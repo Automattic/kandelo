@@ -453,6 +453,7 @@ jobs:
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
             --bottle "$BOTTLE_ARCHIVE" \
             --bottle-json "$BOTTLE_JSON" \
+            --dependency-provenance "$DEPENDENCY_PROVENANCE" \
             --out "$RUNNER_TEMP/homebrew-build-handoff"
 
       - name: Upload strict bottle build handoff
@@ -790,6 +791,7 @@ jobs:
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+            --tap-root "$GITHUB_WORKSPACE/tap"
             --out-env "$RUNNER_TEMP/homebrew-verified-input/build.env"
             --out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"
           )
@@ -1138,6 +1140,8 @@ jobs:
           mkdir -p "$publish_handoff/build" "$publish_handoff/composition"
           cp "$RUNNER_TEMP/homebrew-build-handoff/manifest.json" "$publish_handoff/build/manifest.json"
           cp "$RUNNER_TEMP/homebrew-build-handoff/bottle.json" "$publish_handoff/build/bottle.json"
+          cp "$RUNNER_TEMP/homebrew-build-handoff/dependency-provenance.json" \
+            "$publish_handoff/build/dependency-provenance.json"
           cp "$RUNTIME_BOTTLE" "$publish_handoff/build/bottle.tar.gz"
           cp "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json" "$publish_handoff/receipt.json"
           jq -e '

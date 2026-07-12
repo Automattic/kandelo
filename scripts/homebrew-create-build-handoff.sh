@@ -11,15 +11,16 @@ KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 BOTTLE=""
 BOTTLE_JSON=""
+DEPENDENCY_PROVENANCE=""
 OUT_DIR=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --out <dir>
+usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir>
 
-Creates a handoff containing only manifest.json, bottle.json, and one bottle
-archive. Formula sources, environment files, scripts, and credentials are not
-part of this artifact.
+Creates a handoff containing only manifest.json, bottle.json, one bottle
+archive, and bounded dependency-pour provenance. Formula sources, environment
+files, scripts, credentials, and raw logs are not part of this artifact.
 EOF
 }
 
@@ -34,6 +35,7 @@ while [ "$#" -gt 0 ]; do
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --bottle) BOTTLE="${2:-}"; shift 2 ;;
     --bottle-json) BOTTLE_JSON="${2:-}"; shift 2 ;;
+    --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-create-build-handoff.sh: unknown flag $1" >&2; usage; exit 2 ;;
@@ -58,6 +60,7 @@ for requirement in \
   "bottle-root-url:$BOTTLE_ROOT_URL" \
   "bottle:$BOTTLE" \
   "bottle-json:$BOTTLE_JSON" \
+  "dependency-provenance:$DEPENDENCY_PROVENANCE" \
   "out:$OUT_DIR"; do
   require "${requirement%%:*}" "${requirement#*:}"
 done
@@ -98,6 +101,10 @@ if [ ! -f "$BOTTLE_JSON" ] || [ -L "$BOTTLE_JSON" ]; then
   echo "homebrew-create-build-handoff.sh: bottle JSON must be a regular non-symlink file: $BOTTLE_JSON" >&2
   exit 2
 fi
+if [ ! -f "$DEPENDENCY_PROVENANCE" ] || [ -L "$DEPENDENCY_PROVENANCE" ]; then
+  echo "homebrew-create-build-handoff.sh: dependency provenance must be a regular non-symlink file: $DEPENDENCY_PROVENANCE" >&2
+  exit 2
+fi
 
 file_size() {
   wc -c <"$1" | tr -d '[:space:]'
@@ -113,7 +120,17 @@ require_max_size() {
 }
 
 require_max_size "bottle JSON" "$BOTTLE_JSON" 1048576
+require_max_size "dependency provenance" "$DEPENDENCY_PROVENANCE" 1048576
 require_max_size "compressed bottle" "$BOTTLE" 536870912
+
+SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
+  --input "$DEPENDENCY_PROVENANCE" \
+  --formula "$FORMULA" \
+  --arch "$ARCH" \
+  --tap-repository "$TAP_REPOSITORY" \
+  --tap-commit "$TAP_COMMIT" \
+  --bottle-root-url "$BOTTLE_ROOT_URL"
 
 case "$(basename "$BOTTLE")" in
   *.bottle.tar.gz) ARCHIVE_NAME="bottle.tar.gz" ;;
@@ -192,6 +209,9 @@ OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
 
 cp "$BOTTLE" "$OUT_DIR/$ARCHIVE_NAME"
 cp "$BOTTLE_JSON" "$OUT_DIR/bottle.json"
+cp "$DEPENDENCY_PROVENANCE" "$OUT_DIR/dependency-provenance.json"
+DEPENDENCY_PROVENANCE_SHA256="$(sha256_file "$DEPENDENCY_PROVENANCE")"
+DEPENDENCY_PROVENANCE_BYTES="$(wc -c <"$DEPENDENCY_PROVENANCE" | tr -d '[:space:]')"
 jq -nS \
   --arg formula "$FORMULA" \
   --arg arch "$ARCH" \
@@ -205,9 +225,12 @@ jq -nS \
   --arg tag "$BOTTLE_TAG" \
   --arg cellar "$BOTTLE_RELOCATION_CELLAR" \
   --arg sha256 "$BOTTLE_SHA256" \
-  --arg bytes "$BOTTLE_BYTES" '
+  --arg bytes "$BOTTLE_BYTES" \
+  --arg dependency_json "dependency-provenance.json" \
+  --arg dependency_sha256 "$DEPENDENCY_PROVENANCE_SHA256" \
+  --arg dependency_bytes "$DEPENDENCY_PROVENANCE_BYTES" '
     {
-      schema: 1,
+      schema: 2,
       formula: $formula,
       arch: $arch,
       release_tag: $release_tag,
@@ -222,11 +245,15 @@ jq -nS \
         cellar: $cellar,
         sha256: $sha256,
         bytes: ($bytes | tonumber)
+      },
+      dependency_provenance: {
+        json: $dependency_json,
+        sha256: $dependency_sha256,
+        bytes: ($dependency_bytes | tonumber)
       }
     }
   ' >"$OUT_DIR/manifest.json"
 
-SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 bash "$SCRIPT_ROOT/homebrew-validate-build-handoff.sh" \
   --handoff "$OUT_DIR" \
   --formula "$FORMULA" \

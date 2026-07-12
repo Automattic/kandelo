@@ -12,16 +12,18 @@ KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 OUT_ENV=""
 OUT_BOTTLE_JSON=""
+TAP_ROOT=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> [--out-env <path>] [--out-bottle-json <path>]
+usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>]
 
 Validates an untrusted build handoff against values from the publisher plan.
-The handoff must contain exactly manifest.json, bottle.json, and the bottle
-archive named by the manifest. --out-env, when provided, is written outside
-the handoff only after every check succeeds. --out-bottle-json reconstructs
-the minimal metadata accepted by Homebrew; raw artifact JSON is never copied.
+The handoff must contain exactly manifest.json, bottle.json,
+dependency-provenance.json, and the bottle archive named by the manifest.
+--out-env, when provided, is written outside the handoff only after every check
+succeeds. --out-bottle-json reconstructs the minimal metadata accepted by
+Homebrew; raw artifact JSON is never copied.
 EOF
 }
 
@@ -35,6 +37,7 @@ while [ "$#" -gt 0 ]; do
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
+    --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --out-env) OUT_ENV="${2:-}"; shift 2 ;;
     --out-bottle-json) OUT_BOTTLE_JSON="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -94,6 +97,10 @@ if [ ! -d "$HANDOFF" ] || [ -L "$HANDOFF" ]; then
   echo "homebrew-validate-build-handoff.sh: handoff must be a real directory: $HANDOFF" >&2
   exit 1
 fi
+if [ -n "$TAP_ROOT" ] && { [ ! -d "$TAP_ROOT" ] || [ -L "$TAP_ROOT" ]; }; then
+  echo "homebrew-validate-build-handoff.sh: --tap-root must be a real directory" >&2
+  exit 2
+fi
 
 HANDOFF="$(cd "$HANDOFF" && pwd -P)"
 entries=()
@@ -101,8 +108,8 @@ while IFS= read -r -d '' entry; do
   entries+=("$entry")
 done < <(find "$HANDOFF" -mindepth 1 -maxdepth 1 -print0)
 
-if [ "${#entries[@]}" -ne 3 ]; then
-  echo "homebrew-validate-build-handoff.sh: handoff must contain exactly three files" >&2
+if [ "${#entries[@]}" -ne 4 ]; then
+  echo "homebrew-validate-build-handoff.sh: handoff must contain exactly four files" >&2
   exit 1
 fi
 for entry in "${entries[@]}"; do
@@ -114,11 +121,13 @@ done
 
 MANIFEST="$HANDOFF/manifest.json"
 BOTTLE_JSON="$HANDOFF/bottle.json"
+DEPENDENCY_PROVENANCE="$HANDOFF/dependency-provenance.json"
 BOTTLE_ARCHIVE="$HANDOFF/bottle.tar.gz"
 if [ ! -f "$MANIFEST" ] || [ -L "$MANIFEST" ] || \
    [ ! -f "$BOTTLE_JSON" ] || [ -L "$BOTTLE_JSON" ] || \
+   [ ! -f "$DEPENDENCY_PROVENANCE" ] || [ -L "$DEPENDENCY_PROVENANCE" ] || \
    [ ! -f "$BOTTLE_ARCHIVE" ] || [ -L "$BOTTLE_ARCHIVE" ]; then
-  echo "homebrew-validate-build-handoff.sh: manifest.json, bottle.json, and bottle.tar.gz are required regular files" >&2
+  echo "homebrew-validate-build-handoff.sh: manifest.json, bottle.json, dependency-provenance.json, and bottle.tar.gz are required regular files" >&2
   exit 1
 fi
 
@@ -137,6 +146,7 @@ require_max_size() {
 
 require_max_size "manifest.json" "$MANIFEST" 65536
 require_max_size "bottle.json" "$BOTTLE_JSON" 1048576
+require_max_size "dependency-provenance.json" "$DEPENDENCY_PROVENANCE" 1048576
 require_max_size "compressed bottle" "$BOTTLE_ARCHIVE" 536870912
 
 manifest_error="$(mktemp)"
@@ -152,10 +162,10 @@ if ! jq -e \
     def exact_keys($expected):
       type == "object" and keys == ($expected | sort);
     exact_keys([
-      "arch", "bottle", "bottle_root_url", "formula", "kandelo_commit",
-      "release_tag", "schema", "tap_commit", "tap_repository"
+      "arch", "bottle", "bottle_root_url", "dependency_provenance", "formula",
+      "kandelo_commit", "release_tag", "schema", "tap_commit", "tap_repository"
     ]) and
-    .schema == 1 and
+    .schema == 2 and
     .formula == $formula and
     .arch == $arch and
     .release_tag == $release_tag and
@@ -171,7 +181,13 @@ if ! jq -e \
       . == "/home/linuxbrew/.linuxbrew/Cellar") and
     (.bottle.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
     (.bottle.bytes | type == "number" and . >= 0 and floor == .) and
-    .bottle.archive == "bottle.tar.gz"
+    .bottle.archive == "bottle.tar.gz" and
+    (.dependency_provenance | exact_keys(["bytes", "json", "sha256"])) and
+    .dependency_provenance.json == "dependency-provenance.json" and
+    (.dependency_provenance.sha256 |
+      type == "string" and test("^[0-9a-f]{64}$")) and
+    (.dependency_provenance.bytes |
+      type == "number" and . >= 0 and floor == .)
   ' "$MANIFEST" >/dev/null 2>"$manifest_error"; then
   echo "homebrew-validate-build-handoff.sh: manifest.json violates the strict build-handoff schema" >&2
   sed -n '1,3p' "$manifest_error" >&2
@@ -181,6 +197,8 @@ fi
 ARCHIVE_NAME="$(jq -r '.bottle.archive' "$MANIFEST")"
 EXPECTED_SHA256="$(jq -r '.bottle.sha256' "$MANIFEST")"
 EXPECTED_BYTES="$(jq -r '.bottle.bytes' "$MANIFEST")"
+EXPECTED_DEPENDENCY_SHA256="$(jq -r '.dependency_provenance.sha256' "$MANIFEST")"
+EXPECTED_DEPENDENCY_BYTES="$(jq -r '.dependency_provenance.bytes' "$MANIFEST")"
 BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$MANIFEST")"
 BOTTLE_TAG="${ARCH}_kandelo"
 BOTTLE_ARCHIVE="$HANDOFF/$ARCHIVE_NAME"
@@ -192,7 +210,7 @@ BOTTLE_INSTALL_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
 
 for entry in "${entries[@]}"; do
   case "$(basename "$entry")" in
-    manifest.json|bottle.json|"$ARCHIVE_NAME") ;;
+    manifest.json|bottle.json|dependency-provenance.json|"$ARCHIVE_NAME") ;;
     *) echo "homebrew-validate-build-handoff.sh: unexpected handoff file: $(basename "$entry")" >&2; exit 1 ;;
   esac
 done
@@ -223,6 +241,31 @@ if [ "$ACTUAL_BYTES" != "$EXPECTED_BYTES" ]; then
   echo "homebrew-validate-build-handoff.sh: bottle archive byte count does not match manifest" >&2
   exit 1
 fi
+ACTUAL_DEPENDENCY_SHA256="$(sha256_file "$DEPENDENCY_PROVENANCE")"
+ACTUAL_DEPENDENCY_BYTES="$(wc -c <"$DEPENDENCY_PROVENANCE" | tr -d '[:space:]')"
+if [ "$ACTUAL_DEPENDENCY_SHA256" != "$EXPECTED_DEPENDENCY_SHA256" ]; then
+  echo "homebrew-validate-build-handoff.sh: dependency provenance SHA-256 does not match manifest" >&2
+  exit 1
+fi
+if [ "$ACTUAL_DEPENDENCY_BYTES" != "$EXPECTED_DEPENDENCY_BYTES" ]; then
+  echo "homebrew-validate-build-handoff.sh: dependency provenance byte count does not match manifest" >&2
+  exit 1
+fi
+
+SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+dependency_validation_args=(
+  validate
+  --input "$DEPENDENCY_PROVENANCE"
+  --formula "$FORMULA"
+  --arch "$ARCH"
+  --tap-repository "$TAP_REPOSITORY"
+  --tap-commit "$TAP_COMMIT"
+  --bottle-root-url "$BOTTLE_ROOT_URL"
+)
+if [ -n "$TAP_ROOT" ]; then
+  dependency_validation_args+=(--tap-root "$TAP_ROOT")
+fi
+python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" "${dependency_validation_args[@]}"
 
 if ! jq -e \
   --arg formula "$FORMULA" \
@@ -342,6 +385,7 @@ if [ -n "$OUT_ENV" ]; then
     printf 'BOTTLE_SHA256=%q\n' "$ACTUAL_SHA256"
     printf 'BOTTLE_BYTES=%q\n' "$ACTUAL_BYTES"
     printf 'BOTTLE_RELOCATION_CELLAR=%q\n' "$BOTTLE_RELOCATION_CELLAR"
+    printf 'DEPENDENCY_PROVENANCE=%q\n' "$DEPENDENCY_PROVENANCE"
   } >"$out_tmp"
   mv "$out_tmp" "$out_path"
 fi

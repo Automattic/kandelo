@@ -239,6 +239,7 @@ make_build_handoff() {
   local source_dir="${handoff}.source"
   local bottle="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.tar.gz"
   local bottle_json="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.json"
+  local dependency_provenance="$source_dir/dependency-provenance.json"
   local bottle_stage="$source_dir/stage/hello/2.12.1"
   local sha256
 
@@ -279,6 +280,16 @@ EOF
       }
     }
   }' >"$bottle_json"
+  jq -nS '{
+    schema: 1,
+    formula: "hello",
+    arch: "wasm32",
+    tap_repository: "Automattic/kandelo-homebrew",
+    tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+    bottle_tag: "wasm32_kandelo",
+    dependencies: []
+  }' >"$dependency_provenance"
 
   bash "$REPO_ROOT/scripts/homebrew-create-build-handoff.sh" \
     --formula hello \
@@ -290,6 +301,7 @@ EOF
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
     --bottle "$bottle" \
     --bottle-json "$bottle_json" \
+    --dependency-provenance "$dependency_provenance" \
     --out "$handoff" >/dev/null
 }
 
@@ -323,7 +335,7 @@ assert_build_handoff_is_minimal_and_validated() {
     --out-bottle-json "$canonical_json" >/dev/null
 
   files="$(find "$handoff" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort)"
-  [ "$files" = $'bottle.json\nbottle.tar.gz\nmanifest.json' ] ||
+  [ "$files" = $'bottle.json\nbottle.tar.gz\ndependency-provenance.json\nmanifest.json' ] ||
     fail "build handoff contains files outside its minimal data contract: $files"
   [ ! -e "$handoff/Formula" ] || fail "build handoff included formula source"
   [ ! -e "$handoff/build.env" ] || fail "build handoff included executable environment data"
@@ -342,6 +354,8 @@ assert_build_handoff_is_minimal_and_validated() {
       fail "validated handoff env has the wrong archive byte count"
     [ "$BOTTLE_RELOCATION_CELLAR" = "any_skip_relocation" ] ||
       fail "validated handoff env lost the Homebrew relocation cellar"
+    [ "$DEPENDENCY_PROVENANCE" -ef "$handoff/dependency-provenance.json" ] ||
+      fail "validated handoff env lost dependency provenance"
   )
   jq -e --arg sha256 "$(jq -r '.bottle.sha256' "$handoff/manifest.json")" '
     keys == ["hello"] and
@@ -384,6 +398,7 @@ assert_build_handoff_rejects_untrusted_content() {
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
     --bottle "$zstd_bottle" \
     --bottle-json "${handoff}.source/hello--2.12.1.wasm32_kandelo.bottle.json" \
+    --dependency-provenance "${handoff}.source/dependency-provenance.json" \
     --out "$zstd_out" >/dev/null 2>&1; then
     fail "build handoff creator accepted a zstd bottle for the gzip-only publisher"
   fi
@@ -406,6 +421,7 @@ assert_build_handoff_rejects_untrusted_content() {
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
     --bottle "$invalid_gzip" \
     --bottle-json "$invalid_json" \
+    --dependency-provenance "${handoff}.source/dependency-provenance.json" \
     --out "$invalid_out" >/dev/null 2>&1; then
     fail "build handoff creator accepted non-gzip bytes under a gzip filename"
   fi
@@ -417,7 +433,7 @@ assert_build_handoff_rejects_untrusted_content() {
   if validate_build_handoff "$handoff" > /dev/null 2>"$err"; then
     fail "build handoff validator accepted an extra environment file"
   fi
-  grep -q "exactly three files" "$err" ||
+  grep -q "exactly four files" "$err" ||
     fail "build handoff validator did not explain the extra file"
 
   handoff="$TMPDIR/build-handoff-symlink"
@@ -446,6 +462,15 @@ assert_build_handoff_rejects_untrusted_content() {
   printf 'tampered\n' >>"$handoff/bottle.tar.gz"
   if validate_build_handoff "$handoff" >/dev/null 2>&1; then
     fail "build handoff validator accepted modified bottle bytes"
+  fi
+
+  handoff="$TMPDIR/build-handoff-dependency-tamper"
+  make_build_handoff "$handoff"
+  jq '.tap_commit = "cccccccccccccccccccccccccccccccccccccccc"' \
+    "$handoff/dependency-provenance.json" >"$tmp"
+  mv "$tmp" "$handoff/dependency-provenance.json"
+  if validate_build_handoff "$handoff" >/dev/null 2>&1; then
+    fail "build handoff validator accepted modified dependency provenance"
   fi
 
   handoff="$TMPDIR/build-handoff-json-sha"
@@ -499,6 +524,13 @@ assert_build_handoff_rejects_untrusted_content() {
   truncate -s 536870913 "$handoff/bottle.tar.gz"
   if validate_build_handoff "$handoff" >/dev/null 2>&1; then
     fail "build handoff validator accepted a compressed bottle larger than 512 MiB"
+  fi
+
+  handoff="$TMPDIR/build-handoff-large-dependency-provenance"
+  make_build_handoff "$handoff"
+  truncate -s 1048577 "$handoff/dependency-provenance.json"
+  if validate_build_handoff "$handoff" >/dev/null 2>&1; then
+    fail "build handoff validator accepted dependency provenance larger than 1 MiB"
   fi
 }
 
@@ -860,6 +892,8 @@ case "${1:-}" in
       *) exit 43 ;;
     esac
     ;;
+  deps)
+    ;;
   install)
     exit 42
     ;;
@@ -906,6 +940,538 @@ EOF
   [ ! -e "$trust_config" ] || fail "build-local Homebrew config survived cleanup"
   [ -z "$(find "$caller_config" -mindepth 1 -print -quit)" ] ||
     fail "bottle build mutated the caller's Homebrew config store"
+}
+
+assert_bottle_build_forces_same_tap_dependencies() {
+  local tap="$TMPDIR/bottle-dependency-tap"
+  local brew_repo="$TMPDIR/bottle-dependency-brew-repo"
+  local brew_prefix="$TMPDIR/bottle-dependency-prefix"
+  local fake_brew="$TMPDIR/bottle-dependency-brew"
+  local out="$TMPDIR/bottle-dependency-out"
+  local log="$TMPDIR/bottle-dependency.log"
+  make_tap "$tap"
+  mkdir -p "$brew_repo" "$brew_prefix"
+  cat >"$tap/Formula/zlib.rb" <<'EOF'
+class Zlib < Formula
+end
+EOF
+
+  cat >"$fake_brew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_BREW_LOG"
+case "${1:-}" in
+  --prefix) printf '%s\n' "$FAKE_BREW_PREFIX" ;;
+  --repository)
+    if [ "$#" -eq 1 ]; then
+      printf '%s\n' "$FAKE_BREW_REPOSITORY"
+    else
+      printf '%s\n' "$FAKE_TAP_ROOT"
+    fi
+    ;;
+  tap|trust) ;;
+  deps)
+    printf '%s\n' 'cmake' 'automattic/kandelo-homebrew/zlib'
+    ;;
+  install)
+    if [ "$*" = 'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib' ]; then
+      exit 42
+    fi
+    exit 43
+    ;;
+  *) exit 44 ;;
+esac
+EOF
+  chmod +x "$fake_brew"
+
+  if FAKE_BREW_LOG="$log" \
+    FAKE_BREW_PREFIX="$brew_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello \
+      --arch wasm32 \
+      --out "$out" \
+      --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+      >/dev/null 2>&1; then
+    fail "dependency force-bottle fixture unexpectedly completed"
+  fi
+
+  grep -Fx 'deps --topological --full-name --formula automattic/kandelo-homebrew/hello' "$log" >/dev/null ||
+    fail "bottle build did not resolve the runtime dependency closure"
+  grep -Fx 'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib' "$log" >/dev/null ||
+    fail "bottle build did not force the selected same-tap dependency bottle"
+  ! grep -F 'install --force-bottle' "$log" | grep -F 'cmake' >/dev/null ||
+    fail "bottle build treated a host dependency as a Kandelo bottle"
+  ! grep -F 'install --build-bottle' "$log" >/dev/null ||
+    fail "bottle build continued to the target source build after a dependency bottle failure"
+}
+
+assert_dependency_pour_provenance_is_bounded() {
+  local root="$TMPDIR/dependency-provenance"
+  local tap="$root/tap"
+  local cellar="$root/cellar/zlib/1.3.1"
+  local target_receipt="$root/target-receipt.json"
+  local expected_dependencies="$root/expected-dependencies.txt"
+  local install_log="$root/install.log"
+  local fake_brew="$root/brew"
+  local info="$root/zlib-info.json"
+  local output="$root/provenance.json"
+  local bad="$root/bad.json"
+  local formula_sha
+  local bottle_sha="1111111111111111111111111111111111111111111111111111111111111111"
+  local tap_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  mkdir -p "$tap/Formula" "$cellar"
+  cat >"$tap/Formula/zlib.rb" <<'EOF'
+class Zlib < Formula
+  desc "fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
+  end
+end
+EOF
+  cat >"$tap/Formula/curl.rb" <<'EOF'
+class Curl < Formula
+  desc "consumer fixture"
+  depends_on "automattic/kandelo-homebrew/zlib"
+end
+EOF
+  formula_sha="$(sha256sum "$tap/Formula/zlib.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap/Formula/zlib.rb" | awk '{print $1}')"
+  jq -nS --arg tap_commit "$tap_commit" '{
+    homebrew_version: "Homebrew fixture",
+    built_as_bottle: true,
+    poured_from_bottle: true,
+    installed_on_request: false,
+    source: {
+      tap: "automattic/kandelo-homebrew",
+      tap_git_head: $tap_commit
+    },
+    runtime_dependencies: []
+  }' >"$cellar/INSTALL_RECEIPT.json"
+  jq -nS '{runtime_dependencies: [{
+    full_name: "automattic/kandelo-homebrew/zlib",
+    version: "1.3.1",
+    pkg_version: "1.3.1",
+    revision: 0,
+    bottle_rebuild: 0,
+    declared_directly: true
+  }]}' >"$target_receipt"
+  printf '%s\n' 'automattic/kandelo-homebrew/zlib' >"$expected_dependencies"
+  jq -nS --arg formula_sha "$formula_sha" --arg bottle_sha "$bottle_sha" '{
+    formulae: [{
+      name: "zlib",
+      full_name: "automattic/kandelo-homebrew/zlib",
+      ruby_source_checksum: {sha256: $formula_sha},
+      bottle: {stable: {
+        rebuild: 0,
+        files: {wasm32_kandelo: {
+          cellar: "any_skip_relocation",
+          url: ("https://ghcr.io/v2/automattic/kandelo-homebrew/zlib/blobs/sha256:" + $bottle_sha),
+          sha256: $bottle_sha
+        }}
+      }}
+    }],
+    casks: []
+  }' >"$info"
+  cat >"$fake_brew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --cellar)
+    [ "${2:-}" = "automattic/kandelo-homebrew/zlib" ]
+    printf '%s\n' "$FAKE_CELLAR/zlib"
+    ;;
+  info)
+    [ "${2:-}" = "--json=v2" ]
+    [ "${3:-}" = "automattic/kandelo-homebrew/zlib" ]
+    cat "$FAKE_INFO"
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$fake_brew"
+  cat >"$install_log" <<EOF
+==> Downloading https://ghcr.io/v2/automattic/kandelo-homebrew/zlib/manifests/1.3.1
+==> Downloading https://ghcr.io/v2/automattic/kandelo-homebrew/zlib/blobs/sha256:$bottle_sha
+==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.tar.gz
+EOF
+
+  FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" \
+      --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --tap-commit "$tap_commit" \
+      --formula curl \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+      --target-receipt "$target_receipt" \
+      --expected-dependencies "$expected_dependencies" \
+      --install-log "$install_log" \
+      --out "$output"
+  python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$output" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --tap-commit "$tap_commit" \
+    --formula curl \
+    --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --tap-root "$tap"
+  jq -e --arg bottle_sha "$bottle_sha" '
+    (.dependencies | length) == 1 and
+    .dependencies[0].name == "zlib" and
+    .dependencies[0].bottle.sha256 == $bottle_sha and
+    .dependencies[0].receipt.built_as_bottle == true and
+    .dependencies[0].receipt.poured_from_bottle == true and
+    .dependencies[0].receipt.installed_on_request == false and
+    (.dependencies[0].install_log.fetch | length) == 1 and
+    (.dependencies[0].install_log.pour | length) == 1 and
+    .dependencies[0].install_log.source_build_absent == true
+  ' "$output" >/dev/null || fail "dependency provenance omitted exact bottle-pour evidence"
+
+  local fabricated_sha="2222222222222222222222222222222222222222222222222222222222222222"
+  jq --arg fabricated_sha "$fabricated_sha" '
+    .dependencies[0].bottle.sha256 = $fabricated_sha |
+    .dependencies[0].bottle.url =
+      ("https://ghcr.io/v2/automattic/kandelo-homebrew/zlib/blobs/sha256:" + $fabricated_sha) |
+    .dependencies[0].install_log.fetch = [
+      ("==> Downloading https://ghcr.io/v2/automattic/kandelo-homebrew/zlib/blobs/sha256:" + $fabricated_sha)
+    ]
+  ' "$output" >"$bad"
+  if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$bad" --tap-repository Automattic/kandelo-homebrew \
+    --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --tap-root "$tap" >/dev/null 2>&1; then
+    fail "fresh dependency validation accepted fabricated prior-bottle metadata"
+  fi
+
+  jq '.dependencies = []' "$output" >"$bad"
+  if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$bad" --tap-repository Automattic/kandelo-homebrew \
+    --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --tap-root "$tap" >/dev/null 2>&1; then
+    fail "fresh dependency validation accepted an omitted exact-tap closure"
+  fi
+
+  jq '.runtime_dependencies = []' "$target_receipt" >"$bad"
+  if FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+      --target-receipt "$bad" --expected-dependencies "$expected_dependencies" \
+      --install-log "$install_log" --out "$root/missing-dependency.json" \
+      >/dev/null 2>&1; then
+    fail "dependency provenance accepted a target receipt missing a resolved dependency"
+  fi
+
+  jq '.poured_from_bottle = false' "$cellar/INSTALL_RECEIPT.json" >"$bad"
+  mv "$bad" "$cellar/INSTALL_RECEIPT.json"
+  if FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+      --target-receipt "$target_receipt" --expected-dependencies "$expected_dependencies" \
+      --install-log "$install_log" --out "$bad" \
+      >/dev/null 2>&1; then
+    fail "dependency provenance accepted a source-built dependency receipt"
+  fi
+
+  jq '.dependencies[0].install_log.source_build_absent = false' "$output" >"$bad"
+  if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$bad" --tap-repository Automattic/kandelo-homebrew \
+    --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    >/dev/null 2>&1; then
+    fail "dependency provenance validator accepted a source-build claim"
+  fi
+
+  printf '# changed after build\n' >>"$tap/Formula/zlib.rb"
+  if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$output" --tap-repository Automattic/kandelo-homebrew \
+    --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --tap-root "$tap" >/dev/null 2>&1; then
+    fail "dependency provenance accepted Formula drift from the exact tap"
+  fi
+}
+
+assert_static_formula_closure_is_fail_closed() {
+  local tap="$TMPDIR/static-closure-tap"
+  local output
+  mkdir -p "$tap/Formula"
+  cat >"$tap/Formula/dep-b.rb" <<'RUBY'
+class DepB < Formula
+end
+RUBY
+  cat >"$tap/Formula/dep-a.rb" <<'RUBY'
+class DepA < Formula
+  depends_on "automattic/kandelo-homebrew/dep-b"
+end
+RUBY
+  cat >"$tap/Formula/dep-recommended.rb" <<'RUBY'
+class DepRecommended < Formula
+end
+RUBY
+  cat >"$tap/Formula/root.rb" <<'RUBY'
+class Root < Formula
+  depends_on "pkgconf" => :build
+  depends_on "wabt" => [:build, :test]
+  depends_on "automattic/kandelo-homebrew/dep-a"
+  depends_on "automattic/kandelo-homebrew/dep-recommended" => :recommended
+  depends_on "automattic/kandelo-homebrew/not-installed" => :optional
+end
+RUBY
+  output="$(ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" Automattic/kandelo-homebrew root)"
+  [ "$output" = $'automattic/kandelo-homebrew/dep-a\nautomattic/kandelo-homebrew/dep-b\nautomattic/kandelo-homebrew/dep-recommended' ] ||
+    fail "static Formula resolver did not produce the recursive runtime closure: $output"
+
+  expect_static_closure_failure() {
+    local formula="$1" label="$2"
+    if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+      "$tap" Automattic/kandelo-homebrew "$formula" >/dev/null 2>&1; then
+      fail "static Formula resolver accepted $label"
+    fi
+  }
+
+  cat >"$tap/Formula/conditional.rb" <<'RUBY'
+class Conditional < Formula
+  if ENV["INCLUDE_DEP"]
+    depends_on "automattic/kandelo-homebrew/dep-a"
+  end
+end
+RUBY
+  expect_static_closure_failure conditional "a conditional dependency"
+
+  cat >"$tap/Formula/modifier.rb" <<'RUBY'
+class Modifier < Formula
+  depends_on "automattic/kandelo-homebrew/dep-a" if ENV["INCLUDE_DEP"]
+end
+RUBY
+  expect_static_closure_failure modifier "a modifier-if dependency"
+
+  cat >"$tap/Formula/interpolated.rb" <<'RUBY'
+class Interpolated < Formula
+  dependency = "dep-a"
+  depends_on "automattic/kandelo-homebrew/#{dependency}"
+end
+RUBY
+  expect_static_closure_failure interpolated "an interpolated dependency"
+
+  cat >"$tap/Formula/helper.rb" <<'RUBY'
+class Helper < Formula
+  def self.declare_dependency
+    depends_on "automattic/kandelo-homebrew/dep-a"
+  end
+end
+RUBY
+  expect_static_closure_failure helper "a dependency hidden in a helper"
+
+  cat >"$tap/Formula/initializer.rb" <<'RUBY'
+class Initializer < Formula
+  def initialize(*args)
+    super
+    self.class.__send__("depends_" + "on", "automattic/kandelo-homebrew/dep-a")
+  end
+end
+RUBY
+  expect_static_closure_failure initializer "an initialization-time dependency dispatch"
+
+  cat >"$tap/Formula/receiver.rb" <<'RUBY'
+class Receiver < Formula
+  self.depends_on "automattic/kandelo-homebrew/dep-a"
+end
+RUBY
+  expect_static_closure_failure receiver "a dependency with a dynamic receiver"
+
+  cat >"$tap/Formula/string-dispatch.rb" <<'RUBY'
+class StringDispatch < Formula
+  send("depends_" + "on", "automattic/kandelo-homebrew/dep-a")
+end
+RUBY
+  expect_static_closure_failure string-dispatch "a dependency built through string dispatch"
+
+  cat >"$tap/Formula/class-eval.rb" <<'RUBY'
+class ClassEval < Formula
+  class_eval("depends_" + "on \"automattic/kandelo-homebrew/dep-a\"")
+end
+RUBY
+  expect_static_closure_failure class-eval "a dependency built through class_eval"
+
+  cat >"$tap/Formula/patch-execution.rb" <<'RUBY'
+class PatchExecution < Formula
+  patch do
+    PatchExecution.singleton_class.instance_method(("depends_" + "on").to_sym).bind_call(
+      PatchExecution,
+      "automattic/kandelo-homebrew/dep-a",
+    )
+  end
+end
+RUBY
+  expect_static_closure_failure patch-execution "executable dependency dispatch in a patch block"
+
+  cat >"$tap/Formula/foreign-include.rb" <<'RUBY'
+class ForeignInclude < Formula
+  include DependencyDeclaringSupport
+end
+RUBY
+  expect_static_closure_failure foreign-include "an alternate class-body support module"
+
+  mkdir -p "$tap/Kandelo/formula_support"
+  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
+require "fileutils"
+require "json"
+require "shellwords"
+
+module KandeloFormulaSupport
+  def kandelo_fixture
+    "fixture"
+  end
+end
+RUBY
+  cat >"$tap/Formula/support-ok.rb" <<'RUBY'
+require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class SupportOk < Formula
+  include KandeloFormulaSupport
+  depends_on "automattic/kandelo-homebrew/dep-a"
+end
+RUBY
+  output="$(ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" Automattic/kandelo-homebrew support-ok)"
+  [ "$output" = $'automattic/kandelo-homebrew/dep-a\nautomattic/kandelo-homebrew/dep-b' ] ||
+    fail "static Formula resolver rejected a canonical benign support module: $output"
+
+  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
+require "fileutils"
+require "json"
+require "shellwords"
+
+module KandeloFormulaSupport
+  def self.included(formula)
+    formula.singleton_class.instance_method(("depends_" + "on").to_sym).bind_call(
+      formula,
+      "automattic/kandelo-homebrew/dep-a",
+    )
+  end
+end
+RUBY
+  cat >"$tap/Formula/support-hook.rb" <<'RUBY'
+require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class SupportHook < Formula
+  include KandeloFormulaSupport
+end
+RUBY
+  expect_static_closure_failure support-hook "a load-time Kandelo support-module hook"
+
+  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
+require "fileutils"
+require "json"
+require "shellwords"
+
+module KandeloFormulaSupport
+  def kandelo_fixture
+  end
+ensure
+  Formula.singleton_class.instance_method(("depends_" + "on").to_sym).bind(Formula).call(
+    "automattic/kandelo-homebrew/dep-a",
+  )
+end
+RUBY
+  cat >"$tap/Formula/support-ensure.rb" <<'RUBY'
+require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class SupportEnsure < Formula
+  include KandeloFormulaSupport
+end
+RUBY
+  expect_static_closure_failure support-ensure "an executable support-module ensure tail"
+
+  cat >"$tap/Formula/uses-from-macos.rb" <<'RUBY'
+class UsesFromMacos < Formula
+  uses_from_macos "automattic/kandelo-homebrew/dep-a"
+end
+RUBY
+  expect_static_closure_failure uses-from-macos "an alternate dependency DSL"
+
+  cat >"$tap/Formula/deps-mutation.rb" <<'RUBY'
+class DepsMutation < Formula
+  deps << Dependency.new("automattic/kandelo-homebrew/dep-a")
+end
+RUBY
+  expect_static_closure_failure deps-mutation "a direct dependency collector mutation"
+
+  cat >"$tap/Formula/top-level.rb" <<'RUBY'
+warn "unexpected Formula-load execution"
+
+class TopLevel < Formula
+  depends_on "automattic/kandelo-homebrew/dep-a"
+end
+RUBY
+  expect_static_closure_failure top-level "an unsupported top-level executable statement"
+
+  cat >"$tap/Formula/class-ensure.rb" <<'RUBY'
+class ClassEnsure < Formula
+  desc "fixture"
+ensure
+  singleton_class.instance_method(("depends_" + "on").to_sym).bind(self).call(
+    "automattic/kandelo-homebrew/dep-a",
+  )
+end
+RUBY
+  expect_static_closure_failure class-ensure "an executable Formula class ensure tail"
+
+  cat >"$tap/Formula/unnormalized.rb" <<'RUBY'
+class Unnormalized < Formula
+  depends_on "Automattic/kandelo-homebrew/dep-a"
+end
+RUBY
+  expect_static_closure_failure unnormalized "an unnormalized same-tap dependency"
+
+  cat >"$tap/Formula/unknown-tag.rb" <<'RUBY'
+class UnknownTag < Formula
+  depends_on "automattic/kandelo-homebrew/dep-a" => :mystery
+end
+RUBY
+  expect_static_closure_failure unknown-tag "an unknown dependency tag"
+
+  cat >"$tap/Formula/wrong-name.rb" <<'RUBY'
+class Wrong < Formula
+end
+RUBY
+  expect_static_closure_failure wrong-name "a Formula class that does not match its filename"
+
+  cat >"$tap/Formula/cycle-a.rb" <<'RUBY'
+class CycleA < Formula
+  depends_on "automattic/kandelo-homebrew/cycle-b"
+end
+RUBY
+  cat >"$tap/Formula/cycle-b.rb" <<'RUBY'
+class CycleB < Formula
+  depends_on "automattic/kandelo-homebrew/cycle-a"
+end
+RUBY
+  expect_static_closure_failure cycle-a "a same-tap dependency cycle"
+
+  mkdir -p "$TMPDIR/static-closure-symlink-tap"
+  ln -s "$tap/Formula" "$TMPDIR/static-closure-symlink-tap/Formula"
+  if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$TMPDIR/static-closure-symlink-tap" Automattic/kandelo-homebrew root \
+    >/dev/null 2>&1; then
+    fail "static Formula resolver accepted a symlinked Formula directory"
+  fi
 }
 
 assert_failure_preserves_metadata() {
@@ -1272,6 +1838,9 @@ assert_matrix_skips_unchanged_cache_key
 assert_upload_dry_run
 assert_upload_push_uses_relative_layer_path
 assert_bottle_build_trusts_selected_tap
+assert_bottle_build_forces_same_tap_dependencies
+assert_dependency_pour_provenance_is_bounded
+assert_static_formula_closure_is_fail_closed
 assert_generator_rejects_mismatched_homebrew_commit
 assert_build_handoff_is_minimal_and_validated
 assert_build_handoff_rejects_untrusted_content

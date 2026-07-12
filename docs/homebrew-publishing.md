@@ -131,6 +131,55 @@ HOMEBREW_KANDELO_LLVM_BIN
 Workflow-facing scripts use `KANDELO_HOMEBREW_*` variables outside Formula
 Ruby.
 
+## Dependency-First Bottles
+
+Publish same-tap runtime dependencies before their consumers. The bottle
+builder resolves the selected Formula's recursive runtime closure in
+topological order, filters it to `Automattic/kandelo-homebrew`, and installs
+each dependency separately with `--force-bottle --as-dependency
+--ignore-dependencies`. A missing Kandelo bottle therefore fails before the
+consumer source build; Homebrew is not allowed to silently replace a prior
+library bottle with a dependency source build.
+
+After building the consumer, the builder checks every same-tap dependency in
+its `INSTALL_RECEIPT.json`. The installed dependency receipt must say
+`built_as_bottle: true`, `poured_from_bottle: true`, and
+`installed_on_request: false`, and its source tap commit must match the exact
+planned tap. The selected Formula's `wasm32_kandelo` or `wasm64_kandelo`
+bottle digest and bounded fetch/pour log lines are recorded alongside those
+receipt facts. Raw logs do not cross the runner boundary. Fresh verifier and
+finalizer runners rehash each dependency Formula from the exact planned tap
+before accepting the bounded provenance.
+
+The exact same-tap closure resolved before installation must equal the closure
+recorded in the target receipt. A missing or unexpected receipt entry fails the
+build before any publication handoff is created.
+
+Fresh verifier and finalizer validation independently derive that closure from
+the exact tap without evaluating Formula Ruby. Same-tap dependencies must use
+direct Formula class-body literal declarations such as `depends_on
+"automattic/kandelo-homebrew/zlib"`. The static resolver includes untagged and
+`:recommended` dependencies, excludes the canonical `:build`, `:test`, and
+`:optional` forms, and recursively resolves explicit same-tap references.
+Conditional, interpolated, helper-hidden, unknown-tag, duplicate, and cyclic
+dependency declarations fail closed. The submitted provenance dependency set
+must exactly equal this independently derived closure, including for an empty
+root-package closure.
+
+For every closure member, the resolver also reads the canonical static
+`bottle do` block and derives the selected architecture's cellar, rebuild,
+digest, tag, and digest-bound URL. Fresh validation requires the submitted
+prior-bottle record to equal that exact tap data; a closure member with no
+selected-architecture bottle fails validation.
+
+This non-evaluating boundary permits only the Formula load-time structures the
+tap currently uses. `patch do` is limited to static resource declarations,
+class constants and build-time instance methods use explicit allowlists, and
+the shared `KandeloFormulaSupport` file is accepted only when its top level is
+the three standard-library requires plus a module containing unique
+`kandelo_` instance methods. Load-time hooks, arbitrary class methods, and
+other executable structures fail closed.
+
 ## Trusted Publish Flow
 
 The reusable publisher is:
@@ -199,8 +248,9 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    does not disable tap-trust enforcement or reuse persistent account state.
    The job then builds the required Kandelo pieces and executes the Formula
    build and test without publisher credentials. Its strict handoff contains
-   only `manifest.json`, Homebrew's bottle JSON, and one gzip bottle archive.
-   It contains no Formula source, scripts, environment files, or credentials.
+   only `manifest.json`, Homebrew's bottle JSON, one gzip bottle archive, and
+   bounded `dependency-provenance.json`. It contains no Formula source,
+   scripts, environment files, raw logs, or credentials.
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
    against the plan before exposing the token to an isolated ORAS upload. Its
@@ -394,8 +444,9 @@ gallery publication requires a separate immutable asset contract.
 
 - Do not evaluate Formula Ruby in host or browser VFS tooling.
 - Use a disposable Homebrew prefix for local bottle builds. The trusted CI
-  runner is disposable; a local run installs the target formula and any missing
-  build dependencies into the prefix selected by `HOMEBREW_BREW_FILE`.
+  runner is disposable; a local run installs the target formula and ordinary
+  host build dependencies into the prefix selected by `HOMEBREW_BREW_FILE`.
+  Same-tap runtime dependencies must already have matching Kandelo bottles.
 - Do not treat a successful bottle build as browser support.
 - Do not mark `browser_compatible = true` without browser smoke evidence.
 - Do not use Homebrew sidecars to weaken Kandelo ABI or cache-key checks.
