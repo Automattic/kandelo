@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "yaml"
 
 REPO_ROOT = File.expand_path("..", __dir__)
@@ -101,7 +102,7 @@ def check_publisher(workflow)
   checkout_indices = plan_steps.each_index.select do |index|
     plan_steps[index]["uses"].to_s.downcase.start_with?("actions/checkout@")
   end
-  check(!validation_index.nil?, "publisher lacks caller trust validation")
+  check(validation_index == 0, "publisher trust validation must be the first plan step")
   check(!checkout_indices.empty? && validation_index < checkout_indices.min,
         "publisher does not validate caller trust before checkout")
 
@@ -120,6 +121,9 @@ def check_publisher(workflow)
     check(validation_env[key] == value, "publisher trust validation has an unexpected #{key}")
   end
   validation_run = validation["run"].to_s
+  check(Digest::SHA256.hexdigest(validation_run) ==
+        "c946d88dc5265d23d67641d11598960e241f7677fe2b4d035b14d3c65fde4c06",
+        "publisher trust validation script changed")
   check(validation_run.include?('[ "$KANDELO_REF" = "main" ]'),
         "publisher does not constrain write publication to Kandelo main")
   check(validation_run.include?('[ "$TAP_REF" = "main" ]'),
@@ -155,6 +159,51 @@ def check_publisher(workflow)
         "publisher enables Magic Nix GitHub Actions caching")
   check(magic_step.dig("with", "use-flakehub") == false,
         "publisher enables Magic Nix FlakeHub caching")
+
+  expected_outputs = {
+    "matrix" => "${{ steps.matrix.outputs.matrix }}",
+    "abi" => "${{ steps.release.outputs.abi }}",
+    "release-tag" => "${{ steps.release.outputs.release-tag }}",
+    "bottle-root-prefix" => "${{ steps.release.outputs.bottle-root-prefix }}",
+  }
+  check(jobs.fetch("plan")["outputs"] == expected_outputs, "publisher plan outputs changed")
+  build = jobs.fetch("build-and-publish")
+  check(build["needs"] == ["plan"], "publisher build does not depend exactly on plan")
+  check(build["if"] == "${{ needs.plan.outputs.matrix != '[]' }}",
+        "publisher build condition bypasses the validated matrix")
+  check(build.dig("strategy", "matrix", "include") ==
+        "${{ fromJson(needs.plan.outputs.matrix) }}",
+        "publisher build matrix bypasses the validated plan output")
+
+  plan_checkouts = plan_steps.select do |step|
+    step["uses"].to_s.downcase.start_with?("actions/checkout@")
+  end.map { |step| { "name" => step["name"], "with" => step["with"] } }
+  expected_plan_checkouts = [
+    {
+      "name" => "Checkout Kandelo workflow source",
+      "with" => {
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ inputs.kandelo-ref }}",
+        "path" => "kandelo",
+        "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout tap",
+      "with" => {
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ inputs.tap-ref }}",
+        "path" => "tap",
+      },
+    },
+  ]
+  check(plan_checkouts == expected_plan_checkouts, "publisher plan checkout wiring changed")
+
+  build_checkouts = job_steps(build, "publisher build").select do |step|
+    step["uses"].to_s.downcase.start_with?("actions/checkout@")
+  end.map { |step| { "name" => step["name"], "with" => step["with"] } }
+  expected_build_checkouts = [expected_plan_checkouts[1], expected_plan_checkouts[0]]
+  check(build_checkouts == expected_build_checkouts, "publisher build checkout wiring changed")
 end
 
 def check_maintenance(workflow)
@@ -223,7 +272,7 @@ def check_maintenance(workflow)
     '[[ "$KANDELO_HOMEBREW_FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]',
     'case "$KANDELO_HOMEBREW_ARCH" in',
     'wasm32|wasm64) ;;',
-    '[[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[0-9]+$ ]]',
+    '[[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[1-9][0-9]*$ ]]',
   ].each do |validation|
     check(record_run.include?(validation), "maintenance rollback lacks #{validation}")
   end
@@ -264,6 +313,40 @@ def self_test(publisher, maintenance)
   expect_rejection("direct publisher dispatch") do
     mutated = deep_copy(publisher)
     workflow_events(mutated)["workflow_dispatch"] = {}
+    check_publisher(mutated)
+  end
+  expect_rejection("a pre-validation executable step") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "plan", "steps").unshift({ "run" => "echo selected code" })
+    check_publisher(mutated)
+  end
+  expect_rejection("short-circuited trust validation") do
+    mutated = deep_copy(publisher)
+    step = mutated.dig("jobs", "plan", "steps").first
+    step["run"] = "exit 0\n#{step['run']}"
+    check_publisher(mutated)
+  end
+  expect_rejection("a build detached from the validated plan") do
+    mutated = deep_copy(publisher)
+    build = mutated.dig("jobs", "build-and-publish")
+    build.delete("needs")
+    build["if"] = true
+    check_publisher(mutated)
+  end
+  expect_rejection("an unreviewed plan checkout repository") do
+    mutated = deep_copy(publisher)
+    step = mutated.dig("jobs", "plan", "steps").find do |candidate|
+      candidate["name"] == "Checkout Kandelo workflow source"
+    end
+    step.fetch("with")["repository"] = "unreviewed/attacker-code"
+    check_publisher(mutated)
+  end
+  expect_rejection("an unreviewed build checkout ref") do
+    mutated = deep_copy(publisher)
+    step = mutated.dig("jobs", "build-and-publish", "steps").find do |candidate|
+      candidate["name"] == "Checkout Kandelo workflow source"
+    end
+    step.fetch("with")["ref"] = "unreviewed-branch"
     check_publisher(mutated)
   end
   expect_rejection("an unpinned Homebrew setup action") do
