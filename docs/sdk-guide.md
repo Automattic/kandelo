@@ -178,6 +178,12 @@ When linking an executable (not compile-only), the SDK adds:
 - `sysroot/lib/crt1.o` — C runtime startup
 - `sysroot/lib/libc.a` — musl libc
 
+The injected glue and startup objects precede user linker inputs, and the final
+musl archive follows them. The SDK preserves user source, object, archive, and
+`-l` ordering between those boundaries. This also makes an explicit `-lc`, as
+emitted by some Autoconf projects, equivalent to the automatically linked libc
+without pulling musl's syscall definitions ahead of Kandelo's glue overrides.
+
 ### Sysroot platform libraries
 
 `scripts/build-musl.sh` also builds Kandelo's platform graphics shims into the

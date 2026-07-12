@@ -44,6 +44,33 @@ describe('buildClangArgs', () => {
     expect(args.join(' ')).toContain('channel_syscall.c');
   });
 
+  it('orders explicit libc and user libraries after syscall glue', () => {
+    const args = buildClangArgs([
+      'main.o',
+      '-L', '/deps/lib',
+      '-lxml2',
+      'support.a',
+      '-lc',
+      '-o', 'out.wasm',
+    ], toolchain);
+    const channelGlue = args.indexOf('/tmp/glue/channel_syscall.c');
+    const crt = args.indexOf('/tmp/sysroot/lib/crt1.o');
+    const main = args.indexOf('main.o');
+    const libraryPath = args.indexOf('-L');
+    const xml = args.indexOf('-lxml2');
+    const support = args.indexOf('support.a');
+    const explicitLibc = args.indexOf('-lc');
+    const finalLibc = args.indexOf('/tmp/sysroot/lib/libc.a');
+
+    expect(channelGlue).toBeLessThan(crt);
+    expect(crt).toBeLessThan(main);
+    expect(main).toBeLessThan(libraryPath);
+    expect(libraryPath).toBeLessThan(xml);
+    expect(xml).toBeLessThan(support);
+    expect(support).toBeLessThan(explicitLibc);
+    expect(explicitLibc).toBeLessThan(finalLibc);
+  });
+
   it('preprocess-only: no link flags', () => {
     const args = buildClangArgs(['-E', 'foo.c'], toolchain);
     expect(args).not.toContain('-Wl,--entry=_start');
