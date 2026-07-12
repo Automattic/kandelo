@@ -63,6 +63,7 @@ import {
   PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
+  SCHED_AFFINITY_MASK_SIZE,
   STRUCT_SIZE_KERNEL_WAIT_RESULT,
   STRUCT_SIZE_WASM_RUSAGE_WIRE,
   SYSCALL_ARGS,
@@ -214,6 +215,7 @@ const SYS_EPOLL_CREATE = ABI_SYSCALLS.EpollCreate;
 const SYS_EPOLL_CTL = ABI_SYSCALLS.EpollCtl;
 const SYS_EPOLL_WAIT = ABI_SYSCALLS.EpollWait;
 const SYS_RT_SIGTIMEDWAIT = ABI_SYSCALLS.RtSigtimedwait;
+const SYS_SCHED_GETAFFINITY = ABI_SYSCALLS.SchedGetaffinity;
 
 /**
  * Grace period for signal-mask-swapping ppoll/pselect wakeups after a pipe
@@ -3285,7 +3287,15 @@ export class CentralizedKernelWorker {
     const syscallNr = processView.getUint32(CH_SYSCALL, true);
     const origArgs: number[] = [];
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
-      origArgs.push(Number(processView.getBigInt64(CH_ARGS + i * CH_ARG_SIZE, true)));
+      const rawArg = processView.getBigInt64(CH_ARGS + i * CH_ARG_SIZE, true);
+      // Linux declares sched_getaffinity's length as unsigned int even for a
+      // 64-bit caller. Normalize it while it is still a bigint, before a
+      // memory64 value can lose precision in a JavaScript number.
+      if (syscallNr === SYS_SCHED_GETAFFINITY && i === 1) {
+        origArgs.push(Number(BigInt.asUintN(32, rawArg)));
+      } else {
+        origArgs.push(Number(rawArg));
+      }
     }
 
     // Track last 30 syscalls per channel for crash diagnostics
@@ -3583,6 +3593,27 @@ export class CentralizedKernelWorker {
     }
 
     // --- Normal syscall path ---
+    // Linux requires room for one kernel-word mask and a kernel-word-aligned
+    // length. The descriptor marshals only the fixed four bytes Kandelo can
+    // write, so a larger valid request is not constrained by channel capacity.
+    if (
+      syscallNr === SYS_SCHED_GETAFFINITY
+      && (
+        origArgs[1] < SCHED_AFFINITY_MASK_SIZE
+        || origArgs[1] % SCHED_AFFINITY_MASK_SIZE !== 0
+      )
+    ) {
+      this.completeChannel(
+        channel,
+        syscallNr,
+        origArgs,
+        undefined,
+        -1,
+        EINVAL,
+      );
+      return;
+    }
+
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
 
     // Copy raw args to kernel scratch header (will be adjusted below)
@@ -3591,6 +3622,7 @@ export class CentralizedKernelWorker {
     // Process pointer args: copy data between process and kernel memory
     const argDescs = SYSCALL_ARGS[syscallNr];
     let dataOffset = 0; // Offset within scratch data area for allocations
+    let schedGetaffinityOutputInvalid = false;
 
     if (argDescs) {
       // Re-create typed views (memory may have grown)
@@ -3600,7 +3632,11 @@ export class CentralizedKernelWorker {
 
       for (const desc of argDescs) {
         const ptr = origArgs[desc.argIndex];
-        if (ptr === 0) {
+        const deferSchedGetaffinityOutputError =
+          syscallNr === SYS_SCHED_GETAFFINITY
+          && desc.argIndex === 2
+          && desc.direction === "out";
+        if (ptr === 0 && !deferSchedGetaffinityOutputError) {
           const required = desc.required === true
             || (desc.size.type === "cstring" && desc.nullable !== true);
           if (required) {
@@ -3677,15 +3713,22 @@ export class CentralizedKernelWorker {
         }
 
         if (!isValidMemoryRange(processMem, ptr, size)) {
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            EFAULT,
-          );
-          return;
+          if (deferSchedGetaffinityOutputError) {
+            // Linux resolves the requested task before copying its affinity
+            // mask. Use safe kernel scratch now, then convert a successful
+            // lookup to EFAULT below; an ESRCH result must take precedence.
+            schedGetaffinityOutputInvalid = true;
+          } else {
+            this.completeChannel(
+              channel,
+              syscallNr,
+              origArgs,
+              undefined,
+              -1,
+              EFAULT,
+            );
+            return;
+          }
         }
 
         const kernelPtr = dataStart + dataOffset;
@@ -3957,6 +4000,14 @@ export class CentralizedKernelWorker {
       // Read return value and errno from kernel scratch
       let retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       let errVal = kernelView.getUint32(CH_ERRNO, true);
+      if (
+        syscallNr === SYS_SCHED_GETAFFINITY
+        && schedGetaffinityOutputInvalid
+        && retVal >= 0
+      ) {
+        retVal = -1;
+        errVal = EFAULT;
+      }
       if (
         syscallNr === SYS_MMAP &&
         fileSharedMmapPreparation?.kind === "prepared" &&

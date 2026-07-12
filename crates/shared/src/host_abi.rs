@@ -8,7 +8,10 @@
 use core::mem::size_of;
 
 use crate::abi::extended_syscalls as extra_syscalls;
-use crate::{Syscall, WASM_RUSAGE_WIRE_SIZE, WasmStat, WasmStatfs, WasmTimespec};
+use crate::{
+    SCHED_AFFINITY_MASK_SIZE, Syscall, WASM_RUSAGE_WIRE_SIZE, WasmStat, WasmStatfs,
+    WasmTimespec,
+};
 
 /// Direction of a marshalled pointer argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -450,6 +453,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE))]
     ),
     entry!(
+        extra_syscalls::SYS_SCHED_GETAFFINITY,
+        [desc!(2, Out, fixed!(SCHED_AFFINITY_MASK_SIZE), required)]
+    ),
+    entry!(
         extra_syscalls::SYS_PRLIMIT64,
         [desc!(2, In, fixed!(16)), desc!(3, Out, fixed!(16)),]
     ),
@@ -617,6 +624,18 @@ mod tests {
             }
         );
         assert!(waitid[1].nullable);
+
+        let sched_getaffinity =
+            find(extra_syscalls::SYS_SCHED_GETAFFINITY).args[0];
+        assert_eq!(sched_getaffinity.arg_index, 2);
+        assert_eq!(sched_getaffinity.direction, SyscallArgDirection::Out);
+        assert_eq!(
+            sched_getaffinity.size,
+            SyscallArgSize::Fixed {
+                size: SCHED_AFFINITY_MASK_SIZE,
+            }
+        );
+        assert!(sched_getaffinity.required);
 
         let semop = find(extra_syscalls::SYS_SEMOP).args[0].size;
         assert_eq!(

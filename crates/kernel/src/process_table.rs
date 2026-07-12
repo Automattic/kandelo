@@ -1027,6 +1027,26 @@ impl ProcessTable {
         self.processes.get(&pid)
     }
 
+    /// Find the process record that owns a retained Linux-style task ID.
+    ///
+    /// A process leader's TID is its PID; pthread TIDs live in the owning
+    /// Process record. Exited leaders remain addressable until reaped, while a
+    /// Limbo record is only an internal process-group/session placeholder.
+    pub fn get_process_containing_task(&self, tid: u32) -> Option<&Process> {
+        if let Some(leader) = self
+            .processes
+            .get(&tid)
+            .filter(|process| process.state != ProcessState::Limbo)
+        {
+            return Some(leader);
+        }
+
+        self.processes.values().find(|process| {
+            matches!(process.state, ProcessState::Running | ProcessState::Stopped)
+                && process.get_thread(tid).is_some()
+        })
+    }
+
     /// Collect every retained PID, including internal limbo identities.
     pub fn all_pids(&self) -> Vec<u32> {
         self.processes.keys().copied().collect()
@@ -1767,5 +1787,38 @@ mod tests {
                 .is_none()
         );
         locks.clear();
+    }
+
+    #[test]
+    fn task_lookup_prefers_leaders_and_excludes_dead_worker_threads() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.create_process(200).unwrap();
+        table
+            .get_mut(100)
+            .unwrap()
+            .add_thread(crate::process::ThreadInfo::new(900, 0, 0, 0));
+        table
+            .get_mut(100)
+            .unwrap()
+            .add_thread(crate::process::ThreadInfo::new(200, 0, 0, 0));
+
+        assert_eq!(table.get_process_containing_task(100).unwrap().pid, 100);
+        // An exact process leader wins over a numerically colliding worker TID.
+        assert_eq!(table.get_process_containing_task(200).unwrap().pid, 200);
+        assert_eq!(table.get_process_containing_task(900).unwrap().pid, 100);
+
+        table.get_mut(100).unwrap().state = ProcessState::Stopped;
+        assert_eq!(table.get_process_containing_task(900).unwrap().pid, 100);
+        table.get_mut(100).unwrap().state = ProcessState::Exited;
+        assert_eq!(table.get_process_containing_task(100).unwrap().pid, 100);
+        assert!(table.get_process_containing_task(900).is_none());
+
+        table.get_mut(200).unwrap().state = ProcessState::Exited;
+        assert_eq!(table.get_process_containing_task(200).unwrap().pid, 200);
+        table.get_mut(200).unwrap().state = ProcessState::Limbo;
+        assert!(table.get_process_containing_task(200).is_none());
+
+        assert!(table.get_process_containing_task(9999).is_none());
     }
 }

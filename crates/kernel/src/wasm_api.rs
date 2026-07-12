@@ -22,7 +22,9 @@ use wasm_posix_shared::{
 };
 
 use crate::ofd::FileType;
-use crate::process::{normalize_posix_timer_signo, HostIO, Process, StdioConfig, StdioKind};
+use crate::process::{
+    HostIO, Process, ProcessState, StdioConfig, StdioKind, normalize_posix_timer_signo,
+};
 use crate::signal::{
     DefaultSignalOutcome, apply_default_signal_action, deliver_pending_signals,
     dequeue_signal_for, terminate_process_by_signal,
@@ -3854,21 +3856,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // -- Scheduling stubs (single-CPU Wasm) --
         237 => 0, // SYS_SCHED_SETAFFINITY: no-op (single CPU)
-        238 => {
-            // SYS_SCHED_GETAFFINITY: return a 1-bit cpuset
-            let size = a2 as usize;
-            let mask_ptr = a3 as *mut u8;
-            if size == 0 || mask_ptr.is_null() {
-                -(Errno::EINVAL as i32)
-            } else {
-                let mask = unsafe { slice::from_raw_parts_mut(mask_ptr, size) };
-                for b in mask.iter_mut() {
-                    *b = 0;
-                }
-                mask[0] = 1; // CPU 0 available
-                0
-            }
-        }
+        238 => kernel_sched_getaffinity(a1, args[1] as u32, a3 as *mut u8),
 
         // -- Memory/sync stubs --
         257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
@@ -5885,6 +5873,63 @@ fn kernel_sched_validate_pid(pid: i32) -> i32 {
             }
         }
     }
+}
+
+/// Resolve the Linux task selected by sched_getaffinity.
+///
+/// Process leaders use their PID as their TID. Worker threads live in their
+/// owning Process record, while pid 0 selects the exact calling thread. Limbo
+/// records are already reaped and no longer name a task.
+fn sched_affinity_target_process(
+    table: &crate::process_table::ProcessTable,
+    pid: i32,
+) -> Result<&Process, Errno> {
+    if pid == 0 {
+        let caller = table.get(table.current_pid()).ok_or(Errno::ESRCH)?;
+        let current_tid = table.current_tid();
+        if !matches!(caller.state, ProcessState::Running | ProcessState::Stopped) {
+            return Err(Errno::ESRCH);
+        }
+        if caller.is_main_thread(current_tid) || caller.get_thread(current_tid).is_some() {
+            return Ok(caller);
+        }
+        return Err(Errno::ESRCH);
+    }
+
+    if pid < 0 {
+        return Err(Errno::ESRCH);
+    }
+
+    table
+        .get_process_containing_task(pid as u32)
+        .ok_or(Errno::ESRCH)
+}
+
+/// Linux sched_getaffinity compatibility for Kandelo's one-CPU kernel.
+///
+/// Linux validates the unsigned byte length against one kernel-word mask,
+/// requires kernel-word alignment, and returns the number of bytes copied by
+/// the raw syscall. Musl converts that positive raw result to public success 0
+/// and zero-fills the caller's remaining cpu_set_t bytes.
+fn kernel_sched_getaffinity(pid: i32, cpusetsize: u32, mask_ptr: *mut u8) -> i32 {
+    const MASK_SIZE: u32 = wasm_posix_shared::SCHED_AFFINITY_MASK_SIZE;
+
+    if cpusetsize < MASK_SIZE || cpusetsize % MASK_SIZE != 0 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(error) = sched_affinity_target_process(table, pid) {
+        return -(error as i32);
+    }
+    if mask_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+
+    let mask = unsafe { slice::from_raw_parts_mut(mask_ptr, MASK_SIZE as usize) };
+    mask.fill(0);
+    mask[0] = 1;
+    MASK_SIZE as i32
 }
 
 /// sched_getparam — write scheduling parameters (sched_priority = 0) to param_ptr.

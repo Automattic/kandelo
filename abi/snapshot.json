@@ -1,5 +1,5 @@
 {
-  "abi_version": 37,
+  "abi_version": 38,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 37,
+      "abi_version": 38,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -3878,6 +3878,17 @@
         }
       }
     ],
+    "238": [
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "required": true,
+        "size": {
+          "size": 4,
+          "type": "fixed"
+        }
+      }
+    ],
     "24": [
       {
         "argIndex": 0,
@@ -5353,6 +5364,10 @@
     {
       "name": "SchedRrGetInterval",
       "number": 236
+    },
+    {
+      "name": "SchedGetaffinity",
+      "number": 238
     },
     {
       "name": "EpollCreate1",

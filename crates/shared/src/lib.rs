@@ -68,7 +68,16 @@ pub mod host_abi;
 /// 37: pending host-delegated AF_INET stream connects expose EINPROGRESS then
 ///     EALREADY to non-blocking callers while blocking callers wait for the
 ///     same host handshake to complete or fail.
-pub const ABI_VERSION: u32 = 37;
+/// 38: sched_getaffinity marshals its fixed kernel mask across process memory,
+///     validates live task identity, and exposes the Linux raw return contract.
+pub const ABI_VERSION: u32 = 38;
+
+/// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
+///
+/// The current kernel models one CPU and uses one wasm32 kernel word. Both
+/// wasm32 and wasm64 guests therefore receive the same four-byte raw mask;
+/// changing this width is an ABI change.
+pub const SCHED_AFFINITY_MASK_SIZE: u32 = 4;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1427,6 +1436,7 @@ pub mod abi {
         pub const SYS_SCHED_YIELD: u32 = 229;
         pub const SYS_SCHED_GETPARAM: u32 = 230;
         pub const SYS_SCHED_RR_GET_INTERVAL: u32 = 236;
+        pub const SYS_SCHED_GETAFFINITY: u32 = 238;
         pub const SYS_EPOLL_CREATE1: u32 = 239;
         pub const SYS_EPOLL_CTL: u32 = 240;
         pub const SYS_EPOLL_PWAIT: u32 = 241;
@@ -1563,6 +1573,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "SchedRrGetInterval",
                 number: SYS_SCHED_RR_GET_INTERVAL,
+            },
+            AbiSyscallNumber {
+                name: "SchedGetaffinity",
+                number: SYS_SCHED_GETAFFINITY,
             },
             AbiSyscallNumber {
                 name: "EpollCreate1",

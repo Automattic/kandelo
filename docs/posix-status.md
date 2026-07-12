@@ -290,7 +290,7 @@ shortcuts.
 | `sched_get_priority_min()` | Stub | Returns 0. |
 | `sched_rr_get_interval()` | Stub | Writes 10ms timespec. |
 | `sched_setaffinity()` | Stub | Returns 0 (no-op). |
-| `sched_getaffinity()` | Stub | Sets bit 0 in cpuset (1 CPU). Returns cpuset size. |
+| `sched_getaffinity()` | Stub | Linux-specific one-CPU compatibility surface. Running or stopped workers and process leaders that have not been reaped (including zombie leaders) report a fixed four-byte CPU-0 mask; reaped leaders, dead workers, and absent tasks return `ESRCH`. The raw syscall requires a size of at least four bytes aligned to four, writes and returns exactly four bytes, and leaves a larger raw buffer's tail untouched. Musl's public wrapper zero-fills that tail and returns 0. Exact leader PIDs take precedence over Kandelo's per-process worker TID records, whose numeric IDs can still collide across processes. |
 | `sched_yield()` | Stub | Returns 0 (no-op, single-threaded). |
 
 ## Event/Notification

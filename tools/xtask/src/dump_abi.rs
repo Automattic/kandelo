@@ -213,6 +213,10 @@ fn render_ts_module() -> String {
         "export const ABI_KERNEL_EXPORT = {:?} as const;\n\n",
         shared::abi::ABI_KERNEL_EXPORT
     ));
+    out.push_str(&format!(
+        "export const SCHED_AFFINITY_MASK_SIZE = {} as const;\n\n",
+        shared::SCHED_AFFINITY_MASK_SIZE
+    ));
 
     out.push_str(&format!(
         "export const HOST_ADAPTER_VERSION = {} as const;\n",
@@ -2300,6 +2304,7 @@ mod tests {
     #[test]
     fn generated_typescript_contains_pathconf_names_and_required_outputs() {
         let rendered = render_ts_module();
+        assert!(rendered.contains("export const SCHED_AFFINITY_MASK_SIZE = 4 as const;"));
         assert!(rendered.contains("export const PATHCONF_NAMES = {"));
         assert!(rendered.contains("  PATH_MAX: 4,"));
         assert!(rendered.contains("  TIMESTAMP_RESOLUTION: 23,"));
