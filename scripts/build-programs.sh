@@ -275,6 +275,19 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         echo "  Compiling $local_name (wasm64)..."
         "$CC" "${CFLAGS64[@]}" "$src" "${LINK_FLAGS64[@]}" -o "$OUT_DIR_64/${local_name}.wasm"
     done
+
+    # Keep the memory64 wait-lifecycle browser fixture on the same owned build
+    # path as its wasm32 counterpart. Vitest also compiles this file in global
+    # setup, but browser-only and packed CI workspaces must not depend on that
+    # earlier runner having left a generated artifact behind. This fixture
+    # deliberately uses posix_spawn rather than fork because fork rewind
+    # instrumentation is currently a wasm32 artifact contract.
+    wait_lifecycle_src="$REPO_ROOT/examples/wait_lifecycle_test.c"
+    if [ -f "$wait_lifecycle_src" ]; then
+        echo "  Compiling wait_lifecycle_test (wasm64)..."
+        "$CC" "${CFLAGS64[@]}" "$wait_lifecycle_src" "${LINK_FLAGS64[@]}" \
+            -o "$REPO_ROOT/examples/wait_lifecycle_test.wasm64.wasm"
+    fi
 fi
 
 echo "Programs built."

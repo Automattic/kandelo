@@ -17,10 +17,16 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::slice;
 
-use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmStatfs, WasmTimespec};
+use wasm_posix_shared::{
+    Errno, KernelWaitResult, WasmDirent, WasmStat, WasmStatfs, WasmTimespec,
+};
 
 use crate::ofd::FileType;
 use crate::process::{normalize_posix_timer_signo, HostIO, Process, StdioConfig, StdioKind};
+use crate::signal::{
+    DefaultSignalOutcome, apply_default_signal_action, deliver_pending_signals,
+    dequeue_signal_for, terminate_process_by_signal,
+};
 use crate::syscalls;
 
 // ---------------------------------------------------------------------------
@@ -1216,54 +1222,8 @@ fn ensure_memory_covers(_end_addr: usize) {
     // No-op on non-Wasm targets (tests)
 }
 
-fn terminate_process_by_signal(proc: &mut Process, host: &mut WasmHostIO, signum: u32) {
-    proc.sigsuspend_saved_mask = None;
-    for thread in &mut proc.threads {
-        thread.signals.sigsuspend_saved_mask = None;
-    }
-    syscalls::sys_exit(proc, host, 0);
-    proc.exit_signal = signum & 0x7f;
-}
-
 // 3c. Signal delivery at syscall boundaries
 // ---------------------------------------------------------------------------
-
-/// Check for and deliver pending signals before/after syscall.
-fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
-    use crate::signal::{DefaultAction, SignalHandler, default_action};
-    let tid = crate::process_table::current_tid();
-    loop {
-        // Caught signals are delivered by the glue code via
-        // kernel_dequeue_signal; default and ignored signals are consumed here.
-        let deliverable = proc.deliverable_for(tid);
-        if deliverable == 0 {
-            break;
-        }
-        let signum = deliverable.trailing_zeros() + 1;
-        if signum >= wasm_posix_shared::signal::NSIG {
-            break;
-        }
-        let action = proc.signals.get_action(signum);
-        match action.handler {
-            SignalHandler::Handler(_) => break,
-            SignalHandler::Default => {
-                let _ = dequeue_signal_for(proc, tid, signum);
-                match default_action(signum) {
-                    DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        terminate_process_by_signal(proc, host, signum);
-                    }
-                    _ => {}
-                }
-            }
-            SignalHandler::Ignore => {
-                let _ = dequeue_signal_for(proc, tid, signum);
-            }
-        }
-        if proc.state == crate::process::ProcessState::Exited {
-            break;
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // 4. Exported kernel functions
@@ -1793,6 +1753,24 @@ pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
     }
 }
 
+/// Return the host-visible lifecycle state. Reaped limbo group identities are
+/// not processes and report ESRCH just like an absent pid.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_state(pid: u32) -> i32 {
+    use crate::process::ProcessState;
+    use wasm_posix_shared::wait::{
+        PROCESS_STATE_EXITED, PROCESS_STATE_RUNNING, PROCESS_STATE_STOPPED,
+    };
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid).map(|proc| proc.state) {
+        Some(ProcessState::Running) => PROCESS_STATE_RUNNING,
+        Some(ProcessState::Stopped) => PROCESS_STATE_STOPPED,
+        Some(ProcessState::Exited) => PROCESS_STATE_EXITED,
+        Some(ProcessState::Limbo) | None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Mark a process as signal-terminated without removing it from the table.
 ///
 /// Used by the host when the Worker dies before the guest reaches SYS_EXIT.
@@ -1810,19 +1788,45 @@ pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     }
 }
 
-/// Poll for a waitable child matching waitpid-style `target_pid`.
-///
-/// Returns a child pid and writes its wait status to `status_ptr` when a
-/// zombie matches, 0 when a matching child is still running, or negative
-/// errno when no matching child exists.
+/// Atomically select and optionally consume one child status record. A
+/// consuming exit selection also reaps the child in this serialized kernel
+/// operation; WNOWAIT peeks without consuming or reaping.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_wait4_poll(parent_pid: u32, target_pid: i32, status_ptr: *mut i32) -> i32 {
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    match table.poll_waitable_child(parent_pid, target_pid) {
-        Ok(Some((child_pid, wait_status))) => {
-            if !status_ptr.is_null() {
-                unsafe {
-                    *status_ptr = wait_status;
+pub extern "C" fn kernel_wait_child_poll(
+    parent_pid: u32,
+    target_pid: i32,
+    event_mask: u32,
+    flags: u32,
+    out_ptr: *mut KernelWaitResult,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+
+    let selected = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        table.poll_wait_event(parent_pid, target_pid, event_mask, flags)
+    };
+
+    match selected {
+        Ok(Some((child_pid, event))) => {
+            let result = KernelWaitResult {
+                wait_status: event.wait_status,
+                si_code: event.si_code,
+                si_status: event.si_status,
+                child_uid: event.child_uid,
+                rusage: event.rusage,
+            };
+            unsafe {
+                core::ptr::write_unaligned(out_ptr, result);
+            }
+
+            if flags & wasm_posix_shared::wait::WNOWAIT == 0
+                && event.event_mask == wasm_posix_shared::wait::EVENT_EXITED
+            {
+                let reaped = reap_process_and_cleanup(child_pid);
+                if reaped < 0 {
+                    return reaped;
                 }
             }
             child_pid as i32
@@ -1862,6 +1866,20 @@ pub extern "C" fn kernel_has_sa_nocldwait(pid: u32) -> i32 {
                     _ => 0,
                 }
             }
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Check whether SIGCHLD stop/continue notifications are suppressed.
+/// SA_NOCLDSTOP never suppresses the wait status record itself.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_has_sa_nocldstop(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => {
+            let action = proc.signals.get_action(wasm_posix_shared::signal::SIGCHLD);
+            i32::from(action.flags & wasm_posix_shared::signal::SA_NOCLDSTOP != 0)
         }
         None => -(Errno::ESRCH as i32),
     }
@@ -2043,9 +2061,9 @@ pub extern "C" fn kernel_fd_supports_mmap_writeback(pid: u32, fd: i32) -> i32 {
 /// binary record per process into the host-supplied scratch buffer.
 ///
 /// Zombie (Exited) processes are omitted by default — the kandelo Inspector
-/// wants a "currently running" view, and the kernel keeps zombies around for
-/// waitpid() reap semantics that aren't visible at this layer. The internal
-/// procfs ABI still surfaces them via /proc/[pid] for processes that care.
+/// wants a live-process view, including stopped processes, and the kernel
+/// keeps zombies around for waitpid() reap semantics. Procfs still surfaces
+/// them via /proc/[pid].
 ///
 /// Wire format (all integers little-endian):
 ///
@@ -2056,7 +2074,7 @@ pub extern "C" fn kernel_fd_supports_mmap_writeback(pid: u32, fd: i32) -> i32 {
 ///     u32  uid             -- effective uid for ps-style USER display
 ///     u32  gid             -- effective gid
 ///     u64  vsize_bytes    -- sum of mmap-region sizes
-///     u32  state          -- 'R' (running) or 'Z' (zombie) as ASCII
+///     u32  state          -- 'R' (running) or 'T' (stopped) as ASCII
 ///     u32  comm_len
 ///     u32  cmdline_len
 ///     [comm_len bytes]    -- process_name(proc) — basename of argv[0]
@@ -2079,7 +2097,10 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
             Some(p) => p,
             None => continue,
         };
-        if proc.state != crate::process::ProcessState::Running {
+        if matches!(
+            proc.state,
+            crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+        ) {
             continue;
         }
         let cmdline = crate::procfs::generate_cmdline(proc);
@@ -2102,15 +2123,23 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
             Some(p) => p,
             None => continue,
         };
-        // Drop zombies: the kernel keeps Exited entries for waitpid()
-        // reap semantics, but a "currently running" view shouldn't show
-        // them.
-        if proc.state != crate::process::ProcessState::Running {
+        // Drop zombies and reaped limbo identities, but retain stopped
+        // processes in the live-process view.
+        if matches!(
+            proc.state,
+            crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+        ) {
             continue;
         }
         let cmdline = crate::procfs::generate_cmdline(proc);
         let comm = process_name_bytes(proc);
-        let state: u32 = b'R' as u32;
+        let state: u32 = match proc.state {
+            crate::process::ProcessState::Running => b'R' as u32,
+            crate::process::ProcessState::Stopped => b'T' as u32,
+            crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => {
+                unreachable!("non-live processes were filtered above")
+            }
+        };
         let vsize: u64 = proc.memory.mappings().iter().map(|r| r.len as u64).sum();
 
         write_u32(buf, &mut off, proc.pid);
@@ -2203,14 +2232,9 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
         // shared-pending bits (Process.signals.pending), but we collapse to a
         // single bitmask here — the actual dequeue routine below picks the
         // right queue.
-        let deliverable = proc.deliverable_for(tid);
-        if deliverable == 0 {
+        let Some(signum) = proc.next_deliverable_signal(tid) else {
             return 0;
-        }
-        let signum = deliverable.trailing_zeros() + 1;
-        if signum >= wasm_posix_shared::signal::NSIG {
-            return 0;
-        }
+        };
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
@@ -2266,15 +2290,11 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 return signum as i32;
             }
             SignalHandler::Default => {
-                use crate::signal::{DefaultAction, default_action};
                 let _ = dequeue_signal_for(proc, tid, signum);
-                match default_action(signum) {
-                    DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        let mut host = WasmHostIO;
-                        terminate_process_by_signal(proc, &mut host, signum);
-                        return 0;
-                    }
-                    _ => continue,
+                let mut host = WasmHostIO;
+                match apply_default_signal_action(proc, &mut host, signum) {
+                    DefaultSignalOutcome::Continue => continue,
+                    DefaultSignalOutcome::Stopped | DefaultSignalOutcome::Exited => return 0,
                 }
             }
             SignalHandler::Ignore => {
@@ -2283,23 +2303,6 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
             }
         }
     }
-}
-
-/// Dequeue one pending instance of `signum` for the given thread. Prefers that
-/// exact thread's directed pending queue over the shared process-level queue —
-/// POSIX requires that signals sent via `pthread_kill` / `tkill` / `tgkill`
-/// be delivered to that thread specifically, even when the shared queue also
-/// carries an instance of the same signal.
-///
-/// Returns `(signum, si_value, si_code)`; `si_value`/`si_code` default to 0
-/// for coalesced standard signals without `sigqueue` metadata.
-fn dequeue_signal_for(
-    proc: &mut crate::process::Process,
-    tid: u32,
-    signum: u32,
-) -> (u32, i32, i32) {
-    let (si_value, si_code) = proc.consume_signal_for(tid, signum).unwrap_or((0, 0));
-    (signum, si_value, si_code)
 }
 
 /// Handle exec semantics on a process in the process table.
@@ -2336,7 +2339,10 @@ fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = table.get_mut(pid).ok_or(Errno::ESRCH)?;
 
-    if proc.state != crate::process::ProcessState::Running {
+    if matches!(
+        proc.state,
+        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+    ) {
         return Err(Errno::ESRCH);
     }
 
@@ -3253,7 +3259,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         105 => kernel_setgid(a1 as u32),  // SYS_SETGID
         106 => kernel_seteuid(a1 as u32), // SYS_SETEUID
         107 => kernel_setegid(a1 as u32), // SYS_SETEGID
-        108 => kernel_getrusage(a1, a2 as *mut u8, 144), // SYS_GETRUSAGE (musl passes 2 args; time64 rusage = 18x8 = 144)
+        108 => kernel_getrusage(
+            a1,
+            a2 as *mut u8,
+            wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE,
+        ), // SYS_GETRUSAGE (musl passes 2 args)
         131 => kernel_setresuid(a1 as u32, a2 as u32, a3 as u32), // SYS_SETRESUID
         132 => kernel_getresuid(a1 as *mut u32, a2 as *mut u32, a3 as *mut u32), // SYS_GETRESUID
         133 => kernel_setresgid(a1 as u32, a2 as u32, a3 as u32), // SYS_SETRESGID
@@ -5740,7 +5750,7 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
                     -(Errno::EPERM as i32)
                 } else {
                     if sig > 0 {
-                        target.signals.raise_with_value(sig, si_value);
+                        target.raise_signal_with_value(sig, si_value);
                         deliver_pending_signals(target, &mut host);
                     }
                     0
@@ -5779,7 +5789,7 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
                 }
                 delivered = true;
                 if sig > 0 {
-                    target.signals.raise_with_value(sig, si_value);
+                    target.raise_signal_with_value(sig, si_value);
                     deliver_pending_signals(target, &mut host);
                 }
             }
@@ -5798,7 +5808,7 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
 
     // For local sigqueue, raise with value on the current process directly.
     if si_value != 0 && sig > 0 {
-        proc.signals.raise_with_value(sig, si_value);
+        proc.raise_signal_with_value(sig, si_value);
         deliver_pending_signals(proc, &mut host);
         return 0;
     }
@@ -5903,7 +5913,7 @@ pub extern "C" fn kernel_deliver_signal(sig: u32) -> i32 {
     if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
         return -(Errno::EINVAL as i32);
     }
-    proc.signals.raise(sig);
+    proc.raise_signal(sig);
     let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     0
@@ -5988,30 +5998,22 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
     // in-process signalling that uses `tkill(self_tid, sig)`; aligning with
     // the previous "tkill is raise" behaviour keeps those paths alive while
     // per-thread routing is still correct for genuinely-known TIDs.
-    match proc.get_thread_mut(tid) {
-        Some(t) => {
-            if sig > 0 {
-                if si_code != 0 || si_value != 0 {
-                    t.signals.raise_with_value(sig, si_value);
-                } else {
-                    t.signals.raise(sig);
-                }
+    if sig > 0 {
+        let directed = if si_code != 0 || si_value != 0 {
+            proc.raise_for_thread_with_value(tid, sig, si_value)
+        } else {
+            proc.raise_for_thread(tid, sig)
+        };
+        if !directed {
+            if si_code != 0 || si_value != 0 {
+                proc.raise_signal_with_value(sig, si_value);
+            } else {
+                proc.raise_signal(sig);
             }
-            deliver_pending_signals(proc, &mut host);
-            0
-        }
-        None => {
-            if sig > 0 {
-                if si_code != 0 || si_value != 0 {
-                    proc.signals.raise_with_value(sig, si_value);
-                } else {
-                    proc.signals.raise(sig);
-                }
-            }
-            deliver_pending_signals(proc, &mut host);
-            0
         }
     }
+    deliver_pending_signals(proc, &mut host);
+    0
 }
 
 /// Set signal action. act_ptr/oldact_ptr point to structs:
@@ -9248,9 +9250,12 @@ pub extern "C" fn kernel_setegid(egid: u32) -> i32 {
 // Phase 12: getrusage
 // ---------------------------------------------------------------------------
 
-/// getrusage — get resource usage. Writes 144-byte rusage struct.
+/// getrusage — get resource usage. Writes the shared fixed-width wire record.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getrusage(who: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    if buf_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
     let (_gkl, proc) = unsafe { get_process() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_getrusage(proc, who, buf) {
@@ -10848,7 +10853,7 @@ pub extern "C" fn kernel_pty_master_write(pty_idx: u32, buf_ptr: *const u8, buf_
                 let pids = table.pids_in_group(fg_pgid as u32);
                 for pid in pids {
                     if let Some(proc) = table.get_mut(pid) {
-                        proc.signals.raise(signum);
+                        proc.raise_signal(signum);
                     }
                 }
             }
