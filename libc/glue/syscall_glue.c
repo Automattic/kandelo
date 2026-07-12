@@ -17,6 +17,7 @@
  *   - Return -38 (ENOSYS) for unrecognised syscall numbers
  */
 
+#include "abi_constants.h"
 #include "syscall_imports.h"
 
 /* ------------------------------------------------------------------ */
@@ -974,11 +975,11 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_setrlimit((uint32_t)a1,
                                       (const uint8_t *)(uintptr_t)a2);
 
-    /* getrusage — (who, buf_ptr, buf_len) */
+    /* getrusage — (who, buf_ptr) */
     case SYS_GETRUSAGE:
         return (long)kernel_getrusage((int32_t)a1,
                                       (uint8_t *)(uintptr_t)a2,
-                                      (uint32_t)a3);
+                                      WASM_POSIX_RUSAGE_WIRE_SIZE);
 
     /* ============================================================== */
     /* System info                                                     */

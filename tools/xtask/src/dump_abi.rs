@@ -179,9 +179,13 @@ fn render_c_header() -> String {
          /* Default process-wasm pthread slot declaration. */\n\
          #define WASM_POSIX_THREAD_SLOT_DECL_DEFAULT {thread_slots_default}\n\
          \n\
+         /* Fixed kernel/musl resource-usage wire record size. */\n\
+         #define WASM_POSIX_RUSAGE_WIRE_SIZE {rusage_wire_size}u\n\
+         \n\
          #endif /* WASM_POSIX_ABI_CONSTANTS_H */\n",
         version = shared::ABI_VERSION,
         thread_slots_default = shared::process_memory::THREAD_SLOTS_USE_HOST_DEFAULT,
+        rusage_wire_size = shared::WASM_RUSAGE_WIRE_SIZE,
     )
 }
 
@@ -426,6 +430,79 @@ fn render_ts_module() -> String {
     ));
 
     out.push_str(&format!(
+        "export const WAIT_EVENT_EXITED = {} as const;\n",
+        shared::wait::EVENT_EXITED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_EVENT_STOPPED = {} as const;\n",
+        shared::wait::EVENT_STOPPED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_EVENT_CONTINUED = {} as const;\n",
+        shared::wait::EVENT_CONTINUED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WNOHANG = {} as const;\n",
+        shared::wait::WNOHANG
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WUNTRACED = {} as const;\n",
+        shared::wait::WUNTRACED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WSTOPPED = {} as const;\n",
+        shared::wait::WSTOPPED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WEXITED = {} as const;\n",
+        shared::wait::WEXITED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WCONTINUED = {} as const;\n",
+        shared::wait::WCONTINUED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WNOWAIT = {} as const;\n",
+        shared::wait::WNOWAIT
+    ));
+    out.push_str(&format!(
+        "export const WAIT_CLD_EXITED = {} as const;\n",
+        shared::wait::CLD_EXITED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_CLD_KILLED = {} as const;\n",
+        shared::wait::CLD_KILLED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_CLD_STOPPED = {} as const;\n",
+        shared::wait::CLD_STOPPED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_CLD_CONTINUED = {} as const;\n",
+        shared::wait::CLD_CONTINUED
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_STATE_RUNNING = {} as const;\n",
+        shared::wait::PROCESS_STATE_RUNNING
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_STATE_STOPPED = {} as const;\n",
+        shared::wait::PROCESS_STATE_STOPPED
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_STATE_EXITED = {} as const;\n",
+        shared::wait::PROCESS_STATE_EXITED
+    ));
+    out.push_str(&format!(
+        "export const WAKE_PROCESS_STOPPED = {} as const;\n",
+        shared::wait::WAKE_PROCESS_STOPPED
+    ));
+    out.push_str(&format!(
+        "export const WAKE_PROCESS_CONTINUED = {} as const;\n\n",
+        shared::wait::WAKE_PROCESS_CONTINUED
+    ));
+
+    out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_STAT = {} as const;\n",
         size_of::<shared::WasmStat>()
     ));
@@ -442,8 +519,36 @@ fn render_ts_module() -> String {
         size_of::<shared::WasmPollFd>()
     ));
     out.push_str(&format!(
-        "export const STRUCT_SIZE_WASM_STATFS = {} as const;\n\n",
+        "export const STRUCT_SIZE_WASM_STATFS = {} as const;\n",
         size_of::<shared::WasmStatfs>()
+    ));
+    out.push_str(&format!(
+        "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = {} as const;\n",
+        size_of::<shared::WasmRusageWire>()
+    ));
+    out.push_str(&format!(
+        "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = {} as const;\n",
+        size_of::<shared::KernelWaitResult>()
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelWaitResult, wait_status)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelWaitResult, si_code)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelWaitResult, si_status)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelWaitResult, child_uid)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = {} as const;\n\n",
+        offset_of!(shared::KernelWaitResult, rusage)
     ));
 
     out.push_str("export const HOST_INTERCEPTED_SYSCALLS = {\n");
@@ -678,6 +783,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("syscalls".into(), syscalls());
     root.insert("pathconf_names".into(), pathconf_names());
+    root.insert("wait_contract".into(), wait_contract());
     root.insert(
         "host_intercepted_syscalls".into(),
         host_intercepted_syscalls(),
@@ -907,7 +1013,10 @@ fn marshalled_structs() -> Value {
     };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
     use shared::gl::{GlContextAttrs, GlQueryInfo, GlSubmitInfo, GlSurfaceAttrs};
-    use shared::{WasmDirent, WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
+    use shared::{
+        KernelWaitResult, WasmDirent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat,
+        WasmStatfs, WasmTimespec,
+    };
 
     let mut structs: JsonMap = BTreeMap::new();
     structs.insert(
@@ -976,6 +1085,39 @@ fn marshalled_structs() -> Value {
             f_frsize,
             f_flags,
             _pad,
+        }),
+    );
+    structs.insert(
+        "WasmRusageWire".into(),
+        struct_layout!(WasmRusageWire {
+            ru_utime_sec,
+            ru_utime_usec,
+            ru_stime_sec,
+            ru_stime_usec,
+            ru_maxrss,
+            ru_ixrss,
+            ru_idrss,
+            ru_isrss,
+            ru_minflt,
+            ru_majflt,
+            ru_nswap,
+            ru_inblock,
+            ru_oublock,
+            ru_msgsnd,
+            ru_msgrcv,
+            ru_nsignals,
+            ru_nvcsw,
+            ru_nivcsw,
+        }),
+    );
+    structs.insert(
+        "KernelWaitResult".into(),
+        struct_layout!(KernelWaitResult {
+            wait_status,
+            si_code,
+            si_status,
+            child_uid,
+            rusage,
         }),
     );
     structs.insert(
@@ -1302,6 +1444,54 @@ fn pathconf_names() -> Value {
         names.insert((*name).into(), json!(number));
     }
     Value::Object(names.into_iter().collect())
+}
+
+fn wait_contract() -> Value {
+    let mut contract: JsonMap = BTreeMap::new();
+    for (name, value) in [
+        ("WAIT_EVENT_EXITED", json!(shared::wait::EVENT_EXITED)),
+        ("WAIT_EVENT_STOPPED", json!(shared::wait::EVENT_STOPPED)),
+        (
+            "WAIT_EVENT_CONTINUED",
+            json!(shared::wait::EVENT_CONTINUED),
+        ),
+        ("WAIT_WNOHANG", json!(shared::wait::WNOHANG)),
+        ("WAIT_WUNTRACED", json!(shared::wait::WUNTRACED)),
+        ("WAIT_WSTOPPED", json!(shared::wait::WSTOPPED)),
+        ("WAIT_WEXITED", json!(shared::wait::WEXITED)),
+        ("WAIT_WCONTINUED", json!(shared::wait::WCONTINUED)),
+        ("WAIT_WNOWAIT", json!(shared::wait::WNOWAIT)),
+        ("WAIT_CLD_EXITED", json!(shared::wait::CLD_EXITED)),
+        ("WAIT_CLD_KILLED", json!(shared::wait::CLD_KILLED)),
+        ("WAIT_CLD_STOPPED", json!(shared::wait::CLD_STOPPED)),
+        (
+            "WAIT_CLD_CONTINUED",
+            json!(shared::wait::CLD_CONTINUED),
+        ),
+        (
+            "PROCESS_STATE_RUNNING",
+            json!(shared::wait::PROCESS_STATE_RUNNING),
+        ),
+        (
+            "PROCESS_STATE_STOPPED",
+            json!(shared::wait::PROCESS_STATE_STOPPED),
+        ),
+        (
+            "PROCESS_STATE_EXITED",
+            json!(shared::wait::PROCESS_STATE_EXITED),
+        ),
+        (
+            "WAKE_PROCESS_STOPPED",
+            json!(shared::wait::WAKE_PROCESS_STOPPED),
+        ),
+        (
+            "WAKE_PROCESS_CONTINUED",
+            json!(shared::wait::WAKE_PROCESS_CONTINUED),
+        ),
+    ] {
+        contract.insert(name.into(), value);
+    }
+    Value::Object(contract.into_iter().collect())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2123,6 +2313,54 @@ mod tests {
         assert_eq!(names.as_object().unwrap().len(), 24);
     }
 
+    #[test]
+    fn generated_wait_abi_metadata_matches_shared_layouts() {
+        let rendered = render_ts_module();
+        for expected in [
+            "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;",
+            "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = 160 as const;",
+            "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = 0 as const;",
+            "export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = 4 as const;",
+            "export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = 8 as const;",
+            "export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = 12 as const;",
+            "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = 16 as const;",
+            "export const WAIT_EVENT_EXITED = 1 as const;",
+            "export const WAIT_EVENT_STOPPED = 2 as const;",
+            "export const WAIT_EVENT_CONTINUED = 4 as const;",
+            "export const PROCESS_STATE_RUNNING = 0 as const;",
+            "export const PROCESS_STATE_STOPPED = 1 as const;",
+            "export const PROCESS_STATE_EXITED = 2 as const;",
+            "export const WAKE_PROCESS_STOPPED = 16 as const;",
+            "export const WAKE_PROCESS_CONTINUED = 32 as const;",
+            "\"kernel_get_process_state\"",
+            "\"kernel_has_sa_nocldstop\"",
+            "\"kernel_wait_child_poll\"",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing generated TS: {expected}"
+            );
+        }
+
+        let header = render_c_header();
+        assert!(header.contains("#define WASM_POSIX_RUSAGE_WIRE_SIZE 144u"));
+
+        let structs = marshalled_structs();
+        assert_eq!(structs["WasmRusageWire"]["size"], json!(144));
+        assert_eq!(structs["KernelWaitResult"]["size"], json!(160));
+        assert_eq!(
+            structs["KernelWaitResult"]["fields"][4],
+            json!({"name": "rusage", "offset": 16, "span": 144})
+        );
+
+        let contract = wait_contract();
+        assert_eq!(contract["WAIT_WNOWAIT"], json!(0x0100_0000));
+        assert_eq!(contract["WAIT_CLD_CONTINUED"], json!(6));
+        assert_eq!(contract["PROCESS_STATE_STOPPED"], json!(1));
+        assert_eq!(contract["WAKE_PROCESS_CONTINUED"], json!(32));
+        assert_eq!(contract.as_object().unwrap().len(), 18);
+    }
+
     fn base_snapshot() -> Value {
         json!({
             "abi_version": 10,
@@ -2240,6 +2478,19 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"host_adapter\""]
+        );
+    }
+
+    #[test]
+    fn adding_wait_contract_section_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["wait_contract"] = wait_contract();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["added top-level section \"wait_contract\""]
         );
     }
 

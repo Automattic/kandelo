@@ -126,8 +126,11 @@ function buildKernelImports(
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for complete, then trap
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
       onKernelExit?.(status);
+      // Per-thread exit is non-returning. Throwing here prevents libc's
+      // mandated SYS_exit retry loop from parking a second time on a channel
+      // the host has already removed, and lets the outer worker report exit.
+      throw new WebAssembly.RuntimeError("unreachable");
     },
 
     // Clone dispatches through channel (SYS_CLONE)
@@ -2156,10 +2159,13 @@ export async function centralizedThreadWorkerMain(
       }
     }
 
-    // Send SYS_EXIT through the channel. The kernel worker performs
-    // CLONE_CHILD_CLEARTID after it observes SYS_EXIT; doing it here would
-    // let pthread_join reclaim the stack while this Worker is still running.
-    {
+    // A normal return has not passed through libc's noreturn kernel_exit
+    // import, so publish SYS_EXIT here. When kernel_exit already ran it sent
+    // and completed SYS_EXIT before the compiler's trailing unreachable was
+    // caught above. Publishing a second exit on that now-removed channel
+    // parks this Worker forever; after slot reuse its stale atomic waiter can
+    // steal the next pthread's first notify.
+    if (kernelThreadExitStatus === null) {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);

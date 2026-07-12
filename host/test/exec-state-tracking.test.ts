@@ -79,6 +79,15 @@ describe("exec host-state transition", () => {
           [otherChannel, { futexIndex: 5 }],
         ]),
         pendingCancels: new Set([threadChannel, otherChannel]),
+        stoppedPids: new Set([7, 8]),
+        parkedChannelCompletions: new Map([
+          [mainChannel, { prepared: {}, relistenRequested: true }],
+          [otherChannel, { prepared: {}, relistenRequested: true }],
+        ]),
+        deferredStoppedChannels: new Map([
+          [threadChannel, true],
+          [otherChannel, true],
+        ]),
         channelTids: new Map([
           ["7:256", 11],
           ["8:0", 8],
@@ -112,6 +121,12 @@ describe("exec host-state transition", () => {
       expect(worker.pendingFutexWaits.has(otherChannel)).toBe(true);
       expect(worker.pendingCancels.has(threadChannel)).toBe(false);
       expect(worker.pendingCancels.has(otherChannel)).toBe(true);
+      expect(worker.stoppedPids.has(7)).toBe(true);
+      expect(worker.stoppedPids.has(8)).toBe(true);
+      expect(worker.parkedChannelCompletions.has(mainChannel)).toBe(false);
+      expect(worker.parkedChannelCompletions.has(otherChannel)).toBe(true);
+      expect(worker.deferredStoppedChannels.has(threadChannel)).toBe(false);
+      expect(worker.deferredStoppedChannels.has(otherChannel)).toBe(true);
       expect(worker.channelTids.has("7:256")).toBe(false);
       expect(worker.channelTids.get("8:0")).toBe(8);
       expect(worker.threadForkContexts.has("7:256")).toBe(false);
@@ -1058,6 +1073,9 @@ function createWorker(overrides: Record<string, unknown>): any {
     pendingPipeWriters: new Map(),
     pendingFutexWaits: new Map(),
     pendingCancels: new Set(),
+    stoppedPids: new Set(),
+    parkedChannelCompletions: new Map(),
+    deferredStoppedChannels: new Map(),
     socketTimeoutTimers: new Map(),
     posixTimers: new Map(),
     channelTids: new Map(),

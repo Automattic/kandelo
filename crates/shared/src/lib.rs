@@ -891,6 +891,8 @@ pub mod signal {
     pub const SIGCONT: u32 = 18;
     pub const SIGSTOP: u32 = 19;
     pub const SIGTSTP: u32 = 20;
+    pub const SIGTTIN: u32 = 21;
+    pub const SIGTTOU: u32 = 22;
     pub const SIGXCPU: u32 = 24;
     pub const SIGXFSZ: u32 = 25;
     pub const SIGWINCH: u32 = 28;
@@ -919,8 +921,8 @@ pub mod signal {
     pub const SA_DEFAULT_TERM: u32 = 0; // Terminate
     pub const SA_DEFAULT_IGN: u32 = 1; // Ignore
     pub const SA_DEFAULT_CORE: u32 = 2; // Core dump (treated as terminate in Wasm)
-    pub const SA_DEFAULT_STOP: u32 = 3; // Stop (not supported in Wasm)
-    pub const SA_DEFAULT_CONT: u32 = 4; // Continue (not supported in Wasm)
+    pub const SA_DEFAULT_STOP: u32 = 3; // Stop until a continue transition
+    pub const SA_DEFAULT_CONT: u32 = 4; // Continue a stopped process
 }
 
 /// Resource limit constants for getrlimit/setrlimit.
@@ -941,6 +943,110 @@ pub mod rlimit {
 pub mod rusage {
     pub const RUSAGE_SELF: i32 = 0;
     pub const RUSAGE_CHILDREN: i32 = -1;
+}
+
+/// Process-wait event, option, result, and host-wakeup constants.
+pub mod wait {
+    /// A child exit event is eligible for selection.
+    pub const EVENT_EXITED: u32 = 1;
+    /// A child stop event is eligible for selection.
+    pub const EVENT_STOPPED: u32 = 2;
+    /// A child continue event is eligible for selection.
+    pub const EVENT_CONTINUED: u32 = 4;
+
+    pub const WNOHANG: u32 = 1;
+    pub const WUNTRACED: u32 = 2;
+    pub const WSTOPPED: u32 = WUNTRACED;
+    pub const WEXITED: u32 = 4;
+    pub const WCONTINUED: u32 = 8;
+    pub const WNOWAIT: u32 = 0x0100_0000;
+
+    pub const CLD_EXITED: i32 = 1;
+    pub const CLD_KILLED: i32 = 2;
+    pub const CLD_STOPPED: i32 = 5;
+    pub const CLD_CONTINUED: i32 = 6;
+
+    pub const PROCESS_STATE_RUNNING: i32 = 0;
+    pub const PROCESS_STATE_STOPPED: i32 = 1;
+    pub const PROCESS_STATE_EXITED: i32 = 2;
+
+    /// Host retry wake reason: the process entered a stopped state.
+    pub const WAKE_PROCESS_STOPPED: u8 = 16;
+    /// Host retry wake reason: the process resumed from a stopped state.
+    pub const WAKE_PROCESS_CONTINUED: u8 = 32;
+}
+
+/// Fixed-width kernel/musl resource-usage wire record.
+///
+/// This is not musl's public `struct rusage`, whose size depends on the
+/// target's `long` width. Both wasm32 and wasm64 exchange the meaningful
+/// prefix as eighteen little-endian 64-bit slots.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct WasmRusageWire {
+    pub ru_utime_sec: i64,
+    pub ru_utime_usec: i64,
+    pub ru_stime_sec: i64,
+    pub ru_stime_usec: i64,
+    pub ru_maxrss: i64,
+    pub ru_ixrss: i64,
+    pub ru_idrss: i64,
+    pub ru_isrss: i64,
+    pub ru_minflt: i64,
+    pub ru_majflt: i64,
+    pub ru_nswap: i64,
+    pub ru_inblock: i64,
+    pub ru_oublock: i64,
+    pub ru_msgsnd: i64,
+    pub ru_msgrcv: i64,
+    pub ru_nsignals: i64,
+    pub ru_nvcsw: i64,
+    pub ru_nivcsw: i64,
+}
+
+/// Compatibility name used by kernel-side wait/resource-usage code.
+pub type KernelRusage = WasmRusageWire;
+
+pub const WASM_RUSAGE_WIRE_SIZE: u32 = core::mem::size_of::<WasmRusageWire>() as u32;
+
+/// Fixed result record written by `kernel_wait_child_poll`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct KernelWaitResult {
+    pub wait_status: i32,
+    pub si_code: i32,
+    pub si_status: i32,
+    pub child_uid: u32,
+    pub rusage: WasmRusageWire,
+}
+
+pub const KERNEL_WAIT_RESULT_SIZE: u32 = core::mem::size_of::<KernelWaitResult>() as u32;
+
+#[cfg(test)]
+mod wait_abi_tests {
+    use super::{KERNEL_WAIT_RESULT_SIZE, KernelWaitResult, WASM_RUSAGE_WIRE_SIZE, WasmRusageWire};
+    use core::mem::{offset_of, size_of};
+
+    #[test]
+    fn rusage_wire_layout_is_eighteen_i64_slots() {
+        assert_eq!(WASM_RUSAGE_WIRE_SIZE, 144);
+        assert_eq!(size_of::<WasmRusageWire>(), 144);
+        assert_eq!(offset_of!(WasmRusageWire, ru_utime_sec), 0);
+        assert_eq!(offset_of!(WasmRusageWire, ru_stime_sec), 16);
+        assert_eq!(offset_of!(WasmRusageWire, ru_maxrss), 32);
+        assert_eq!(offset_of!(WasmRusageWire, ru_nivcsw), 136);
+    }
+
+    #[test]
+    fn kernel_wait_result_layout_is_stable() {
+        assert_eq!(KERNEL_WAIT_RESULT_SIZE, 160);
+        assert_eq!(size_of::<KernelWaitResult>(), 160);
+        assert_eq!(offset_of!(KernelWaitResult, wait_status), 0);
+        assert_eq!(offset_of!(KernelWaitResult, si_code), 4);
+        assert_eq!(offset_of!(KernelWaitResult, si_status), 8);
+        assert_eq!(offset_of!(KernelWaitResult, child_uid), 12);
+        assert_eq!(offset_of!(KernelWaitResult, rusage), 16);
+    }
 }
 
 /// select() constants.
@@ -1199,13 +1305,15 @@ pub mod abi {
         "kernel_create_process",
         "kernel_create_process_with_stdio",
         "kernel_get_parent_pid",
+        "kernel_get_process_state",
         "kernel_handle_channel",
+        "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
         "kernel_mark_process_signaled",
         "kernel_reap_exited_child",
         "kernel_remove_process",
-        "kernel_wait4_poll",
+        "kernel_wait_child_poll",
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[

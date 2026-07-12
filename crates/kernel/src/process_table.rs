@@ -21,7 +21,7 @@ use wasm_posix_shared::flags::O_ACCMODE;
 use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
-use crate::process::{Process, ProcessState, StdioConfig};
+use crate::process::{ChildWaitEvent, Process, ProcessState, StdioConfig};
 
 const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
@@ -615,7 +615,10 @@ impl ProcessTable {
         }
         let serialized_parent = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
-            if parent.state != crate::process::ProcessState::Running {
+            if matches!(
+                parent.state,
+                crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+            ) {
                 return Err(Errno::ESRCH);
             }
             serialize_fork_state_with_growing_buffer(parent)?
@@ -690,12 +693,19 @@ impl ProcessTable {
     pub(crate) fn replace_legacy_exec_process(
         &mut self,
         pid: u32,
-        replacement: Process,
+        mut replacement: Process,
     ) -> Result<(), Errno> {
         if replacement.pid != pid {
             return Err(Errno::EINVAL);
         }
         if let Some(old) = self.processes.get(&pid) {
+            if matches!(old.state, ProcessState::Exited | ProcessState::Limbo) {
+                return Err(Errno::ESRCH);
+            }
+            // Exec replaces the image, not the process identity or its
+            // job-control state or unconsumed parent-visible status record.
+            replacement.state = old.state;
+            replacement.wait_event = old.wait_event;
             let removed = crate::descriptor_backing::removed_backings_for_exec(old, &replacement)?;
             let old = self.processes.insert(pid, replacement).unwrap();
             crate::descriptor_backing::release_backings(&removed);
@@ -742,7 +752,10 @@ impl ProcessTable {
         // Snapshot inheritable parent state under an immutable borrow.
         let inherit = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
-            if parent.state != crate::process::ProcessState::Running {
+            if matches!(
+                parent.state,
+                crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+            ) {
                 return Err(Errno::ESRCH);
             }
             // Compute the SIG_IGN-disposition bitmask for signals 1..=64.
@@ -1012,41 +1025,54 @@ impl ProcessTable {
     /// parent reaps it, so wait semantics stay kernel-owned.
     pub fn mark_process_signaled(&mut self, pid: u32, signum: u32) -> Result<(), Errno> {
         let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
-        proc.state = ProcessState::Exited;
-        proc.exit_status = 0;
-        proc.exit_signal = signum & 0x7f;
+        proc.record_signal_exit(signum);
         Ok(())
     }
 
-    /// Poll for a waitable child owned by `parent_pid` matching a waitpid-style
-    /// target.
-    ///
-    /// Returns:
-    /// - `Ok(Some((child_pid, wait_status)))` when a matching zombie exists.
-    /// - `Ok(None)` when a matching child exists but is still running.
-    /// - `Err(ECHILD)` when no matching child belongs to the parent.
-    pub fn poll_waitable_child(
-        &self,
+    /// Select the latest status-information record for a direct child.
+    /// Nonmatching masks and WNOWAIT leave that single record untouched.
+    pub fn poll_wait_event(
+        &mut self,
         parent_pid: u32,
         target_pid: i32,
-    ) -> Result<Option<(u32, i32)>, Errno> {
-        let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+        event_mask: u32,
+        flags: u32,
+    ) -> Result<Option<(u32, ChildWaitEvent)>, Errno> {
+        use wasm_posix_shared::wait::{
+            EVENT_CONTINUED, EVENT_EXITED, EVENT_STOPPED, WNOWAIT,
+        };
+
+        let valid_events = EVENT_EXITED | EVENT_STOPPED | EVENT_CONTINUED;
+        if event_mask == 0 || event_mask & !valid_events != 0 || flags & !WNOWAIT != 0 {
+            return Err(Errno::EINVAL);
+        }
+
+        let parent_pgid = self
+            .processes
+            .get(&parent_pid)
+            .ok_or(Errno::ESRCH)?
+            .pgid;
         let mut saw_matching_child = false;
 
-        for (&child_pid, child) in &self.processes {
-            if child.ppid != parent_pid {
+        for (&child_pid, child) in &mut self.processes {
+            if child.ppid != parent_pid || child.state == ProcessState::Limbo {
                 continue;
             }
-            if !Self::child_matches_wait_target(child_pid, child, target_pid, parent.pgid) {
+            if !Self::child_matches_wait_target(child_pid, child, target_pid, parent_pgid) {
                 continue;
             }
             saw_matching_child = true;
-            if child.state == ProcessState::Exited {
-                return Ok(Some((
-                    child_pid,
-                    Self::wait_status_from_process(child),
-                )));
+
+            let Some(event) = child.wait_event else {
+                continue;
+            };
+            if event.event_mask & event_mask == 0 {
+                continue;
             }
+            if flags & WNOWAIT == 0 {
+                child.wait_event = None;
+            }
+            return Ok(Some((child_pid, event)));
         }
 
         if saw_matching_child {
@@ -1083,14 +1109,6 @@ impl ProcessTable {
             return false;
         };
         child.pgid == target_pgid
-    }
-
-    fn wait_status_from_process(proc: &Process) -> i32 {
-        if proc.exit_signal != 0 {
-            (proc.exit_signal as i32) & 0x7f
-        } else {
-            (proc.exit_status & 0xff) << 8
-        }
     }
 }
 
@@ -1225,6 +1243,25 @@ mod tests {
     }
 
     #[test]
+    fn legacy_exec_preserves_stopped_state_and_parent_visible_status_record() {
+        use wasm_posix_shared::signal::SIGTSTP;
+        use wasm_posix_shared::wait::EVENT_STOPPED;
+
+        let mut table = ProcessTable::new();
+        table.create_process(200).unwrap();
+        assert!(table.get_mut(200).unwrap().record_stop(SIGTSTP));
+
+        table
+            .replace_legacy_exec_process(200, Process::new(200))
+            .unwrap();
+
+        assert_eq!(table.get(200).unwrap().state, ProcessState::Stopped);
+        let event = table.get(200).unwrap().wait_event.unwrap();
+        assert_eq!(event.event_mask, EVENT_STOPPED);
+        assert_eq!(event.si_status, SIGTSTP as i32);
+    }
+
+    #[test]
     fn fork_pipe_replay_includes_fds_above_default_nofile_limit() {
         use crate::fd::OpenFileDescRef;
         use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
@@ -1271,6 +1308,36 @@ mod tests {
             ),
             Err(Errno::ESRCH),
         );
+    }
+
+    #[test]
+    fn stopped_parent_can_finish_spawn_after_async_resolution() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::signal::SIGSTOP;
+
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        assert!(table.get_mut(100).unwrap().record_stop(SIGSTOP));
+
+        // The host resolves a posix_spawn executable asynchronously. A stop
+        // can land during that await; the parent remains a live process and
+        // the resolved continuation must still be allowed to create its child.
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child(
+                100,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .expect("stopped parent remains eligible to complete spawn");
+
+        assert_eq!(table.get(100).unwrap().state, ProcessState::Stopped);
+        assert_eq!(table.get(child_pid).unwrap().ppid, 100);
+        assert_eq!(table.get(child_pid).unwrap().state, ProcessState::Running);
     }
 
     #[test]
@@ -1463,62 +1530,100 @@ mod tests {
     }
 
     #[test]
-    fn poll_waitable_child_returns_exited_child_status() {
+    fn poll_wait_event_selects_and_consumes_exit_status() {
+        use wasm_posix_shared::wait::{CLD_EXITED, EVENT_EXITED};
+
         let mut table = ProcessTable::new();
         table.create_process(10).unwrap();
         table.create_process(11).unwrap();
         let child = table.processes.get_mut(&11).unwrap();
         child.ppid = 10;
-        child.state = ProcessState::Exited;
-        child.exit_status = 7;
+        assert!(child.record_normal_exit(7));
 
-        assert_eq!(
-            table.poll_waitable_child(10, -1).unwrap(),
-            Some((11, 7 << 8))
-        );
+        let (pid, event) = table
+            .poll_wait_event(10, -1, EVENT_EXITED, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pid, 11);
+        assert_eq!(event.wait_status, 7 << 8);
+        assert_eq!(event.si_code, CLD_EXITED);
+        assert_eq!(event.si_status, 7);
+        assert!(table.get(11).unwrap().wait_event.is_none());
+        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
     }
 
     #[test]
-    fn poll_waitable_child_encodes_signal_status() {
+    fn poll_wait_event_wnowait_repeats_the_same_signal_exit() {
+        use wasm_posix_shared::wait::{CLD_KILLED, EVENT_EXITED, WNOWAIT};
+
         let mut table = ProcessTable::new();
         table.create_process(10).unwrap();
         table.create_process(11).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
         table.mark_process_signaled(11, 15).unwrap();
-        table.processes.get_mut(&11).unwrap().ppid = 10;
 
-        assert_eq!(table.poll_waitable_child(10, 11).unwrap(), Some((11, 15)));
+        for _ in 0..2 {
+            let (_, event) = table
+                .poll_wait_event(10, 11, EVENT_EXITED, WNOWAIT)
+                .unwrap()
+                .unwrap();
+            assert_eq!(event.wait_status, 15);
+            assert_eq!(event.si_code, CLD_KILLED);
+            assert_eq!(event.si_status, 15);
+        }
+        assert!(table.get(11).unwrap().wait_event.is_some());
     }
 
     #[test]
-    fn poll_waitable_child_preserves_high_normal_exit_status() {
+    fn poll_wait_event_nonmatching_mask_preserves_latest_record() {
+        use wasm_posix_shared::signal::SIGTSTP;
+        use wasm_posix_shared::wait::{EVENT_EXITED, EVENT_STOPPED};
+
         let mut table = ProcessTable::new();
         table.create_process(10).unwrap();
         table.create_process(11).unwrap();
         let child = table.processes.get_mut(&11).unwrap();
         child.ppid = 10;
-        child.state = ProcessState::Exited;
-        child.exit_status = 255;
-        child.exit_signal = 0;
+        assert!(child.record_stop(SIGTSTP));
 
+        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
         assert_eq!(
-            table.poll_waitable_child(10, -1).unwrap(),
-            Some((11, 255 << 8))
+            table.get(11).unwrap().wait_event.unwrap().event_mask,
+            EVENT_STOPPED
+        );
+        assert!(
+            table
+                .poll_wait_event(10, -1, EVENT_STOPPED, 0)
+                .unwrap()
+                .is_some()
         );
     }
 
     #[test]
-    fn poll_waitable_child_distinguishes_running_from_no_child() {
+    fn poll_wait_event_distinguishes_running_from_no_child_and_validates_input() {
+        use wasm_posix_shared::wait::{EVENT_EXITED, WNOWAIT};
+
         let mut table = ProcessTable::new();
         table.create_process(10).unwrap();
         table.create_process(11).unwrap();
         table.processes.get_mut(&11).unwrap().ppid = 10;
 
-        assert_eq!(table.poll_waitable_child(10, -1).unwrap(), None);
-        assert_eq!(table.poll_waitable_child(10, 12), Err(Errno::ECHILD));
+        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
+        assert_eq!(
+            table.poll_wait_event(10, 12, EVENT_EXITED, 0),
+            Err(Errno::ECHILD)
+        );
+        assert_eq!(table.poll_wait_event(10, -1, 0, 0), Err(Errno::EINVAL));
+        assert_eq!(
+            table.poll_wait_event(10, -1, EVENT_EXITED, WNOWAIT | 2),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]
-    fn poll_waitable_child_matches_process_groups() {
+    fn poll_wait_event_matches_process_groups() {
+        use wasm_posix_shared::wait::EVENT_EXITED;
+
         let mut table = ProcessTable::new();
         table.create_process(10).unwrap();
         table.processes.get_mut(&10).unwrap().pgid = 20;
@@ -1527,22 +1632,31 @@ mod tests {
             let child = table.processes.get_mut(&11).unwrap();
             child.ppid = 10;
             child.pgid = 20;
-            child.state = ProcessState::Exited;
-            child.exit_status = 0;
+            child.record_normal_exit(0);
         }
         table.create_process(12).unwrap();
         {
             let child = table.processes.get_mut(&12).unwrap();
             child.ppid = 10;
             child.pgid = 30;
-            child.state = ProcessState::Exited;
-            child.exit_status = 1;
+            child.record_normal_exit(1);
         }
 
-        assert_eq!(table.poll_waitable_child(10, 0).unwrap(), Some((11, 0)));
         assert_eq!(
-            table.poll_waitable_child(10, -30).unwrap(),
-            Some((12, 1 << 8))
+            table
+                .poll_wait_event(10, 0, EVENT_EXITED, 0)
+                .unwrap()
+                .unwrap()
+                .0,
+            11
+        );
+        assert_eq!(
+            table
+                .poll_wait_event(10, -30, EVENT_EXITED, 0)
+                .unwrap()
+                .unwrap()
+                .0,
+            12
         );
     }
 

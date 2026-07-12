@@ -795,6 +795,22 @@ Normal exit status and signal termination are stored separately. `_exit()` and
 high normal exit code was a signal, while host lifecycle callbacks may still
 present the conventional shell-style `128 + signal` value.
 
+Child status is a Rust-owned, per-process record covering stop, continue, and
+termination. POSIX replacement semantics apply: a new transition replaces
+older unconsumed status, ordinary waits consume it, and `waitid(WNOWAIT)` only
+peeks. Stopped and continued reports never reap; consuming termination status
+does. The host validates every guest output range before asking the kernel to
+consume a record, so an `EFAULT` cannot lose child status or reap a zombie.
+
+Default stop actions park execution cooperatively at the syscall boundary. The
+kernel emits a process-transition event, and the shared Node/browser host holds
+prepared completions by exact channel identity, including every pthread
+channel, until SIGCONT. SIGCONT changes state immediately even when blocked,
+ignored, or caught; SIGKILL can terminate a stopped process. Current Wasm
+workers do not provide arbitrary-instruction preemption, so CPU-bound code that
+never reaches a syscall cannot be suspended immediately; that boundary is
+documented in `posix-status.md` rather than hidden behind host-specific behavior.
+
 ## Browser-Specific Architecture
 
 In the browser, an additional layer wraps the kernel:

@@ -44,6 +44,7 @@ import type { MountConfig } from "./vfs/types";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
+import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
@@ -682,7 +683,12 @@ async function handleInit(msg: InitMessage) {
         // post-commit signal death also returns 0 because the old syscall can
         // no longer return; only emit exec when a replacement was installed.
         const installedWorker = processes.get(pid)?.worker;
-        if (result === 0 && installedWorker && installedWorker !== previousWorker) {
+        if (
+          result === 0
+          && installedWorker
+          && installedWorker !== previousWorker
+          && kernelWorker.isProcessExecutionActive(pid)
+        ) {
           post({ type: "proc_event", kind: "exec", pid });
         }
         return result;
@@ -896,7 +902,9 @@ async function handleFork(
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
-  const childWorker = workerAdapter.createWorker(childInitData);
+  const childWorker = new DeferredWorkerHandle(
+    () => workerAdapter.createWorker(childInitData),
+  );
   processes.set(childPid, {
     memory: childMemory,
     programBytes: parentProgram,
@@ -925,6 +933,27 @@ async function handleFork(
   });
 
   installCrashSafetyNet(childWorker, childPid);
+
+  try {
+    const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
+      childPid,
+      childMemory,
+      () => { childWorker.start(); },
+      () => { void childWorker.terminate(); },
+    );
+    if (startDisposition === "stale") {
+      throw new Error(`Fork child ${childPid} changed generation before Worker launch`);
+    }
+  } catch (error) {
+    if (processes.get(childPid)?.worker === childWorker) {
+      processes.delete(childPid);
+      threadModuleCache.delete(childPid);
+      ptyByPid.delete(childPid);
+      vmInterruptTimers.clear(childPid);
+    }
+    void childWorker.terminate();
+    throw error;
+  }
 
   return [childChannelOffset];
 }
@@ -1026,7 +1055,9 @@ async function handleExec(
       argv: launchArgv,
       env: envp,
     });
-    replacementWorker = workerAdapter.createWorker(initData);
+    replacementWorker = new DeferredWorkerHandle(
+      () => workerAdapter.createWorker(initData),
+    );
 
     // Clear thread module cache — new program binary is different
     threadModuleCache.delete(pid);
@@ -1063,6 +1094,20 @@ async function handleExec(
     });
 
     installCrashSafetyNet(replacementWorker, pid);
+    const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
+      pid,
+      newMemory,
+      () => { (replacementWorker as DeferredWorkerHandle).start(); },
+      () => { void replacementWorker?.terminate(); },
+    );
+    if (startDisposition === "stale") {
+      throw new Error(`Exec pid ${pid} changed generation before Worker launch`);
+    }
+    if (startDisposition === "dead") {
+      kernelWorker.finishProcessExecHandoff(pid);
+      kernelWorker.finalizeExecHandoffTermination(pid);
+      return 0;
+    }
     kernelWorker.finishProcessExecHandoff(pid);
     return 0;
   } catch (err) {
@@ -1187,7 +1232,9 @@ async function handlePosixSpawn(
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
-  const newWorker = workerAdapter.createWorker(initData);
+  const newWorker = new DeferredWorkerHandle(
+    () => workerAdapter.createWorker(initData),
+  );
   processes.set(childPid, {
     memory,
     programBytes,
@@ -1216,6 +1263,27 @@ async function handlePosixSpawn(
   });
 
   installCrashSafetyNet(newWorker, childPid);
+
+  try {
+    const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
+      childPid,
+      memory,
+      () => { newWorker.start(); },
+      () => { void newWorker.terminate(); },
+    );
+    if (startDisposition === "stale") {
+      throw new Error(`Spawn child ${childPid} changed generation before Worker launch`);
+    }
+  } catch (error) {
+    if (processes.get(childPid)?.worker === newWorker) {
+      processes.delete(childPid);
+      threadModuleCache.delete(childPid);
+      ptyByPid.delete(childPid);
+      vmInterruptTimers.clear(childPid);
+    }
+    void newWorker.terminate();
+    throw error;
+  }
 
   return 0;
 }
@@ -1297,7 +1365,9 @@ async function handleClone(
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
-  const threadWorker = workerAdapter.createWorker(threadInitData);
+  const threadWorker = new DeferredWorkerHandle(
+    () => workerAdapter.createWorker(threadInitData),
+  );
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
   const threadEntry: ThreadWorkerInfo = {
     worker: threadWorker,
@@ -1374,6 +1444,32 @@ async function handleClone(
     }
   });
   threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
+
+  let startDisposition: ReturnType<
+    CentralizedKernelWorker["startProcessWorkerWhenRunnable"]
+  >;
+  try {
+    startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
+      pid,
+      memory,
+      () => { threadWorker.start(); },
+      () => { void threadWorker.terminate(); },
+      () => {
+        kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
+        const failedClone = kernelWorker.failDeferredCloneLaunch(pid, tid, 12);
+        void terminateThreadEntry();
+        return failedClone;
+      },
+    );
+  } catch (error) {
+    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
+    void terminateThreadEntry();
+    throw error;
+  }
+  if (startDisposition === "stale") {
+    void terminateThreadEntry();
+    throw new Error(`Process ${pid} changed generation before thread Worker launch`);
+  }
 
   return tid;
 }

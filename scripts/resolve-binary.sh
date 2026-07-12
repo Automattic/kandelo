@@ -151,14 +151,17 @@ kernel_required_exports=(
     __abi_version
     kernel_alloc_scratch
     kernel_create_process
+    kernel_create_process_with_stdio
     kernel_get_parent_pid
+    kernel_get_process_state
     kernel_handle_channel
+    kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
     kernel_mark_process_signaled
     kernel_reap_exited_child
     kernel_remove_process
-    kernel_wait4_poll
+    kernel_wait_child_poll
 )
 
 executable_program_required_exports=(

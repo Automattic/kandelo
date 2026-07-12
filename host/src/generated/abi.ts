@@ -24,13 +24,15 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_create_process",
   "kernel_create_process_with_stdio",
   "kernel_get_parent_pid",
+  "kernel_get_process_state",
   "kernel_handle_channel",
+  "kernel_has_sa_nocldstop",
   "kernel_host_adapter_manifest_len",
   "kernel_host_adapter_manifest_ptr",
   "kernel_mark_process_signaled",
   "kernel_reap_exited_child",
   "kernel_remove_process",
-  "kernel_wait4_poll",
+  "kernel_wait_child_poll",
 ] as const;
 
 export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
@@ -106,11 +108,37 @@ export const CH_SIG_HANDLER = 65564 as const;
 export const CH_SIG_FLAGS = 65568 as const;
 export const CH_SIG_OLD_MASK = 65576 as const;
 
+export const WAIT_EVENT_EXITED = 1 as const;
+export const WAIT_EVENT_STOPPED = 2 as const;
+export const WAIT_EVENT_CONTINUED = 4 as const;
+export const WAIT_WNOHANG = 1 as const;
+export const WAIT_WUNTRACED = 2 as const;
+export const WAIT_WSTOPPED = 2 as const;
+export const WAIT_WEXITED = 4 as const;
+export const WAIT_WCONTINUED = 8 as const;
+export const WAIT_WNOWAIT = 16777216 as const;
+export const WAIT_CLD_EXITED = 1 as const;
+export const WAIT_CLD_KILLED = 2 as const;
+export const WAIT_CLD_STOPPED = 5 as const;
+export const WAIT_CLD_CONTINUED = 6 as const;
+export const PROCESS_STATE_RUNNING = 0 as const;
+export const PROCESS_STATE_STOPPED = 1 as const;
+export const PROCESS_STATE_EXITED = 2 as const;
+export const WAKE_PROCESS_STOPPED = 16 as const;
+export const WAKE_PROCESS_CONTINUED = 32 as const;
+
 export const STRUCT_SIZE_WASM_STAT = 88 as const;
 export const STRUCT_SIZE_WASM_DIRENT = 16 as const;
 export const STRUCT_SIZE_WASM_TIMESPEC = 16 as const;
 export const STRUCT_SIZE_WASM_POLL_FD = 8 as const;
 export const STRUCT_SIZE_WASM_STATFS = 72 as const;
+export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;
+export const STRUCT_SIZE_KERNEL_WAIT_RESULT = 160 as const;
+export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = 0 as const;
+export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = 4 as const;
+export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = 8 as const;
+export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = 12 as const;
+export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = 16 as const;
 
 export const HOST_INTERCEPTED_SYSCALLS = {
   SYS_EXECVE: 211,
@@ -790,7 +818,7 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 } },
   ],
   108: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 144 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 144 }, required: true },
   ],
   109: [
     { argIndex: 0, direction: "in", size: { type: "cstring" } },
@@ -858,7 +886,7 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   139: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 } },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 144 } },
   ],
   140: [
     { argIndex: 0, direction: "in", size: { type: "cstring" } },
@@ -914,6 +942,10 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   272: [
     { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  288: [
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 128 }, required: true },
+    { argIndex: 4, direction: "out", size: { type: "fixed", size: 144 }, nullable: true },
   ],
   299: [
     { argIndex: 0, direction: "in", size: { type: "cstring" } },
