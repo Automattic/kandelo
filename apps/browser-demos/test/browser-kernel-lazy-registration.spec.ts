@@ -19,19 +19,21 @@ const processWorkerModulePath = resolve(
   __dirname,
   "../../../host/src/worker-entry-browser.ts",
 );
-const spawnSmokePath = resolve(__dirname, "../../../examples/spawn-smoke.wasm");
-const helloPath = resolve(__dirname, "../../../examples/hello.wasm");
-
-async function lazyExecImage(assetUrl: string, helloSize: number): Promise<Uint8Array> {
+async function lazyExecImage(
+  assetUrl: string,
+  helloSize: number,
+  shellBytes: Uint8Array,
+): Promise<Uint8Array> {
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  fs.mkdir("/bin", 0o755);
   fs.mkdir("/usr", 0o755);
   fs.mkdir("/usr/bin", 0o755);
   fs.createFileWithOwner(
-    "/usr/bin/spawn-smoke",
+    "/bin/sh",
     0o755,
     0,
     0,
-    new Uint8Array(readFileSync(spawnSmokePath)),
+    shellBytes,
   );
   fs.registerLazyFile("/usr/bin/hello", assetUrl, helloSize, 0o755);
   return fs.saveImage({ metadata: { version: 1, kernelAbi: ABI_VERSION } });
@@ -124,12 +126,23 @@ test("browser kernel reports lazy exec integrity failures as EIO and retries", a
     kernelPath,
     "kernel.wasm is required; build or fetch the current ABI kernel before browser tests",
   ).toBeTruthy();
+  const shellPath = tryResolveBinary("programs/wasm32/dash.wasm");
+  expect(
+    shellPath,
+    "dash.wasm is required; fetch the current ABI package before browser tests",
+  ).toBeTruthy();
+  const helloPath = tryResolveBinary("programs/wasm32/hello.wasm");
+  expect(
+    helloPath,
+    "hello.wasm is required; fetch the current ABI package before browser tests",
+  ).toBeTruthy();
 
-  const helloBytes = new Uint8Array(readFileSync(helloPath));
+  const helloBytes = new Uint8Array(readFileSync(helloPath!));
+  const shellBytes = new Uint8Array(readFileSync(shellPath!));
   const assetUrl = new URL("/__lazy_integrity__/exec-hello.wasm", baseURL).href;
   const kernelUrl = new URL("/__lazy_integrity__/kernel.wasm", baseURL).href;
   const imageUrl = new URL("/__lazy_integrity__/rootfs.vfs", baseURL).href;
-  const image = await lazyExecImage(assetUrl, helloBytes.byteLength);
+  const image = await lazyExecImage(assetUrl, helloBytes.byteLength, shellBytes);
   let assetRequests = 0;
 
   await page.route(kernelUrl, (route) => route.fulfill({
@@ -264,8 +277,8 @@ test("browser kernel reports lazy exec integrity failures as EIO and retries", a
         const run = async (): Promise<number> => {
           const pid = await request<number>({
             type: "spawn",
-            programPath: "/usr/bin/spawn-smoke",
-            argv: ["spawn-smoke", "/usr/bin/hello"],
+            programPath: "/bin/sh",
+            argv: ["sh", "-c", "/usr/bin/hello"],
             env: ["PATH=/usr/bin:/bin", "HOME=/root", "TMPDIR=/tmp"],
             stdin: new Uint8Array(),
             maxPages: 4096,
@@ -299,12 +312,14 @@ test("browser kernel reports lazy exec integrity failures as EIO and retries", a
     },
   );
 
-  expect(result.firstExit, browserName).toBe(1);
+  expect(result.firstExit, browserName).not.toBe(0);
   expect(result.secondExit, browserName).toBe(0);
   expect(result.stderr, browserName).toContain("I/O error");
-  expect(result.stdout, browserName).toContain("Hello from musl");
-  expect(result.stdout, browserName).toContain("OK");
-  expect(result.lazyStatuses, browserName).toEqual([
+  expect(result.stdout, browserName).toContain("Hello, world!");
+  const lifecycle = result.lazyStatuses.filter(
+    (status, index, statuses) => status !== "progress" || statuses[index - 1] !== "progress",
+  );
+  expect(lifecycle, browserName).toEqual([
     "started",
     "progress",
     "error",

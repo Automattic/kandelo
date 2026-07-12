@@ -52,17 +52,21 @@ jobs:
           use-gha-cache: false
           use-flakehub: false
 
-      - name: Resolve current ABI kernel
+      - name: Resolve current ABI test artifacts
         run: |
           ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
           export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
             HOST_TARGET=$(rustc -vV | sed -n "s/^host: //p")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch wasm32 --binaries-dir "$PWD/binaries" \
-              --fetch-only resolve kernel >/dev/null
+            for package in kernel dash hello; do
+              cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+                build-deps --arch wasm32 --binaries-dir "$PWD/binaries" \
+                --fetch-only resolve "$package" >/dev/null
+            done
             scripts/resolve-binary.sh kernel.wasm >/dev/null
+            scripts/resolve-binary.sh programs/wasm32/dash.wasm >/dev/null
+            scripts/resolve-binary.sh programs/wasm32/hello.wasm >/dev/null
           '
 
       - name: Install browser demo dependencies
