@@ -454,6 +454,8 @@ interface ProcessRegistration {
   pid: number;
   memory: WebAssembly.Memory;
   channels: ChannelInfo[];
+  /** False as soon as exit or exec begins for this process generation. */
+  active: boolean;
   /** Pointer width: 4 for wasm32, 8 for wasm64. */
   ptrWidth: 4 | 8;
   /**
@@ -548,6 +550,14 @@ export interface SpawnResolveError {
 
 export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram | SpawnResolveError;
 
+export interface CloneLaunchResult {
+  tid: number;
+  /** Release the initialized Worker only after clone's result is visible. Must not throw. */
+  start: () => void;
+  /** Tear down an initialized but unpublished Worker and all of its host state. */
+  abort: () => Promise<void>;
+}
+
 function isSpawnResolveError(
   resolution: SpawnProgramResolution,
 ): resolution is SpawnResolveError {
@@ -629,9 +639,11 @@ export interface CentralizedKernelCallbacks {
 
   /**
    * Called when a process calls clone (thread creation). The callback should
-   * spawn a thread Worker sharing the parent's Memory. Returns the TID.
+   * initialize a thread Worker sharing the parent's Memory. The start callback
+   * is invoked only after clone success is visible to the guest; abort is
+   * invoked if publication cannot complete.
    */
-  onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number>;
+  onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<CloneLaunchResult>;
 
   /**
    * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
@@ -735,8 +747,11 @@ export class CentralizedKernelWorker {
     retVal: number;
     errVal: number;
   }>();
-  /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
-  private threadCtidPtrs = new Map<string, number>();
+  /** Generation-tagged CLONE_CHILD_CLEARTID state for each live pthread. */
+  private threadCtidPtrs = new Map<string, {
+    ptr: number;
+    registration: ProcessRegistration;
+  }>();
   /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
   private tcpListeners = new Map<string, {
     server: import("net").Server;
@@ -1217,6 +1232,7 @@ export class CentralizedKernelWorker {
       pid,
       memory,
       channels,
+      active: true,
       ptrWidth: options?.ptrWidth ?? 4,
       explicitMaxAddr: options?.maxAddr !== undefined,
     };
@@ -1541,9 +1557,24 @@ export class CentralizedKernelWorker {
    * Unregister a process. Stops listening on its channels and removes
    * it from the kernel's process table.
    */
+  private clearThreadCtidPtrsForRegistration(registration: ProcessRegistration): void {
+    for (const [key, state] of this.threadCtidPtrs) {
+      if (state.registration === registration) this.threadCtidPtrs.delete(key);
+    }
+  }
+
+  /** Mark a process generation stale before asynchronous worker teardown. */
+  retireProcessGeneration(pid: number, expectedMemory?: WebAssembly.Memory): void {
+    const registration = this.processes.get(pid);
+    if (!registration || (expectedMemory && registration.memory !== expectedMemory)) return;
+    registration.active = false;
+    this.clearThreadCtidPtrsForRegistration(registration);
+  }
+
   unregisterProcess(pid: number): void {
     const registration = this.processes.get(pid);
     if (!registration) return;
+    this.retireProcessGeneration(pid, registration.memory);
 
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
@@ -1632,6 +1663,8 @@ export class CentralizedKernelWorker {
   }
 
   deactivateProcess(pid: number): void {
+    const registration = this.processes.get(pid);
+    if (registration) this.retireProcessGeneration(pid, registration.memory);
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
     this.stdinFinite.delete(pid);
@@ -1686,6 +1719,8 @@ export class CentralizedKernelWorker {
    * Does NOT cancel timers (POSIX: timers are preserved across exec).
    */
   prepareProcessForExec(pid: number): void {
+    const registration = this.processes.get(pid);
+    if (registration) this.retireProcessGeneration(pid, registration.memory);
     // Remove channels from active list (stops listening on old memory)
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
@@ -1773,9 +1808,17 @@ export class CentralizedKernelWorker {
   /**
    * Remove a channel from a process registration (e.g. when a thread exits).
    */
-  removeChannel(pid: number, channelOffset: number): void {
+  removeChannel(
+    pid: number,
+    channelOffset: number,
+    expectedMemory?: WebAssembly.Memory,
+  ): void {
     const registration = this.processes.get(pid);
-    if (!registration) return;
+    if (
+      !registration ||
+      !registration.active ||
+      (expectedMemory && registration.memory !== expectedMemory)
+    ) return;
 
     registration.channels = registration.channels.filter(
       (ch) => ch.channelOffset !== channelOffset,
@@ -2648,9 +2691,8 @@ export class CentralizedKernelWorker {
     argDescs: SyscallArgDesc[] | undefined,
     retVal: number,
     errVal: number,
+    beforePublish?: () => void,
   ): void {
-    const processView = new DataView(channel.memory.buffer, channel.channelOffset);
-
     // Copy output data from kernel scratch back to process memory
     if (argDescs) {
       const processMem = new Uint8Array(channel.memory.buffer);
@@ -2724,13 +2766,6 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Clear handling flag (channel is done — poller can pick it up for next syscall)
-    channel.handling = false;
-
-    // Write result to process channel
-    processView.setBigInt64(CH_RETURN, BigInt(retVal), true);
-    processView.setUint32(CH_ERRNO, errVal, true);
-
     // Cancel any pending socket timeout timer for this channel
     this.clearSocketTimeout(channel);
 
@@ -2742,17 +2777,35 @@ export class CentralizedKernelWorker {
     // response data to the browser without waiting for the next pump cycle
     this.flushTcpSendPipes(channel.pid);
 
+    // Everything above may fail while the syscall is still unpublished. The
+    // optional hook lets clone commit CLONE_PARENT_SETTID in the same final,
+    // non-throwing region as its return value and CH_COMPLETE transition.
+    const processView = new DataView(channel.memory.buffer, channel.channelOffset);
+    beforePublish?.();
+    // Clear only after every fallible pre-publication step. Otherwise a
+    // polling host can re-enter the still-PENDING syscall while rollback runs.
+    channel.handling = false;
+    processView.setBigInt64(CH_RETURN, BigInt(retVal), true);
+    processView.setUint32(CH_ERRNO, errVal, true);
+
     // Set status to COMPLETE and notify process
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
 
-
-    // Drain kernel wakeup events and process targeted wakeups.
-    this.drainAndProcessWakeupEvents();
-
-    // Re-listen for next syscall
-    this.relistenChannel(channel);
+    // CH_COMPLETE is the syscall's publication boundary. Cleanup after this
+    // point must not throw back into callers that could otherwise attempt a
+    // second completion or roll back state the guest has already observed.
+    try {
+      this.drainAndProcessWakeupEvents();
+    } catch (error) {
+      console.error("[kernel-worker] post-completion wakeup drain failed:", error);
+    }
+    try {
+      this.relistenChannel(channel);
+    } catch (error) {
+      console.error("[kernel-worker] post-completion relisten failed:", error);
+    }
   }
 
   /**
@@ -6291,6 +6344,29 @@ export class CentralizedKernelWorker {
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 38);
       return;
     }
+    const processRegistration = this.processes.get(channel.pid);
+    if (!processRegistration || !processRegistration.active) {
+      this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 3); // ESRCH
+      return;
+    }
+    const CLONE_PARENT_SETTID = 0x00100000;
+    const flags = origArgs[0];
+    const ptidPtr = origArgs[2];
+    const parentTidPointerIsValid = () =>
+      (flags & CLONE_PARENT_SETTID) === 0 || (
+        Number.isSafeInteger(ptidPtr) &&
+        ptidPtr > 0 &&
+        ptidPtr <= channel.memory.buffer.byteLength - 4
+      );
+    if (!parentTidPointerIsValid()) {
+      this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 14); // EFAULT
+      return;
+    }
+    const isCurrentGeneration = () =>
+      processRegistration.active &&
+      this.processes.get(channel.pid) === processRegistration &&
+      processRegistration.memory === channel.memory &&
+      processRegistration.channels.includes(channel);
 
     // Route through kernel_handle_channel — the kernel allocates a TID and
     // stores ThreadInfo. The dispatch table remaps args correctly.
@@ -6320,17 +6396,6 @@ export class CentralizedKernelWorker {
 
     const tid = retVal;
 
-    // CLONE_PARENT_SETTID: write TID to ptid_ptr in process memory.
-    // The host writes this because ptid_ptr is in process memory, not kernel
-    // memory.
-    const CLONE_PARENT_SETTID = 0x00100000;
-    const flags = origArgs[0];
-    const ptidPtr = origArgs[2];
-    if (flags & CLONE_PARENT_SETTID && ptidPtr !== 0) {
-      const procView = new DataView(channel.memory.buffer);
-      procView.setInt32(ptidPtr, tid, true);
-    }
-
     // Read fnPtr and argPtr from the channel's CH_DATA area (written by kernel_clone stub)
     // These are always written as u32 by the glue (even on wasm64, table indices are i32)
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
@@ -6343,30 +6408,96 @@ export class CentralizedKernelWorker {
     // Register the clear-TID pointer before starting the host Worker. A very
     // short-lived pthread can reach SYS_EXIT before onClone resolves.
     if (ctidPtr !== 0) {
-      this.threadCtidPtrs.set(`${channel.pid}:${tid}`, ctidPtr);
+      this.threadCtidPtrs.set(`${channel.pid}:${tid}`, {
+        ptr: ctidPtr,
+        registration: processRegistration,
+      });
     }
 
-    this.callbacks.onClone(
-      channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
-    ).then((assignedTid) => {
-      if (!this.processes.has(channel.pid)) {
-        if (ctidPtr !== 0) {
-          this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
-        }
+    const failCloneAttempt = (error: unknown, errno: number) => {
+      console.error(`[kernel-worker] onClone failed: ${error}`);
+      if (!isCurrentGeneration()) return;
+      const ctidKey = `${channel.pid}:${tid}`;
+      const ctidState = this.threadCtidPtrs.get(ctidKey);
+      if (ctidState?.registration === processRegistration) {
+        this.threadCtidPtrs.delete(ctidKey);
+      }
+      this.notifyThreadExit(channel.pid, tid);
+      this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, errno);
+    };
+
+    void (async () => {
+      let launchResult: CloneLaunchResult;
+      try {
+        launchResult = await this.callbacks.onClone!(
+          channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
+        );
+      } catch (error) {
+        failCloneAttempt(error, 11); // EAGAIN
         return;
       }
-      if (assignedTid !== tid && ctidPtr !== 0) {
-        this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
-        this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
+
+      const abortBeforePublication = async (reason: unknown): Promise<void> => {
+        try {
+          await launchResult.abort();
+        } catch (abortError) {
+          console.error(
+            `[kernel-worker] clone abort failed after ${String(reason)}:`,
+            abortError,
+          );
+        }
+      };
+
+      if (!isCurrentGeneration()) {
+        await abortBeforePublication("process generation changed");
+        return;
       }
-      this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
-    }).catch((err) => {
-      if (ctidPtr !== 0) {
-        this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
+
+      if (launchResult.tid !== tid) {
+        const error = new Error(
+          `onClone returned tid ${launchResult.tid}, expected kernel tid ${tid}`,
+        );
+        await abortBeforePublication(error);
+        failCloneAttempt(error, 11); // EAGAIN
+        return;
       }
-      console.error(`[kernel-worker] onClone failed: ${err}`);
-      this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 12); // ENOMEM
-    });
+
+      if (!parentTidPointerIsValid()) {
+        const error = new Error("CLONE_PARENT_SETTID pointer became invalid before publication");
+        await abortBeforePublication(error);
+        failCloneAttempt(error, 14); // EFAULT
+        return;
+      }
+
+      try {
+        this.completeChannel(
+          channel,
+          SYS_CLONE,
+          origArgs,
+          undefined,
+          tid,
+          0,
+          () => {
+            if (flags & CLONE_PARENT_SETTID) {
+              new DataView(channel.memory.buffer).setInt32(ptidPtr, tid, true);
+            }
+          },
+        );
+      } catch (error) {
+        await abortBeforePublication(error);
+        failCloneAttempt(error, 11); // EAGAIN
+        return;
+      }
+
+      // start() is an idempotent, non-throwing commit operation. Any failure to
+      // post thread_start is handled by the host as immediate thread death;
+      // clone success is already visible and must never be rolled back here.
+      try {
+        launchResult.start();
+      } catch (error) {
+        console.error("[kernel-worker] CloneLaunchResult.start() threw after publication:", error);
+      }
+    })();
   }
 
   /**
@@ -6437,6 +6568,7 @@ export class CentralizedKernelWorker {
     // Main thread exit or exit_group: record exit status for waitpid,
     // queue SIGCHLD to parent, then notify the host callback.
     const exitingPid = channel.pid;
+    this.retireProcessGeneration(exitingPid, channel.memory);
     // Idempotency: this guard is shared with handleProcessTerminated so a
     // SYS_KILL that races a clean SYS_EXIT from the same process doesn't
     // produce two SIGCHLDs / two parent wake-ups. Cleared by
@@ -6474,6 +6606,7 @@ export class CentralizedKernelWorker {
    */
   private handleProcessTerminated(channel: ChannelInfo): void {
     const exitingPid = channel.pid;
+    this.retireProcessGeneration(exitingPid, channel.memory);
     // Idempotency guard — both handleExit and reapKilledProcessesAfterSyscall
     // can route here for the same pid; do the parent-wakeup work exactly
     // once per generation. Cleared by deactivateProcess + registerProcess
@@ -6993,19 +7126,28 @@ export class CentralizedKernelWorker {
    * context, while `tid` addresses the kernel/libc thread state and clear-TID
    * futex word used by joiners.
    */
-  finalizeThreadExit(pid: number, tid: number, channelOffset: number): void {
+  finalizeThreadExit(
+    pid: number,
+    tid: number,
+    channelOffset: number,
+    expectedMemory?: WebAssembly.Memory,
+  ): void {
+    const registration = this.processes.get(pid);
+    if (
+      !registration ||
+      !registration.active ||
+      (expectedMemory && registration.memory !== expectedMemory)
+    ) return;
     const tidKey = `${pid}:${channelOffset}`;
     this.channelTids.delete(tidKey);
     this.threadForkContexts.delete(tidKey);
 
     const ctidKey = `${pid}:${tid}`;
-    const ctidPtr = this.threadCtidPtrs.get(ctidKey);
-    if (ctidPtr && ctidPtr !== 0) {
+    const ctidState = this.threadCtidPtrs.get(ctidKey);
+    if (ctidState && ctidState.registration === registration && ctidState.ptr !== 0) {
       this.threadCtidPtrs.delete(ctidKey);
-      const channel = this.activeChannels.find(
-        (ch) => ch.pid === pid && ch.channelOffset === channelOffset,
-      );
-      const memory = channel?.memory ?? this.processes.get(pid)?.memory;
+      const ctidPtr = ctidState.ptr;
+      const memory = registration.memory;
       if (memory) {
         const procView = new DataView(memory.buffer);
         procView.setInt32(ctidPtr, 0, true);
@@ -7015,7 +7157,7 @@ export class CentralizedKernelWorker {
     }
 
     this.notifyThreadExit(pid, tid);
-    this.removeChannel(pid, channelOffset);
+    this.removeChannel(pid, channelOffset, registration.memory);
   }
 
   /**

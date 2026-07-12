@@ -95,6 +95,18 @@ describe("BrowserWorkerAdapter", () => {
       expect(lastMockWorker!.sentMessages[0]).toEqual(initData);
     });
 
+    it("terminates a Worker whose init message cannot be cloned", () => {
+      const postMessage = vi.spyOn(MockBrowserWorker.prototype, "postMessage")
+        .mockImplementationOnce(() => {
+          throw new DOMException("could not clone", "DataCloneError");
+        });
+      const adapter = new BrowserWorkerAdapter("worker.js");
+
+      expect(() => adapter.createWorker({ pid: 42 })).toThrow(/could not clone/);
+      expect(lastMockWorker!.terminated).toBe(true);
+      postMessage.mockRestore();
+    });
+
     it("should return a WorkerHandle", () => {
       const adapter = new BrowserWorkerAdapter("worker.js");
       const handle = adapter.createWorker({});

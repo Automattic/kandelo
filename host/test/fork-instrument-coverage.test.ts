@@ -34,6 +34,7 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
+import { NodePlatformIO } from "../src/platform/node";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -469,6 +470,30 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
       contains: ["PRE_SPAWN", "PARENT: child=", "PASS: P-09"],
       execPrograms: echoExecMap,
     });
+  });
+
+  // P-10: a fork child creates its first pthread. This is the Tcl notifier
+  // restart shape: patch the child program into a thread module, start the
+  // thread worker, and reclaim it before the child exits.
+  it("P-10 fork child creates and joins a pthread", async () => {
+    await runFixture("programs/p_10_fork_child_creates_thread.wasm", {
+      contains: ["PRE_FORK", "CHILD_THREAD: ok", "CHILD: joined", "PASS: P-10"],
+      timeout: 10_000,
+    });
+  });
+
+  it("P-10 works through the custom PlatformIO clone callback", async () => {
+    const binary = tryResolveBinary("programs/p_10_fork_child_creates_thread.wasm");
+    expect(binary, "missing P-10 fixture").toBeTruthy();
+    const result = await runCentralizedProgram({
+      programPath: binary!,
+      io: new NodePlatformIO(),
+      timeout: 10_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("CHILD_THREAD: ok");
+    expect(result.stdout).toContain("PASS: P-10");
   });
 });
 

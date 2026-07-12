@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTURED_STDIO, CentralizedKernelWorker, TERMINAL_STDIO } from "./kernel-worker";
 import type {
+  CloneLaunchResult,
   ForkFromThreadContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
@@ -106,6 +107,7 @@ interface ForkReplayContext {
 }
 
 interface ProcessInfo {
+  active: boolean;
   memory: WebAssembly.Memory;
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
@@ -169,6 +171,7 @@ interface ThreadWorkerInfo {
   tid: number;
   basePage: number;
   termination?: Promise<void>;
+  cancel?: (reason: string) => Promise<void>;
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
@@ -185,8 +188,8 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
   if (!threads) return;
   threadWorkers.delete(pid);
   for (const t of threads) {
-    await (t.termination ?? terminateTrackedWorker(t.worker));
-    threadExits.release(pid, t.channelOffset);
+    await (t.cancel?.("process generation retired") ??
+      t.termination ?? terminateTrackedWorker(t.worker));
   }
 }
 
@@ -232,6 +235,8 @@ async function finalizeProcessWorker(
 ): Promise<void> {
   const cur = processes.get(pid);
   if (cur && cur.worker === worker) {
+    cur.active = false;
+    kernelWorker.retireProcessGeneration(pid, cur.memory);
     // Synthesize a signal-style reap *before* `deactivateProcess` in
     // case the worker died without sending SYS_EXIT_GROUP (uncaught
     // wasm trap, instantiation failure → `{type:"error"}` path).
@@ -728,6 +733,7 @@ function handleSpawn(msg: SpawnMessage) {
 
     const worker = workerAdapter.createWorker(initData);
     processes.set(pid, {
+      active: true,
       memory,
       programBytes: msg.programBytes,
       programModule: msg.programModule,
@@ -831,6 +837,7 @@ async function handleFork(
 
   const childWorker = workerAdapter.createWorker(childInitData);
   processes.set(childPid, {
+    active: true,
     memory: childMemory,
     programBytes: parentProgram,
     programModule: parentInfo.programModule,
@@ -870,12 +877,18 @@ async function handleExec(
   const { programBytes, argv: launchArgv } = resolved;
 
   const newPtrWidth = detectPtrWidth(programBytes);
+  const oldInfo = processes.get(pid);
+  if (!oldInfo?.active) return -3; // ESRCH
+  oldInfo.active = false;
   const setupResult = kernelWorker.kernelExecSetup(pid);
-  if (setupResult < 0) return setupResult;
+  if (setupResult < 0) {
+    if (processes.get(pid) === oldInfo) oldInfo.active = true;
+    return setupResult;
+  }
 
   kernelWorker.prepareProcessForExec(pid);
+  await terminateThreadWorkers(pid);
 
-  const oldInfo = processes.get(pid);
   if (oldInfo?.worker) {
     intentionallyTerminated.add(oldInfo.worker as object);
     await oldInfo.worker.terminate().catch(() => {});
@@ -918,6 +931,7 @@ async function handleExec(
 
   const newWorker = workerAdapter.createWorker(initData);
   processes.set(pid, {
+    active: true,
     memory: newMemory,
     programBytes,
     worker: newWorker,
@@ -1027,6 +1041,7 @@ async function handlePosixSpawn(
 
   const newWorker = workerAdapter.createWorker(initData);
   processes.set(childPid, {
+    active: true,
     memory,
     programBytes,
     worker: newWorker,
@@ -1061,21 +1076,30 @@ async function handleClone(
   tlsPtr: number,
   ctidPtr: number,
   memory: WebAssembly.Memory,
-): Promise<number> {
+): Promise<CloneLaunchResult> {
   const processInfo = processes.get(pid);
-  if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
+  if (!processInfo?.active || processInfo.memory !== memory) {
+    throw new Error(`Unknown or retired pid ${pid} for clone`);
+  }
+  const threadAllocator = processInfo.threadAllocator;
 
   // Auto-compile thread module if not already cached per-PID
   let threadModule = threadModuleCache.get(pid);
   if (!threadModule) {
     const patched = patchWasmForThread(processInfo.programBytes);
     threadModule = await WebAssembly.compile(patched);
+    if (!processInfo.active || processes.get(pid) !== processInfo || processInfo.memory !== memory) {
+      throw new Error(`Process ${pid} changed while compiling its thread module`);
+    }
     threadModuleCache.set(pid, threadModule);
+  }
+  if (!processInfo.active || processes.get(pid) !== processInfo || processInfo.memory !== memory) {
+    throw new Error(`Process ${pid} changed before thread allocation`);
   }
 
   let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
   try {
-    alloc = processInfo.threadAllocator.allocate(memory);
+    alloc = threadAllocator.allocate(memory);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     post({
@@ -1109,7 +1133,14 @@ async function handleClone(
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
-  const threadWorker = workerAdapter.createWorker(threadInitData);
+  let threadWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+  try {
+    threadWorker = workerAdapter.createWorker(threadInitData);
+  } catch (error) {
+    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
+    threadAllocator.free(alloc.basePage);
+    throw error;
+  }
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
   const threadEntry: ThreadWorkerInfo = {
     worker: threadWorker,
@@ -1120,30 +1151,77 @@ async function handleClone(
   threadWorkers.get(pid)!.push(threadEntry);
 
   let reclaimed = false;
-  const reclaimThread = () => {
+  function reclaimThread(): void {
     if (reclaimed) return;
     reclaimed = true;
-    processInfo.threadAllocator.free(alloc.basePage);
-    threadExits.release(pid, alloc.channelOffset);
+    threadAllocator.free(alloc.basePage);
+    threadExits.release(pid, alloc.channelOffset, terminateThreadEntry);
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);
       if (idx >= 0) threads.splice(idx, 1);
+      if (threads.length === 0) threadWorkers.delete(pid);
     }
-  };
-  const terminateThreadEntry = (): Promise<void> => {
+  }
+  function terminateThreadEntry(): Promise<void> {
     if (!threadEntry.termination) {
       threadEntry.termination = terminateTrackedWorker(threadWorker).finally(reclaimThread);
     }
     return threadEntry.termination;
-  };
+  }
   threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
-  const failThread = (reason: string) => {
+  let launchState: "pending" | "ready" | "started" | "failed" = "pending";
+  let finished = false;
+  let resolveLaunch!: (result: CloneLaunchResult) => void;
+  let rejectLaunch!: (error: Error) => void;
+  const launchPromise = new Promise<CloneLaunchResult>((resolve, reject) => {
+    resolveLaunch = resolve;
+    rejectLaunch = reject;
+  });
+
+  const reportThreadFailure = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
+  };
+
+  const failLaunch = (reason: string): boolean => {
+    if (launchState !== "pending") return false;
+    launchState = "failed";
+    finished = true;
+    reportThreadFailure(reason);
+    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
+    void terminateThreadEntry().then(
+      () => rejectLaunch(new Error(reason)),
+      (error) => rejectLaunch(error instanceof Error ? error : new Error(String(error))),
+    );
+    return true;
+  };
+
+  const abortLaunch = async (): Promise<void> => {
+    if (launchState === "failed" || finished) {
+      if (threadEntry.termination) await threadEntry.termination;
+      return;
+    }
+    launchState = "failed";
+    finished = true;
+    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
+    await terminateThreadEntry();
+  };
+  threadEntry.cancel = async (reason: string): Promise<void> => {
+    if (failLaunch(reason)) {
+      if (threadEntry.termination) await threadEntry.termination;
+      return;
+    }
+    await abortLaunch();
+  };
+
+  const failThread = (reason: string) => {
+    if (failLaunch(reason) || finished) return;
+    finished = true;
+    reportThreadFailure(reason);
     const disposition = threadWorkerFailureDisposition(reason);
-    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
+    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset, memory);
     void terminateThreadEntry();
     if (disposition.kind === "guest-fatal-trap") {
       try { kernelWorker.notifyHostProcessCrashed(pid, disposition.signum); } catch { /* best-effort */ }
@@ -1152,15 +1230,51 @@ async function handleClone(
   };
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
-    if (m.type === "thread_exit") {
+    if (m.type === "thread_ready") {
+      if (m.pid !== pid || m.tid !== tid) {
+        failLaunch(
+          `worker reported readiness for pid=${m.pid} tid=${m.tid}; expected pid=${pid} tid=${tid}`,
+        );
+        return;
+      }
+      if (launchState !== "pending") return;
+      if (!processInfo.active || processes.get(pid) !== processInfo || processInfo.memory !== memory) {
+        failLaunch(`process ${pid} changed before thread readiness`);
+        return;
+      }
+      launchState = "ready";
+      resolveLaunch({
+        tid,
+        start: () => {
+          if (finished || launchState !== "ready") return;
+          launchState = "started";
+          try {
+            threadWorker.postMessage({ type: "thread_start", pid, tid });
+          } catch (error) {
+            failThread(`unable to start initialized worker: ${error}`);
+          }
+        },
+        abort: abortLaunch,
+      });
+    } else if (m.type === "thread_exit") {
+      if (failLaunch("worker exited before reporting thread readiness")) return;
+      if (launchState === "ready") {
+        failThread("worker exited before thread start");
+        return;
+      }
+      finished = true;
       void terminateThreadEntry();
     } else if (m.type === "error") {
       failThread(m.message);
     }
   });
   threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
+  threadWorker.on("exit", (code: number) => {
+    if (finished || intentionallyTerminated.has(threadWorker as object)) return;
+    failThread(`worker exited before thread completion (code=${code})`);
+  });
 
-  return tid;
+  return launchPromise;
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {
@@ -1179,6 +1293,8 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
   }
 
   const info = processes.get(pid);
+  if (info) info.active = false;
+  kernelWorker.retireProcessGeneration(pid, info?.memory);
 
   const teardown = (async () => {
     // Keep the pid registered until the process worker is gone. musl's
@@ -1216,23 +1332,13 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
 
 async function handleTerminate(msg: TerminateProcessMessage) {
   const pid = msg.pid;
+  const info = processes.get(pid);
+  if (info) info.active = false;
+  kernelWorker.retireProcessGeneration(pid, info?.memory);
 
-  // Terminate thread workers
-  const threads = threadWorkers.get(pid);
-  if (threads) {
-    for (const t of threads) {
-      intentionallyTerminated.add(t.worker as object);
-      await t.worker.terminate().catch(() => {});
-      try {
-        kernelWorker.notifyThreadExit(pid, t.tid);
-        kernelWorker.removeChannel(pid, t.channelOffset);
-      } catch {}
-    }
-    threadWorkers.delete(pid);
-  }
+  await terminateThreadWorkers(pid);
 
   // Terminate main process worker
-  const info = processes.get(pid);
   if (info?.worker) {
     await terminateTrackedWorker(info.worker);
   }

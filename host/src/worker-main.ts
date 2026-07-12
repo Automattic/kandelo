@@ -1359,8 +1359,15 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
  *
  * This function:
  * 1. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
- * 2. Finds the constructor function by scanning the known LLVM helper exports
- *    for their common call target and replaces that function body with a no-op.
+ * 2. Identifies `__wasm_call_ctors` only from authoritative linker evidence
+ *    and replaces that function body with a no-op.
+ *
+ * `wasm-fork-instrument` deliberately preserves `__abi_version` in its raw
+ * linker-wrapper form. When constructors exist, wasm-ld prefixes that wrapper
+ * with `call $__wasm_call_ctors`; when they do not, the marker starts with its
+ * constant return. This distinction is load-bearing. A large C binary can
+ * have hundreds of unrelated exported call targets and no constructors at
+ * all, so selecting a merely shared or first call target corrupts the module.
  */
 export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
   const src = new Uint8Array(bytes);
@@ -1390,11 +1397,36 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     return result;
   }
 
-  // Parse all sections
+  function readName(pos: number): [string, number] {
+    const [length, lengthBytes] = readLEB128(src, pos);
+    const start = pos + lengthBytes;
+    return [new TextDecoder().decode(src.subarray(start, start + length)), start + length];
+  }
+
+  function skipLimits(pos: number): number {
+    const [flags, flagsBytes] = readLEB128(src, pos);
+    pos += flagsBytes;
+    const [, minBytes] = readLEB128(src, pos);
+    pos += minBytes;
+    if (flags & 1) {
+      const [, maxBytes] = readLEB128(src, pos);
+      pos += maxBytes;
+    }
+    return pos;
+  }
+
+  function skipValueType(pos: number): number {
+    const type = src[pos++];
+    // Typed references encode a heap type after ref.null/ref.
+    if (type === 0x63 || type === 0x64) {
+      const [, heapTypeBytes] = readLEB128(src, pos);
+      pos += heapTypeBytes;
+    }
+    return pos;
+  }
+
   interface Section { id: number; offset: number; totalSize: number; contentOffset: number; contentSize: number; }
   const sections: Section[] = [];
-  let numFuncImports = 0;
-  let hasStartSection = false;
   let offset = 8;
 
   while (offset < src.length) {
@@ -1403,92 +1435,72 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     const contentOffset = offset + 1 + sizeBytes;
     const totalSize = 1 + sizeBytes + sectionSize;
     sections.push({ id: sectionId, offset, totalSize, contentOffset, contentSize: sectionSize });
-    if (sectionId === 8) hasStartSection = true;
     offset += totalSize;
   }
 
-  if (!hasStartSection) return bytes;
+  const functionTypeIndices: number[] = [];
+  let numFuncImports = 0;
+  const exportFuncIndicesByName = new Map<string, number>();
+  let typeSection: Section | null = null;
+  let codeSection: Section | null = null;
 
-  // Count function imports from Import section (id=2)
   for (const sec of sections) {
-    if (sec.id === 2) {
+    if (sec.id === 1) {
+      typeSection = sec;
+    } else if (sec.id === 2) {
       let pos = sec.contentOffset;
       const [importCount, countBytes] = readLEB128(src, pos);
       pos += countBytes;
       for (let i = 0; i < importCount; i++) {
-        const [modLen, modLenBytes] = readLEB128(src, pos);
-        pos += modLenBytes + modLen;
-        const [fieldLen, fieldLenBytes] = readLEB128(src, pos);
-        pos += fieldLenBytes + fieldLen;
+        [, pos] = readName(pos);
+        [, pos] = readName(pos);
         const kind = src[pos++];
-        if (kind === 0) { // function import
+        if (kind === 0) {
+          const [typeIndex, typeIndexBytes] = readLEB128(src, pos);
+          pos += typeIndexBytes;
+          functionTypeIndices.push(typeIndex);
           numFuncImports++;
-          const [, typeIdxBytes] = readLEB128(src, pos);
-          pos += typeIdxBytes;
-        } else if (kind === 1) { // table
-          pos++; // reftype
-          const flags = src[pos++];
-          const [, minBytes] = readLEB128(src, pos); pos += minBytes;
-          if (flags & 1) { const [, maxBytes] = readLEB128(src, pos); pos += maxBytes; }
-        } else if (kind === 2) { // memory
-          const flags = src[pos++];
-          const [, minBytes] = readLEB128(src, pos); pos += minBytes;
-          if (flags & 1) { const [, maxBytes] = readLEB128(src, pos); pos += maxBytes; }
-        } else if (kind === 3) { // global
-          pos++; // valtype
-          pos++; // mutability
+        } else if (kind === 1) {
+          pos = skipValueType(pos);
+          pos = skipLimits(pos);
+        } else if (kind === 2) {
+          pos = skipLimits(pos);
+        } else if (kind === 3) {
+          pos = skipValueType(pos) + 1;
+        } else if (kind === 4) {
+          pos++; // tag attribute
+          const [, typeIndexBytes] = readLEB128(src, pos);
+          pos += typeIndexBytes;
         }
       }
-      break;
-    }
-  }
-
-  // Find the constructor function by looking at the exported helper wrappers.
-  // Plain lld output puts `call $__wasm_call_ctors` first. After
-  // wasm-fork-instrument, wrappers have a rewind prolog before the original
-  // body, so scan instructions and choose the call target shared by the known
-  // helper exports instead of assuming opcode 0 is the constructor call.
-  let ctorFuncIndex = -1;
-  let exportedFuncIndices: number[] = [];
-  const exportFuncIndicesByName = new Map<string, number>();
-
-  // Collect exported function indices from Export section (id=7)
-  for (const sec of sections) {
-    if (sec.id === 7) {
+    } else if (sec.id === 3) {
+      let pos = sec.contentOffset;
+      const [functionCount, countBytes] = readLEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < functionCount; i++) {
+        const [typeIndex, typeIndexBytes] = readLEB128(src, pos);
+        pos += typeIndexBytes;
+        functionTypeIndices.push(typeIndex);
+      }
+    } else if (sec.id === 7) {
       let pos = sec.contentOffset;
       const [exportCount, countBytes] = readLEB128(src, pos);
       pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
-        const [nameLen, nameLenBytes] = readLEB128(src, pos);
-        pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
-        pos += nameLen;
+        let name: string;
+        [name, pos] = readName(pos);
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);
         pos += idxBytes;
-        if (kind === 0) { // function export
-          exportedFuncIndices.push(idx);
-          exportFuncIndicesByName.set(name, idx);
-        }
+        if (kind === 0) exportFuncIndicesByName.set(name, idx);
       }
-      break;
+    } else if (sec.id === 10) {
+      codeSection = sec;
     }
   }
 
-  function skipLEB(pos: number): number {
-    const [, n] = readLEB128(src, pos);
-    return pos + n;
-  }
-
-  function skipMemArg(pos: number): number {
-    pos = skipLEB(pos); // alignment
-    return skipLEB(pos); // offset
-  }
-
-  function getInstructionStartAndEnd(
-    codeSection: Section,
-    funcIndex: number,
-  ): { start: number; end: number } | null {
+  function getInstructionBounds(funcIndex: number): { start: number; end: number } | null {
+    if (!codeSection) return null;
     const codeEntry = funcIndex - numFuncImports;
     if (codeEntry < 0) return null;
 
@@ -1509,130 +1521,83 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     const [localCount, localCountBytes] = readLEB128(src, pos);
     pos += localCountBytes;
     for (let i = 0; i < localCount; i++) {
-      pos = skipLEB(pos); // count
-      pos++; // valtype
+      const [, localRunLengthBytes] = readLEB128(src, pos);
+      pos += localRunLengthBytes;
+      pos = skipValueType(pos);
     }
 
     return { start: pos, end: bodyEnd };
   }
 
-  function scanCallTargets(codeSection: Section, funcIndex: number): number[] {
-    const bounds = getInstructionStartAndEnd(codeSection, funcIndex);
-    if (!bounds) return [];
+  const ctorCandidates = new Map<number, string[]>();
+  const addCtorCandidate = (index: number | undefined, source: string) => {
+    if (index === undefined) return;
+    const sources = ctorCandidates.get(index) ?? [];
+    sources.push(source);
+    ctorCandidates.set(index, sources);
+  };
 
-    const calls: number[] = [];
-    let pos = bounds.start;
-    while (pos < bounds.end) {
-      const op = src[pos++];
-      if (op === 0x10) { // call
-        const [target, n] = readLEB128(src, pos);
-        pos += n;
-        calls.push(target);
-      } else if (op === 0x11 || op === 0x13) { // call_indirect / return_call_indirect
-        pos = skipLEB(pos);
-        pos = skipLEB(pos);
-      } else if (op === 0x12 || op === 0x14 || op === 0x15) {
-        pos = skipLEB(pos);
-      } else if (op === 0x02 || op === 0x03 || op === 0x04) {
-        // blocktype: empty marker, valtype, or signed type index.
-        pos = src[pos] === 0x40 || src[pos] >= 0x70 ? pos + 1 : skipLEB(pos);
-      } else if (op === 0x0c || op === 0x0d || (op >= 0x20 && op <= 0x26) || op === 0xd0 || op === 0xd2) {
-        pos = skipLEB(pos);
-      } else if (op === 0x0e) { // br_table
-        const [count, n] = readLEB128(src, pos);
-        pos += n;
-        for (let i = 0; i <= count; i++) pos = skipLEB(pos);
-      } else if (op >= 0x28 && op <= 0x3e) {
-        pos = skipMemArg(pos);
-      } else if (op === 0x3f || op === 0x40) {
-        pos++;
-      } else if (op === 0x41 || op === 0x42) {
-        pos = skipLEB(pos);
-      } else if (op === 0x43) {
-        pos += 4;
-      } else if (op === 0x44) {
-        pos += 8;
-      } else if (op === 0xfc) {
-        const [subop, n] = readLEB128(src, pos);
-        pos += n;
-        if (subop === 8 || subop === 10 || subop === 12 || subop === 14) {
-          pos = skipLEB(skipLEB(pos));
-        } else if (subop >= 9 && subop <= 17) {
-          pos = skipLEB(pos);
-        }
-      } else if (op === 0xfe) {
-        pos = skipLEB(pos);
-        pos = skipMemArg(pos);
-      } else if (op === 0xfd) {
-        // SIMD is not expected in the helper wrappers. Stop before treating
-        // SIMD immediates as opcodes and collecting false call targets.
-        break;
-      } else {
-        // Most numeric, parametric, and control opcodes have no immediates.
-      }
-    }
-    return calls;
-  }
+  // Custom name sections are optional debug metadata and cannot authorize a
+  // function-body rewrite. Use only executable linker semantics as evidence.
+  addCtorCandidate(exportFuncIndicesByName.get("__wasm_call_ctors"), "function export");
 
-  // Find the Code section and identify a call target shared by LLVM helper exports.
-  for (const sec of sections) {
-    if (sec.id === 10 && exportedFuncIndices.length > 0) {
-      const helperNames = [
-        "__wasm_init_tls",
-        "__abi_version",
-        "__get_channel_base_addr",
-        "_start",
-        "__wasm_thread_init",
-      ];
-      const counts = new Map<number, { count: number; firstOrder: number }>();
-      let order = 0;
-      for (const name of helperNames) {
-        const funcIndex = exportFuncIndicesByName.get(name);
-        if (funcIndex === undefined) continue;
-        const perFunction = new Set(scanCallTargets(sec, funcIndex).filter(target => target >= numFuncImports));
-        for (const target of perFunction) {
-          const entry = counts.get(target);
-          if (entry) {
-            entry.count++;
-          } else {
-            counts.set(target, { count: 1, firstOrder: order++ });
-          }
-        }
-      }
-
-      let best: { target: number; count: number; firstOrder: number } | null = null;
-      for (const [target, value] of counts) {
-        if (
-          value.count >= 2 &&
-          (!best || value.count > best.count ||
-            (value.count === best.count && value.firstOrder < best.firstOrder))
-        ) {
-          best = { target, count: value.count, firstOrder: value.firstOrder };
-        }
-      }
-
-      if (best) {
-        ctorFuncIndex = best.target;
-      } else {
-        // Fallback for very small legacy binaries: use the first call in an
-        // exported function whose body starts with that call.
-        for (const funcIndex of exportedFuncIndices) {
-          const bounds = getInstructionStartAndEnd(sec, funcIndex);
-          if (!bounds || src[bounds.start] !== 0x10) continue;
-          const [target] = readLEB128(src, bounds.start + 1);
-          if (target >= numFuncImports) {
-            ctorFuncIndex = target;
-            break;
-          }
-        }
-      }
-      break;
+  const abiMarkerIndex = exportFuncIndicesByName.get("__abi_version");
+  if (abiMarkerIndex !== undefined && extractAbiVersion(bytes) !== null) {
+    const bounds = getInstructionBounds(abiMarkerIndex);
+    if (bounds && src[bounds.start] === 0x10) {
+      const [target] = readLEB128(src, bounds.start + 1);
+      addCtorCandidate(target, "__abi_version linker wrapper");
     }
   }
 
-  const ctorCodeEntry = ctorFuncIndex >= 0 ? ctorFuncIndex - numFuncImports : -1;
-  if (ctorFuncIndex < 0) {
-    // No ctor found — still strip start section but can't neuter the ctor body
+  if (ctorCandidates.size > 1) {
+    const evidence = [...ctorCandidates]
+      .map(([index, sources]) => `${index} (${sources.join(", ")})`)
+      .join("; ");
+    throw new Error(`Conflicting __wasm_call_ctors evidence: ${evidence}`);
+  }
+
+  const ctorFuncIndex = ctorCandidates.keys().next().value as number | undefined;
+  const hasStartSection = sections.some((sec) => sec.id === 8);
+  if (ctorFuncIndex === undefined && !hasStartSection) return bytes;
+
+  let ctorCodeEntry = -1;
+  if (ctorFuncIndex !== undefined) {
+    ctorCodeEntry = ctorFuncIndex - numFuncImports;
+    const typeIndex = functionTypeIndices[ctorFuncIndex];
+    if (ctorCodeEntry < 0 || !codeSection || typeIndex === undefined || !typeSection) {
+      throw new Error(`__wasm_call_ctors function ${ctorFuncIndex} has no defined function body`);
+    }
+
+    let pos = typeSection.contentOffset;
+    const [typeCount, countBytes] = readLEB128(src, pos);
+    pos += countBytes;
+    let signature: { params: number; results: number } | null = null;
+    for (let i = 0; i < typeCount; i++) {
+      const form = src[pos++];
+      if (form !== 0x60) break;
+      const [paramCount, paramCountBytes] = readLEB128(src, pos);
+      pos += paramCountBytes;
+      for (let param = 0; param < paramCount; param++) pos = skipValueType(pos);
+      const [resultCount, resultCountBytes] = readLEB128(src, pos);
+      pos += resultCountBytes;
+      for (let result = 0; result < resultCount; result++) pos = skipValueType(pos);
+      if (i === typeIndex) signature = { params: paramCount, results: resultCount };
+    }
+
+    const evidence = ctorCandidates.get(ctorFuncIndex) ?? [];
+    const markerProvesVoidSignature = evidence.includes("__abi_version linker wrapper");
+    if (!signature && !markerProvesVoidSignature) {
+      throw new Error(
+        `Cannot inspect __wasm_call_ctors function ${ctorFuncIndex} signature from this type section`,
+      );
+    }
+    if (signature && (signature.params !== 0 || signature.results !== 0)) {
+      throw new Error(
+        `__wasm_call_ctors function ${ctorFuncIndex} must have type () -> (), ` +
+          `found ${signature.params} parameter(s) and ${signature.results} result(s)`,
+      );
+    }
   }
 
   // Build output: always skip Start section; optionally neuter constructor function
@@ -1807,6 +1772,33 @@ export async function centralizedThreadWorkerMain(
     if (!threadFn) {
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
+
+    const startPromise = new Promise<void>((resolve) => {
+      let started = false;
+      port.on("message", (raw: unknown) => {
+        const message = raw as { type?: string; pid?: number; tid?: number };
+        if (
+          !started &&
+          message.type === "thread_start" &&
+          message.pid === pid &&
+          message.tid === tid
+        ) {
+          started = true;
+          resolve();
+        }
+      });
+    });
+
+    // clone() must not report success until the Worker has instantiated the
+    // patched module, initialized TLS/stack/channel state, and resolved the
+    // requested table entry. It waits here until the kernel has published the
+    // successful clone result to the caller's channel.
+    port.postMessage({
+      type: "thread_ready",
+      pid,
+      tid,
+    } satisfies WorkerToHostMessage);
+    await startPromise;
 
     const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
     let result = 0;

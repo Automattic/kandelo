@@ -3,6 +3,7 @@
 export type HostToWorkerMessage =
   | CentralizedWorkerInitMessage
   | CentralizedThreadInitMessage
+  | ThreadStartMessage
   | WorkerTerminateMessage
   | DeliverSignalMessage
   | ExecReplyMessage;
@@ -86,6 +87,12 @@ export interface CentralizedThreadInitMessage {
   kernelAbiVersion?: number;
 }
 
+export interface ThreadStartMessage {
+  type: "thread_start";
+  pid: number;
+  tid: number;
+}
+
 export interface WorkerTerminateMessage {
   type: "terminate";
 }
@@ -94,6 +101,7 @@ export interface WorkerTerminateMessage {
 
 export type WorkerToHostMessage =
   | WorkerReadyMessage
+  | ThreadReadyMessage
   | WorkerExitMessage
   | ThreadExitMessage
   | WorkerErrorMessage
@@ -104,6 +112,12 @@ export type WorkerToHostMessage =
 export interface WorkerReadyMessage {
   type: "ready";
   pid: number;
+}
+
+export interface ThreadReadyMessage {
+  type: "thread_ready";
+  pid: number;
+  tid: number;
 }
 
 export interface WorkerExitMessage {

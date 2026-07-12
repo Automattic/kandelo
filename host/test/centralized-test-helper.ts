@@ -8,7 +8,11 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  CAPTURED_STDIO,
+  CentralizedKernelWorker,
+  type CloneLaunchResult,
+} from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
@@ -292,6 +296,28 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   let stderr = "";
   const stdoutChunks: Uint8Array[] = [];
   const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+  const threadTeardowns = new Map<number, Set<() => Promise<void>>>();
+
+  const registerThreadTeardown = (threadPid: number, teardown: () => Promise<void>) => {
+    let teardowns = threadTeardowns.get(threadPid);
+    if (!teardowns) {
+      teardowns = new Set();
+      threadTeardowns.set(threadPid, teardowns);
+    }
+    teardowns.add(teardown);
+  };
+
+  const unregisterThreadTeardown = (threadPid: number, teardown: () => Promise<void>) => {
+    const teardowns = threadTeardowns.get(threadPid);
+    if (!teardowns) return;
+    teardowns.delete(teardown);
+    if (teardowns.size === 0) threadTeardowns.delete(threadPid);
+  };
+
+  const terminateThreadsForProcess = async (threadPid: number): Promise<void> => {
+    const teardowns = [...(threadTeardowns.get(threadPid) ?? [])];
+    await Promise.all(teardowns.map((teardown) => teardown()));
+  };
 
   const io = options.io ?? new NodePlatformIO();
   const workerAdapter = new NodeWorkerAdapter();
@@ -400,6 +426,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         if (setupResult < 0) return setupResult;
 
         kernelWorker.prepareProcessForExec(execPid);
+        await terminateThreadsForProcess(execPid);
 
         const oldWorker = workers.get(execPid);
         if (oldWorker) {
@@ -458,6 +485,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const threadAllocator = threadAllocators.get(clonePid);
         if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
+        const cloneProgramBytes = processProgramBytes.get(clonePid) ?? programBytes;
         const alloc = threadAllocator.allocate(memory);
         kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr);
 
@@ -465,7 +493,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           type: "centralized_thread_init",
           pid: clonePid,
           tid,
-          programBytes: processProgramBytes.get(clonePid) ?? programBytes,
+          programBytes: cloneProgramBytes,
           memory,
           channelOffset: alloc.channelOffset,
           fnPtr,
@@ -473,28 +501,115 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           stackPtr,
           tlsPtr,
           ctidPtr,
+          tlsOffset: alloc.tlsOffset,
           tlsAllocAddr: alloc.tlsAllocAddr,
           ptrWidth: clonePtrWidth,
         };
 
-        const threadWorker = workerAdapter.createWorker(threadInitData);
-        threadWorker.on("message", (msg: unknown) => {
-          const m = msg as WorkerToHostMessage;
-          if (m.type === "thread_exit") {
-            threadAllocator.free(alloc.basePage);
-            threadWorker.terminate().catch(() => {});
-          }
-        });
-        threadWorker.on("error", () => {
-          kernelWorker.notifyThreadExit(clonePid, tid);
-          kernelWorker.removeChannel(clonePid, alloc.channelOffset);
+        let threadWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+        try {
+          threadWorker = workerAdapter.createWorker(threadInitData);
+        } catch (error) {
+          kernelWorker.removeChannel(clonePid, alloc.channelOffset, memory);
           threadAllocator.free(alloc.basePage);
+          throw error;
+        }
+
+        let state: "pending" | "ready" | "started" | "finished" | "failed" = "pending";
+        let termination: Promise<void> | undefined;
+        const terminateThread = (): Promise<void> => {
+          if (!termination) {
+            termination = threadWorker.terminate().catch(() => {}).finally(() => {
+              kernelWorker.removeChannel(clonePid, alloc.channelOffset, memory);
+              threadAllocator.free(alloc.basePage);
+              unregisterThreadTeardown(clonePid, terminateThread);
+            });
+          }
+          return termination;
+        };
+        registerThreadTeardown(clonePid, terminateThread);
+
+        let resolveLaunch!: (result: CloneLaunchResult) => void;
+        let rejectLaunch!: (error: Error) => void;
+        const launch = new Promise<CloneLaunchResult>((resolve, reject) => {
+          resolveLaunch = resolve;
+          rejectLaunch = reject;
         });
 
-        return tid;
+        const failPendingLaunch = (reason: string): boolean => {
+          if (state !== "pending") return false;
+          state = "failed";
+          void terminateThread().then(
+            () => rejectLaunch(new Error(reason)),
+            (error) => rejectLaunch(error instanceof Error ? error : new Error(String(error))),
+          );
+          return true;
+        };
+
+        const abortLaunch = async (): Promise<void> => {
+          if (state !== "finished") state = "failed";
+          await terminateThread();
+        };
+
+        threadWorker.on("message", (msg: unknown) => {
+          const m = msg as WorkerToHostMessage;
+          if (m.type === "thread_ready") {
+            if (m.pid !== clonePid || m.tid !== tid) {
+              failPendingLaunch(
+                `Worker reported readiness for pid=${m.pid} tid=${m.tid}; ` +
+                  `expected pid=${clonePid} tid=${tid}`,
+              );
+              return;
+            }
+            if (state !== "pending") return;
+            if (
+              threadAllocators.get(clonePid) !== threadAllocator ||
+              processProgramBytes.get(clonePid) !== cloneProgramBytes
+            ) {
+              failPendingLaunch(`Process ${clonePid} changed before thread readiness`);
+              return;
+            }
+            state = "ready";
+            resolveLaunch({
+              tid,
+              start: () => {
+                if (state !== "ready") return;
+                state = "started";
+                try {
+                  threadWorker.postMessage({ type: "thread_start", pid: clonePid, tid });
+                } catch (error) {
+                  state = "failed";
+                  kernelWorker.finalizeThreadExit(clonePid, tid, alloc.channelOffset, memory);
+                  void terminateThread();
+                }
+              },
+              abort: abortLaunch,
+            });
+          } else if (m.type === "thread_exit") {
+            if (failPendingLaunch("Worker exited before reporting thread readiness")) return;
+            state = "finished";
+            void terminateThread();
+          } else if (m.type === "error") {
+            if (failPendingLaunch(m.message)) return;
+            if (state === "finished" || state === "failed") return;
+            state = "failed";
+            kernelWorker.finalizeThreadExit(clonePid, tid, alloc.channelOffset, memory);
+            void terminateThread();
+          }
+        });
+        threadWorker.on("error", (error: Error) => {
+          if (failPendingLaunch(`Thread worker failed: ${error.message}`)) return;
+          if (state === "finished" || state === "failed") return;
+          state = "failed";
+          kernelWorker.finalizeThreadExit(clonePid, tid, alloc.channelOffset, memory);
+          void terminateThread();
+        });
+
+        return launch;
       },
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
+          void terminateThreadsForProcess(exitPid);
           kernelWorker.unregisterProcess(exitPid);
           processProgramBytes.delete(exitPid);
           processLayouts.delete(exitPid);
@@ -508,6 +623,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           }
           resolveExit(exitStatus);
         } else {
+          void terminateThreadsForProcess(exitPid);
           kernelWorker.deactivateProcess(exitPid);
           processProgramBytes.delete(exitPid);
           processLayouts.delete(exitPid);
@@ -589,6 +705,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
   const timer = setTimeout(() => {
     for (const [, w] of workers) w.terminate().catch(() => {});
+    for (const threadPid of threadTeardowns.keys()) {
+      void terminateThreadsForProcess(threadPid);
+    }
     rejectExit(new Error(`Program timed out after ${timeout}ms`));
   }, timeout);
 
@@ -607,12 +726,18 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     if (m.type === "error" && m.pid === pid) {
       clearTimeout(timer);
       for (const [, w] of workers) w.terminate().catch(() => {});
+      for (const threadPid of threadTeardowns.keys()) {
+        void terminateThreadsForProcess(threadPid);
+      }
       rejectExit(new Error(m.message));
     }
   });
 
   const exitCode = await exitPromise;
   clearTimeout(timer);
+  for (const threadPid of [...threadTeardowns.keys()]) {
+    await terminateThreadsForProcess(threadPid);
+  }
 
   const totalLen = stdoutChunks.reduce((sum, c) => sum + c.length, 0);
   const stdoutBytes = new Uint8Array(totalLen);

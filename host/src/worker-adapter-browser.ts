@@ -11,7 +11,12 @@ export class BrowserWorkerAdapter implements WorkerAdapter {
     const worker = new Worker(this.entryUrl, { type: "module" });
     // Web Workers don't have workerData — send init data via postMessage
     const handle = new BrowserWorkerHandle(worker);
-    worker.postMessage(workerData);
+    try {
+      worker.postMessage(workerData);
+    } catch (error) {
+      worker.terminate();
+      throw error;
+    }
     return handle;
   }
 }
