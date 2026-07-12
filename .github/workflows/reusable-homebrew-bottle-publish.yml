@@ -201,12 +201,14 @@ jobs:
       - name: Export Homebrew path and token env
         shell: bash
         env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           brew_bin="$(command -v brew)"
-          homebrew_cache="$RUNNER_TEMP/homebrew-cache-${{ matrix.formula }}-${{ matrix.arch }}"
-          homebrew_temp="$RUNNER_TEMP/homebrew-temp-${{ matrix.formula }}-${{ matrix.arch }}"
+          homebrew_cache="$RUNNER_TEMP/homebrew-cache-${FORMULA}-${ARCH}"
+          homebrew_temp="$RUNNER_TEMP/homebrew-temp-${FORMULA}-${ARCH}"
           mkdir -p "$homebrew_cache" "$homebrew_temp"
           {
             echo "HOMEBREW_BREW_FILE=$brew_bin"
@@ -290,6 +292,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
+          KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
@@ -313,14 +316,13 @@ jobs:
               BOTTLE_SHA256=""
               BOTTLE_BYTES=""
             else
-              bottle_root_url="${{ needs.plan.outputs.bottle-root-prefix }}"
               bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh \
                 --tap-root "$GITHUB_WORKSPACE/tap" \
                 --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
                 --formula "$KANDELO_HOMEBREW_FORMULA" \
                 --arch "$KANDELO_HOMEBREW_ARCH" \
                 --out "$bottle_out" \
-                --bottle-root-url "$bottle_root_url"
+                --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
 
               # shellcheck disable=SC1091
               . "$bottle_out/build.env"
@@ -455,15 +457,18 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
         run: |
           set -euo pipefail
           error_text="$(tail -c 6000 "$RUNNER_TEMP/homebrew-publish-error.txt" || true)"
           publish_args=(
             --tap-root "$GITHUB_WORKSPACE/tap"
-            --formula "${{ matrix.formula }}"
-            --arch "${{ matrix.arch }}"
-            --release-tag "${{ needs.plan.outputs.release-tag }}"
+            --formula "$KANDELO_HOMEBREW_FORMULA"
+            --arch "$KANDELO_HOMEBREW_ARCH"
+            --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --status failed
             --error "$error_text"
           )
