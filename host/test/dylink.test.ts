@@ -1011,13 +1011,18 @@ describe.skipIf(!hasWat2Wasm())("weak self-import handling", () => {
   });
 
   it("provides the __cpp_exception tag to -fwasm-exceptions modules", () => {
-    // C++ side modules import this tag; without the host providing it, the
-    // module fails to instantiate with "tag import requires a WebAssembly.Tag".
+    // C++ side modules import this i32-payload tag. Exercise an actual
+    // throw/catch so both the supplied signature and engine behavior are
+    // covered, not merely WebAssembly.Instance's value-type check.
     const lib = loadSharedLibrarySync("tag.so", assembleSideModule(`
       (module
         (import "env" "__cpp_exception" (tag $exc (param i32)))
-        (func (export "noop")))
+        (func (export "throw_and_catch") (result i32)
+          (try (result i32)
+            (do
+              (throw $exc (i32.const 42)))
+            (catch $exc))))
     `, "tag"), createLoadOptions());
-    expect(lib.exports.noop).toBeTypeOf("function");
+    expect((lib.exports.throw_and_catch as Function)()).toBe(42);
   });
 });
