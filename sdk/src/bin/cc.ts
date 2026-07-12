@@ -239,29 +239,31 @@ function buildClangArgsInternal(
   if (parsed.preprocessOnly) args.push('-E');
   if (parsed.assemblyOnly) args.push('-S');
   if (parsed.outputFile) args.push('-o', parsed.outputFile);
+  const deferExecutableInputs = linking && !classifyLink && !parsed.shared;
   // Static link semantics depend on the caller's exact ordering of objects,
   // archives, -l flags, and linker group controls. Parsed classifications are
   // for SDK decisions only; forwarding must never rebuild the command in
-  // type-based buckets.
-  args.push(...parsed.forwardedArgs);
+  // type-based buckets. Executable links defer this sequence until after the
+  // platform glue and CRT so an explicit -lc cannot resolve musl's syscall
+  // definitions before Kandelo's overrides.
+  if (!deferExecutableInputs) args.push(...parsed.forwardedArgs);
 
   // The SDK compiles its glue sources during each executable link. Keep those
   // files and sysroot headers independent of the checkout used for the build.
   // Append these after caller flags so a broader caller-owned mapping cannot
   // retain a less-specific host path in DWARF.
-  if (
+  const sdkCompileArgs = (
     hasSourceFiles || parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly || linking ||
     executableLinker?.kind === 'no-link'
-  ) {
-    args.push(...sdkSourcePrefixMapFlags(toolchain, arch));
-  }
+  ) ? sdkSourcePrefixMapFlags(toolchain, arch) : [];
 
   // -fPIC is consumed by parseArgs (so the linker can see `parsed.pic`),
   // but it must also reach clang at compile time so the resulting object
   // uses PIC relocations. Without this a TU later linked into a shared
   // library produces non-PIC objects and `wasm-ld --shared` rejects them
   // with "R_WASM_MEMORY_ADDR_LEB cannot be used; recompile with -fPIC".
-  if (parsed.pic) args.push('-fPIC');
+  if (parsed.pic) sdkCompileArgs.push('-fPIC');
+  if (!deferExecutableInputs) args.push(...sdkCompileArgs);
 
   if (linking) {
     // Keep clang and lld in the same resolved LLVM tree. Without an explicit
@@ -294,7 +296,9 @@ function buildClangArgsInternal(
           `through ${MAX_EXECUTABLE_MEMORY_SIZE} bytes`,
         );
       }
-      // Executable build: link CRT, libc, and syscall glue
+      // Executable build: place platform definitions before caller inputs and
+      // leave the final libc archive available for everything still
+      // unresolved. This order is also used by the Kandelo-native SDK driver.
       const threadSlots = inferThreadSlotDeclaration(parsed, userArgs, {
         readFile: (path) => {
           try {
@@ -317,6 +321,8 @@ function buildClangArgsInternal(
       }
       args.push(
         join(toolchain.sysroot, 'lib', 'crt1.o'),
+        ...parsed.forwardedArgs,
+        ...sdkCompileArgs,
         join(toolchain.sysroot, 'lib', 'libc.a'),
         // LLD 22 made --stack-first the default; LLD 21 neither defaults to
         // it nor accepts --no-stack-first. Preserve Kandelo's established
