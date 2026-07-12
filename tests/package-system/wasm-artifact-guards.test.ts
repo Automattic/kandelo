@@ -20,6 +20,9 @@ describe("wasm artifact ABI guards", () => {
   let fixtureDir: string;
   let namedWasm: string;
   let strippedWasm: string;
+  let wrappedWasm: string;
+  let wrappedStrippedWasm: string;
+  let arbitraryWrapperWasm: string;
   let failingObjdumpBin: string;
 
   beforeAll(() => {
@@ -46,13 +49,65 @@ describe("wasm artifact ABI guards", () => {
     copyFileSync(namedWasm, strippedWasm);
     execFileSync("wasm-strip", [strippedWasm]);
 
+    const wrappedWatPath = path.join(fixtureDir, "wrapped-abi.wat");
+    wrappedWasm = path.join(fixtureDir, "wrapped-abi.wasm");
+    wrappedStrippedWasm = path.join(fixtureDir, "wrapped-abi-stripped.wasm");
+    writeFileSync(
+      wrappedWatPath,
+      `(module
+        (func $__wasm_call_ctors)
+        (func $__wasm_posix_user_abi_version (result i32)
+          i32.const 18)
+        (func $__wasm_posix_user_abi_version.command_export (result i32)
+          call $__wasm_call_ctors
+          call $__wasm_posix_user_abi_version)
+        (export "__abi_version" (func $__wasm_posix_user_abi_version.command_export)))\n`,
+    );
+    execFileSync("wat2wasm", [
+      "--debug-names",
+      wrappedWatPath,
+      "-o",
+      wrappedWasm,
+    ]);
+    copyFileSync(wrappedWasm, wrappedStrippedWasm);
+    execFileSync("wasm-strip", [wrappedStrippedWasm]);
+
+    const arbitraryWrapperWatPath = path.join(
+      fixtureDir,
+      "arbitrary-wrapper-abi.wat",
+    );
+    arbitraryWrapperWasm = path.join(fixtureDir, "arbitrary-wrapper-abi.wasm");
+    writeFileSync(
+      arbitraryWrapperWatPath,
+      `(module
+        (func $__wasm_call_ctors)
+        (func $__wasm_posix_user_abi_version (result i32)
+          i32.const 18)
+        (func $__wasm_posix_user_abi_version.command_export (result i32)
+          call $__wasm_call_ctors
+          call $__wasm_posix_user_abi_version
+          i32.const 1
+          i32.add)
+        (export "__abi_version" (func $__wasm_posix_user_abi_version.command_export)))\n`,
+    );
+    execFileSync("wat2wasm", [
+      "--debug-names",
+      arbitraryWrapperWatPath,
+      "-o",
+      arbitraryWrapperWasm,
+    ]);
+
     // Current LLVM output can use instructions that the pinned WABT reads in
     // the export table but rejects while disassembling. Model that split so
     // the Binaryen fallback remains covered without checking in a large SDK
     // binary fixture.
-    const realObjdump = execFileSync("bash", ["-c", "command -v wasm-objdump"], {
-      encoding: "utf8",
-    }).trim();
+    const realObjdump = execFileSync(
+      "bash",
+      ["-c", "command -v wasm-objdump"],
+      {
+        encoding: "utf8",
+      },
+    ).trim();
     failingObjdumpBin = path.join(fixtureDir, "failing-objdump-bin");
     mkdirSync(failingObjdumpBin);
     const objdumpWrapper = path.join(failingObjdumpBin, "wasm-objdump");
@@ -123,19 +178,52 @@ describe("wasm artifact ABI guards", () => {
     expect(result.stdout.trim()).toBe("17");
   });
 
-  it("classifies aliased artifacts by their extracted ABI", () => {
-    const matching = runGuard(
-      'wasm_has_stale_abi "$1" "$2"',
-      namedWasm,
-      "17",
+  it("extracts ABI through wasm-ld's command export wrapper", () => {
+    const exports = execFileSync("wasm-objdump", ["-x", wrappedWasm], {
+      encoding: "utf8",
+    });
+    expect(exports).toContain(
+      '<__wasm_posix_user_abi_version.command_export> -> "__abi_version"',
     );
+
+    const result = runGuard('wasm_extract_abi_version "$1"', wrappedWasm);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("18");
+  });
+
+  it("extracts wrapped ABI when the custom name section is stripped", () => {
+    const result = runGuard(
+      'wasm_extract_abi_version "$1"',
+      wrappedStrippedWasm,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("18");
+  });
+
+  it("falls back for a wrapped ABI when WABT cannot disassemble it", () => {
+    const result = runGuardWithEnv(
+      'wasm_extract_abi_version "$1"',
+      { PATH: `${failingObjdumpBin}:${process.env.PATH ?? ""}` },
+      wrappedWasm,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("18");
+  });
+
+  it("rejects wrappers with computation after the delegated ABI call", () => {
+    const result = runGuard(
+      'wasm_extract_abi_version "$1"',
+      arbitraryWrapperWasm,
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("classifies aliased artifacts by their extracted ABI", () => {
+    const matching = runGuard('wasm_has_stale_abi "$1" "$2"', namedWasm, "17");
     expect(matching.status, matching.stderr).toBe(1);
 
-    const stale = runGuard(
-      'wasm_has_stale_abi "$1" "$2"',
-      namedWasm,
-      "18",
-    );
+    const stale = runGuard('wasm_has_stale_abi "$1" "$2"', namedWasm, "18");
     expect(stale.status, stale.stderr).toBe(0);
   });
 });
