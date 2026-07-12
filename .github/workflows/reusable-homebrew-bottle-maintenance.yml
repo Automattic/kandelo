@@ -6,18 +6,6 @@ on:
       mode:
         type: string
         default: rebuild
-      kandelo-repository:
-        type: string
-        default: Automattic/kandelo
-      kandelo-ref:
-        type: string
-        default: main
-      tap-repository:
-        type: string
-        default: Automattic/kandelo-homebrew
-      tap-ref:
-        type: string
-        default: main
       formulae:
         type: string
         required: true
@@ -25,12 +13,6 @@ on:
         type: string
         default: wasm32
       release-tag:
-        type: string
-        default: ""
-      bottle-root-url:
-        type: string
-        default: ""
-      sidecar-command:
         type: string
         default: ""
       expected-cache-keys:
@@ -51,69 +33,9 @@ on:
       deletion-reason:
         type: string
         default: ""
-      dry-run:
-        type: boolean
-        default: false
-  workflow_dispatch:
-    inputs:
-      mode:
-        type: choice
-        options:
-          - rebuild
-          - repair-only
-          - rollback
-        default: rebuild
-      kandelo-repository:
-        type: string
-        default: Automattic/kandelo
-      kandelo-ref:
-        type: string
-        default: main
-      tap-repository:
-        type: string
-        default: Automattic/kandelo-homebrew
-      tap-ref:
-        type: string
-        default: main
-      formulae:
-        type: string
-        required: true
-      arches:
-        type: string
-        default: wasm32
-      release-tag:
-        type: string
-        default: ""
-      bottle-root-url:
-        type: string
-        default: ""
-      sidecar-command:
-        type: string
-        default: ""
-      expected-cache-keys:
-        type: string
-        default: ""
-      force:
-        type: boolean
-        default: false
-      rollback-reason:
-        type: string
-        default: ""
-      rollback-ref:
-        type: string
-        default: ""
-      deleted-package-url:
-        type: string
-        default: ""
-      deletion-reason:
-        type: string
-        default: ""
-      dry-run:
-        type: boolean
-        default: false
 
 concurrency:
-  group: kandelo-homebrew-bottle-maintenance-${{ inputs.tap-repository }}-${{ inputs.release-tag || github.run_id }}
+  group: kandelo-homebrew-bottle-maintenance-Automattic-kandelo-homebrew-${{ inputs.release-tag || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -125,20 +47,17 @@ jobs:
       actions: read
     uses: ./.github/workflows/reusable-homebrew-bottle-publish.yml
     with:
-      kandelo-repository: ${{ inputs.kandelo-repository }}
-      kandelo-ref: ${{ inputs.kandelo-ref }}
-      tap-repository: ${{ inputs.tap-repository }}
-      tap-ref: ${{ inputs.tap-ref }}
+      kandelo-repository: Automattic/kandelo
+      kandelo-ref: main
+      tap-repository: Automattic/kandelo-homebrew
+      tap-ref: main
       formulae: ${{ inputs.formulae }}
       arches: ${{ inputs.arches }}
       release-tag: ${{ inputs.release-tag }}
-      bottle-root-url: ${{ inputs.bottle-root-url }}
-      sidecar-command: ${{ inputs.sidecar-command }}
       expected-cache-keys: ${{ inputs.expected-cache-keys }}
       force: ${{ inputs.force }}
       repair-only: ${{ inputs.mode == 'repair-only' }}
-      dry-run: ${{ inputs.dry-run }}
-    secrets: inherit
+      dry-run: false
 
   rollback:
     if: ${{ inputs.mode == 'rollback' }}
@@ -152,15 +71,15 @@ jobs:
       - name: Checkout tap
         uses: actions/checkout@v6.0.2
         with:
-          repository: ${{ inputs.tap-repository }}
-          ref: ${{ inputs.tap-ref }}
+          repository: Automattic/kandelo-homebrew
+          ref: main
           path: tap
 
       - name: Checkout Kandelo workflow source
         uses: actions/checkout@v6.0.2
         with:
-          repository: ${{ inputs.kandelo-repository }}
-          ref: ${{ inputs.kandelo-ref }}
+          repository: Automattic/kandelo
+          ref: main
           path: kandelo
           submodules: false
 
@@ -178,7 +97,6 @@ jobs:
       - name: Record rollback without replacing last-green metadata
         shell: bash
         env:
-          KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_HOMEBREW_ROLLBACK_REASON: ${{ inputs.rollback-reason }}
           KANDELO_HOMEBREW_ROLLBACK_REF: ${{ inputs.rollback-ref }}
           KANDELO_HOMEBREW_DELETED_PACKAGE_URL: ${{ inputs.deleted-package-url }}
@@ -201,9 +119,6 @@ jobs:
           fi
           if [ -n "$KANDELO_HOMEBREW_DELETION_REASON" ]; then
             publish_args+=(--deletion-reason "$KANDELO_HOMEBREW_DELETION_REASON")
-          fi
-          if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
-            publish_args+=(--dry-run --no-lock)
           fi
           cd "$GITHUB_WORKSPACE/kandelo"
           bash scripts/dev-shell.sh bash scripts/homebrew-publish-sidecars.sh "${publish_args[@]}"

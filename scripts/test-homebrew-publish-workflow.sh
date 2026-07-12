@@ -260,13 +260,38 @@ assert_rollback_deletion_requires_reason() {
 assert_publisher_trust_contract() {
   local publisher="$REPO_ROOT/.github/workflows/reusable-homebrew-bottle-publish.yml"
   local maintenance="$REPO_ROOT/.github/workflows/reusable-homebrew-bottle-maintenance.yml"
+  local magic_nix
   local rebuild_job
 
   if grep -Eq '^[[:space:]]*permissions:' "$publisher"; then
     fail "reusable publisher requests permissions instead of inheriting its caller scope"
   fi
-  if grep -Eq 'uses:[[:space:]]+actions/cache@' "$publisher"; then
+  if grep -Eq 'uses:[[:space:]]+actions/cache(/restore)?@' "$publisher"; then
     fail "reusable publisher consumes caller-writable Actions cache state"
+  fi
+  magic_nix="$(grep -F -A5 'uses: DeterminateSystems/magic-nix-cache-action@' "$publisher")"
+  printf '%s\n' "$magic_nix" | grep -Fx '          use-gha-cache: false' >/dev/null ||
+    fail "reusable publisher enables Magic Nix GitHub Actions caching"
+  printf '%s\n' "$magic_nix" | grep -Fx '          use-flakehub: false' >/dev/null ||
+    fail "reusable publisher enables Magic Nix FlakeHub caching"
+  grep -Fx \
+    '        uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c' \
+    "$publisher" >/dev/null || fail "Homebrew setup action is not pinned to the reviewed commit"
+  grep -Fx '      - name: Validate caller trust boundary' "$publisher" >/dev/null ||
+    fail "reusable publisher does not validate write-path refs before checkout"
+  grep -F '[ "$KANDELO_REF" = "main" ]' "$publisher" >/dev/null ||
+    fail "reusable publisher does not constrain write publication to Kandelo main"
+  grep -F '[ "$TAP_REF" = "main" ]' "$publisher" >/dev/null ||
+    fail "reusable publisher does not constrain write publication to tap main"
+
+  if grep -Fx '  workflow_dispatch:' "$maintenance" >/dev/null; then
+    fail "write-capable maintenance is directly dispatchable from an arbitrary workflow ref"
+  fi
+  if grep -F '${{ inputs.kandelo-ref }}' "$maintenance" >/dev/null ||
+     grep -F '${{ inputs.tap-ref }}' "$maintenance" >/dev/null ||
+     grep -F '${{ inputs.sidecar-command }}' "$maintenance" >/dev/null ||
+     grep -F '${{ inputs.dry-run }}' "$maintenance" >/dev/null; then
+    fail "trusted maintenance executes caller-selected code or commands with write authority"
   fi
 
   rebuild_job="$(awk '
@@ -285,6 +310,12 @@ assert_publisher_trust_contract() {
   printf '%s\n' "$rebuild_job" |
     grep -Fx '    uses: ./.github/workflows/reusable-homebrew-bottle-publish.yml' >/dev/null ||
     fail "trusted maintenance permissions are not attached to the publisher call job"
+  printf '%s\n' "$rebuild_job" | grep -Fx '      kandelo-ref: main' >/dev/null ||
+    fail "trusted maintenance does not publish from Kandelo main"
+  printf '%s\n' "$rebuild_job" | grep -Fx '      tap-ref: main' >/dev/null ||
+    fail "trusted maintenance does not publish from tap main"
+  printf '%s\n' "$rebuild_job" | grep -Fx '      dry-run: false' >/dev/null ||
+    fail "trusted maintenance exposes a dry run with a write-scoped token"
 }
 
 assert_matrix

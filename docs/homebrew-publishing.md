@@ -162,6 +162,14 @@ silently cap them. PRs from untrusted forks must not receive write permissions;
 they can run schema and local build checks but cannot publish bottles or tap
 metadata.
 
+Write-capable publication is additionally fixed to `Automattic/kandelo@main`
+and `Automattic/kandelo-homebrew@main`, the first-party bottle root, and the
+reviewed sidecar generator. Arbitrary Kandelo or tap refs are accepted only when
+`dry-run: true` is paired with a read-only caller. The maintenance workflow is
+callable but is not directly branch-dispatchable; a future operator-facing
+caller must live on the protected default branch and grant the write scopes
+explicitly. Third-party actions in the privileged path are pinned by commit.
+
 For each `(formula, arch)` entry, the trusted path:
 
 1. Checks out the tap and the selected Kandelo ref.

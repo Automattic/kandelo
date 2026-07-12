@@ -56,6 +56,40 @@ jobs:
       release-tag: ${{ steps.release.outputs.release-tag }}
       bottle-root-prefix: ${{ steps.release.outputs.bottle-root-prefix }}
     steps:
+      - name: Validate caller trust boundary
+        shell: bash
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_REF: ${{ inputs.tap-ref }}
+          BOTTLE_ROOT_URL: ${{ inputs.bottle-root-url }}
+          SIDECAR_COMMAND: ${{ inputs.sidecar-command }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            exit 0
+          fi
+          [ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ] || {
+            echo "::error::publication requires Automattic/kandelo"; exit 2;
+          }
+          [ "$KANDELO_REF" = "main" ] || {
+            echo "::error::publication requires Kandelo main"; exit 2;
+          }
+          [ "$TAP_REPOSITORY" = "Automattic/kandelo-homebrew" ] || {
+            echo "::error::publication requires Automattic/kandelo-homebrew"; exit 2;
+          }
+          [ "$TAP_REF" = "main" ] || {
+            echo "::error::publication requires tap main"; exit 2;
+          }
+          [ -z "$BOTTLE_ROOT_URL" ] || {
+            echo "::error::publication derives its bottle root from the first-party tap"; exit 2;
+          }
+          [ "$SIDECAR_COMMAND" = "bash scripts/homebrew-generate-sidecars-from-env.sh" ] || {
+            echo "::error::publication requires the reviewed sidecar generator"; exit 2;
+          }
+
       - name: Checkout Kandelo workflow source
         uses: actions/checkout@v6.0.2
         with:
@@ -156,7 +190,7 @@ jobs:
           submodules: false
 
       - name: Install Homebrew
-        uses: Homebrew/actions/setup-homebrew@master
+        uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c
 
       - name: Export Homebrew path and token env
         shell: bash
