@@ -16,7 +16,7 @@ DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a54
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5724fbd09d7c43ba63c5bfa58cb4e73d7f0c08247b029b49a3e4e940d0011bd5"
 PUBLISHER_BUILD_DIGEST = "7c4141acf50a353846fc87c9a8a9928efb5ba717e25793908f14c31b96045022"
-PUBLISHER_UPLOAD_DIGEST = "b3b91d57de69a2d473fd437a5fbe7b3529079aa4ef0472eb548b4abcee666e9c"
+PUBLISHER_UPLOAD_DIGEST = "60a32b6c315cfbaa5b4035c67f1cbb76d17b17a6e20c4f3e06d72aa66af456bd"
 PUBLISHER_VERIFY_DIGEST = "2f1a0c6e76d6741f96a067f4f6a45daef3555e2fb20ff79dfdf083cd69f6e924"
 PUBLISHER_FINALIZE_DIGEST = "808e283806190e29b42c8a88db8db43af67d9100af84063ea486fe33205eb839"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
@@ -487,7 +487,9 @@ def check_publisher(workflow)
   upload_validate = named_step(upload_steps,
                                "Validate build data before exposing upload credentials")
   upload_attempt = named_step(upload_steps, "Upload validated bottle in isolated ORAS auth state")
-  check(upload_steps.index(upload_validate) < upload_steps.index(upload_attempt),
+  check(upload_validate["id"] == "validate-build" &&
+        upload_attempt["if"] == "${{ steps.validate-build.outcome == 'success' }}" &&
+        upload_steps.index(upload_validate) < upload_steps.index(upload_attempt),
         "publisher exposes upload credentials before validating the handoff")
   check(upload_validate.fetch("run").include?("scripts/homebrew-validate-build-handoff.sh") &&
         upload_validate.fetch("run").include?('--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"') &&
@@ -869,6 +871,11 @@ def self_test(publisher, maintenance)
       validate_index = steps.index { |step| step["name"] == "Validate build data before exposing upload credentials" }
       upload_index = steps.index { |step| step["name"] == "Upload validated bottle in isolated ORAS auth state" }
       steps[validate_index], steps[upload_index] = steps[upload_index], steps[validate_index]
+    },
+    "uploader validation outcome bypass" => lambda { |w|
+      step = mutate_named_step(w, "upload-bottle",
+                               "Upload validated bottle in isolated ORAS auth state")
+      step.delete("if")
     },
     "direct ORAS upload bypass" => lambda { |w|
       step = mutate_named_step(w, "upload-bottle", "Upload validated bottle in isolated ORAS auth state")

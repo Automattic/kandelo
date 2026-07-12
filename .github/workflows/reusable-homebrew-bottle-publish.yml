@@ -528,6 +528,7 @@ jobs:
           path: ${{ runner.temp }}/homebrew-build-handoff
 
       - name: Validate build data before exposing upload credentials
+        id: validate-build
         if: ${{ steps.build-handoff.outcome == 'success' }}
         shell: bash
         env:
@@ -556,6 +557,7 @@ jobs:
 
       - name: Upload validated bottle in isolated ORAS auth state
         id: upload
+        if: ${{ steps.validate-build.outcome == 'success' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
