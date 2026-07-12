@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
@@ -15,6 +16,11 @@ const phpBinaryPath =
   tryResolveBinary("programs/php/php.wasm") ??
   join(__dirname, "../php-src/sapi/cli/php");
 const PHP_AVAILABLE = existsSync(phpBinaryPath);
+const zipSoPath = tryResolveBinary("programs/php/zip.so");
+const ZIP_AVAILABLE = PHP_AVAILABLE && zipSoPath !== null;
+const zipExtArgs = ZIP_AVAILABLE
+  ? ["-n", "-d", `extension_dir=${dirname(zipSoPath!)}`, "-d", "extension=zip.so"]
+  : [];
 
 describe.skipIf(!PHP_AVAILABLE)("PHP CLI on kandelo", () => {
     it("runs 'echo Hello World' via php -r", async () => {
@@ -223,5 +229,51 @@ describe.skipIf(!PHP_AVAILABLE)("PHP XML extensions on kandelo", () => {
         });
         expect(stdout).toContain("xml-ok");
         expect(exitCode).toBe(0);
+    }, 60_000);
+});
+
+describe.skipIf(!ZIP_AVAILABLE)("PHP zip extension on kandelo", () => {
+    // The package side module lives at a resolver-owned host path. Opt into
+    // NodePlatformIO for this extension-loading test; the browser companion
+    // test mounts the same artifact into the kernel-owned VFS.
+    it("registers ZipArchive through the packaged side module", async () => {
+        const { stdout, stderr, exitCode } = await runCentralizedProgram({
+            programPath: phpBinaryPath,
+            argv: ["php", ...zipExtArgs, "-r",
+                'echo class_exists("ZipArchive") ? "ziparchive-ok" : "missing";'],
+            io: new NodePlatformIO(),
+        });
+        expect(stderr).toBe("");
+        expect(stdout).toContain("ziparchive-ok");
+        expect(exitCode).toBe(0);
+    }, 60_000);
+
+    it("round-trips a DEFLATE entry through ZipArchive", async () => {
+        const scratch = mkdtempSync(join(tmpdir(), "kandelo-php-zip-"));
+        const archive = join(scratch, "smoke.zip");
+        try {
+            const { stdout, stderr, exitCode } = await runCentralizedProgram({
+                programPath: phpBinaryPath,
+                argv: ["php", ...zipExtArgs, "-r", `
+                    $z = new ZipArchive;
+                    if ($z->open(${JSON.stringify(archive)}, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) { exit(10); }
+                    if (!$z->addFromString("hello.txt", "kandelo-zip-ok")) { exit(11); }
+                    if (!$z->setCompressionName("hello.txt", ZipArchive::CM_DEFLATE)) { exit(12); }
+                    if (!$z->close()) { exit(13); }
+                    $r = new ZipArchive;
+                    if ($r->open(${JSON.stringify(archive)}) !== true) { exit(14); }
+                    $stat = $r->statName("hello.txt");
+                    if ($stat === false || $stat["comp_method"] !== ZipArchive::CM_DEFLATE) { exit(15); }
+                    echo $r->getFromName("hello.txt");
+                    $r->close();
+                `],
+                io: new NodePlatformIO(),
+            });
+            expect(stderr).toBe("");
+            expect(stdout).toContain("kandelo-zip-ok");
+            expect(exitCode).toBe(0);
+        } finally {
+            rmSync(scratch, { recursive: true, force: true });
+        }
     }, 60_000);
 });

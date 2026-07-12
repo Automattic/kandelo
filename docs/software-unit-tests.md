@@ -112,6 +112,36 @@ runtime packaging and harness support:
 - DNS record-query PHPTs require enabling a correct resolver backend in the
   PHP build/runtime.
 
+## 2026-07-12 PHP ZIP Package Validation
+
+The PHP package now publishes `zip.so` as an opt-in shared extension backed by
+the resolver-built libzip 1.11.4 package. The package currently targets wasm32
+and supports stored and DEFLATE entries; optional libzip crypto, BZIP2, LZMA,
+and Zstandard backends are not enabled. This update does not revise the
+historical full-run counts above.
+
+Focused validation on the exact Batch 2 ABI 19 serial tree covered the package
+and both host paths:
+
+- A clean PHP build produced exactly the six manifest-declared outputs. Both
+  PHP executables report ABI 19, the outputs contain no producer paths, and all
+  139 `zip.so` environment imports resolve through PHP's exported surface or
+  the host-provided shared memory.
+- The focused Node/Vitest PHP package suite passed 19/19, including extension
+  registration and a DEFLATE close/reopen round trip.
+- The real-Chromium PHP package test passed, loading `zip.so` from the
+  kernel-owned VFS and reopening a DEFLATE archive.
+- Thirteen selected upstream `ext/zip` PHPTs passed on the Node host with no
+  skips or unsupported results. They cover registration, open/close,
+  add/extract/delete, compression, timestamps, progress and cancellation
+  callbacks, and supported-method reporting.
+
+A targeted browser-PHPT run built the fingerprinted PHP VFS image but did not
+reach PHP: the general browser-demo page imports its complete shell-lazy
+artifact catalog, and this ABI 19 scratch did not contain the unrelated
+`less.wasm` artifact. Browser PHPT results are therefore not claimed here; the
+dedicated real-Chromium ZIP test above is the browser runtime evidence for this
+package change.
 
 ## 2026-06-14 PHP PHPT Node Chunked Full Run
 
