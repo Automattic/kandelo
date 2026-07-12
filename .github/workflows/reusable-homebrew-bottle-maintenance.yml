@@ -112,11 +112,6 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
-  packages: write
-  actions: read
-
 concurrency:
   group: kandelo-homebrew-bottle-maintenance-${{ inputs.tap-repository }}-${{ inputs.release-tag || github.run_id }}
   cancel-in-progress: false
@@ -124,6 +119,10 @@ concurrency:
 jobs:
   rebuild-or-repair:
     if: ${{ inputs.mode == 'rebuild' || inputs.mode == 'repair-only' }}
+    permissions:
+      contents: write
+      packages: write
+      actions: read
     uses: ./.github/workflows/reusable-homebrew-bottle-publish.yml
     with:
       kandelo-repository: ${{ inputs.kandelo-repository }}

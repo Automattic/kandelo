@@ -43,11 +43,6 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
-  packages: write
-  actions: read
-
 concurrency:
   group: kandelo-homebrew-bottle-publish-${{ inputs.tap-repository }}-${{ inputs.release-tag || github.run_id }}
   cancel-in-progress: false
@@ -144,10 +139,6 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.plan.outputs.matrix) }}
-    permissions:
-      contents: write
-      packages: write
-      actions: read
     steps:
       - name: Checkout tap
         uses: actions/checkout@v6.0.2

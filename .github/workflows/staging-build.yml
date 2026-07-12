@@ -146,6 +146,9 @@ jobs:
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
 
+      - name: Validate Homebrew publisher trust contract
+        run: bash scripts/dev-shell.sh bash scripts/test-homebrew-publish-workflow.sh
+
       - name: Cache xtask build
         uses: actions/cache@v5.0.5
         with:

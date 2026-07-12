@@ -257,6 +257,36 @@ assert_rollback_deletion_requires_reason() {
     fail "rollback deletion did not explain missing deletion reason"
 }
 
+assert_publisher_trust_contract() {
+  local publisher="$REPO_ROOT/.github/workflows/reusable-homebrew-bottle-publish.yml"
+  local maintenance="$REPO_ROOT/.github/workflows/reusable-homebrew-bottle-maintenance.yml"
+  local rebuild_job
+
+  if grep -Eq '^[[:space:]]*permissions:' "$publisher"; then
+    fail "reusable publisher requests permissions instead of inheriting its caller scope"
+  fi
+  if grep -Eq 'uses:[[:space:]]+actions/cache@' "$publisher"; then
+    fail "reusable publisher consumes caller-writable Actions cache state"
+  fi
+
+  rebuild_job="$(awk '
+    $0 == "  rebuild-or-repair:" { capture = 1 }
+    capture && $0 ~ /^  [[:alnum:]_-]+:$/ && $0 != "  rebuild-or-repair:" { exit }
+    capture { print }
+  ' "$maintenance")"
+  printf '%s\n' "$rebuild_job" | grep -Fx '    permissions:' >/dev/null ||
+    fail "trusted maintenance caller does not own an explicit permissions block"
+  printf '%s\n' "$rebuild_job" | grep -Fx '      contents: write' >/dev/null ||
+    fail "trusted maintenance caller lacks contents: write"
+  printf '%s\n' "$rebuild_job" | grep -Fx '      packages: write' >/dev/null ||
+    fail "trusted maintenance caller lacks packages: write"
+  printf '%s\n' "$rebuild_job" | grep -Fx '      actions: read' >/dev/null ||
+    fail "trusted maintenance caller lacks actions: read"
+  printf '%s\n' "$rebuild_job" |
+    grep -Fx '    uses: ./.github/workflows/reusable-homebrew-bottle-publish.yml' >/dev/null ||
+    fail "trusted maintenance permissions are not attached to the publisher call job"
+}
+
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
 assert_upload_dry_run
@@ -265,5 +295,6 @@ assert_failure_preserves_metadata
 assert_failed_payload_rejects_success_status
 assert_rollback_preserves_metadata
 assert_rollback_deletion_requires_reason
+assert_publisher_trust_contract
 
 echo "test-homebrew-publish-workflow.sh: ok"
