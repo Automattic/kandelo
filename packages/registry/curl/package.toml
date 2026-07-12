@@ -2,19 +2,17 @@ kind = "program"
 name = "curl"
 version = "8.11.1"
 kernel_abi = 7
-# curl is a side-output of libcurl's build (libcurl's autoconf produces
-# both lib/libcurl.a and src/curl). Keep this manifest aligned with
-# libcurl's source so build-curl.sh — which delegates to
-# build-libcurl.sh — finds a pre-generated `configure` script. The
-# github "archive/refs/tags/" tarball does NOT contain one (autoconf
-# runs at release time, not in git); the curl.se release tarball does.
+# curl and libcurl come from the same upstream build graph, but they are
+# separate resolver packages. This transaction delegates to
+# build-libcurl.sh in `curl` package mode and publishes only curl.wasm. Keep
+# the source aligned with libcurl's release tarball because GitHub's tag
+# archive does not contain the release-generated configure script.
 #
-# build-curl.sh is literally `exec bash build-libcurl.sh`, so curl
-# is a strict consumer of libcurl's build. Declaring libcurl folds its
-# cache_key into ours, while zlib/openssl must also be direct deps
-# because the delegated build script consumes their resolver env vars
-# when producing the standalone curl CLI.
-depends_on = ["libcurl@8.11.1", "zlib@1.3.1", "openssl@3.3.2"]
+# This separate build consumes zlib and OpenSSL resolver paths while linking
+# the CLI. It does not consume the libcurl package output: the common source
+# version and recipe content are already part of this package's own cache key.
+depends_on = ["zlib@1.3.1", "openssl@3.3.2"]
+arches = ["wasm32"]
 
 [source]
 url = "https://curl.se/download/curl-8.11.1.tar.xz"
@@ -26,6 +24,36 @@ url = "https://github.com/curl/curl/blob/master/COPYING"
 
 [build]
 script_path = "packages/registry/curl/build-curl.sh"
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "tar.*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "shasum"
+version_constraint = ">=6.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wasm-objdump"
+version_constraint = ">=1.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[outputs]]
 name = "curl"
