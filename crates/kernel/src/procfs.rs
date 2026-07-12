@@ -298,10 +298,10 @@ pub fn generate_stat(proc: &Process) -> Vec<u8> {
     use alloc::format;
 
     let name = process_name(proc);
-    let state = if proc.state == crate::process::ProcessState::Running {
-        'R'
-    } else {
-        'Z'
+    let state = match proc.state {
+        crate::process::ProcessState::Running => 'R',
+        crate::process::ProcessState::Stopped => 'T',
+        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => 'Z',
     };
 
     // Linux /proc/pid/stat format (simplified):
@@ -328,10 +328,12 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
 
     let name = process_name(proc);
 
-    let state_str = if proc.state == crate::process::ProcessState::Running {
-        "R (running)"
-    } else {
-        "Z (zombie)"
+    let state_str = match proc.state {
+        crate::process::ProcessState::Running => "R (running)",
+        crate::process::ProcessState::Stopped => "T (stopped)",
+        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => {
+            "Z (zombie)"
+        }
     };
 
     let content = format!(
@@ -1140,6 +1142,21 @@ mod tests {
         assert!(status_str.contains("Pid:\t1\n"));
         assert!(status_str.contains("Umask:\t0022\n"));
         assert!(status_str.contains("SigPnd:\t0000000001000002\n"));
+    }
+
+    #[test]
+    fn stopped_process_uses_linux_t_state_in_stat_and_status() {
+        let mut proc = Process::new(44);
+        proc.argv.push(b"sleeping".to_vec());
+        proc.state = crate::process::ProcessState::Stopped;
+
+        let stat = generate_stat(&proc);
+        let stat = core::str::from_utf8(&stat).unwrap();
+        assert!(stat.starts_with("44 (sleeping) T "));
+
+        let status = generate_status(&proc);
+        let status = core::str::from_utf8(&status).unwrap();
+        assert!(status.contains("State:\tT (stopped)\n"));
     }
 
     #[test]

@@ -5,8 +5,9 @@ export type ThreadTerminator = () => Promise<void>;
  *
  * Starting a Worker is not atomic with installing all host bookkeeping: a very
  * short-lived pthread can reach SYS_exit before its terminator is registered.
- * The kernel must still abandon that syscall channel so guest code cannot run
- * past SYS_exit and race pthread_join() stack reclamation.
+ * The kernel must still complete that syscall channel before terminating the
+ * Worker so guest code cannot run past SYS_exit or race pthread_join() stack
+ * reclamation.
  */
 export class ThreadExitCoordinator {
   private terminators = new Map<string, ThreadTerminator>();

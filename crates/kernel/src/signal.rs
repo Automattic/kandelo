@@ -3,6 +3,8 @@ extern crate alloc;
 
 use alloc::collections::VecDeque;
 
+use crate::process::{HostIO, Process, ProcessState};
+
 /// First real-time signal number.
 pub const SIGRTMIN: u32 = 32;
 /// Last real-time signal number (exclusive upper bound for iteration).
@@ -52,8 +54,8 @@ pub enum DefaultAction {
     Terminate,
     Ignore,
     CoreDump, // Treated as terminate in Wasm
-    Stop,     // Not supported in Wasm
-    Continue, // Not supported in Wasm
+    Stop,
+    Continue,
 }
 
 /// Get the POSIX default action for a signal number.
@@ -64,10 +66,98 @@ pub fn default_action(signum: u32) -> DefaultAction {
         | SIGUSR1 | SIGUSR2 | SIGPIPE | SIGALRM | SIGTERM => DefaultAction::Terminate,
         SIGCHLD | SIGWINCH => DefaultAction::Ignore,
         SIGCONT => DefaultAction::Continue,
-        SIGSTOP | SIGTSTP => DefaultAction::Stop,
+        SIGSTOP | SIGTSTP | SIGTTIN | SIGTTOU => DefaultAction::Stop,
         // Unrecognized signals default to terminate
         _ if signum >= 1 && signum < NSIG => DefaultAction::Terminate,
         _ => DefaultAction::Terminate,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DefaultSignalOutcome {
+    Continue,
+    Stopped,
+    Exited,
+}
+
+/// Finish a signal-caused process exit, including resource cleanup, before
+/// publishing the parent-visible exit record.
+pub(crate) fn terminate_process_by_signal(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    signum: u32,
+) {
+    proc.sigsuspend_saved_mask = None;
+    for thread in &mut proc.threads {
+        thread.signals.sigsuspend_saved_mask = None;
+    }
+    crate::syscalls::sys_exit_by_signal(proc, host, signum);
+}
+
+/// Apply a signal's default action after its pending instance has been
+/// consumed. SIGCONT's mandatory resume already happened at generation time.
+pub(crate) fn apply_default_signal_action(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> DefaultSignalOutcome {
+    match default_action(signum) {
+        DefaultAction::Terminate | DefaultAction::CoreDump => {
+            terminate_process_by_signal(proc, host, signum);
+            DefaultSignalOutcome::Exited
+        }
+        DefaultAction::Stop => {
+            if proc.record_stop(signum) {
+                DefaultSignalOutcome::Stopped
+            } else {
+                DefaultSignalOutcome::Continue
+            }
+        }
+        DefaultAction::Continue | DefaultAction::Ignore => DefaultSignalOutcome::Continue,
+    }
+}
+
+/// Consume one pending instance for `tid`, preferring its directed queue.
+pub(crate) fn dequeue_signal_for(
+    proc: &mut Process,
+    tid: u32,
+    signum: u32,
+) -> (u32, i32, i32) {
+    if proc.state == ProcessState::Stopped && signum == wasm_posix_shared::signal::SIGKILL {
+        proc.clear_signal_everywhere(signum);
+        return (signum, 0, 0);
+    }
+    let (si_value, si_code) = proc.consume_signal_for(tid, signum).unwrap_or((0, 0));
+    (signum, si_value, si_code)
+}
+
+/// Consume default/ignored pending signals at a syscall boundary. Caught
+/// signals stay queued for the guest glue. While stopped, Process selection
+/// exposes only SIGKILL; SIGCONT has already resumed at generation time.
+pub(crate) fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO) {
+    let tid = crate::process_table::current_tid();
+    loop {
+        let Some(signum) = proc.next_deliverable_signal(tid) else {
+            break;
+        };
+        let action = proc.signals.get_action(signum);
+        match action.handler {
+            SignalHandler::Handler(_) => break,
+            SignalHandler::Default => {
+                let _ = dequeue_signal_for(proc, tid, signum);
+                if apply_default_signal_action(proc, host, signum)
+                    != DefaultSignalOutcome::Continue
+                {
+                    break;
+                }
+            }
+            SignalHandler::Ignore => {
+                let _ = dequeue_signal_for(proc, tid, signum);
+            }
+        }
+        if matches!(proc.state, ProcessState::Stopped | ProcessState::Exited) {
+            break;
+        }
     }
 }
 
@@ -346,6 +436,9 @@ impl SignalState {
     fn raise_internal(&mut self, signum: u32, si_value: i32, si_code: i32) -> bool {
         if signum == 0 || signum >= 65 {
             return false;
+        }
+        if should_discard_pending(signum, &self.actions[signum as usize].handler) {
+            return true;
         }
         self.pending |= sig_bit(signum);
         if signum >= SIGRTMIN {
@@ -635,6 +728,47 @@ mod tests {
         assert_eq!(default_action(SIGCHLD), DefaultAction::Ignore);
         assert_eq!(default_action(SIGCONT), DefaultAction::Continue);
         assert_eq!(default_action(SIGSTOP), DefaultAction::Stop);
+        assert_eq!(default_action(SIGTSTP), DefaultAction::Stop);
+        assert_eq!(default_action(SIGTTIN), DefaultAction::Stop);
+        assert_eq!(default_action(SIGTTOU), DefaultAction::Stop);
+    }
+
+    #[test]
+    fn stopped_process_retains_non_kill_signals_pending() {
+        use crate::process::{Process, ProcessState, test_host::NoopHost};
+        use wasm_posix_shared::wait::EVENT_STOPPED;
+
+        let mut proc = Process::new(51);
+        let mut host = NoopHost;
+        assert!(proc.record_stop(SIGTSTP));
+        assert!(proc.raise_signal(SIGTERM));
+
+        deliver_pending_signals(&mut proc, &mut host);
+
+        assert_eq!(proc.state, ProcessState::Stopped);
+        assert!(proc.signals.is_pending(SIGTERM));
+        assert_eq!(proc.wait_event.unwrap().event_mask, EVENT_STOPPED);
+    }
+
+    #[test]
+    fn sigkill_terminates_a_stopped_process() {
+        use crate::process::{Process, ProcessState, ThreadInfo, test_host::NoopHost};
+        use wasm_posix_shared::wait::{CLD_KILLED, EVENT_EXITED};
+
+        let mut proc = Process::new(52);
+        let mut host = NoopHost;
+        assert!(proc.record_stop(SIGTSTP));
+        proc.add_thread(ThreadInfo::new(99, 0, 0, 0));
+        assert!(proc.raise_for_thread(99, SIGKILL));
+
+        deliver_pending_signals(&mut proc, &mut host);
+
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert!(!proc.signal_pending_anywhere(SIGKILL));
+        let event = proc.wait_event.unwrap();
+        assert_eq!(event.event_mask, EVENT_EXITED);
+        assert_eq!(event.si_code, CLD_KILLED);
+        assert_eq!(event.si_status, SIGKILL as i32);
     }
 
     #[test]
@@ -815,6 +949,16 @@ mod tests {
         state.raise(SIGUSR1);
         assert!(state.is_pending(SIGUSR1));
         state.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
+        assert!(!state.is_pending(SIGUSR1));
+    }
+
+    #[test]
+    fn test_sig_ign_discards_new_generation_even_while_blocked() {
+        let mut state = SignalState::new();
+        state.blocked = sig_bit(SIGUSR1);
+        state.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
+
+        assert!(state.raise(SIGUSR1));
         assert!(!state.is_pending(SIGUSR1));
     }
 

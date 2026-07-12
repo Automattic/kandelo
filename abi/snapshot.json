@@ -198,13 +198,15 @@
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_get_parent_pid",
+      "kernel_get_process_state",
       "kernel_handle_channel",
+      "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
       "kernel_mark_process_signaled",
       "kernel_reap_exited_child",
       "kernel_remove_process",
-      "kernel_wait4_poll"
+      "kernel_wait_child_poll"
     ],
     "required_worker_features": 7,
     "version": 1,
@@ -698,6 +700,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_process_state",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_robust_list",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -845,6 +852,11 @@
       "kind": "func",
       "name": "kernel_handle_channel",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_has_sa_nocldstop",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1683,8 +1695,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_wait4_poll",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "name": "kernel_wait_child_poll",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2057,6 +2069,36 @@
       ],
       "size": 32
     },
+    "KernelWaitResult": {
+      "fields": [
+        {
+          "name": "wait_status",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "si_code",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "si_status",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "child_uid",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "rusage",
+          "offset": 16,
+          "span": 144
+        }
+      ],
+      "size": 160
+    },
     "WasmDirent": {
       "fields": [
         {
@@ -2136,6 +2178,101 @@
         }
       ],
       "size": 8
+    },
+    "WasmRusageWire": {
+      "fields": [
+        {
+          "name": "ru_utime_sec",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "ru_utime_usec",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "ru_stime_sec",
+          "offset": 16,
+          "span": 8
+        },
+        {
+          "name": "ru_stime_usec",
+          "offset": 24,
+          "span": 8
+        },
+        {
+          "name": "ru_maxrss",
+          "offset": 32,
+          "span": 8
+        },
+        {
+          "name": "ru_ixrss",
+          "offset": 40,
+          "span": 8
+        },
+        {
+          "name": "ru_idrss",
+          "offset": 48,
+          "span": 8
+        },
+        {
+          "name": "ru_isrss",
+          "offset": 56,
+          "span": 8
+        },
+        {
+          "name": "ru_minflt",
+          "offset": 64,
+          "span": 8
+        },
+        {
+          "name": "ru_majflt",
+          "offset": 72,
+          "span": 8
+        },
+        {
+          "name": "ru_nswap",
+          "offset": 80,
+          "span": 8
+        },
+        {
+          "name": "ru_inblock",
+          "offset": 88,
+          "span": 8
+        },
+        {
+          "name": "ru_oublock",
+          "offset": 96,
+          "span": 8
+        },
+        {
+          "name": "ru_msgsnd",
+          "offset": 104,
+          "span": 8
+        },
+        {
+          "name": "ru_msgrcv",
+          "offset": 112,
+          "span": 8
+        },
+        {
+          "name": "ru_nsignals",
+          "offset": 120,
+          "span": 8
+        },
+        {
+          "name": "ru_nvcsw",
+          "offset": 128,
+          "span": 8
+        },
+        {
+          "name": "ru_nivcsw",
+          "offset": 136,
+          "span": 8
+        }
+      ],
+      "size": 144
     },
     "WasmStat": {
       "fields": [
@@ -3144,6 +3281,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 144,
           "type": "fixed"
@@ -3465,7 +3603,7 @@
         "argIndex": 3,
         "direction": "out",
         "size": {
-          "size": 32,
+          "size": 144,
           "type": "fixed"
         }
       }
@@ -3835,6 +3973,26 @@
         "direction": "in",
         "size": {
           "type": "cstring"
+        }
+      }
+    ],
+    "288": [
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "required": true,
+        "size": {
+          "size": 128,
+          "type": "fixed"
+        }
+      },
+      {
+        "argIndex": 4,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "size": 144,
+          "type": "fixed"
         }
       }
     ],
@@ -5382,5 +5540,25 @@
       "name": "ThreadCancel",
       "number": 415
     }
-  ]
+  ],
+  "wait_contract": {
+    "PROCESS_STATE_EXITED": 2,
+    "PROCESS_STATE_RUNNING": 0,
+    "PROCESS_STATE_STOPPED": 1,
+    "WAIT_CLD_CONTINUED": 6,
+    "WAIT_CLD_EXITED": 1,
+    "WAIT_CLD_KILLED": 2,
+    "WAIT_CLD_STOPPED": 5,
+    "WAIT_EVENT_CONTINUED": 4,
+    "WAIT_EVENT_EXITED": 1,
+    "WAIT_EVENT_STOPPED": 2,
+    "WAIT_WCONTINUED": 8,
+    "WAIT_WEXITED": 4,
+    "WAIT_WNOHANG": 1,
+    "WAIT_WNOWAIT": 16777216,
+    "WAIT_WSTOPPED": 2,
+    "WAIT_WUNTRACED": 2,
+    "WAKE_PROCESS_CONTINUED": 32,
+    "WAKE_PROCESS_STOPPED": 16
+  }
 }
