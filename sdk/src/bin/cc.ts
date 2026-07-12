@@ -24,6 +24,17 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
   const parsed = parseArgs(filtered);
   const linking = needsLinking(parsed);
   const hasSourceFiles = parsed.sourceFiles.length > 0;
+  const forwardedArgs: string[] = [];
+  for (let i = 0; i < filtered.length; i++) {
+    const arg = filtered[i];
+    if (arg === '-shared' || arg === '-ldl') continue;
+    if (arg === '--kandelo-thread-slots' || arg === '--wasm-posix-thread-slots') {
+      i++;
+      continue;
+    }
+    if (arg.startsWith('--kandelo-thread-slots=') || arg.startsWith('--wasm-posix-thread-slots=')) continue;
+    forwardedArgs.push(arg);
+  }
 
   const args: string[] = [];
   const target = `--target=${targetTriple(arch)}`;
@@ -39,29 +50,14 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
   }
   args.push(`--sysroot=${toolchain.sysroot}`);
 
-  if (parsed.compileOnly) args.push('-c');
-  if (parsed.preprocessOnly) args.push('-E');
-  if (parsed.assemblyOnly) args.push('-S');
-  if (parsed.outputFile) args.push('-o', parsed.outputFile);
-  args.push(...parsed.otherArgs);
-
-  args.push(...parsed.sourceFiles);
-  args.push(...parsed.objectFiles);
-  args.push(...parsed.archiveFiles);
-
-  // -fPIC is consumed by parseArgs (so the linker can see `parsed.pic`),
-  // but it must also reach clang at compile time so the resulting object
-  // uses PIC relocations. Without this a TU later linked into a shared
-  // library produces non-PIC objects and `wasm-ld --shared` rejects them
-  // with "R_WASM_MEMORY_ADDR_LEB cannot be used; recompile with -fPIC".
-  if (parsed.pic) args.push('-fPIC');
-
   if (linking) {
     if (parsed.shared) {
       // Shared library build: no CRT, no libc, no syscall glue
-      args.push(...SHARED_LINK_FLAGS);
+      args.push(...forwardedArgs, ...SHARED_LINK_FLAGS);
     } else {
-      // Executable build: link CRT, libc, and syscall glue
+      // Executable build: resolve user libraries after the platform glue that
+      // overrides musl symbols, then make the final libc archive available for
+      // everything still unresolved. Preserve the user's link-input order.
       const threadSlots = inferThreadSlotDeclaration(parsed, userArgs, {
         readFile: (path) => {
           try {
@@ -84,10 +80,13 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
       }
       args.push(
         join(toolchain.sysroot, 'lib', 'crt1.o'),
+        ...forwardedArgs,
         join(toolchain.sysroot, 'lib', 'libc.a'),
         ...linkFlags(arch),
       );
     }
+  } else {
+    args.push(...forwardedArgs);
   }
 
   return args;
