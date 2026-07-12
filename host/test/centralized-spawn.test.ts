@@ -100,4 +100,36 @@ describe("non-forking posix_spawn", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("reports ENOEXEC for malformed Wasm before creating the spawn child", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kandelo-malformed-wasm-"));
+    const malformedWasm = join(tempDir, "malformed.wasm");
+    try {
+      // Valid magic/version, followed by a truncated type section. A magic-only
+      // check accepts this; WebAssembly compilation must reject it in spawn's
+      // side-effect-free preflight, before the kernel applies file actions.
+      writeFileSync(malformedWasm, Buffer.from([
+        0x00, 0x61, 0x73, 0x6d,
+        0x01, 0x00, 0x00, 0x00,
+        0x01, 0x01, 0xff,
+      ]));
+
+      const result = await runCentralizedProgram({
+        programPath: spawnSmokeWasm,
+        argv: ["spawn-smoke", "/usr/bin/malformed.wasm"],
+        execPrograms: new Map([
+          ["/usr/bin/malformed.wasm", malformedWasm],
+        ]),
+        useDefaultRootfs: false,
+        timeout: 30_000,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("Exec format error");
+      expect(result.stderr).not.toContain("Centralized worker failed");
+      expect(result.stderr).not.toContain("WebAssembly.compile()");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

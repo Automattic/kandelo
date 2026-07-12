@@ -146,12 +146,23 @@ const ETC_HOSTS = [
   "",
 ].join("\n");
 
-const ETC_SERVICES = [
-  "http\t\t80/tcp\t\twww",
-  "https\t\t443/tcp",
-  "mysql\t\t3306/tcp",
-  "",
-].join("\n");
+const ETC_SERVICES = readFileSync(
+  join(REPO_ROOT, "images", "rootfs", "etc", "services"),
+  "utf8",
+);
+
+/**
+ * Install the account and network databases shared by dinit-based images.
+ * `/etc/services` comes from the rootfs source so derived images cannot drift
+ * into a second, smaller service-name contract.
+ */
+export function addDinitBaseSystemFiles(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/etc");
+  writeVfsFile(fs, "/etc/passwd", ETC_PASSWD);
+  writeVfsFile(fs, "/etc/group", ETC_GROUP);
+  writeVfsFile(fs, "/etc/hosts", ETC_HOSTS);
+  writeVfsFile(fs, "/etc/services", ETC_SERVICES);
+}
 
 /**
  * Options for {@link addDinitInit}. The defaults set up an implicit
@@ -264,11 +275,7 @@ export function addDinitInit(
   // Basic rootfs files. Most Unix daemons expect these to exist at
   // startup; missing them is the usual cause of "started but exits 1
   // silently" failures.
-  ensureDirRecursive(fs, "/etc");
-  writeVfsFile(fs, "/etc/passwd", ETC_PASSWD);
-  writeVfsFile(fs, "/etc/group", ETC_GROUP);
-  writeVfsFile(fs, "/etc/hosts", ETC_HOSTS);
-  writeVfsFile(fs, "/etc/services", ETC_SERVICES);
+  addDinitBaseSystemFiles(fs);
 
   // Standard runtime/log dirs
   ensureDirRecursive(fs, "/var/log");

@@ -64,8 +64,12 @@ scripts/run-php-upstream-node-chunks.sh \
 Important reruns included:
 
 - `Zend/tests/generators/bug71441.phpt`, which now passes after increasing the
-  default Node host worker stack from 16 MiB to 32 MiB. This is a general host
-  stability change for deep guest stacks, not PHP-specific behavior.
+  Node process-worker stack limit to 32 MiB. This is a general host stability
+  change for deep guest stacks, not PHP-specific behavior. Embedders with a
+  tighter memory budget can set `KANDELO_NODE_WORKER_STACK_SIZE_MB` to a
+  positive finite value; the browser harness instead launches Chromium with
+  an equivalent V8 stack limit because browser workers do not expose Node's
+  per-worker `resourceLimits` API.
 - FPM non-root/virtual-ownership coverage, which now passes after allowing
   host-backed mounts to expose stable virtual uid/gid metadata to the guest.
 - Two online `httpbin.org` HTTP/1.1 PHPTs, which are now counted as upstream

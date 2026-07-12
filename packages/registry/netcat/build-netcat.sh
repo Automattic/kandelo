@@ -3,15 +3,28 @@ set -euo pipefail
 
 # Build GNU Netcat 0.7.1 for wasm32-posix-kernel.
 
-NETCAT_VERSION="${NETCAT_VERSION:-0.7.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/netcat-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+NETCAT_VERSION="${WASM_POSIX_DEP_VERSION:-${NETCAT_VERSION:-0.7.1}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://downloads.sourceforge.net/project/netcat/netcat/${NETCAT_VERSION}/netcat-${NETCAT_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-30719c9a4ffbcf15676b8f528233ccc54ee6cba96cb4590975f5fd60c68a066f}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/netcat-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
+if [ "$TARGET_ARCH" != "wasm32" ]; then
+    echo "ERROR: GNU Netcat is currently packaged for wasm32 only, got $TARGET_ARCH" >&2
+    exit 2
+fi
+
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
@@ -23,14 +36,26 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
 
+SOURCE_MARKER="$SRC_DIR/.kandelo-netcat-source"
+expected_source_marker="$(printf '%s\n%s\n%s' "$NETCAT_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    echo "==> Existing GNU Netcat source does not match requested version/source; cleaning..."
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
+
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading GNU Netcat $NETCAT_VERSION..."
+    DOWNLOAD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-netcat-src.XXXXXX")"
+    trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
     TARBALL="netcat-${NETCAT_VERSION}.tar.gz"
-    URL="https://downloads.sourceforge.net/project/netcat/netcat/${NETCAT_VERSION}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$DOWNLOAD_DIR/$TARBALL"
+    echo "==> Verifying source sha256..."
+    echo "$SOURCE_SHA256  $DOWNLOAD_DIR/$TARBALL" | shasum -a 256 -c -
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$DOWNLOAD_DIR/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
+    trap - EXIT
+    rm -rf "$DOWNLOAD_DIR"
 fi
 
 cd "$SRC_DIR"
@@ -40,6 +65,7 @@ PATCH_SET=(
     "listen-success-exit.patch"
     "udp-listen-single-socket.patch"
     "disable-pktinfo.patch"
+    "disable-abortive-linger.patch"
 )
 echo "==> Verifying Kandelo netcat portability patches..."
 for patch_name in "${PATCH_SET[@]}"; do
@@ -76,6 +102,11 @@ if ! grep -q "/\\* #  define USE_PKTINFO \\*/" src/netcat.h; then
     exit 1
 fi
 
+if ! grep -q "Kandelo cannot yet model abortive SO_LINGER" src/network.c; then
+    echo "ERROR: disable-abortive-linger.patch is missing from src/network.c" >&2
+    exit 1
+fi
+
 if [ ! -f Makefile ]; then
     echo "==> Configuring GNU Netcat for wasm32..."
     export ac_cv_func_malloc_0_nonnull=yes
@@ -108,13 +139,32 @@ fi
 
 echo "==> Applying fork instrumentation metadata..."
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
-"$FORK_INSTRUMENT" "$NETCAT_BIN" -o "$NETCAT_BIN.instr"
+(cd "$REPO_ROOT" && "$FORK_INSTRUMENT" "$NETCAT_BIN" -o "$NETCAT_BIN.instr")
 mv "$NETCAT_BIN.instr" "$NETCAT_BIN"
 
 mkdir -p "$BIN_DIR"
 cp "$NETCAT_BIN" "$BIN_DIR/nc.wasm"
 
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary netcat "$BIN_DIR/nc.wasm"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    # Resolver builds must publish only into the resolver-owned output
+    # directory. Apply the same artifact guards as install_local_binary without
+    # writing a local-binaries override into the source worktree.
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+    if ! wasm_is_binary "$BIN_DIR/nc.wasm"; then
+        echo "ERROR: refusing non-Wasm netcat artifact: $BIN_DIR/nc.wasm" >&2
+        exit 1
+    fi
+    wasm_require_no_legacy_asyncify "$BIN_DIR/nc.wasm"
+    wasm_require_fork_instrumentation_if_needed "$BIN_DIR/nc.wasm"
+    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+    cp "$BIN_DIR/nc.wasm" "$WASM_POSIX_DEP_OUT_DIR/nc.wasm"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/nc.wasm (resolver scratch)"
+else
+    # Direct developer builds retain the normal local resolver override.
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary netcat "$BIN_DIR/nc.wasm"
+fi
 
 ls -lh "$BIN_DIR/nc.wasm"

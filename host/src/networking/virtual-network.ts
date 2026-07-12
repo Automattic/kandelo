@@ -21,6 +21,7 @@ const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
 const POLLERR = 0x0008;
 const POLLHUP = 0x0010;
+const MSG_PEEK = 0x0002;
 
 const ANY = "0.0.0.0";
 
@@ -97,7 +98,7 @@ class VirtualTcpPeer implements TcpConnectionPeer {
     return data.length;
   }
 
-  recv(maxLen: number, _flags: number): Uint8Array {
+  recv(maxLen: number, flags: number): Uint8Array {
     if (this.reset) {
       const err = new Error("ECONNRESET") as Error & { errno?: number };
       err.errno = ECONNRESET;
@@ -106,7 +107,9 @@ class VirtualTcpPeer implements TcpConnectionPeer {
     if (this.recvBuf.length > 0) {
       const len = Math.min(maxLen, this.recvBuf.length);
       const out = this.recvBuf.slice(0, len);
-      this.recvBuf = this.recvBuf.slice(len);
+      if ((flags & MSG_PEEK) === 0) {
+        this.recvBuf = this.recvBuf.slice(len);
+      }
       return out;
     }
     if (!this.peer || this.peer.writeClosed) {

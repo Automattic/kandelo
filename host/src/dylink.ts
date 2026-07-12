@@ -324,6 +324,14 @@ export interface LoadSharedLibraryOptions {
   got: Map<string, WebAssembly.Global>;
   /** Already-loaded libraries for dedup and dependency resolution */
   loadedLibraries: Map<string, LoadedSharedLibrary>;
+  /**
+   * Process-owned exception tag shared by the main image and every side
+   * module. When omitted, standalone linker users get one tag lazily and it
+   * is retained on this options object for subsequent loads.
+   */
+  longjmpTag?: WebAssembly.Tag;
+  /** Process pointer width, which also determines the __c_longjmp payload. */
+  ptrWidth?: 4 | 8;
   /** Immutable symbol names exported by the main module. */
   mainModuleSymbols?: ReadonlySet<string>;
   /** Present only in a process worker that can drive side-module unwind. */
@@ -334,6 +342,56 @@ export interface LoadSharedLibraryOptions {
   resolveLibrary?: (name: string) => Promise<Uint8Array | null>;
   /** Callback to locate and read a library file by name (sync version) */
   resolveLibrarySync?: (name: string) => Uint8Array | null;
+}
+
+type TagConstructor = new (
+  descriptor: { parameters: Array<"i32" | "i64"> },
+) => WebAssembly.Tag;
+
+function tagConstructor(): TagConstructor | undefined {
+  return (WebAssembly as typeof WebAssembly & { Tag?: TagConstructor }).Tag;
+}
+
+/** Create the exception tag used by one process and all of its side modules. */
+export function createLongjmpTag(ptrWidth: 4 | 8): WebAssembly.Tag | undefined {
+  if (ptrWidth !== 4 && ptrWidth !== 8) {
+    throw new TypeError(`invalid process pointer width ${String(ptrWidth)}`);
+  }
+  const Tag = tagConstructor();
+  return Tag
+    ? new Tag({ parameters: [ptrWidth === 8 ? "i64" : "i32"] })
+    : undefined;
+}
+
+/** Reject lookalike values before handing an exception-tag import to Wasm. */
+export function requireLongjmpTag(value: unknown, context: string): WebAssembly.Tag {
+  const Tag = tagConstructor();
+  if (!Tag) {
+    throw new Error(`${context}: this WebAssembly runtime does not support exception tags`);
+  }
+  if (!(value instanceof Tag)) {
+    throw new TypeError(`${context}: __c_longjmp must be an actual WebAssembly.Tag`);
+  }
+  return value;
+}
+
+function validateLongjmpConfiguration(options: LoadSharedLibraryOptions): void {
+  const ptrWidth = options.ptrWidth ?? 4;
+  if (ptrWidth !== 4 && ptrWidth !== 8) {
+    throw new TypeError(`invalid process pointer width ${String(ptrWidth)}`);
+  }
+  if (options.longjmpTag !== undefined) {
+    requireLongjmpTag(options.longjmpTag, "dynamic linker");
+  }
+}
+
+function resolveLongjmpTag(options: LoadSharedLibraryOptions): WebAssembly.Tag {
+  validateLongjmpConfiguration(options);
+  if (options.longjmpTag !== undefined) return options.longjmpTag;
+  const ptrWidth = options.ptrWidth ?? 4;
+  const tag = createLongjmpTag(ptrWidth);
+  options.longjmpTag = requireLongjmpTag(tag, "dynamic linker");
+  return options.longjmpTag;
 }
 
 const SIDE_DYNAMIC_LOOKUP_IMPORTS = new Set([
@@ -447,6 +505,12 @@ function instantiateSharedLibrary(
       && imp.kind === "function"
       && SIDE_DYNAMIC_LOOKUP_IMPORTS.has(imp.name)
   );
+  const importsLongjmpTag = moduleImports.some((imp) =>
+    imp.module === "env"
+      && imp.name === "__c_longjmp"
+      && (imp.kind as string) === "tag"
+  );
+  const longjmpTag = importsLongjmpTag ? resolveLongjmpTag(options) : undefined;
 
   if (presentForkExports.length > 0 && !hasCompleteForkInstrumentation) {
     const missing = SIDE_MODULE_FORK_EXPORTS.filter((exportName) =>
@@ -642,16 +706,6 @@ function instantiateSharedLibrary(
       }
       return entry;
     };
-
-    // Tag imported by side modules compiled with clang's wasm SjLj lowering
-    // (`-mllvm -wasm-enable-sjlj`). The host doesn't actually catch these — the
-    // main process either has its own __c_longjmp tag (LLVM 22) or doesn't use
-    // SjLj (LLVM 21). A stub Tag lets the side module's import type-check and
-    // instantiate; behavior at throw time is undefined but the side module
-    // typically never throws this tag itself.
-    const longjmpTag = (typeof (WebAssembly as any).Tag === "function")
-      ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
-      : undefined;
 
     let instance: WebAssembly.Instance | null = null;
     let sideForkState: SideModuleForkState | null = null;
@@ -857,6 +911,7 @@ export async function loadSharedLibrary(
   wasmBytes: Uint8Array,
   options: LoadSharedLibraryOptions,
 ): Promise<LoadedSharedLibrary> {
+  validateLongjmpConfiguration(options);
   const existing = options.loadedLibraries.get(name);
   if (existing) return existing;
 
@@ -891,6 +946,7 @@ export function loadSharedLibrarySync(
   options: LoadSharedLibraryOptions,
   replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
+  validateLongjmpConfiguration(options);
   const existing = options.loadedLibraries.get(name);
   if (existing) return existing;
 
@@ -938,6 +994,7 @@ export class DynamicLinker {
   private lastError: string | null = null;
 
   constructor(options: LoadSharedLibraryOptions) {
+    validateLongjmpConfiguration(options);
     this.options = options;
   }
 

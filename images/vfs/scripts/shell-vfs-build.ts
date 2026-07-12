@@ -162,34 +162,6 @@ function populateSystem(fs: MemoryFileSystem): void {
   fs.chown("/home/user", 1000, 1000);
   populateNetHackPlayground(fs);
 
-  // /etc/services — required for getservbyname/getservbyport calls in
-  // nginx/php-fpm/MariaDB. Harmless in Shell-only builds.
-  const services = [
-    "tcpmux\t\t1/tcp",
-    "echo\t\t7/tcp",
-    "echo\t\t7/udp",
-    "discard\t\t9/tcp\t\tsink null",
-    "discard\t\t9/udp\t\tsink null",
-    "ftp-data\t20/tcp",
-    "ftp\t\t21/tcp",
-    "ssh\t\t22/tcp",
-    "telnet\t\t23/tcp",
-    "smtp\t\t25/tcp\t\tmail",
-    "domain\t\t53/tcp",
-    "domain\t\t53/udp",
-    "http\t\t80/tcp\t\twww",
-    "pop3\t\t110/tcp\t\tpop-3",
-    "nntp\t\t119/tcp\t\treadnews untp",
-    "ntp\t\t123/udp",
-    "imap\t\t143/tcp\t\timap2",
-    "snmp\t\t161/udp",
-    "https\t\t443/tcp",
-    "imaps\t\t993/tcp",
-    "pop3s\t\t995/tcp",
-    "mysql\t\t3306/tcp",
-  ].join("\n") + "\n";
-  writeVfsFile(fs, "/etc/services", services);
-
   const gitconfig = [
     "[maintenance]",
     "\tauto = false",

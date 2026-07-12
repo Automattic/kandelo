@@ -23,8 +23,8 @@ export class NodeTimeProvider implements TimeProvider {
       const elapsed = ns - this._startNs;
       return { sec: Number(elapsed / 1000000000n), nsec: Number(elapsed % 1000000000n) };
     }
-    if (clockId === 1) {
-      // CLOCK_MONOTONIC
+    if (clockId === 1 || clockId === 7) {
+      // CLOCK_MONOTONIC / CLOCK_BOOTTIME
       return { sec: Number(ns / 1000000000n), nsec: Number(ns % 1000000000n) };
     }
     // CLOCK_REALTIME — use hrtime + epoch offset for nanosecond resolution
@@ -43,8 +43,8 @@ export class NodeTimeProvider implements TimeProvider {
 
 export class BrowserTimeProvider implements TimeProvider {
   clockGettime(clockId: number): { sec: number; nsec: number } {
-    if (clockId === 1 || clockId === 2 || clockId === 3) {
-      // CLOCK_MONOTONIC / CLOCK_PROCESS_CPUTIME_ID / CLOCK_THREAD_CPUTIME_ID
+    if (clockId === 1 || clockId === 2 || clockId === 3 || clockId === 7) {
+      // CLOCK_MONOTONIC / CPU-time clocks / CLOCK_BOOTTIME
       const ms = performance.now();
       return { sec: Math.floor(ms / 1000), nsec: Math.floor((ms % 1000) * 1_000_000) };
     }

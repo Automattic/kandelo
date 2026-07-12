@@ -97,14 +97,47 @@ export class MockWorkerAdapter implements WorkerAdapter {
 
 // --- Node.js implementation ---
 
-import { Worker } from "node:worker_threads";
+import { Worker, type WorkerOptions } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 
+// Wasm guest stacks consume the embedding worker's native stack when engines
+// recurse through Wasm frames. Keep the default high enough for stack-heavy
+// POSIX workloads while retaining an environment override for constrained
+// embedders.
+const DEFAULT_NODE_WORKER_STACK_SIZE_MB = 32;
+
 function currentModuleUrl(): string {
   if (typeof __filename !== "undefined") return pathToFileURL(__filename).href;
   return import.meta.url;
+}
+
+/** @internal Exported so the host policy can be validated without spawning a worker. */
+export function nodeWorkerStackSizeMb(
+  raw = process.env.KANDELO_NODE_WORKER_STACK_SIZE_MB,
+): number {
+  if (raw === undefined || raw === "") return DEFAULT_NODE_WORKER_STACK_SIZE_MB;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`invalid KANDELO_NODE_WORKER_STACK_SIZE_MB: ${raw}`);
+  }
+  return parsed;
+}
+
+/** @internal Exported so tests can verify resource-limit composition. */
+export function nodeWorkerOptions(
+  workerData: unknown,
+  options: WorkerOptions = {},
+): WorkerOptions {
+  return {
+    ...options,
+    workerData,
+    resourceLimits: {
+      ...options.resourceLimits,
+      stackSizeMb: nodeWorkerStackSizeMb(),
+    },
+  };
 }
 
 export class NodeWorkerAdapter implements WorkerAdapter {
@@ -153,7 +186,7 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     // bootstrap which takes >500ms with 10+ concurrent workers).
     const compiledEntry = this.resolveCompiledEntry();
     if (compiledEntry) {
-      const worker = new Worker(compiledEntry, { workerData });
+      const worker = new Worker(compiledEntry, nodeWorkerOptions(workerData));
       return new NodeWorkerHandle(worker);
     }
 
@@ -169,10 +202,9 @@ export class NodeWorkerAdapter implements WorkerAdapter {
       `await import('${entryUrl}');`,
     ].join("\n");
 
-    const worker = new Worker(bootstrap, {
+    const worker = new Worker(bootstrap, nodeWorkerOptions(workerData, {
       eval: true,
-      workerData,
-    });
+    }));
     return new NodeWorkerHandle(worker);
   }
 }

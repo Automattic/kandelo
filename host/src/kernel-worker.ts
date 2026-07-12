@@ -118,10 +118,12 @@ const E2BIG = 7;
 const EAGAIN = 11;
 const EACCES = 13;
 const EBADF = 9;
+const EADDRNOTAVAIL = 99;
 const EEXIST = 17;
 const EFAULT = 14;
 const EIO = 5;
 const EINVAL = 22;
+const ENODEV = 19;
 const ENOMEM = 12;
 const ENAMETOOLONG = 36;
 const ENOENT = 2;
@@ -210,9 +212,19 @@ const SIGALRM = 14;
 const SIGKILL = 9;
 
 /** Network ioctl request codes */
+const SIOCGIFNAME = 0x8910;
 const SIOCGIFCONF = 0x8912;
 const SIOCGIFHWADDR = 0x8927;
 const SIOCGIFADDR = 0x8915;
+const SIOCGIFINDEX = 0x8933;
+const AF_INET = 2;
+const ARPHRD_ETHER = 1;
+const ARPHRD_LOOPBACK = 772;
+const IF_NAMESIZE = 16;
+const VIRTUAL_INTERFACES = [
+  { name: "lo", index: 1, loopback: true },
+  { name: "eth0", index: 2, loopback: false },
+] as const;
 
 /** Ioctl syscall number */
 const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
@@ -702,6 +714,7 @@ export interface ForkFromThreadContext {
 
 export interface ResolvedSpawnProgram {
   programBytes: ArrayBuffer;
+  programModule: WebAssembly.Module;
   argv: string[];
 }
 
@@ -709,13 +722,12 @@ export interface SpawnResolveError {
   errno: number;
 }
 
-export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram | SpawnResolveError;
+export type SpawnProgramResolution = ResolvedSpawnProgram | SpawnResolveError;
 
 function isSpawnResolveError(
   resolution: SpawnProgramResolution,
 ): resolution is SpawnResolveError {
-  return !(resolution instanceof ArrayBuffer) &&
-    "errno" in resolution &&
+  return "errno" in resolution &&
     typeof resolution.errno === "number";
 }
 
@@ -764,10 +776,10 @@ export interface CentralizedKernelCallbacks {
   ) => Promise<number>;
 
   /**
-   * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
-   * for `path` (or `{ programBytes, argv }` when resolution rewrites argv,
-   * e.g. a shebang script), `{ errno }` for a located but unlaunchable
-   * program, or `null` for ENOENT. **Must NOT have side effects** —
+   * Pre-flight resolution step for SYS_SPAWN. Returns the validated program
+   * bytes, their compiled module, and launch argv for `path`, `{ errno }` for
+   * a located but unlaunchable program, or `null` for ENOENT. **Must NOT have
+   * side effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -781,11 +793,12 @@ export interface CentralizedKernelCallbacks {
   onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnProgramResolution | null>;
 
   /**
-   * Launch a worker for the spawned child with already-resolved bytes
-   * and argv (from `onResolveSpawn`). The kernel has constructed the child Process
-   * descriptor under `childPid` and applied file actions + attrs by the
-   * time this is called. The callback instantiates a fresh Worker and
-   * registers it via `registerProcess({ skipKernelCreate: true })`.
+   * Launch a worker for the spawned child with the already-resolved bytes,
+   * compiled module, and argv from `onResolveSpawn`. The kernel has
+   * constructed the child Process descriptor under `childPid` and applied
+   * file actions + attrs by the time this is called. The callback instantiates
+   * a fresh Worker and registers it via
+   * `registerProcess({ skipKernelCreate: true })`.
    *
    * Returns 0 on success, negative errno on failure. On non-zero return
    * the kernel descriptor is rolled back via `kernel_remove_process`.
@@ -794,7 +807,11 @@ export interface CentralizedKernelCallbacks {
    * `onFork` (which clones the parent's Memory): `onSpawn` always
    * creates a fresh Memory and runs the new program from `_start`.
    */
-  onSpawn?: (childPid: number, programBytes: ArrayBuffer, argv: string[], envp: string[]) => Promise<number>;
+  onSpawn?: (
+    childPid: number,
+    program: ResolvedSpawnProgram,
+    envp: string[],
+  ) => Promise<number>;
 
   /**
    * Called when a process calls clone (thread creation). The callback should
@@ -3053,7 +3070,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // --- ioctl: intercept network interface ioctls (SIOCGIFCONF, SIOCGIFHWADDR) ---
+    // --- ioctl: intercept network interface ioctls ---
     // These require host-side handling because:
     //   SIOCGIFCONF: struct ifconf contains a pointer to a process-memory buffer
     //   SIOCGIFHWADDR: returns the virtual MAC address for this kernel instance
@@ -3063,12 +3080,20 @@ export class CentralizedKernelWorker {
         this.handleIoctlIfconf(channel, origArgs);
         return;
       }
+      if (request === SIOCGIFNAME) {
+        this.handleIoctlIfname(channel, origArgs);
+        return;
+      }
       if (request === SIOCGIFHWADDR) {
         this.handleIoctlIfhwaddr(channel, origArgs);
         return;
       }
       if (request === SIOCGIFADDR) {
         this.handleIoctlIfaddr(channel, origArgs);
+        return;
+      }
+      if (request === SIOCGIFINDEX) {
+        this.handleIoctlIfindex(channel, origArgs);
         return;
       }
     }
@@ -6161,8 +6186,64 @@ export class CentralizedKernelWorker {
   }
 
   // ---- Network interface ioctl host-side handlers ----
-  // The kernel has a single virtual network interface ("eth0") with a random
-  // MAC address generated per kernel instance.
+
+  private finishNetworkIoctl(
+    channel: ChannelInfo,
+    retVal = 0,
+    errno = 0,
+  ): void {
+    this.completeChannelRaw(channel, retVal, errno);
+    this.relistenChannel(channel);
+  }
+
+  private guestRangeIsValid(
+    channel: ChannelInfo,
+    ptr: number,
+    length: number,
+  ): boolean {
+    return Number.isSafeInteger(ptr) &&
+      Number.isSafeInteger(length) &&
+      ptr >= 0 &&
+      length >= 0 &&
+      ptr <= channel.memory.buffer.byteLength - length;
+  }
+
+  private interfaceAddress(
+    iface: (typeof VIRTUAL_INTERFACES)[number],
+  ): Uint8Array | null {
+    if (iface.loopback) return new Uint8Array([127, 0, 0, 1]);
+    const address = this.io.network?.localAddress;
+    return address?.length === 4 ? new Uint8Array(address) : null;
+  }
+
+  /**
+   * `struct ifreq` has a 16-byte name followed by a union. The union is 16
+   * bytes under wasm32, but its `struct ifmap` member grows to 24 bytes under
+   * wasm64 because `unsigned long` is pointer-sized.
+   */
+  private ifreqSize(channel: ChannelInfo): number {
+    return this.getPtrWidth(channel.pid) === 8 ? 40 : 32;
+  }
+
+  private readIfreqName(channel: ChannelInfo, ifreqPtr: number): string | null {
+    if (!this.guestRangeIsValid(channel, ifreqPtr, this.ifreqSize(channel))) {
+      return null;
+    }
+    const bytes = new Uint8Array(channel.memory.buffer, ifreqPtr, IF_NAMESIZE);
+    let end = 0;
+    while (end < bytes.length && bytes[end] !== 0) end++;
+    return new TextDecoder().decode(new Uint8Array(bytes.subarray(0, end)));
+  }
+
+  private writeIfreqName(
+    processMem: Uint8Array,
+    ifreqPtr: number,
+    name: string,
+  ): void {
+    const nameBytes = new TextEncoder().encode(name);
+    processMem.fill(0, ifreqPtr, ifreqPtr + IF_NAMESIZE);
+    processMem.set(nameBytes.subarray(0, IF_NAMESIZE - 1), ifreqPtr);
+  }
 
   /**
    * Handle SIOCGIFCONF: enumerate network interfaces.
@@ -6171,16 +6252,22 @@ export class CentralizedKernelWorker {
    * directly — we handle the entire ioctl on the host side.
    */
   private handleIoctlIfconf(channel: ChannelInfo, origArgs: number[]): void {
+    const pw = this.getPtrWidth(channel.pid);
+    const ifconfPtr = origArgs[2];
+    const ifconfSize = pw === 8 ? 16 : 8;
+    if (!this.guestRangeIsValid(channel, ifconfPtr, ifconfSize)) {
+      this.finishNetworkIoctl(channel, -EFAULT, EFAULT);
+      return;
+    }
+
     const processView = new DataView(channel.memory.buffer);
     const processMem = new Uint8Array(channel.memory.buffer);
-    const pw = this.getPtrWidth(channel.pid);
-
-    // Read struct ifconf from process memory at arg[2]
-    // struct ifconf { int ifc_len; union { char *ifc_buf; struct ifreq *ifc_req; }; }
-    // wasm32: ifc_len at +0 (4B), ifc_buf at +4 (4B) — total 8 bytes
-    // wasm64: ifc_len at +0 (4B), [4B padding], ifc_buf at +8 (8B) — total 16 bytes
-    const ifconfPtr = origArgs[2];
+    const ifreqSize = this.ifreqSize(channel);
     const ifcLen = processView.getInt32(ifconfPtr, true);
+    if (ifcLen < 0) {
+      this.finishNetworkIoctl(channel, -EINVAL, EINVAL);
+      return;
+    }
     let ifcBuf: number;
     if (pw === 8) {
       ifcBuf = Number(processView.getBigUint64(ifconfPtr + 8, true));
@@ -6188,32 +6275,65 @@ export class CentralizedKernelWorker {
       ifcBuf = processView.getUint32(ifconfPtr + 4, true);
     }
 
-    // sizeof(struct ifreq) = 32 (16 name + 16 sockaddr union, no pointers — same on both)
-    const SIZEOF_IFREQ = 32;
-
-    if (ifcLen >= SIZEOF_IFREQ && ifcBuf !== 0) {
-      // Write one ifreq entry for "eth0" into process memory at ifc_buf
-      const nameBytes = new TextEncoder().encode("eth0");
-      processMem.set(nameBytes, ifcBuf);
-      processMem.fill(0, ifcBuf + nameBytes.length, ifcBuf + 16); // pad ifr_name
-
-      // ifr_addr: AF_INET (2) with 127.0.0.1 — just needs to be a valid sockaddr
-      processMem.fill(0, ifcBuf + 16, ifcBuf + SIZEOF_IFREQ);
-      processView.setUint16(ifcBuf + 16, 2, true); // AF_INET
-      processMem[ifcBuf + 20] = 127; // sin_addr = 127.0.0.1
-      processMem[ifcBuf + 21] = 0;
-      processMem[ifcBuf + 22] = 0;
-      processMem[ifcBuf + 23] = 1;
-
-      // Update ifc_len to actual bytes written
-      processView.setInt32(ifconfPtr, SIZEOF_IFREQ, true);
-    } else {
-      // No space or null buffer
-      processView.setInt32(ifconfPtr, 0, true);
+    if (ifcBuf === 0) {
+      processView.setInt32(
+        ifconfPtr,
+        VIRTUAL_INTERFACES.length * ifreqSize,
+        true,
+      );
+      this.finishNetworkIoctl(channel);
+      return;
     }
 
-    this.completeChannelRaw(channel, 0, 0);
-    this.relistenChannel(channel);
+    if (ifcLen < ifreqSize) {
+      processView.setInt32(ifconfPtr, 0, true);
+      this.finishNetworkIoctl(channel);
+      return;
+    }
+
+    const capacity = Math.floor(ifcLen / ifreqSize);
+    const count = Math.min(capacity, VIRTUAL_INTERFACES.length);
+    const bytesToWrite = count * ifreqSize;
+    if (!this.guestRangeIsValid(channel, ifcBuf, bytesToWrite)) {
+      this.finishNetworkIoctl(channel, -EFAULT, EFAULT);
+      return;
+    }
+
+    for (let i = 0; i < count; i++) {
+      const iface = VIRTUAL_INTERFACES[i];
+      const entryPtr = ifcBuf + i * ifreqSize;
+      this.writeIfreqName(processMem, entryPtr, iface.name);
+      processMem.fill(0, entryPtr + IF_NAMESIZE, entryPtr + ifreqSize);
+      processView.setUint16(entryPtr + IF_NAMESIZE, AF_INET, true);
+      const address = this.interfaceAddress(iface);
+      if (address) processMem.set(address, entryPtr + IF_NAMESIZE + 4);
+    }
+    processView.setInt32(ifconfPtr, bytesToWrite, true);
+    this.finishNetworkIoctl(channel);
+  }
+
+  /**
+   * Handle SIOCGIFNAME: map an interface index to its name.
+   * struct ifreq at arg[2]: ifr_name[16] + union; ifr_ifindex lives at +16.
+   */
+  private handleIoctlIfname(channel: ChannelInfo, origArgs: number[]): void {
+    const ifreqPtr = origArgs[2];
+    if (!this.guestRangeIsValid(channel, ifreqPtr, this.ifreqSize(channel))) {
+      this.finishNetworkIoctl(channel, -EFAULT, EFAULT);
+      return;
+    }
+    const processView = new DataView(channel.memory.buffer);
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const ifindex = processView.getInt32(ifreqPtr + 16, true);
+    const iface = VIRTUAL_INTERFACES.find((candidate) => candidate.index === ifindex);
+
+    if (!iface) {
+      this.finishNetworkIoctl(channel, -ENODEV, ENODEV);
+      return;
+    }
+
+    this.writeIfreqName(processMem, ifreqPtr, iface.name);
+    this.finishNetworkIoctl(channel);
   }
 
   /**
@@ -6222,41 +6342,97 @@ export class CentralizedKernelWorker {
    * Returns the virtual MAC in ifr_hwaddr.sa_data[0..5].
    */
   private handleIoctlIfhwaddr(channel: ChannelInfo, origArgs: number[]): void {
+    const ifreqPtr = origArgs[2];
+    const name = this.readIfreqName(channel, ifreqPtr);
+    if (name === null) {
+      this.finishNetworkIoctl(channel, -EFAULT, EFAULT);
+      return;
+    }
+    const iface = VIRTUAL_INTERFACES.find((candidate) => candidate.name === name);
+    if (!iface) {
+      this.finishNetworkIoctl(channel, -ENODEV, ENODEV);
+      return;
+    }
     const processView = new DataView(channel.memory.buffer);
     const processMem = new Uint8Array(channel.memory.buffer);
-    const ifreqPtr = origArgs[2];
 
-    // Write ifr_hwaddr at offset 16 from ifreq start:
-    //   sa_family = ARPHRD_ETHER (1)
-    //   sa_data[0..5] = MAC address
-    processMem.fill(0, ifreqPtr + 16, ifreqPtr + 32);          // clear sockaddr
-    processView.setUint16(ifreqPtr + 16, 1, true);             // ARPHRD_ETHER
-    processMem.set(this.virtualMacAddress, ifreqPtr + 18);      // MAC address
+    processMem.fill(
+      0,
+      ifreqPtr + IF_NAMESIZE,
+      ifreqPtr + this.ifreqSize(channel),
+    );
+    processView.setUint16(
+      ifreqPtr + IF_NAMESIZE,
+      iface.loopback ? ARPHRD_LOOPBACK : ARPHRD_ETHER,
+      true,
+    );
+    if (!iface.loopback) {
+      processMem.set(this.virtualMacAddress, ifreqPtr + IF_NAMESIZE + 2);
+    }
 
-    this.completeChannelRaw(channel, 0, 0);
-    this.relistenChannel(channel);
+    this.finishNetworkIoctl(channel);
   }
 
   /**
    * Handle SIOCGIFADDR: get interface address.
    * struct ifreq at arg[2]: ifr_name[16] + ifr_addr (struct sockaddr, 16 bytes)
-   * Returns 127.0.0.1 for the virtual interface.
+   * Returns the selected virtual interface's assigned IPv4 address.
    */
   private handleIoctlIfaddr(channel: ChannelInfo, origArgs: number[]): void {
+    const ifreqPtr = origArgs[2];
+    const name = this.readIfreqName(channel, ifreqPtr);
+    if (name === null) {
+      this.finishNetworkIoctl(channel, -EFAULT, EFAULT);
+      return;
+    }
+    const iface = VIRTUAL_INTERFACES.find((candidate) => candidate.name === name);
+    if (!iface) {
+      this.finishNetworkIoctl(channel, -ENODEV, ENODEV);
+      return;
+    }
+    const address = this.interfaceAddress(iface);
+    if (!address) {
+      this.finishNetworkIoctl(channel, -EADDRNOTAVAIL, EADDRNOTAVAIL);
+      return;
+    }
     const processView = new DataView(channel.memory.buffer);
     const processMem = new Uint8Array(channel.memory.buffer);
+
+    processMem.fill(
+      0,
+      ifreqPtr + IF_NAMESIZE,
+      ifreqPtr + this.ifreqSize(channel),
+    );
+    processView.setUint16(ifreqPtr + IF_NAMESIZE, AF_INET, true);
+    processMem.set(address, ifreqPtr + IF_NAMESIZE + 4);
+
+    this.finishNetworkIoctl(channel);
+  }
+
+  /**
+   * Handle SIOCGIFINDEX: map an interface name to its index.
+   * struct ifreq at arg[2]: ifr_name[16] + union; ifr_ifindex lives at +16.
+   */
+  private handleIoctlIfindex(channel: ChannelInfo, origArgs: number[]): void {
     const ifreqPtr = origArgs[2];
+    const name = this.readIfreqName(channel, ifreqPtr);
+    if (name === null) {
+      this.finishNetworkIoctl(channel, -EFAULT, EFAULT);
+      return;
+    }
+    const iface = VIRTUAL_INTERFACES.find((candidate) => candidate.name === name);
 
-    // Write ifr_addr at offset 16: AF_INET + 127.0.0.1
-    processMem.fill(0, ifreqPtr + 16, ifreqPtr + 32);
-    processView.setUint16(ifreqPtr + 16, 2, true);  // AF_INET
-    processMem[ifreqPtr + 20] = 127;                 // sin_addr = 127.0.0.1
-    processMem[ifreqPtr + 21] = 0;
-    processMem[ifreqPtr + 22] = 0;
-    processMem[ifreqPtr + 23] = 1;
+    if (!iface) {
+      this.finishNetworkIoctl(channel, -ENODEV, ENODEV);
+      return;
+    }
 
-    this.completeChannelRaw(channel, 0, 0);
-    this.relistenChannel(channel);
+    new DataView(channel.memory.buffer).setInt32(
+      ifreqPtr + IF_NAMESIZE,
+      iface.index,
+      true,
+    );
+    this.finishNetworkIoctl(channel);
   }
 
   private handleWritev(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
@@ -7364,14 +7540,14 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // ── PRE-FLIGHT: resolve program bytes BEFORE calling the kernel ──
+    // ── PRE-FLIGHT: resolve and compile BEFORE calling the kernel ──
     // POSIX requires file_actions to run "exactly once." `posix_spawnp`'s
     // PATH search emits one `posix_spawn` per candidate; if we let the
     // kernel apply file_actions on each iteration, the side effects
     // (e.g. `addopen(O_EXCL)`) accumulate and the second iteration sees
     // its own state from the first. Resolve bytes via the host's
     // side-effect-free preflight first; only call the kernel if the
-    // program actually exists.
+    // program actually exists and compiles.
     const resolveSpawnProgram = async (): Promise<SpawnProgramResolution | null> => {
       const resolved = await this.callbacks.onResolveSpawn!(path, argv);
       if (resolved || rawPath === path || !rawPath || rawPath.startsWith("/")) {
@@ -7396,10 +7572,8 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, resolved.errno >>> 0);
         return;
       }
-      const programBytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;
-      const launchArgv = resolved instanceof ArrayBuffer ? argv : resolved.argv;
       this.handleSpawnAfterResolve(
-        channel, origArgs, parentPid, pidOutPtr, blobBytes, blobLen, launchArgv, envp, programBytes,
+        channel, origArgs, parentPid, pidOutPtr, blobBytes, blobLen, resolved, envp,
       );
     }).catch((err) => {
       if (!this.isAsyncChannelProcessActive(channel)) return;
@@ -7410,8 +7584,8 @@ export class CentralizedKernelWorker {
 
   /**
    * Continuation of `handleSpawn` after `onResolveSpawn` has returned
-   * actual program bytes. Now safe to ask the kernel to build the child
-   * (which will apply file_actions exactly once).
+   * validated, compiled program. Now safe to ask the kernel to build the
+   * child (which will apply file_actions exactly once).
    */
   private handleSpawnAfterResolve(
     channel: ChannelInfo,
@@ -7420,9 +7594,8 @@ export class CentralizedKernelWorker {
     pidOutPtr: number,
     blobBytes: Uint8Array,
     blobLen: number,
-    argv: string[],
+    program: ResolvedSpawnProgram,
     envp: string[],
-    programBytes: ArrayBuffer,
   ): void {
     // ── Copy blob to kernel scratch ──
     const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
@@ -7471,14 +7644,14 @@ export class CentralizedKernelWorker {
     try {
       this.inheritHostFdMirrors(parentPid, childPid, false);
       launch = Promise.resolve(
-        this.callbacks.onSpawn!(childPid, programBytes, argv, envp),
+        this.callbacks.onSpawn!(childPid, program, envp),
       );
     } catch (err) {
       rollbackSpawn(5, err);
       return;
     }
 
-    // ── Launch the worker async (with already-resolved bytes) ──
+    // ── Launch the worker async (with the precompiled program) ──
     launch.then((rc) => {
       if (rc < 0) {
         rollbackSpawn((-rc) >>> 0);

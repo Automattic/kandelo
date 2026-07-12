@@ -2,6 +2,9 @@
  * Tests for execve support — loading a new program binary into an existing process.
  */
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
 
@@ -58,5 +61,36 @@ describe("execve", () => {
     expect(result.stdout).toContain("argv[0]=exec-child");
     expect(result.stdout).toContain("argv[1]=from-fork");
     expect(result.stdout).toContain("FROM=fork");
+  });
+
+  it.skipIf(!hasExecCaller)("rejects malformed Wasm before committing exec", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kandelo-exec-malformed-wasm-"));
+    const malformedWasm = join(tempDir, "malformed.wasm");
+    try {
+      // Valid Wasm magic/version with a truncated type section. This reaches
+      // compilation, which must fail before kernelExecSetup discards the old
+      // process image.
+      writeFileSync(malformedWasm, Buffer.from([
+        0x00, 0x61, 0x73, 0x6d,
+        0x01, 0x00, 0x00, 0x00,
+        0x01, 0x01, 0xff,
+      ]));
+
+      const result = await runCentralizedProgram({
+        programPath: execCallerBinary!,
+        argv: ["exec-caller"],
+        timeout: 15_000,
+        execPrograms: new Map([
+          ["/bin/exec-child", malformedWasm],
+        ]),
+      });
+
+      expect(result.exitCode).toBe(127);
+      expect(result.stderr).toContain("Exec format error");
+      expect(result.stderr).not.toContain("Centralized worker failed");
+      expect(result.stderr).not.toContain("WebAssembly.compile()");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

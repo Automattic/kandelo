@@ -45,7 +45,7 @@ const programsBuilt = existsSync(wasmTrapBin) &&
 describe.skipIf(!programsBuilt)("wasm trap → host exit (regression)", () => {
   it("__builtin_trap() in user code: spawn() resolves promptly, no hang", async () => {
     const t0 = Date.now();
-    const { exitCode, stderr } = await runCentralizedProgram({
+    const { exitCode, stderr, hostDiagnostics } = await runCentralizedProgram({
       programPath: wasmTrapBin,
       useDefaultRootfs: false,
       timeout: 5000,
@@ -54,17 +54,19 @@ describe.skipIf(!programsBuilt)("wasm trap → host exit (regression)", () => {
 
     expect(stderr).toContain("before-trap");
     expect(stderr).not.toContain("SHOULD-NEVER-REACH");
+    expect(stderr).not.toContain("RuntimeError");
     // Arbitrary `unreachable` traps are no longer masked as successful exits;
     // only the known kernel_exit path is interpreted as normal termination.
     expect(exitCode).toBe(signalExitStatus(SIGILL));
-    expect(stderr).toContain("RuntimeError");
-    expect(stderr).toContain("unreachable");
+    const diagnosticText = hostDiagnostics.map((entry) => entry.message).join("\n");
+    expect(diagnosticText).toContain("RuntimeError");
+    expect(diagnosticText).toContain("unreachable");
     expect(elapsed).toBeLessThan(3000);
   }, 8_000);
 
   it("out-of-bounds memory trap resolves as SIGSEGV", async () => {
     const t0 = Date.now();
-    const { exitCode, stderr } = await runCentralizedProgram({
+    const { exitCode, stderr, hostDiagnostics } = await runCentralizedProgram({
       programPath: oobTrapBin,
       useDefaultRootfs: false,
       timeout: 5000,
@@ -73,14 +75,15 @@ describe.skipIf(!programsBuilt)("wasm trap → host exit (regression)", () => {
 
     expect(stderr).toContain("before-oob");
     expect(stderr).not.toContain("SHOULD-NEVER-REACH");
+    expect(stderr).not.toContain("RuntimeError");
     expect(exitCode).toBe(signalExitStatus(SIGSEGV));
-    expect(stderr).toContain("RuntimeError");
+    expect(hostDiagnostics.map((entry) => entry.message).join("\n")).toContain("RuntimeError");
     expect(elapsed).toBeLessThan(3000);
   }, 8_000);
 
   it("integer divide-by-zero trap resolves as SIGFPE", async () => {
     const t0 = Date.now();
-    const { exitCode, stderr } = await runCentralizedProgram({
+    const { exitCode, stderr, hostDiagnostics } = await runCentralizedProgram({
       programPath: divzeroTrapBin,
       useDefaultRootfs: false,
       timeout: 5000,
@@ -89,8 +92,9 @@ describe.skipIf(!programsBuilt)("wasm trap → host exit (regression)", () => {
 
     expect(stderr).toContain("before-divzero");
     expect(stderr).not.toContain("SHOULD-NEVER-REACH");
+    expect(stderr).not.toContain("RuntimeError");
     expect(exitCode).toBe(signalExitStatus(SIGFPE));
-    expect(stderr).toContain("RuntimeError");
+    expect(hostDiagnostics.map((entry) => entry.message).join("\n")).toContain("RuntimeError");
     expect(elapsed).toBeLessThan(3000);
   }, 8_000);
 

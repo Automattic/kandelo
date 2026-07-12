@@ -4,6 +4,7 @@ import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const MSG_PEEK = 0x0002;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -83,13 +84,25 @@ class LoopbackMitmTls implements TlsMitmConnection {
   async close(): Promise<void> {}
 }
 
+async function waitForReadable(
+  backend: Pick<TlsNetworkBackend, "poll">,
+  handle: number,
+): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if ((backend.poll(handle, 0x0001) & 0x0001) !== 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("timed out waiting for readable poll");
+}
+
 describe("FetchNetworkBackend", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   describe("getaddrinfo", () => {
-    it("returns a 4-byte address for any hostname", () => {
+    it("returns a 4-byte address for DNS names that can be deferred to fetch", () => {
       const backend = new FetchNetworkBackend();
       const addr = backend.getaddrinfo("example.com");
       expect(addr.length).toBe(4);
@@ -124,6 +137,19 @@ describe("FetchNetworkBackend", () => {
       expect(backend.getaddrinfo("example.com.")).toHaveLength(4);
       expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
+    });
+
+    it("rejects the reserved invalid zone without rejecting unqualified names", () => {
+      const backend = new FetchNetworkBackend();
+      expect(backend.getaddrinfo("dummy-host-name").length).toBe(4);
+      expect(() => backend.getaddrinfo("totes.invalid")).toThrow("ENOENT");
+    });
+
+    it("allows explicitly aliased unqualified names", () => {
+      const backend = new FetchNetworkBackend({
+        hostAliases: { registry: "registry.npmjs.org" },
+      });
+      expect(backend.getaddrinfo("registry").length).toBe(4);
     });
   });
 
@@ -166,6 +192,32 @@ describe("FetchNetworkBackend", () => {
       backend.connect(1, new Uint8Array([93, 184, 216, 34]), 80);
       expect(backend.poll(1, 0x0004 | 0x0008)).toBe(0x0004);
     });
+  });
+
+  it("honors MSG_PEEK without consuming buffered response bytes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("hello")));
+    const backend = new FetchNetworkBackend();
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+    backend.send(
+      1,
+      encoder.encode("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+      0,
+    );
+
+    const first = decoder.decode(await recvWhenReady(backend, 1));
+    expect(first).toContain("hello");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("world")));
+    backend.send(
+      1,
+      encoder.encode("GET /2 HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+      0,
+    );
+    await waitForReadable(backend, 1);
+    const peeked = decoder.decode(backend.recv(1, 4, MSG_PEEK));
+    const consumed = decoder.decode(backend.recv(1, 4, 0));
+    expect(peeked).toBe(consumed);
   });
 
   describe("hostAliases", () => {
@@ -215,6 +267,19 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
       expect(backend.getaddrinfo("example.com.")).toHaveLength(4);
       expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
+    });
+
+    it("rejects special-use invalid but permits potentially resolvable unqualified names", () => {
+      const backend = new TlsNetworkBackend();
+      expect(backend.getaddrinfo("dummy-host-name").length).toBe(4);
+      expect(() => backend.getaddrinfo("totes.invalid")).toThrow("ENOENT");
+    });
+
+    it("allows explicitly aliased unqualified names", () => {
+      const backend = new TlsNetworkBackend({
+        dnsAliases: { registry: "https://registry.npmjs.org" },
+      });
+      expect(backend.getaddrinfo("registry").length).toBe(4);
     });
   });
 
@@ -267,10 +332,56 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     expect(response.toLowerCase()).not.toContain("content-encoding");
     expect(response.toLowerCase()).not.toContain("connection: close");
   });
+
+  it("routes HTTP fetches through the configured CORS proxy", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("proxied"));
+    vi.stubGlobal("fetch", fetchMock);
+    const proxyPrefix = "https://kandelo.test/proxy?url=";
+    const backend = new TlsNetworkBackend({
+      corsProxyUrl: proxyPrefix,
+      dnsAliases: {},
+    });
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+
+    backend.send(
+      1,
+      encoder.encode("GET /resource HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+      0,
+    );
+    await recvWhenReady(backend, 1);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${proxyPrefix}${encodeURIComponent("http://example.com/resource")}`,
+      expect.any(Object),
+    );
+  });
+
+  it("honors MSG_PEEK without consuming HTTP response bytes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("peek-body")));
+    const backend = new TlsNetworkBackend();
+    const addr = backend.getaddrinfo("proxy.local");
+    backend.connect(1, addr, 80);
+
+    sendGet(backend, 1, "/peek");
+    await recvWhenReady(backend, 1);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("second-body")));
+    sendGet(backend, 1, "/peek2");
+    await recvWhenReady(backend, 1);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("third-body")));
+    sendGet(backend, 1, "/peek3");
+    const peeked = decoder.decode((await recvWhenReady({
+      recv: (handle, maxLen) => backend.recv(handle, maxLen, MSG_PEEK),
+    }, 1)).subarray(0, 8));
+    const consumed = decoder.decode(backend.recv(1, 8, 0));
+    expect(peeked).toBe(consumed);
+  });
 });
 
 describe("TlsNetworkBackend TLS MITM path", () => {
-  it("delivers the full response to recv() before reporting EOF", async () => {
+  it("polls and peeks encrypted response bytes before reporting EOF", async () => {
     const body = "mitm-response-body";
     vi.stubGlobal(
       "fetch",
@@ -293,8 +404,39 @@ describe("TlsNetworkBackend TLS MITM path", () => {
       .getWriter()
       .write(encoder.encode("GET /readme HTTP/1.1\r\nHost: example.com\r\n\r\n"));
 
-    const response = decoder.decode(await recvWhenReady(backend, 1));
+    await waitForReadable(backend, 1);
+    const peeked = backend.recv(1, 8, MSG_PEEK);
+    expect(backend.poll(1, 0x0001) & 0x0001).toBe(0x0001);
+    const consumed = backend.recv(1, 8, 0);
+    expect(peeked).toEqual(consumed);
+    const response = decoder.decode(
+      new Uint8Array([...consumed, ...await recvWhenReady(backend, 1)]),
+    );
     expect(response).toContain("200");
     expect(response).toContain(body);
+  });
+
+  it("routes decrypted HTTPS requests through the configured CORS proxy", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("proxied TLS"));
+    vi.stubGlobal("fetch", fetchMock);
+    const proxyPrefix = "https://kandelo.test/proxy?";
+    let tls!: LoopbackMitmTls;
+    const backend = new TlsNetworkBackend({
+      corsProxyUrl: proxyPrefix,
+      createTlsConnection: () => (tls = new LoopbackMitmTls()),
+    });
+    await backend.init();
+
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(2, addr, 443);
+    await tls.serverEnd.upstream.writable
+      .getWriter()
+      .write(encoder.encode("GET /secure HTTP/1.1\r\nHost: example.com\r\n\r\n"));
+    await waitForReadable(backend, 2);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${proxyPrefix}https://example.com/secure`,
+      expect.any(Object),
+    );
   });
 });

@@ -1,5 +1,8 @@
 import type { NetworkIO } from "../types";
-import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
+import {
+  parseNumericIpv4Hostname,
+  validateSyntheticDnsHostname,
+} from "./hostname";
 
 /** Error with errno property for EAGAIN propagation to the kernel host imports. */
 export class EagainError extends Error {
@@ -11,6 +14,7 @@ const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
 const POLLERR = 0x0008;
 const POLLHUP = 0x0010;
+const MSG_PEEK = 0x0002;
 
 interface ConnectionState {
   hostname: string;
@@ -172,7 +176,7 @@ export class FetchNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  recv(handle: number, maxLen: number, _flags: number): Uint8Array {
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
 
@@ -193,7 +197,9 @@ export class FetchNetworkBackend implements NetworkIO {
     if (len === 0) return new Uint8Array(0);
 
     const result = conn.responseBuf.slice(conn.responseOffset, conn.responseOffset + len);
-    conn.responseOffset += len;
+    if ((flags & MSG_PEEK) === 0) {
+      conn.responseOffset += len;
+    }
     return result;
   }
 
@@ -230,7 +236,7 @@ export class FetchNetworkBackend implements NetworkIO {
   getaddrinfo(hostname: string): Uint8Array {
     const literalIp = parseNumericIpv4Hostname(hostname);
     if (literalIp) return literalIp;
-    validateDnsHostname(hostname);
+    validateSyntheticDnsHostname(hostname, this.options.hostAliases);
 
     // In the browser, return a synthetic IP.
     // The actual connection uses the Host header, not this IP.

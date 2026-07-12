@@ -3,6 +3,8 @@ import * as net from "node:net";
 import { TcpNetworkBackend } from "../src/networking/tcp-backend";
 
 const LOOPBACK = new Uint8Array([127, 0, 0, 1]);
+const POLLIN = 0x0001;
+const MSG_PEEK = 0x0002;
 
 async function listenLoopback(): Promise<{
   server: net.Server;
@@ -46,6 +48,15 @@ async function waitForConnected(backend: TcpNetworkBackend, handle: number): Pro
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("connect timed out");
+}
+
+async function waitForReadable(backend: TcpNetworkBackend, handle: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if ((backend.poll(handle, POLLIN) & POLLIN) !== 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("readable data timed out");
 }
 
 describe("TcpNetworkBackend hostname parsing", () => {
@@ -94,6 +105,35 @@ describe("TcpNetworkBackend", () => {
 
     await expect(accepted).resolves.toEqual({ data: "hello", ended: true });
   });
+
+  it("honors MSG_PEEK on real Node TCP sockets", async () => {
+    let acceptedSocket!: net.Socket;
+    let resolveAccepted!: () => void;
+    const accepted = new Promise<void>((resolve) => { resolveAccepted = resolve; });
+    const server = net.createServer((socket) => {
+      acceptedSocket = socket;
+      resolveAccepted();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+
+    const backend = new TcpNetworkBackend();
+    backend.connect(10, LOOPBACK, (server.address() as net.AddressInfo).port);
+    await waitForConnected(backend, 10);
+    await accepted;
+    acceptedSocket.write("peek-data");
+    await waitForReadable(backend, 10);
+
+    expect(new TextDecoder().decode(backend.recv(10, 4, MSG_PEEK))).toBe("peek");
+    expect(new TextDecoder().decode(backend.recv(10, 9, 0))).toBe("peek-data");
+
+    backend.close(10);
+    acceptedSocket.destroy();
+  });
+
   it("keeps the real writable half open after peer FIN", async () => {
     let acceptedSocket!: net.Socket;
     let resolveAccepted!: () => void;

@@ -21,6 +21,7 @@ import {
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import type { HostDiagnostic } from "../src/host-diagnostic";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
 
@@ -145,6 +146,8 @@ export interface RunProgramResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** Host-owned lifecycle/protocol diagnostics, never guest fd 2 bytes. */
+  hostDiagnostics: HostDiagnostic[];
   /** Raw stdout bytes (for binary output like compressed data) */
   stdoutBytes: Uint8Array;
   /** Per-process fork counter for the spawned process, captured immediately
@@ -179,6 +182,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
 
   let stdout = "";
   let stderr = "";
+  const hostDiagnostics: HostDiagnostic[] = [];
   const stdoutChunks: Uint8Array[] = [];
 
   // Convert execPrograms Map to plain object for the worker
@@ -215,6 +219,9 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     },
     onStderr: (_pid: number, data: Uint8Array) => {
       stderr += new TextDecoder().decode(data);
+    },
+    onHostDiagnostic: (diagnostic) => {
+      hostDiagnostics.push(diagnostic);
     },
   });
 
@@ -270,7 +277,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     offset += chunk.length;
   }
 
-  return { exitCode, stdout, stderr, stdoutBytes, forkCount };
+  return { exitCode, stdout, stderr, hostDiagnostics, stdoutBytes, forkCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -687,5 +694,5 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     offset += chunk.length;
   }
 
-  return { exitCode, stdout, stderr, stdoutBytes };
+  return { exitCode, stdout, stderr, hostDiagnostics: [], stdoutBytes };
 }
