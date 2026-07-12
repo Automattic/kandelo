@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { statSync, existsSync } from "node:fs";
+import { statSync, existsSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
@@ -25,6 +25,8 @@ const TEST_PROGRAMS = [
   "syscall_cp_offset_test.c",
   "select_signal_test.c",
   "lseek_invalid_test.c",
+  "environment_lifecycle_test.c",
+  "chown_sentinel_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
   "sysv_ipc_test.c",
@@ -45,6 +47,10 @@ const TEST_PROGRAMS = [
   "getpwent_smoke.c",
   "thread-exit-group.c",
 ];
+
+const FORK_INSTRUMENTED_PROGRAMS = new Set([
+  "environment_lifecycle_test.c",
+]);
 
 /** WAT fixtures used by host runtime tests. */
 const WAT_FIXTURES = [
@@ -73,10 +79,27 @@ export async function setup() {
     if (!needsRebuild(src, out)) continue;
 
     console.log(`[global-setup] Compiling ${cFile}...`);
-    execFileSync("wasm32posix-cc", [src, "-o", out], {
-      cwd: repoRoot,
-      stdio: "pipe",
-    });
+    if (FORK_INSTRUMENTED_PROGRAMS.has(cFile)) {
+      const linked = `${out}.linked`;
+      try {
+        execFileSync("wasm32posix-cc", [src, "-o", linked], {
+          cwd: repoRoot,
+          stdio: "pipe",
+        });
+        execFileSync(
+          "bash",
+          [join(repoRoot, "scripts/run-wasm-fork-instrument.sh"), linked, "-o", out],
+          { cwd: repoRoot, stdio: "pipe" },
+        );
+      } finally {
+        rmSync(linked, { force: true });
+      }
+    } else {
+      execFileSync("wasm32posix-cc", [src, "-o", out], {
+        cwd: repoRoot,
+        stdio: "pipe",
+      });
+    }
   }
 
   for (const watFile of WAT_FIXTURES) {
