@@ -203,6 +203,8 @@ def check_publisher(workflow)
     "abi" => "${{ steps.release.outputs.abi }}",
     "release-tag" => "${{ steps.release.outputs.release-tag }}",
     "bottle-root-prefix" => "${{ steps.release.outputs.bottle-root-prefix }}",
+    "kandelo-sha" => "${{ steps.source-commits.outputs.kandelo-sha }}",
+    "tap-sha" => "${{ steps.source-commits.outputs.tap-sha }}",
   }
   check(jobs.fetch("plan")["outputs"] == expected_outputs, "publisher plan outputs changed")
   build = jobs.fetch("build-and-publish")
@@ -242,10 +244,38 @@ def check_publisher(workflow)
   ]
   check(plan_checkouts == expected_plan_checkouts, "publisher plan checkout wiring changed")
 
+  source_commit_steps = plan_steps.select { |step| step["name"] == "Resolve source commits" }
+  check(source_commit_steps.length == 1, "publisher must resolve source commits exactly once")
+  source_commit_step = source_commit_steps.first
+  check(source_commit_step.keys.sort == %w[id name run shell] &&
+        source_commit_step["id"] == "source-commits" &&
+        source_commit_step["shell"] == "bash" &&
+        Digest::SHA256.hexdigest(source_commit_step["run"].to_s) ==
+          "c05aa8d02adf2380b8acf8dcb3a7e27341660cefe7600bb8d944daf384d83248",
+        "publisher source-commit resolution changed")
+
   build_checkouts = job_steps(build, "publisher build").select do |step|
     step["uses"].to_s.downcase.start_with?("actions/checkout@")
   end.map { |step| { "name" => step["name"], "with" => step["with"] } }
-  expected_build_checkouts = [expected_plan_checkouts[1], expected_plan_checkouts[0]]
+  expected_build_checkouts = [
+    {
+      "name" => "Checkout tap",
+      "with" => {
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ needs.plan.outputs.tap-sha }}",
+        "path" => "tap",
+      },
+    },
+    {
+      "name" => "Checkout Kandelo workflow source",
+      "with" => {
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+        "path" => "kandelo",
+        "submodules" => false,
+      },
+    },
+  ]
   check(build_checkouts == expected_build_checkouts, "publisher build checkout wiring changed")
 end
 
