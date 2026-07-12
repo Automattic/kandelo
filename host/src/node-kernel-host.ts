@@ -20,6 +20,7 @@ import { createRequire } from "node:module";
 import { Worker as NodeThreadWorker } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
 import type {
+  HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
   ResolveExecRequestMessage,
@@ -61,6 +62,8 @@ export interface NodeKernelHostOptions {
   onStdout?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes to stderr */
   onStderr?: (pid: number, data: Uint8Array) => void;
+  /** Called for host-runtime diagnostics that are not guest stderr. */
+  onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
   /** Called when a process writes PTY output */
   onPtyOutput?: (pid: number, data: Uint8Array) => void;
   /** Called when a process is spawned, execs a new program, or exits.
@@ -88,7 +91,15 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
-  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
+  extraMounts?: Array<{
+    mountPoint: string;
+    hostPath: string;
+    readonly?: boolean;
+    /** Virtual owner for existing host-backed mount entries. Defaults to root. */
+    uid?: number;
+    /** Virtual group for existing host-backed mount entries. Defaults to root. */
+    gid?: number;
+  }>;
 }
 
 export interface SpawnOptions {
@@ -144,6 +155,20 @@ export class NodeKernelHost {
         reject(error);
       }
       this.pendingRequests.clear();
+      const diagnostic: HostDiagnostic = {
+        pid: 0,
+        source: "kernel worker",
+        message: `[NodeKernelHost] kernel worker error: ${error.message}`,
+      };
+      // A worker-level error cannot send a typed message itself. Preserve the
+      // same callback contract and a visible default without treating the
+      // failure as guest stderr.
+      console.error(diagnostic.message);
+      try {
+        this.options.onHostDiagnostic?.(diagnostic);
+      } catch (callbackError) {
+        console.error("[NodeKernelHost] onHostDiagnostic callback failed:", callbackError);
+      }
     });
 
     // Send init and wait for ready
@@ -480,6 +505,10 @@ export class NodeKernelHost {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
+      case "ready":
+        // The temporary init listener resolves readiness. The permanent
+        // listener also receives the message, so account for it explicitly.
+        break;
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);
         if (pending) {
@@ -524,12 +553,32 @@ export class NodeKernelHost {
       case "stderr":
         this.options.onStderr?.(msg.pid, msg.data);
         break;
+      case "host_diagnostic": {
+        this.options.onHostDiagnostic?.({
+          pid: msg.pid,
+          source: msg.source,
+          message: msg.message,
+          ...(msg.status === undefined ? {} : { status: msg.status }),
+        });
+        break;
+      }
       case "pty_output":
         this.options.onPtyOutput?.(msg.pid, msg.data);
         break;
       case "resolve_exec":
         this.handleResolveExec(msg);
         break;
+      default: {
+        // Keep this dispatch coupled to KernelToMainMessage as the protocol
+        // grows. Runtime values still originate outside TypeScript, so make a
+        // malformed/unknown worker message visible instead of dropping it.
+        const exhaustive: never = msg;
+        void exhaustive;
+        console.error(
+          `[NodeKernelHost] unknown kernel-worker message type: ${String((msg as { type?: unknown }).type)}`,
+        );
+        break;
+      }
     }
   }
 

@@ -259,7 +259,7 @@ shortcuts.
 |----------|--------|-------|
 | `time()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns seconds since epoch. |
 | `gettimeofday()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns (sec, usec) pair. |
-| `clock_gettime()` | Full | Host-delegated. CLOCK_REALTIME and CLOCK_MONOTONIC supported. Node.js uses Date.now() and process.hrtime.bigint(). |
+| `clock_gettime()` | Partial | Host-delegated. `CLOCK_REALTIME` and `CLOCK_MONOTONIC` are supported. Linux `CLOCK_REALTIME_COARSE` and `CLOCK_MONOTONIC_COARSE` requests use the corresponding host clock as an equivalent fallback because Kandelo hosts do not expose separate coarse sources. `CLOCK_BOOTTIME` is a monotonic-equivalent fallback because Kandelo hosts do not expose suspend accounting. The process/thread CPU clocks currently report elapsed monotonic time rather than authoritative CPU usage. Linux-style encoded process CPU clock IDs must be negative; malformed positive encodings are rejected with `EINVAL` (which musl's `clock_getcpuclockid()` maps to `ESRCH`). Node.js uses `Date.now()` and `process.hrtime.bigint()`; browsers use `Date.now()` and `performance.now()`. |
 | `nanosleep()` | Partial | Host-delegated. Node.js uses Atomics.wait with timeout. Browser support requires a worker context that can block with Atomics.wait. Validates tv_sec >= 0 and tv_nsec < 1e9. |
 | `usleep()` | Full | Converts microseconds to sec+nsec, delegates to host_nanosleep. |
 | `clock_settime()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
@@ -293,7 +293,7 @@ shortcuts.
 | `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
 | `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
 | `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
-| `timer_create()` | Partial | CLOCK_REALTIME and CLOCK_MONOTONIC with `SIGEV_SIGNAL` or `SIGEV_NONE`. `SIGEV_THREAD` and Linux-specific `SIGEV_THREAD_ID` return `ENOTSUP`. The timer syscall carries a 32-bit `sival_int`; wasm64 pointer-valued `sigev_value` is not supported. |
+| `timer_create()` | Partial | `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, and monotonic-equivalent `CLOCK_BOOTTIME`, with `SIGEV_SIGNAL` or `SIGEV_NONE`. `SIGEV_THREAD` and Linux-specific `SIGEV_THREAD_ID` return `ENOTSUP`. The timer syscall carries a 32-bit `sival_int`; wasm64 pointer-valued `sigev_value` is not supported. |
 | `timer_settime()` / `timer_gettime()` | Partial | Absolute (TIMER_ABSTIME) and relative timers and automatic interval rearming use host timers with millisecond granularity. `timer_gettime()` and `timer_settime()`'s old-value result currently report the last configured value rather than decreasing remaining time. |
 | `timer_getoverrun()` | Full | Tracks overrun count when signal is still pending at next interval fire. Reset on successful signal delivery. |
 | `timer_delete()` | Full | Cancels timer and removes from per-process table. |

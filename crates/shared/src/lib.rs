@@ -37,7 +37,9 @@ pub mod host_abi;
 ///     returning synthetic success through stat/access/path operations.
 /// 27: rebuilt PHP programs require the cooperative VM-interrupt host hook,
 ///     and POSIX timer notifications use validated fixed-width signal fields.
-pub const ABI_VERSION: u32 = 27;
+/// 28: host path, clock/timer, exec/spawn, worker, and persistent-VFS behavior
+///     is aligned across Node and browser runtime boundaries.
+pub const ABI_VERSION: u32 = 28;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -908,6 +910,9 @@ pub mod clock {
     pub const CLOCK_MONOTONIC: u32 = 1;
     pub const CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
     pub const CLOCK_THREAD_CPUTIME_ID: u32 = 3;
+    pub const CLOCK_REALTIME_COARSE: u32 = 5;
+    pub const CLOCK_MONOTONIC_COARSE: u32 = 6;
+    pub const CLOCK_BOOTTIME: u32 = 7;
 }
 
 /// Timespec structure for the Wasm POSIX interface.

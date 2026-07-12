@@ -14,8 +14,10 @@ import {
 import { FramebufferRegistry } from "./framebuffer/registry";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
+  HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+  VfsFileSnapshot,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
@@ -42,6 +44,8 @@ export interface BrowserKernelOptions {
   onStdout?: (data: Uint8Array) => void;
   /** Called when a process writes to stderr */
   onStderr?: (data: Uint8Array) => void;
+  /** Called for host-runtime diagnostics that are not guest stderr. */
+  onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
   /** Called when the service-worker HTTP bridge gains or completes preview requests. */
@@ -74,6 +78,10 @@ export interface BrowserKernelOptions {
   syscallLogPtrWidth?: 4 | 8;
   /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
   dnsAliases?: Record<string, string>;
+  /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl. Browser pages that
+   *  are not controlled by Kandelo's service worker can use this to route
+   *  guest outbound HTTP(S) through a same-origin proxy. */
+  corsProxyUrl?: string;
 }
 
 /** Options for {@link BrowserKernel.boot}. */
@@ -128,6 +136,8 @@ export class BrowserKernel {
   > &
     BrowserKernelOptions;
   private exitResolvers = new Map<number, (status: number) => void>();
+  private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
+  private exitSequence = 0;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private nextRequestId = 1;
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
@@ -233,13 +243,26 @@ export class BrowserKernel {
       this.handleWorkerMessage(e.data as KernelToMainMessage);
     };
     this.kernelWorkerHandle.onerror = (e: ErrorEvent) => {
-      console.error("[BrowserKernel] Kernel worker error:", e.message);
       const err = new Error(`Kernel worker error: ${e.message}`);
       for (const [, { reject }] of this.pendingRequests) {
         reject(err);
       }
       this.pendingRequests.clear();
       this.options.onHttpBridgePendingRequests?.(0);
+      const diagnostic: HostDiagnostic = {
+        pid: 0,
+        source: "kernel worker",
+        message: `[BrowserKernel] kernel worker error: ${e.message}`,
+      };
+      // A worker-level error cannot send a typed message itself. Preserve the
+      // same callback contract and a visible default without treating the
+      // failure as guest stderr.
+      console.error(diagnostic.message);
+      try {
+        this.options.onHostDiagnostic?.(diagnostic);
+      } catch (callbackError) {
+        console.error("[BrowserKernel] onHostDiagnostic callback failed:", callbackError);
+      }
     };
 
     await new Promise<void>((resolve, reject) => {
@@ -295,6 +318,7 @@ export class BrowserKernel {
           enableSyscallLog: this.options.enableSyscallLog,
           syscallLogPtrWidth: this.options.syscallLogPtrWidth,
           dnsAliases: this.options.dnsAliases,
+          corsProxyUrl: this.options.corsProxyUrl,
         },
       };
       this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);
@@ -310,6 +334,7 @@ export class BrowserKernel {
     options: BrowserKernelBootOptions,
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
+    const spawnStartedBeforeExitSequence = this.exitSequence;
     const stdin = options.stdin ?? (!options.pty ? new Uint8Array() : undefined);
 
     const pid = await this.request(requestId, {
@@ -327,9 +352,7 @@ export class BrowserKernel {
       maxPages: this.maxPages,
     }) as number;
 
-    const exit = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
+    const exit = this.claimExitStatus(pid, spawnStartedBeforeExitSequence);
 
     if (options.pty) {
       this.sendToKernel({ type: "register_pty_output", pid });
@@ -449,6 +472,7 @@ export class BrowserKernel {
     },
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
+    const spawnStartedBeforeExitSequence = this.exitSequence;
     const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
@@ -465,9 +489,7 @@ export class BrowserKernel {
       maxPages: this.maxPages,
     }) as number;
 
-    const exit = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
+    const exit = this.claimExitStatus(pid, spawnStartedBeforeExitSequence);
 
     if (options?.pty) {
       this.sendToKernel({ type: "register_pty_output", pid });
@@ -836,9 +858,8 @@ export class BrowserKernel {
   /**
    * Read a file out of the kernel-owned VFS from the main thread. Returns the
    * bytes, or `null` if the path does not exist / is not readable. This is the
-   * only main-thread window into the worker-owned FS — use it to collect
-   * artifacts a process wrote (the main thread no longer shares the VFS
-   * SharedArrayBuffer in kernel-owned mode).
+   * readback path for collecting artifacts a process wrote; the main thread
+   * never receives the live VFS SharedArrayBuffer.
    */
   async readFileFromVfs(path: string): Promise<Uint8Array | null> {
     const requestId = this.nextRequestId++;
@@ -850,6 +871,58 @@ export class BrowserKernel {
     return (result as Uint8Array | null) ?? null;
   }
 
+  /**
+   * Read a file and its permission bits from the worker-owned VFS. This is
+   * useful for callers that temporarily replace a path between process spawns
+   * and must restore the exact prior state afterward.
+   */
+  async readFileSnapshotFromVfs(path: string): Promise<VfsFileSnapshot | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_file",
+      requestId,
+      path,
+      includeMode: true,
+    });
+    return (result as VfsFileSnapshot | null) ?? null;
+  }
+
+  /**
+   * Create or replace a regular file in the worker-owned VFS. The mutation is
+   * performed by the kernel worker, preserving exclusive VFS ownership; call
+   * this only while guest processes that could access the path are stopped.
+   * The parent directory must already exist.
+   */
+  async writeFileToVfs(
+    path: string,
+    data: Uint8Array,
+    mode = 0o644,
+  ): Promise<void> {
+    const requestId = this.nextRequestId++;
+    const owned = data.slice();
+    await this.request(requestId, {
+      type: "write_vfs_file",
+      requestId,
+      path,
+      data: owned,
+      mode: mode & 0o7777,
+    }, [owned.buffer]);
+  }
+
+  /**
+   * Remove a path from the worker-owned VFS between process spawns. Returns
+   * false when the path did not exist.
+   */
+  async unlinkFileFromVfs(path: string): Promise<boolean> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "unlink_vfs_file",
+      requestId,
+      path,
+    });
+    return result === true;
+  }
+
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     const requestId = this.nextRequestId++;
@@ -859,6 +932,7 @@ export class BrowserKernel {
     });
     this.kernelWorkerHandle.terminate();
     this.exitResolvers.clear();
+    this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
@@ -912,6 +986,17 @@ export class BrowserKernel {
     this.kernelWorkerHandle.postMessage(msg, transfer ?? []);
   }
 
+  private claimExitStatus(pid: number, spawnStartedBeforeExitSequence: number): Promise<number> {
+    const unclaimed = this.unclaimedExitStatuses.get(pid);
+    this.unclaimedExitStatuses.delete(pid);
+    if (unclaimed !== undefined && unclaimed.sequence > spawnStartedBeforeExitSequence) {
+      return Promise.resolve(unclaimed.status);
+    }
+    return new Promise<number>((resolve) => {
+      this.exitResolvers.set(pid, resolve);
+    });
+  }
+
   private request(requestId: number, msg: MainToKernelMessage, transfer?: Transferable[]): Promise<any> {
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(requestId, { resolve, reject });
@@ -928,6 +1013,12 @@ export class BrowserKernel {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
+      case "ready":
+      case "init_error":
+        // The temporary boot listener resolves or rejects initialization. The
+        // permanent listener also receives these messages, so account for
+        // them explicitly rather than relying on an implicit fall-through.
+        break;
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);
         if (pending) {
@@ -942,8 +1033,20 @@ export class BrowserKernel {
       }
       case "exit": {
         const resolver = this.exitResolvers.get(msg.pid);
-        this.exitResolvers.delete(msg.pid);
-        if (resolver) resolver(msg.status);
+        if (resolver) {
+          this.exitResolvers.delete(msg.pid);
+          resolver(msg.status);
+        } else {
+          this.unclaimedExitStatuses.set(msg.pid, {
+            status: msg.status,
+            sequence: ++this.exitSequence,
+          });
+          while (this.unclaimedExitStatuses.size > 256) {
+            const oldest = this.unclaimedExitStatuses.keys().next().value;
+            if (oldest === undefined) break;
+            this.unclaimedExitStatuses.delete(oldest);
+          }
+        }
         this.options.onProcessEvent?.({ kind: "exit", pid: msg.pid, exitStatus: msg.status });
         break;
       }
@@ -964,6 +1067,15 @@ export class BrowserKernel {
       case "stderr":
         this.options.onStderr?.(msg.data);
         break;
+      case "host_diagnostic": {
+        this.options.onHostDiagnostic?.({
+          pid: msg.pid,
+          source: msg.source,
+          message: msg.message,
+          ...(msg.status === undefined ? {} : { status: msg.status }),
+        });
+        break;
+      }
       case "pty_output": {
         const cb = this.ptyOutputCallbacks.get(msg.pid);
         if (cb) {
@@ -1010,6 +1122,17 @@ export class BrowserKernel {
       case "lazy_download":
         this.emitLazyDownload(msg.event);
         break;
+      default: {
+        // Keep this dispatch coupled to KernelToMainMessage as the protocol
+        // grows. Runtime values still originate outside TypeScript, so make a
+        // malformed/unknown worker message visible instead of dropping it.
+        const exhaustive: never = msg;
+        void exhaustive;
+        console.error(
+          `[BrowserKernel] unknown kernel-worker message type: ${String((msg as { type?: unknown }).type)}`,
+        );
+        break;
+      }
     }
   }
 

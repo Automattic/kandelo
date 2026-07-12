@@ -131,6 +131,37 @@ Key host components:
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
 
+### Cooperative process-runtime interrupts
+
+A process module may import
+`env.__wasm_posix_vm_interrupt_after(timed_out_ptr, vm_interrupt_ptr, seconds)`
+to request a cooperative runtime deadline. This import is intended for
+language runtimes that already poll an interrupt flag at VM safepoints; it is
+not a substitute for POSIX signal delivery or a general program-specific
+kernel hook.
+
+The process worker forwards each arm or cancellation request to its host's
+dedicated kernel worker. The kernel worker owns the JavaScript timer because a
+process worker executing a CPU-bound Wasm loop cannot service its own event
+loop. At the monotonic deadline the host sets each flag byte with an atomic
+store in the process's shared memory. Timer entries retain the exact
+process-generation object as well as the PID, so exec, exit, or PID reuse
+cannot redirect a stale callback into a replacement process. Deadlines beyond
+JavaScript's signed 32-bit timer range are scheduled in bounded chunks.
+
+The imported function and its pointer-width-specific signature are part of
+the guest/host ABI. A package that starts importing it must raise its kernel
+ABI floor in the same ABI reconciliation that versions and snapshots the new
+surface.
+
+Host-runtime lifecycle diagnostics are kept separate from guest file
+descriptor 2. Both kernel-worker entries send typed `host_diagnostic` messages;
+`NodeKernelHost` and `BrowserKernel` expose them through `onHostDiagnostic`.
+Node also records them on the embedding process's console, while the browser
+live-demo consumer records them in dmesg. Neither path appends host diagnostics
+to the program's stderr byte stream, so test harnesses and applications observe
+only bytes the guest actually wrote.
+
 ### 3. Glue Layer (C)
 
 **Location**: `libc/glue/`
@@ -507,7 +538,20 @@ const ino = mfs.registerLazyFile("/usr/bin/php", "https://cdn.example.com/php.wa
 await mfs.ensureMaterialized("/usr/bin/php");
 ```
 
-Lazy file metadata (`path`, `url`, `size`, `ino`) can be transferred between instances via `exportLazyEntries()` / `importLazyEntries()` — used when forking workers that share the same SharedArrayBuffer.
+Lazy file metadata (`path`, hard-link aliases, `url`, `size`, `ino`, inode
+generation, and data-mutation sequence) can be transferred between instances
+via `exportLazyEntries()` / `importLazyEntries()` — used when workers share the
+same SharedArrayBuffer. The generation prevents an unlinked lazy inode from
+transferring its URL or declared size to a later file that reuses the same
+guest-visible inode number. The data sequence prevents an asynchronous fetch
+from overwriting guest data written through another worker while the request
+was in flight. Live cross-worker imports require both identity fields; only a
+legacy image whose filesystem bytes and lazy JSON form one trusted artifact can
+adopt older metadata, and only for an untouched empty stub. Filesystem rebasing
+preserves hard-link identity for lazy and
+concrete files rather than copying aliases into independent inodes. A rebase
+walks one quiescent source snapshot, so a peer rename cannot mix lazy paths
+from one namespace state with bytes from another.
 
 ### VFS Images
 
@@ -522,6 +566,17 @@ const image: Uint8Array = await mfs.saveImage();
 // Or materialize all lazy files first (self-contained image, no URL dependencies)
 const fullImage: Uint8Array = await mfs.saveImage({ materializeAll: true });
 ```
+
+Image creation is a quiescent filesystem operation. `saveImage()` rejects a
+filesystem with live file or directory descriptors rather than serializing FD
+tables, inode open-reference counts, or lock words as durable state. The
+resulting bytes contain only filesystem state. Restore also clears those
+runtime-only fields in legacy images, so a new machine never inherits handles
+or locks from the image builder. Lazy-file and lazy-archive paths are collected
+under the same namespace transaction as the filesystem bytes, including names
+changed by another worker. `materializeAll: true` resolves both standalone and
+archive-backed entries and fails instead of emitting an image that still
+depends on a deferred URL.
 
 **Restore from an image:**
 
@@ -569,11 +624,10 @@ Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-
 
 **Binary format:**
 
-The on-disk file is the raw VFS image below, wrapped in a single zstd
-frame. `saveImage()` always writes the compressed form (`.vfs.zst`);
-`MemoryFileSystem.fromImage()` accepts either form and auto-detects
-the zstd magic (`28 B5 2F FD`) at offset 0 to decide whether to
-decompress before parsing.
+`MemoryFileSystem.saveImage()` returns the raw VFS image below. The image
+builder helper wraps it in one zstd frame for `.vfs.zst` artifacts;
+`MemoryFileSystem.fromImage()` accepts either form and auto-detects the zstd
+magic (`28 B5 2F FD`) at offset 0 before parsing.
 
 Decompressed layout:
 
@@ -581,11 +635,13 @@ Decompressed layout:
 Offset   Size   Field
 0        4      Magic: 0x56465349 ("VFSI")
 4        4      Version: 1
-8        4      Flags: bit 0 = lazy entries included
+8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata
 12       4      SharedArrayBuffer data length (N)
 16       N      Raw SharedArrayBuffer bytes (block filesystem)
 16+N     4      Lazy entries JSON length (M)
-20+N     M      Lazy entries as JSON (UTF-8): [{ino, path, url, size}, ...]
+20+N     M      Lazy-file JSON (identity, aliases, URL, declared size)
+...      4+L    Optional lazy-archive JSON length and bytes (when bit 1 is set)
+...      4+P    Optional image-metadata JSON length and bytes (when bit 2 is set)
 ```
 
 ## Networking

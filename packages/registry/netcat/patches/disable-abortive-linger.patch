@@ -1,0 +1,33 @@
+diff --git a/src/network.c b/src/network.c
+index 23b2d2c..62e1f51 100644
+--- a/src/network.c
++++ b/src/network.c
+@@ -351,6 +351,8 @@ int netcat_socket_new(int domain, int type)
+ {
+   int sock, ret, sockopt;
++#if !defined(__wasm32__)
+   struct linger fix_ling;
++#endif
+
+   sock = socket(domain, type, 0);
+   if (sock < 0)
+@@ -359,5 +361,11 @@ int netcat_socket_new(int domain, int type)
+
+   /* don't leave the socket in a TIME_WAIT state if we close the connection */
++#if defined(__wasm32__)
++  /* Kandelo cannot yet model abortive SO_LINGER coherently across its
++     in-kernel, Node, and browser transports. The platform truthfully rejects
++     the enabled option, so retain ordinary FIN close semantics here. */
++  ret = 0;
++#else
+   fix_ling.l_onoff = 1;
+   fix_ling.l_linger = 0;
+   ret = setsockopt(sock, SOL_SOCKET, SO_LINGER, &fix_ling, sizeof(fix_ling));
+@@ -367,6 +375,7 @@ int netcat_socket_new(int domain, int type)
+     close(sock);		/* anyway the socket was created */
+     return -2;
+   }
++#endif
+
+   /* fix the socket options */
+   sockopt = 1;

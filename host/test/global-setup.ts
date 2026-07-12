@@ -21,6 +21,7 @@ const fixturesDir = join(__dirname, "fixtures");
 
 /** C programs that tests depend on. */
 const TEST_PROGRAMS = [
+  "clock_getcpuclockid_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
   "sysv_ipc_test.c",
@@ -42,8 +43,12 @@ const TEST_PROGRAMS = [
   "thread-exit-group.c",
 ];
 
-/** WAT fixtures used by host/test/wasi-shim.test.ts. */
-const WAT_FIXTURES = ["wasi-args.wat", "wasi-hello.wat"];
+/** WAT fixtures used by host runtime tests. */
+const WAT_FIXTURES = [
+  "deep-wasm-recursion.wat",
+  "wasi-args.wat",
+  "wasi-hello.wat",
+];
 
 function needsRebuild(srcFile: string, outFile: string): boolean {
   if (!existsSync(outFile)) return true;

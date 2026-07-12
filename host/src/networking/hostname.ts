@@ -72,3 +72,28 @@ export function validateDnsHostname(hostname: string): void {
     throw nameNotFoundError(hostname);
   }
 }
+
+/**
+ * Validate a name before a browser fetch/TLS backend assigns it a synthetic
+ * address. These backends defer the real lookup to fetch(), so they must reject
+ * names that the browser environment already knows cannot resolve.
+ */
+export function validateSyntheticDnsHostname(
+  hostname: string,
+  aliases?: Record<string, string>,
+): void {
+  validateDnsHostname(hostname);
+
+  const absoluteName = hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
+  const lowerName = absoluteName.toLowerCase();
+  if (
+    aliases &&
+    (Object.prototype.hasOwnProperty.call(aliases, absoluteName) ||
+      Object.prototype.hasOwnProperty.call(aliases, lowerName))
+  ) {
+    return;
+  }
+  if (lowerName === "invalid" || lowerName.endsWith(".invalid")) {
+    throw nameNotFoundError(hostname);
+  }
+}

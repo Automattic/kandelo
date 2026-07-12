@@ -9,8 +9,12 @@ import type {
   HttpResponse,
 } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type {
+  HostDiagnosticMessage,
+} from "./host-diagnostic";
 
 export type { HttpRequest, HttpResponse };
+export type { HostDiagnostic } from "./host-diagnostic";
 
 // ── Main Thread → Kernel Worker ──
 
@@ -43,6 +47,10 @@ export interface InitMessage {
     syscallLogPtrWidth?: 4 | 8;
     /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
     dnsAliases?: Record<string, string>;
+    /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl for browser fetch
+     *  backends that need a same-origin proxy to reach external HTTP(S)
+     *  hosts. */
+    corsProxyUrl?: string;
   };
 }
 
@@ -83,8 +91,29 @@ export interface TerminateProcessMessage {
   status: number;
 }
 
+export interface VfsFileSnapshot {
+  data: Uint8Array;
+  mode: number;
+}
+
 export interface ReadVfsFileMessage {
   type: "read_vfs_file";
+  requestId: number;
+  path: string;
+  /** Return the file's permission bits with its bytes for lossless restore. */
+  includeMode?: boolean;
+}
+
+export interface WriteVfsFileMessage {
+  type: "write_vfs_file";
+  requestId: number;
+  path: string;
+  data: Uint8Array;
+  mode: number;
+}
+
+export interface UnlinkVfsFileMessage {
+  type: "unlink_vfs_file";
   requestId: number;
   path: string;
 }
@@ -321,6 +350,8 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | WriteVfsFileMessage
+  | UnlinkVfsFileMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage
@@ -485,6 +516,7 @@ export type KernelToMainMessage =
   | ExitMessage
   | StdoutMessage
   | StderrMessage
+  | HostDiagnosticMessage
   | PtyOutputMessage
   | ListenTcpMessage
   | FbBindMessage

@@ -51,9 +51,8 @@
 /etc/os-release    f  0644  0  0
 /etc/profile       f  0644  0  0
 /etc/motd          f  0644  0  0
-# services matches the ad-hoc table in
-# apps/browser-demos/lib/browser-kernel.ts byte-for-byte so the cutover
-# is invisible to getservbyname/getservbyport callers.
+# The rootfs file is the authoritative services database. Rootfs-derived
+# images inherit it rather than rebuilding or synthesizing a second table.
 /etc/services      f  0644  0  0
 
 # ── Shells ─────────────────────────────────────────────────────────

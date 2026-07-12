@@ -5,6 +5,8 @@ import { parseZipCentralDirectory } from "../src/vfs/zip";
 import type { ZipEntry } from "../src/vfs/zip";
 
 const O_RDONLY = 0x0000;
+const O_WRONLY = 0x0001;
+const O_TRUNC = 0x0200;
 
 function createMemfs(): MemoryFileSystem {
   const sab = new SharedArrayBuffer(4 * 1024 * 1024);
@@ -61,9 +63,170 @@ function makeRealZip() {
   return { zipBytes, entries: parseZipCentralDirectory(zipBytes) };
 }
 
+function makeTwoMemberZip() {
+  const zipBytes = zipSync({
+    "a.txt": new TextEncoder().encode("alpha"),
+    "b.txt": new TextEncoder().encode("bravo"),
+  });
+  return { zipBytes, entries: parseZipCentralDirectory(zipBytes) };
+}
+
+function readText(mfs: MemoryFileSystem, path: string): string {
+  const fd = mfs.open(path, O_RDONLY, 0);
+  const buffer = new Uint8Array(64);
+  const read = mfs.read(fd, buffer, null, buffer.length);
+  mfs.close(fd);
+  return new TextDecoder().decode(buffer.subarray(0, read));
+}
+
 // --- Task 3: Registration ---
 
 describe("Lazy archive group registration", () => {
+  it("atomically replaces an existing file with archive backing", async () => {
+    const originalFetch = globalThis.fetch;
+    const mfs = createMemfs();
+    const { zipBytes, entries } = makeRealZip();
+    mfs.mkdir("/opt", 0o755);
+    mfs.mkdir("/opt/bin", 0o755);
+    mfs.createFileWithOwner("/opt/bin/hello", 0o644, 0, 0, new Uint8Array([9]));
+
+    mfs.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+
+    try {
+      await expect(mfs.ensureMaterialized("/opt/bin/hello")).resolves.toBe(
+        true,
+      );
+      expect(readText(mfs, "/opt/bin/hello")).toBe("#!/bin/sh\necho hello");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not overwrite a peer write after replacing an archive path", async () => {
+    const originalFetch = globalThis.fetch;
+    const mfs = createMemfs();
+    const peer = MemoryFileSystem.fromExisting(mfs.sharedBuffer);
+    const { zipBytes, entries } = makeRealZip();
+    mfs.mkdir("/opt", 0o755);
+    mfs.mkdir("/opt/bin", 0o755);
+    mfs.createFileWithOwner("/opt/bin/hello", 0o644, 0, 0, new Uint8Array([4]));
+
+    const raw = (
+      mfs as unknown as {
+        fs: {
+          createLazyStub: (
+            path: string,
+            mode: number,
+          ) => { ino: number; generation: number; dataSequence: number };
+        };
+      }
+    ).fs;
+    const createLazyStub = raw.createLazyStub.bind(raw);
+    const createSpy = vi
+      .spyOn(raw, "createLazyStub")
+      .mockImplementation((path, mode) => {
+        const identity = createLazyStub(path, mode);
+        if (path === "/opt/bin/hello") {
+          const writer = peer.open(path, O_WRONLY, 0o644);
+          peer.write(writer, new Uint8Array([9]), null, 1);
+          peer.close(writer);
+        }
+        return identity;
+      });
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+
+    try {
+      mfs.registerLazyArchiveFromEntries(
+        "http://example.com/test.zip",
+        entries,
+        "/opt",
+      );
+      await expect(mfs.ensureMaterialized("/opt/bin/hello")).resolves.toBe(
+        true,
+      );
+      const fd = mfs.open("/opt/bin/hello", O_RDONLY, 0);
+      const byte = new Uint8Array(1);
+      expect(mfs.read(fd, byte, null, 1)).toBe(1);
+      mfs.close(fd);
+      expect(byte[0]).toBe(9);
+    } finally {
+      createSpy.mockRestore();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("replaces stale standalone backing when a path moves into an archive", async () => {
+    const originalFetch = globalThis.fetch;
+    const mfs = createMemfs();
+    const zipBytes = zipSync({ item: new Uint8Array([7]) });
+    mfs.registerLazyFile("/item", "http://example.com/old", 1);
+    mfs.registerLazyArchiveFromEntries(
+      "http://example.com/archive.zip",
+      parseZipCentralDirectory(zipBytes),
+      "/",
+    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock;
+
+    try {
+      await expect(mfs.ensureMaterialized("/item")).resolves.toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith("http://example.com/archive.zip");
+      const fd = mfs.open("/item", O_RDONLY, 0);
+      const byte = new Uint8Array(1);
+      expect(mfs.read(fd, byte, null, 1)).toBe(1);
+      mfs.close(fd);
+      expect(byte[0]).toBe(7);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("replaces stale archive backing when a member becomes standalone", async () => {
+    const originalFetch = globalThis.fetch;
+    const mfs = createMemfs();
+    const zipBytes = zipSync({ item: new Uint8Array([7]) });
+    mfs.registerLazyArchiveFromEntries(
+      "http://example.com/archive.zip",
+      parseZipCentralDirectory(zipBytes),
+      "/",
+    );
+    mfs.registerLazyFile("/item", "http://example.com/standalone", 1);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-length": "1" }),
+      body: null,
+      arrayBuffer: () => Promise.resolve(new Uint8Array([8]).buffer),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock;
+
+    try {
+      expect(mfs.exportLazyArchiveEntries()).toEqual([]);
+      await expect(mfs.ensureMaterialized("/item")).resolves.toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith("http://example.com/standalone");
+      const fd = mfs.open("/item", O_RDONLY, 0);
+      const byte = new Uint8Array(1);
+      expect(mfs.read(fd, byte, null, 1)).toBe(1);
+      mfs.close(fd);
+      expect(byte[0]).toBe(8);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("registerLazyArchiveFromEntries creates stubs for all files", () => {
     const mfs = createMemfs();
     const entries = makeFakeEntries();
@@ -404,6 +567,85 @@ describe("Lazy archive materialization", () => {
     const st = mfs.stat("/opt/bin/hello");
     expect(st.mode & 0o777).toBe(0o700);
   });
+
+  it("keeps a peer-renamed member lazy when another archive member materializes", async () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const owner = MemoryFileSystem.create(sab);
+    const peer = MemoryFileSystem.fromExisting(sab);
+    const { zipBytes, entries } = makeTwoMemberZip();
+
+    owner.registerLazyArchiveFromEntries(
+      "http://example.com/two-members.zip",
+      entries,
+      "/pkg",
+    );
+    peer.rename("/pkg/b.txt", "/pkg/moved-b.txt");
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+
+    await expect(owner.ensureMaterialized("/pkg/a.txt")).resolves.toBe(true);
+    expect(readText(owner, "/pkg/a.txt")).toBe("alpha");
+
+    await expect(owner.ensureMaterialized("/pkg/moved-b.txt")).resolves.toBe(
+      true,
+    );
+    expect(readText(owner, "/pkg/moved-b.txt")).toBe("bravo");
+  });
+
+  it("finishes a requested archive member renamed during its fetch", async () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const owner = MemoryFileSystem.create(sab);
+    const peer = MemoryFileSystem.fromExisting(sab);
+    const { zipBytes, entries } = makeTwoMemberZip();
+    owner.registerLazyArchiveFromEntries(
+      "http://example.com/two-members.zip",
+      entries,
+      "/pkg",
+    );
+    let release!: (value: ArrayBuffer) => void;
+    const body = new Promise<ArrayBuffer>((resolve) => {
+      release = resolve;
+    });
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => body,
+    } as unknown as Response);
+
+    const pending = owner.ensureMaterialized("/pkg/a.txt");
+    await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+    peer.rename("/pkg/a.txt", "/pkg/moved-a.txt");
+    release(zipBytes.buffer);
+
+    await expect(pending).resolves.toBe(true);
+    expect(readText(owner, "/pkg/moved-a.txt")).toBe("alpha");
+  });
+
+  it("materializes pending archives into a self-contained image", async () => {
+    const mfs = createMemfs();
+    const { zipBytes, entries } = makeRealZip();
+    mfs.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock;
+
+    const restored = MemoryFileSystem.fromImage(
+      await mfs.saveImage({ materializeAll: true }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(restored.exportLazyArchiveEntries()).toEqual([]);
+    expect(readText(restored, "/opt/bin/hello")).toBe("#!/bin/sh\necho hello");
+    expect(readText(restored, "/opt/share/data.txt")).toBe("hello world");
+  });
 });
 
 // --- Task 5: Unlink tracking ---
@@ -465,6 +707,60 @@ describe("Lazy archive unlink tracking", () => {
     const n = mfs.read(fd, buf, null, 64);
     mfs.close(fd);
     expect(new TextDecoder().decode(buf.subarray(0, n))).toBe("hello world");
+  });
+
+  it("retains a peer-created hard-link alias after unlink", async () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const owner = MemoryFileSystem.create(sab);
+    const peer = MemoryFileSystem.fromExisting(sab);
+    const { zipBytes, entries } = makeRealZip();
+    owner.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+    peer.link("/opt/bin/hello", "/archive-alias");
+
+    owner.unlink("/opt/bin/hello");
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+
+    await expect(owner.ensureMaterialized("/archive-alias")).resolves.toBe(
+      true,
+    );
+    expect(readText(owner, "/archive-alias")).toBe("#!/bin/sh\necho hello");
+  });
+
+  it("retains a peer-created archive alias when rename replaces its other name", async () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const owner = MemoryFileSystem.create(sab);
+    const peer = MemoryFileSystem.fromExisting(sab);
+    const { zipBytes, entries } = makeRealZip();
+    owner.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+    peer.link("/opt/bin/hello", "/archive-alias");
+    owner.createFileWithOwner("/source", 0o644, 0, 0, new Uint8Array([4]));
+
+    owner.rename("/source", "/opt/bin/hello");
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+
+    await expect(owner.ensureMaterialized("/archive-alias")).resolves.toBe(
+      true,
+    );
+    expect(readText(owner, "/archive-alias")).toBe("#!/bin/sh\necho hello");
+    const destination = owner.open("/opt/bin/hello", O_RDONLY, 0);
+    const destinationByte = new Uint8Array(1);
+    expect(owner.read(destination, destinationByte, null, 1)).toBe(1);
+    owner.close(destination);
+    expect(destinationByte[0]).toBe(4);
   });
 
   it("unlink of non-archive file does not affect archive groups", () => {
@@ -530,6 +826,65 @@ describe("Lazy archive export/import", () => {
     expect(mfs2.stat("/usr/share/vim/README").size).toBe(0);
   });
 
+  it("retains the original archive member name when importing legacy metadata", async () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const owner = MemoryFileSystem.create(sab);
+    const { zipBytes, entries } = makeRealZip();
+    owner.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+
+    const serialized = owner.exportLazyArchiveEntries();
+    for (const entry of serialized[0].entries) delete entry.archivePath;
+
+    const restoredMetadata = MemoryFileSystem.fromExisting(sab);
+    restoredMetadata.importLazyArchiveEntries(serialized);
+    restoredMetadata.rename("/opt/bin/hello", "/opt/bin/moved");
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+
+    await expect(
+      restoredMetadata.ensureMaterialized("/opt/bin/moved"),
+    ).resolves.toBe(true);
+    expect(readText(restoredMetadata, "/opt/bin/moved")).toBe(
+      "#!/bin/sh\necho hello",
+    );
+  });
+
+  it("rejects sequence-less archive metadata after a live peer write", async () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const owner = MemoryFileSystem.create(sab);
+    const { entries } = makeRealZip();
+    owner.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+    const serialized = owner.exportLazyArchiveEntries();
+    const hello = serialized[0].entries.find(
+      (entry) => entry.vfsPath === "/opt/bin/hello",
+    )!;
+    delete hello.dataSequence;
+
+    const writer = owner.open("/opt/bin/hello", O_WRONLY | O_TRUNC, 0o644);
+    owner.write(writer, new Uint8Array([9]), null, 1);
+    owner.close(writer);
+
+    const peer = MemoryFileSystem.fromExisting(sab);
+    expect(() => peer.importLazyArchiveEntries(serialized)).toThrow(
+      /requires inode generation and data sequence/,
+    );
+
+    expect(peer.stat("/opt/bin/hello").size).toBe(1);
+    await expect(peer.ensureMaterialized("/opt/bin/hello")).resolves.toBe(
+      false,
+    );
+  });
+
   it("rebaseToNewFileSystem preserves unmaterialized archive metadata", () => {
     const mfs = createMemfs();
     const entries = makeFakeEntries();
@@ -557,7 +912,7 @@ describe("Lazy archive export/import", () => {
     rebased.close(fd);
   });
 
-  it("import of materialized group does not populate lazyArchiveInodes", async () => {
+  it("omits fully materialized groups from deferred archive metadata", async () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs1 = MemoryFileSystem.create(sab);
     const { zipBytes, entries } = makeRealZip();
@@ -576,10 +931,9 @@ describe("Lazy archive export/import", () => {
 
     await mfs1.ensureMaterialized("/opt/bin/hello");
 
-    // Export from instance 1 — group should be materialized
+    // Concrete files no longer need archive metadata in another instance.
     const serialized = mfs1.exportLazyArchiveEntries();
-    expect(serialized).toHaveLength(1);
-    expect(serialized[0].materialized).toBe(true);
+    expect(serialized).toEqual([]);
 
     // Import into instance 2 on the same SAB
     const mfs2 = MemoryFileSystem.fromExisting(sab);

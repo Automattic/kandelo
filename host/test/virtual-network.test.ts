@@ -10,6 +10,7 @@ const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
 const POLLERR = 0x0008;
 const POLLHUP = 0x0010;
+const MSG_PEEK = 0x0002;
 
 describe("LocalVirtualNetwork", () => {
   it("resolves bounded legacy numeric IPv4 forms and valid DNS aliases", () => {
@@ -54,6 +55,27 @@ describe("LocalVirtualNetwork", () => {
 
     expect(accepted!.send(new TextEncoder().encode("pong"), 0)).toBe(4);
     expect(new TextDecoder().decode(client.recv(7, 16, 0))).toBe("pong");
+  });
+
+  it("honors MSG_PEEK without consuming TCP stream data", () => {
+    const net = new LocalVirtualNetwork();
+    const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
+    const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
+    let accepted: TcpConnectionPeer | null = null;
+
+    expect(server.listenTcp!("srv:1", new Uint8Array([10, 88, 0, 2]), 8080, {
+      accept(peer) {
+        accepted = peer;
+        return 0;
+      },
+    })).toBe(0);
+
+    client.connect(7, new Uint8Array([10, 88, 0, 2]), 8080);
+    expect(accepted).not.toBeNull();
+    accepted!.send(new TextEncoder().encode("peek-data"), 0);
+
+    expect(new TextDecoder().decode(client.recv(7, 4, MSG_PEEK))).toBe("peek");
+    expect(new TextDecoder().decode(client.recv(7, 9, 0))).toBe("peek-data");
   });
 
   it("reports refused TCP connects when no listener is bound", () => {

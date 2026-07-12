@@ -11,6 +11,7 @@ export { centralizedWorkerMain, centralizedThreadWorkerMain, patchWasmForThread 
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
 export type { KernelConfig, PlatformIO, StatResult, StatfsResult } from "./types";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
+export type { HostDiagnostic } from "./host-diagnostic";
 export type {
   HostToWorkerMessage, WorkerToHostMessage,
   WorkerReadyMessage, WorkerExitMessage, WorkerErrorMessage,
