@@ -179,6 +179,36 @@ pkgconfig = ["lib/pkgconfig/zlib.pc"]
 files = ["share/runtime-data.bin"]                   # other runtime data
 ```
 
+Program packages use `[[outputs]]` for executable/side-module artifacts. A
+non-Wasm file required at runtime is declared separately so it remains part of
+the same reproducible archive and cache key:
+
+```toml
+[[outputs]]
+name = "php"
+wasm = "php.wasm"
+
+[[runtime_files]]
+artifact = "icu.dat"                 # relative to the package cache/archive
+guest_path = "/usr/lib/php/icu.dat"  # installation path in a VFS image
+mode = 420                            # optional decimal TOML; default 0644
+```
+
+`[[runtime_files]]` is program-only. Artifact paths are normalized portable
+relative paths; guest paths are normalized absolute POSIX paths; files,
+ancestor paths, and resolver-mirror destinations may not collide. The resolver
+requires regular non-symlink runtime files after fresh builds, cache hits, and
+remote fetches. It mirrors them at
+`{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
+number of `[[outputs]]` entries. Missing fetched files make the archive stale
+and trigger source fallback (or a hard failure in fetch-only mode).
+
+Repo-side VFS/test builders query the authoritative path and mode with
+`xtask build-deps runtime-file-metadata <package> <artifact>`; they must not
+scan library caches or invent environment-only guest paths. Published VFS
+images contain the installed bytes already, so this query is a build-tool
+contract rather than a runtime host API.
+
 `package.toml` **must NOT** carry `revision`, `[binary]`,
 `[build].repo_url`, or `[build].commit`. Those moved to `build.toml`
 during the binary-resolution-via-index-ledger migration;

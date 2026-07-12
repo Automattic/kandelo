@@ -104,7 +104,7 @@ async function vfsImage(
   return compressed ? new Uint8Array(zstdCompressSync(image)) : image;
 }
 
-function fixtureRelPath(extension: ".wasm" | ".vfs" | ".vfs.zst"): string {
+function fixtureRelPath(extension: ".wasm" | ".vfs" | ".vfs.zst" | ".dat"): string {
   const testRoot = "programs/wasm32/__binary_resolver_test__";
   const dir = `${testRoot}/${randomUUID()}`;
   cleanupDirs.add(join(localBinariesDir(), dir));
@@ -189,5 +189,21 @@ describe("binary resolver artifact policy", () => {
     const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
 
     expect(resolveBinary(relPath)).toBe(fetchedPath);
+  });
+
+  it("prefers a local declared runtime data file over the fetched candidate", () => {
+    const relPath = fixtureRelPath(".dat");
+    const localPath = writeCandidate(
+      localBinariesDir(),
+      relPath,
+      new TextEncoder().encode("local-runtime"),
+    );
+    writeCandidate(
+      binariesDir(),
+      relPath,
+      new TextEncoder().encode("fetched-runtime"),
+    );
+
+    expect(resolveBinary(relPath)).toBe(localPath);
   });
 });

@@ -1,5 +1,6 @@
 /**
- * Resolve a binary (wasm, zip bundle, vfs image) from the repo's
+ * Resolve a packaged artifact (Wasm executable/side module, VFS image,
+ * archive, or declared runtime data file) from the repo's
  * `local-binaries/` or `binaries/` tree.
  *
  * Priority:
@@ -81,13 +82,14 @@ function packageRoot(): string {
 }
 
 /**
- * Resolve a binary relative to the binaries tree.
+ * Resolve an artifact relative to the binaries tree.
  *
  * Example paths:
  *   `kernel.wasm`
  *   `userspace.wasm`
  *   `programs/vim.zip`               (implicit wasm32 — see below)
  *   `programs/git/git.wasm`          (implicit wasm32)
+ *   `programs/php/icu.dat`           (implicit wasm32 runtime file)
  *   `programs/wasm64/mariadb-vfs.vfs.zst` (explicit arch)
  *
  * Per-arch layout: `binaries/programs/` and `local-binaries/programs/`
