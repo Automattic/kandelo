@@ -2047,16 +2047,32 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
             FileType::Socket => {
                 let sock_idx = (-(host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
+                    if let Some(path) = sock.bind_path.as_deref() {
+                        let registry = unsafe {
+                            crate::unix_socket::global_unix_socket_registry()
+                        };
+                        registry.remove_owner(path, proc.pid, sock_idx);
+                    }
                     if sock.domain == crate::socket::SocketDomain::Inet
                         && sock.sock_type == crate::socket::SocketType::Dgram
                     {
                         crate::socket::udp_unregister(proc.pid, sock_idx);
                         let _ = host.host_udp_unbind(sock_idx as i32);
                     }
-                    if sock.domain == crate::socket::SocketDomain::Inet
-                        && sock.sock_type == crate::socket::SocketType::Stream
+                    if sock.domain == crate::socket::SocketDomain::Inet6
+                        && sock.sock_type == crate::socket::SocketType::Dgram
+                    {
+                        crate::socket::udp6_unregister(proc.pid, sock_idx);
+                    }
+                    if matches!(
+                        sock.domain,
+                        crate::socket::SocketDomain::Inet | crate::socket::SocketDomain::Inet6
+                    ) && sock.sock_type == crate::socket::SocketType::Stream
                     {
                         crate::socket::tcp_unregister(proc.pid, sock_idx);
+                        if sock.domain == crate::socket::SocketDomain::Inet6 {
+                            crate::socket::tcp6_unregister(proc.pid, sock_idx);
+                        }
                     }
                     // Connected AF_INET socket: drop one cross-process ref
                     // (fork/spawn share host_net_handle by value). Only the
@@ -2088,6 +2104,18 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                         if let Some(pipe) = pipe {
                             pipe.close_read_end();
                             unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
+                        }
+                    }
+                }
+                // peer_idx is a process-local socket-table identity used by
+                // AF_UNIX datagrams and same-process stream OOB delivery.
+                // Clear references before freeing the slot so a later
+                // allocation cannot receive data intended for the closed
+                // endpoint.
+                for peer_idx in 0..proc.sockets.len() {
+                    if let Some(peer) = proc.sockets.get_mut(peer_idx) {
+                        if peer.peer_idx == Some(sock_idx) {
+                            peer.peer_idx = None;
                         }
                     }
                 }
@@ -2695,11 +2723,6 @@ pub fn sys_write(
                     }
                 }
                 SocketDomain::Unix => {
-                    if sock.send_buf_idx.is_none()
-                        && sock.sock_type == crate::socket::SocketType::Dgram
-                    {
-                        return Ok(buf.len()); // bit-bucket for SOCK_DGRAM (syslog pattern)
-                    }
                     let send_buf_idx = sock.send_buf_idx.ok_or(Errno::ENOTCONN)?;
                     loop {
                         let pipe =
@@ -6175,6 +6198,26 @@ fn parse_sockaddr_in(addr: &[u8]) -> Result<([u8; 4], u16), Errno> {
     ))
 }
 
+fn parse_sockaddr_in6(addr: &[u8]) -> Result<([u8; 16], u16), Errno> {
+    use wasm_posix_shared::socket::AF_INET6;
+
+    // struct sockaddr_in6:
+    //   sa_family_t sin6_family (2, little-endian on wasm32)
+    //   in_port_t   sin6_port   (2, network byte order)
+    //   uint32_t    sin6_flowinfo
+    //   struct in6_addr sin6_addr
+    //   uint32_t    sin6_scope_id
+    if addr.len() < 28 {
+        return Err(Errno::EINVAL);
+    }
+    if sockaddr_family(addr)? as u32 != AF_INET6 {
+        return Err(Errno::EAFNOSUPPORT);
+    }
+    let mut ip = [0u8; 16];
+    ip.copy_from_slice(&addr[8..24]);
+    Ok((ip, u16::from_be_bytes([addr[2], addr[3]])))
+}
+
 fn write_sockaddr_in(buf: &mut [u8], addr: [u8; 4], port: u16) -> usize {
     let mut sa = [0u8; 16];
     sa[0] = 2; // AF_INET, little-endian
@@ -6191,8 +6234,83 @@ fn write_sockaddr_in(buf: &mut [u8], addr: [u8; 4], port: u16) -> usize {
     16
 }
 
+fn write_sockaddr_in6(buf: &mut [u8], addr: [u8; 16], port: u16) -> usize {
+    let mut sa = [0u8; 28];
+    sa[0] = 10; // AF_INET6, little-endian
+    sa[1] = 0;
+    let port_be = port.to_be_bytes();
+    sa[2] = port_be[0];
+    sa[3] = port_be[1];
+    // flowinfo remains zero
+    sa[8..24].copy_from_slice(&addr);
+    // scope_id remains zero
+    let n = buf.len().min(28);
+    buf[..n].copy_from_slice(&sa[..n]);
+    28
+}
+
 fn is_loopback_addr(addr: [u8; 4]) -> bool {
     addr[0] == 127
+}
+
+fn is_loopback_addr6(addr: [u8; 16]) -> bool {
+    addr == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+}
+
+fn is_unspecified_addr6(addr: [u8; 16]) -> bool {
+    addr == [0; 16]
+}
+
+fn ipv4_mapped_addr6(addr: [u8; 4]) -> [u8; 16] {
+    let mut mapped = [0u8; 16];
+    mapped[10] = 0xff;
+    mapped[11] = 0xff;
+    mapped[12..16].copy_from_slice(&addr);
+    mapped
+}
+
+fn ipv6_v6only(sock: &crate::socket::SocketInfo) -> bool {
+    let value = sock
+        .get_option(
+            wasm_posix_shared::socket::IPPROTO_IPV6,
+            wasm_posix_shared::socket::IPV6_V6ONLY,
+        )
+        // Dual-stack datagram routing is not yet exposed; report that honest
+        // boundary as V6ONLY while stream sockets retain Linux's dual-stack
+        // default.
+        .unwrap_or(u32::from(
+            sock.sock_type == crate::socket::SocketType::Dgram,
+        ));
+    value != 0
+}
+
+fn bind_device_allows_ipv4(
+    sock: &crate::socket::SocketInfo,
+    addr: [u8; 4],
+    binding: bool,
+) -> bool {
+    match sock.bind_device.as_deref() {
+        None => true,
+        Some(b"lo") => {
+            addr == [0; 4]
+                || is_loopback_addr(addr)
+                || (!binding && is_ipv4_multicast_addr(addr))
+        }
+        Some(b"eth0") => addr == [0; 4] || !is_loopback_addr(addr),
+        Some(_) => false,
+    }
+}
+
+fn bind_device_allows_ipv6(
+    sock: &crate::socket::SocketInfo,
+    addr: [u8; 16],
+) -> bool {
+    match sock.bind_device.as_deref() {
+        None => true,
+        Some(b"lo") => is_unspecified_addr6(addr) || is_loopback_addr6(addr),
+        // Kandelo does not expose an external IPv6 interface today.
+        Some(b"eth0") | Some(_) => false,
+    }
 }
 
 fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
@@ -6203,11 +6321,29 @@ fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
 }
 
 fn is_supported_udp_route_addr(addr: [u8; 4]) -> bool {
-    is_loopback_addr(addr) || is_virtual_network_addr(addr)
+    addr == [0, 0, 0, 0]
+        || is_loopback_addr(addr)
+        || is_virtual_network_addr(addr)
+        || is_ipv4_multicast_addr(addr)
 }
 
 fn is_virtual_network_addr(addr: [u8; 4]) -> bool {
     addr[0] == 10 && addr[1] == 88
+}
+
+fn is_ipv4_multicast_addr(addr: [u8; 4]) -> bool {
+    (224..=239).contains(&addr[0])
+}
+
+fn udp_canonical_dst_addr(dst_addr: [u8; 4]) -> [u8; 4] {
+    // Linux treats UDP connect/sendto to INADDR_ANY as a route to local
+    // loopback (getpeername() reports 127.0.0.1). Preserve that generic
+    // socket behavior instead of reporting ENETUNREACH.
+    if dst_addr == [0, 0, 0, 0] {
+        [127, 0, 0, 1]
+    } else {
+        dst_addr
+    }
 }
 
 fn udp_route_local_addr(dst_addr: [u8; 4]) -> [u8; 4] {
@@ -6215,6 +6351,75 @@ fn udp_route_local_addr(dst_addr: [u8; 4]) -> [u8; 4] {
         [127, 0, 0, 1]
     } else {
         [0, 0, 0, 0]
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn ipv4_multicast_interface_from_index(ifindex: u32) -> Result<[u8; 4], Errno> {
+    match ifindex {
+        0 => Ok([0, 0, 0, 0]),
+        // Kandelo exposes a Linux-like loopback interface as index 1.
+        1 => Ok([127, 0, 0, 1]),
+        _ => Err(Errno::ENODEV),
+    }
+}
+
+/// Resolve musl's wasm32/wasm64 `group_req` and `group_source_req`
+/// sockaddr_storage offsets from the option buffer's canonical size (or,
+/// for oversized buffers, from unambiguous embedded AF_INET families).
+pub(crate) fn multicast_group_request_offsets(
+    buf: &[u8],
+    with_source: bool,
+) -> Result<(usize, Option<usize>), Errno> {
+    use wasm_posix_shared::socket::AF_INET;
+
+    const GROUP_REQ_WASM32_SIZE: usize = 132;
+    const GROUP_REQ_WASM64_SIZE: usize = 136;
+    const GROUP_SOURCE_REQ_WASM32_SIZE: usize = 260;
+    const GROUP_SOURCE_REQ_WASM64_SIZE: usize = 264;
+
+    let (size32, size64, source32, source64) = if with_source {
+        (
+            GROUP_SOURCE_REQ_WASM32_SIZE,
+            GROUP_SOURCE_REQ_WASM64_SIZE,
+            Some(132),
+            Some(136),
+        )
+    } else {
+        (GROUP_REQ_WASM32_SIZE, GROUP_REQ_WASM64_SIZE, None, None)
+    };
+    if buf.len() < size32 {
+        return Err(Errno::EINVAL);
+    }
+    if buf.len() < size64 {
+        return Ok((4, source32));
+    }
+    if buf.len() == size64 {
+        return Ok((8, source64));
+    }
+
+    let family_is_inet = |offset: usize| {
+        buf.get(offset..offset + 2)
+            .map(|family| u16::from_le_bytes([family[0], family[1]]) as u32 == AF_INET)
+            .unwrap_or(false)
+    };
+    let wasm32 = family_is_inet(4) && source32.map(|o| family_is_inet(o)).unwrap_or(true);
+    let wasm64 = family_is_inet(8) && source64.map(|o| family_is_inet(o)).unwrap_or(true);
+    match (wasm32, wasm64) {
+        (true, false) => Ok((4, source32)),
+        (false, true) => Ok((8, source64)),
+        (true, true) => Err(Errno::EINVAL),
+        (false, false) => Ok((8, source64)),
+    }
+}
+
+fn ipv4_multicast_interface_matches(interface_addr: [u8; 4], ingress_interface: [u8; 4]) -> bool {
+    if interface_addr == [0, 0, 0, 0] {
+        true
+    } else if is_loopback_addr(interface_addr) {
+        is_loopback_addr(ingress_interface)
+    } else {
+        interface_addr == ingress_interface
     }
 }
 
@@ -6262,6 +6467,13 @@ fn udp_bind_socket(
     port: u16,
 ) -> Result<(), Errno> {
     if !is_supported_udp_bind_addr(addr) {
+        return Err(Errno::EADDRNOTAVAIL);
+    }
+    if !bind_device_allows_ipv4(
+        proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?,
+        addr,
+        true,
+    ) {
         return Err(Errno::EADDRNOTAVAIL);
     }
 
@@ -6339,6 +6551,152 @@ fn udp_take_socket_error(proc: &mut Process, sock_idx: usize) -> Result<(), Errn
     Err(Errno::from_u32(err).unwrap_or(Errno::EIO))
 }
 
+fn ipv4_multicast_membership_mut(
+    sock: &mut crate::socket::SocketInfo,
+    group: [u8; 4],
+    interface_addr: [u8; 4],
+) -> &mut crate::socket::Ipv4MulticastMembership {
+    if let Some(idx) = sock
+        .ipv4_multicast_memberships
+        .iter()
+        .position(|m| m.group == group && m.interface_addr == interface_addr)
+    {
+        return &mut sock.ipv4_multicast_memberships[idx];
+    }
+    sock.ipv4_multicast_memberships
+        .push(crate::socket::Ipv4MulticastMembership {
+            group,
+            interface_addr,
+            any_source: false,
+            blocked_sources: Vec::new(),
+            included_sources: Vec::new(),
+        });
+    sock.ipv4_multicast_memberships
+        .last_mut()
+        .expect("membership was just pushed")
+}
+
+fn ipv4_multicast_leave_if_empty(sock: &mut crate::socket::SocketInfo, idx: usize) {
+    if let Some(m) = sock.ipv4_multicast_memberships.get(idx) {
+        if !m.any_source && m.included_sources.is_empty() {
+            sock.ipv4_multicast_memberships.remove(idx);
+        }
+    }
+}
+
+/// Apply an IPv4 multicast membership/source-filter socket option.
+///
+/// Kandelo models the POSIX/Linux observable contract for local UDP
+/// multicast: joining a group on loopback lets datagrams sent to that group
+/// and interface be received by sockets bound to the destination port, source
+/// filters suppress or include sources, and sends to groups with no local
+/// listeners still succeed like UDP datagrams.
+pub fn sys_setsockopt_ipv4_multicast(
+    proc: &mut Process,
+    fd: i32,
+    optname: u32,
+    group: [u8; 4],
+    interface_addr: [u8; 4],
+    source: Option<[u8; 4]>,
+) -> Result<(), Errno> {
+    use crate::socket::{SocketDomain, SocketType};
+    use wasm_posix_shared::socket::*;
+
+    if !is_ipv4_multicast_addr(group) {
+        return Err(Errno::EINVAL);
+    }
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+        return Err(Errno::ENOPROTOOPT);
+    }
+
+    match optname {
+        IP_ADD_MEMBERSHIP | MCAST_JOIN_GROUP => {
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            membership.any_source = true;
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_DROP_MEMBERSHIP | MCAST_LEAVE_GROUP => {
+            sock.ipv4_multicast_memberships
+                .retain(|m| !(m.group == group && m.interface_addr == interface_addr));
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_BLOCK_SOURCE | MCAST_BLOCK_SOURCE => {
+            let source = source.ok_or(Errno::EINVAL)?;
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            if !membership.blocked_sources.contains(&source) {
+                membership.blocked_sources.push(source);
+            }
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_UNBLOCK_SOURCE | MCAST_UNBLOCK_SOURCE => {
+            let source = source.ok_or(Errno::EINVAL)?;
+            if let Some(membership) = sock
+                .ipv4_multicast_memberships
+                .iter_mut()
+                .find(|m| m.group == group && m.interface_addr == interface_addr)
+            {
+                membership.blocked_sources.retain(|s| *s != source);
+            }
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_ADD_SOURCE_MEMBERSHIP | MCAST_JOIN_SOURCE_GROUP => {
+            let source = source.ok_or(Errno::EINVAL)?;
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            if !membership.included_sources.contains(&source) {
+                membership.included_sources.push(source);
+            }
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_DROP_SOURCE_MEMBERSHIP | MCAST_LEAVE_SOURCE_GROUP => {
+            let source = source.ok_or(Errno::EINVAL)?;
+            if let Some(idx) = sock
+                .ipv4_multicast_memberships
+                .iter()
+                .position(|m| m.group == group && m.interface_addr == interface_addr)
+            {
+                sock.ipv4_multicast_memberships[idx]
+                    .included_sources
+                    .retain(|s| *s != source);
+                ipv4_multicast_leave_if_empty(sock, idx);
+            }
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        _ => Err(Errno::ENOPROTOOPT),
+    }
+}
+
+fn udp_socket_accepts_multicast_datagram(
+    sock: &crate::socket::SocketInfo,
+    group: [u8; 4],
+    src_addr: [u8; 4],
+    src_port: u16,
+    ingress_interface: [u8; 4],
+) -> bool {
+    if !udp_socket_accepts_datagram(sock, src_addr, src_port) {
+        return false;
+    }
+    sock.ipv4_multicast_memberships.iter().any(|membership| {
+        membership.group == group
+            && ipv4_multicast_interface_matches(membership.interface_addr, ingress_interface)
+            && ((membership.any_source && !membership.blocked_sources.contains(&src_addr))
+                || membership.included_sources.contains(&src_addr))
+    })
+}
+
 fn udp_purge_unaccepted_datagrams(proc: &mut Process, sock_idx: usize) -> Result<(), Errno> {
     let (peer_addr, peer_port, connected) = {
         let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -6367,6 +6725,14 @@ fn udp_send_datagram(
 ) -> Result<usize, Errno> {
     use crate::socket::{Datagram, SocketState};
 
+    let dst_addr = udp_canonical_dst_addr(dst_addr);
+    if !bind_device_allows_ipv4(
+        proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?,
+        dst_addr,
+        false,
+    ) {
+        return Err(Errno::ENETUNREACH);
+    }
     let (state, shut_wr) = {
         let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
         (sock.state, sock.shut_wr)
@@ -6388,6 +6754,85 @@ fn udp_send_datagram(
         let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
         (sock.bind_addr, sock.bind_port)
     };
+    let mut src_addr = if src_addr == [0, 0, 0, 0] && is_loopback_addr(dst_addr) {
+        udp_route_local_addr(dst_addr)
+    } else {
+        src_addr
+    };
+    if is_ipv4_multicast_addr(dst_addr) {
+        use wasm_posix_shared::socket::{IP_MULTICAST_IF, IP_MULTICAST_LOOP, IPPROTO_IP};
+
+        let (loop_enabled, outgoing_interface) = {
+            let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+            let loop_enabled = sock
+                .get_option(IPPROTO_IP, IP_MULTICAST_LOOP)
+                .unwrap_or(1)
+                != 0;
+            let configured = sock
+                .get_option(IPPROTO_IP, IP_MULTICAST_IF)
+                .unwrap_or(0)
+                .to_le_bytes();
+            let outgoing_interface = if configured != [0; 4] {
+                configured
+            } else if sock.bind_device.as_deref() == Some(b"lo") {
+                [127, 0, 0, 1]
+            } else if is_loopback_addr(sock.bind_addr)
+                || is_virtual_network_addr(sock.bind_addr)
+            {
+                sock.bind_addr
+            } else {
+                [0; 4]
+            };
+            (loop_enabled, outgoing_interface)
+        };
+        if src_addr == [0; 4] && outgoing_interface != [0; 4] {
+            src_addr = outgoing_interface;
+        }
+        if !loop_enabled {
+            return Ok(buf.len());
+        }
+        let datagram = Datagram {
+            data: buf.to_vec(),
+            src_addr,
+            src_addr6: [0; 16],
+            dst_addr,
+            dst_addr6: [0; 16],
+            src_port,
+            src_sock_idx: Some(sock_idx),
+            ipv6_tclass: 0,
+            src_pid: proc.pid,
+            src_uid: proc.uid,
+            src_gid: proc.gid,
+            ancillary_fds: Vec::new(),
+        };
+
+        let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
+        for endpoint in endpoints {
+            if endpoint.pid != proc.pid {
+                continue;
+            }
+            let accepts = proc
+                .sockets
+                .get(endpoint.sock_idx)
+                .map(|sock| {
+                    udp_socket_accepts_multicast_datagram(
+                        sock,
+                        dst_addr,
+                        src_addr,
+                        src_port,
+                        outgoing_interface,
+                    )
+                })
+                .unwrap_or(false);
+            if !accepts {
+                continue;
+            }
+            if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
+                udp_queue_datagram(target, datagram.clone());
+            }
+        }
+        return Ok(buf.len());
+    }
     if !is_loopback_addr(dst_addr) {
         return match host.host_udp_send(&src_addr, src_port, &dst_addr, dst_port, buf) {
             Ok(n) => Ok(n),
@@ -6404,7 +6849,16 @@ fn udp_send_datagram(
     let datagram = Datagram {
         data: buf.to_vec(),
         src_addr,
+        src_addr6: [0; 16],
+        dst_addr,
+        dst_addr6: [0; 16],
         src_port,
+        src_sock_idx: Some(sock_idx),
+        ipv6_tclass: 0,
+        src_pid: proc.pid,
+        src_uid: proc.uid,
+        src_gid: proc.gid,
+        ancillary_fds: Vec::new(),
     };
 
     let mut delivered = false;
@@ -6437,6 +6891,270 @@ fn udp_send_datagram(
     Ok(buf.len())
 }
 
+fn unix_dgram_send_to_sock(
+    proc: &mut Process,
+    src_sock_idx: usize,
+    dst_sock_idx: usize,
+    buf: &[u8],
+) -> Result<usize, Errno> {
+    use crate::socket::Datagram;
+
+    let shut_wr = proc
+        .sockets
+        .get(src_sock_idx)
+        .ok_or(Errno::EBADF)?
+        .shut_wr;
+    if shut_wr {
+        return Err(Errno::EPIPE);
+    }
+
+    let datagram = Datagram {
+        data: buf.to_vec(),
+        src_addr: [0; 4],
+        src_addr6: [0; 16],
+        dst_addr: [0; 4],
+        dst_addr6: [0; 16],
+        src_port: 0,
+        src_sock_idx: Some(src_sock_idx),
+        ipv6_tclass: 0,
+        src_pid: proc.pid,
+        src_uid: proc.uid,
+        src_gid: proc.gid,
+        ancillary_fds: Vec::new(),
+    };
+    let target = proc.sockets.get_mut(dst_sock_idx).ok_or(Errno::ECONNREFUSED)?;
+    if target.domain != crate::socket::SocketDomain::Unix
+        || target.sock_type != crate::socket::SocketType::Dgram
+        || !matches!(
+            target.state,
+            crate::socket::SocketState::Bound | crate::socket::SocketState::Connected
+        )
+    {
+        return Err(Errno::ECONNREFUSED);
+    }
+    udp_queue_datagram(target, datagram);
+    Ok(buf.len())
+}
+
+fn finish_datagram_send(
+    proc: &mut Process,
+    flags: u32,
+    result: Result<usize, Errno>,
+) -> Result<usize, Errno> {
+    if matches!(result, Err(Errno::EPIPE))
+        && flags & wasm_posix_shared::socket::MSG_NOSIGNAL == 0
+    {
+        proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+    }
+    result
+}
+
+fn udp6_bind_socket(
+    proc: &mut Process,
+    sock_idx: usize,
+    addr: [u8; 16],
+    port: u16,
+) -> Result<(), Errno> {
+    use crate::socket::SocketState;
+
+    if !(is_loopback_addr6(addr) || is_unspecified_addr6(addr)) {
+        return Err(Errno::EADDRNOTAVAIL);
+    }
+    if !bind_device_allows_ipv6(proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?, addr) {
+        return Err(Errno::EADDRNOTAVAIL);
+    }
+
+    let reuse_addr = proc
+        .sockets
+        .get(sock_idx)
+        .and_then(|sock| {
+            sock.get_option(
+                wasm_posix_shared::socket::SOL_SOCKET,
+                wasm_posix_shared::socket::SO_REUSEADDR,
+            )
+        })
+        .unwrap_or(0)
+        != 0;
+    let assigned_port = if port == 0 {
+        if proc.next_ephemeral_port < 49152 {
+            proc.next_ephemeral_port = 49152;
+        }
+        let start = proc.next_ephemeral_port;
+        loop {
+            let candidate = proc.next_ephemeral_port;
+            bump_ephemeral_port(proc);
+            if crate::socket::udp6_can_bind(proc.pid, sock_idx, addr, candidate, reuse_addr) {
+                break candidate;
+            }
+            if proc.next_ephemeral_port == start {
+                return Err(Errno::EADDRINUSE);
+            }
+        }
+    } else {
+        port
+    };
+    crate::socket::udp6_register(proc.pid, sock_idx, addr, assigned_port, reuse_addr)?;
+
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    sock.bind_addr6 = addr;
+    sock.bind_port = assigned_port;
+    if sock.state == SocketState::Unbound {
+        sock.state = SocketState::Bound;
+    }
+    Ok(())
+}
+
+fn udp6_ensure_bound(
+    proc: &mut Process,
+    sock_idx: usize,
+    addr: [u8; 16],
+) -> Result<(), Errno> {
+    let already_bound = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?.bind_port != 0;
+    if already_bound {
+        return Ok(());
+    }
+    udp6_bind_socket(proc, sock_idx, addr, 0)
+}
+
+fn udp6_socket_accepts_datagram(
+    sock: &crate::socket::SocketInfo,
+    src_addr: [u8; 16],
+    src_port: u16,
+) -> bool {
+    use crate::socket::SocketState;
+
+    if sock.state == SocketState::Connected {
+        return sock.peer_addr6 == src_addr && sock.peer_port == src_port;
+    }
+    true
+}
+
+/// Whether a queued datagram is visible through this socket's connected-peer
+/// filter. Keep recv and poll on the same predicate so readiness cannot claim
+/// data that the following recv would reject.
+fn dgram_matches_connected_peer(
+    sock: &crate::socket::SocketInfo,
+    owner_pid: u32,
+    datagram: &crate::socket::Datagram,
+) -> bool {
+    use crate::socket::{SocketDomain, SocketState};
+
+    if sock.state != SocketState::Connected {
+        return true;
+    }
+    match sock.domain {
+        SocketDomain::Inet => {
+            datagram.src_addr == sock.peer_addr && datagram.src_port == sock.peer_port
+        }
+        SocketDomain::Inet6 => {
+            datagram.src_addr6 == sock.peer_addr6 && datagram.src_port == sock.peer_port
+        }
+        SocketDomain::Unix => {
+            datagram.src_pid == owner_pid
+                && sock
+                    .peer_idx
+                    .is_some_and(|peer| datagram.src_sock_idx == Some(peer))
+        }
+    }
+}
+
+fn udp6_send_datagram(
+    proc: &mut Process,
+    sock_idx: usize,
+    buf: &[u8],
+    dst_addr: [u8; 16],
+    dst_port: u16,
+) -> Result<usize, Errno> {
+    use crate::socket::{Datagram, SocketDomain, SocketState, SocketType};
+
+    let dst_addr = if is_unspecified_addr6(dst_addr) {
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+    } else {
+        dst_addr
+    };
+    if !is_loopback_addr6(dst_addr) {
+        return Err(Errno::ENETUNREACH);
+    }
+    if !bind_device_allows_ipv6(proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?, dst_addr) {
+        return Err(Errno::ENETUNREACH);
+    }
+
+    let (state, shut_wr) = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        (sock.state, sock.shut_wr)
+    };
+    if shut_wr {
+        return Err(Errno::EPIPE);
+    }
+    if state == SocketState::Connected {
+        udp_take_socket_error(proc, sock_idx)?;
+    }
+
+    let loopback = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let auto_bind_addr = if state == SocketState::Connected {
+        loopback
+    } else {
+        [0; 16]
+    };
+    udp6_ensure_bound(proc, sock_idx, auto_bind_addr)?;
+
+    let (src_addr, src_port) = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        (sock.bind_addr6, sock.bind_port)
+    };
+    let src_addr = if is_unspecified_addr6(src_addr) {
+        loopback
+    } else {
+        src_addr
+    };
+    let datagram = Datagram {
+        data: buf.to_vec(),
+        src_addr: [0; 4],
+        src_addr6: src_addr,
+        dst_addr: [0; 4],
+        dst_addr6: dst_addr,
+        src_port,
+        src_sock_idx: Some(sock_idx),
+        ipv6_tclass: 0,
+        src_pid: proc.pid,
+        src_uid: proc.uid,
+        src_gid: proc.gid,
+        ancillary_fds: Vec::new(),
+    };
+
+    let mut delivered = false;
+    let sock_count = proc.sockets.len();
+    for idx in 0..sock_count {
+        let accepts = proc
+            .sockets
+            .get(idx)
+            .map(|sock| {
+                sock.domain == SocketDomain::Inet6
+                    && sock.sock_type == SocketType::Dgram
+                    && sock.bind_port == dst_port
+                    && (is_unspecified_addr6(sock.bind_addr6) || sock.bind_addr6 == dst_addr)
+                    && udp6_socket_accepts_datagram(sock, src_addr, src_port)
+            })
+            .unwrap_or(false);
+        if !accepts {
+            continue;
+        }
+        if let Some(target) = proc.sockets.get_mut(idx) {
+            udp_queue_datagram(target, datagram.clone());
+            delivered = true;
+            break;
+        }
+    }
+
+    if !delivered && state == SocketState::Connected {
+        if let Some(sock) = proc.sockets.get_mut(sock_idx) {
+            sock.connect_error = Errno::ECONNREFUSED as u32;
+        }
+    }
+
+    Ok(buf.len())
+}
+
 pub fn inject_udp_datagram_into(
     proc: &mut Process,
     dst_addr: [u8; 4],
@@ -6450,7 +7168,16 @@ pub fn inject_udp_datagram_into(
     let datagram = Datagram {
         data: data.to_vec(),
         src_addr,
+        src_addr6: [0; 16],
+        dst_addr,
+        dst_addr6: [0; 16],
         src_port,
+        src_sock_idx: None,
+        ipv6_tclass: 0,
+        src_pid: 0,
+        src_uid: 0,
+        src_gid: 0,
+        ancillary_fds: Vec::new(),
     };
     let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
     for endpoint in endpoints {
@@ -6492,17 +7219,14 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
 
     match sock.domain {
         SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.bind_addr, sock.bind_port)),
-        SocketDomain::Inet6 => {
-            if buf.len() >= 2 {
-                buf[0] = 10; // AF_INET6
-                buf[1] = 0;
-            }
-            Ok(2)
-        }
+        SocketDomain::Inet6 => Ok(write_sockaddr_in6(buf, sock.bind_addr6, sock.bind_port)),
         SocketDomain::Unix => {
             if let Some(ref path) = sock.bind_path {
-                // sockaddr_un: family(2) + path (null-terminated)
-                let total_len = 2 + path.len() + 1; // +1 for null terminator
+                // sockaddr_un: family(2) + path. Filesystem paths are
+                // null-terminated; Linux abstract namespace paths start with
+                // NUL and use the addrlen as their length (no terminator).
+                let abstract_unix = path.first().copied() == Some(0);
+                let total_len = 2 + path.len() + if abstract_unix { 0 } else { 1 };
                 let n = buf.len().min(total_len);
                 if n >= 1 {
                     buf[0] = 1;
@@ -6514,8 +7238,8 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                 if path_copy > 0 {
                     buf[2..2 + path_copy].copy_from_slice(&path[..path_copy]);
                 }
-                // Null terminate if room
-                if n > 2 + path_copy {
+                // Null terminate filesystem paths if room.
+                if !abstract_unix && n > 2 + path_copy {
                     buf[2 + path_copy] = 0;
                 }
                 Ok(total_len)
@@ -6560,13 +7284,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
     }
     match sock.domain {
         SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.peer_addr, sock.peer_port)),
-        SocketDomain::Inet6 => {
-            if buf.len() >= 2 {
-                buf[0] = 10; // AF_INET6
-                buf[1] = 0;
-            }
-            Ok(2)
-        }
+        SocketDomain::Inet6 => Ok(write_sockaddr_in6(buf, sock.peer_addr6, sock.peer_port)),
         SocketDomain::Unix => {
             if buf.len() >= 2 {
                 buf[0] = 1; // AF_UNIX
@@ -6657,16 +7375,34 @@ pub fn sys_send(
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
     if sock.sock_type == SocketType::Dgram {
-        if sock.domain == SocketDomain::Inet {
-            if sock.state != SocketState::Connected {
-                return Err(Errno::EDESTADDRREQ);
+        match sock.domain {
+            SocketDomain::Inet => {
+                if sock.state != SocketState::Connected {
+                    return Err(Errno::EDESTADDRREQ);
+                }
+                let dst_addr = sock.peer_addr;
+                let dst_port = sock.peer_port;
+                let result = udp_send_datagram(proc, host, sock_idx, buf, dst_addr, dst_port);
+                return finish_datagram_send(proc, flags, result);
             }
-            let dst_addr = sock.peer_addr;
-            let dst_port = sock.peer_port;
-            return udp_send_datagram(proc, host, sock_idx, buf, dst_addr, dst_port);
-        }
-        if sock.domain == SocketDomain::Unix && sock.state == SocketState::Connected {
-            return Ok(buf.len());
+            SocketDomain::Inet6 => {
+                if sock.state != SocketState::Connected {
+                    return Err(Errno::EDESTADDRREQ);
+                }
+                let dst_addr = sock.peer_addr6;
+                let dst_port = sock.peer_port;
+                let result = udp6_send_datagram(proc, sock_idx, buf, dst_addr, dst_port);
+                return finish_datagram_send(proc, flags, result);
+            }
+            SocketDomain::Unix if sock.state == SocketState::Connected => {
+                let peer_idx = sock.peer_idx;
+                if let Some(peer_idx) = peer_idx {
+                    let result = unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf);
+                    return finish_datagram_send(proc, flags, result);
+                }
+                return Err(Errno::ECONNREFUSED);
+            }
+            SocketDomain::Unix => {}
         }
     }
     if sock.state != SocketState::Connected {
@@ -6679,14 +7415,23 @@ pub fn sys_send(
             return Err(Errno::EINVAL);
         }
         let oob_byte = buf[buf.len() - 1];
-        // Find peer socket and set OOB byte.
-        // For loopback: peer_idx points to socket in same process.
-        // For cross-process: peer is in another process (handled by global pipe path).
-        if let Some(peer_idx) = sock.peer_idx {
-            if let Some(peer_sock) = proc.sockets.get_mut(peer_idx) {
-                peer_sock.oob_byte = Some(oob_byte);
+        // For loopback, peer_idx points to a socket in the same process.
+        // Cross-process streams use the global pipe path and do not have a
+        // process-local OOB peer. A closed or absent peer is a truthful EPIPE,
+        // never a successful write or an opportunity to target a reused slot.
+        let Some(peer_idx) = sock.peer_idx else {
+            if flags & MSG_NOSIGNAL == 0 {
+                proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
             }
-        }
+            return Err(Errno::EPIPE);
+        };
+        let Some(peer_sock) = proc.sockets.get_mut(peer_idx) else {
+            if flags & MSG_NOSIGNAL == 0 {
+                proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+            }
+            return Err(Errno::EPIPE);
+        };
+        peer_sock.oob_byte = Some(oob_byte);
         return Ok(buf.len());
     }
 
@@ -6716,10 +7461,8 @@ pub fn sys_send(
             }
         }
         SocketDomain::Unix => {
-            // DGRAM bit-bucket (syslog pattern): data is discarded
-            if sock.sock_type == crate::socket::SocketType::Dgram {
-                return Ok(buf.len());
-            }
+            // Connected datagrams returned through the family-specific path
+            // above. The remaining AF_UNIX path is pipe-backed SOCK_STREAM.
             let nosignal = flags & MSG_NOSIGNAL != 0;
             let sigpipe_was_pending = proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE);
             let result = sys_write(proc, host, fd, buf);
@@ -6754,7 +7497,12 @@ pub fn sys_recv(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    if sock.sock_type == SocketType::Dgram && sock.domain == SocketDomain::Inet {
+    if sock.sock_type == SocketType::Dgram
+        && matches!(
+            sock.domain,
+            SocketDomain::Inet | SocketDomain::Inet6 | SocketDomain::Unix
+        )
+    {
         let (n, _) = sys_recvfrom(proc, host, fd, buf, flags, &mut [])?;
         return Ok(n);
     }
@@ -6858,10 +7606,36 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
                 0
             }),
             SO_RCVBUF | SO_SNDBUF => Ok(DEFAULT_PIPE_CAPACITY as u32),
-            SO_REUSEADDR | SO_KEEPALIVE | SO_LINGER | SO_BROADCAST => {
+            SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_PASSCRED
+            | SO_ATTACH_REUSEPORT_CBPF | SO_ZEROCOPY => {
                 Ok(sock.get_option(level, optname).unwrap_or(0))
             }
+            // SO_LINGER and SO_BINDTODEVICE are structured/string-valued and
+            // handled by dedicated wasm ABI wrappers.
+            SO_LINGER | SO_BINDTODEVICE => Err(Errno::ENOPROTOOPT),
             // SO_RCVTIMEO/SO_SNDTIMEO handled by sys_getsockopt_timeout
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        IPPROTO_IP => match optname {
+            IP_TOS | IP_PKTINFO | IP_MTU_DISCOVER | IP_MULTICAST_IF | IP_MULTICAST_TTL
+            | IP_MULTICAST_LOOP | IP_MULTICAST_ALL
+            | MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP
+            | MCAST_BLOCK_SOURCE | MCAST_UNBLOCK_SOURCE | MCAST_JOIN_SOURCE_GROUP
+            | MCAST_LEAVE_SOURCE_GROUP => {
+                Ok(sock.get_option(level, optname).unwrap_or_else(|| match optname {
+                    IP_MULTICAST_TTL | IP_MULTICAST_LOOP => 1,
+                    _ => 0,
+                }))
+            }
+            IP_MTU => Ok(1500),
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        IPPROTO_IPV6 => match optname {
+            IPV6_V6ONLY => Ok(u32::from(ipv6_v6only(sock))),
+            IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP
+            | IPV6_RECVPKTINFO | IPV6_RECVTCLASS | IPV6_DONTFRAG | IPV6_TCLASS => {
+                Ok(sock.get_option(level, optname).unwrap_or(0))
+            }
             _ => Err(Errno::ENOPROTOOPT),
         },
         IPPROTO_TCP => match optname {
@@ -6869,7 +7643,8 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
             | TCP_DEFER_ACCEPT | TCP_QUICKACK | TCP_USER_TIMEOUT => {
                 Ok(sock.get_option(level, optname).unwrap_or(0))
             }
-            // TCP_INFO handled separately by sys_getsockopt_tcp_info
+            // TCP_INFO and TCP_CONGESTION handled separately.
+            TCP_CONGESTION => Err(Errno::ENOPROTOOPT),
             _ => Err(Errno::ENOPROTOOPT),
         },
         _ => Err(Errno::ENOPROTOOPT),
@@ -6955,6 +7730,158 @@ pub fn sys_getsockopt_timeout(proc: &Process, fd: i32, optname: u32) -> Result<u
     })
 }
 
+/// Get SO_LINGER's structured state.
+pub fn sys_getsockopt_linger(proc: &Process, fd: i32) -> Result<(i32, i32), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    Ok((sock.linger_onoff, sock.linger_seconds))
+}
+
+/// Set SO_LINGER's structured state.
+pub fn sys_setsockopt_linger(
+    proc: &mut Process,
+    fd: i32,
+    l_onoff: i32,
+    l_linger: i32,
+) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    sock.linger_onoff = l_onoff;
+    sock.linger_seconds = l_linger;
+    sock.set_option(
+        wasm_posix_shared::socket::SOL_SOCKET,
+        wasm_posix_shared::socket::SO_LINGER,
+        if l_onoff != 0 { 1 } else { 0 },
+    );
+    Ok(())
+}
+
+/// Set SO_BINDTODEVICE to a named virtual interface.
+pub fn sys_setsockopt_bindtodevice(
+    proc: &mut Process,
+    fd: i32,
+    device: &[u8],
+) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if !matches!(
+        sock.domain,
+        crate::socket::SocketDomain::Inet | crate::socket::SocketDomain::Inet6
+    ) {
+        return Err(Errno::ENOPROTOOPT);
+    }
+    let name = device.split(|&b| b == 0).next().unwrap_or(device);
+    if name.is_empty() {
+        sock.bind_device = None;
+        sock.set_option(
+            wasm_posix_shared::socket::SOL_SOCKET,
+            wasm_posix_shared::socket::SO_BINDTODEVICE,
+            0,
+        );
+        return Ok(());
+    }
+    if name != b"lo" && name != b"eth0" {
+        return Err(Errno::ENODEV);
+    }
+    sock.bind_device = Some(name.to_vec());
+    sock.set_option(
+        wasm_posix_shared::socket::SOL_SOCKET,
+        wasm_posix_shared::socket::SO_BINDTODEVICE,
+        1,
+    );
+    Ok(())
+}
+
+/// Get SO_BINDTODEVICE's bound interface name.
+pub fn sys_getsockopt_bindtodevice(proc: &Process, fd: i32) -> Result<Vec<u8>, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if !matches!(
+        sock.domain,
+        crate::socket::SocketDomain::Inet | crate::socket::SocketDomain::Inet6
+    ) {
+        return Err(Errno::ENOPROTOOPT);
+    }
+    Ok(sock.bind_device.clone().unwrap_or_default())
+}
+
+/// Get TCP_CONGESTION's algorithm name.
+pub fn sys_getsockopt_tcp_congestion(proc: &Process, fd: i32) -> Result<Vec<u8>, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if !matches!(
+        sock.domain,
+        crate::socket::SocketDomain::Inet | crate::socket::SocketDomain::Inet6
+    ) || sock.sock_type != crate::socket::SocketType::Stream
+    {
+        return Err(Errno::ENOPROTOOPT);
+    }
+    Ok(sock.tcp_congestion.clone())
+}
+
+/// Set TCP_CONGESTION's algorithm name.
+pub fn sys_setsockopt_tcp_congestion(
+    proc: &mut Process,
+    fd: i32,
+    name: &[u8],
+) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let name = name.split(|&b| b == 0).next().unwrap_or(name);
+    if name.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if !matches!(
+        sock.domain,
+        crate::socket::SocketDomain::Inet | crate::socket::SocketDomain::Inet6
+    ) || sock.sock_type != crate::socket::SocketType::Stream
+    {
+        return Err(Errno::ENOPROTOOPT);
+    }
+    // Kandelo exposes one virtual TCP policy. Accept re-selecting that policy,
+    // but reject names whose behavior the kernel does not implement.
+    if name != b"cubic" {
+        return Err(Errno::ENOENT);
+    }
+    sock.tcp_congestion = name.to_vec();
+    sock.set_option(
+        wasm_posix_shared::socket::IPPROTO_TCP,
+        wasm_posix_shared::socket::TCP_CONGESTION,
+        1,
+    );
+    Ok(())
+}
+
 /// Set socket option value.
 pub fn sys_setsockopt(
     proc: &mut Process,
@@ -6976,11 +7903,65 @@ pub fn sys_setsockopt(
 
     match level {
         SOL_SOCKET => match optname {
-            SO_REUSEADDR | SO_KEEPALIVE | SO_RCVBUF | SO_SNDBUF | SO_LINGER | SO_BROADCAST => {
+            SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_RCVBUF | SO_SNDBUF
+            | SO_BROADCAST | SO_PASSCRED | SO_ATTACH_REUSEPORT_CBPF | SO_ZEROCOPY => {
+                    sock.set_option(level, optname, value);
+                    Ok(())
+                }
+            SO_LINGER | SO_BINDTODEVICE => Err(Errno::ENOPROTOOPT),
+            // SO_RCVTIMEO/SO_SNDTIMEO handled by sys_setsockopt_timeout
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        IPPROTO_IP => match optname {
+            IP_MULTICAST_IF => {
+                let addr = value.to_le_bytes();
+                if addr != [0; 4] && !is_loopback_addr(addr) && !is_virtual_network_addr(addr) {
+                    return Err(Errno::EADDRNOTAVAIL);
+                }
                 sock.set_option(level, optname, value);
                 Ok(())
             }
-            // SO_RCVTIMEO/SO_SNDTIMEO handled by sys_setsockopt_timeout
+            IP_MULTICAST_TTL => {
+                if value > u8::MAX as u32 {
+                    return Err(Errno::EINVAL);
+                }
+                sock.set_option(level, optname, value);
+                Ok(())
+            }
+            IP_MULTICAST_LOOP => {
+                sock.set_option(level, optname, u32::from(value != 0));
+                Ok(())
+            }
+            IP_TOS | IP_PKTINFO | IP_MTU_DISCOVER | IP_MULTICAST_ALL
+            | MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP
+            | MCAST_BLOCK_SOURCE | MCAST_UNBLOCK_SOURCE | MCAST_JOIN_SOURCE_GROUP
+            | MCAST_LEAVE_SOURCE_GROUP => {
+                sock.set_option(level, optname, value);
+                Ok(())
+            }
+            IP_MTU => Err(Errno::ENOPROTOOPT),
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        IPPROTO_IPV6 => match optname {
+            IPV6_V6ONLY => {
+                if sock.domain != crate::socket::SocketDomain::Inet6 {
+                    return Err(Errno::ENOPROTOOPT);
+                }
+                if sock.bind_port != 0 {
+                    return Err(Errno::EINVAL);
+                }
+                if sock.sock_type == crate::socket::SocketType::Dgram && value == 0 {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                sock.set_option(level, optname, if value != 0 { 1 } else { 0 });
+                Ok(())
+            }
+            IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP
+            | IPV6_PKTINFO | IPV6_RECVPKTINFO | IPV6_RECVTCLASS | IPV6_DONTFRAG
+            | IPV6_TCLASS => {
+                sock.set_option(level, optname, value);
+                Ok(())
+            }
             _ => Err(Errno::ENOPROTOOPT),
         },
         IPPROTO_TCP => match optname {
@@ -6989,6 +7970,7 @@ pub fn sys_setsockopt(
                 sock.set_option(level, optname, value);
                 Ok(())
             }
+            TCP_CONGESTION => Err(Errno::ENOPROTOOPT),
             _ => Err(Errno::ENOPROTOOPT),
         },
         _ => Err(Errno::ENOPROTOOPT),
@@ -7061,6 +8043,9 @@ pub fn sys_bind(
             if sock.sock_type == SocketType::Dgram {
                 return udp_bind_socket(proc, host, sock_idx, ip, port);
             }
+            if !bind_device_allows_ipv4(sock, ip, true) {
+                return Err(Errno::EADDRNOTAVAIL);
+            }
 
             let assigned_port = if port == 0 {
                 let p = proc.next_ephemeral_port;
@@ -7079,6 +8064,66 @@ pub fn sys_bind(
             sock.state = SocketState::Bound;
             Ok(())
         }
+        SocketDomain::Inet6 => {
+            let (ip, port) = parse_sockaddr_in6(addr)?;
+            if sock.sock_type == SocketType::Dgram {
+                return udp6_bind_socket(proc, sock_idx, ip, port);
+            }
+            if !(is_loopback_addr6(ip) || is_unspecified_addr6(ip)) {
+                return Err(Errno::EADDRNOTAVAIL);
+            }
+            if !bind_device_allows_ipv6(sock, ip) {
+                return Err(Errno::EADDRNOTAVAIL);
+            }
+
+            let dual_stack = is_unspecified_addr6(ip) && !ipv6_v6only(sock);
+            let assigned_port = if port == 0 {
+                if proc.next_ephemeral_port < 49152 {
+                    proc.next_ephemeral_port = 49152;
+                }
+                let start = proc.next_ephemeral_port;
+                loop {
+                    let candidate = proc.next_ephemeral_port;
+                    bump_ephemeral_port(proc);
+                    if crate::socket::tcp6_can_bind(proc.pid, sock_idx, ip, candidate)
+                        && (!dual_stack
+                            || crate::socket::tcp_can_bind(
+                                proc.pid,
+                                sock_idx,
+                                [0, 0, 0, 0],
+                                candidate,
+                            ))
+                    {
+                        break candidate;
+                    }
+                    if proc.next_ephemeral_port == start {
+                        return Err(Errno::EADDRINUSE);
+                    }
+                }
+            } else {
+                port
+            };
+
+            // Linux defaults AF_INET6 sockets to dual-stack unless
+            // IPV6_V6ONLY is enabled. A wildcard IPv6 stream bind therefore
+            // also occupies the IPv4 port space and must conflict with an
+            // AF_INET bind to the same port. Specific ::1 binds stay IPv6-only
+            // and can coexist with 127.0.0.1.
+            crate::socket::tcp6_register(proc.pid, sock_idx, ip, assigned_port)?;
+            if dual_stack {
+                if let Err(err) =
+                    crate::socket::tcp_register(proc.pid, sock_idx, [0, 0, 0, 0], assigned_port)
+                {
+                    crate::socket::tcp6_unregister(proc.pid, sock_idx);
+                    return Err(err);
+                }
+            }
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            sock.bind_addr6 = ip;
+            sock.bind_port = assigned_port;
+            sock.state = SocketState::Bound;
+            Ok(())
+        }
         SocketDomain::Unix => {
             // sockaddr_un: family(2) + sun_path (null-terminated, up to 108 bytes)
             if addr.len() < 3 {
@@ -7086,15 +8131,28 @@ pub fn sys_bind(
             }
             // Extract path: starts at offset 2, null-terminated
             let path_bytes = &addr[2..];
-            let path_end = path_bytes
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(path_bytes.len());
-            if path_end == 0 {
-                return Err(Errno::EINVAL);
-            }
-            let sun_path = &path_bytes[..path_end];
-            let resolved = crate::path::resolve_path(sun_path, &proc.cwd);
+            let (resolved, abstract_unix) = if path_bytes.first().copied() == Some(0) {
+                if path_bytes.len() < 2 {
+                    return Err(Errno::EINVAL);
+                }
+                // Linux abstract namespace sockets are identified by the raw
+                // bytes after sun_family, including the leading NUL. No
+                // filesystem inode is created and embedded/trailing NUL bytes
+                // are part of the address.
+                (path_bytes.to_vec(), true)
+            } else {
+                let path_end = path_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(path_bytes.len());
+                if path_end == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                (
+                    crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd),
+                    false,
+                )
+            };
 
             // POSIX: bind() must create a filesystem inode at sun_path so
             // chmod/stat/ls find a node there. Do that first via host O_CREAT|
@@ -7104,31 +8162,34 @@ pub fn sys_bind(
             // here after the package-management rebase dropped it; the same
             // code lives at the merge base but didn't survive into the
             // rebased branch.)
-            use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
-            check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
-            // Linux pathname sockets start with every permission bit enabled,
-            // filtered through the creating process's umask. The backing VFS
-            // inode owns these bits so later chmod/stat operations observe one
-            // authoritative value.
-            let socket_mode = 0o777 & !proc.umask;
-            let h = match host.host_open(
-                &resolved,
-                O_CREAT | O_EXCL | O_WRONLY,
-                socket_mode,
-            ) {
-                Ok(h) => h,
-                Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
-                Err(e) => return Err(e),
-            };
-            host.host_chown(&resolved, proc.euid, proc.egid)?;
-            let _ = host.host_close(h);
+            if !abstract_unix {
+                use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
+                check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
+                // Linux pathname sockets start with every permission bit enabled,
+                // filtered through the creating process's umask. Abstract sockets
+                // have no backing VFS inode at all.
+                let socket_mode = 0o777 & !proc.umask;
+                let h = match host.host_open(
+                    &resolved,
+                    O_CREAT | O_EXCL | O_WRONLY,
+                    socket_mode,
+                ) {
+                    Ok(h) => h,
+                    Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
+                    Err(e) => return Err(e),
+                };
+                host.host_chown(&resolved, proc.euid, proc.egid)?;
+                let _ = host.host_close(h);
+            }
 
             // Register in global Unix socket registry. If a stale entry exists
             // (host had no inode but registry did — shouldn't happen normally)
             // unwind the host inode so we don't leak.
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if !registry.register(resolved.clone(), proc.pid, sock_idx) {
-                let _ = host.host_unlink(&resolved);
+                if !abstract_unix {
+                    let _ = host.host_unlink(&resolved);
+                }
                 return Err(Errno::EADDRINUSE);
             }
 
@@ -7137,7 +8198,6 @@ pub fn sys_bind(
             sock.state = SocketState::Bound;
             Ok(())
         }
-        SocketDomain::Inet6 => Err(Errno::EADDRNOTAVAIL),
     }
 }
 
@@ -7158,32 +8218,89 @@ pub fn sys_listen(
         return Err(Errno::ENOTSOCK);
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
-    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-    if sock.sock_type != SocketType::Stream {
+    let (domain, sock_type, state) = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        (sock.domain, sock.sock_type, sock.state)
+    };
+    if sock_type != SocketType::Stream {
         return Err(Errno::EOPNOTSUPP);
     }
-    if sock.state != SocketState::Bound && sock.state != SocketState::Listening {
+    if state == SocketState::Unbound {
+        // Linux auto-binds unbound INET stream sockets on listen(2). This is
+        // observable through getsockname() and lets standard socket option
+        // probes listen without an explicit bind.
+        match domain {
+            SocketDomain::Inet => {
+                let mut wildcard = [0u8; 16];
+                wildcard[0] = wasm_posix_shared::socket::AF_INET as u8;
+                sys_bind(proc, host, fd, &wildcard)?;
+            }
+            SocketDomain::Inet6 => {
+                let mut wildcard = [0u8; 28];
+                wildcard[0] = wasm_posix_shared::socket::AF_INET6 as u8;
+                sys_bind(proc, host, fd, &wildcard)?;
+            }
+            SocketDomain::Unix => return Err(Errno::EINVAL),
+        }
+    } else if state != SocketState::Bound && state != SocketState::Listening {
         return Err(Errno::EINVAL);
+    }
+
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if let Some(value) = sock.get_option(
+        wasm_posix_shared::socket::IPPROTO_TCP,
+        wasm_posix_shared::socket::TCP_DEFER_ACCEPT,
+    ) {
+        if value > 0 {
+            // Linux rounds TCP_DEFER_ACCEPT to an internal retransmission
+            // timeout. Preserve the observable contract that getsockopt()
+            // after listen() returns a value greater than the requested one.
+            sock.set_option(
+                wasm_posix_shared::socket::IPPROTO_TCP,
+                wasm_posix_shared::socket::TCP_DEFER_ACCEPT,
+                value.saturating_add(1),
+            );
+        }
     }
     sock.state = SocketState::Listening;
     if sock.accept_wake_idx.is_none() {
         sock.accept_wake_idx = Some(crate::wakeup::alloc_accept_wake_idx());
     }
 
-    // For AF_INET listeners, allocate a shared accept queue that fork
+    // For AF_INET/AF_INET6 listeners, allocate a shared accept queue that fork
     // children will inherit. This way every process sharing this listener
     // pulls from the same queue (POSIX semantics) — see socket.rs.
     let domain = sock.domain;
-    if domain == SocketDomain::Inet && sock.shared_backlog_idx.is_none() {
+    if matches!(
+        domain,
+        SocketDomain::Inet | SocketDomain::Inet6
+    )
+        && sock.shared_backlog_idx.is_none()
+    {
         let backlog_idx = unsafe { crate::socket::shared_listener_backlog_table().alloc() };
         sock.shared_backlog_idx = Some(backlog_idx);
     }
 
-    // Notify the host for AF_INET sockets so it can open a real TCP server
+    // Notify the host so it can open a real TCP server. The bridge transport is
+    // IPv4 today; AF_INET6 loopback listeners are registered on the IPv4
+    // loopback transport while the guest-facing socket remains AF_INET6. This
+    // gives cross-process ::1 loopback the same accept/backlog semantics as
+    // 127.0.0.1 without exposing host-network details to the guest.
     let port = sock.bind_port;
     let addr = sock.bind_addr;
-    if domain == SocketDomain::Inet {
-        let _ = host.host_net_listen(fd, port, &addr);
+    match domain {
+        SocketDomain::Inet => {
+            let _ = host.host_net_listen(fd, port, &addr);
+        }
+        SocketDomain::Inet6 => {
+            // The host transport is IPv4. Register only a genuine dual-stack
+            // wildcard listener there; native ::1 and V6ONLY listeners stay
+            // on the kernel's IPv6 loopback path and cannot admit IPv4 peers.
+            if is_unspecified_addr6(sock.bind_addr6) && !ipv6_v6only(sock) {
+                let _ = host.host_net_listen(fd, port, &[127, 0, 0, 1]);
+            }
+        }
+        SocketDomain::Unix => {}
     }
     Ok(())
 }
@@ -7200,6 +8317,9 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
+    // Linux accept() does not inherit O_NONBLOCK from the listener. accept4()
+    // applies SOCK_NONBLOCK explicitly in the wasm wrapper after this returns.
+    let accepted_status_flags = O_RDWR;
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
 
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -7210,28 +8330,43 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
         return Err(Errno::EINVAL);
     }
 
-    // AF_INET listeners use a shared cross-process accept queue. Try
+    // AF_INET/AF_INET6 listeners use a shared cross-process accept queue. Try
     // popping from there first; the accepted SocketInfo is created
     // lazily here in the accepting process. See socket.rs.
     if let Some(shared_idx) = sock.shared_backlog_idx {
+        let domain = sock.domain;
         let bind_addr = sock.bind_addr;
+        let bind_addr6 = sock.bind_addr6;
         let bind_port = sock.bind_port;
         let pending = unsafe { crate::socket::shared_listener_backlog_table().pop(shared_idx) };
         if let Some(pc) = pending {
-            let mut accepted = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+            let mut accepted = SocketInfo::new(domain, SocketType::Stream, 0);
             accepted.state = SocketState::Connected;
             accepted.recv_buf_idx = Some(pc.recv_pipe_idx);
             accepted.send_buf_idx = Some(pc.send_pipe_idx);
-            accepted.bind_addr = bind_addr;
             accepted.bind_port = bind_port;
-            accepted.peer_addr = pc.peer_addr;
+            match domain {
+                SocketDomain::Inet => {
+                    accepted.bind_addr = bind_addr;
+                    accepted.peer_addr = pc.peer_addr;
+                }
+                SocketDomain::Inet6 => {
+                    accepted.bind_addr6 = bind_addr6;
+                    accepted.peer_addr6 = if pc.peer_is_ipv6 {
+                        pc.peer_addr6
+                    } else {
+                        ipv4_mapped_addr6(pc.peer_addr)
+                    };
+                }
+                SocketDomain::Unix => unreachable!("AF_UNIX does not use this queue yet"),
+            }
             accepted.peer_port = pc.peer_port;
             accepted.global_pipes = true;
             let accepted_sock_idx = proc.sockets.alloc(accepted);
             let host_handle = -((accepted_sock_idx as i64) + 1);
             let ofd_idx = proc.ofd_table.create(
                 FileType::Socket,
-                O_RDWR,
+                accepted_status_flags,
                 host_handle,
                 b"/dev/socket".to_vec(),
             );
@@ -7255,7 +8390,7 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
     let host_handle = -((accepted_sock_idx as i64) + 1);
     let ofd_idx = proc.ofd_table.create(
         FileType::Socket,
-        O_RDWR,
+        accepted_status_flags,
         host_handle,
         b"/dev/socket".to_vec(),
     );
@@ -7270,10 +8405,12 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
 /// For AF_INET sockets connecting to 127.0.0.1, performs loopback connect:
 /// finds the listening socket on the target port, creates pipe pairs, and
 /// pushes a pending connection to the listener's backlog.
-/// For non-loopback AF_INET/AF_INET6, delegates to the host via `host_net_connect`.
+/// Non-loopback AF_INET streams delegate to the host via `host_net_connect`;
+/// AF_INET6 currently exposes only local `::`/`::1` stream routing.
 /// For AF_UNIX SOCK_STREAM, performs same-process connect via the global
 /// UnixSocketRegistry (cross-process connect is handled in wasm_api.rs).
-/// For AF_UNIX SOCK_DGRAM, connect succeeds as a bit-bucket.
+/// For AF_UNIX SOCK_DGRAM, connects validate a live same-process datagram
+/// endpoint; unsupported cross-process routing fails without misdelivery.
 pub fn sys_connect(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -7308,8 +8445,9 @@ pub fn sys_connect(
                     return Ok(());
                 }
 
-                let (ip, port) = parse_sockaddr_in(addr)?;
-                if ip == [0, 0, 0, 0] && port == 0 {
+                let (raw_ip, port) = parse_sockaddr_in(addr)?;
+                let ip = udp_canonical_dst_addr(raw_ip);
+                if raw_ip == [0, 0, 0, 0] && port == 0 {
                     return Err(Errno::EADDRNOTAVAIL);
                 }
                 if ip == [255, 255, 255, 255] {
@@ -7322,6 +8460,9 @@ pub fn sys_connect(
                     }
                 }
                 if !is_supported_udp_route_addr(ip) {
+                    return Err(Errno::ENETUNREACH);
+                }
+                if !bind_device_allows_ipv4(sock, ip, false) {
                     return Err(Errno::ENETUNREACH);
                 }
 
@@ -7340,12 +8481,140 @@ pub fn sys_connect(
             if sock.state == SocketState::Connected {
                 return Err(Errno::EISCONN);
             }
+
+            if sock.domain == SocketDomain::Inet6 {
+                if sock.sock_type == SocketType::Dgram {
+                    let (raw_ip6, port) = parse_sockaddr_in6(addr)?;
+                    if is_unspecified_addr6(raw_ip6) && port == 0 {
+                        return Err(Errno::EADDRNOTAVAIL);
+                    }
+                    let ip6 = if is_unspecified_addr6(raw_ip6) {
+                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+                    } else {
+                        raw_ip6
+                    };
+                    if !is_loopback_addr6(ip6) {
+                        return Err(Errno::ENETUNREACH);
+                    }
+                    if !bind_device_allows_ipv6(sock, ip6) {
+                        return Err(Errno::ENETUNREACH);
+                    }
+                    udp6_ensure_bound(
+                        proc,
+                        sock_idx,
+                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                    )?;
+                    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                    sock.peer_addr6 = ip6;
+                    sock.peer_port = port;
+                    sock.state = SocketState::Connected;
+                    return Ok(());
+                }
+                if sock.sock_type != SocketType::Stream {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                let (raw_ip6, port) = parse_sockaddr_in6(addr)?;
+                if !(is_loopback_addr6(raw_ip6) || is_unspecified_addr6(raw_ip6)) {
+                    return Err(Errno::EADDRNOTAVAIL);
+                }
+                let ip6 = if is_unspecified_addr6(raw_ip6) {
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+                } else {
+                    raw_ip6
+                };
+                if !bind_device_allows_ipv6(sock, ip6) {
+                    return Err(Errno::ENETUNREACH);
+                }
+
+                // AF_INET6 support is currently local-loopback. That is enough
+                // to model standard bind/listen/getsockname behavior and makes
+                // unsupported remote IPv6 fail deterministically instead of
+                // being mis-parsed as IPv4.
+                let mut listener_idx = None;
+                let sock_count = proc.sockets.len();
+                for i in 0..sock_count {
+                    if let Some(s) = proc.sockets.get(i) {
+                        if s.domain == SocketDomain::Inet6
+                            && s.state == SocketState::Listening
+                            && s.bind_port == port
+                            && s.sock_type == SocketType::Stream
+                            && (is_unspecified_addr6(s.bind_addr6) || s.bind_addr6 == ip6)
+                        {
+                            listener_idx = Some(i);
+                            break;
+                        }
+                    }
+                }
+                let listener_idx = listener_idx.ok_or(Errno::ECONNREFUSED)?;
+
+                let (pipe_a_idx, pipe_b_idx) = unsafe {
+                    crate::pipe::global_pipe_table()
+                        .alloc_pair(PipeBuffer::new(65536), PipeBuffer::new(65536))
+                };
+
+                let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+                let client_addr6 = if is_unspecified_addr6(client_sock.bind_addr6) {
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+                } else {
+                    client_sock.bind_addr6
+                };
+                let mut client_port = client_sock.bind_port;
+                if client_port == 0 {
+                    client_port = proc.next_ephemeral_port;
+                    proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+                    if proc.next_ephemeral_port == 0 {
+                        proc.next_ephemeral_port = 49152;
+                    }
+                }
+
+                let listener = proc.sockets.get(listener_idx).ok_or(Errno::EBADF)?;
+                let mut accepted_sock = SocketInfo::new(SocketDomain::Inet6, SocketType::Stream, 0);
+                accepted_sock.state = SocketState::Connected;
+                accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+                accepted_sock.send_buf_idx = Some(pipe_b_idx);
+                accepted_sock.global_pipes = true;
+                accepted_sock.bind_addr6 = listener.bind_addr6;
+                accepted_sock.bind_port = listener.bind_port;
+                accepted_sock.peer_addr6 = client_addr6;
+                accepted_sock.peer_port = client_port;
+                let accepted_idx = proc.sockets.alloc(accepted_sock);
+
+                let listener = proc.sockets.get_mut(listener_idx).ok_or(Errno::EBADF)?;
+                listener.listen_backlog.push(accepted_idx);
+                let accept_wake_idx = listener.accept_wake_idx;
+
+                let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                client.send_buf_idx = Some(pipe_a_idx);
+                client.recv_buf_idx = Some(pipe_b_idx);
+                client.state = SocketState::Connected;
+                client.peer_addr6 = ip6;
+                client.peer_port = port;
+                client.peer_idx = Some(accepted_idx);
+                client.global_pipes = true;
+                if client.bind_port == 0 {
+                    client.bind_port = client_port;
+                    client.bind_addr6 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+                }
+
+                let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
+                accepted.peer_idx = Some(sock_idx);
+
+                if let Some(idx) = accept_wake_idx {
+                    crate::wakeup::push_accept(idx);
+                }
+
+                return Ok(());
+            }
+
             // Parse sockaddr_in: family(2) + port(2 big-endian) + addr(4)
             if addr.len() < 8 {
                 return Err(Errno::EINVAL);
             }
             let port = u16::from_be_bytes([addr[2], addr[3]]);
             let ip = [addr[4], addr[5], addr[6], addr[7]];
+            if !bind_device_allows_ipv4(sock, ip, false) {
+                return Err(Errno::ENETUNREACH);
+            }
 
             // Check for loopback address (127.0.0.1)
             let is_loopback = ip == [127, 0, 0, 1];
@@ -7381,6 +8650,15 @@ pub fn sys_connect(
                         if s.state == SocketState::Listening
                             && s.bind_port == port
                             && s.sock_type == SocketType::Stream
+                            && match s.domain {
+                                SocketDomain::Inet => {
+                                    s.bind_addr == [0; 4] || s.bind_addr == ip
+                                }
+                                SocketDomain::Inet6 => {
+                                    is_unspecified_addr6(s.bind_addr6) && !ipv6_v6only(s)
+                                }
+                                SocketDomain::Unix => false,
+                            }
                         {
                             listener_idx = Some(i);
                             break;
@@ -7412,22 +8690,27 @@ pub fn sys_connect(
                     }
                 }
 
-                // Create accepted socket (server side) with cross-connected pipes
-                let mut accepted_sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+                // Create the server side in the listener's domain. An IPv4
+                // client accepted by a dual-stack IPv6 wildcard listener is
+                // reported as an IPv4-mapped IPv6 peer.
+                let listener = proc.sockets.get(listener_idx).ok_or(Errno::EBADF)?;
+                let listener_domain = listener.domain;
+                let listener_addr = listener.bind_addr;
+                let listener_addr6 = listener.bind_addr6;
+                let listener_port = listener.bind_port;
+                let mut accepted_sock =
+                    SocketInfo::new(listener_domain, SocketType::Stream, 0);
                 accepted_sock.state = SocketState::Connected;
                 accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads from pipe_a (client's writes)
                 accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to pipe_b (client's reads)
-                accepted_sock.bind_addr = proc
-                    .sockets
-                    .get(listener_idx)
-                    .map(|s| s.bind_addr)
-                    .unwrap_or([0; 4]);
-                accepted_sock.bind_port = proc
-                    .sockets
-                    .get(listener_idx)
-                    .map(|s| s.bind_port)
-                    .unwrap_or(0);
-                accepted_sock.peer_addr = client_addr;
+                accepted_sock.bind_port = listener_port;
+                if listener_domain == SocketDomain::Inet6 {
+                    accepted_sock.bind_addr6 = listener_addr6;
+                    accepted_sock.peer_addr6 = ipv4_mapped_addr6(client_addr);
+                } else {
+                    accepted_sock.bind_addr = listener_addr;
+                    accepted_sock.peer_addr = client_addr;
+                }
                 accepted_sock.peer_port = client_port;
                 accepted_sock.global_pipes = true;
                 let accepted_idx = proc.sockets.alloc(accepted_sock);
@@ -7492,8 +8775,45 @@ pub fn sys_connect(
         SocketDomain::Unix => {
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
             if sock.sock_type == SocketType::Dgram {
-                // SOCK_DGRAM connect on AF_UNIX succeeds as a bit-bucket (syslog pattern)
+                if addr.len() < 3 {
+                    return Err(Errno::EINVAL);
+                }
+                let path_bytes = &addr[2..];
+                let resolved = if path_bytes.first().copied() == Some(0) {
+                    if path_bytes.len() < 2 {
+                        return Err(Errno::EINVAL);
+                    }
+                    path_bytes.to_vec()
+                } else {
+                    let path_end = path_bytes
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(path_bytes.len());
+                    if path_end == 0 {
+                        return Err(Errno::EINVAL);
+                    }
+                    crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+                };
+                let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+                let peer = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
+                // Cross-process datagram routing needs ProcessTable ownership
+                // and is handled by a later machine-wide routing repair. Fail
+                // truthfully here instead of indexing this process's socket
+                // table with another process's slot number.
+                if peer.pid != proc.pid {
+                    return Err(Errno::ECONNREFUSED);
+                }
+                let peer_idx = peer.sock_idx;
+                let target = proc.sockets.get(peer_idx).ok_or(Errno::ECONNREFUSED)?;
+                if target.domain != SocketDomain::Unix
+                    || target.sock_type != SocketType::Dgram
+                    || !matches!(target.state, SocketState::Bound | SocketState::Connected)
+                {
+                    return Err(Errno::ECONNREFUSED);
+                }
+
                 let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                sock.peer_idx = Some(peer_idx);
                 sock.state = SocketState::Connected;
                 return Ok(());
             }
@@ -7506,14 +8826,21 @@ pub fn sys_connect(
                 return Err(Errno::EINVAL);
             }
             let path_bytes = &addr[2..];
-            let path_end = path_bytes
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(path_bytes.len());
-            if path_end == 0 {
-                return Err(Errno::EINVAL);
-            }
-            let resolved = crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd);
+            let resolved = if path_bytes.first().copied() == Some(0) {
+                if path_bytes.len() < 2 {
+                    return Err(Errno::EINVAL);
+                }
+                path_bytes.to_vec()
+            } else {
+                let path_end = path_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(path_bytes.len());
+                if path_end == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+            };
 
             // Look up the path in the global Unix socket registry
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -7601,7 +8928,7 @@ pub fn sys_sendto(
     _host: &mut dyn HostIO,
     fd: i32,
     buf: &[u8],
-    _flags: u32,
+    flags: u32,
     addr: &[u8],
 ) -> Result<usize, Errno> {
     use crate::socket::{SocketDomain, SocketState, SocketType};
@@ -7614,27 +8941,56 @@ pub fn sys_sendto(
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
 
-    // AF_UNIX DGRAM connected sockets: bit-bucket (syslog pattern via send→sendto)
-    if sock.domain == SocketDomain::Unix
-        && sock.sock_type == SocketType::Dgram
-        && sock.state == SocketState::Connected
-    {
-        return Ok(buf.len());
-    }
-
     if addr.is_empty() {
         if sock.state == SocketState::Connected {
-            return sys_send(proc, _host, fd, buf, _flags);
+            return sys_send(proc, _host, fd, buf, flags);
         }
         return Err(Errno::EDESTADDRREQ);
     }
 
-    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+    if sock.sock_type != SocketType::Dgram {
         return Err(Errno::EOPNOTSUPP);
     }
 
-    let (dst_ip, dst_port) = parse_sockaddr_in(addr)?;
-    udp_send_datagram(proc, _host, sock_idx, buf, dst_ip, dst_port)
+    let result = match sock.domain {
+        SocketDomain::Inet => {
+            let (dst_ip, dst_port) = parse_sockaddr_in(addr)?;
+            udp_send_datagram(proc, _host, sock_idx, buf, dst_ip, dst_port)
+        }
+        SocketDomain::Inet6 => {
+            let (dst_ip, dst_port) = parse_sockaddr_in6(addr)?;
+            udp6_send_datagram(proc, sock_idx, buf, dst_ip, dst_port)
+        }
+        SocketDomain::Unix => {
+            if addr.len() < 3 {
+                return Err(Errno::EINVAL);
+            }
+            let path_bytes = &addr[2..];
+            let resolved = if path_bytes.first().copied() == Some(0) {
+                if path_bytes.len() < 2 {
+                    return Err(Errno::EINVAL);
+                }
+                path_bytes.to_vec()
+            } else {
+                let path_end = path_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(path_bytes.len());
+                if path_end == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+            };
+            let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+            let peer = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
+            if peer.pid != proc.pid {
+                return Err(Errno::ECONNREFUSED);
+            }
+            let peer_idx = peer.sock_idx;
+            unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf)
+        }
+    };
+    finish_datagram_send(proc, flags, result)
 }
 
 /// Receive a message from a socket with sender address.
@@ -7664,7 +9020,10 @@ pub fn sys_recvfrom(
         let n = sys_recv(proc, _host, fd, buf, _flags)?;
         return Ok((n, 0));
     }
-    if sock.domain != SocketDomain::Inet {
+    if !matches!(
+        sock.domain,
+        SocketDomain::Inet | SocketDomain::Inet6 | SocketDomain::Unix
+    ) {
         return Err(Errno::EOPNOTSUPP);
     }
     if sock.shut_rd {
@@ -7672,13 +9031,10 @@ pub fn sys_recvfrom(
     }
 
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-    let datagram_idx = sock.dgram_queue.iter().position(|d| {
-        if sock.state == SocketState::Connected {
-            d.src_addr == sock.peer_addr && d.src_port == sock.peer_port
-        } else {
-            true
-        }
-    });
+    let datagram_idx = sock
+        .dgram_queue
+        .iter()
+        .position(|d| dgram_matches_connected_peer(sock, proc.pid, d));
     if datagram_idx.is_none() {
         if sock.state == SocketState::Connected && sock.connect_error != 0 {
             let err = sock.connect_error;
@@ -7698,10 +9054,22 @@ pub fn sys_recvfrom(
     let copy_len = buf.len().min(datagram.data.len());
     buf[..copy_len].copy_from_slice(&datagram.data[..copy_len]);
 
-    // Write sender sockaddr_in to addr_buf
+    // Write sender sockaddr to addr_buf
     let mut addr_written = 0;
     if !addr_buf.is_empty() {
-        addr_written = write_sockaddr_in(addr_buf, datagram.src_addr, datagram.src_port);
+        addr_written = match sock.domain {
+            SocketDomain::Inet => write_sockaddr_in(addr_buf, datagram.src_addr, datagram.src_port),
+            SocketDomain::Inet6 => {
+                write_sockaddr_in6(addr_buf, datagram.src_addr6, datagram.src_port)
+            }
+            SocketDomain::Unix => {
+                if addr_buf.len() >= 2 {
+                    addr_buf[0] = 1;
+                    addr_buf[1] = 0;
+                }
+                2
+            }
+        };
     }
 
     Ok((copy_len, addr_written))
@@ -7923,11 +9291,10 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         if pollfd.events & POLLIN != 0 && sock.shut_rd {
                             revents |= POLLIN;
                         } else if pollfd.events & POLLIN != 0
-                            && sock.dgram_queue.iter().any(|d| {
-                                sock.state != SocketState::Connected
-                                    || (d.src_addr == sock.peer_addr
-                                        && d.src_port == sock.peer_port)
-                            })
+                            && sock
+                                .dgram_queue
+                                .iter()
+                                .any(|d| dgram_matches_connected_peer(sock, proc.pid, d))
                         {
                             revents |= POLLIN;
                         }
@@ -13788,6 +15155,84 @@ mod tests {
     }
 
     #[test]
+    fn test_getsockopt_bindtodevice_defaults_to_empty_name() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+
+        let name = sys_getsockopt_bindtodevice(&proc, fd).unwrap();
+
+        assert!(name.is_empty());
+    }
+
+    #[test]
+    fn test_getsockopt_bindtodevice_returns_explicit_binding() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+
+        sys_setsockopt_bindtodevice(&mut proc, fd, b"lo\0").unwrap();
+        let name = sys_getsockopt_bindtodevice(&proc, fd).unwrap();
+
+        assert_eq!(name, b"lo");
+    }
+
+    #[test]
+    fn test_bindtodevice_can_unbind_and_constrains_routes() {
+        let mut proc = Process::new(9035);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_setsockopt_bindtodevice(&mut proc, fd, b"lo\0").unwrap();
+        let mut external = [0u8; 16];
+        external[0] = AF_INET as u8;
+        external[2..4].copy_from_slice(&53u16.to_be_bytes());
+        external[4..8].copy_from_slice(&[10, 88, 0, 2]);
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, fd, &external).unwrap_err(),
+            Errno::ENETUNREACH,
+        );
+
+        sys_setsockopt_bindtodevice(&mut proc, fd, b"\0").unwrap();
+        assert!(sys_getsockopt_bindtodevice(&proc, fd).unwrap().is_empty());
+        sys_connect(&mut proc, &mut host, fd, &external).unwrap();
+
+        let unix = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        assert_eq!(
+            sys_setsockopt_bindtodevice(&mut proc, unix, b"lo\0").unwrap_err(),
+            Errno::ENOPROTOOPT,
+        );
+    }
+
+    #[test]
+    fn test_tcp_congestion_only_accepts_supported_tcp_policy() {
+        let mut proc = Process::new(9036);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let tcp = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        assert_eq!(sys_getsockopt_tcp_congestion(&proc, tcp).unwrap(), b"cubic");
+        sys_setsockopt_tcp_congestion(&mut proc, tcp, b"cubic\0").unwrap();
+        assert_eq!(
+            sys_setsockopt_tcp_congestion(&mut proc, tcp, b"reno\0").unwrap_err(),
+            Errno::ENOENT,
+        );
+
+        let udp = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        assert_eq!(
+            sys_getsockopt_tcp_congestion(&proc, udp).unwrap_err(),
+            Errno::ENOPROTOOPT,
+        );
+        assert_eq!(
+            sys_setsockopt_tcp_congestion(&mut proc, udp, b"cubic\0").unwrap_err(),
+            Errno::ENOPROTOOPT,
+        );
+    }
+
+    #[test]
     fn test_getsockopt_not_socket() {
         let mut proc = Process::new(1);
         use wasm_posix_shared::socket::*;
@@ -13812,9 +15257,9 @@ mod tests {
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
-        assert!(sys_setsockopt(&mut proc, fd, SOL_SOCKET, SO_LINGER, 5).is_ok());
-        let val = sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_LINGER).unwrap();
-        assert_eq!(val, 5);
+        sys_setsockopt_linger(&mut proc, fd, 1, 5).unwrap();
+        let val = sys_getsockopt_linger(&proc, fd).unwrap();
+        assert_eq!(val, (1, 5));
     }
 
     #[test]
@@ -14084,6 +15529,104 @@ mod tests {
         let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
         assert_eq!(n, 1);
         assert_ne!(pollfd.revents & POLLOUT, 0);
+    }
+
+    #[test]
+    fn test_poll_connected_inet6_datagram_matches_recv_filter() {
+        let mut proc = Process::new(9032);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::poll::POLLIN;
+        use wasm_posix_shared::socket::*;
+        use wasm_posix_shared::WasmPollFd;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let idx = (-(ofd.host_handle + 1)) as usize;
+        let loopback = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let sock = proc.sockets.get_mut(idx).unwrap();
+        sock.state = crate::socket::SocketState::Connected;
+        sock.peer_addr6 = loopback;
+        sock.peer_port = 7000;
+        let mut wrong = crate::socket::Datagram {
+            data: b"wrong".to_vec(),
+            src_addr: [0; 4],
+            src_addr6: [0; 16],
+            dst_addr: [0; 4],
+            dst_addr6: loopback,
+            src_port: 7000,
+            src_sock_idx: None,
+            ipv6_tclass: 0,
+            src_pid: 0,
+            src_uid: 0,
+            src_gid: 0,
+            ancillary_fds: Vec::new(),
+        };
+        sock.dgram_queue.push(wrong.clone());
+
+        let mut pfd = WasmPollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pfd), 0).unwrap(),
+            0
+        );
+        wrong.src_addr6 = loopback;
+        proc.sockets.get_mut(idx).unwrap().dgram_queue.push(wrong);
+        assert_eq!(
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pfd), 0).unwrap(),
+            1
+        );
+        assert_ne!(pfd.revents & POLLIN, 0);
+    }
+
+    #[test]
+    fn test_poll_connected_unix_datagram_includes_peer_pid() {
+        let mut proc = Process::new(9033);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::poll::POLLIN;
+        use wasm_posix_shared::socket::*;
+        use wasm_posix_shared::WasmPollFd;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let idx = (-(ofd.host_handle + 1)) as usize;
+        let sock = proc.sockets.get_mut(idx).unwrap();
+        sock.state = crate::socket::SocketState::Connected;
+        sock.peer_idx = Some(7);
+        let mut datagram = crate::socket::Datagram {
+            data: b"peer".to_vec(),
+            src_addr: [0; 4],
+            src_addr6: [0; 16],
+            dst_addr: [0; 4],
+            dst_addr6: [0; 16],
+            src_port: 0,
+            src_sock_idx: Some(7),
+            ipv6_tclass: 0,
+            src_pid: 9999,
+            src_uid: 0,
+            src_gid: 0,
+            ancillary_fds: Vec::new(),
+        };
+        sock.dgram_queue.push(datagram.clone());
+        let mut pfd = WasmPollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pfd), 0).unwrap(),
+            0
+        );
+        datagram.src_pid = proc.pid;
+        proc.sockets.get_mut(idx).unwrap().dgram_queue.push(datagram);
+        assert_eq!(
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pfd), 0).unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -14645,6 +16188,35 @@ mod tests {
         let mut buf = [0u8; 1];
         let err = sys_recv(&mut proc, &mut host, fd1, &mut buf, MSG_OOB).unwrap_err();
         assert_eq!(err, Errno::EINVAL);
+    }
+
+    #[test]
+    fn test_send_msg_oob_closed_peer_cannot_target_reused_socket_slot() {
+        let mut proc = Process::new(9040);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let (sender_fd, peer_fd) =
+            sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let peer_entry = proc.fd_table.get(peer_fd).unwrap();
+        let peer_ofd = proc.ofd_table.get(peer_entry.ofd_ref.0).unwrap();
+        let peer_idx = (-(peer_ofd.host_handle + 1)) as usize;
+        sys_close(&mut proc, &mut host, peer_fd).unwrap();
+
+        let replacement_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let replacement_entry = proc.fd_table.get(replacement_fd).unwrap();
+        let replacement_ofd = proc.ofd_table.get(replacement_entry.ofd_ref.0).unwrap();
+        let replacement_idx = (-(replacement_ofd.host_handle + 1)) as usize;
+        assert_eq!(replacement_idx, peer_idx);
+
+        assert_eq!(
+            sys_send(&mut proc, &mut host, sender_fd, b"X", MSG_OOB).unwrap_err(),
+            Errno::EPIPE,
+        );
+        assert!(proc
+            .signals
+            .is_pending(wasm_posix_shared::signal::SIGPIPE));
+        assert!(proc.sockets.get(replacement_idx).unwrap().oob_byte.is_none());
     }
 
     // ---- prctl tests ----
@@ -16631,16 +18203,19 @@ mod tests {
     }
 
     #[test]
-    fn test_unix_dgram_connect_succeeds_as_bit_bucket() {
+    fn test_unix_dgram_connect_missing_peer_is_econnrefused() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
-        let addr = [1, 0]; // AF_UNIX family
-        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
-        // Write should succeed and discard data
-        let n = sys_write(&mut proc, &mut host, fd, b"hello syslog").unwrap();
-        assert_eq!(n, 12);
+        let mut addr = [0u8; 64];
+        addr[0] = 1;
+        let path = b"/tmp/no-dgram-peer.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
     }
 
     #[test]
@@ -16911,6 +18486,63 @@ mod tests {
         // Cleanup
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         registry.cleanup_process(9022);
+    }
+
+    #[test]
+    fn test_abstract_unix_socket_bind_is_not_filesystem_backed() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.pid = 9023;
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 1; // AF_UNIX
+        addr[2] = 0; // Linux abstract namespace marker
+        addr[3..8].copy_from_slice(b"abs01");
+        let addrlen = 8;
+
+        sys_bind(&mut proc, &mut host, fd, &addr[..addrlen]).unwrap();
+        assert_eq!(
+            host.next_handle, 100,
+            "abstract AF_UNIX bind must not create a host filesystem inode",
+        );
+
+        let mut name = [0u8; 32];
+        let n = sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(n, addrlen);
+        assert_eq!(&name[..addrlen], &addr[..addrlen]);
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9023);
+    }
+
+    #[test]
+    fn test_abstract_unix_socket_same_process_connect() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.pid = 9024;
+        let server_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 1; // AF_UNIX
+        addr[2] = 0; // abstract namespace
+        addr[3..9].copy_from_slice(b"abs002");
+        let addrlen = 9;
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+
+        assert_eq!(
+            sys_write(&mut proc, &mut host, client_fd, b"abstract").unwrap(),
+            8,
+        );
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, accepted_fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"abstract");
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9024);
     }
 
     #[test]
@@ -17755,6 +19387,41 @@ mod tests {
     }
 
     #[test]
+    fn test_accept_does_not_inherit_listener_nonblock_status() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::fcntl_cmd::F_SETFL;
+        use wasm_posix_shared::socket::*;
+
+        let server_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_fcntl(&mut proc, server_fd, F_SETFL, O_NONBLOCK).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2;
+        addr[2] = 0x23;
+        addr[3] = 0x8d; // port 9101
+        sys_bind(&mut proc, &mut host, server_fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut connect_addr = [0u8; 16];
+        connect_addr[0] = 2;
+        connect_addr[2] = 0x23;
+        connect_addr[3] = 0x8d;
+        connect_addr[4] = 127;
+        connect_addr[7] = 1;
+        sys_connect(&mut proc, &mut host, client_fd, &connect_addr).unwrap();
+
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+        let entry = proc.fd_table.get(accepted_fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        assert_eq!(
+            ofd.status_flags & O_NONBLOCK,
+            0,
+            "accept() should leave the accepted OFD blocking",
+        );
+    }
+
+    #[test]
     fn test_udp_loopback() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -17799,6 +19466,768 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+    }
+
+    #[test]
+    fn test_ipv4_multicast_loopback_membership_and_filters() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_any = [0u8; 16];
+        bind_any[0] = 2;
+        sys_bind(&mut proc, &mut host, recv_fd, &bind_any).unwrap();
+        let mut gsa_buf = [0u8; 16];
+        sys_getsockname(&proc, recv_fd, &mut gsa_buf).unwrap();
+        let port = u16::from_be_bytes([gsa_buf[2], gsa_buf[3]]);
+
+        let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_loopback = [0u8; 16];
+        bind_loopback[0] = 2;
+        bind_loopback[4] = 127;
+        bind_loopback[7] = 1;
+        sys_bind(&mut proc, &mut host, send_fd, &bind_loopback).unwrap();
+
+        let group = [224, 0, 0, 23];
+        let lo = [127, 0, 0, 1];
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_JOIN_GROUP,
+            group,
+            lo,
+            None,
+        )
+        .unwrap();
+
+        let mut dest = [0u8; 16];
+        dest[0] = 2;
+        dest[2..4].copy_from_slice(&port.to_be_bytes());
+        dest[4..8].copy_from_slice(&group);
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"initial", 0, &dest).unwrap(),
+            7
+        );
+
+        let mut buf = [0u8; 32];
+        let mut from = [0u8; 16];
+        let (n, _) =
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+        assert_eq!(&buf[..n], b"initial");
+        assert_eq!(&from[4..8], &lo);
+
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_BLOCK_SOURCE,
+            group,
+            lo,
+            Some(lo),
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"blocked", 0, &dest).unwrap(),
+            7
+        );
+        let recv_idx = {
+            let entry = proc.fd_table.get(recv_fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            (-(ofd.host_handle + 1)) as usize
+        };
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty(),
+            "blocked multicast source should not enqueue a datagram"
+        );
+
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_UNBLOCK_SOURCE,
+            group,
+            lo,
+            Some(lo),
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"unblocked", 0, &dest).unwrap(),
+            9
+        );
+        let (n, _) =
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+        assert_eq!(&buf[..n], b"unblocked");
+
+        sys_setsockopt(&mut proc, send_fd, IPPROTO_IP, IP_MULTICAST_LOOP, 0).unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"no-loop", 0, &dest).unwrap(),
+            7
+        );
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty(),
+            "IP_MULTICAST_LOOP=0 must suppress local delivery"
+        );
+        sys_setsockopt(&mut proc, send_fd, IPPROTO_IP, IP_MULTICAST_LOOP, 1).unwrap();
+
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_LEAVE_GROUP,
+            group,
+            lo,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"ignored", 0, &dest).unwrap(),
+            7
+        );
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty(),
+            "leaving a multicast group should stop group delivery"
+        );
+    }
+
+    #[test]
+    fn test_multicast_group_request_offsets_cover_wasm32_and_wasm64() {
+        assert_eq!(
+            multicast_group_request_offsets(&[0u8; 132], false).unwrap(),
+            (4, None)
+        );
+        assert_eq!(
+            multicast_group_request_offsets(&[0u8; 136], false).unwrap(),
+            (8, None)
+        );
+        assert_eq!(
+            multicast_group_request_offsets(&[0u8; 260], true).unwrap(),
+            (4, Some(132))
+        );
+        assert_eq!(
+            multicast_group_request_offsets(&[0u8; 264], true).unwrap(),
+            (8, Some(136))
+        );
+        assert_eq!(
+            multicast_group_request_offsets(&[0u8; 131], false).unwrap_err(),
+            Errno::EINVAL
+        );
+
+        let mut oversized32 = [0u8; 140];
+        oversized32[4] = wasm_posix_shared::socket::AF_INET as u8;
+        assert_eq!(
+            multicast_group_request_offsets(&oversized32, false).unwrap(),
+            (4, None)
+        );
+        let mut ambiguous = oversized32;
+        ambiguous[8] = wasm_posix_shared::socket::AF_INET as u8;
+        assert_eq!(
+            multicast_group_request_offsets(&ambiguous, false).unwrap_err(),
+            Errno::EINVAL
+        );
+    }
+
+    #[test]
+    fn test_ipv4_multicast_source_membership_and_interface_match() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_any = [0u8; 16];
+        bind_any[0] = 2;
+        bind_any[2] = 0x45;
+        bind_any[3] = 0x67;
+        sys_bind(&mut proc, &mut host, recv_fd, &bind_any).unwrap();
+
+        let loop_sender = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_loopback = [0u8; 16];
+        bind_loopback[0] = 2;
+        bind_loopback[4] = 127;
+        bind_loopback[7] = 1;
+        sys_bind(&mut proc, &mut host, loop_sender, &bind_loopback).unwrap();
+
+        let default_sender = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let group = [224, 0, 0, 23];
+        let lo = [127, 0, 0, 1];
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_JOIN_SOURCE_GROUP,
+            group,
+            lo,
+            Some(lo),
+        )
+        .unwrap();
+
+        let mut dest = [0u8; 16];
+        dest[0] = 2;
+        dest[2] = 0x45;
+        dest[3] = 0x67;
+        dest[4..8].copy_from_slice(&group);
+
+        // The receiver joined the group on loopback only. An unbound sender
+        // uses the default interface and must not satisfy that membership,
+        // but the UDP multicast send itself still succeeds.
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                default_sender,
+                b"default-iface",
+                0,
+                &dest
+            )
+            .unwrap(),
+            13
+        );
+        let recv_idx = {
+            let entry = proc.fd_table.get(recv_fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            (-(ofd.host_handle + 1)) as usize
+        };
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty()
+        );
+
+        sys_setsockopt(
+            &mut proc,
+            default_sender,
+            IPPROTO_IP,
+            IP_MULTICAST_IF,
+            u32::from_le_bytes(lo),
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                default_sender,
+                b"selected-loopback",
+                0,
+                &dest,
+            )
+            .unwrap(),
+            17
+        );
+        let mut selected_buf = [0u8; 32];
+        let mut selected_from = [0u8; 16];
+        let (selected_len, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut selected_buf,
+            0,
+            &mut selected_from,
+        )
+        .unwrap();
+        assert_eq!(&selected_buf[..selected_len], b"selected-loopback");
+        assert_eq!(&selected_from[4..8], &lo);
+
+        sys_setsockopt(
+            &mut proc,
+            default_sender,
+            IPPROTO_IP,
+            IP_MULTICAST_IF,
+            0,
+        )
+        .unwrap();
+        sys_setsockopt_bindtodevice(&mut proc, default_sender, b"lo\0").unwrap();
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                default_sender,
+                b"bound-loopback",
+                0,
+                &dest,
+            )
+            .unwrap(),
+            14
+        );
+        let (bound_len, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut selected_buf,
+            0,
+            &mut selected_from,
+        )
+        .unwrap();
+        assert_eq!(&selected_buf[..bound_len], b"bound-loopback");
+        assert_eq!(&selected_from[4..8], &lo);
+
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, loop_sender, b"source-match", 0, &dest).unwrap(),
+            12
+        );
+        let mut buf = [0u8; 32];
+        let mut from = [0u8; 16];
+        let (n, _) =
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+        assert_eq!(&buf[..n], b"source-match");
+
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_LEAVE_SOURCE_GROUP,
+            group,
+            lo,
+            Some(lo),
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, loop_sender, b"left-source", 0, &dest).unwrap(),
+            11
+        );
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_udp_connect_to_inaddr_any_routes_to_loopback() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        addr[3] = 80; // port 80, network byte order
+
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let sock = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(sock.peer_addr, [127, 0, 0, 1]);
+        assert_eq!(sock.bind_addr, [127, 0, 0, 1]);
+    }
+
+    #[test]
+    fn test_datagram_shutdown_send_obeys_msg_nosignal() {
+        let mut proc = Process::new(9034);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::signal::SIGPIPE;
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut peer = [0u8; 16];
+        peer[0] = AF_INET as u8;
+        peer[2..4].copy_from_slice(&23103u16.to_be_bytes());
+        peer[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        sys_connect(&mut proc, &mut host, fd, &peer).unwrap();
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_WR).unwrap();
+
+        assert_eq!(
+            sys_send(&mut proc, &mut host, fd, b"signal", 0).unwrap_err(),
+            Errno::EPIPE,
+        );
+        assert!(proc.signals.is_pending(SIGPIPE));
+        proc.signals.clear(SIGPIPE);
+        assert_eq!(
+            sys_send(&mut proc, &mut host, fd, b"quiet", MSG_NOSIGNAL).unwrap_err(),
+            Errno::EPIPE,
+        );
+        assert!(!proc.signals.is_pending(SIGPIPE));
+    }
+
+    #[test]
+    fn test_inet6_udp_loopback_datagram_delivery() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let server_fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        let mut server_addr = [0u8; 28];
+        server_addr[0] = 10; // AF_INET6
+        server_addr[2] = 0x56;
+        server_addr[3] = 0xce; // port 22222
+        server_addr[23] = 1; // ::1
+        sys_bind(&mut proc, &mut host, server_fd, &server_addr).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &server_addr).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, client_fd, b"udp6").unwrap(), 4);
+
+        let mut buf = [0u8; 8];
+        let mut from = [0u8; 28];
+        let (n, from_len) =
+            sys_recvfrom(&mut proc, &mut host, server_fd, &mut buf, 0, &mut from).unwrap();
+        assert_eq!(&buf[..n], b"udp6");
+        assert_eq!(from_len, 28);
+        assert_eq!(&from[8..24], &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn test_inet6_udp_bind_is_machine_scoped_and_truthfully_v6only() {
+        let mut first = Process::new(9037);
+        let mut second = Process::new(9038);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd1 = sys_socket(&mut first, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        assert_eq!(
+            sys_getsockopt(&mut first, fd1, IPPROTO_IPV6, IPV6_V6ONLY).unwrap(),
+            1,
+        );
+        assert_eq!(
+            sys_setsockopt(&mut first, fd1, IPPROTO_IPV6, IPV6_V6ONLY, 0).unwrap_err(),
+            Errno::EOPNOTSUPP,
+        );
+        let mut addr = [0u8; 28];
+        addr[0] = AF_INET6 as u8;
+        addr[2..4].copy_from_slice(&23104u16.to_be_bytes());
+        addr[23] = 1;
+        sys_bind(&mut first, &mut host, fd1, &addr).unwrap();
+
+        let fd2 = sys_socket(&mut second, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        assert_eq!(
+            sys_bind(&mut second, &mut host, fd2, &addr).unwrap_err(),
+            Errno::EADDRINUSE,
+        );
+        sys_close(&mut first, &mut host, fd1).unwrap();
+        sys_bind(&mut second, &mut host, fd2, &addr).unwrap();
+        sys_close(&mut second, &mut host, fd2).unwrap();
+    }
+
+    #[test]
+    fn test_unix_dgram_loopback_datagram_delivery() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        proc.pid = 9025;
+        let server_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let mut addr = [0u8; 64];
+        addr[0] = 1; // AF_UNIX
+        let path = b"/tmp/udg-loop.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
+        assert_eq!(
+            sys_write(&mut proc, &mut host, client_fd, b"unix-dgram").unwrap(),
+            10,
+        );
+
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, server_fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"unix-dgram");
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9025);
+    }
+
+    #[test]
+    fn test_unix_dgram_rejects_stream_target() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9026);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let stream_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 64];
+        addr[0] = 1;
+        let path = b"/tmp/udg-stream-target.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addr = &addr[..2 + path.len() + 1];
+        sys_bind(&mut proc, &mut host, stream_fd, addr).unwrap();
+
+        let dgram_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, dgram_fd, addr).unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, dgram_fd, b"wrong type", 0, addr).unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9026);
+    }
+
+    #[test]
+    fn test_unix_dgram_cross_process_target_cannot_misindex_sender_socket() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut receiver = Process::new(9027);
+        let mut sender = Process::new(9028);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut receiver, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let mut addr = [0u8; 64];
+        addr[0] = 1;
+        let path = b"/tmp/udg-cross-process.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addr = &addr[..2 + path.len() + 1];
+        sys_bind(&mut receiver, &mut host, recv_fd, addr).unwrap();
+
+        // This is slot zero in each process. Discarding the registry PID would
+        // enqueue into the sender's unrelated slot-zero socket.
+        let send_fd = sys_socket(&mut sender, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        assert_eq!(
+            sys_sendto(&mut sender, &mut host, send_fd, b"must not misdeliver", 0, addr)
+                .unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
+        let send_entry = sender.fd_table.get(send_fd).unwrap();
+        let send_ofd = sender.ofd_table.get(send_entry.ofd_ref.0).unwrap();
+        let send_idx = (-(send_ofd.host_handle + 1)) as usize;
+        assert!(sender.sockets.get(send_idx).unwrap().dgram_queue.is_empty());
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9027);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9028);
+    }
+
+    #[test]
+    fn test_unix_dgram_close_cannot_redirect_connected_peer_after_slot_reuse() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9039);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let server_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let mut server_addr = [0u8; 64];
+        server_addr[0] = AF_UNIX as u8;
+        let server_path = b"/tmp/udg-closed-peer.sock";
+        server_addr[2..2 + server_path.len()].copy_from_slice(server_path);
+        let server_addr = &server_addr[..2 + server_path.len() + 1];
+        sys_bind(&mut proc, &mut host, server_fd, server_addr).unwrap();
+
+        let server_entry = proc.fd_table.get(server_fd).unwrap();
+        let server_ofd = proc.ofd_table.get(server_entry.ofd_ref.0).unwrap();
+        let server_idx = (-(server_ofd.host_handle + 1)) as usize;
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, server_addr).unwrap();
+        sys_close(&mut proc, &mut host, server_fd).unwrap();
+
+        let replacement_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let replacement_entry = proc.fd_table.get(replacement_fd).unwrap();
+        let replacement_ofd = proc.ofd_table.get(replacement_entry.ofd_ref.0).unwrap();
+        let replacement_idx = (-(replacement_ofd.host_handle + 1)) as usize;
+        assert_eq!(replacement_idx, server_idx);
+
+        let mut replacement_addr = [0u8; 64];
+        replacement_addr[0] = AF_UNIX as u8;
+        let replacement_path = b"/tmp/udg-replacement.sock";
+        replacement_addr[2..2 + replacement_path.len()].copy_from_slice(replacement_path);
+        let replacement_addr = &replacement_addr[..2 + replacement_path.len() + 1];
+        sys_bind(&mut proc, &mut host, replacement_fd, replacement_addr).unwrap();
+
+        assert_eq!(
+            sys_write(&mut proc, &mut host, client_fd, b"must not redirect").unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
+        assert!(proc
+            .sockets
+            .get(replacement_idx)
+            .unwrap()
+            .dgram_queue
+            .is_empty());
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9039);
+    }
+
+    #[test]
+    fn test_abstract_unix_name_is_reusable_after_last_close() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9029);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let addr = [1, 0, 0, b'r', b'e', b'u', b's', b'e'];
+        let first = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_bind(&mut proc, &mut host, first, &addr).unwrap();
+        sys_close(&mut proc, &mut host, first).unwrap();
+
+        let second = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_bind(&mut proc, &mut host, second, &addr).unwrap();
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9029);
+    }
+
+    #[test]
+    fn test_inet6_loopback_bind_getsockname_and_connect_refused() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 28];
+        addr[0] = 10; // AF_INET6
+        addr[2] = 0x05;
+        addr[3] = 0x39; // port 1337
+        addr[23] = 1; // ::1
+
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, fd, 5).unwrap();
+
+        let mut name = [0u8; 28];
+        let n = sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(n, 28);
+        assert_eq!(&name[..28], &addr);
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        let mut refused = [0u8; 28];
+        refused[0] = 10;
+        refused[3] = 1; // ::1:1, no listener
+        refused[23] = 1;
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, client_fd, &refused).unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
+
+        let any_client = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        let mut unspecified_peer = addr;
+        unspecified_peer[8..24].fill(0);
+        sys_connect(&mut proc, &mut host, any_client, &unspecified_peer).unwrap();
+        let mut peer = [0u8; 28];
+        assert_eq!(sys_getpeername(&proc, any_client, &mut peer).unwrap(), 28);
+        assert_eq!(&peer[8..24], &addr[8..24]);
+        let accepted = sys_accept(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            sys_send(&mut proc, &mut host, any_client, b"v6-request", 0).unwrap(),
+            10,
+        );
+        let mut payload = [0u8; 16];
+        assert_eq!(
+            sys_recv(&mut proc, &mut host, accepted, &mut payload, 0).unwrap(),
+            10,
+        );
+        assert_eq!(&payload[..10], b"v6-request");
+        assert_eq!(
+            sys_send(&mut proc, &mut host, accepted, b"v6-reply", 0).unwrap(),
+            8,
+        );
+        assert_eq!(
+            sys_recv(&mut proc, &mut host, any_client, &mut payload, 0).unwrap(),
+            8,
+        );
+        assert_eq!(&payload[..8], b"v6-reply");
+
+        for open_fd in [accepted, any_client, client_fd, fd] {
+            sys_close(&mut proc, &mut host, open_fd).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_dual_stack_wildcard_accepts_ipv4_as_mapped_ipv6() {
+        let mut proc = Process::new(9030);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let port = 23101u16;
+        let mut v6_any = [0u8; 28];
+        v6_any[0] = AF_INET6 as u8;
+        v6_any[2..4].copy_from_slice(&port.to_be_bytes());
+        let server6 = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        assert_eq!(
+            sys_getsockopt(&mut proc, server6, IPPROTO_IPV6, IPV6_V6ONLY).unwrap(),
+            0
+        );
+        sys_bind(&mut proc, &mut host, server6, &v6_any).unwrap();
+        sys_listen(&mut proc, &mut host, server6, 4).unwrap();
+
+        let mut v4_any = [0u8; 16];
+        v4_any[0] = AF_INET as u8;
+        v4_any[2..4].copy_from_slice(&port.to_be_bytes());
+        let conflicting4 = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        assert_eq!(
+            sys_bind(&mut proc, &mut host, conflicting4, &v4_any).unwrap_err(),
+            Errno::EADDRINUSE,
+        );
+
+        let client4 = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut loop4 = v4_any;
+        loop4[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        sys_connect(&mut proc, &mut host, client4, &loop4).unwrap();
+        let accepted = sys_accept(&mut proc, &mut host, server6).unwrap();
+        let accepted_entry = proc.fd_table.get(accepted).unwrap();
+        let accepted_ofd = proc.ofd_table.get(accepted_entry.ofd_ref.0).unwrap();
+        let accepted_idx = (-(accepted_ofd.host_handle + 1)) as usize;
+        let accepted_sock = proc.sockets.get(accepted_idx).unwrap();
+        assert_eq!(accepted_sock.domain, crate::socket::SocketDomain::Inet6);
+        assert_eq!(
+            accepted_sock.peer_addr6,
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]
+        );
+
+        sys_close(&mut proc, &mut host, accepted).unwrap();
+        sys_close(&mut proc, &mut host, client4).unwrap();
+        sys_close(&mut proc, &mut host, conflicting4).unwrap();
+        sys_close(&mut proc, &mut host, server6).unwrap();
+    }
+
+    #[test]
+    fn test_v6only_wildcard_isolated_from_ipv4_and_reserves_ipv6() {
+        let mut proc = Process::new(9031);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let port = 23102u16;
+        let mut v6_any = [0u8; 28];
+        v6_any[0] = AF_INET6 as u8;
+        v6_any[2..4].copy_from_slice(&port.to_be_bytes());
+        let server6 = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        sys_setsockopt(&mut proc, server6, IPPROTO_IPV6, IPV6_V6ONLY, 1).unwrap();
+        sys_bind(&mut proc, &mut host, server6, &v6_any).unwrap();
+        sys_listen(&mut proc, &mut host, server6, 4).unwrap();
+
+        let duplicate6 = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        assert_eq!(
+            sys_bind(&mut proc, &mut host, duplicate6, &v6_any).unwrap_err(),
+            Errno::EADDRINUSE,
+        );
+
+        let mut v4_any = [0u8; 16];
+        v4_any[0] = AF_INET as u8;
+        v4_any[2..4].copy_from_slice(&port.to_be_bytes());
+        let refused4 = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut loop4 = v4_any;
+        loop4[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, refused4, &loop4).unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
+
+        let server4 = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_bind(&mut proc, &mut host, server4, &v4_any).unwrap();
+        sys_listen(&mut proc, &mut host, server4, 4).unwrap();
+        let client4 = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client4, &loop4).unwrap();
+        let accepted4 = sys_accept(&mut proc, &mut host, server4).unwrap();
+        let accepted_entry = proc.fd_table.get(accepted4).unwrap();
+        let accepted_ofd = proc.ofd_table.get(accepted_entry.ofd_ref.0).unwrap();
+        let accepted_idx = (-(accepted_ofd.host_handle + 1)) as usize;
+        assert_eq!(
+            proc.sockets.get(accepted_idx).unwrap().domain,
+            crate::socket::SocketDomain::Inet,
+        );
+
+        for fd in [accepted4, client4, server4, refused4, duplicate6, server6] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
     }
 
     // ── Threading tests ──────────────────────────────────────────────

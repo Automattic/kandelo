@@ -15,6 +15,7 @@
 
 import type { NetworkIO } from "../types";
 import { EagainError } from "./fetch-backend";
+import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
 import { TLS_1_2_Connection } from "../../../packages/registry/openssl/src/tls/1_2/connection";
 import {
   generateCertificate,
@@ -229,6 +230,10 @@ export class TlsNetworkBackend implements NetworkIO {
   // ---- NetworkIO implementation ----
 
   getaddrinfo(hostname: string): Uint8Array {
+    const literalIp = parseNumericIpv4Hostname(hostname);
+    if (literalIp) return literalIp;
+    validateDnsHostname(hostname);
+
     const ip = this.syntheticIp(hostname);
     const ipStr = this.ipKey(ip);
     this.hostnameMap.set(ipStr, hostname);

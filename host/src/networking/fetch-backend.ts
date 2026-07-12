@@ -1,4 +1,5 @@
 import type { NetworkIO } from "../types";
+import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
 
 /** Error with errno property for EAGAIN propagation to the kernel host imports. */
 export class EagainError extends Error {
@@ -227,6 +228,10 @@ export class FetchNetworkBackend implements NetworkIO {
   }
 
   getaddrinfo(hostname: string): Uint8Array {
+    const literalIp = parseNumericIpv4Hostname(hostname);
+    if (literalIp) return literalIp;
+    validateDnsHostname(hostname);
+
     // In the browser, return a synthetic IP.
     // The actual connection uses the Host header, not this IP.
     // Use a deterministic hash to generate a fake IP in the 10.x.x.x range.

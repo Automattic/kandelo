@@ -17,6 +17,10 @@ pub struct UnixSocketEntry {
     pub pid: u32,
     /// Index into that process's SocketTable.
     pub sock_idx: usize,
+    /// Every process-local socket table entry that inherited this bound
+    /// endpoint. The public pid/sock_idx pair above is the current lookup
+    /// target; ownership moves to another live entry when that owner closes.
+    owners: Vec<(u32, usize)>,
 }
 
 /// Global registry mapping resolved paths to listening Unix sockets.
@@ -37,13 +41,61 @@ impl UnixSocketRegistry {
         if self.entries.contains_key(&path) {
             return false;
         }
-        self.entries.insert(path, UnixSocketEntry { pid, sock_idx });
+        self.entries.insert(
+            path,
+            UnixSocketEntry {
+                pid,
+                sock_idx,
+                owners: alloc::vec![(pid, sock_idx)],
+            },
+        );
+        true
+    }
+
+    /// Record a fork/spawn child that inherited a bound AF_UNIX endpoint.
+    pub fn add_owner(&mut self, path: &[u8], pid: u32, sock_idx: usize) -> bool {
+        let Some(entry) = self.entries.get_mut(path) else {
+            return false;
+        };
+        if !entry.owners.contains(&(pid, sock_idx)) {
+            entry.owners.push((pid, sock_idx));
+        }
+        true
+    }
+
+    /// Drop one process-local owner. The name remains registered while any
+    /// inherited endpoint is live; otherwise it becomes reusable (which is
+    /// essential for Linux abstract-namespace sockets, which have no inode).
+    pub fn remove_owner(&mut self, path: &[u8], pid: u32, sock_idx: usize) -> bool {
+        let Some(entry) = self.entries.get_mut(path) else {
+            return false;
+        };
+        let old_len = entry.owners.len();
+        entry
+            .owners
+            .retain(|owner| *owner != (pid, sock_idx));
+        if entry.owners.len() == old_len {
+            return false;
+        }
+        if entry.owners.is_empty() {
+            // A pathname socket leaves its filesystem node behind after the
+            // last close; keep a metadata tombstone until unlink so stat still
+            // reports S_IFSOCK and bind still sees EADDRINUSE. Abstract names
+            // have no inode and disappear immediately.
+            if path.first().copied() == Some(0) {
+                self.entries.remove(path);
+            }
+        } else if entry.pid == pid && entry.sock_idx == sock_idx {
+            (entry.pid, entry.sock_idx) = entry.owners[0];
+        }
         true
     }
 
     /// Look up a Unix socket by path.
     pub fn lookup(&self, path: &[u8]) -> Option<&UnixSocketEntry> {
-        self.entries.get(path)
+        self.entries
+            .get(path)
+            .filter(|entry| !entry.owners.is_empty())
     }
 
     /// Remove a Unix socket registration by path.
@@ -53,7 +105,16 @@ impl UnixSocketRegistry {
 
     /// Remove all registrations for a given pid (process cleanup).
     pub fn cleanup_process(&mut self, pid: u32) {
-        self.entries.retain(|_, entry| entry.pid != pid);
+        self.entries.retain(|path, entry| {
+            entry.owners.retain(|owner| owner.0 != pid);
+            if entry.owners.is_empty() {
+                return path.first().copied() != Some(0);
+            }
+            if entry.pid == pid {
+                (entry.pid, entry.sock_idx) = entry.owners[0];
+            }
+            true
+        });
     }
 
     /// Check if a path is registered (for stat/lstat).
@@ -110,13 +171,24 @@ mod tests {
     #[test]
     fn test_cleanup_process() {
         let mut reg = UnixSocketRegistry::new();
-        reg.register(b"/tmp/a.sock".to_vec(), 1, 0);
-        reg.register(b"/tmp/b.sock".to_vec(), 1, 1);
+        reg.register(b"\0a".to_vec(), 1, 0);
+        reg.register(b"\0b".to_vec(), 1, 1);
         reg.register(b"/tmp/c.sock".to_vec(), 2, 0);
         reg.cleanup_process(1);
-        assert!(reg.lookup(b"/tmp/a.sock").is_none());
-        assert!(reg.lookup(b"/tmp/b.sock").is_none());
+        assert!(reg.lookup(b"\0a").is_none());
+        assert!(reg.lookup(b"\0b").is_none());
         assert!(reg.lookup(b"/tmp/c.sock").is_some());
+    }
+
+    #[test]
+    fn test_pathname_metadata_remains_until_unlink() {
+        let mut reg = UnixSocketRegistry::new();
+        reg.register(b"/tmp/stale.sock".to_vec(), 1, 0);
+        assert!(reg.remove_owner(b"/tmp/stale.sock", 1, 0));
+        assert!(reg.contains(b"/tmp/stale.sock"));
+        assert!(reg.lookup(b"/tmp/stale.sock").is_none());
+        assert!(reg.unregister(b"/tmp/stale.sock"));
+        assert!(!reg.contains(b"/tmp/stale.sock"));
     }
 
     #[test]
@@ -135,5 +207,17 @@ mod tests {
         assert!(reg.register(b"/tmp/test.sock".to_vec(), 2, 1));
         let entry = reg.lookup(b"/tmp/test.sock").unwrap();
         assert_eq!(entry.pid, 2);
+    }
+
+    #[test]
+    fn test_inherited_owner_keeps_registration_live() {
+        let mut reg = UnixSocketRegistry::new();
+        reg.register(b"\0abstract".to_vec(), 10, 4);
+        assert!(reg.add_owner(b"\0abstract", 20, 4));
+        assert!(reg.remove_owner(b"\0abstract", 10, 4));
+        let entry = reg.lookup(b"\0abstract").unwrap();
+        assert_eq!((entry.pid, entry.sock_idx), (20, 4));
+        assert!(reg.remove_owner(b"\0abstract", 20, 4));
+        assert!(reg.lookup(b"\0abstract").is_none());
     }
 }
