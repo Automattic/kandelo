@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 extern char **environ;
+extern long __syscall_cp_check(long result);
 
 static int fail(const char *step)
 {
@@ -62,6 +63,106 @@ static void enable_pending_cancel(int signum)
     int error = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     if (error != 0)
         cancel_enable_error = error;
+}
+
+struct completed_cancel_ctx {
+    atomic_int ready;
+    atomic_int proceed;
+    atomic_int preserved_success;
+    atomic_int returned_from_eintr;
+    atomic_int cleanup_ran;
+};
+
+static void record_completed_cancel_cleanup(void *opaque)
+{
+    struct completed_cancel_ctx *ctx = opaque;
+    atomic_store_explicit(&ctx->cleanup_ran, 1, memory_order_release);
+}
+
+static void *completed_cancel_thread(void *opaque)
+{
+    struct completed_cancel_ctx *ctx = opaque;
+
+    pthread_cleanup_push(record_completed_cancel_cleanup, ctx);
+    atomic_store_explicit(&ctx->ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&ctx->proceed, memory_order_acquire)) {
+        /* Stay outside cancellation points until the caller sets cancel. */
+    }
+
+    /* This models the post-dispatch edge of a cancellation-point syscall.
+     * Once the syscall completed successfully, cancellation must remain
+     * pending instead of replacing a result whose side effects are visible. */
+    if (__syscall_cp_check(17) == 17) {
+        atomic_store_explicit(
+            &ctx->preserved_success,
+            1,
+            memory_order_release
+        );
+    }
+
+    /* Host-interrupted cancellation points complete with EINTR. That is the
+     * post-dispatch edge where deferred cancellation must take effect. */
+    (void)__syscall_cp_check(-EINTR);
+    atomic_store_explicit(
+        &ctx->returned_from_eintr,
+        1,
+        memory_order_release
+    );
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
+static int test_cancel_preserves_completed_syscall(void)
+{
+    struct completed_cancel_ctx ctx = {
+        .ready = ATOMIC_VAR_INIT(0),
+        .proceed = ATOMIC_VAR_INIT(0),
+        .preserved_success = ATOMIC_VAR_INIT(0),
+        .returned_from_eintr = ATOMIC_VAR_INIT(0),
+        .cleanup_ran = ATOMIC_VAR_INIT(0),
+    };
+    pthread_t thread;
+    int error = pthread_create(&thread, NULL, completed_cancel_thread, &ctx);
+    if (error != 0) {
+        errno = error;
+        return fail("completed-cancel pthread_create");
+    }
+
+    while (!atomic_load_explicit(&ctx.ready, memory_order_acquire))
+        usleep(1000);
+    error = pthread_cancel(thread);
+    if (error != 0) {
+        errno = error;
+        return fail("completed-cancel pthread_cancel");
+    }
+    atomic_store_explicit(&ctx.proceed, 1, memory_order_release);
+
+    void *joined = NULL;
+    error = pthread_join(thread, &joined);
+    if (error != 0) {
+        errno = error;
+        return fail("completed-cancel pthread_join");
+    }
+    if (joined != PTHREAD_CANCELED ||
+        !atomic_load_explicit(&ctx.preserved_success, memory_order_acquire) ||
+        atomic_load_explicit(&ctx.returned_from_eintr, memory_order_acquire) ||
+        !atomic_load_explicit(&ctx.cleanup_ran, memory_order_acquire)) {
+        fprintf(stderr,
+            "completed syscall cancellation mismatch: joined=%p "
+            "preserved=%d returned_eintr=%d cleanup=%d\n",
+            joined,
+            atomic_load_explicit(
+                &ctx.preserved_success,
+                memory_order_relaxed
+            ),
+            atomic_load_explicit(
+                &ctx.returned_from_eintr,
+                memory_order_relaxed
+            ),
+            atomic_load_explicit(&ctx.cleanup_ran, memory_order_relaxed));
+        return -1;
+    }
+    return 0;
 }
 
 static int read_all(const char *path, char *buf, size_t size)
@@ -1091,6 +1192,10 @@ int main(int argc, char **argv)
 #if __SIZEOF_POINTER__ == 8
     if (argc > 1 && strcmp(argv[1], MEMORY64_WAIT_CHILD_MODE) == 0)
         return run_memory64_wait_child(argc, argv);
+#endif
+    if (test_cancel_preserves_completed_syscall() != 0)
+        return 12;
+#if __SIZEOF_POINTER__ == 8
     if (test_memory64_wait_layouts() != 0)
         return 1;
     puts("WAIT_LIFECYCLE_PASS");
