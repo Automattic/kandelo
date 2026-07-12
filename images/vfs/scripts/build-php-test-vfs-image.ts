@@ -39,12 +39,12 @@ import { resolvePackageRuntimeFile } from "../../../scripts/package-runtime-file
 const REPO_ROOT = findRepoRoot();
 const PHP_FIXTURE_ROOT = join(REPO_ROOT, "tests/php-fixtures");
 const LOCAL_PHP_SRC = join(REPO_ROOT, "packages/registry/php/php-src");
+const ICU_RUNTIME = resolvePackageRuntimeFile(REPO_ROOT, "php", "icu.dat");
 const PHP_WASM = process.env.PHP_WASM
-  ?? tryResolveBinary("programs/php/php.wasm")
+  ?? ICU_RUNTIME?.closureHostPaths.get("php/php.wasm")
   ?? join(LOCAL_PHP_SRC, "sapi/cli/php");
 const OPCACHE_SO = process.env.PHP_OPCACHE_SO
-  ?? tryResolveBinary("programs/php/opcache.so");
-const ICU_RUNTIME = resolvePackageRuntimeFile(REPO_ROOT, "php", "icu.dat");
+  ?? ICU_RUNTIME?.closureHostPaths.get("php/opcache.so");
 const PHP_EXTENSION_DIRS = [
   dirname(PHP_WASM),
   ...((process.env.PHP_EXTENSION_DIR ?? "")
@@ -52,13 +52,13 @@ const PHP_EXTENSION_DIRS = [
     .map((path) => path.trim())
     .filter(Boolean)),
 ];
-const INTL_SO = tryResolveBinary("programs/php/intl.so")
+const INTL_SO = ICU_RUNTIME?.closureHostPaths.get("php/intl.so")
   ?? [...PHP_EXTENSION_DIRS]
     .reverse()
     .map((dir) => join(dir, "intl.so"))
     .find((path) => existsSync(path));
 const PHP_FPM_WASM = process.env.PHP_FPM_WASM
-  ?? tryResolveBinary("programs/php/php-fpm.wasm");
+  ?? ICU_RUNTIME?.closureHostPaths.get("php/php-fpm.wasm");
 const ROOTFS_VFS = process.env.ROOTFS_VFS
   ?? tryResolveBinary("rootfs.vfs")
   ?? tryResolveBinary("programs/rootfs.vfs")

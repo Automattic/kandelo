@@ -46,9 +46,13 @@ function resolveKernelArtifactsAlias(): Plugin {
 }
 
 function findPhpArtifact(name: string): string | null {
-  if (name === "icu.dat") return phpIcuRuntime?.hostPath ?? null;
-  const resolved = tryResolveBinary(`programs/php/${name}`);
-  if (resolved) return resolved;
+  if (phpIcuRuntime) {
+    // All PHP artifacts served by this harness come from the single complete
+    // package tier selected with icu.dat. Never let per-file resolver priority
+    // compose local and fetched builds.
+    return phpIcuRuntime.closureHostPaths.get(`php/${name}`) ?? null;
+  }
+  if (name === "icu.dat") return null;
   const candidates = [
     path.resolve(__dirname, "../../bin", name),
     ...(name === "php.wasm"

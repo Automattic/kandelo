@@ -3106,11 +3106,27 @@ fn runtime_file_metadata_value(
                 m.name, artifact
             )
         })?;
+    // A runtime file is meaningful only alongside the exact executable and
+    // side-module outputs produced by the same program package archive. Give
+    // repo-side consumers the complete resolver mirror closure so they can
+    // select one materialization tier atomically instead of resolving each
+    // member independently and accidentally mixing builds.
+    let closure_mirror_paths: Vec<PathBuf> = m
+        .program_outputs
+        .iter()
+        .map(|output| m.output_dest_rel_for(output))
+        .chain(
+            m.runtime_files
+                .iter()
+                .map(|runtime_file| m.runtime_file_dest_rel_for(runtime_file)),
+        )
+        .collect();
     Ok(serde_json::json!({
         "artifact": runtime_file.artifact,
         "guest_path": runtime_file.guest_path,
         "mode": runtime_file.mode,
         "mirror_path": m.runtime_file_dest_rel_for(runtime_file),
+        "closure_mirror_paths": closure_mirror_paths,
     }))
 }
 
@@ -6860,6 +6876,10 @@ printf runtime-data > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
                 "guest_path": "/usr/lib/php/icu.dat",
                 "mode": 420,
                 "mirror_path": "runtimeprog/icu.dat",
+                "closure_mirror_paths": [
+                    "runtimeprog.wasm",
+                    "runtimeprog/icu.dat",
+                ],
             })
         );
         let path =
@@ -6871,6 +6891,47 @@ printf runtime-data > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         assert!(
             err.contains("runtime file") && err.contains("missing"),
             "got: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_file_metadata_lists_the_complete_multi_output_closure() {
+        let manifest = DepsManifest::parse(
+            r#"kind = "program"
+name = "runtimeprog"
+version = "1.0"
+depends_on = []
+[source]
+url = "https://example.test/runtimeprog.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "runtimeprog"
+wasm = "bin/runtimeprog.wasm"
+[[outputs]]
+name = "module"
+wasm = "extensions/module.so"
+[[runtime_files]]
+artifact = "share/icu.dat"
+guest_path = "/usr/lib/runtimeprog/icu.dat"
+[[runtime_files]]
+artifact = "share/timezone.dat"
+guest_path = "/usr/lib/runtimeprog/timezone.dat"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+
+        let metadata = runtime_file_metadata_value(&manifest, "share/icu.dat").unwrap();
+        assert_eq!(
+            metadata["closure_mirror_paths"],
+            serde_json::json!([
+                "runtimeprog/runtimeprog.wasm",
+                "runtimeprog/module.so",
+                "runtimeprog/share/icu.dat",
+                "runtimeprog/share/timezone.dat",
+            ])
         );
     }
 

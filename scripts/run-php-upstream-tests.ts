@@ -39,7 +39,6 @@ import {
   sep,
 } from "node:path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
-import { tryResolveBinary } from "../host/src/binary-resolver";
 import { ABI_SYSCALL_NAMES } from "../host/src/generated/abi";
 import { ensureSourceExtract } from "../images/vfs/scripts/source-extract-helper";
 import { preparePhpTestFixtures } from "../images/vfs/scripts/php-test-fixtures";
@@ -219,7 +218,7 @@ async function withTimeout<T>(
 function resolvePhpBinary(): string {
   const candidate =
     process.env.PHP_WASM ??
-    tryResolveBinary("programs/php/php.wasm") ??
+    PHP_ICU_RUNTIME?.closureHostPaths.get("php/php.wasm") ??
     join(LOCAL_PHP_SRC, "sapi/cli/php");
   if (!candidate || !existsSync(candidate)) {
     throw new Error(
@@ -232,7 +231,7 @@ function resolvePhpBinary(): string {
 function resolvePhpFpmBinary(phpPath: string): string | null {
   const explicit = process.env.PHP_FPM_WASM;
   if (explicit) return resolve(explicit);
-  const resolved = tryResolveBinary("programs/php/php-fpm.wasm");
+  const resolved = PHP_ICU_RUNTIME?.closureHostPaths.get("php/php-fpm.wasm");
   if (resolved) return resolved;
   const sibling = join(dirname(phpPath), "php-fpm.wasm");
   return existsSync(sibling) ? sibling : null;
@@ -549,10 +548,24 @@ function sharedExtensionPathsForPhp(phpPath: string): Map<string, string> {
       }
     }
   }
+  // When the declared package closure is materialized, use its selected
+  // side-module paths directly. They were resolved together with php.wasm and
+  // icu.dat from one complete provenance tier.
+  for (const name of [
+    "opcache",
+    "curl",
+    "phar",
+    "zend_test",
+    "zip",
+    "intl",
+  ]) {
+    const resolved = PHP_ICU_RUNTIME?.closureHostPaths.get(`php/${name}.so`);
+    if (resolved) out.set(name, resolved);
+  }
   const phpDir = dirname(phpPath);
   const opcachePath =
     process.env.PHP_OPCACHE_SO ??
-    tryResolveBinary("programs/php/opcache.so") ??
+    PHP_ICU_RUNTIME?.closureHostPaths.get("php/opcache.so") ??
     join(phpDir, "opcache.so");
   if (opcachePath && existsSync(opcachePath)) out.set("opcache", opcachePath);
   return out;

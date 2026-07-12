@@ -7,6 +7,7 @@ import {
   binariesDir,
   localBinariesDir,
   resolveBinary,
+  tryResolveBinarySet,
 } from "../src/binary-resolver";
 import { ABI_VERSION } from "../src/generated/abi";
 import {
@@ -104,7 +105,7 @@ async function vfsImage(
   return compressed ? new Uint8Array(zstdCompressSync(image)) : image;
 }
 
-function fixtureRelPath(extension: ".wasm" | ".vfs" | ".vfs.zst" | ".dat"): string {
+function fixtureClosureRelPaths(names: readonly string[]): string[] {
   const testRoot = "programs/wasm32/__binary_resolver_test__";
   const dir = `${testRoot}/${randomUUID()}`;
   cleanupDirs.add(join(localBinariesDir(), dir));
@@ -115,7 +116,11 @@ function fixtureRelPath(extension: ".wasm" | ".vfs" | ".vfs.zst" | ".dat"): stri
     cleanupEmptyDirs.add(join(root, "programs"));
     cleanupEmptyDirs.add(root);
   }
-  return `${dir}/artifact${extension}`;
+  return names.map((name) => `${dir}/${name}`);
+}
+
+function fixtureRelPath(extension: ".wasm" | ".vfs" | ".vfs.zst" | ".dat"): string {
+  return fixtureClosureRelPaths([`artifact${extension}`])[0];
 }
 
 function candidatePath(root: string, relPath: string): string {
@@ -205,5 +210,121 @@ describe("binary resolver artifact policy", () => {
     );
 
     expect(resolveBinary(relPath)).toBe(localPath);
+  });
+});
+
+describe("binary resolver package closures", () => {
+  it("returns a complete local closure from one provenance root", () => {
+    const [wasmRel, dataRel] = fixtureClosureRelPaths([
+      "program.wasm",
+      "runtime.dat",
+    ]);
+    const wasmPath = writeCandidate(
+      localBinariesDir(),
+      wasmRel,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+    const dataPath = writeCandidate(
+      localBinariesDir(),
+      dataRel,
+      new TextEncoder().encode("local-runtime"),
+    );
+    writeCandidate(
+      binariesDir(),
+      wasmRel,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+    writeCandidate(
+      binariesDir(),
+      dataRel,
+      new TextEncoder().encode("fetched-runtime"),
+    );
+
+    expect(tryResolveBinarySet([wasmRel, dataRel])).toEqual([wasmPath, dataPath]);
+  });
+
+  it("falls back wholesale from a partial local closure to complete fetched bytes", () => {
+    const [wasmRel, dataRel] = fixtureClosureRelPaths([
+      "program.wasm",
+      "runtime.dat",
+    ]);
+    writeCandidate(
+      localBinariesDir(),
+      wasmRel,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+    const fetchedWasm = writeCandidate(
+      binariesDir(),
+      wasmRel,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+    const fetchedData = writeCandidate(
+      binariesDir(),
+      dataRel,
+      new TextEncoder().encode("fetched-runtime"),
+    );
+
+    expect(tryResolveBinarySet([wasmRel, dataRel])).toEqual([
+      fetchedWasm,
+      fetchedData,
+    ]);
+  });
+
+  it("rejects complementary partial tiers instead of mixing a closure", () => {
+    const [wasmRel, dataRel] = fixtureClosureRelPaths([
+      "program.wasm",
+      "runtime.dat",
+    ]);
+    writeCandidate(
+      localBinariesDir(),
+      wasmRel,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+    writeCandidate(
+      binariesDir(),
+      dataRel,
+      new TextEncoder().encode("fetched-runtime"),
+    );
+
+    expect(() => tryResolveBinarySet([wasmRel, dataRel])).toThrow(
+      /no single provenance tier.*tiers will not be mixed/s,
+    );
+  });
+
+  it("falls back wholesale when a local closure member fails artifact policy", () => {
+    const [wasmRel, dataRel] = fixtureClosureRelPaths([
+      "program.wasm",
+      "runtime.dat",
+    ]);
+    writeCandidate(
+      localBinariesDir(),
+      wasmRel,
+      executableWasmWithAbi(ABI_VERSION - 1),
+    );
+    writeCandidate(
+      localBinariesDir(),
+      dataRel,
+      new TextEncoder().encode("local-runtime"),
+    );
+    const fetchedWasm = writeCandidate(
+      binariesDir(),
+      wasmRel,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+    const fetchedData = writeCandidate(
+      binariesDir(),
+      dataRel,
+      new TextEncoder().encode("fetched-runtime"),
+    );
+
+    expect(tryResolveBinarySet([wasmRel, dataRel])).toEqual([
+      fetchedWasm,
+      fetchedData,
+    ]);
+  });
+
+  it("returns null only when no closure member exists in any tier", () => {
+    const relPaths = fixtureClosureRelPaths(["program.wasm", "runtime.dat"]);
+    expect(tryResolveBinarySet(relPaths)).toBeNull();
   });
 });
