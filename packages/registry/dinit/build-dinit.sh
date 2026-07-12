@@ -132,11 +132,15 @@ CPPFLAGS_FOR_BUILD =
 LDFLAGS_FOR_BUILD =
 
 # Target flags. dinit uses C++ exceptions in its client code (dinitctl,
-# dinit-monitor) so we cannot disable them. Add libc++ include path
+# dinit-monitor), so compile with the WebAssembly exception model as well as
+# leaving C++ exceptions enabled. Without -fwasm-exceptions, clang emits
+# Wasm throw instructions but no catch handlers, and an expected dinitctl
+# connection failure escapes to the host as WebAssembly.Exception. Add the
+# libc++ include path
 # explicitly since the wasm32posix toolchain does not auto-include it;
 # the library is picked up at link time via -lc++ -lc++abi.
 CPPFLAGS = -D_POSIX_C_SOURCE=200809L -isystem $SYSROOT/include/c++/v1
-CXXFLAGS = -std=c++14 -O2 -Wall -Wextra
+CXXFLAGS = -std=c++14 -O2 -Wall -Wextra -fwasm-exceptions
 CFLAGS = -O2 -Wall
 
 # Link flags (target). Explicit -L because the SDK wrapper does not
