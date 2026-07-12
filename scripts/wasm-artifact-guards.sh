@@ -72,31 +72,97 @@ _wasm_stream_awk() {
     return "${statuses[1]:-1}"
 }
 
+_wasm_extract_constant_i32_body() {
+    local function_index="${1:-}"
+    [[ "$function_index" =~ ^[0-9]+$ ]] || return 1
+
+    awk -v function_index="$function_index" '
+        index($0, " func[" function_index "]") && /:$/ {
+            in_function = 1
+            valid = 1
+            next
+        }
+        in_function && /\| i32.const [0-9]+$/ {
+            if (seen_constant || seen_return) valid = 0
+            value = $NF
+            seen_constant = 1
+            next
+        }
+        in_function && /\| return$/ {
+            if (!seen_constant || seen_return) valid = 0
+            seen_return = 1
+            next
+        }
+        in_function && /\| end$/ {
+            if (valid && seen_constant) print value
+            exit
+        }
+        in_function && !/^[[:space:]]*$/ { valid = 0 }
+    '
+}
+
+wasm_extract_abi_version_with_binaryen() {
+    local path="${1:-}"
+    local function_index="${2:-}"
+    command -v wasm-opt >/dev/null 2>&1 || return 1
+    [[ "$function_index" =~ ^[0-9]+$ ]] || return 1
+
+    local extracted details extracted_function_index signature_index dump abi
+    extracted="$(mktemp)" || return 1
+    if ! wasm-opt "$path" "--extract-function-index=$function_index" -o "$extracted" 2>/dev/null; then
+        rm -f "$extracted"
+        return 1
+    fi
+    details="$(wasm-objdump -x "$extracted" 2>/dev/null)" || {
+        rm -f "$extracted"
+        return 1
+    }
+    extracted_function_index="$(
+        sed -nE 's/^ - func\[([0-9]+)\].* -> ".*"$/\1/p' <<< "$details"
+    )"
+    [[ "$extracted_function_index" =~ ^[0-9]+$ ]] || {
+        rm -f "$extracted"
+        return 1
+    }
+    signature_index="$(
+        sed -nE "s/^ - func\\[$extracted_function_index\\] sig=([0-9]+).*/\\1/p" <<< "$details"
+    )"
+    [[ "$signature_index" =~ ^[0-9]+$ ]] &&
+        grep -Fqx " - type[$signature_index] () -> i32" <<< "$details" || {
+        rm -f "$extracted"
+        return 1
+    }
+    dump="$(wasm-objdump -d "$extracted" 2>/dev/null)" || {
+        rm -f "$extracted"
+        return 1
+    }
+    rm -f "$extracted"
+    abi="$(_wasm_extract_constant_i32_body "$extracted_function_index" <<< "$dump")"
+    [[ "$abi" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$abi"
+}
+
 wasm_extract_abi_version() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 1
     command -v wasm-objdump >/dev/null 2>&1 || return 1
-
     # The export name and the function's optional debug name are separate Wasm
     # concepts. SDK binaries export the internal function
     # `__wasm_posix_user_abi_version` as `__abi_version`, and stripped binaries
     # have no function names at all. Resolve the export to its numeric function
     # index first; that index is stable in `wasm-objdump` output regardless of
     # the custom name section.
-    local func_index export_status=0
-    func_index="$(_wasm_stream_awk '
-        index($0, "-> \"__abi_version\"") {
-            line = $0
-            if (match(line, /func\[[0-9]+\]/)) {
-                target = substr(line, RSTART + 5, RLENGTH - 6)
-            }
-        }
-        END {
-            if (target != "") print target
-            else exit 1
-        }
-    ' wasm-objdump -x "$path")" || export_status=$?
-    [ "$export_status" -eq 0 ] && [ -n "$func_index" ] || return 1
+    local details func_index signature_index
+    details="$(wasm-objdump -x "$path" 2>/dev/null)" || return 1
+    func_index="$(
+        sed -nE 's/^ - func\[([0-9]+)\].* -> "__abi_version"$/\1/p' <<< "$details"
+    )"
+    [[ "$func_index" =~ ^[0-9]+$ ]] || return 1
+    signature_index="$(
+        sed -nE "s/^ - func\\[$func_index\\] sig=([0-9]+).*/\\1/p" <<< "$details"
+    )"
+    [[ "$signature_index" =~ ^[0-9]+$ ]] || return 1
+    grep -Fqx " - type[$signature_index] () -> i32" <<< "$details" || return 1
 
     # Accept only constants that form the direct return value. This avoids
     # mistaking an unrelated instrumentation constant in the same function for
@@ -211,6 +277,16 @@ wasm_extract_abi_version() {
         ' wasm-objdump -d "$path"
     )" || disassembly_status=$?
     if [ "$disassembly_status" -eq 0 ] && [ -n "$version" ]; then
+        printf '%s\n' "$version"
+        return 0
+    fi
+
+    # Large fork dispatchers can make full WABT disassembly fail before it
+    # reaches the ABI export. Extract the mapped function into a small module
+    # first; direct constant exports can then be checked with the same strict
+    # body shape without materializing the full dispatcher.
+    version="$(wasm_extract_abi_version_with_binaryen "$path" "$func_index" || true)"
+    if [[ "$version" =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$version"
         return 0
     fi
