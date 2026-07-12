@@ -57,10 +57,12 @@ if [ -z "$ZLIB_PREFIX" ]; then
     ZLIB_PREFIX="$LEGACY_ZLIB"
 fi
 
-if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
-    echo "ERROR: zlib not found at $ZLIB_PREFIX" >&2
+if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ] || [ ! -f "$ZLIB_PREFIX/include/zlib.h" ]; then
+    echo "ERROR: zlib headers and archive not found at $ZLIB_PREFIX" >&2
     exit 1
 fi
+ZLIB_CPPFLAGS="-I$ZLIB_PREFIX/include"
+ZLIB_LDFLAGS="-L$ZLIB_PREFIX/lib"
 
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -93,6 +95,8 @@ wasm32posix-configure \
     --without-threads \
     --with-zlib="$ZLIB_PREFIX" \
     --prefix="$INSTALL_DIR" \
+    CPPFLAGS="$ZLIB_CPPFLAGS" \
+    LDFLAGS="$ZLIB_LDFLAGS" \
     CFLAGS="-O2"
 
 # Compile directly without libtool. Source list mirrors Makefile.am's
@@ -112,15 +116,16 @@ SOURCES=(
     schematron.c
 )
 
-CFLAGS="-O2 -DHAVE_CONFIG_H -I. -I./include"
+# The hand compile bypasses configure's generated Makefiles, so carry the
+# resolver-owned zlib include path into this phase explicitly.
+COMPILE_FLAGS=(-O2 -DHAVE_CONFIG_H -I. -I./include "$ZLIB_CPPFLAGS")
 
 echo "==> Compiling libxml2 source files..."
 OBJS=()
 for src in "${SOURCES[@]}"; do
     if [ -f "$src" ]; then
         obj="${src%.c}.o"
-        # shellcheck disable=SC2086
-        wasm32posix-cc $CFLAGS -c "$src" -o "$obj"
+        wasm32posix-cc "${COMPILE_FLAGS[@]}" -c "$src" -o "$obj"
         OBJS+=("$obj")
     fi
 done
