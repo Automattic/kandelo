@@ -350,6 +350,11 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
+The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
+`mysql` account (uid/gid 101). Their writable `/data` directories are
+therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
+root-owned `01777` sticky directory.
+
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
 
 Homebrew-derived browser images are published through the package-source
