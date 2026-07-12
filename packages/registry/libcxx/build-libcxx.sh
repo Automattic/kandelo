@@ -137,7 +137,15 @@ echo "==> Building libc++ and libc++abi for ${ARCH}..."
 # against the modern ABI; consumers linking against this libcxx
 # archive must also compile with `-wasm-use-legacy-eh=false` (the
 # SDK's `compileFlags` was updated in lock-step).
-WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG"
+#
+# LLVM records source/compilation paths in archive members. All assembled
+# sources and both variant build directories live under REPO_ROOT, so one
+# stable worktree mapping covers LLVM_SRC_DIR, BUILD_DIR, PIC_BUILD_DIR, the
+# generated smoke source, and sysroot paths for both PIC and non-PIC builds.
+# Without it, libc++abi.a and every side module absorbing it differ solely by
+# the caller's checkout path.
+REPRODUCIBLE_PREFIX_MAPS="-ffile-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fdebug-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fmacro-prefix-map=${REPO_ROOT}=/usr/src/kandelo"
+WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG ${REPRODUCIBLE_PREFIX_MAPS}"
 
 # Start with a fresh source tree so a cache-miss rebuild does not mix old + new
 # artifacts. (Each build dir is cleaned by build_libcxx_variant below.)

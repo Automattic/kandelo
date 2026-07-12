@@ -8,7 +8,9 @@ commit      = "UNPUBLISHED"
 # Linux so icupkg/pkgdata do not need libstdc++.so.6 on the Nix CI runner.
 # Revision 5: compile ICU's default data directory as the stable guest path
 # /usr/lib/php instead of the resolver's random temporary install prefix.
-revision    = 5
+# Revision 6: make the three pkg-config prefixes relative to pcfiledir so a
+# fetched or moved archive resolves its own headers and libraries.
+revision    = 6
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

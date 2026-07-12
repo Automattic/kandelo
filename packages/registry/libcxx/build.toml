@@ -10,7 +10,10 @@ commit      = "UNPUBLISHED"
 # Revision 6: additionally emits position-independent libc++-pic.a /
 # libc++abi-pic.a (a second -fPIC build) so wasm side modules like PHP's
 # intl.so can statically absorb libc++. The non-PIC pair is unchanged.
-revision    = 6
+# Revision 7: map the worktree (including the assembled LLVM source and both
+# build variants) to a stable producer path so archives do not retain the
+# caller's absolute checkout directory.
+revision    = 7
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
