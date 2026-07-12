@@ -226,4 +226,14 @@ describe("wasm artifact ABI guards", () => {
     const stale = runGuard('wasm_has_stale_abi "$1" "$2"', namedWasm, "18");
     expect(stale.status, stale.stderr).toBe(0);
   });
+
+  it("extracts only a constant ABI through the primary and fallback paths", () => {
+    const output = execFileSync(
+      "bash",
+      [path.resolve(repoRoot, "scripts", "test-wasm-artifact-guards.sh")],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+
+    expect(output).toContain("test-wasm-artifact-guards.sh: ok");
+  });
 });
