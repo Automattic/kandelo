@@ -114,7 +114,7 @@ jobs:
             wasm32|wasm64) ;;
             *) echo "::error::invalid architecture for rollback"; exit 2 ;;
           esac
-          if ! [[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[0-9]+$ ]]; then
+          if ! [[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[1-9][0-9]*$ ]]; then
             echo "::error::invalid bottle release tag for rollback"
             exit 2
           fi
