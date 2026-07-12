@@ -101,6 +101,9 @@
             pkgs.curl
             pkgs.perl
             pkgs.python3
+            # Ruby's standard Psych parser is used by the Homebrew publisher
+            # trust test so workflow contracts are checked as YAML data.
+            pkgs.ruby
             pkgs.flex
             pkgs.bison
             pkgs.xz
