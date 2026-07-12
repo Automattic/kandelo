@@ -2046,6 +2046,10 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
             }
             FileType::Socket => {
                 let sock_idx = (-(host_handle + 1)) as usize;
+                let unix_dgram_send_state_changed = proc.sockets.get(sock_idx).is_some_and(|sock| {
+                    sock.domain == crate::socket::SocketDomain::Unix
+                        && sock.sock_type == crate::socket::SocketType::Dgram
+                });
                 if let Some(sock) = proc.sockets.get(sock_idx) {
                     if let Some(path) = sock.bind_path.as_deref() {
                         let registry = unsafe {
@@ -2131,6 +2135,13 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                     }
                 }
                 proc.sockets.free(sock_idx);
+                // Closing either endpoint can invalidate a process-local
+                // AF_UNIX datagram association. Retry blocked sends and
+                // readiness waits so they observe ECONNREFUSED/EPERM instead
+                // of waiting until an unrelated timeout.
+                if unix_dgram_send_state_changed {
+                    crate::wakeup::push_datagram_writable();
+                }
             }
             FileType::EventFd => {
                 // Free the eventfd state
@@ -4205,6 +4216,10 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     {
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.unregister(&resolved) {
+            // A sendto(path) may be parked on a full AF_UNIX datagram queue.
+            // Once the name is removed, retry it so it observes the now-stale
+            // destination instead of sleeping until an unrelated timeout.
+            crate::wakeup::push_datagram_writable();
             match host.host_unlink(&resolved) {
                 Ok(()) | Err(Errno::ENOENT) => return Ok(()),
                 Err(e) => return Err(e),
@@ -6540,11 +6555,31 @@ fn udp_socket_accepts_datagram(
     true
 }
 
-fn udp_queue_datagram(sock: &mut crate::socket::SocketInfo, datagram: crate::socket::Datagram) {
+fn udp_queue_datagram(
+    sock: &mut crate::socket::SocketInfo,
+    make_datagram: impl FnOnce() -> crate::socket::Datagram,
+) {
+    // This is a fixed internal queue limit; SO_RCVBUF is currently advisory.
+    // UDP is unreliable, so a full receive queue drops the incoming datagram
+    // while preserving the order of datagrams that were already accepted.
     if sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT {
-        sock.dgram_queue.remove(0);
+        return;
     }
-    sock.dgram_queue.push(datagram);
+    sock.dgram_queue.push(make_datagram());
+}
+
+fn unix_queue_datagram(
+    sock: &mut crate::socket::SocketInfo,
+    make_datagram: impl FnOnce() -> crate::socket::Datagram,
+) -> Result<(), Errno> {
+    // AF_UNIX datagrams are reliable. EAGAIN enters the host's ordinary
+    // blocking-write retry path, while O_NONBLOCK or MSG_DONTWAIT exposes it
+    // directly to the caller.
+    if sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT {
+        return Err(Errno::EAGAIN);
+    }
+    sock.dgram_queue.push(make_datagram());
+    Ok(())
 }
 
 fn udp_take_socket_error(proc: &mut Process, sock_idx: usize) -> Result<(), Errno> {
@@ -6770,6 +6805,7 @@ fn udp_send_datagram(
     } else {
         src_addr
     };
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
     if is_ipv4_multicast_addr(dst_addr) {
         use wasm_posix_shared::socket::{IP_MULTICAST_IF, IP_MULTICAST_LOOP, IPPROTO_IP};
 
@@ -6802,21 +6838,6 @@ fn udp_send_datagram(
         if !loop_enabled {
             return Ok(buf.len());
         }
-        let datagram = Datagram {
-            data: buf.to_vec(),
-            src_addr,
-            src_addr6: [0; 16],
-            dst_addr,
-            dst_addr6: [0; 16],
-            src_port,
-            src_sock_idx: Some(sock_idx),
-            ipv6_tclass: 0,
-            src_pid: proc.pid,
-            src_uid: proc.uid,
-            src_gid: proc.gid,
-            ancillary_fds: Vec::new(),
-        };
-
         let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
         for endpoint in endpoints {
             if endpoint.pid != proc.pid {
@@ -6839,7 +6860,20 @@ fn udp_send_datagram(
                 continue;
             }
             if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
-                udp_queue_datagram(target, datagram.clone());
+                udp_queue_datagram(target, || Datagram {
+                    data: buf.to_vec(),
+                    src_addr,
+                    src_addr6: [0; 16],
+                    dst_addr,
+                    dst_addr6: [0; 16],
+                    src_port,
+                    src_sock_idx: Some(sock_idx),
+                    ipv6_tclass: 0,
+                    src_pid,
+                    src_uid,
+                    src_gid,
+                    ancillary_fds: Vec::new(),
+                });
             }
         }
         return Ok(buf.len());
@@ -6857,21 +6891,6 @@ fn udp_send_datagram(
             Err(e) => Err(e),
         };
     }
-    let datagram = Datagram {
-        data: buf.to_vec(),
-        src_addr,
-        src_addr6: [0; 16],
-        dst_addr,
-        dst_addr6: [0; 16],
-        src_port,
-        src_sock_idx: Some(sock_idx),
-        ipv6_tclass: 0,
-        src_pid: proc.pid,
-        src_uid: proc.uid,
-        src_gid: proc.gid,
-        ancillary_fds: Vec::new(),
-    };
-
     let mut delivered = false;
     let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
     for endpoint in endpoints {
@@ -6887,7 +6906,20 @@ fn udp_send_datagram(
             continue;
         }
         if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
-            udp_queue_datagram(target, datagram.clone());
+            udp_queue_datagram(target, || Datagram {
+                data: buf.to_vec(),
+                src_addr,
+                src_addr6: [0; 16],
+                dst_addr,
+                dst_addr6: [0; 16],
+                src_port,
+                src_sock_idx: Some(sock_idx),
+                ipv6_tclass: 0,
+                src_pid,
+                src_uid,
+                src_gid,
+                ancillary_fds: Vec::new(),
+            });
             delivered = true;
             break;
         }
@@ -6919,20 +6951,7 @@ fn unix_dgram_send_to_sock(
         return Err(Errno::EPIPE);
     }
 
-    let datagram = Datagram {
-        data: buf.to_vec(),
-        src_addr: [0; 4],
-        src_addr6: [0; 16],
-        dst_addr: [0; 4],
-        dst_addr6: [0; 16],
-        src_port: 0,
-        src_sock_idx: Some(src_sock_idx),
-        ipv6_tclass: 0,
-        src_pid: proc.pid,
-        src_uid: proc.uid,
-        src_gid: proc.gid,
-        ancillary_fds: Vec::new(),
-    };
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
     let target = proc.sockets.get_mut(dst_sock_idx).ok_or(Errno::ECONNREFUSED)?;
     if target.domain != crate::socket::SocketDomain::Unix
         || target.sock_type != crate::socket::SocketType::Dgram
@@ -6943,7 +6962,29 @@ fn unix_dgram_send_to_sock(
     {
         return Err(Errno::ECONNREFUSED);
     }
-    udp_queue_datagram(target, datagram);
+    if !unix_dgram_target_accepts_sender(target, src_sock_idx) {
+        return Err(Errno::EPERM);
+    }
+    // A read-shut AF_UNIX datagram peer cannot accept another reliable
+    // message. Report the broken association before constructing a payload;
+    // the send wrapper supplies SIGPIPE unless MSG_NOSIGNAL was requested.
+    if target.shut_rd {
+        return Err(Errno::EPIPE);
+    }
+    unix_queue_datagram(target, || Datagram {
+        data: buf.to_vec(),
+        src_addr: [0; 4],
+        src_addr6: [0; 16],
+        dst_addr: [0; 4],
+        dst_addr6: [0; 16],
+        src_port: 0,
+        src_sock_idx: Some(src_sock_idx),
+        ipv6_tclass: 0,
+        src_pid,
+        src_uid,
+        src_gid,
+        ancillary_fds: Vec::new(),
+    })?;
     Ok(buf.len())
 }
 
@@ -7040,6 +7081,23 @@ fn udp6_socket_accepts_datagram(
     true
 }
 
+fn unix_dgram_target_accepts_sender(
+    target: &crate::socket::SocketInfo,
+    src_sock_idx: usize,
+) -> bool {
+    use crate::socket::SocketState;
+
+    target.state != SocketState::Connected || target.peer_idx == Some(src_sock_idx)
+}
+
+fn unix_dgram_matches_peer(
+    owner_pid: u32,
+    peer_idx: usize,
+    datagram: &crate::socket::Datagram,
+) -> bool {
+    datagram.src_pid == owner_pid && datagram.src_sock_idx == Some(peer_idx)
+}
+
 /// Whether a queued datagram is visible through this socket's connected-peer
 /// filter. Keep recv and poll on the same predicate so readiness cannot claim
 /// data that the following recv would reject.
@@ -7060,12 +7118,9 @@ fn dgram_matches_connected_peer(
         SocketDomain::Inet6 => {
             datagram.src_addr6 == sock.peer_addr6 && datagram.src_port == sock.peer_port
         }
-        SocketDomain::Unix => {
-            datagram.src_pid == owner_pid
-                && sock
-                    .peer_idx
-                    .is_some_and(|peer| datagram.src_sock_idx == Some(peer))
-        }
+        SocketDomain::Unix => sock
+            .peer_idx
+            .is_some_and(|peer| unix_dgram_matches_peer(owner_pid, peer, datagram)),
     }
 }
 
@@ -7118,20 +7173,7 @@ fn udp6_send_datagram(
     } else {
         src_addr
     };
-    let datagram = Datagram {
-        data: buf.to_vec(),
-        src_addr: [0; 4],
-        src_addr6: src_addr,
-        dst_addr: [0; 4],
-        dst_addr6: dst_addr,
-        src_port,
-        src_sock_idx: Some(sock_idx),
-        ipv6_tclass: 0,
-        src_pid: proc.pid,
-        src_uid: proc.uid,
-        src_gid: proc.gid,
-        ancillary_fds: Vec::new(),
-    };
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
 
     let mut delivered = false;
     let sock_count = proc.sockets.len();
@@ -7151,7 +7193,20 @@ fn udp6_send_datagram(
             continue;
         }
         if let Some(target) = proc.sockets.get_mut(idx) {
-            udp_queue_datagram(target, datagram.clone());
+            udp_queue_datagram(target, || Datagram {
+                data: buf.to_vec(),
+                src_addr: [0; 4],
+                src_addr6: src_addr,
+                dst_addr: [0; 4],
+                dst_addr6: dst_addr,
+                src_port,
+                src_sock_idx: Some(sock_idx),
+                ipv6_tclass: 0,
+                src_pid,
+                src_uid,
+                src_gid,
+                ancillary_fds: Vec::new(),
+            });
             delivered = true;
             break;
         }
@@ -7176,20 +7231,6 @@ pub fn inject_udp_datagram_into(
 ) -> i32 {
     use crate::socket::Datagram;
 
-    let datagram = Datagram {
-        data: data.to_vec(),
-        src_addr,
-        src_addr6: [0; 16],
-        dst_addr,
-        dst_addr6: [0; 16],
-        src_port,
-        src_sock_idx: None,
-        ipv6_tclass: 0,
-        src_pid: 0,
-        src_uid: 0,
-        src_gid: 0,
-        ancillary_fds: Vec::new(),
-    };
     let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
     for endpoint in endpoints {
         if endpoint.pid != proc.pid {
@@ -7204,7 +7245,20 @@ pub fn inject_udp_datagram_into(
             continue;
         }
         if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
-            udp_queue_datagram(target, datagram);
+            udp_queue_datagram(target, || Datagram {
+                data: data.to_vec(),
+                src_addr,
+                src_addr6: [0; 16],
+                dst_addr,
+                dst_addr6: [0; 16],
+                src_port,
+                src_sock_idx: None,
+                ipv6_tclass: 0,
+                src_pid: 0,
+                src_uid: 0,
+                src_gid: 0,
+                ancillary_fds: Vec::new(),
+            });
             return 0;
         }
     }
@@ -7330,16 +7384,30 @@ pub fn sys_shutdown(
     // later close, process exit, fork, or SCM_RIGHTS transfer from dropping or
     // resurrecting the same pipe reference. Explicit SHUT_RD is a hard receive
     // refusal; only normal close uses TCP's orderly orphaned-receive state.
-    let (send_idx, recv_idx, net_handle) = {
+    let (send_idx, recv_idx, net_handle, datagram_send_state_changed) = {
         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+        let is_unix_dgram = sock.domain == crate::socket::SocketDomain::Unix
+            && sock.sock_type == crate::socket::SocketType::Dgram;
+        let was_shut_rd = sock.shut_rd;
+        let was_shut_wr = sock.shut_wr;
         match how {
             SHUT_RD => {
                 sock.shut_rd = true;
-                (None, sock.recv_buf_idx.take(), None)
+                (
+                    None,
+                    sock.recv_buf_idx.take(),
+                    None,
+                    is_unix_dgram && !was_shut_rd,
+                )
             }
             SHUT_WR => {
                 sock.shut_wr = true;
-                (sock.send_buf_idx.take(), None, None)
+                (
+                    sock.send_buf_idx.take(),
+                    None,
+                    None,
+                    is_unix_dgram && !was_shut_wr,
+                )
             }
             SHUT_RDWR => {
                 sock.shut_rd = true;
@@ -7348,6 +7416,7 @@ pub fn sys_shutdown(
                     sock.send_buf_idx.take(),
                     sock.recv_buf_idx.take(),
                     sock.host_net_handle.take(),
+                    is_unix_dgram && (!was_shut_rd || !was_shut_wr),
                 )
             }
             _ => return Err(Errno::EINVAL),
@@ -7375,6 +7444,12 @@ pub fn sys_shutdown(
         if crate::socket::host_net_handle_close_ref(net_handle) {
             let _ = host.host_net_close(net_handle);
         }
+    }
+    // AF_UNIX datagram writers and readiness waiters are not backed by a
+    // targetable pipe. A read-side or write-side shutdown changes whether the
+    // next send blocks or fails, so ask the host to retry them broadly.
+    if datagram_send_state_changed {
+        crate::wakeup::push_datagram_writable();
     }
     Ok(())
 }
@@ -8849,10 +8924,28 @@ pub fn sys_connect(
                 {
                     return Err(Errno::ECONNREFUSED);
                 }
+                if !unix_dgram_target_accepts_sender(target, sock_idx) {
+                    return Err(Errno::EPERM);
+                }
 
-                let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-                sock.peer_idx = Some(peer_idx);
-                sock.state = SocketState::Connected;
+                let owner_pid = proc.pid;
+                let send_state_changed = {
+                    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                    let association_changed = sock.state != SocketState::Connected
+                        || sock.peer_idx != Some(peer_idx);
+                    sock.peer_idx = Some(peer_idx);
+                    sock.state = SocketState::Connected;
+                    let queued_before = sock.dgram_queue.len();
+                    sock.dgram_queue
+                        .retain(|datagram| unix_dgram_matches_peer(owner_pid, peer_idx, datagram));
+                    association_changed || sock.dgram_queue.len() != queued_before
+                };
+                // Connecting changes both this socket's destination and which
+                // senders it accepts. Even if a selected peer's messages keep
+                // the queue full, rejected writers must wake to observe EPERM.
+                if send_state_changed {
+                    crate::wakeup::push_datagram_writable();
+                }
                 return Ok(());
             }
             if sock.state == SocketState::Connected {
@@ -9082,11 +9175,16 @@ pub fn sys_recvfrom(
         return Err(Errno::EAGAIN);
     }
     let datagram_idx = datagram_idx.unwrap();
-    let datagram = if _flags & MSG_PEEK != 0 {
+    let peek = _flags & MSG_PEEK != 0;
+    let was_full = sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT;
+    let datagram = if peek {
         sock.dgram_queue[datagram_idx].clone()
     } else {
         sock.dgram_queue.remove(datagram_idx)
     };
+    if !peek && was_full && sock.domain == SocketDomain::Unix {
+        crate::wakeup::push_datagram_writable();
+    }
 
     // Copy data to buffer
     let copy_len = buf.len().min(datagram.data.len());
@@ -9336,7 +9434,27 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         {
                             revents |= POLLIN;
                         }
-                        if pollfd.events & POLLOUT != 0 && !sock.shut_wr {
+                        let unix_peer_queue_full = sock.domain
+                            == crate::socket::SocketDomain::Unix
+                            && sock.state == SocketState::Connected
+                            && sock
+                                .peer_idx
+                                .and_then(|peer_idx| proc.sockets.get(peer_idx))
+                                .is_some_and(|peer| {
+                                    peer.domain == crate::socket::SocketDomain::Unix
+                                        && peer.sock_type == SocketType::Dgram
+                                        && matches!(
+                                            peer.state,
+                                            SocketState::Bound | SocketState::Connected
+                                        )
+                                        && !peer.shut_rd
+                                        && unix_dgram_target_accepts_sender(peer, sock_idx)
+                                        && peer.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT
+                                });
+                        if pollfd.events & POLLOUT != 0
+                            && !sock.shut_wr
+                            && !unix_peer_queue_full
+                        {
                             revents |= POLLOUT;
                         }
                     }
@@ -9742,6 +9860,7 @@ pub fn sys_unlinkat(
         {
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if registry.unregister(&resolved) {
+                crate::wakeup::push_datagram_writable();
                 match host.host_unlink(&resolved) {
                     Ok(()) | Err(Errno::ENOENT) => return Ok(()),
                     Err(e) => return Err(e),
@@ -12415,6 +12534,32 @@ mod tests {
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static THREAD_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn test_unix_addr(path: &[u8]) -> Vec<u8> {
+        let mut addr = vec![0; 2 + path.len() + 1];
+        addr[0] = wasm_posix_shared::socket::AF_UNIX as u8;
+        addr[2..2 + path.len()].copy_from_slice(path);
+        addr
+    }
+
+    fn bind_test_unix_dgram(
+        proc: &mut Process,
+        host: &mut dyn HostIO,
+        path: &[u8],
+    ) -> (i32, Vec<u8>) {
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+
+        let fd = sys_socket(proc, host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let addr = test_unix_addr(path);
+        sys_bind(proc, host, fd, &addr).unwrap();
+        (fd, addr)
+    }
+
+    fn test_socket_idx(proc: &Process, fd: i32) -> usize {
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        (-(ofd.host_handle + 1)) as usize
+    }
 
     fn set_test_current_tid(tid: u32) {
         unsafe {
@@ -20096,6 +20241,411 @@ mod tests {
     }
 
     #[test]
+    fn test_unix_dgram_full_queue_backpressures_without_reordering() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9052);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let recv_path = b"/tmp/udg-overflow-recv.sock";
+        let mut recv_addr = [0u8; 64];
+        recv_addr[0] = AF_UNIX as u8;
+        recv_addr[2..2 + recv_path.len()].copy_from_slice(recv_path);
+        let recv_addr = &recv_addr[..2 + recv_path.len() + 1];
+        sys_bind(&mut proc, &mut host, recv_fd, recv_addr).unwrap();
+
+        let send_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let send_path = b"/tmp/udg-overflow-send.sock";
+        let mut send_addr = [0u8; 64];
+        send_addr[0] = AF_UNIX as u8;
+        send_addr[2..2 + send_path.len()].copy_from_slice(send_path);
+        let send_addr = &send_addr[..2 + send_path.len() + 1];
+        sys_bind(&mut proc, &mut host, send_fd, send_addr).unwrap();
+        sys_connect(&mut proc, &mut host, send_fd, recv_addr).unwrap();
+
+        // A connected receiver admits only its chosen peer. Purge datagrams
+        // from other senders that arrived before connect, and reject later
+        // attempts so invisible messages cannot fill the reliable queue.
+        let attacker_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                attacker_fd,
+                b"pre-connect attacker",
+                0,
+                recv_addr,
+            )
+            .unwrap(),
+            20,
+        );
+        let recv_idx = {
+            let entry = proc.fd_table.get(recv_fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            (-(ofd.host_handle + 1)) as usize
+        };
+        assert_eq!(
+            sys_write(
+                &mut proc,
+                &mut host,
+                send_fd,
+                b"peer-before-connect",
+            )
+            .unwrap(),
+            19,
+        );
+        assert_eq!(proc.sockets.get(recv_idx).unwrap().dgram_queue.len(), 2);
+        sys_connect(&mut proc, &mut host, recv_fd, send_addr).unwrap();
+        assert_eq!(proc.sockets.get(recv_idx).unwrap().dgram_queue.len(), 1);
+        let mut peer_payload = [0u8; 32];
+        let peer_len = sys_read(&mut proc, &mut host, recv_fd, &mut peer_payload).unwrap();
+        assert_eq!(&peer_payload[..peer_len], b"peer-before-connect");
+        assert!(proc.sockets.get(recv_idx).unwrap().dgram_queue.is_empty());
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, attacker_fd, recv_addr).unwrap_err(),
+            Errno::EPERM,
+        );
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                attacker_fd,
+                b"post-connect attacker",
+                0,
+                recv_addr,
+            )
+            .unwrap_err(),
+            Errno::EPERM,
+        );
+
+        for sequence in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+            assert_eq!(
+                sys_write(
+                    &mut proc,
+                    &mut host,
+                    send_fd,
+                    &(sequence as u32).to_le_bytes(),
+                )
+                .unwrap(),
+                4,
+            );
+        }
+        assert_eq!(
+            unix_queue_datagram(proc.sockets.get_mut(recv_idx).unwrap(), || {
+                panic!("a full Unix datagram queue must not construct a blocked payload")
+            }),
+            Err(Errno::EAGAIN),
+        );
+        assert_eq!(
+            sys_write(
+                &mut proc,
+                &mut host,
+                send_fd,
+                &(UDP_DATAGRAM_QUEUE_LIMIT as u32).to_le_bytes(),
+            )
+            .unwrap_err(),
+            Errno::EAGAIN,
+        );
+
+        use wasm_posix_shared::poll::POLLOUT;
+        let mut pollfd = WasmPollFd {
+            fd: send_fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            0,
+        );
+        assert_eq!(pollfd.revents, 0);
+
+        let mut buf = [0u8; 4];
+        assert_eq!(sys_read(&mut proc, &mut host, recv_fd, &mut buf).unwrap(), 4);
+        assert_eq!(u32::from_le_bytes(buf), 0);
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+        assert_eq!(
+            sys_write(
+                &mut proc,
+                &mut host,
+                send_fd,
+                &(UDP_DATAGRAM_QUEUE_LIMIT as u32).to_le_bytes(),
+            )
+            .unwrap(),
+            4,
+        );
+
+        for expected in 1..=UDP_DATAGRAM_QUEUE_LIMIT {
+            assert_eq!(sys_read(&mut proc, &mut host, recv_fd, &mut buf).unwrap(), 4);
+            assert_eq!(u32::from_le_bytes(buf), expected as u32);
+        }
+
+        sys_close(&mut proc, &mut host, attacker_fd).unwrap();
+        sys_close(&mut proc, &mut host, send_fd).unwrap();
+        sys_close(&mut proc, &mut host, recv_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, send_path).unwrap();
+        sys_unlink(&mut proc, &mut host, recv_path).unwrap();
+    }
+
+    #[test]
+    fn test_unix_dgram_connect_releases_rejected_full_queue_sender() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9053);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::poll::POLLOUT;
+
+        let recv_path = b"/tmp/udg-connect-state-recv.sock";
+        let first_path = b"/tmp/udg-connect-state-first.sock";
+        let selected_path = b"/tmp/udg-connect-state-selected.sock";
+        let (recv_fd, recv_addr) = bind_test_unix_dgram(&mut proc, &mut host, recv_path);
+        let (first_fd, _) = bind_test_unix_dgram(&mut proc, &mut host, first_path);
+        let (selected_fd, selected_addr) =
+            bind_test_unix_dgram(&mut proc, &mut host, selected_path);
+        sys_connect(&mut proc, &mut host, first_fd, &recv_addr).unwrap();
+        sys_connect(&mut proc, &mut host, selected_fd, &recv_addr).unwrap();
+
+        for sequence in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+            sys_send(
+                &mut proc,
+                &mut host,
+                selected_fd,
+                &(sequence as u32).to_le_bytes(),
+                0,
+            )
+            .unwrap();
+        }
+
+        let mut first_poll = WasmPollFd {
+            fd: first_fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut first_poll),
+                0,
+            )
+            .unwrap(),
+            0,
+        );
+
+        // The receiver selects the other sender without freeing capacity.
+        // The first sender must nevertheless become ready so its next send
+        // can report the now-immediate EPERM instead of remaining parked.
+        sys_connect(&mut proc, &mut host, recv_fd, &selected_addr).unwrap();
+        assert_eq!(
+            proc.sockets
+                .get(test_socket_idx(&proc, recv_fd))
+                .unwrap()
+                .dgram_queue
+                .len(),
+            UDP_DATAGRAM_QUEUE_LIMIT,
+        );
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut first_poll),
+                0,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_ne!(first_poll.revents & POLLOUT, 0);
+        assert_eq!(
+            sys_send(&mut proc, &mut host, first_fd, b"rejected", 0).unwrap_err(),
+            Errno::EPERM,
+        );
+
+        let mut selected_poll = WasmPollFd {
+            fd: selected_fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut selected_poll),
+                0,
+            )
+            .unwrap(),
+            0,
+        );
+
+        for fd in [first_fd, selected_fd, recv_fd] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        for path in [first_path.as_slice(), selected_path.as_slice(), recv_path.as_slice()] {
+            sys_unlink(&mut proc, &mut host, path).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_unix_dgram_read_shutdown_releases_full_sender_to_epipe() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9054);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::poll::POLLOUT;
+        use wasm_posix_shared::signal::SIGPIPE;
+        use wasm_posix_shared::socket::{MSG_NOSIGNAL, SHUT_RD};
+
+        let recv_path = b"/tmp/udg-shutdown-recv.sock";
+        let send_path = b"/tmp/udg-shutdown-send.sock";
+        let (recv_fd, recv_addr) = bind_test_unix_dgram(&mut proc, &mut host, recv_path);
+        let (send_fd, _) = bind_test_unix_dgram(&mut proc, &mut host, send_path);
+        sys_connect(&mut proc, &mut host, send_fd, &recv_addr).unwrap();
+
+        for sequence in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+            sys_send(
+                &mut proc,
+                &mut host,
+                send_fd,
+                &(sequence as u32).to_le_bytes(),
+                0,
+            )
+            .unwrap();
+        }
+        let recv_idx = test_socket_idx(&proc, recv_fd);
+        let mut pollfd = WasmPollFd {
+            fd: send_fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            0,
+        );
+
+        sys_shutdown(&mut proc, &mut host, recv_fd, SHUT_RD).unwrap();
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+        assert_eq!(
+            sys_send(&mut proc, &mut host, send_fd, b"signal", 0).unwrap_err(),
+            Errno::EPIPE,
+        );
+        assert!(proc.signals.is_pending(SIGPIPE));
+        assert_eq!(
+            proc.sockets.get(recv_idx).unwrap().dgram_queue.len(),
+            UDP_DATAGRAM_QUEUE_LIMIT,
+        );
+        proc.signals.clear(SIGPIPE);
+        assert_eq!(
+            sys_send(
+                &mut proc,
+                &mut host,
+                send_fd,
+                b"quiet",
+                MSG_NOSIGNAL,
+            )
+            .unwrap_err(),
+            Errno::EPIPE,
+        );
+        assert!(!proc.signals.is_pending(SIGPIPE));
+
+        for fd in [send_fd, recv_fd] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        for path in [send_path.as_slice(), recv_path.as_slice()] {
+            sys_unlink(&mut proc, &mut host, path).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_unix_dgram_close_releases_full_connected_sender() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9055);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::poll::POLLOUT;
+
+        let recv_path = b"/tmp/udg-close-recv.sock";
+        let send_path = b"/tmp/udg-close-send.sock";
+        let (recv_fd, recv_addr) = bind_test_unix_dgram(&mut proc, &mut host, recv_path);
+        let (send_fd, _) = bind_test_unix_dgram(&mut proc, &mut host, send_path);
+        sys_connect(&mut proc, &mut host, send_fd, &recv_addr).unwrap();
+        for sequence in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+            sys_send(
+                &mut proc,
+                &mut host,
+                send_fd,
+                &(sequence as u32).to_le_bytes(),
+                0,
+            )
+            .unwrap();
+        }
+
+        let mut pollfd = WasmPollFd {
+            fd: send_fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            0,
+        );
+        sys_close(&mut proc, &mut host, recv_fd).unwrap();
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+        assert_eq!(
+            sys_send(&mut proc, &mut host, send_fd, b"closed", 0).unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
+
+        sys_close(&mut proc, &mut host, send_fd).unwrap();
+        for path in [send_path.as_slice(), recv_path.as_slice()] {
+            sys_unlink(&mut proc, &mut host, path).unwrap();
+        }
+    }
+
+    #[test]
     fn test_unix_dgram_rejects_stream_target() {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(9026);
@@ -20383,6 +20933,80 @@ mod tests {
         for fd in [accepted4, client4, server4, refused4, duplicate6, server6] {
             sys_close(&mut proc, &mut host, fd).unwrap();
         }
+    }
+
+    #[test]
+    fn test_udp_recv_queue_tail_drops_on_overflow() {
+        use wasm_posix_shared::socket::*;
+
+        let mut proc = Process::new(9051);
+        let mut host = MockHostIO::new();
+
+        // Receiver bound to 127.0.0.1:ephemeral.
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut baddr = [0u8; 16];
+        baddr[0] = 2;
+        sys_bind(&mut proc, &mut host, recv_fd, &baddr).unwrap();
+        let mut gsa = [0u8; 16];
+        sys_getsockname(&proc, recv_fd, &mut gsa).unwrap();
+        let port = [gsa[2], gsa[3]];
+
+        // Sender.
+        let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut saddr = [0u8; 16];
+        saddr[0] = 2;
+        sys_bind(&mut proc, &mut host, send_fd, &saddr).unwrap();
+
+        // Send LIMIT + 2 sequence-numbered datagrams to 127.0.0.1:port.
+        for sequence in 0..UDP_DATAGRAM_QUEUE_LIMIT + 2 {
+            let mut dest = [0u8; 16];
+            dest[0] = 2;
+            dest[2] = port[0];
+            dest[3] = port[1];
+            dest[4] = 127;
+            dest[7] = 1;
+            assert_eq!(
+                sys_sendto(
+                    &mut proc,
+                    &mut host,
+                    send_fd,
+                    &(sequence as u32).to_le_bytes(),
+                    0,
+                    &dest,
+                )
+                .unwrap(),
+                4,
+            );
+        }
+        let recv_idx = {
+            let entry = proc.fd_table.get(recv_fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            (-(ofd.host_handle + 1)) as usize
+        };
+        udp_queue_datagram(proc.sockets.get_mut(recv_idx).unwrap(), || {
+            panic!("a full UDP queue must not construct a dropped payload")
+        });
+
+        // The already-queued datagrams survive in order.
+        for expected in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+            let mut buf = [0u8; 4];
+            let mut from = [0u8; 16];
+            let (n, from_len) =
+                sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+            assert_eq!(n, 4);
+            assert_eq!(from_len, 16);
+            assert_eq!(u32::from_le_bytes(buf), expected as u32);
+        }
+
+        // The two incoming datagrams sent after the queue filled were dropped.
+        let mut buf = [0u8; 4];
+        let mut from = [0u8; 16];
+        assert_eq!(
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap_err(),
+            Errno::EAGAIN,
+        );
+        sys_close(&mut proc, &mut host, send_fd).unwrap();
+        sys_close(&mut proc, &mut host, recv_fd).unwrap();
     }
 
     // ── Threading tests ──────────────────────────────────────────────
