@@ -960,6 +960,8 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref() {
   git -C "$seed" push -q -u origin main
   git --git-dir="$remote" symbolic-ref HEAD refs/heads/main
   git clone -q "$remote" "$tap"
+  git -C "$tap" config user.name "Kandelo Test"
+  git -C "$tap" config user.email "kandelo-test@example.invalid"
   planned_tap="$(git -C "$tap" rev-parse HEAD)"
   planned_kandelo="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
