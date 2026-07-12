@@ -337,9 +337,11 @@ For each declared arch in the package's `arches = [...]` (default
    - `abi_versions` must contain the in-tree `ABI_VERSION`.
    - `cache_key_sha` must match the resolver's locally-computed
      cache-key sha (catches recipe drift).
-6. Places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
-   into the cache, so browser/Node demos can load by relative path
-   without re-fetching.
+6. Places each program output under `binaries/programs/<arch>/` using the
+   manifest's output layout, and places declared non-Wasm runtime files under
+   `binaries/programs/<arch>/<package>/<artifact>`. Both are symlinks into the
+   validated cache, so browser/Node image builders load the same bytes without
+   re-fetching. Local builds use the identical layout under `local-binaries/`.
 
 On any verification failure, the resolver logs a warning and falls
 through to a source build (the package's build script). This
