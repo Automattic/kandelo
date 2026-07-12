@@ -1,0 +1,46 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+name = "libzip"
+version = "1.11.4"
+kernel_abi = 7
+depends_on = ["zlib@1.3.1"]
+# PHP's current extension build is wasm32-only. Do not advertise wasm64 until
+# the consumer and this recipe are both validated for that architecture.
+arches = ["wasm32"]
+
+[source]
+url = "https://libzip.org/download/libzip-1.11.4.tar.gz"
+sha256 = "82e9f2f2421f9d7c2466bbc3173cd09595a88ea37db0d559a9d0a2dc60dc722e"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/nih-at/libzip/blob/v1.11.4/LICENSE"
+
+[build]
+script_path = "packages/registry/libzip/build-libzip.sh"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wasm-objdump"
+version_constraint = ">=1.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libzip.a"]
+headers = ["include/zip.h", "include/zipconf.h"]
+pkgconfig = ["lib/pkgconfig/libzip.pc"]

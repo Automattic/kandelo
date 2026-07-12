@@ -71,24 +71,28 @@ LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:-}"
 [ -z "$LIBXML2_PREFIX" ] && { echo "==> Resolving libxml2..."; LIBXML2_PREFIX="$(resolve_dep libxml2)"; }
 LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:-}"
 [ -z "$LIBICONV_PREFIX" ] && { echo "==> Resolving GNU libiconv..."; LIBICONV_PREFIX="$(resolve_dep libiconv)"; }
+LIBZIP_PREFIX="${WASM_POSIX_DEP_LIBZIP_DIR:-}"
+[ -z "$LIBZIP_PREFIX" ] && { echo "==> Resolving libzip..."; LIBZIP_PREFIX="$(resolve_dep libzip)"; }
 [ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
 [ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
 [ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
 [ -f "$LIBXML2_PREFIX/lib/libxml2.a" ] || { echo "ERROR: libxml2 resolve missing libxml2.a"; exit 1; }
 [ -f "$LIBICONV_PREFIX/lib/libiconv.a" ] || { echo "ERROR: GNU libiconv resolve missing libiconv.a"; exit 1; }
+[ -f "$LIBZIP_PREFIX/lib/libzip.a" ] || { echo "ERROR: libzip resolve missing libzip.a"; exit 1; }
 echo "==> zlib at $ZLIB_PREFIX"
 echo "==> sqlite at $SQLITE_PREFIX"
 echo "==> openssl at $OPENSSL_PREFIX"
 echo "==> libxml2 at $LIBXML2_PREFIX"
 echo "==> GNU libiconv at $LIBICONV_PREFIX"
+echo "==> libzip at $LIBZIP_PREFIX"
 
 # Compose PKG_CONFIG_PATH for all deps so wasm32posix-configure's
 # pkg-config probes can find them in the cache instead of the sysroot.
-DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBICONV_PREFIX/lib/pkgconfig"
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBICONV_PREFIX/lib/pkgconfig:$LIBZIP_PREFIX/lib/pkgconfig"
 
 # Compose -I and -L flags for defense-in-depth (autoconf raw probes).
-DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include -I$LIBICONV_PREFIX/include"
-DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib -L$LIBICONV_PREFIX/lib"
+DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include -I$LIBICONV_PREFIX/include -I$LIBZIP_PREFIX/include"
+DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib -L$LIBICONV_PREFIX/lib -L$LIBZIP_PREFIX/lib"
 
 # Some locally rebuilt dependency prefixes used during PHP/kernel
 # conformance iteration intentionally contain only headers and static
@@ -106,6 +110,8 @@ LIBXML_CFLAGS_VALUE="-I$LIBXML2_PREFIX/include/libxml2 -I$LIBXML2_PREFIX/include
 LIBXML_LIBS_VALUE="-L$LIBXML2_PREFIX/lib -lxml2 -L$LIBICONV_PREFIX/lib -liconv -lcharset -lz"
 ICONV_CFLAGS_VALUE="-I$LIBICONV_PREFIX/include"
 ICONV_LIBS_VALUE="-L$LIBICONV_PREFIX/lib -liconv -lcharset"
+LIBZIP_CFLAGS_VALUE="-I$LIBZIP_PREFIX/include"
+LIBZIP_LIBS_VALUE="-L$LIBZIP_PREFIX/lib -lzip -L$ZLIB_PREFIX/lib -lz"
 
 prefix_map_flags() {
     local producer_path="$1"
@@ -123,6 +129,7 @@ REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$SQLITE_PREFIX" /usr/src/kandelo
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$OPENSSL_PREFIX" /usr/src/kandelo-deps/openssl)"
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBXML2_PREFIX" /usr/src/kandelo-deps/libxml2)"
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBICONV_PREFIX" /usr/src/kandelo-deps/libiconv)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBZIP_PREFIX" /usr/src/kandelo-deps/libzip)"
 
 echo "==> Downloading PHP $PHP_VERSION..."
 TARBALL="$WORK_DIR/php.tar.gz"
@@ -737,6 +744,10 @@ if [ -f Makefile ] && ! grep -q 'ext/zend_test' Makefile; then
     echo "==> Existing PHP Makefile lacks zend_test shared-extension rules; reconfiguring..."
     rm -f Makefile config.cache
 fi
+if [ -f Makefile ] && ! grep -q 'ext/zip' Makefile; then
+    echo "==> Existing PHP Makefile lacks the zip shared-extension rules; reconfiguring..."
+    rm -f Makefile config.cache
+fi
 if [ -f Makefile ] && grep -q -- '-rpath' Makefile; then
     echo "==> Existing PHP Makefile contains ELF rpath flags unsupported by wasm-ld; reconfiguring..."
     rm -f Makefile config.cache
@@ -811,10 +822,19 @@ if [ ! -f Makefile ]; then
     # Preseeding the cache with the known result keeps the cross-compile build
     # aligned with the actual library/header ABI rather than falling back to
     # musl's narrower iconv implementation.
+    #
+    # ac_cv_lib_zip_*: PHP checks newer libzip APIs by linking each probe into
+    # the complete PHP dependency graph. On this cross target, unrelated
+    # archive members can make that whole-program probe fail even though a
+    # direct link against the exact resolver-built libzip archive succeeds.
+    # Seed only symbols verified by the libzip recipe's upstream source graph;
+    # this preserves the actual 1.11.4 API instead of silently compiling an
+    # older, reduced ZipArchive surface.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
+-u rand -u srand -u remove \
 -Wl,-z,stack-size=4194304" \
     ZLIB_CFLAGS="$ZLIB_CFLAGS_VALUE" \
     ZLIB_LIBS="$ZLIB_LIBS_VALUE" \
@@ -826,6 +846,14 @@ if [ ! -f Makefile ]; then
     LIBXML_LIBS="$LIBXML_LIBS_VALUE" \
     ICONV_CFLAGS="$ICONV_CFLAGS_VALUE" \
     ICONV_LIBS="$ICONV_LIBS_VALUE" \
+    LIBZIP_CFLAGS="$LIBZIP_CFLAGS_VALUE" \
+    LIBZIP_LIBS="$LIBZIP_LIBS_VALUE" \
+    ac_cv_lib_zip_zip_file_set_mtime=yes \
+    ac_cv_lib_zip_zip_file_set_encryption=yes \
+    ac_cv_lib_zip_zip_libzip_version=yes \
+    ac_cv_lib_zip_zip_register_progress_callback_with_state=yes \
+    ac_cv_lib_zip_zip_register_cancel_callback_with_state=yes \
+    ac_cv_lib_zip_zip_compression_method_supported=yes \
     PHP_UNAME="Kandelo wasm32-posix-kernel" \
     ac_cv_lib_iconv_libiconv=yes \
     wasm32posix-configure \
@@ -877,6 +905,7 @@ if [ ! -f Makefile ]; then
         --enable-simplexml \
         --enable-xmlreader \
         --enable-xmlwriter \
+        --with-zip=shared \
         --cache-file="$CONFIG_CACHE" \
         --prefix="$GUEST_PREFIX" \
         --sysconfdir=/etc \
@@ -1095,6 +1124,21 @@ wasm32posix-cc -shared -fPIC -o "$BIN_DIR/zend_test.so" \
     ext/zend_test/.libs/*.o
 echo "==> zend_test.so: $(wc -c < "$BIN_DIR/zend_test.so") bytes"
 
+# Build ext/zip as a normal shared PHP extension. libzip is linked statically
+# into the side module; its zlib and libc/PHP imports resolve from php.wasm,
+# whose --export-all link is forced to retain the few libc functions used only
+# by libzip.
+echo "==> Building zip.so (extension)..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+    EXTRA_CFLAGS="$EXTRA_INC_LIBXML -I$LIBZIP_PREFIX/include" \
+    ext/zip/php_zip.lo \
+    ext/zip/zip_stream.lo
+wasm32posix-cc -shared -fPIC -o "$BIN_DIR/zip.so" \
+    ext/zip/.libs/php_zip.o \
+    ext/zip/.libs/zip_stream.o \
+    "$LIBZIP_PREFIX/lib/libzip.a"
+echo "==> zip.so: $(wc -c < "$BIN_DIR/zip.so") bytes"
+
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 cp sapi/cli/php "$BIN_DIR/php.wasm"
 cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
@@ -1138,4 +1182,5 @@ if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     install_local_binary php "$BIN_DIR/opcache.so"
     install_local_binary php "$BIN_DIR/phar.so"
     install_local_binary php "$BIN_DIR/zend_test.so"
+    install_local_binary php "$BIN_DIR/zip.so"
 fi
