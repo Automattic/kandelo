@@ -16,7 +16,11 @@
 import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { createConnection, createServer, type Socket } from "net";
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
+import {
+    CAPTURED_STDIO,
+    CentralizedKernelWorker,
+    type CloneLaunchResult,
+} from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
@@ -120,7 +124,10 @@ function nextPid(): number { return _nextPid++; }
 // Server mid-test restart state
 let autoRestartOnServerExit = false;
 let serverRestartPromise: Promise<boolean> | null = null;
-const serverThreadWorkers = new Set<ReturnType<NodeWorkerAdapter["createWorker"]>>();
+const serverThreadTeardowns = new Map<
+    ReturnType<NodeWorkerAdapter["createWorker"]>,
+    (reason: string) => Promise<void>
+>();
 
 // Track current running test for thread crash abort
 let currentTestReject: ((err: Error) => void) | null = null;
@@ -236,7 +243,8 @@ async function main() {
             },
 
             onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-                const alloc = threadAllocator.allocate(memory);
+                const allocator = threadAllocator;
+                const alloc = allocator.allocate(memory);
                 kernelWorker.addChannel(pid, alloc.channelOffset, tid);
 
                 const threadInitData: CentralizedThreadInitMessage = {
@@ -247,25 +255,101 @@ async function main() {
                     memory,
                     channelOffset: alloc.channelOffset,
                     fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr,
+                    tlsOffset: alloc.tlsOffset,
                     tlsAllocAddr: alloc.tlsAllocAddr,
                 };
-                const threadWorker = workerAdapter.createWorker(threadInitData);
-                serverThreadWorkers.add(threadWorker);
+                let threadWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+                try {
+                    threadWorker = workerAdapter.createWorker(threadInitData);
+                } catch (error) {
+                    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
+                    allocator.free(alloc.basePage);
+                    throw error;
+                }
+                let state: "pending" | "ready" | "started" | "finished" | "failed" = "pending";
+                let termination: Promise<void> | undefined;
+                const terminateThread = (): Promise<void> => {
+                    if (!termination) {
+                        termination = threadWorker.terminate().catch(() => {}).finally(() => {
+                            serverThreadTeardowns.delete(threadWorker);
+                            allocator.free(alloc.basePage);
+                        });
+                    }
+                    return termination;
+                };
+                let resolveLaunch!: (result: CloneLaunchResult) => void;
+                let rejectLaunch!: (error: Error) => void;
+                const launch = new Promise<CloneLaunchResult>((resolveLaunchPromise, rejectLaunchPromise) => {
+                    resolveLaunch = resolveLaunchPromise;
+                    rejectLaunch = rejectLaunchPromise;
+                });
+                const failPendingLaunch = (reason: string): boolean => {
+                    if (state !== "pending") return false;
+                    state = "failed";
+                    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
+                    void terminateThread().then(
+                        () => rejectLaunch(new Error(reason)),
+                        (error) => rejectLaunch(error instanceof Error ? error : new Error(String(error))),
+                    );
+                    return true;
+                };
+                const abortLaunch = async (): Promise<void> => {
+                    state = "failed";
+                    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
+                    await terminateThread();
+                };
+                const cancelThread = async (reason: string): Promise<void> => {
+                    if (failPendingLaunch(reason)) {
+                        if (termination) await termination;
+                        return;
+                    }
+                    await abortLaunch();
+                };
+                serverThreadTeardowns.set(threadWorker, cancelThread);
                 threadWorker.on("message", (msg: unknown) => {
                     const m = msg as WorkerToHostMessage;
-                    if (m.type === "thread_exit") {
-                        serverThreadWorkers.delete(threadWorker);
-                        kernelWorker.notifyThreadExit(pid, tid);
-                        kernelWorker.removeChannel(pid, alloc.channelOffset);
-                        threadAllocator.free(alloc.basePage);
-                        threadWorker.terminate().catch(() => {});
+                    if (m.type === "thread_ready") {
+                        if (m.pid !== pid || m.tid !== tid) {
+                            failPendingLaunch(
+                                `Worker reported readiness for pid=${m.pid} tid=${m.tid}; expected pid=${pid} tid=${tid}`,
+                            );
+                            return;
+                        }
+                        if (state !== "pending") return;
+                        state = "ready";
+                        resolveLaunch({
+                            tid,
+                            start: () => {
+                                if (state !== "ready") return;
+                                state = "started";
+                                try {
+                                    threadWorker.postMessage({ type: "thread_start", pid, tid });
+                                } catch (error) {
+                                    state = "failed";
+                                    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset, memory);
+                                    void terminateThread();
+                                }
+                            },
+                            abort: abortLaunch,
+                        });
+                    } else if (m.type === "thread_exit") {
+                        if (failPendingLaunch("Worker exited before reporting thread readiness")) return;
+                        state = "finished";
+                        void terminateThread();
+                    } else if (m.type === "error") {
+                        if (failPendingLaunch(m.message)) return;
+                        if (state === "finished" || state === "failed") return;
+                        state = "failed";
+                        kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset, memory);
+                        void terminateThread();
                     }
                 });
                 threadWorker.on("error", (err) => {
-                    serverThreadWorkers.delete(threadWorker);
-                    try { kernelWorker.notifyThreadExit(pid, tid); } catch {}
-                    try { kernelWorker.removeChannel(pid, alloc.channelOffset); } catch {}
-                    threadAllocator.free(alloc.basePage);
+                    if (failPendingLaunch(`Server thread failed: ${err?.message ?? err}`)) return;
+                    if (state === "finished" || state === "failed") return;
+                    state = "failed";
+                    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset, memory);
+                    void terminateThread();
                     // Server thread crashed — mark for restart and abort current test
                     const msg = err?.message || "server thread crashed";
                     console.error(`[thread-worker] tid=${tid} CAUGHT ERROR: ${msg}`);
@@ -277,7 +361,7 @@ async function main() {
                         currentTestWorker = null;
                     }
                 });
-                return tid;
+                return launch;
             },
 
             onExec: async () => -38, // ENOSYS
@@ -337,10 +421,10 @@ async function main() {
         port: number,
     ): Promise<boolean> {
         // Terminate remaining server thread workers
-        for (const tw of serverThreadWorkers) {
-            await tw.terminate().catch(() => {});
+        for (const teardown of [...serverThreadTeardowns.values()]) {
+            await teardown("server generation retired");
         }
-        serverThreadWorkers.clear();
+        serverThreadTeardowns.clear();
         threadAllocator = new ThreadPageAllocator(MAX_PAGES);
 
         // Clean Aria control/log files
@@ -385,10 +469,10 @@ async function main() {
     /** Kill all workers and start a fresh server instance. */
     async function restartServer(): Promise<void> {
         // Terminate all workers (including server threads)
-        for (const tw of serverThreadWorkers) {
-            await tw.terminate().catch(() => {});
+        for (const teardown of [...serverThreadTeardowns.values()]) {
+            await teardown("server generation retired");
         }
-        serverThreadWorkers.clear();
+        serverThreadTeardowns.clear();
         for (const [pid, w] of workers) {
             await w.terminate().catch(() => {});
             try { kernelWorker.unregisterProcess(pid); } catch {}

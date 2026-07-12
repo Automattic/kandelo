@@ -165,8 +165,11 @@ const kernelWorker = new CentralizedKernelWorker(
       // Return 0 on success, -2 (ENOENT) if not found
     },
     onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-      // Allocate thread channel, spawn thread worker
-      // Return tid on success
+      // Allocate the thread channel and initialize a Worker. Resolve only
+      // after it reports thread_ready, then return { tid, start, abort }:
+      // start posts thread_start after clone success is published; abort
+      // terminates the unpublished Worker and reclaims its channel and slot.
+      // See host/src/node-kernel-worker-entry.ts for the full lifecycle.
     },
     onExit: (pid, status) => {
       // Handle process exit

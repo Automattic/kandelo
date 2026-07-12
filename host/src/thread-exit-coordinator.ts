@@ -20,8 +20,18 @@ export class ThreadExitCoordinator {
     }
   }
 
-  release(pid: number, channelOffset: number): void {
+  release(
+    pid: number,
+    channelOffset: number,
+    expectedTerminator?: ThreadTerminator,
+  ): void {
     const key = this.key(pid, channelOffset);
+    if (
+      expectedTerminator !== undefined &&
+      this.terminators.get(key) !== expectedTerminator
+    ) {
+      return;
+    }
     this.terminators.delete(key);
     this.pendingExits.delete(key);
   }

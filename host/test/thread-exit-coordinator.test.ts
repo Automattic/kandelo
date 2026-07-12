@@ -41,4 +41,18 @@ describe("ThreadExitCoordinator", () => {
     expect(firstTerminate).toHaveBeenCalledTimes(1);
     expect(secondTerminate).not.toHaveBeenCalled();
   });
+
+  it("does not let stale cleanup release a reused channel's terminator", () => {
+    const exits = new ThreadExitCoordinator();
+    const firstTerminate = vi.fn(async () => {});
+    const secondTerminate = vi.fn(async () => {});
+
+    exits.register(123, 0x20000, firstTerminate);
+    exits.register(123, 0x20000, secondTerminate);
+    exits.release(123, 0x20000, firstTerminate);
+
+    expect(exits.requestExit(123, 0x20000)).toBe(true);
+    expect(firstTerminate).not.toHaveBeenCalled();
+    expect(secondTerminate).toHaveBeenCalledOnce();
+  });
 });

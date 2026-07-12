@@ -34,6 +34,7 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
+import { NodePlatformIO } from "../src/platform/node";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -479,6 +480,20 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
       contains: ["PRE_FORK", "CHILD_THREAD: ok", "CHILD: joined", "PASS: P-10"],
       timeout: 10_000,
     });
+  });
+
+  it("P-10 works through the custom PlatformIO clone callback", async () => {
+    const binary = tryResolveBinary("programs/p_10_fork_child_creates_thread.wasm");
+    expect(binary, "missing P-10 fixture").toBeTruthy();
+    const result = await runCentralizedProgram({
+      programPath: binary!,
+      io: new NodePlatformIO(),
+      timeout: 10_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("CHILD_THREAD: ok");
+    expect(result.stdout).toContain("PASS: P-10");
   });
 });
 

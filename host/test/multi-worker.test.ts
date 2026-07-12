@@ -4,7 +4,11 @@
 // setNextChildPid, and fork flow.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  CAPTURED_STDIO,
+  CentralizedKernelWorker,
+  type CloneLaunchResult,
+} from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { SharedLockTable } from "../src/shared-lock-table";
@@ -71,6 +75,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
       activeChannels: [{ pid }, { pid: peerPid }],
       processes: new Map([[pid, {}], [peerPid, {}]]),
+      threadCtidPtrs: new Map(),
       stdinFinite: new Set([pid]),
       stdinBuffers: new Map([[pid, new Uint8Array()]]),
       alarmTimers: new Map(),
@@ -208,17 +213,23 @@ describe("CentralizedKernelWorker Process Management", () => {
       consecutiveSyscalls: 0,
     };
     new DataView(memory.buffer).setInt32(ctidPtr, tid, true);
+    const registration = {
+      active: true,
+      memory,
+      channels: [{ channelOffset: mainChannelOffset }, channel],
+    };
 
     const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      processes: new Map([
-        [pid, { memory, channels: [{ channelOffset: mainChannelOffset }, channel] }],
-      ]),
+      processes: new Map([[pid, registration]]),
       activeChannels: [channel],
       channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
       threadForkContexts: new Map([
         [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
       ]),
-      threadCtidPtrs: new Map([[`${pid}:${tid}`, ctidPtr]]),
+      threadCtidPtrs: new Map([[
+        `${pid}:${tid}`,
+        { ptr: ctidPtr, registration },
+      ]]),
       notifyThreadExit: vi.fn(),
     }) as CentralizedKernelWorker;
 
@@ -253,11 +264,13 @@ describe("CentralizedKernelWorker Process Management", () => {
       maximum: 1,
     });
     const kernelView = new DataView(kernelMemory.buffer);
-    const threadCtidPtrs = new Map<string, number>();
-    let resolveClone!: (value: number) => void;
+    const threadCtidPtrs = new Map<string, { ptr: number }>();
+    const channel = { pid, channelOffset: mainChannelOffset, memory };
+    const registration = { active: true, channels: [channel], memory };
+    let resolveClone!: (value: CloneLaunchResult) => void;
     const onClone = vi.fn(() => {
-      expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(ctidPtr);
-      return new Promise<number>((resolve) => {
+      expect(threadCtidPtrs.get(`${pid}:${tid}`)?.ptr).toBe(ctidPtr);
+      return new Promise<CloneLaunchResult>((resolve) => {
         resolveClone = resolve;
       });
     });
@@ -272,9 +285,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       kernelMemory,
       scratchOffset: 0,
       currentHandlePid: 0,
-      processes: new Map([
-        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
-      ]),
+      processes: new Map([[pid, registration]]),
       threadCtidPtrs,
       completeChannel: vi.fn(),
       bindKernelTidForChannel: vi.fn(),
@@ -290,13 +301,13 @@ describe("CentralizedKernelWorker Process Management", () => {
     });
 
     (kw as any).handleClone(
-      { pid, channelOffset: mainChannelOffset, memory },
+      channel,
       [0, stackPtr, 0, tlsPtr, ctidPtr, 0],
     );
 
     expect(onClone).toHaveBeenCalledTimes(1);
-    expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(ctidPtr);
-    resolveClone(tid);
+    expect(threadCtidPtrs.get(`${pid}:${tid}`)?.ptr).toBe(ctidPtr);
+    resolveClone({ tid, start: vi.fn(), abort: vi.fn(async () => {}) });
     await Promise.resolve();
     expect((kw as any).completeChannel).toHaveBeenCalled();
   });
@@ -314,12 +325,21 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
     const kernelView = new DataView(kernelMemory.buffer);
-    const completeChannel = vi.fn();
+    const completeChannel = vi.fn((...args: unknown[]) => {
+      const beforePublish = args[6] as (() => void) | undefined;
+      beforePublish?.();
+    });
+    const channel = { pid, channelOffset: mainChannelOffset, memory };
+    const registration = { active: true, channels: [channel], memory };
     const start = vi.fn(() => {
       expect(completeChannel).toHaveBeenCalledTimes(1);
       expect(new DataView(memory.buffer).getInt32(ptidPtr, true)).toBe(tid);
     });
-    const onClone = vi.fn(async () => ({ tid, start }));
+    const onClone = vi.fn(async () => ({
+      tid,
+      start,
+      abort: vi.fn(async () => {}),
+    }));
 
     const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
       callbacks: { onClone },
@@ -327,7 +347,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       kernelMemory,
       scratchOffset: 0,
       currentHandlePid: 0,
-      processes: new Map([[pid, { channels: [{ channelOffset: mainChannelOffset }] }]]),
+      processes: new Map([[pid, registration]]),
       threadCtidPtrs: new Map(),
       completeChannel,
       bindKernelTidForChannel: vi.fn(),
@@ -344,13 +364,258 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     const CLONE_PARENT_SETTID = 0x00100000;
     (kw as any).handleClone(
-      { pid, channelOffset: mainChannelOffset, memory },
+      channel,
       [CLONE_PARENT_SETTID, 0x00800000, ptidPtr, 0x00900000, 0, 0],
     );
 
     await Promise.resolve();
     await Promise.resolve();
     expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 16 * WASM_PAGE_SIZE - 3])(
+    "rejects invalid CLONE_PARENT_SETTID pointer %d before allocating a TID",
+    (ptidPtr) => {
+      const pid = 130;
+      const mainChannelOffset = WASM_PAGE_SIZE;
+      const memory = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+      const channel = { pid, channelOffset: mainChannelOffset, memory };
+      const registration = { active: true, channels: [channel], memory };
+      const processView = new DataView(memory.buffer, mainChannelOffset);
+      processView.setUint32(CH_DATA, 11, true);
+      processView.setUint32(CH_DATA + 4, 22, true);
+
+      const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+      const kernelHandle = vi.fn();
+      const onClone = vi.fn();
+      const completeChannel = vi.fn();
+      const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+        callbacks: { onClone },
+        kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+        kernelMemory,
+        scratchOffset: 0,
+        currentHandlePid: 0,
+        processes: new Map([[pid, registration]]),
+        threadCtidPtrs: new Map(),
+        completeChannel,
+        bindKernelTidForChannel: vi.fn(),
+        kernelInstance: { exports: { kernel_handle_channel: kernelHandle } },
+      });
+
+      const CLONE_PARENT_SETTID = 0x00100000;
+      const args = [CLONE_PARENT_SETTID, 0x00800000, ptidPtr, 0x00900000, 0, 0];
+      (kw as any).handleClone(channel, args);
+
+      expect(kernelHandle).not.toHaveBeenCalled();
+      expect(onClone).not.toHaveBeenCalled();
+      expect(completeChannel).toHaveBeenCalledOnce();
+      expect(completeChannel).toHaveBeenCalledWith(
+        channel,
+        ABI_SYSCALLS.Clone,
+        args,
+        undefined,
+        -1,
+        14,
+      );
+    },
+  );
+
+  it("accepts an in-bounds unaligned CLONE_PARENT_SETTID pointer", async () => {
+    const pid = 131;
+    const tid = 82;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const ptidPtr = 0x00030001;
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+    const channel = { pid, channelOffset: mainChannelOffset, memory };
+    const registration = { active: true, channels: [channel], memory };
+    const processView = new DataView(memory.buffer, mainChannelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+
+    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const kernelView = new DataView(kernelMemory.buffer);
+    const start = vi.fn();
+    const abort = vi.fn(async () => {});
+    const completeChannel = vi.fn((...args: unknown[]) => {
+      const beforePublish = args[6] as (() => void) | undefined;
+      beforePublish?.();
+    });
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone: vi.fn(async () => ({ tid, start, abort })) },
+      kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes: new Map([[pid, registration]]),
+      threadCtidPtrs: new Map(),
+      completeChannel,
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    const CLONE_PARENT_SETTID = 0x00100000;
+    (kw as any).handleClone(
+      channel,
+      [CLONE_PARENT_SETTID, 0x00800000, ptidPtr, 0x00900000, 0, 0],
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(new DataView(memory.buffer).getInt32(ptidPtr, true)).toBe(tid);
+    expect(start).toHaveBeenCalledOnce();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it("aborts a ready Worker when clone publication fails", async () => {
+    const pid = 132;
+    const tid = 83;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const ptidPtr = 0x00030000;
+    const ctidPtr = 0x00040000;
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+    const channel = { pid, channelOffset: mainChannelOffset, memory };
+    const registration = { active: true, channels: [channel], memory };
+    const processView = new DataView(memory.buffer, mainChannelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+    new DataView(memory.buffer).setInt32(ptidPtr, -1, true);
+
+    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const kernelView = new DataView(kernelMemory.buffer);
+    const start = vi.fn();
+    const abort = vi.fn(async () => {});
+    const notifyThreadExit = vi.fn();
+    const publishedFailures: Array<[number, number]> = [];
+    const completeChannel = vi.fn((...args: unknown[]) => {
+      const retVal = args[4] as number;
+      const errVal = args[5] as number;
+      if (retVal === tid) throw new Error("pre-publication output drain failed");
+      publishedFailures.push([retVal, errVal]);
+    });
+    const threadCtidPtrs = new Map();
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone: vi.fn(async () => ({ tid, start, abort })) },
+      kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes: new Map([[pid, registration]]),
+      threadCtidPtrs,
+      completeChannel,
+      notifyThreadExit,
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    const CLONE_PARENT_SETTID = 0x00100000;
+    (kw as any).handleClone(
+      channel,
+      [CLONE_PARENT_SETTID, 0x00800000, ptidPtr, 0x00900000, ctidPtr, 0],
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(abort).toHaveBeenCalledOnce();
+    expect(start).not.toHaveBeenCalled();
+    expect(notifyThreadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadCtidPtrs.has(`${pid}:${tid}`)).toBe(false);
+    expect(new DataView(memory.buffer).getInt32(ptidPtr, true)).toBe(-1);
+    expect(publishedFailures).toEqual([[-1, 11]]);
+  });
+
+  it("does not let stale clone cleanup touch a replacement process generation", async () => {
+    const pid = 133;
+    const tid = 84;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const ctidPtr = 0x00040000;
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+    const channel = { pid, channelOffset: mainChannelOffset, memory };
+    const oldRegistration = { active: true, channels: [channel], memory };
+    const processView = new DataView(memory.buffer, mainChannelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+
+    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const kernelView = new DataView(kernelMemory.buffer);
+    let resolveLaunch!: (result: CloneLaunchResult) => void;
+    const onClone = vi.fn(() => new Promise<CloneLaunchResult>((resolve) => {
+      resolveLaunch = resolve;
+    }));
+    const abort = vi.fn(async () => {});
+    const completeChannel = vi.fn();
+    const notifyThreadExit = vi.fn();
+    const threadCtidPtrs = new Map();
+    const processes = new Map([[pid, oldRegistration]]);
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone },
+      kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes,
+      threadCtidPtrs,
+      completeChannel,
+      notifyThreadExit,
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    (kw as any).handleClone(
+      channel,
+      [0, 0x00800000, 0, 0x00900000, ctidPtr, 0],
+    );
+    expect(threadCtidPtrs.get(`${pid}:${tid}`)?.registration).toBe(oldRegistration);
+
+    oldRegistration.active = false;
+    const replacementMemory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const replacementRegistration = {
+      active: true,
+      channels: [],
+      memory: replacementMemory,
+    };
+    processes.set(pid, replacementRegistration);
+    const replacementCtidState = { ptr: ctidPtr, registration: replacementRegistration };
+    threadCtidPtrs.set(`${pid}:${tid}`, replacementCtidState);
+
+    resolveLaunch({ tid, start: vi.fn(), abort });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(abort).toHaveBeenCalledOnce();
+    expect(notifyThreadExit).not.toHaveBeenCalled();
+    expect(completeChannel).not.toHaveBeenCalled();
+    expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(replacementCtidState);
   });
 
   it("rolls back the provisional kernel thread when its Worker cannot launch", async () => {
@@ -369,10 +634,12 @@ describe("CentralizedKernelWorker Process Management", () => {
     const kernelView = new DataView(kernelMemory.buffer);
     const completeChannel = vi.fn();
     const notifyThreadExit = vi.fn();
+    const channel = { pid, channelOffset: mainChannelOffset, memory };
+    const registration = { active: true, channels: [channel], memory };
     const onClone = vi.fn(async () => {
       throw new WebAssembly.CompileError("invalid thread module");
     });
-    const threadCtidPtrs = new Map<string, number>();
+    const threadCtidPtrs = new Map<string, { ptr: number }>();
 
     const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
       callbacks: { onClone },
@@ -380,7 +647,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       kernelMemory,
       scratchOffset: 0,
       currentHandlePid: 0,
-      processes: new Map([[pid, { channels: [{ channelOffset: mainChannelOffset }] }]]),
+      processes: new Map([[pid, registration]]),
       threadCtidPtrs,
       completeChannel,
       notifyThreadExit,
@@ -398,7 +665,7 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     const CLONE_PARENT_SETTID = 0x00100000;
     const args = [CLONE_PARENT_SETTID, 0x00800000, ptidPtr, 0x00900000, ctidPtr, 0];
-    (kw as any).handleClone({ pid, channelOffset: mainChannelOffset, memory }, args);
+    (kw as any).handleClone(channel, args);
 
     await Promise.resolve();
     await Promise.resolve();

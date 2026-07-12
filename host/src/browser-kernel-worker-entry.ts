@@ -138,6 +138,7 @@ interface ForkReplayContext {
 }
 
 interface ProcessInfo {
+  active: boolean;
   memory: WebAssembly.Memory;
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
@@ -222,6 +223,7 @@ interface ThreadWorkerInfo {
   tid: number;
   basePage: number;
   termination?: Promise<void>;
+  cancel?: (reason: string) => Promise<void>;
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
@@ -303,10 +305,10 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
   threadWorkers.delete(pid);
   for (const t of threads) {
     await (
+      t.cancel?.("process generation retired") ??
       t.termination ??
       terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
     );
-    threadExits.release(pid, t.channelOffset);
   }
 }
 const ptyByPid = new Map<number, number>();
@@ -859,6 +861,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
 
     const worker = workerAdapter.createWorker(initData);
     processes.set(pid, {
+      active: true,
       memory,
       programBytes,
       worker,
@@ -1029,6 +1032,7 @@ async function handleFork(
   const childWorker = workerAdapter.createWorker(childInitData);
 
   processes.set(childPid, {
+    active: true,
     memory: childMemory,
     programBytes: parentInfo.programBytes,
     programModule: parentInfo.programModule,
@@ -1058,17 +1062,23 @@ async function handleExec(
   const { programBytes: bytes, argv: launchArgv } = resolved;
 
   // Program found — run kernel exec setup
+  const oldInfo = processes.get(pid);
+  if (!oldInfo?.active) return -3; // ESRCH
+  oldInfo.active = false;
   const setupResult = kernelWorker.kernelExecSetup(pid);
-  if (setupResult < 0) return setupResult;
+  if (setupResult < 0) {
+    if (processes.get(pid) === oldInfo) oldInfo.active = true;
+    return setupResult;
+  }
 
   kernelWorker.prepareProcessForExec(pid);
+  await terminateThreadWorkers(pid);
 
   // Terminate old worker. Mark it as intentionally terminated *before*
   // calling terminate(): the synthesized "exit" event from
   // BrowserWorkerHandle would otherwise fire installProcessWorkerListeners'
   // crash detector and tear down the kernel's view of the still-alive
   // (post-exec) process.
-  const oldInfo = processes.get(pid);
   if (oldInfo?.worker) {
     intentionallyTerminated.add(oldInfo.worker as object);
     await oldInfo.worker.terminate().catch(() => {});
@@ -1126,6 +1136,7 @@ async function handleExec(
   threadModuleCache.delete(pid);
 
   processes.set(pid, {
+    active: true,
     memory: newMemory,
     programBytes: bytes,
     worker: newWorker,
@@ -1230,6 +1241,7 @@ async function handlePosixSpawn(
   const newWorker = workerAdapter.createWorker(initData);
 
   processes.set(childPid, {
+    active: true,
     memory: newMemory,
     programBytes,
     worker: newWorker,
@@ -1256,7 +1268,10 @@ async function handleClone(
   memory: WebAssembly.Memory,
 ): Promise<CloneLaunchResult> {
   const processInfo = processes.get(pid);
-  if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
+  if (!processInfo?.active || processInfo.memory !== memory) {
+    throw new Error(`Unknown or retired pid ${pid} for clone`);
+  }
+  const threadAllocator = processInfo.threadAllocator;
   threadedProcessPids.add(pid);
 
   // Auto-compile thread module if not already cached.
@@ -1268,12 +1283,18 @@ async function handleClone(
   if (!threadModule) {
     const patched = patchWasmForThread(processInfo.programBytes);
     threadModule = await WebAssembly.compile(patched);
+    if (!processInfo.active || processes.get(pid) !== processInfo || processInfo.memory !== memory) {
+      throw new Error(`Process ${pid} changed while compiling its thread module`);
+    }
     threadModuleCache.set(pid, threadModule);
+  }
+  if (!processInfo.active || processes.get(pid) !== processInfo || processInfo.memory !== memory) {
+    throw new Error(`Process ${pid} changed before thread allocation`);
   }
 
   let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
   try {
-    alloc = processInfo.threadAllocator.allocate(memory);
+    alloc = threadAllocator.allocate(memory);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     post({
@@ -1312,8 +1333,8 @@ async function handleClone(
   try {
     threadWorker = workerAdapter.createWorker(threadInitData);
   } catch (error) {
-    kernelWorker.removeChannel(pid, alloc.channelOffset);
-    processInfo.threadAllocator.free(alloc.basePage);
+    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
+    threadAllocator.free(alloc.basePage);
     throw error;
   }
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
@@ -1326,19 +1347,19 @@ async function handleClone(
   threadWorkers.get(pid)!.push(threadEntry);
 
   let reclaimed = false;
-  const reclaimThread = () => {
+  function reclaimThread(): void {
     if (reclaimed) return;
     reclaimed = true;
-    processInfo.threadAllocator.free(alloc.basePage);
-    threadExits.release(pid, alloc.channelOffset);
+    threadAllocator.free(alloc.basePage);
+    threadExits.release(pid, alloc.channelOffset, terminateThreadEntry);
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);
       if (idx >= 0) threads.splice(idx, 1);
       if (threads.length === 0) threadWorkers.delete(pid);
     }
-  };
-  const terminateThreadEntry = (): Promise<void> => {
+  }
+  function terminateThreadEntry(): Promise<void> {
     if (!threadEntry.termination) {
       threadEntry.termination = terminateTrackedWorker(
         threadWorker,
@@ -1346,10 +1367,10 @@ async function handleClone(
       ).finally(reclaimThread);
     }
     return threadEntry.termination;
-  };
+  }
   threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
-  let launchState: "pending" | "ready" | "failed" = "pending";
+  let launchState: "pending" | "ready" | "started" | "failed" = "pending";
   let finished = false;
   let resolveLaunch!: (result: CloneLaunchResult) => void;
   let rejectLaunch!: (error: Error) => void;
@@ -1368,7 +1389,7 @@ async function handleClone(
     launchState = "failed";
     finished = true;
     reportThreadFailure(reason);
-    kernelWorker.removeChannel(pid, alloc.channelOffset);
+    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
     void terminateThreadEntry().then(
       () => rejectLaunch(new Error(reason)),
       (error) => rejectLaunch(error instanceof Error ? error : new Error(String(error))),
@@ -1376,12 +1397,30 @@ async function handleClone(
     return true;
   };
 
+  const abortLaunch = async (): Promise<void> => {
+    if (launchState === "failed" || finished) {
+      if (threadEntry.termination) await threadEntry.termination;
+      return;
+    }
+    launchState = "failed";
+    finished = true;
+    kernelWorker.removeChannel(pid, alloc.channelOffset, memory);
+    await terminateThreadEntry();
+  };
+  threadEntry.cancel = async (reason: string): Promise<void> => {
+    if (failLaunch(reason)) {
+      if (threadEntry.termination) await threadEntry.termination;
+      return;
+    }
+    await abortLaunch();
+  };
+
   const failThread = (reason: string) => {
     if (failLaunch(reason) || finished) return;
     finished = true;
     reportThreadFailure(reason);
     const disposition = threadWorkerFailureDisposition(reason);
-    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
+    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset, memory);
     void terminateThreadEntry();
     if (disposition.kind === "guest-fatal-trap") {
       handleExit(pid, disposition.exitStatus, disposition.signum);
@@ -1390,22 +1429,38 @@ async function handleClone(
 
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
-    if (m.type === "thread_ready" && m.pid === pid && m.tid === tid) {
+    if (m.type === "thread_ready") {
+      if (m.pid !== pid || m.tid !== tid) {
+        failLaunch(
+          `worker reported readiness for pid=${m.pid} tid=${m.tid}; expected pid=${pid} tid=${tid}`,
+        );
+        return;
+      }
       if (launchState !== "pending") return;
+      if (!processInfo.active || processes.get(pid) !== processInfo || processInfo.memory !== memory) {
+        failLaunch(`process ${pid} changed before thread readiness`);
+        return;
+      }
       launchState = "ready";
       resolveLaunch({
         tid,
         start: () => {
-          if (finished) return;
+          if (finished || launchState !== "ready") return;
+          launchState = "started";
           try {
             threadWorker.postMessage({ type: "thread_start", pid, tid });
           } catch (error) {
             failThread(`unable to start initialized worker: ${error}`);
           }
         },
+        abort: abortLaunch,
       });
     } else if (m.type === "thread_exit") {
       if (failLaunch("worker exited before reporting thread readiness")) return;
+      if (launchState === "ready") {
+        failThread("worker exited before thread start");
+        return;
+      }
       finished = true;
       void terminateThreadEntry();
     } else if ((m as { type?: string }).type === "error") {
@@ -1446,6 +1501,8 @@ async function finishProcessExit(
   if (processTeardowns.has(pid)) return;
 
   const info = processes.get(pid);
+  if (info) info.active = false;
+  kernelWorker.retireProcessGeneration(pid, info?.memory);
   reportNonzeroProcessExitDiagnostic(pid, exitStatus, "kernel process exit");
   const threadedSettleMs = threadedProcessPids.has(pid)
     ? THREADED_WORKER_TERMINATION_SETTLE_MS
@@ -1532,22 +1589,11 @@ function handleReadVfsFile(msg: Extract<MainToKernelMessage, { type: "read_vfs_f
 
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
+  const retiringInfo = processes.get(pid);
+  if (retiringInfo) retiringInfo.active = false;
+  kernelWorker.retireProcessGeneration(pid, retiringInfo?.memory);
 
-  // Terminate thread workers
-  const threads = threadWorkers.get(pid);
-  if (threads) {
-    for (const t of threads) {
-      await (
-        t.termination ??
-        terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
-      );
-      try {
-        kernelWorker.notifyThreadExit(pid, t.tid);
-        kernelWorker.removeChannel(pid, t.channelOffset);
-      } catch {}
-    }
-    threadWorkers.delete(pid);
-  }
+  await terminateThreadWorkers(pid);
 
   // Terminate main process worker
   const info = processes.get(pid);
