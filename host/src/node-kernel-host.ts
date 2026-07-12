@@ -65,7 +65,8 @@ export interface NodeKernelHostOptions {
   onPtyOutput?: (pid: number, data: Uint8Array) => void;
   /** Called when a process is spawned, execs a new program, or exits.
    *  Used by Inspector-style UIs to refresh their process table without
-   *  polling. */
+   *  polling. Kernel-internal fork and posix_spawn events carry `ppid`;
+   *  the synthetic root spawn does not. */
   onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
   /**
    * Called when the worker can't resolve an exec path locally.
@@ -515,7 +516,10 @@ export class NodeKernelHost {
         // Kernel-internal fork / exec / posix_spawn. The host doesn't
         // see these via NodeKernelHost.spawn (forks happen inside the
         // wasm kernel without going through the request/response loop).
-        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
+        const event = msg.kind === "spawn"
+          ? { kind: msg.kind, pid: msg.pid, ppid: msg.ppid }
+          : { kind: msg.kind, pid: msg.pid };
+        this.options.onProcessEvent?.(event);
         break;
       }
       case "stdout":

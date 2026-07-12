@@ -614,9 +614,10 @@ export interface CentralizedKernelCallbacks {
   /**
    * Launch a worker for the spawned child with already-resolved bytes
    * and argv (from `onResolveSpawn`). The kernel has constructed the child Process
-   * descriptor under `childPid` and applied file actions + attrs by the
-   * time this is called. The callback instantiates a fresh Worker and
-   * registers it via `registerProcess({ skipKernelCreate: true })`.
+   * descriptor under `childPid` with `parentPid` as its authoritative parent
+   * and applied file actions + attrs by the time this is called. The callback
+   * instantiates a fresh Worker and registers it via
+   * `registerProcess({ skipKernelCreate: true })`.
    *
    * Returns 0 on success, negative errno on failure. On non-zero return
    * the kernel descriptor is rolled back via `kernel_remove_process`.
@@ -625,7 +626,13 @@ export interface CentralizedKernelCallbacks {
    * `onFork` (which clones the parent's Memory): `onSpawn` always
    * creates a fresh Memory and runs the new program from `_start`.
    */
-  onSpawn?: (childPid: number, programBytes: ArrayBuffer, argv: string[], envp: string[]) => Promise<number>;
+  onSpawn?: (
+    parentPid: number,
+    childPid: number,
+    programBytes: ArrayBuffer,
+    argv: string[],
+    envp: string[],
+  ) => Promise<number>;
 
   /**
    * Called when a process calls clone (thread creation). The callback should
@@ -6069,7 +6076,7 @@ export class CentralizedKernelWorker {
     if (childPid >= this.nextChildPid) this.nextChildPid = childPid + 1;
 
     // ── Launch the worker async (with already-resolved bytes) ──
-    this.callbacks.onSpawn!(childPid, programBytes, argv, envp).then((rc) => {
+    this.callbacks.onSpawn!(parentPid, childPid, programBytes, argv, envp).then((rc) => {
       if (rc < 0) {
         const removeProcess = this.kernelInstance!.exports.kernel_remove_process as
           (pid: number) => number;

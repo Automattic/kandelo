@@ -1183,6 +1183,7 @@ async function handlePosixSpawnResolve(
  * `handlePosixSpawn`.
  */
 async function handlePosixSpawn(
+  parentPid: number,
   childPid: number,
   programBytes: ArrayBuffer,
   argv: string[],
@@ -1190,7 +1191,7 @@ async function handlePosixSpawn(
 ): Promise<number> {
   await waitForProcessTeardowns();
 
-  post({ type: "proc_event", kind: "spawn", pid: childPid });
+  post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
 
   const ptrWidth = detectPtrWidth(programBytes);
   const {
@@ -1216,7 +1217,7 @@ async function handlePosixSpawn(
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
-    ppid: 0,
+    ppid: parentPid,
     programBytes,
     memory: newMemory,
     channelOffset: newChannelOffset,

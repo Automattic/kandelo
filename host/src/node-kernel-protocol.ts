@@ -245,14 +245,12 @@ export interface ResolveExecRequestMessage {
 /**
  * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
  * browser-side ProcEventMessage. Exit events come via the existing
- * ExitMessage; we don't duplicate them here.
+ * ExitMessage; we don't duplicate them here. Spawn events always carry the
+ * authoritative parent pid; exec events preserve process identity and do not.
  */
-export interface ProcEventMessage {
-  type: "proc_event";
-  kind: "spawn" | "exec";
-  pid: number;
-  ppid?: number;
-}
+export type ProcEventMessage =
+  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
+  | { type: "proc_event"; kind: "exec"; pid: number };
 
 export type KernelToMainMessage =
   | ReadyMessage

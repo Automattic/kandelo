@@ -36,6 +36,14 @@ const repoRoot = join(__dirname, "..", "..");
 const nodeEntry = join(repoRoot, "host", "src", "node-kernel-worker-entry.ts");
 const browserEntry = join(repoRoot, "host", "src", "browser-kernel-worker-entry.ts");
 
+function posixSpawnHandlerSource(src: string): string {
+  const start = src.indexOf("async function handlePosixSpawn(");
+  const end = src.indexOf("\nasync function handleClone(", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return src.slice(start, end);
+}
+
 describe("spawn host parity", () => {
   it("Node kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
     const src = readFileSync(nodeEntry, "utf8");
@@ -50,6 +58,16 @@ describe("spawn host parity", () => {
     );
     expect(src, `${nodeEntry} must wire onResolveSpawn: handlePosixSpawnResolve`).toMatch(
       /onResolveSpawn:\s*handlePosixSpawnResolve/,
+    );
+    const spawnHandler = posixSpawnHandlerSource(src);
+    expect(spawnHandler, `${nodeEntry} must accept posix_spawn parentage`).toMatch(
+      /handlePosixSpawn\(\s*parentPid:\s*number,\s*childPid:\s*number,/s,
+    );
+    expect(spawnHandler, `${nodeEntry} must publish posix_spawn parentage`).toMatch(
+      /kind:\s*"spawn",\s*pid:\s*childPid,\s*ppid:\s*parentPid/,
+    );
+    expect(spawnHandler, `${nodeEntry} must initialize the child with its real parent`).toMatch(
+      /ppid:\s*parentPid/,
     );
   });
 
@@ -67,13 +85,23 @@ describe("spawn host parity", () => {
     expect(src, `${browserEntry} must wire onResolveSpawn (calling handlePosixSpawnResolve)`).toMatch(
       /onResolveSpawn:.*handlePosixSpawnResolve/s,
     );
+    const spawnHandler = posixSpawnHandlerSource(src);
+    expect(spawnHandler, `${browserEntry} must accept posix_spawn parentage`).toMatch(
+      /handlePosixSpawn\(\s*parentPid:\s*number,\s*childPid:\s*number,/s,
+    );
+    expect(spawnHandler, `${browserEntry} must publish posix_spawn parentage`).toMatch(
+      /kind:\s*"spawn",\s*pid:\s*childPid,\s*ppid:\s*parentPid/,
+    );
+    expect(spawnHandler, `${browserEntry} must initialize the child with its real parent`).toMatch(
+      /ppid:\s*parentPid/,
+    );
   });
 
   it("CentralizedKernelCallbacks declares both onResolveSpawn and onSpawn", () => {
     // Ensures the host shared interface itself still surfaces both
     // callbacks — without these, neither entry would even type-check.
     const src = readFileSync(join(repoRoot, "host", "src", "kernel-worker.ts"), "utf8");
-    expect(src).toMatch(/onSpawn\?:\s*\(/);
+    expect(src).toMatch(/onSpawn\?:\s*\(\s*parentPid:\s*number,\s*childPid:\s*number,/s);
     expect(src).toMatch(/onResolveSpawn\?:\s*\(/);
   });
 });

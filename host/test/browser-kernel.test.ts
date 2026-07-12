@@ -147,6 +147,42 @@ describe("BrowserKernel", () => {
     expect(await exit).toBe(7);
   });
 
+  it("forwards posix_spawn parentage from the browser kernel worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const processEvents: Array<{
+      kind: "spawn" | "exec" | "exit";
+      pid: number;
+      ppid?: number;
+      exitStatus?: number;
+    }> = [];
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onProcessEvent: (event) => processEvents.push(event),
+    });
+
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/init"],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({ type: "response", requestId: spawn.requestId, result: 100 });
+    await bootPromise;
+
+    processEvents.length = 0;
+    worker.simulateMessage({ type: "proc_event", kind: "spawn", pid: 2, ppid: 100 });
+    worker.simulateMessage({ type: "proc_event", kind: "exec", pid: 2 });
+
+    expect(processEvents).toEqual([
+      { kind: "spawn", pid: 2, ppid: 100 },
+      { kind: "exec", pid: 2 },
+    ]);
+  });
+
   it("readFileFromVfs round-trips a path to the worker and back", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });

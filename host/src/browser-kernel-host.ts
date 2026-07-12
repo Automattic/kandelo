@@ -52,9 +52,10 @@ export interface BrowserKernelOptions {
    *  Used by Inspector-style UIs to refresh their process table without
    *  polling. Source feeds:
    *    - main-thread BrowserKernel.spawn / .boot → "spawn"
-   *    - worker-side fork / posix_spawn → "spawn" (via proc_event message)
+   *    - worker-side fork / posix_spawn → "spawn" with `ppid` (via proc_event message)
    *    - worker-side execve → "exec"
    *    - worker-side exit → "exit" (via existing exit message)
+   *  Main-thread root spawns do not carry `ppid`.
    */
   onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
@@ -952,7 +953,10 @@ export class BrowserKernel {
         // don't come through BrowserKernel.spawn(), so the worker posts
         // them directly. Exit is delivered separately via the existing
         // "exit" message above.
-        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
+        const event = msg.kind === "spawn"
+          ? { kind: msg.kind, pid: msg.pid, ppid: msg.ppid }
+          : { kind: msg.kind, pid: msg.pid };
+        this.options.onProcessEvent?.(event);
         break;
       }
       case "http_bridge_pending":

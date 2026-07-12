@@ -138,6 +138,13 @@ export interface RunProgramOptions {
   captureForkCount?: boolean;
   /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
   useDefaultRootfs?: boolean;
+  /** Observe process lifecycle events emitted by NodeKernelHost. Worker-thread mode only. */
+  onProcessEvent?: (event: {
+    kind: "spawn" | "exec" | "exit";
+    pid: number;
+    ppid?: number;
+    exitStatus?: number;
+  }) => void;
 }
 
 export interface RunProgramResult {
@@ -215,6 +222,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     onStderr: (_pid: number, data: Uint8Array) => {
       stderr += new TextDecoder().decode(data);
     },
+    onProcessEvent: options.onProcessEvent,
   });
 
   await host.init();
