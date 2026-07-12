@@ -51,6 +51,19 @@ if [ "$KANDELO_HOMEBREW_RELEASE_TAG" != "bottles-abi-v${ABI_VERSION}" ]; then
   exit 2
 fi
 
+BREW_REPOSITORY="$("${HOMEBREW_BREW_FILE:-brew}" --repository)"
+ACTUAL_BREW_COMMIT="$(git -C "$BREW_REPOSITORY" rev-parse HEAD)"
+BREW_COMMIT="${HOMEBREW_BREW_COMMIT:-$ACTUAL_BREW_COMMIT}"
+if ! [[ "$BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-generate-sidecars-from-env.sh: invalid Homebrew commit: $BREW_COMMIT" >&2
+  exit 2
+fi
+if [ "$ACTUAL_BREW_COMMIT" != "$BREW_COMMIT" ]; then
+  echo "homebrew-generate-sidecars-from-env.sh: active Homebrew checkout differs from $BREW_COMMIT" >&2
+  exit 2
+fi
+BREW_VERSION="$("${HOMEBREW_BREW_FILE:-brew}" --version | head -n 1) (commit $BREW_COMMIT)"
+
 CACHE_KEY_SHA="$(
   cd "$KANDELO_ROOT"
   cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
@@ -59,7 +72,6 @@ CACHE_KEY_SHA="$(
 
 SDK_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sdk/activate.sh" | awk '{print $1}')"
 SYSROOT_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sysroot/lib/libc.a" | awk '{print $1}')"
-BREW_VERSION="$("${HOMEBREW_BREW_FILE:-brew}" --version | head -n 1)"
 TAP_COMMIT="$(git -C "$KANDELO_HOMEBREW_TAP_ROOT" rev-parse HEAD)"
 KANDELO_COMMIT="$(git -C "$KANDELO_ROOT" rev-parse HEAD)"
 GENERATED_AT="$(date -u +%FT%TZ)"
@@ -91,9 +103,15 @@ with bottle_json_path.open("r", encoding="utf-8") as f:
 
 if len(bottle_json) != 1:
     raise SystemExit(f"expected one formula in bottle JSON, got {len(bottle_json)}")
-formula_key, bottle_entry = next(iter(bottle_json.items()))
+input_formula_key, bottle_entry = next(iter(bottle_json.items()))
 bottle_formula = bottle_entry["formula"]
 bottle = bottle_entry["bottle"]
+qualified_formula_key = f"{os.environ['TAP_NAME']}/{formula}"
+if input_formula_key not in {formula, qualified_formula_key}:
+    raise SystemExit(
+        f"bottle JSON formula key {input_formula_key!r} does not identify {qualified_formula_key}"
+    )
+formula_key = qualified_formula_key
 tag_name = f"{arch}_kandelo"
 tag = bottle["tags"].get(tag_name)
 if tag is None:

@@ -25,7 +25,7 @@ Homebrew's `bottle do` block.
 | Repository | Owns |
 |---|---|
 | `Automattic/kandelo` | Schemas, validators, reusable workflows, package build scripts, VFS planner/builder, Node/browser smoke tests, and this documentation. |
-| `Automattic/kandelo-homebrew` | Tap state: `Formula/`, generated `Kandelo/` sidecars, bottle blocks, provenance reports, and `bottles-abi-v<N>` release assets. |
+| `Automattic/kandelo-homebrew` | Tap state: `Formula/`, generated `Kandelo/` sidecars, bottle blocks, and provenance reports. |
 
 The checked-in `homebrew/kandelo-homebrew/` directory is a reviewable template
 and test fixture for the tap shape. Live generated tap state belongs in
@@ -43,11 +43,11 @@ Homebrew publishing is a sibling to Kandelo package archive publishing:
 |---|---|---|
 | Formula source and `bottle do` blocks | Tap git repository | Homebrew. |
 | Bottle tarballs | GHCR/Homebrew bottle URL shape | Homebrew and Kandelo VFS builder. |
-| `Kandelo/metadata.json` | Tap git repository and `bottles-abi-v<N>` release | VFS planner, validator, audit tooling. |
+| `Kandelo/metadata.json` | Tap git repository | VFS planner, validator, audit tooling. |
 | `Kandelo/formula/*.json` | Same as metadata | Formula-level Kandelo sidecar. |
 | `Kandelo/link/*.json` | Same as metadata | VFS builder pour/link plan. |
 | `Kandelo/reports/*.provenance.json` | Same as metadata | Durable publication and validation evidence. |
-| Browser gallery assets | `bottles-abi-v<N>` release | Kandelo browser gallery. |
+| Browser gallery assets | Run-scoped diagnostic artifact | Review evidence only; not a durable public gallery. |
 
 Do not publish Homebrew bottles into Kandelo's `binaries-abi-v<N>` package
 release, and do not use a Kandelo package-source `index.toml` as a substitute
@@ -58,8 +58,8 @@ for Homebrew bottle metadata. A package-source-shaped `gallery.json` and
 
 Kandelo bottles use the Homebrew platform tags `wasm32_kandelo` and
 `wasm64_kandelo`. The tag names intentionally keep the Kandelo ABI out of the
-Homebrew tag. ABI compatibility belongs in Kandelo sidecar metadata, release
-names such as `bottles-abi-v<N>`, and cache-key checks.
+Homebrew tag. ABI compatibility belongs in Kandelo sidecar metadata, namespaces
+such as `bottles-abi-v<N>`, and cache-key checks.
 
 Homebrew's current bottle tag parser treats the token before the final
 underscore as a CPU architecture only when it is listed in
@@ -87,7 +87,7 @@ developer's host Homebrew checkout in place.
 Verify the patch against a Homebrew checkout with:
 
 ```bash
-scripts/verify-homebrew-kandelo-platform-tags.sh
+scripts/dev-shell.sh bash scripts/verify-homebrew-kandelo-platform-tags.sh
 ```
 
 ## Formula Authoring
@@ -152,57 +152,94 @@ jobs:
       arches: wasm32
 ```
 
-The reusable workflow does not request token permissions of its own. The caller
-owns that trust decision: publication callers must explicitly grant
-`contents: write` and `packages: write`, while dry-run callers grant only the
-read scopes needed to fetch source and existing packages. GitHub does not allow
-a nested workflow to elevate its caller's token, so adding write permissions to
-the reusable workflow would invalidate read-only dry-run callers rather than
-silently cap them. PRs from untrusted forks must not receive write permissions;
-they can run schema and local build checks but cannot publish bottles or tap
-metadata.
+The caller grants the maximum permission ceiling. A write-capable publication
+caller must grant `contents: write`, `packages: write`, and `actions: read`, but
+the reusable workflow explicitly downgrades each job to its required subset.
+The build and verification jobs receive only read permissions, the uploader
+receives `packages: write` but not `contents: write`, and the tap finalizer
+receives `contents: write` but not `packages: write`. A nested workflow cannot
+elevate above its caller's ceiling. Because the reusable graph statically
+contains write-capable jobs, the reviewed dry-run caller grants the same maximum
+ceiling; those write-capable jobs do not schedule, and every job that does
+schedule explicitly narrows itself to read scopes. PRs from untrusted forks must
+not receive this caller ceiling; they can run schema and local build checks but
+cannot invoke the trusted publisher.
 
+Every call is fixed to a reviewed `repository_dispatch` workflow in
+`Automattic/kandelo-homebrew@main`. Non-dry calls may come from
+`publish-bottles.yml` or `maintain-bottles.yml`; dry calls must come from
+`dry-run-bottles.yml`. The normal caller is displayed as
+**Publish Kandelo bottles**; do not restore the narrower legacy **Publish hello
+bottle** name.
 Write-capable publication is additionally fixed to `Automattic/kandelo@main`
-and `Automattic/kandelo-homebrew@main`, the first-party bottle root, and the
-reviewed sidecar generator. Arbitrary Kandelo or tap refs are accepted only when
-`dry-run: true` is paired with a read-only caller. The maintenance workflow is
-callable but is not directly branch-dispatchable; a future operator-facing
-caller must live on the protected default branch and grant the write scopes
-explicitly. Third-party actions in the privileged path are pinned by commit.
+and `Automattic/kandelo-homebrew@main`. The bottle root is never caller-selected:
+the workflow rejects a non-empty `bottle-root-url` and derives
+`https://ghcr.io/v2/<lowercase-owner>/<lowercase-repository>` from the tap
+repository. Arbitrary Kandelo or tap refs are accepted only by the reviewed
+dry-run caller. The maintenance workflow is callable but is not directly
+branch-dispatchable; its operator-facing caller must live on the protected
+default branch and grant write scopes explicitly. Third-party actions in the
+privileged path are pinned by commit.
 
-For each `(formula, arch)` entry, the trusted path:
+After a read-only planning job resolves the immutable Kandelo commit, tap
+commit, ABI namespace, derived bottle root, and formula matrix, each
+`(formula, arch)` entry crosses four separate runner roles:
 
-1. Checks out the tap and the selected Kandelo ref.
-2. Installs Homebrew and enters Kandelo's `scripts/dev-shell.sh`.
-3. Builds the Kandelo sysroot and kernel pieces required by formula tests.
-4. Runs `scripts/homebrew-bottle-build.sh`, which builds through Homebrew,
-   applies the Kandelo bottle-tag patch in a temporary Homebrew worktree,
-   runs the formula test, and merges the generated bottle block.
-5. Uploads bottle bytes through `scripts/homebrew-ghcr-upload.sh`.
-6. Generates sidecars with `cargo xtask homebrew-sidecars` through
-   `scripts/homebrew-generate-sidecars-from-env.sh` or another trusted
-   `sidecar-command`.
-7. Validates the generated sidecars.
-8. Publishes formula changes, sidecars, provenance, and release assets with
-   `scripts/homebrew-publish-sidecars.sh`.
+1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
+   Homebrew/brew commit, exposes Brew through the canonical
+   `/home/linuxbrew/.linuxbrew` prefix, builds the required Kandelo pieces, and
+   executes the Formula build and test without publisher credentials. Its
+   strict handoff contains only `manifest.json`, Homebrew's bottle JSON, and
+   one gzip bottle archive. It contains no Formula source, scripts, environment
+   files, or credentials.
+2. `upload-bottle` runs only for a write publication and receives only
+   `packages: write`. On a fresh runner it validates the strict build handoff
+   against the plan before exposing the token to an isolated ORAS upload. Its
+   only output is a strict data receipt identifying the uploaded digest URL,
+   SHA-256, byte count, and image tag.
+3. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
+   revalidates the build handoff and receipt, reconstructs minimal canonical
+   bottle JSON instead of trusting arbitrary artifact fields, fetches the full
+   Kandelo ABI runtime graph, builds the VFS image, and runs the runtime and
+   browser gates. It uses the locally built bottle in dry-run mode. In write
+   mode it discards that bottle as runtime evidence and instead anonymously
+   downloads the GHCR digest URL, then rechecks SHA-256 and byte count. The
+   trusted in-tree generator produces the Formula update and `Kandelo/`
+   sidecars. The resulting publication handoff is an exact, data-only layout;
+   downstream jobs never execute artifact-provided scripts or environment
+   files.
+4. `finalize-tap` runs only for a write publication and receives only
+   `contents: write`. On another fresh runner it validates the complete
+   publication handoff as inert data against the exact base tap before checking
+   out with push credentials. Only then may the trusted publisher compose and
+   push the Formula update, sidecars, and provenance under the tap state lock.
 
-The publish concurrency group is scoped by tap repository and target release
-tag so metadata writes for the same `bottles-abi-v<N>` release serialize.
+Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
+remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow
+uses a separate clean checkout for failure reports so a partially generated or
+locally committed success attempt cannot enter a last-green failure commit.
 
-Use `dry-run: true` for local or CI validation that must not push GHCR blobs,
-tap commits, or release assets. Dry runs still build bottles and validate the
-generated metadata shape. The publisher deliberately does not restore GitHub
+Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
+tap commits. Dry runs still build bottles and validate the generated metadata
+shape. They seed the VFS builder from the current local bottle. Non-dry runs
+seed it only with bytes returned by the anonymous GHCR readback. The publisher
+deliberately does not restore GitHub
 Actions dependency caches: selected tap and Kandelo refs are executable code,
 and a manually dispatched dry run can write Actions storage in the same
 repository scope as a later privileged publish. Run-scoped diagnostic artifacts
 remain available, but cached build output is not an input to bottle publication.
+
+`bottles-abi-v<N>` is currently a metadata namespace, not a promise that a
+GitHub Release with that tag contains sidecars or gallery archives. Immutable,
+serialized gallery release publication is deferred. Do not restore the old
+mutable `gh release upload --clobber` path.
 
 ## Sidecar Metadata
 
 Generate sidecars with:
 
 ```bash
-cargo xtask homebrew-sidecars \
+scripts/dev-shell.sh cargo xtask homebrew-sidecars \
   --tap-root /path/to/kandelo-homebrew \
   --input /path/to/sidecars-input.json \
   --previous-metadata /path/to/previous/Kandelo/metadata.json
@@ -211,12 +248,13 @@ cargo xtask homebrew-sidecars \
 Validate generated tap metadata with:
 
 ```bash
-cargo xtask homebrew-validate --tap-root /path/to/kandelo-homebrew
+scripts/dev-shell.sh cargo xtask homebrew-validate \
+  --tap-root /path/to/kandelo-homebrew
 ```
 
 `homebrew-validate` checks JSON schema shape plus cross-file facts:
 
-- metadata release ABI matches `bottles-abi-v<N>`;
+- metadata ABI matches the `bottles-abi-v<N>` namespace;
 - formula sidecars agree with `metadata.json`;
 - bottle arch and `bottle_tag` agree;
 - link manifests stay inside the Homebrew prefix;
@@ -233,9 +271,12 @@ Bottle status follows Kandelo's last-green model:
   complete fallback.
 
 Failure reporting must not replace last-green metadata. The workflow's failure
-path calls `scripts/homebrew-publish-sidecars.sh --status failed` so the failed
-attempt is durable while the previous successful bottle remains selectable when
-its fallback fields are complete.
+path checks out a fresh tap, refreshes it to `origin/main` under the tap-wide
+lock, and calls `scripts/homebrew-publish-sidecars.sh --status failed`. The
+report records the resolved Kandelo and tap source commits plus the workflow run
+URL, but not raw stderr. The previous successful bottle remains selectable when
+its fallback fields are complete. Maintenance exposes only `rebuild` and
+`rollback`; there is no workflow-level `repair-only` mode.
 
 ## VFS Planning And Building
 
@@ -257,7 +298,7 @@ validates receipts, applies link manifests, writes
 Build a precomposed image with:
 
 ```bash
-npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
+scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
   --tap-root /path/to/kandelo-homebrew \
   --package hello \
@@ -278,7 +319,7 @@ Node and browser support are explicit metadata claims.
 The Node smoke for the published `hello` bottle:
 
 ```bash
-npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
+scripts/dev-shell.sh npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
   --result-dir test-runs/homebrew-node-smoke \
   --tap-repository Automattic/kandelo-homebrew
 ```
@@ -300,12 +341,18 @@ Only after that smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.
 Packages without a successful browser smoke remain Node-only.
 
+The `hello` package bytes in this smoke come from the current Homebrew bottle:
+from the local build in dry-run mode, or from the anonymously fetched GHCR blob
+in write mode. The browser demo still resolves Kandelo-owned ABI platform
+prerequisites such as `node.wasm` and `node-vfs.vfs.zst` through Kandelo's normal
+binary release. Those platform assets are not the migrated package under test.
+
 ## Browser Gallery Assets
 
 Generate browser gallery assets only from browser-smoked wasm32 metadata:
 
 ```bash
-scripts/homebrew-create-browser-gallery.sh \
+scripts/dev-shell.sh bash scripts/homebrew-create-browser-gallery.sh \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
   --image target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json \
@@ -320,7 +367,9 @@ metadata where the wasm32 bottle is not `status = "success"` and
 
 `scripts/validate-software-gallery.mjs` verifies that every gallery entry has
 wasm32 success metadata, an `archive_url`, and `browser_compatible = true`.
-Launch-time archive failures must remain visible in the Kandelo UI.
+Launch-time archive failures must remain visible in the Kandelo UI. The trusted
+publisher retains these generated files as run diagnostics only. Durable public
+gallery publication requires a separate immutable asset contract.
 
 ## Operational Boundaries
 
@@ -332,12 +381,23 @@ Launch-time archive failures must remain visible in the Kandelo UI.
   install is validated.
 - Do not delete GHCR bottle blobs as the normal recovery path. Prefer marking a
   failed attempt and preserving last-green fallback metadata.
+- Do not merge or enable the privileged tap caller until publication composes
+  peer and sibling-architecture sidecars under the tap lock and rejects formula
+  source changes after planning. This activation prerequisite is tracked by
+  `Automattic/kandelo#885`; a global lock alone does not make stale aggregate
+  sidecars safe.
+- Do not publish a new formula's tap metadata until its GHCR package passes the
+  anonymous digest readback. New GHCR packages are private by default; changing
+  package visibility is an explicit operator action, not a workflow side effect.
 - Do not bump `build.toml` revisions for docs-only changes.
 
 ## Current Gaps
 
-The implemented path covers trusted first bottle publication, sidecars,
-verified VFS image building, Node smoke, browser smoke, and gallery gating.
-Broader package coverage, general guest `brew install`, and full manual
-rebuild/rollback runbooks remain separate work and should stay out of
-reference docs until they land.
+The implemented path covers a trusted bottle build, GHCR upload plus anonymous
+readback, sidecar validation, verified VFS image building, browser smoke, and
+diagnostic gallery gating. Privileged tap activation remains gated on lossless
+under-lock sidecar composition and formula-source drift protection in
+`Automattic/kandelo#885`. Public visibility provisioning for new GHCR packages,
+immutable gallery release
+publication, broader package coverage, general guest `brew install`, and full
+operator runbooks remain separate work.

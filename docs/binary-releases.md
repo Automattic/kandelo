@@ -25,11 +25,19 @@ see [docs/package-sources.md](package-sources.md).
 
 Homebrew bottles use a separate publication model. Bottle tarballs are
 Homebrew-native artifacts published through the `Automattic/kandelo-homebrew`
-tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars, provenance,
-and optional browser gallery assets publish to the tap's `bottles-abi-v<N>`
-release. They do not appear in the main repository's `binaries-abi-v<N>`
-`index.toml` ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md)
-for formula authoring and operations.
+tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and
+provenance publish as tap git state. Browser gallery output is currently
+run-scoped diagnostic evidence, not a durable release asset. These artifacts
+do not appear in the main repository's `binaries-abi-v<N>` `index.toml`
+ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
+authoring and operations.
+
+Homebrew runtime verification still fetches the complete
+`binaries-abi-v<N>` graph needed to boot Kandelo in Node and the browser. Those
+kernel, host-runtime, and VFS artifacts are platform prerequisites. The
+migrated package being verified is poured from the Homebrew bottle: the local
+bottle in a dry run, or the anonymously read-back GHCR bottle in a write run.
+It is not selected from Kandelo's package registry archive ledger.
 
 ## Producer side: the matrix flow
 
@@ -119,18 +127,19 @@ asset's bytes never change. Different inputs → different filename.
 PR-staging releases use `pr-<NNN>-staging` (also mutable, but
 ephemeral — closed PRs leave them as historical curios).
 
-Homebrew tap releases use:
+Homebrew sidecars use the ABI namespace:
 
 ```text
 bottles-abi-v<ABI_VERSION>
 ```
 
-Those releases carry Kandelo/Homebrew sidecars, provenance reports, and
-browser-gallery assets. They are intentionally separate from package archive
-releases because Homebrew bottle selection is governed by Formula metadata and
-Homebrew bottle tags, not by Kandelo's package resolver.
+The current Homebrew publisher commits sidecars and provenance reports to tap
+git and retains browser-gallery output as run diagnostics. It does not create
+or mutate a GitHub Release for this namespace. Homebrew state is intentionally
+separate from package archive releases because bottle selection is governed by
+Formula metadata and Homebrew bottle tags, not by Kandelo's package resolver.
 
-The ABI version appears in the tag because a release is tied to a
+The ABI version appears in the namespace because its metadata is tied to a
 specific kernel ABI. Programs from `binaries-abi-v10` cannot run
 against a kernel on ABI 11 — the resolver's compatibility check
 rejects them.

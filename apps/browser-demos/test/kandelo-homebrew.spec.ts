@@ -16,12 +16,20 @@ const appUrl = (path: string): string => {
   return baseUrl ? new URL(path, baseUrl).href : path;
 };
 
-async function gotoOrSkip(page: Page, path: string) {
+async function gotoOrSkip(page: Page, path: string, allowMissingBinary = true) {
   await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
+  await handleViteOverlay(page, allowMissingBinary);
+}
+
+async function handleViteOverlay(page: Page, allowMissingBinary: boolean) {
+  const overlay = page.locator("vite-error-overlay");
+  if (!await overlay.count()) return;
+  if (!allowMissingBinary) {
+    const detail = (await overlay.textContent())?.trim() || "unknown Vite import error";
+    throw new Error(`Published Homebrew browser smoke hit a Vite error overlay: ${detail}`);
   }
+  test.skip(true, "Required binary not built - Vite import error");
 }
 
 async function openNewMachineLauncher(page: Page) {
@@ -113,6 +121,11 @@ test.afterAll(async () => {
   await rm(FIXTURE_ROOT, { recursive: true, force: true });
 });
 
+test("strict Homebrew publisher smoke rejects Vite import overlays", async ({ page }) => {
+  await page.setContent("<vite-error-overlay>missing ABI node.wasm</vite-error-overlay>");
+  await expect(handleViteOverlay(page, false)).rejects.toThrow(/missing ABI node\.wasm/);
+});
+
 test("software gallery hides wasm32 entries without browser-compatible metadata", async ({ page }) => {
   const manifestPath = await writeHomebrewGalleryFixture("nonbrowser", [
     { id: "hello-vfs", title: "GNU hello Homebrew VFS", browserCompatible: false },
@@ -147,10 +160,13 @@ test("browser-compatible gallery archive launch failures are visible", async ({ 
 
 test("Homebrew hello VFS image boots in browser and runs hello --version", async ({ page }) => {
   const vfsUrl = process.env.KANDELO_BROWSER_HELLO_VFS_URL;
+  if (!vfsUrl && process.env.KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE === "1") {
+    throw new Error("KANDELO_BROWSER_HELLO_VFS_URL is required for the strict publisher smoke");
+  }
   test.skip(!vfsUrl, "KANDELO_BROWSER_HELLO_VFS_URL is required for the published Homebrew hello smoke");
   test.setTimeout(360_000);
 
-  await gotoOrSkip(page, `/?vfs=${encodeURIComponent(vfsUrl!)}`);
+  await gotoOrSkip(page, `/?vfs=${encodeURIComponent(vfsUrl!)}`, false);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForTerminalContent(page, /kandelo\$\s*$/, 240_000);
 

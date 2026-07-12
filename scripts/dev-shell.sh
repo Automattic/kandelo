@@ -94,6 +94,7 @@ nix_develop=(
     --keep WASM_POSIX_SYSROOT \
     --keep WASM_POSIX_LLVM_DIR \
     --keep HOMEBREW_BREW_FILE \
+    --keep HOMEBREW_BREW_COMMIT \
     --keep HOMEBREW_PREFIX \
     --keep HOMEBREW_REPOSITORY \
     --keep HOMEBREW_CACHE \
