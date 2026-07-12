@@ -8,7 +8,7 @@ import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsBinary } from "@host/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
-import { rewriteShellLazyFileUrls } from "../../lib/init/shell-lazy-files";
+import { rewriteRootfsLazyFileUrls } from "../../lib/init/rootfs-lazy-files";
 
 interface RunPhpScriptRequest {
   testId: string;
@@ -71,7 +71,7 @@ function createFs(): MemoryFileSystem {
   // This legacy shared-SAB runner registers lazy-file metadata from the
   // restored image directly, so resolve canonical rootfs placeholders to
   // Vite-managed asset URLs before BrowserKernel.init() forwards them.
-  rewriteShellLazyFileUrls(fs);
+  rewriteRootfsLazyFileUrls(fs);
   return fs;
 }
 

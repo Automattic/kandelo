@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { rewriteShellLazyFileUrls } from "../../apps/browser-demos/lib/init/shell-lazy-files";
+import { rewriteRootfsLazyFileUrls } from "../../apps/browser-demos/lib/init/rootfs-lazy-files";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -24,7 +24,7 @@ describe.skipIf(!existsSync(rootfsImage))("PHP browser PHPT lazy assets", () => 
       expect(before.find((entry) => entry.path === path)?.url).toBe(url);
     }
 
-    rewriteShellLazyFileUrls(fs);
+    rewriteRootfsLazyFileUrls(fs);
     const after = fs.exportLazyEntries();
     expect(after.filter((entry) => entry.url.startsWith("binaries/"))).toEqual([]);
     for (const [path, sourceUrl] of expected) {
