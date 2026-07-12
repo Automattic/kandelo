@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { zstdCompressSync } from "node:zlib";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -180,6 +180,74 @@ describe("VFS image save/restore", () => {
       expect(entries[0].path).toBe("/bin/lazy-tool");
       expect(entries[0].url).toBe("http://example.com/tool.wasm");
       expect(entries[0].size).toBe(12345);
+    });
+
+    it("rejects an image whose serialized lazy size is not a safe integer", async () => {
+      const mfs = createMemfs();
+      mfs.registerLazyFile("/bin/lazy-tool", "http://example.com/tool.wasm", 12345, 0o755);
+      const image = await mfs.saveImage();
+      const marker = new TextEncoder().encode('"size":12345');
+      const replacement = new TextEncoder().encode('"size":1e999');
+      const offset = image.findIndex((_, index) =>
+        marker.every((byte, markerIndex) => image[index + markerIndex] === byte)
+      );
+      expect(offset).toBeGreaterThan(0);
+      image.set(replacement, offset);
+
+      expect(() => MemoryFileSystem.fromImage(image)).toThrow(/safe-integer size/);
+    });
+
+    it("rejects truncated, oversized, and trailing lazy metadata sections", async () => {
+      const mfs = createMemfs();
+      mfs.registerLazyFile("/bin/tool", "http://example.com/tool.wasm", 4, 0o755);
+      const image = await mfs.saveImage();
+      const sabLen = new DataView(
+        image.buffer,
+        image.byteOffset,
+        image.byteLength,
+      ).getUint32(12, true);
+      const lazyOffset = 16 + sabLen;
+
+      const truncated = image.slice();
+      const truncatedView = new DataView(truncated.buffer);
+      truncatedView.setUint32(
+        lazyOffset,
+        truncatedView.getUint32(lazyOffset, true) + 1024,
+        true,
+      );
+      expect(() => MemoryFileSystem.fromImage(truncated)).toThrow(
+        /truncated \(lazy file metadata payload\)/,
+      );
+
+      const oversized = image.slice();
+      new DataView(oversized.buffer).setUint32(lazyOffset, 16 * 1024 * 1024 + 1, true);
+      expect(() => MemoryFileSystem.fromImage(oversized)).toThrow(
+        /lazy file metadata exceeds/,
+      );
+
+      const trailing = new Uint8Array(image.byteLength + 1);
+      trailing.set(image);
+      expect(() => MemoryFileSystem.fromImage(trailing)).toThrow(/trailing bytes/);
+    });
+
+    it("materializeAll propagates a size mismatch and preserves the lazy stub", async () => {
+      const originalFetch = globalThis.fetch;
+      const mfs = createMemfs();
+      mfs.registerLazyFile("/bin/tool", "http://example.com/tool.wasm", 4, 0o755);
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(new Uint8Array([0, 1])));
+      try {
+        await expect(mfs.saveImage({ materializeAll: true })).rejects.toThrow(
+          "expected 4 bytes, received 2",
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+
+      expect(mfs.getLazyEntry("/bin/tool")).toMatchObject({ size: 4 });
+      const fd = mfs.open("/bin/tool", O_RDONLY, 0);
+      const bytes = new Uint8Array(4);
+      expect(mfs.read(fd, bytes, null, bytes.byteLength)).toBe(0);
+      mfs.close(fd);
     });
 
     it("preserves multiple lazy files", async () => {

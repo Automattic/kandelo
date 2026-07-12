@@ -77,7 +77,7 @@ Common fields:
 | --- | --- | --- |
 | `src=<path>` | file | Use a source file other than `sourceTree/<path>`. |
 | `lazy_url=<url>` | file | Register a URL-backed file stub. |
-| `lazy_size=<n>` | file | Required with `lazy_url`. |
+| `lazy_size=<n>` | file | Required with `lazy_url`; exact logical bytes after HTTP Content-Encoding decoding, up to 1 GiB. |
 | `target=<path>` | symlink | Symlink target. |
 | `major=<n>` / `minor=<n>` | device | Device numbers. |
 

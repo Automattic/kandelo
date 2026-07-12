@@ -12,7 +12,7 @@
 //
 // Per-type trailing key=value fields:
 //   f   src=<repo-relative path>       — override implicit sourceTree/<path>
-//   f   lazy_url=<url> lazy_size=<n>   — URL-backed file stub, fetched on demand
+//   f   lazy_url=<url> lazy_size=<n>   — URL-backed stub; exact decoded file bytes
 //   l   target=<symlink target path>   — required
 //   c|b major=<n>  minor=<n>           — both required
 //
@@ -28,6 +28,8 @@
 // preceded by whitespace, so values like `url=./x.zip#frag` are
 // preserved. Leading/trailing whitespace on each line is stripped.
 // Blank lines are skipped.
+
+import { MAX_LAZY_CONTENT_BYTES } from "../../../host/src/vfs/lazy-fetch";
 
 export type NodeType = "d" | "f" | "l" | "c" | "b";
 
@@ -222,6 +224,13 @@ function validateRequiredExtras(node: ManifestNode, lineNumber: number, sourcePa
     if (node.lazySize === undefined) {
       throw err(lineNumber, sourcePath, `"${node.path}" requires lazy_size= with lazy_url=`);
     }
+    if (node.lazySize > MAX_LAZY_CONTENT_BYTES) {
+      throw err(
+        lineNumber,
+        sourcePath,
+        `"${node.path}" lazy_size exceeds ${MAX_LAZY_CONTENT_BYTES} bytes`,
+      );
+    }
   }
   if (node.type === "c" || node.type === "b") {
     if (node.major === undefined) {
@@ -244,7 +253,11 @@ function parseDecimal(s: string, lineNumber: number, sourcePath: string | undefi
   if (!/^[0-9]+$/.test(s)) {
     throw err(lineNumber, sourcePath, `invalid integer ${field} "${s}"`);
   }
-  return parseInt(s, 10);
+  const value = Number(s);
+  if (!Number.isSafeInteger(value)) {
+    throw err(lineNumber, sourcePath, `integer ${field} is outside the safe range: "${s}"`);
+  }
+  return value;
 }
 
 function err(lineNumber: number, sourcePath: string | undefined, msg: string): Error {
