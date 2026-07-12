@@ -76,7 +76,7 @@ pub fn default_action(signum: u32) -> DefaultAction {
 /// cause the pending signal to be discarded." Also: "Setting a signal action to
 /// SIG_DFL for a signal that is pending and whose default action is to ignore the
 /// signal (for example, SIGCHLD), shall cause the pending signal to be discarded."
-fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
+pub(crate) fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
     match handler {
         SignalHandler::Ignore => true,
         SignalHandler::Default => default_action(signum) == DefaultAction::Ignore,
@@ -178,6 +178,28 @@ impl PerThreadSignalState {
         }
     }
 
+    /// Consume one directed instance of `signum` regardless of its blocked
+    /// state. Standard signals coalesce; RT signals retain the pending bit
+    /// until their final queued instance is consumed.
+    pub fn consume_one(&mut self, signum: u32) -> Option<(i32, i32)> {
+        if signum == 0
+            || signum >= NSIG
+            || self.pending & sig_bit(signum) == 0
+        {
+            return None;
+        }
+        let (mut si_value, mut si_code) = (0i32, 0i32);
+        if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
+            si_value = self.rt_queue[pos].si_value;
+            si_code = self.rt_queue[pos].si_code;
+            self.rt_queue.remove(pos);
+        }
+        if signum < SIGRTMIN || !self.rt_queue.iter().any(|e| e.signum == signum) {
+            self.pending &= !sig_bit(signum);
+        }
+        Some((si_value, si_code))
+    }
+
     /// Check whether a signal is blocked by this thread.
     pub fn is_blocked(&self, signum: u32) -> bool {
         if signum >= NSIG {
@@ -197,19 +219,7 @@ impl PerThreadSignalState {
         if signum >= NSIG {
             return None;
         }
-        let (mut si_value, mut si_code) = (0i32, 0i32);
-        if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
-            si_value = self.rt_queue[pos].si_value;
-            si_code = self.rt_queue[pos].si_code;
-            self.rt_queue.remove(pos);
-        }
-        if signum >= SIGRTMIN {
-            if !self.rt_queue.iter().any(|e| e.signum == signum) {
-                self.pending &= !sig_bit(signum);
-            }
-        } else {
-            self.pending &= !sig_bit(signum);
-        }
+        let (si_value, si_code) = self.consume_one(signum)?;
         Some((signum, si_value, si_code))
     }
 }
@@ -318,28 +328,6 @@ impl SignalState {
                 flags: 0,
                 mask: 0,
             };
-        }
-    }
-
-    /// Promote the calling pthread's signal mask and directed pending queue
-    /// when exec collapses a multithreaded process to that one thread.
-    pub fn promote_exec_thread(&mut self, thread: PerThreadSignalState) {
-        self.blocked = thread.blocked;
-        self.pending |= thread.pending;
-        for entry in thread.rt_queue {
-            if entry.signum >= SIGRTMIN {
-                self.rt_queue.push_back(entry);
-            } else if let Some(existing) = self
-                .rt_queue
-                .iter_mut()
-                .find(|queued| queued.signum == entry.signum)
-            {
-                // Standard signals coalesce. Prefer the calling thread's
-                // siginfo because it was specifically directed there.
-                *existing = entry;
-            } else {
-                self.rt_queue.push_back(entry);
-            }
         }
     }
 

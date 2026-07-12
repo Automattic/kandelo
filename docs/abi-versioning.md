@@ -61,6 +61,11 @@ export. The host uses the query unconditionally to distinguish signal death
 from ordinary high exit statuses, so a kernel without it must fail manifest
 validation rather than silently treating the process as live.
 
+ABI 31 makes `kernel_prepare_write_operation` required. Host-backed writes use
+that preflight unconditionally before splitting one guest operation into
+scratch-buffer chunks, so a kernel without it must fail manifest validation
+rather than bypassing operation-wide file-size enforcement.
+
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI
 changes and do not require a bump.

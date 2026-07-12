@@ -39,7 +39,7 @@ pub mod host_abi;
 ///     and POSIX timer notifications use validated fixed-width signal fields.
 /// 28: host path, clock/timer, exec/spawn, worker, and persistent-VFS behavior
 ///     is aligned across Node and browser runtime boundaries.
-pub const ABI_VERSION: u32 = 30;
+pub const ABI_VERSION: u32 = 31;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1159,6 +1159,7 @@ pub mod abi {
         "kernel_host_adapter_manifest_ptr",
         "kernel_mark_process_signaled",
         "kernel_pipe_has_readers",
+        "kernel_prepare_write_operation",
         "kernel_reap_exited_child",
         "kernel_remove_process",
         "kernel_wait4_poll",

@@ -9,6 +9,7 @@ use wasm_posix_shared::flags::*;
 use wasm_posix_shared::flock_op::*;
 use wasm_posix_shared::lock_type::*;
 use wasm_posix_shared::mode::{S_IFCHR, S_IFDIR, S_IFIFO, S_IFMT, S_IFREG};
+use wasm_posix_shared::rlimit::{RLIM_INFINITY, RLIMIT_FSIZE};
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
@@ -20,7 +21,7 @@ use crate::process::{HostIO, Process};
 use crate::signal::SignalHandler;
 use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_FAILED};
 use wasm_posix_shared::signal::{
-    NSIG, SIG_BLOCK, SIG_DFL, SIG_IGN, SIG_SETMASK, SIG_UNBLOCK, SIGKILL, SIGSTOP,
+    NSIG, SIG_BLOCK, SIG_DFL, SIG_IGN, SIG_SETMASK, SIG_UNBLOCK, SIGKILL, SIGSTOP, SIGXFSZ,
 };
 
 /// Creation flags that are stripped from status_flags after open.
@@ -683,7 +684,8 @@ pub(crate) fn commit_exec_state(
             .position(|thread| thread.tid == caller_tid)
             .ok_or(Errno::ESRCH)?;
         let caller = proc.threads.remove(thread_index);
-        proc.signals.promote_exec_thread(caller.signals);
+        proc.signals.blocked = caller.signals.blocked;
+        proc.main_thread_signals = caller.signals;
     }
 
     let cloexec_fds: Vec<i32> = proc
@@ -2408,7 +2410,8 @@ pub fn sys_read(
                 table.get(sfd_idx).map(|sfd| sfd.mask).ok_or(Errno::EBADF)
             })?;
             // Find a pending signal matching the mask
-            let pending = proc.signals.pending_mask();
+            let tid = crate::process_table::current_tid();
+            let pending = proc.pending_for(tid);
             let matching = pending & mask;
             if matching == 0 {
                 return Err(Errno::EAGAIN);
@@ -2416,7 +2419,7 @@ pub fn sys_read(
             // Find lowest matching signal (bit N = signal N+1, musl 0-based convention)
             let signo = matching.trailing_zeros() + 1;
             // Consume the signal from pending
-            proc.signals.clear_pending(signo);
+            proc.consume_signal_for(tid, signo).ok_or(Errno::EAGAIN)?;
             // Write signalfd_siginfo (128 bytes): only ssi_signo at offset 0
             for b in buf[..128].iter_mut() {
                 *b = 0;
@@ -2789,22 +2792,6 @@ pub fn sys_write(
             Ok(n)
         }
         _ => {
-            // memfd: write to in-memory buffer
-            if file_type == FileType::MemFd {
-                let memfd_idx = (-(host_handle + 1)) as usize;
-                return crate::descriptor_backing::with_memfds(|table| {
-                    let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
-                    let offset = usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)?;
-                    let end = offset.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
-                    if end > backing.data.len() {
-                        backing.data.resize(end, 0);
-                    }
-                    backing.data[offset..end].copy_from_slice(buf);
-                    backing.offset += buf.len() as i64;
-                    Ok(buf.len())
-                });
-            }
-
             // Virtual character devices — handle in-kernel
             if file_type == FileType::CharDevice {
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
@@ -2865,24 +2852,45 @@ pub fn sys_write(
                     };
                 }
             }
-            // O_APPEND: seek to end before writing (POSIX atomicity guaranteed by serialized kernel syscalls)
-            if status_flags & O_APPEND != 0 {
+
+            // Compute RLIMIT_FSIZE once for this logical write. For regular
+            // files and memfds this resolves the authoritative append or
+            // open-file-description offset without changing either cursor.
+            let writable_len = write_operation_budget(proc, host, fd, None, buf.len())?;
+
+            // memfd: write to the shared in-memory backing. Apply O_APPEND
+            // only at the actual non-empty mutation boundary.
+            if file_type == FileType::MemFd {
+                let memfd_idx = (-(host_handle + 1)) as usize;
+                return crate::descriptor_backing::with_memfds(|table| {
+                    let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
+                    if writable_len > 0 && status_flags & O_APPEND != 0 {
+                        backing.offset =
+                            i64::try_from(backing.data.len()).map_err(|_| Errno::EOVERFLOW)?;
+                    }
+                    let offset = usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)?;
+                    let end = offset.checked_add(writable_len).ok_or(Errno::EFBIG)?;
+                    if end > backing.data.len() {
+                        backing.data.resize(end, 0);
+                    }
+                    backing.data[offset..end].copy_from_slice(&buf[..writable_len]);
+                    backing.offset = backing
+                        .offset
+                        .checked_add(i64::try_from(writable_len).map_err(|_| Errno::EOVERFLOW)?)
+                        .ok_or(Errno::EOVERFLOW)?;
+                    Ok(writable_len)
+                });
+            }
+
+            // O_APPEND positioning belongs to the actual non-empty write, not
+            // the side-effect-free operation-budget query.
+            if writable_len > 0 && status_flags & O_APPEND != 0 {
                 let end = host.host_seek(host_handle, 0, 2)?; // SEEK_END
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                     ofd.offset = end;
                 }
             }
-            // RLIMIT_FSIZE: check if write would exceed file size limit
-            let fsize_limit = proc.rlimits[1][0]; // RLIMIT_FSIZE soft limit
-            if fsize_limit != u64::MAX {
-                let current_offset = proc.ofd_table.get(ofd_idx).map_or(0, |o| o.offset);
-                let end_pos = current_offset as u64 + buf.len() as u64;
-                if end_pos > fsize_limit {
-                    proc.signals.raise(wasm_posix_shared::signal::SIGXFSZ);
-                    return Err(Errno::EFBIG);
-                }
-            }
-            let n = host.host_write(host_handle, buf)?;
+            let n = host.host_write(host_handle, &buf[..writable_len])?;
             if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                 ofd.offset += n as i64;
             }
@@ -3191,6 +3199,141 @@ pub fn sys_pread(
     Ok(n)
 }
 
+/// Queue a synchronous file-size-limit signal for the thread that issued the
+/// write. A worker thread must not redirect SIGXFSZ through the process-shared
+/// pending set to a different thread that happens to have it unblocked.
+fn raise_fsize_signal_for_caller(proc: &mut Process) {
+    let tid = crate::process_table::current_tid();
+    if !proc.raise_for_thread(tid, SIGXFSZ) {
+        // A stale host TID must not lose the required signal. The shared
+        // queue is the conservative fallback used by the existing signal
+        // entry points for unknown thread identities.
+        proc.signals.raise(SIGXFSZ);
+    }
+}
+
+/// Apply POSIX RLIMIT_FSIZE semantics to one regular-file write operation.
+///
+/// A write that starts before the soft file-size limit may complete partially
+/// up to the limit. Only a non-empty operation with no byte available at its
+/// starting offset fails with EFBIG and generates SIGXFSZ.
+fn fsize_limited_write_len(
+    proc: &mut Process,
+    offset: u64,
+    requested_len: usize,
+) -> Result<usize, Errno> {
+    if requested_len == 0 {
+        return Ok(0);
+    }
+    let fsize_limit = proc.rlimits[RLIMIT_FSIZE as usize][0];
+    if fsize_limit == RLIM_INFINITY {
+        return Ok(requested_len);
+    }
+    if offset >= fsize_limit {
+        raise_fsize_signal_for_caller(proc);
+        return Err(Errno::EFBIG);
+    }
+    // Convert only after comparing in u64. The kernel itself is wasm32 even
+    // for wasm64 guests, so a remaining budget above 4 GiB must not wrap when
+    // represented as usize.
+    let available = fsize_limit - offset;
+    match usize::try_from(available) {
+        Ok(available) => Ok(requested_len.min(available)),
+        Err(_) => Ok(requested_len),
+    }
+}
+
+/// Resolve the writable prefix for a single top-level write operation.
+///
+/// `offset` is `Some` for positioned operations and `None` for operations
+/// using the open-file-description cursor. O_APPEND observes the current file
+/// size without moving either the host or kernel cursor; the actual write owns
+/// append positioning. Non-regular objects are validated for write access but
+/// are not constrained by RLIMIT_FSIZE.
+pub(crate) fn write_operation_budget(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    offset: Option<i64>,
+    requested_len: usize,
+) -> Result<usize, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let (file_type, status_flags, host_handle, current_offset) = {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        (
+            ofd.file_type,
+            ofd.status_flags,
+            ofd.host_handle,
+            ofd.offset,
+        )
+    };
+
+    if status_flags & O_ACCMODE == O_RDONLY {
+        return Err(Errno::EBADF);
+    }
+    if requested_len == 0 {
+        return Ok(0);
+    }
+    if !matches!(file_type, FileType::Regular | FileType::MemFd) {
+        return Ok(requested_len);
+    }
+
+    let start = if let Some(offset) = offset {
+        u64::try_from(offset).map_err(|_| Errno::EINVAL)?
+    } else if file_type == FileType::MemFd {
+        let memfd_idx = (-(host_handle + 1)) as usize;
+        crate::descriptor_backing::with_memfds(|table| {
+            let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
+            if status_flags & O_APPEND != 0 {
+                u64::try_from(backing.data.len()).map_err(|_| Errno::EOVERFLOW)
+            } else {
+                u64::try_from(backing.offset).map_err(|_| Errno::EINVAL)
+            }
+        })?
+    } else {
+        if status_flags & O_APPEND != 0 {
+            host.host_fstat(host_handle)?.st_size
+        } else {
+            u64::try_from(current_offset).map_err(|_| Errno::EINVAL)?
+        }
+    };
+
+    fsize_limited_write_len(proc, start, requested_len)
+}
+
+/// Validate a transfer source without consuming data or changing its cursor.
+/// Output RLIMIT checks must not hide an invalid input descriptor.
+fn validate_transfer_input(proc: &Process, fd: i32, offset: Option<i64>) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc
+        .ofd_table
+        .get(entry.ofd_ref.0)
+        .ok_or(Errno::EBADF)?;
+    if ofd.status_flags & O_ACCMODE == O_WRONLY {
+        return Err(Errno::EBADF);
+    }
+    if matches!(offset, Some(value) if value < 0) {
+        return Err(Errno::EINVAL);
+    }
+    if offset.is_some()
+        && matches!(
+            ofd.file_type,
+            FileType::Pipe
+                | FileType::Socket
+                | FileType::EventFd
+                | FileType::Epoll
+                | FileType::TimerFd
+                | FileType::SignalFd
+                | FileType::PtyMaster
+                | FileType::PtySlave
+        )
+    {
+        return Err(Errno::ESPIPE);
+    }
+    Ok(())
+}
+
 /// Write to a file descriptor at a given offset without modifying the file position.
 pub fn sys_pwrite(
     proc: &mut Process,
@@ -3226,24 +3369,26 @@ pub fn sys_pwrite(
     }
 
     let host_handle = ofd.host_handle;
+    let file_type = ofd.file_type;
     let saved_offset = ofd.offset;
+    let writable_len = write_operation_budget(proc, host, fd, Some(offset), buf.len())?;
 
-    if ofd.file_type == FileType::MemFd {
+    if file_type == FileType::MemFd {
         let memfd_idx = (-(host_handle + 1)) as usize;
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
-        let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+        let end = start.checked_add(writable_len).ok_or(Errno::EFBIG)?;
         return crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
             if end > backing.data.len() {
                 backing.data.resize(end, 0);
             }
-            backing.data[start..end].copy_from_slice(buf);
-            Ok(buf.len())
+            backing.data[start..end].copy_from_slice(&buf[..writable_len]);
+            Ok(writable_len)
         });
     }
 
     host.host_seek(host_handle, offset, SEEK_SET)?;
-    let n = host.host_write(host_handle, buf)?;
+    let n = host.host_write(host_handle, &buf[..writable_len])?;
     host.host_seek(host_handle, saved_offset, SEEK_SET)?;
 
     Ok(n)
@@ -3275,6 +3420,19 @@ pub fn sys_preadv(
     Ok(total)
 }
 
+/// Validate the total byte count represented by one wasm32 scatter/gather
+/// operation. Syscall return values are signed 32-bit even when the guest uses
+/// memory64, so a larger aggregate cannot be reported faithfully.
+fn checked_iovec_len(iovecs: &[&[u8]]) -> Result<usize, Errno> {
+    let total = iovecs.iter().try_fold(0usize, |total, buf| {
+        total.checked_add(buf.len()).ok_or(Errno::EINVAL)
+    })?;
+    if total > i32::MAX as usize {
+        return Err(Errno::EINVAL);
+    }
+    Ok(total)
+}
+
 /// pwritev -- scatter-gather write at offset.
 /// Writes from multiple buffers to a file descriptor at the given offset
 /// without modifying the file position.
@@ -3285,16 +3443,30 @@ pub fn sys_pwritev(
     iovecs: &[&[u8]],
     offset: i64,
 ) -> Result<usize, Errno> {
+    let requested_len = checked_iovec_len(iovecs)?;
+    let writable_len =
+        write_operation_budget(proc, host, fd, Some(offset), requested_len)?;
     let mut total = 0usize;
     let mut cur_offset = offset;
     for buf in iovecs {
+        if total == writable_len {
+            break;
+        }
         if buf.is_empty() {
             continue;
         }
-        let n = sys_pwrite(proc, host, fd, buf, cur_offset)?;
+        let operation_remaining = writable_len - total;
+        let attempted = buf.len().min(operation_remaining);
+        let n = match sys_pwrite(proc, host, fd, &buf[..attempted], cur_offset) {
+            Ok(n) => n,
+            Err(_) if total > 0 => return Ok(total),
+            Err(e) => return Err(e),
+        };
         total += n;
-        cur_offset += n as i64;
-        if n < buf.len() {
+        cur_offset = cur_offset
+            .checked_add(i64::try_from(n).map_err(|_| Errno::EOVERFLOW)?)
+            .ok_or(Errno::EOVERFLOW)?;
+        if n < attempted || total == writable_len {
             break; // Short write
         }
     }
@@ -3313,12 +3485,17 @@ pub fn sys_sendfile(
     offset: i64,
     count: usize,
 ) -> Result<usize, Errno> {
+    if count == 0 {
+        return Ok(0);
+    }
+    validate_transfer_input(proc, in_fd, (offset >= 0).then_some(offset))?;
+    let writable_len = write_operation_budget(proc, host, out_fd, None, count)?;
     let mut total = 0usize;
     let mut buf = [0u8; 4096];
     let mut cur_offset = offset;
 
-    while total < count {
-        let to_read = (count - total).min(buf.len());
+    while total < writable_len {
+        let to_read = (writable_len - total).min(buf.len());
         let n = if offset >= 0 {
             match sys_pread(proc, host, in_fd, &mut buf[..to_read], cur_offset) {
                 Ok(n) => {
@@ -3379,13 +3556,18 @@ pub fn sys_copy_file_range(
     off_out: Option<i64>,
     len: usize,
 ) -> Result<usize, Errno> {
+    if len == 0 {
+        return Ok(0);
+    }
+    validate_transfer_input(proc, fd_in, off_in)?;
+    let writable_len = write_operation_budget(proc, host, fd_out, off_out, len)?;
     let mut total = 0usize;
     let mut buf = [0u8; 4096];
     let mut cur_off_in = off_in.unwrap_or(-1);
     let mut cur_off_out = off_out.unwrap_or(-1);
 
-    while total < len {
-        let to_read = (len - total).min(buf.len());
+    while total < writable_len {
+        let to_read = (writable_len - total).min(buf.len());
         let n = if off_in.is_some() {
             match sys_pread(proc, host, fd_in, &mut buf[..to_read], cur_off_in) {
                 Ok(n) => {
@@ -5384,32 +5566,9 @@ pub fn sys_sigtimedwait(
     if pending_in_mask != 0 {
         let signum = pending_in_mask.trailing_zeros() + 1;
         if signum < NSIG {
-            // Prefer directed delivery for non-main threads, same rule as
-            // `kernel_dequeue_signal`.
-            let bit = crate::signal::sig_bit(signum);
-            if !proc.is_main_thread(tid) {
-                if let Some(t) = proc.get_thread_mut(tid) {
-                    if (t.signals.pending & bit) != 0 {
-                        let (mut si_value, mut si_code) = (0i32, 0i32);
-                        if let Some(pos) =
-                            t.signals.rt_queue.iter().position(|e| e.signum == signum)
-                        {
-                            si_value = t.signals.rt_queue[pos].si_value;
-                            si_code = t.signals.rt_queue[pos].si_code;
-                            t.signals.rt_queue.remove(pos);
-                        }
-                        if signum >= crate::signal::SIGRTMIN {
-                            if !t.signals.rt_queue.iter().any(|e| e.signum == signum) {
-                                t.signals.pending &= !bit;
-                            }
-                        } else {
-                            t.signals.pending &= !bit;
-                        }
-                        return Ok((signum, si_value, si_code));
-                    }
-                }
-            }
-            let (si_value, si_code) = proc.signals.consume_one(signum);
+            let (si_value, si_code) = proc
+                .consume_signal_for(tid, signum)
+                .ok_or(Errno::EAGAIN)?;
             return Ok((signum, si_value, si_code));
         }
     }
@@ -5486,6 +5645,9 @@ pub fn sys_sigaction(
         .signals
         .set_action(sig, new_action)
         .map_err(|_| Errno::EINVAL)?;
+    if crate::signal::should_discard_pending(sig, &new_handler) {
+        proc.clear_directed_signal(sig);
+    }
 
     let old_handler_val = match old.handler {
         SignalHandler::Default => SIG_DFL,
@@ -5509,6 +5671,9 @@ pub fn sys_signal(proc: &mut Process, signum: u32, handler_val: u32) -> Result<i
         .signals
         .set_handler(signum, new_handler)
         .map_err(|_| Errno::EINVAL)?;
+    if crate::signal::should_discard_pending(signum, &new_handler) {
+        proc.clear_directed_signal(signum);
+    }
 
     let old_val = match old {
         SignalHandler::Default => SIG_DFL as i32,
@@ -9464,7 +9629,8 @@ pub fn sys_poll(
         return Ok(ready);
     }
 
-    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+    let tid = crate::process_table::current_tid();
+    if proc.deliverable_for(tid) != 0 && !proc.should_restart_for(tid) {
         return Err(Errno::EINTR);
     }
     Err(Errno::EAGAIN)
@@ -9475,6 +9641,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
     use wasm_posix_shared::poll::*;
 
     let mut ready_count = 0i32;
+    let tid = crate::process_table::current_tid();
 
     for pollfd in fds.iter_mut() {
         pollfd.revents = 0;
@@ -9542,7 +9709,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                 if let Some(mask) = crate::descriptor_backing::with_signalfds(|table| {
                     table.get(sfd_idx).map(|sfd| sfd.mask)
                 }) {
-                    let matching = proc.signals.pending_mask() & mask;
+                    let matching = proc.pending_for(tid) & mask;
                     if pollfd.events & POLLIN != 0 && matching != 0 {
                         revents |= POLLIN;
                     }
@@ -11662,22 +11829,46 @@ pub fn sys_ftruncate(
     }
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
-    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    let (file_type, status_flags, host_handle) = {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        (ofd.file_type, ofd.status_flags, ofd.host_handle)
+    };
 
     // Must be a regular file or memfd
-    if ofd.file_type != FileType::Regular && ofd.file_type != FileType::MemFd {
+    if file_type != FileType::Regular && file_type != FileType::MemFd {
         return Err(Errno::EINVAL);
     }
 
     // Must be writable (O_WRONLY or O_RDWR)
-    let access = ofd.status_flags & O_ACCMODE;
+    let access = status_flags & O_ACCMODE;
     if access == O_RDONLY {
         return Err(Errno::EINVAL);
     }
 
+    let current_size = if file_type == FileType::MemFd {
+        let memfd_idx = (-(host_handle + 1)) as usize;
+        crate::descriptor_backing::with_memfds(|table| {
+            let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
+            u64::try_from(backing.data.len()).map_err(|_| Errno::EOVERFLOW)
+        })?
+    } else {
+        host.host_fstat(host_handle)?.st_size
+    };
+
+    // RLIMIT_FSIZE forbids an operation that would grow a file beyond the
+    // limit. Shrinking (or retaining) an already-oversized file is permitted.
+    let fsize_limit = proc.rlimits[RLIMIT_FSIZE as usize][0];
+    if fsize_limit != RLIM_INFINITY
+        && (length as u64) > current_size
+        && (length as u64) > fsize_limit
+    {
+        raise_fsize_signal_for_caller(proc);
+        return Err(Errno::EFBIG);
+    }
+
     // MemFd: truncate in-memory buffer
-    if ofd.file_type == FileType::MemFd {
-        let memfd_idx = (-(ofd.host_handle + 1)) as usize;
+    if file_type == FileType::MemFd {
+        let memfd_idx = (-(host_handle + 1)) as usize;
         let new_len = usize::try_from(length).map_err(|_| Errno::EFBIG)?;
         crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
@@ -11687,14 +11878,7 @@ pub fn sys_ftruncate(
         return Ok(());
     }
 
-    // RLIMIT_FSIZE: check if truncate target exceeds file size limit
-    let fsize_limit = proc.rlimits[1][0]; // RLIMIT_FSIZE soft limit
-    if fsize_limit != u64::MAX && (length as u64) > fsize_limit {
-        proc.signals.raise(wasm_posix_shared::signal::SIGXFSZ);
-        return Err(Errno::EFBIG);
-    }
-
-    host.host_ftruncate(ofd.host_handle, length)
+    host.host_ftruncate(host_handle, length)
 }
 
 /// fallocate -- ensure space is allocated for a file region.
@@ -11709,11 +11893,11 @@ pub fn sys_fallocate(
     if offset < 0 || len <= 0 {
         return Err(Errno::EINVAL);
     }
-    let required = offset + len;
+    let required = offset.checked_add(len).ok_or(Errno::EFBIG)?;
 
     // Get current file size via fstat
     let stat = sys_fstat(proc, host, fd)?;
-    let current_size = stat.st_size as i64;
+    let current_size = i64::try_from(stat.st_size).map_err(|_| Errno::EOVERFLOW)?;
 
     // Only extend if needed — fallocate never shrinks
     if required > current_size {
@@ -11816,15 +12000,22 @@ pub fn sys_writev(
     fd: i32,
     buffers: &[&[u8]],
 ) -> Result<usize, Errno> {
+    let requested_len = checked_iovec_len(buffers)?;
+    let writable_len = write_operation_budget(proc, host, fd, None, requested_len)?;
     let mut total = 0usize;
     for buf in buffers {
+        if total == writable_len {
+            break;
+        }
         if buf.is_empty() {
             continue;
         }
-        match sys_write(proc, host, fd, buf) {
+        let operation_remaining = writable_len - total;
+        let attempted = buf.len().min(operation_remaining);
+        match sys_write(proc, host, fd, &buf[..attempted]) {
             Ok(n) => {
                 total += n;
-                if n < buf.len() {
+                if n < attempted || total == writable_len {
                     break; // Short write, stop
                 }
             }
@@ -12162,7 +12353,8 @@ pub fn sys_select(
     if ready > 0 || timeout_ms == 0 {
         return Ok(ready);
     }
-    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+    let tid = crate::process_table::current_tid();
+    if proc.deliverable_for(tid) != 0 && !proc.should_restart_for(tid) {
         return Err(Errno::EINTR);
     }
     Err(Errno::EAGAIN)
@@ -12894,6 +13086,9 @@ mod tests {
         fchown_calls: Vec<(i64, u32, u32)>,
         closed_handles: Vec<i64>,
         closed_dir_handles: Vec<i64>,
+        seek_end: i64,
+        seek_calls: Vec<(i64, i64, u32)>,
+        stat_size: u64,
     }
 
     impl MockHostIO {
@@ -12927,6 +13122,9 @@ mod tests {
                 fchown_calls: Vec::new(),
                 closed_handles: Vec::new(),
                 closed_dir_handles: Vec::new(),
+                seek_end: 0,
+                seek_calls: Vec::new(),
+                stat_size: 1024,
             }
         }
 
@@ -13001,8 +13199,13 @@ mod tests {
             Ok(buf.len())
         }
 
-        fn host_seek(&mut self, _handle: i64, _offset: i64, _whence: u32) -> Result<i64, Errno> {
-            Ok(0)
+        fn host_seek(&mut self, handle: i64, offset: i64, whence: u32) -> Result<i64, Errno> {
+            self.seek_calls.push((handle, offset, whence));
+            if whence == SEEK_END {
+                Ok(self.seek_end + offset)
+            } else {
+                Ok(offset)
+            }
         }
 
         fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
@@ -13024,7 +13227,7 @@ mod tests {
                 st_nlink: 1,
                 st_uid: uid,
                 st_gid: gid,
-                st_size: 1024,
+                st_size: self.stat_size,
                 st_atime_sec: 0,
                 st_atime_nsec: 0,
                 st_mtime_sec: 0,
@@ -13206,7 +13409,8 @@ mod tests {
             Ok(())
         }
 
-        fn host_ftruncate(&mut self, _handle: i64, _length: i64) -> Result<(), Errno> {
+        fn host_ftruncate(&mut self, _handle: i64, length: i64) -> Result<(), Errno> {
+            self.stat_size = u64::try_from(length).map_err(|_| Errno::EINVAL)?;
             Ok(())
         }
 
@@ -16916,6 +17120,7 @@ mod tests {
         caller.signals.raise_with_value(32, 202);
         proc.add_thread(caller);
         proc.add_thread(ThreadInfo::new(12, 0, 0, 0));
+        proc.main_thread_signals.raise(SIGINT);
         proc.signals
             .set_handler(SIGINT, SignalHandler::Handler(0x1234))
             .unwrap();
@@ -16937,12 +17142,34 @@ mod tests {
         assert!(proc.threads.is_empty());
         assert_eq!(proc.signals.blocked, crate::signal::sig_bit(SIGTERM));
         assert_eq!(proc.signals.get_handler(SIGINT), SignalHandler::Default);
-        assert_eq!(proc.signals.consume_one(32), (101, -1));
-        assert_eq!(proc.signals.consume_one(32), (202, -1));
+        assert_eq!(
+            proc.main_thread_signals.pending & crate::signal::sig_bit(SIGINT),
+            0
+        );
+        assert_eq!(proc.signals.pending & crate::signal::sig_bit(32), 0);
+        assert_eq!(proc.main_thread_signals.consume_one(32), Some((101, -1)));
+        assert_eq!(proc.main_thread_signals.consume_one(32), Some((202, -1)));
+        assert_eq!(proc.main_thread_signals.pending, 0);
         assert_eq!(proc.alarm_deadline_ns, 8_000_000_000);
         assert_eq!(proc.alarm_interval_ns, 1_000_000_000);
         assert!(proc.posix_timers.is_empty());
         assert!(proc.has_exec);
+    }
+
+    #[test]
+    fn exec_from_main_preserves_main_directed_pending_queue() {
+        use wasm_posix_shared::signal::SIGTERM;
+
+        let mut proc = Process::new(20);
+        let mut host = MockHostIO::new();
+        proc.main_thread_signals.raise_with_value(32, 77);
+        proc.signals.raise(SIGTERM);
+
+        let pid = proc.pid;
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        assert_eq!(proc.main_thread_signals.consume_one(32), Some((77, -1)));
+        assert_eq!(proc.signals.consume_one(SIGTERM), (0, 0));
     }
 
     #[test]
@@ -19055,12 +19282,19 @@ mod tests {
         assert_eq!(result, Err(Errno::EMFILE));
     }
 
+    fn fsize_signal_pending(proc: &Process) -> bool {
+        proc.signal_pending_for(proc.pid, SIGXFSZ)
+    }
+
+    fn clear_fsize_signal(proc: &mut Process) {
+        proc.main_thread_signals.clear_pending(SIGXFSZ);
+        proc.signals.clear(SIGXFSZ);
+    }
+
     #[test]
-    fn test_rlimit_fsize_enforced() {
+    fn test_rlimit_fsize_write_short_zero_then_efbig() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-
-        // Open a file for writing
         let fd = sys_open(
             &mut proc,
             &mut host,
@@ -19070,23 +19304,288 @@ mod tests {
         )
         .unwrap();
 
-        // Set RLIMIT_FSIZE to 10 bytes
-        sys_setrlimit(&mut proc, 1, 10, 10).unwrap(); // resource 1 = RLIMIT_FSIZE
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 10, 10).unwrap();
 
-        // Writing 5 bytes at offset 0 should succeed (end_pos=5 <= 10)
-        let result = sys_write(&mut proc, &mut host, fd, &[1, 2, 3, 4, 5]);
-        assert!(result.is_ok());
-
-        // Writing 10 more bytes should fail (end_pos=15 > 10) with EFBIG
-        let result = sys_write(&mut proc, &mut host, fd, &[0u8; 10]);
-        assert_eq!(result, Err(Errno::EFBIG));
-
-        // SIGXFSZ should have been raised
-        assert_ne!(proc.signals.deliverable(), 0);
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"abcde"), Ok(5));
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &[0u8; 10]), Ok(5));
+        assert!(!fsize_signal_pending(&proc));
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b""), Ok(0));
+        assert!(!fsize_signal_pending(&proc));
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"x"), Err(Errno::EFBIG));
+        assert!(fsize_signal_pending(&proc));
     }
 
     #[test]
-    fn test_ftruncate_rlimit_fsize() {
+    fn test_rlimit_fsize_pwrite_short_zero_then_efbig() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/fsize_pwrite_test",
+            O_WRONLY | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 10, 10).unwrap();
+
+        assert_eq!(
+            sys_pwrite(&mut proc, &mut host, fd, b"abcdefghij", 5),
+            Ok(5)
+        );
+        assert!(!fsize_signal_pending(&proc));
+        assert_eq!(sys_pwrite(&mut proc, &mut host, fd, b"", 10), Ok(0));
+        assert!(!fsize_signal_pending(&proc));
+
+        assert_eq!(
+            sys_pwrite(&mut proc, &mut host, fd, b"x", 10),
+            Err(Errno::EFBIG)
+        );
+        assert!(fsize_signal_pending(&proc));
+    }
+
+    #[test]
+    fn test_rlimit_fsize_budget_above_wasm32_range_does_not_wrap() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/fsize-large-limit",
+            O_WRONLY | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+        let limit = (1u64 << 32) + 5;
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, limit, limit).unwrap();
+
+        assert_eq!(
+            write_operation_budget(&mut proc, &mut host, fd, Some(0), 10),
+            Ok(10)
+        );
+        assert_eq!(
+            sys_pwrite(&mut proc, &mut host, fd, b"0123456789", 1i64 << 32),
+            Ok(5)
+        );
+        assert!(!fsize_signal_pending(&proc));
+    }
+
+    #[test]
+    fn test_rlimit_fsize_does_not_limit_captured_pipe_or_terminal_stdout() {
+        let mut captured = Process::new(1);
+        let mut terminal = Process::new_with_stdio(2, crate::process::StdioConfig::terminal());
+        let mut host = MockHostIO::new();
+
+        sys_setrlimit(&mut captured, RLIMIT_FSIZE, 1, 1).unwrap();
+        sys_setrlimit(&mut terminal, RLIMIT_FSIZE, 1, 1).unwrap();
+
+        assert_eq!(sys_write(&mut captured, &mut host, 1, b"abc"), Ok(3));
+        assert_eq!(sys_write(&mut terminal, &mut host, 1, b"def"), Ok(3));
+        assert!(!fsize_signal_pending(&captured));
+        assert!(!fsize_signal_pending(&terminal));
+    }
+
+    #[test]
+    fn test_rlimit_fsize_writev_and_pwritev_use_one_operation_budget() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let write_fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/fsize-writev",
+            O_WRONLY | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+        let pwrite_fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/fsize-pwritev",
+            O_WRONLY | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 5, 5).unwrap();
+        let iovecs: &[&[u8]] = &[b"ab", b"cde", b"f"];
+
+        assert_eq!(sys_writev(&mut proc, &mut host, write_fd, iovecs), Ok(5));
+        assert!(!fsize_signal_pending(&proc));
+        assert_eq!(sys_write(&mut proc, &mut host, write_fd, b"x"), Err(Errno::EFBIG));
+        assert!(fsize_signal_pending(&proc));
+
+        clear_fsize_signal(&mut proc);
+        assert_eq!(
+            sys_pwritev(&mut proc, &mut host, pwrite_fd, iovecs, 0),
+            Ok(5)
+        );
+        assert!(!fsize_signal_pending(&proc));
+        assert_eq!(
+            sys_pwrite(&mut proc, &mut host, pwrite_fd, b"x", 5),
+            Err(Errno::EFBIG)
+        );
+        assert!(fsize_signal_pending(&proc));
+    }
+
+    #[test]
+    fn test_rlimit_fsize_append_uses_file_end() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.seek_end = 8;
+        host.stat_size = 8;
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/fsize-append",
+            O_WRONLY | O_CREAT | O_APPEND,
+            0o644,
+        )
+        .unwrap();
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 10, 10).unwrap();
+
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"abcde"), Ok(2));
+        let entry = proc.fd_table.get(fd).unwrap();
+        assert_eq!(proc.ofd_table.get(entry.ofd_ref.0).unwrap().offset, 10);
+        assert_eq!(host.seek_calls.iter().filter(|call| call.2 == SEEK_END).count(), 1);
+        assert!(!fsize_signal_pending(&proc));
+    }
+
+    #[test]
+    fn test_rlimit_fsize_memfd_write_pwrite_and_ftruncate() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"fsize", 0).unwrap();
+
+        assert_eq!(sys_ftruncate(&mut proc, &mut host, fd, 20), Ok(()));
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 10, 10).unwrap();
+        assert_eq!(sys_ftruncate(&mut proc, &mut host, fd, 15), Ok(()));
+        assert_eq!(sys_ftruncate(&mut proc, &mut host, fd, 15), Ok(()));
+        assert!(!fsize_signal_pending(&proc));
+        assert_eq!(sys_ftruncate(&mut proc, &mut host, fd, 0), Ok(()));
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 5, 5).unwrap();
+
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"abcdefgh"), Ok(5));
+        assert_eq!(sys_fstat(&mut proc, &mut host, fd).unwrap().st_size, 5);
+        assert!(!fsize_signal_pending(&proc));
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"x"), Err(Errno::EFBIG));
+
+        clear_fsize_signal(&mut proc);
+        assert_eq!(sys_pwrite(&mut proc, &mut host, fd, b"xyz", 4), Ok(1));
+        assert!(!fsize_signal_pending(&proc));
+        assert_eq!(sys_pwrite(&mut proc, &mut host, fd, b"x", 5), Err(Errno::EFBIG));
+
+        clear_fsize_signal(&mut proc);
+        assert_eq!(sys_ftruncate(&mut proc, &mut host, fd, 6), Err(Errno::EFBIG));
+        assert!(fsize_signal_pending(&proc));
+        assert_eq!(sys_fstat(&mut proc, &mut host, fd).unwrap().st_size, 5);
+    }
+
+    #[test]
+    fn test_rlimit_fsize_copy_operations_do_not_overadvance_source() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let source = sys_memfd_create(&mut proc, b"source", 0).unwrap();
+        let copy_dest = sys_memfd_create(&mut proc, b"copy-dest", 0).unwrap();
+        let send_dest = sys_memfd_create(&mut proc, b"send-dest", 0).unwrap();
+        sys_write(&mut proc, &mut host, source, b"0123456789").unwrap();
+        sys_lseek(&mut proc, &mut host, source, 0, SEEK_SET).unwrap();
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 5, 5).unwrap();
+
+        assert_eq!(
+            sys_copy_file_range(&mut proc, &mut host, source, None, copy_dest, None, 10),
+            Ok(5)
+        );
+        assert_eq!(sys_lseek(&mut proc, &mut host, source, 0, SEEK_CUR), Ok(5));
+        assert!(!fsize_signal_pending(&proc));
+
+        assert_eq!(
+            sys_copy_file_range(&mut proc, &mut host, source, None, copy_dest, None, 1),
+            Err(Errno::EFBIG)
+        );
+        assert_eq!(sys_lseek(&mut proc, &mut host, source, 0, SEEK_CUR), Ok(5));
+
+        clear_fsize_signal(&mut proc);
+        sys_lseek(&mut proc, &mut host, source, 0, SEEK_SET).unwrap();
+        assert_eq!(
+            sys_sendfile(&mut proc, &mut host, send_dest, source, -1, 10),
+            Ok(5)
+        );
+        assert_eq!(sys_lseek(&mut proc, &mut host, source, 0, SEEK_CUR), Ok(5));
+        assert!(!fsize_signal_pending(&proc));
+    }
+
+    #[test]
+    fn test_rlimit_fsize_transfer_preflight_is_side_effect_free() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.stat_size = 8;
+        host.seek_end = 8;
+        let output = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/fsize-transfer-append",
+            O_WRONLY | O_CREAT | O_APPEND,
+            0o644,
+        )
+        .unwrap();
+
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 5, 10).unwrap();
+        assert_eq!(
+            sys_sendfile(&mut proc, &mut host, output, 9999, -1, 1),
+            Err(Errno::EBADF)
+        );
+        assert!(!fsize_signal_pending(&proc));
+        assert!(host.seek_calls.is_empty());
+
+        let input = sys_memfd_create(&mut proc, b"invalid-offset-input", 0).unwrap();
+        assert_eq!(
+            sys_copy_file_range(
+                &mut proc,
+                &mut host,
+                input,
+                Some(-1),
+                output,
+                None,
+                1,
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(sys_lseek(&mut proc, &mut host, input, 0, SEEK_CUR), Ok(0));
+        assert!(!fsize_signal_pending(&proc));
+        assert!(host.seek_calls.is_empty());
+        assert_eq!(
+            sys_splice(
+                &mut proc,
+                &mut host,
+                input,
+                Some(-1),
+                output,
+                None,
+                1,
+                0,
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(sys_lseek(&mut proc, &mut host, input, 0, SEEK_CUR), Ok(0));
+        assert!(!fsize_signal_pending(&proc));
+        assert!(host.seek_calls.is_empty());
+
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 10, 10).unwrap();
+        let empty_input = sys_memfd_create(&mut proc, b"empty-input", 0).unwrap();
+        let output_entry = proc.fd_table.get(output).unwrap();
+        let output_ofd = output_entry.ofd_ref.0;
+        let original_offset = proc.ofd_table.get(output_ofd).unwrap().offset;
+        assert_eq!(
+            sys_sendfile(&mut proc, &mut host, output, empty_input, -1, 4),
+            Ok(0)
+        );
+        assert_eq!(proc.ofd_table.get(output_ofd).unwrap().offset, original_offset);
+        assert!(host.seek_calls.is_empty());
+        assert!(!fsize_signal_pending(&proc));
+    }
+
+    #[test]
+    fn test_ftruncate_and_fallocate_rlimit_fsize() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(
@@ -19098,15 +19597,22 @@ mod tests {
         )
         .unwrap();
 
-        // Set RLIMIT_FSIZE to 100 bytes
-        sys_setrlimit(&mut proc, 1, 100, 100).unwrap();
+        sys_setrlimit(&mut proc, RLIMIT_FSIZE, 100, 100).unwrap();
 
-        // Truncate to 50 should succeed
-        assert!(sys_ftruncate(&mut proc, &mut host, fd, 50).is_ok());
+        assert_eq!(sys_ftruncate(&mut proc, &mut host, fd, 50), Ok(()));
+        assert_eq!(sys_ftruncate(&mut proc, &mut host, fd, 200), Err(Errno::EFBIG));
+        assert!(fsize_signal_pending(&proc));
 
-        // Truncate to 200 should fail with EFBIG
-        let result = sys_ftruncate(&mut proc, &mut host, fd, 200);
-        assert_eq!(result, Err(Errno::EFBIG));
+        clear_fsize_signal(&mut proc);
+        assert_eq!(sys_fallocate(&mut proc, &mut host, fd, 0, 2048), Err(Errno::EFBIG));
+        assert!(fsize_signal_pending(&proc));
+
+        clear_fsize_signal(&mut proc);
+        assert_eq!(
+            sys_fallocate(&mut proc, &mut host, fd, i64::MAX, 1),
+            Err(Errno::EFBIG)
+        );
+        assert!(!fsize_signal_pending(&proc));
     }
 
     #[test]
@@ -24485,6 +24991,39 @@ mod tests {
 
         // Signal should be consumed from pending
         assert!(!proc.signals.is_pending(SIGINT));
+    }
+
+    #[test]
+    fn test_signalfd4_reads_main_directed_signal_without_exposing_it_to_workers() {
+        use wasm_posix_shared::signal::SIGXFSZ;
+        use wasm_posix_shared::WasmPollFd;
+
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mask = crate::signal::sig_bit(SIGXFSZ);
+        proc.signals.blocked = mask;
+        proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
+        let fd = sys_signalfd4(&mut proc, -1, mask, O_NONBLOCK).unwrap();
+        assert!(proc.raise_for_thread(proc.pid, SIGXFSZ));
+        assert!(!proc.signal_pending_for(2, SIGXFSZ));
+
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0),
+            Ok(1)
+        );
+        assert_ne!(pollfd.revents & POLLIN, 0);
+
+        let mut buf = [0u8; 128];
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Ok(128));
+        assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), SIGXFSZ);
+        assert!(!proc.signal_pending_for(proc.pid, SIGXFSZ));
     }
 
     #[test]
