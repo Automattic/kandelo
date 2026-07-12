@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  createCppExceptionTag,
   createLongjmpTag,
   parseDylinkSection,
   loadSharedLibrary,
@@ -72,6 +73,7 @@ function buildDylinkWat(
   tableSize = 0,
   memorySize = 0,
   wat2wasmFlags: string[] = [],
+  tlsExports: string[] = [],
 ): Uint8Array {
   const dir = join(tmpdir(), "wasm-dylink-wat-test");
   mkdirSync(dir, { recursive: true });
@@ -83,11 +85,21 @@ function buildDylinkWat(
   });
   const module = new Uint8Array(readFileSync(wasmPath));
   const dylinkName = new TextEncoder().encode("dylink.0");
-  // Memory-info subsection: size=0, align=0, table size=0, table align=0.
-  const payload = new Uint8Array(1 + dylinkName.length + 6);
+  // Memory-info subsection: size, align=0, table size, table align=0.
+  // Optional export-info entries pin TLS-relative relocation behavior.
+  const exportInfoBody = tlsExports.flatMap((exportName) => {
+    const bytes = [...new TextEncoder().encode(exportName)];
+    if (bytes.length >= 128) throw new Error("test TLS export name is too long");
+    return [bytes.length, ...bytes, 1]; // WASM_DYLINK_FLAG_TLS
+  });
+  const exportInfo = tlsExports.length > 0
+    ? [3, 1 + exportInfoBody.length, tlsExports.length, ...exportInfoBody]
+    : [];
+  const payload = new Uint8Array(1 + dylinkName.length + 6 + exportInfo.length);
   payload[0] = dylinkName.length;
   payload.set(dylinkName, 1);
   payload.set([1, 4, memorySize, 0, tableSize, 0], 1 + dylinkName.length);
+  payload.set(exportInfo, 1 + dylinkName.length + 6);
   const section = new Uint8Array(2 + payload.length);
   section[0] = 0;
   section[1] = payload.length;
@@ -199,6 +211,67 @@ describe.skipIf(typeof WebAssembly.Tag !== "function")("longjmp tag identity", (
 
     expect(() => loadSharedLibrarySync("libinvalid-longjmp.so", wasmBytes, options))
       .toThrow(/__c_longjmp must be an actual WebAssembly\.Tag/);
+  });
+});
+
+describe.skipIf(typeof WebAssembly.Tag !== "function")("C++ exception tag identity", () => {
+  const cases = [
+    { ptrWidth: 4 as const, wasmType: "i32", value: 42 },
+    { ptrWidth: 8 as const, wasmType: "i64", value: 42n },
+  ];
+
+  it.each(cases)(
+    "shares one process-owned $wasmType tag across throwing and catching side modules",
+    ({ ptrWidth, wasmType, value }) => {
+      const throwerBytes = buildDylinkWat(`
+        (module
+          (import "env" "memory" (memory 1 100 shared))
+          (tag $cpp (import "env" "__cpp_exception") (param ${wasmType}))
+          (func (export "throw_cpp") (param $value ${wasmType})
+            local.get $value
+            throw $cpp))
+      `, `cpp-thrower-${wasmType}`, undefined, 0, 0, ["--enable-exceptions"]);
+      const catcherBytes = buildDylinkWat(`
+        (module
+          (import "env" "memory" (memory 1 100 shared))
+          (import "env" "throw_cpp" (func $throw_cpp (param ${wasmType})))
+          (tag $cpp (import "env" "__cpp_exception") (param ${wasmType}))
+          (func (export "catch_cpp") (param $value ${wasmType}) (result ${wasmType})
+            (try (result ${wasmType})
+              (do
+                local.get $value
+                call $throw_cpp
+                unreachable)
+              (catch $cpp))))
+      `, `cpp-catcher-${wasmType}`, undefined, 0, 0, ["--enable-exceptions"]);
+      const options = createSideForkLoadOptions();
+      options.ptrWidth = ptrWidth;
+      options.cppExceptionTag = createCppExceptionTag(ptrWidth)!;
+
+      loadSharedLibrarySync(`libcpp-thrower-${wasmType}.so`, throwerBytes, options);
+      const processTag = options.cppExceptionTag;
+      const catcher = loadSharedLibrarySync(
+        `libcpp-catcher-${wasmType}.so`,
+        catcherBytes,
+        options,
+      );
+
+      expect(options.cppExceptionTag).toBe(processTag);
+      expect((catcher.exports.catch_cpp as Function)(value)).toBe(value);
+    },
+  );
+
+  it("rejects a lookalike process C++ tag before instantiation", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (tag $cpp (import "env" "__cpp_exception") (param i32)))
+    `, "invalid-cpp-tag", undefined, 0, 0, ["--enable-exceptions"]);
+    const options = createSideForkLoadOptions();
+    options.cppExceptionTag = {} as WebAssembly.Tag;
+
+    expect(() => loadSharedLibrarySync("libinvalid-cpp-tag.so", wasmBytes, options))
+      .toThrow(/__cpp_exception must be an actual WebAssembly\.Tag/);
   });
 });
 
@@ -735,6 +808,185 @@ describe("dylink symbol interposition", () => {
 });
 
 describe("dylink replay layout and rollback", () => {
+  it("restores copied live TLS without re-running side-module TLS initialization", () => {
+    const tlsSide = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "__memory_base" (global $memory_base i32))
+        (global $tls_base (export "__tls_base") (mut i32) (i32.const 0))
+        (global (export "__tls_size") i32 (i32.const 4))
+        (global (export "__tls_align") i32 (i32.const 4))
+        (global (export "__wasm_lpad_context") i32 (i32.const 8))
+        (func $init_tls (export "__wasm_init_tls") (param $base i32)
+          local.get $base
+          global.set $tls_base
+          local.get $base
+          i32.const 42
+          i32.store)
+        (func $start
+          global.get $memory_base
+          i32.load
+          i32.eqz
+          if
+            global.get $memory_base
+            i32.const 2
+            i32.store
+            global.get $memory_base
+            i32.const 8
+            i32.add
+            call $init_tls
+          end)
+        (start $start)
+        (func (export "get_tls") (result i32)
+          global.get $tls_base
+          i32.load)
+        (func (export "set_tls") (param $value i32)
+          global.get $tls_base
+          local.get $value
+          i32.store))
+    `, "replay-live-tls", undefined, 0, 16, [], ["__wasm_lpad_context"]);
+    const parent = createSideForkLoadOptions();
+    const loaded = loadSharedLibrarySync("libtls.so", tlsSide, parent);
+    expect(loaded.tlsBase).toBe(1032);
+    expect((loaded.exports.__wasm_lpad_context as WebAssembly.Global).value)
+      .toBe(loaded.tlsBase! + 8);
+    expect((loaded.exports.__tls_size as WebAssembly.Global).value).toBe(4);
+    expect((loaded.exports.__tls_align as WebAssembly.Global).value).toBe(4);
+    expect((loaded.exports.get_tls as Function)()).toBe(42);
+    (loaded.exports.set_tls as Function)(99);
+
+    const child = createSideForkLoadOptions();
+    new Uint8Array(child.memory.buffer).set(new Uint8Array(parent.memory.buffer));
+    const replayed = loadSharedLibrarySync("libtls.so", tlsSide, child, {
+      memoryBase: loaded.memoryBase,
+      tableBase: loaded.tableBase,
+      tlsBase: loaded.tlsBase,
+    });
+
+    expect(replayed.tlsBase).toBe(loaded.tlsBase);
+    expect((replayed.exports.__wasm_lpad_context as WebAssembly.Global).value)
+      .toBe(replayed.tlsBase! + 8);
+    expect((replayed.exports.get_tls as Function)()).toBe(99);
+
+    const ambiguous = createSideForkLoadOptions();
+    new Uint8Array(ambiguous.memory.buffer).set(new Uint8Array(parent.memory.buffer));
+    expect(() => loadSharedLibrarySync("libtls.so", tlsSide, ambiguous, {
+      memoryBase: loaded.memoryBase,
+      tableBase: loaded.tableBase,
+      tlsBase: 0,
+    })).toThrow(/missing a valid side-module TLS base/);
+  });
+
+  it("restores an i64 TLS-base global for the 64-bit pointer contract", () => {
+    const tlsSide = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "__memory_base" (global $memory_base i32))
+        (global $tls_base (export "__tls_base") (mut i64) (i64.const 0))
+        (global (export "__tls_size") i32 (i32.const 4))
+        (global (export "__tls_align") i32 (i32.const 4))
+        (func $init_tls (param $base i32)
+          local.get $base
+          i64.extend_i32_u
+          global.set $tls_base
+          local.get $base
+          i32.const 17
+          i32.store)
+        (func $start
+          global.get $memory_base
+          i32.load
+          i32.eqz
+          if
+            global.get $memory_base
+            i32.const 2
+            i32.store
+            global.get $memory_base
+            i32.const 8
+            i32.add
+            call $init_tls
+          end)
+        (start $start)
+        (func (export "get_tls") (result i32)
+          global.get $tls_base
+          i32.wrap_i64
+          i32.load)
+        (func (export "set_tls") (param $value i32)
+          global.get $tls_base
+          i32.wrap_i64
+          local.get $value
+          i32.store))
+    `, "replay-live-tls-i64", undefined, 0, 16);
+    const parent = createSideForkLoadOptions();
+    parent.ptrWidth = 8;
+    const loaded = loadSharedLibrarySync("libtls64.so", tlsSide, parent);
+    (loaded.exports.set_tls as Function)(71);
+
+    const child = createSideForkLoadOptions();
+    child.ptrWidth = 8;
+    new Uint8Array(child.memory.buffer).set(new Uint8Array(parent.memory.buffer));
+    const replayed = loadSharedLibrarySync("libtls64.so", tlsSide, child, {
+      memoryBase: loaded.memoryBase,
+      tableBase: loaded.tableBase,
+      tlsBase: loaded.tlsBase,
+    });
+
+    expect(replayed.tlsBase).toBe(loaded.tlsBase);
+    expect((replayed.exports.__tls_base as WebAssembly.Global).value)
+      .toBe(BigInt(loaded.tlsBase!));
+    expect((replayed.exports.get_tls as Function)()).toBe(71);
+  });
+
+  it("rejects incomplete, immutable, and out-of-reservation TLS state", () => {
+    const missingBase = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (global (export "__tls_size") i32 (i32.const 4))
+        (global (export "__tls_align") i32 (i32.const 4)))
+    `, "tls-missing-base", undefined, 0, 16);
+    expect(() => loadSharedLibrarySync(
+      "libtls-missing-base.so",
+      missingBase,
+      createSideForkLoadOptions(),
+    )).toThrow(/must export mutable __tls_base/);
+
+    const immutableBase = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (global (export "__tls_base") i32 (i32.const 1032))
+        (global (export "__tls_size") i32 (i32.const 4))
+        (global (export "__tls_align") i32 (i32.const 4)))
+    `, "tls-immutable-base", undefined, 0, 16);
+    expect(() => loadSharedLibrarySync(
+      "libtls-immutable-base.so",
+      immutableBase,
+      createSideForkLoadOptions(),
+    )).toThrow(/must be mutable/);
+
+    const live = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "__memory_base" (global $memory_base i32))
+        (global $tls_base (export "__tls_base") (mut i32) (i32.const 0))
+        (global (export "__tls_size") i32 (i32.const 4))
+        (global (export "__tls_align") i32 (i32.const 4))
+        (func $start
+          global.get $memory_base
+          i32.const 8
+          i32.add
+          global.set $tls_base)
+        (start $start))
+    `, "tls-outside-reservation", undefined, 0, 16);
+    const parent = createSideForkLoadOptions();
+    const loaded = loadSharedLibrarySync("libtls-outside.so", live, parent);
+    const child = createSideForkLoadOptions();
+    new Uint8Array(child.memory.buffer).set(new Uint8Array(parent.memory.buffer));
+    expect(() => loadSharedLibrarySync("libtls-outside.so", live, child, {
+      memoryBase: loaded.memoryBase,
+      tableBase: loaded.tableBase,
+      tlsBase: loaded.memoryBase + 16,
+    })).toThrow(/escapes module reservation/);
+  });
+
   it("pads replay to the exact parent table base and rejects overshoot", () => {
     const wasmBytes = buildDylinkWat(`
       (module

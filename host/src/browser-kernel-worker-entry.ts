@@ -1530,6 +1530,7 @@ async function handleClone(
     programBytes: processInfo.programBytes,
     programModule: threadModule,
     memory,
+    processChannelOffset: processInfo.channelOffset,
     channelOffset: alloc.channelOffset,
     fnPtr,
     argPtr,

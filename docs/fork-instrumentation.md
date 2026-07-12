@@ -125,7 +125,7 @@ Capability enforcement follows the compiled kernel ABI. ABI 16 predates this
 section, so an artifact with no section retains the legacy five-export fallback
 and can still coordinate a main/side-module fork. If an ABI-16 artifact does
 carry the section, its marker is authoritative and malformed, unknown, or
-role-inconsistent claims fail loudly. Starting with ABI 17, the
+role-inconsistent claims fail loudly. Starting with ABI 18, the
 role-appropriate bit is mandatory: generic five-export artifacts and binaries
 produced by the older call-graph pass fail with a rebuild diagnostic. This
 threshold ensures that mandatory enforcement and the incompatible artifact
@@ -134,8 +134,12 @@ of these capability claims changes fork replay assumptions and must follow the
 ABI-versioning policy.
 
 ABI 17 was intentionally skipped. ABI 18 activated the mandatory role marker.
-ABI-16 artifacts without a marker remain historical inputs for the parser's
-explicit compatibility tests; they do not satisfy an ABI-26 launch.
+ABI 16 remains only a historical compatibility boundary. The reconstructed
+line enforces role claims and this ABI 36 epoch adds side-module replay state
+and pthread-fork arbitration. ABI-16 artifacts without a marker remain
+historical inputs for the parser's explicit compatibility tests; they do not
+satisfy an ABI-36 launch. Any future capability-contract change must still
+advance `ABI_VERSION` and regenerate `abi/snapshot.json` atomically.
 
 `ptr` is `i32` on wasm32 user programs and `i64` on wasm64 user programs. The
 tool picks the pointer width from the module's primary memory — a memory64
@@ -227,9 +231,23 @@ function pointers passed through main-module memory or the shared table cannot
 currently be attributed to their originating module; using such a pointer to
 create a side A -> side B -> fork path is unsupported and is not yet guaranteed
 to fail before control-flow corruption. A future module-activation protocol is
-required to close that residual. Fork from a pthread into a dlopened side
-module is also unsupported; pthread workers do not install the side-module
-coordinator.
+required to close that residual.
+
+Pthread workers do not own the process worker's side-module instances, table,
+or exception-tag identities. `dlopen()` from a pthread consequently returns
+NULL with a precise `dlerror()`. Once the process main worker has published a
+dlopen archive entry, `fork()` from a pthread returns `ENOTSUP` without
+creating a child. A host-private atomic lock prevents main-worker dlopen from
+racing the pthread's archive check and is held through unwind, SYS_FORK/memory
+copy, and parent rewind; the child clears its copied lock before replay. Fork
+from a pthread remains supported while that process-wide archive is empty.
+
+For TLS-bearing side modules, each archive entry also preserves the live
+positive `__tls_base`. Replay restores only that mutable global using the
+process pointer type. It does not call `__wasm_init_tls`: the child memory copy
+already contains live TLS, and reinitialization would overwrite C++ landing-pad
+and application `thread_local` state. TLS-relative exports relocate from that
+base, while `__tls_size` and `__tls_align` remain scalar constants.
 
 Every participating module still uses the fixed 16 KiB save-buffer limit
 described below. A dynamically allocated side buffer avoids overlap with the
