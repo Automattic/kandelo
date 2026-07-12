@@ -432,6 +432,10 @@ export class HostFileSystem implements FileSystemBackend {
     this.metadata.chown(fs.statSync(this.safePath(path)), uid, gid);
   }
 
+  lchown(path: string, uid: number, gid: number): void {
+    this.metadata.chown(fs.lstatSync(this.safePath(path, false)), uid, gid);
+  }
+
   access(path: string, mode: number): void {
     this.metadata.access(fs.statSync(this.safePath(path)), mode);
   }

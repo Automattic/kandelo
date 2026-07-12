@@ -136,6 +136,9 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
     chown: (p, u, g) => {
       calls.push(`chown:${p}`);
     },
+    lchown: (p, u, g) => {
+      calls.push(`lchown:${p}`);
+    },
     access: (p, m) => {
       calls.push(`access:${p}`);
     },
@@ -184,6 +187,23 @@ describe("VirtualPlatformIO mount resolution", () => {
     vfs.stat("/tmp/foo");
     expect(tmp.calls).toContain("stat:/foo");
     expect(root.calls).not.toContain("stat:/tmp/foo");
+  });
+
+  it("routes lchown by the final link pathname rather than its target", () => {
+    const root = createMockBackend();
+    const tmp = createMockBackend();
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/tmp", backend: tmp },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    vfs.lchown("/tmp/link-to-root", 123, 456);
+
+    expect(tmp.calls).toContain("lchown:/link-to-root");
+    expect(root.calls).not.toContain("lchown:/tmp/link-to-root");
   });
 
   it("does not route /home/foo to /tmp mount", () => {

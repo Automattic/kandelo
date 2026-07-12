@@ -477,6 +477,7 @@ fn render_ts_module() -> String {
     out.push_str("  argIndex: number;\n");
     out.push_str("  direction: SyscallArgDirection;\n");
     out.push_str("  size: SyscallArgSizeSpec;\n");
+    out.push_str("  nullable?: boolean;\n");
     out.push_str("  copyRetvalAdd?: number;\n");
     out.push_str("}\n\n");
 
@@ -500,6 +501,9 @@ fn ts_syscall_arg_desc(desc: &shared::host_abi::SyscallArgDesc) -> String {
         syscall_arg_direction_name(desc.direction),
         ts_syscall_arg_size(desc.size)
     );
+    if desc.nullable {
+        s.push_str(", nullable: true");
+    }
     if desc.copy_retval_add != 0 {
         s.push_str(&format!(", copyRetvalAdd: {}", desc.copy_retval_add));
     }
@@ -1511,6 +1515,9 @@ fn syscall_arg_desc_json(desc: &shared::host_abi::SyscallArgDesc) -> Value {
         json!(syscall_arg_direction_name(desc.direction)),
     );
     m.insert("size".into(), syscall_arg_size_json(desc.size));
+    if desc.nullable {
+        m.insert("nullable".into(), json!(true));
+    }
     if desc.copy_retval_add != 0 {
         m.insert("copyRetvalAdd".into(), json!(desc.copy_retval_add));
     }

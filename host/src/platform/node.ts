@@ -242,6 +242,10 @@ export class NodePlatformIO implements PlatformIO {
     this.metadata.chown(fs.statSync(this.rewritePath(path)), uid, gid);
   }
 
+  lchown(path: string, uid: number, gid: number): void {
+    this.metadata.chown(fs.lstatSync(this.rewritePath(path)), uid, gid);
+  }
+
   access(path: string, mode: number): void {
     this.metadata.access(fs.statSync(this.rewritePath(path)), mode);
   }

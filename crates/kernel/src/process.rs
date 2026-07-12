@@ -43,6 +43,9 @@ pub trait HostIO {
     fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
     fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno>;
+    fn host_lchown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno>;
     fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
     fn host_readdir(

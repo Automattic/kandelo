@@ -39,7 +39,7 @@ pub mod host_abi;
 ///     and POSIX timer notifications use validated fixed-width signal fields.
 /// 28: host path, clock/timer, exec/spawn, worker, and persistent-VFS behavior
 ///     is aligned across Node and browser runtime boundaries.
-pub const ABI_VERSION: u32 = 32;
+pub const ABI_VERSION: u32 = 33;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1243,6 +1243,7 @@ pub mod abi {
         pub const SYS_SENDFILE: u32 = 294;
         pub const SYS_PREADV: u32 = 295;
         pub const SYS_PWRITEV: u32 = 296;
+        pub const SYS_LCHOWN: u32 = 299;
         pub const SYS_FALLOCATE: u32 = 308;
         pub const SYS_TIMER_CREATE: u32 = 326;
         pub const SYS_TIMER_SETTIME: u32 = 327;
@@ -1426,6 +1427,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Pwritev",
                 number: SYS_PWRITEV,
+            },
+            AbiSyscallNumber {
+                name: "Lchown",
+                number: SYS_LCHOWN,
             },
             AbiSyscallNumber {
                 name: "Fallocate",

@@ -53,6 +53,7 @@ unsafe extern "C" {
     fn host_readlink(path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
     fn host_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
+    fn host_lchown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
     fn host_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32;
     fn host_opendir(path_ptr: *const u8, path_len: u32) -> i64;
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
@@ -448,6 +449,11 @@ impl HostIO for WasmHostIO {
 
     fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
         let result = unsafe { host_chown(path.as_ptr(), path.len() as u32, uid, gid) };
+        i32_to_result(result)
+    }
+
+    fn host_lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+        let result = unsafe { host_lchown(path.as_ptr(), path.len() as u32, uid, gid) };
         i32_to_result(result)
     }
 
@@ -3671,10 +3677,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             )
         }
         299 => {
-            // SYS_LCHOWN: (path, uid, gid) — treat like chown (no symlink distinction)
+            // SYS_LCHOWN: (path, uid, gid)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
-            kernel_chown(p, len, a2 as u32, a3 as u32)
+            kernel_lchown(p, len, a2 as u32, a3 as u32)
         }
         307 => 0, // SYS_FADVISE64: advisory, always succeed
 
@@ -5381,6 +5387,24 @@ pub extern "C" fn kernel_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_chown(proc, &mut host, path, uid, gid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Change symlink ownership without following the final link.
+fn kernel_lchown(
+    path_ptr: *const u8,
+    path_len: u32,
+    uid: u32,
+    gid: u32,
+) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_lchown(proc, &mut host, path, uid, gid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
