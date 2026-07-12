@@ -65,7 +65,10 @@ pub mod host_abi;
 ///     lifecycle use the reconciled process wire contract.
 /// 36: side-module replay-control memory and concurrent pthread-fork
 ///     arbitration share one host/guest continuation contract.
-pub const ABI_VERSION: u32 = 36;
+/// 37: pending host-delegated AF_INET stream connects expose EINPROGRESS then
+///     EALREADY to non-blocking callers while blocking callers wait for the
+///     same host handshake to complete or fail.
+pub const ABI_VERSION: u32 = 37;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -151,6 +151,8 @@ const ENOENT = 2;
 const ENOSYS = 38;
 const ENOTSUP = 95;
 const ETIMEDOUT = 110;
+const EALREADY = 114;
+const EINPROGRESS = 115;
 const EINTR_ERRNO = 4;
 
 function cstringCopySize(
@@ -567,7 +569,8 @@ const ERRNO_NAMES: Record<number, string> = {
   95: "EOPNOTSUPP", 97: "EAFNOSUPPORT", 98: "EADDRINUSE",
   99: "EADDRNOTAVAIL", 100: "ENETDOWN", 103: "ECONNABORTED",
   104: "ECONNRESET", 106: "EISCONN", 107: "ENOTCONN",
-  110: "ETIMEDOUT", 111: "ECONNREFUSED", 115: "EINPROGRESS",
+  110: "ETIMEDOUT", 111: "ECONNREFUSED", 114: "EALREADY",
+  115: "EINPROGRESS",
 };
 
 /** Info about a registered thread channel. */
@@ -4184,6 +4187,15 @@ export class CentralizedKernelWorker {
       if (routedMqNotification && this.finishSignalTermination(channel)) return;
 
       // --- Blocking syscall handling ---
+      // Host-delegated AF_INET connect has its own public pending errnos. Keep
+      // EINPROGRESS/EALREADY visible to non-blocking callers, while blocking
+      // callers remain parked in the same host-owned retry loop as EAGAIN.
+      // The sockaddr-family guard deliberately excludes AF_UNIX from this
+      // transport-specific retry rule.
+      if (this.handlePendingInetConnect(channel, syscallNr, origArgs, retVal, errVal)) {
+        return;
+      }
+
       // 1. EAGAIN: kernel returned EAGAIN for a blocking syscall.
       //    Schedule async retry — the process stays blocked on Atomics.wait.
       if (retVal === -1 && errVal === EAGAIN) {
@@ -6030,6 +6042,62 @@ export class CentralizedKernelWorker {
       // Schedule pump to detect pipe closure (PHP closing the socket)
       conn.schedulePump();
     }
+  }
+
+  /**
+   * Route a host-delegated AF_INET connect that has not completed yet.
+   *
+   * The Rust kernel translates HostIO's internal EAGAIN sentinel into the
+   * connect(2) API's EINPROGRESS (first attempt) or EALREADY (repeat attempt).
+   * A non-blocking guest must observe that exact errno. A blocking guest must
+   * remain asleep while the host periodically re-enters the kernel to query
+   * the same connection; that retry never starts a second host connection.
+   */
+  private handlePendingInetConnect(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    retVal: number,
+    errVal: number,
+  ): boolean {
+    if (
+      syscallNr !== SYS_CONNECT ||
+      retVal !== -1 ||
+      (errVal !== EINPROGRESS && errVal !== EALREADY)
+    ) {
+      return false;
+    }
+
+    const addrPtr = origArgs[1];
+    const addrLen = origArgs[2];
+    if (
+      !Number.isSafeInteger(addrPtr) ||
+      addrPtr <= 0 ||
+      addrLen < 2 ||
+      addrPtr + 2 > channel.memory.buffer.byteLength
+    ) {
+      return false;
+    }
+    const AF_INET = 2;
+    const family = new DataView(channel.memory.buffer).getUint16(addrPtr, true);
+    if (family !== AF_INET) return false;
+
+    const isFdNonblock = this.kernelInstance!.exports.kernel_is_fd_nonblock as
+      ((pid: number, fd: number) => number) | undefined;
+    const nonblock = isFdNonblock?.(channel.pid, origArgs[0]) === 1;
+    if (nonblock) {
+      this.completeChannel(
+        channel,
+        syscallNr,
+        origArgs,
+        SYSCALL_ARGS[syscallNr],
+        -1,
+        errVal,
+      );
+    } else {
+      this.handleBlockingRetry(channel, syscallNr, origArgs);
+    }
+    return true;
   }
 
   private handleBlockingRetry(
