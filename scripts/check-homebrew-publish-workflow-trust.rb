@@ -92,6 +92,11 @@ def check_publisher(workflow)
   check(events.keys == ["workflow_call"], "publisher must only expose workflow_call")
   jobs = workflow_jobs(workflow)
   check(jobs.keys.sort == %w[build-and-publish plan], "publisher has an unexpected job set")
+  check(jobs.fetch("plan").keys.sort == %w[outputs runs-on steps],
+        "publisher plan execution contract changed")
+  check(jobs.fetch("build-and-publish").keys.sort ==
+        %w[if needs runs-on steps strategy timeout-minutes],
+        "publisher build execution contract changed")
   check(!workflow.key?("permissions"), "reusable publisher requests workflow permissions")
   check(jobs.values.none? { |job| job.is_a?(Hash) && job.key?("permissions") },
         "reusable publisher requests job permissions")
@@ -109,7 +114,7 @@ def check_publisher(workflow)
   validation = plan_steps.fetch(validation_index)
   validation_env = validation["env"]
   check(validation_env.is_a?(Hash), "publisher trust validation lacks an env mapping")
-  {
+  expected_validation_env = {
     "DRY_RUN" => "${{ inputs.dry-run }}",
     "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
     "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
@@ -117,9 +122,12 @@ def check_publisher(workflow)
     "TAP_REF" => "${{ inputs.tap-ref }}",
     "BOTTLE_ROOT_URL" => "${{ inputs.bottle-root-url }}",
     "SIDECAR_COMMAND" => "${{ inputs.sidecar-command }}",
-  }.each do |key, value|
-    check(validation_env[key] == value, "publisher trust validation has an unexpected #{key}")
-  end
+  }
+  check(validation.keys.sort == %w[env name run shell] &&
+        validation["name"] == "Validate caller trust boundary" &&
+        validation["shell"] == "bash" &&
+        validation_env == expected_validation_env,
+        "publisher trust validation step mapping changed")
   validation_run = validation["run"].to_s
   check(Digest::SHA256.hexdigest(validation_run) ==
         "c946d88dc5265d23d67641d11598960e241f7677fe2b4d035b14d3c65fde4c06",
@@ -228,6 +236,9 @@ def check_maintenance(workflow)
   check(values_for_key(workflow, "uses").sort == expected_uses,
         "maintenance action set or pin changed")
   rebuild = jobs.fetch("rebuild-or-repair")
+  check(rebuild.keys.sort == %w[if permissions uses with] &&
+        rebuild["if"] == "${{ inputs.mode == 'rebuild' || inputs.mode == 'repair-only' }}",
+        "maintenance rebuild execution contract changed")
   expected_rebuild_permissions = { "contents" => "write", "packages" => "write", "actions" => "read" }
   check(exact_permissions?(rebuild["permissions"], expected_rebuild_permissions),
         "maintenance rebuild permissions are not exact")
@@ -241,6 +252,9 @@ def check_maintenance(workflow)
   check(rebuild_with["dry-run"] == false, "maintenance rebuild exposes a write-scoped dry run")
 
   rollback = jobs.fetch("rollback")
+  check(rollback.keys.sort == %w[if permissions runs-on steps timeout-minutes] &&
+        rollback["if"] == "${{ inputs.mode == 'rollback' }}",
+        "maintenance rollback execution contract changed")
   expected_rollback_permissions = { "contents" => "write", "packages" => "read", "actions" => "read" }
   check(exact_permissions?(rollback["permissions"], expected_rollback_permissions),
         "maintenance rollback permissions are not exact")
@@ -324,6 +338,16 @@ def self_test(publisher, maintenance)
     mutated = deep_copy(publisher)
     step = mutated.dig("jobs", "plan", "steps").first
     step["run"] = "exit 0\n#{step['run']}"
+    check_publisher(mutated)
+  end
+  expect_rejection("continued trust-validation failure") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "plan", "steps").first["continue-on-error"] = true
+    check_publisher(mutated)
+  end
+  expect_rejection("an overridden trust-validation shell") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "plan", "steps").first["shell"] = "bash -c 'exit 0' {0}"
     check_publisher(mutated)
   end
   expect_rejection("a build detached from the validated plan") do
