@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -18,13 +18,31 @@ const phpBinaryPath =
   join(__dirname, "../php-src/sapi/cli/php");
 const intlSoPath = tryResolveBinary("programs/php/intl.so");
 
-// icu.dat lives in the icu package's resolver cache dir. Pick the newest
-// non-temp build for the current arch.
+// icu.dat remains owned by the ICU library package, not copied into PHP's
+// program outputs. CI/manual callers can name the exact resolved file; the
+// cache fallback is restricted to this checkout's ICU version and revision so
+// an unrelated newer ICU build cannot silently satisfy the test.
 function findIcuDat(): string | undefined {
+  const explicit = process.env.PHP_INTL_ICU_DATA;
+  if (explicit !== undefined) {
+    if (!existsSync(explicit) || !statSync(explicit).isFile()) {
+      throw new Error(`PHP_INTL_ICU_DATA is not a regular file: ${explicit}`);
+    }
+    return explicit;
+  }
+
+  const icuDir = join(__dirname, "../../icu");
+  const version = readFileSync(join(icuDir, "package.toml"), "utf8")
+    .match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+  const revision = readFileSync(join(icuDir, "build.toml"), "utf8")
+    .match(/^revision\s*=\s*(\d+)/m)?.[1];
+  if (!version || !revision) return undefined;
+
   const libsDir = join(homedir(), ".cache/kandelo/libs");
   if (!existsSync(libsDir)) return undefined;
+  const expectedPrefix = `icu-${version}-rev${revision}-wasm32-`;
   const candidates = readdirSync(libsDir)
-    .filter((n) => n.startsWith("icu-") && n.includes("-wasm32-") && !n.includes(".tmp-"))
+    .filter((n) => n.startsWith(expectedPrefix) && !n.includes(".tmp-"))
     .map((n) => join(libsDir, n, "share", "icu.dat"))
     .filter((p) => existsSync(p));
   if (candidates.length === 0) return undefined;
