@@ -11,8 +11,8 @@
  * A missing/unreadable icu.dat is non-fatal at load (intl.so may be present
  * without any code using intl) but stays loud: we warn to stderr and let ICU
  * fail with U_MISSING_RESOURCE_ERROR when a service actually needs data, rather
- * than silently succeeding. Path defaults to /usr/lib/php/icu.dat, overridable
- * via KANDELO_ICU_DAT_PATH for VFS images that stage it elsewhere.
+ * than silently succeeding. The PHP package runtime-file contract installs the
+ * exact matching bytes at /usr/lib/php/icu.dat on every host.
  */
 
 #include <stdio.h>
@@ -26,22 +26,19 @@
 #include <unicode/uclean.h>
 #include <unicode/utypes.h>
 
-#define KANDELO_ICU_DAT_DEFAULT "/usr/lib/php/icu.dat"
+#define KANDELO_ICU_DAT_PATH "/usr/lib/php/icu.dat"
 
 static void kandelo_intl_load_icu_data(void) __attribute__((constructor));
 
 static void kandelo_intl_load_icu_data(void) {
-    const char *path = getenv("KANDELO_ICU_DAT_PATH");
-    if (path == NULL || path[0] == '\0') {
-        path = KANDELO_ICU_DAT_DEFAULT;
-    }
+    const char *path = KANDELO_ICU_DAT_PATH;
 
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         fprintf(stderr,
                 "[intl] ICU data not loaded: cannot open %s. "
                 "intl functions will fail with U_MISSING_RESOURCE_ERROR. "
-                "Set KANDELO_ICU_DAT_PATH or stage icu.dat there.\n",
+                "Rebuild/materialize the complete PHP package runtime closure.\n",
                 path);
         return;
     }
