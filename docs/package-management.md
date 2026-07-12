@@ -176,6 +176,7 @@ script_path = "packages/registry/zlib/build-zlib.sh"
 libs = ["lib/libz.a"]                            # must exist post-build
 headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
+files = ["share/runtime-data.bin"]                   # other runtime data
 ```
 
 `package.toml` **must NOT** carry `revision`, `[binary]`,
@@ -353,7 +354,7 @@ that doesn't respect them cannot be cached safely.
 
 | Variable | Meaning |
 |---|---|
-| `WASM_POSIX_DEP_OUT_DIR` | Temp dir the script must install into. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` relative paths. |
+| `WASM_POSIX_DEP_OUT_DIR` | Temp dir the script must install into. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` / `outputs.files` relative paths. |
 | `WASM_POSIX_DEP_NAME` | `name` from package.toml. |
 | `WASM_POSIX_DEP_VERSION` | `version` from package.toml. |
 | `WASM_POSIX_DEP_REVISION` | Effective package revision after `build.toml` is overlaid. |
@@ -371,7 +372,7 @@ from source; it does not restrict normal SDK users compiling against a
 published sysroot/libc++ artifact.
 
 After the script exits 0, the resolver verifies every path in
-`outputs.{libs,headers,pkgconfig}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
+`outputs.{libs,headers,pkgconfig,files}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
 A missing output fails the build (and the temp dir is cleaned up,
 so a retry starts clean).
 

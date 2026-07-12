@@ -44,21 +44,40 @@ fi
 ICU_VERSION="${WASM_POSIX_DEP_VERSION:-${ICU_VERSION:-74.2}}"
 ICU_VER_UNDERSCORE="${ICU_VERSION//./_}"          # 74.2 -> 74_2
 ICU_MAJOR="${ICU_VERSION%%.*}"                     # 74.2 -> 74
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/icu-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/unicode-org/icu/releases/download/release-${ICU_MAJOR}-${ICU_VERSION#*.}/icu4c-${ICU_VER_UNDERSCORE}-src.tgz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-68db082212a96d6f53e35d60f47d38b962e9f9d207a74cfac78029ae8ff5e08c}"
 
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-SRC_ROOT="$SCRIPT_DIR/icu-src"          # contains icu/ (with source/)
+if [ "$TARGET_ARCH" != "wasm32" ]; then
+    echo "ERROR: ICU currently supports only wasm32, got $TARGET_ARCH" >&2
+    exit 1
+fi
+
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-icu.XXXXXX")"
+cleanup() {
+    status=$?
+    trap - EXIT
+    if [ "${WASM_POSIX_KEEP_BUILD_DIR:-0}" = "1" ]; then
+        echo "==> Preserving ICU build directory: $WORK_DIR" >&2
+    else
+        rm -rf "$WORK_DIR"
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+
+SRC_ROOT="$WORK_DIR/source"             # contains icu/ (with source/)
 ICU_SRC="$SRC_ROOT/icu/source"
-HOST_BUILD="$SCRIPT_DIR/host-build"     # stage-1 native build (out-of-tree)
+HOST_BUILD="$WORK_DIR/host-build"       # stage-1 native build (out-of-tree)
 
 # --- Resolve libcxx (ICU is C++), symlink into sysroot (mariadb pattern) ---
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 resolve_dep() {
-    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$1")
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps --arch "$TARGET_ARCH" resolve "$1")
 }
 LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
 if [ -z "$LIBCXX_PREFIX" ]; then
@@ -79,18 +98,29 @@ ln -sfn "$LIBCXX_PREFIX/include/c++/v1"  "$SYSROOT/include/c++/v1"
 # --- Fetch + verify source ---
 if [ ! -d "$ICU_SRC" ]; then
     echo "==> Downloading ICU $ICU_VERSION..."
-    TARBALL="/tmp/icu4c-${ICU_VER_UNDERSCORE}-src.tgz"
+    TARBALL="$WORK_DIR/icu4c-${ICU_VER_UNDERSCORE}-src.tgz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    fi
+    echo "==> Verifying source sha256..."
+    echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
     mkdir -p "$SRC_ROOT"
     tar xzf "$TARBALL" -C "$SRC_ROOT"    # extracts icu/
     rm "$TARBALL"
 fi
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+
+run_logged() {
+    local label="$1"
+    shift
+    local log="$WORK_DIR/$label.log"
+    if "$@" >"$log" 2>&1; then
+        tail -20 "$log"
+        return 0
+    fi
+    echo "ERROR: $label failed; final log follows:" >&2
+    tail -200 "$log" >&2
+    return 1
+}
 
 # ============================================================
 # Stage 1 — HOST build (native tools + data)
@@ -118,7 +148,7 @@ if [ ! -x "$HOST_BUILD/bin/icupkg" ] && [ ! -x "$HOST_BUILD/bin/genccode" ]; the
         "$ICU_SRC/runConfigureICU" MacOSX \
             --enable-static --disable-shared \
             --disable-samples --disable-tests --disable-extras
-      make -j"$NPROC"
+      run_logged host-make make -j"$NPROC"
     )
 else
     echo "==> Stage 1: reusing existing host build at $HOST_BUILD"
@@ -162,11 +192,16 @@ wasm32posix-configure \
     --prefix="$INSTALL_DIR"
 
 echo "==> Stage 2: building wasm32 libraries..."
-make -j"$NPROC"
+# ICU bakes ICUDATA_DIR into common/putil.ao when data packaging is `common`.
+# The resolver install prefix is a random `.tmp-<pid>` directory, so leaving
+# the generated default in place makes libicuuc.a differ on every clean build.
+# The PHP extension stages icu.dat at this stable guest directory and calls
+# udata_setCommonData() explicitly; use the same path for the fallback string.
+run_logged wasm-make make -j"$NPROC" ICUDATA_DIR=/usr/lib/php
 
 echo "==> Installing to $INSTALL_DIR..."
 rm -rf "$INSTALL_DIR"
-make install
+run_logged wasm-install make install
 
 # --- Stage the common data as icu.dat (see header) ---
 DAT_SRC="$(find "$ICU_SRC/data" "$HOST_BUILD/data" -name "icudt${ICU_MAJOR}l.dat" 2>/dev/null | head -1 || true)"

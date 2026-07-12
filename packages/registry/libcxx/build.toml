@@ -1,6 +1,6 @@
 script_path = "packages/registry/libcxx/build-libcxx.sh"
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
 # Revision 4: libcxx + libcxxabi + libunwind rebuilt with
 # `-mllvm -wasm-use-legacy-eh=false` explicitly set.
 # Revision 5: libcxx builds only from flake.nix's exact Nix LLVM

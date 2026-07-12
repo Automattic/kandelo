@@ -11,8 +11,10 @@ arches = ["wasm32"]
 # ICU4C for wasm32, built as static libraries:
 #   lib/libicuuc.a      (common)
 #   lib/libicui18n.a    (internationalization)
+#   lib/libicuio.a      (ICU stream I/O used by PHP's configure contract)
 #   lib/libicudata.a    (stubdata — real data lives in the .dat, see below)
 #   include/unicode/*.h
+#   lib/pkgconfig/icu-{uc,i18n,io}.pc
 #   share/icu.dat       (common data archive; renamed from icudt74l.dat per
 #                        the intl side-module design — loaded at runtime via
 #                        udata_setCommonData, NOT ICU's default name search)
@@ -34,12 +36,51 @@ url = "https://github.com/unicode-org/icu/blob/main/icu4c/LICENSE"
 [build]
 script_path = "packages/registry/icu/build-icu.sh"
 
+# Stage 1 compiles native ICU data tools; Stage 2 invokes GNU make around the
+# SDK's wasm wrappers. Source fetching and direct (non-resolver) dependency
+# fallback also need the declared network/Rust tools. Keep these probes aligned
+# with the repository dev shell instead of accepting ambient host state.
+[[host_tools]]
+name = "clang"
+version_constraint = ">=21.0"
+probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "clang++"
+version_constraint = ">=21.0"
+probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "rustc"
+version_constraint = ">=1.85"
+probe = { args = ["--version"], version_regex = "rustc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.85"
+probe = { args = ["--version"], version_regex = "cargo (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
 [outputs]
 libs = ["lib/libicuuc.a", "lib/libicui18n.a", "lib/libicuio.a", "lib/libicudata.a"]
 headers = ["include/unicode"]
-# NOTE: the build also installs share/icu.dat (the ICU common data archive,
-# staged from icudt<ver>l.dat). It is not declarable as a library output here
-# (Outputs only takes libs/headers/pkgconfig); consumers such as PHP's intl
-# side module read it directly from the resolved dep dir
-# ($WASM_POSIX_DEP_ICU_DIR/share/icu.dat) and load it at runtime via
-# udata_setCommonData(). See build-icu.sh.
+pkgconfig = ["lib/pkgconfig/icu-uc.pc", "lib/pkgconfig/icu-i18n.pc", "lib/pkgconfig/icu-io.pc"]
+# ICU common data is a first-class declared runtime file, staged from
+# icudt<ver>l.dat. Consumers read it from the resolved dependency directory at
+# $WASM_POSIX_DEP_ICU_DIR/share/icu.dat and load it with udata_setCommonData().
+files = ["share/icu.dat"]
