@@ -160,15 +160,36 @@ def check_publisher(workflow)
   check(values_for_key(workflow, "uses").sort == expected_uses,
         "publisher action set or pin changed")
 
-  magic_steps = workflow_steps(workflow).select do |step|
+  publisher_steps = workflow_steps(workflow)
+  homebrew_steps = publisher_steps.select do |step|
+    step["uses"] == "Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c"
+  end
+  expected_homebrew_step = {
+    "name" => "Install Homebrew",
+    "uses" => "Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c",
+  }
+  check(homebrew_steps == [expected_homebrew_step],
+        "Homebrew setup action mapping changed")
+
+  nix_steps = publisher_steps.select do |step|
+    step["uses"] == "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
+  end
+  expected_nix_step = {
+    "name" => "Install Nix",
+    "uses" => "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
+    "with" => { "github-token" => "" },
+  }
+  check(nix_steps == [expected_nix_step], "Nix installer action mapping changed")
+
+  magic_steps = publisher_steps.select do |step|
     step["uses"] == "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d"
   end
-  check(magic_steps.length == 1, "publisher lacks exactly one reviewed Magic Nix step")
-  magic_step = magic_steps.first
-  check(magic_step.dig("with", "use-gha-cache") == false,
-        "publisher enables Magic Nix GitHub Actions caching")
-  check(magic_step.dig("with", "use-flakehub") == false,
-        "publisher enables Magic Nix FlakeHub caching")
+  expected_magic_step = {
+    "name" => "Cache Nix store + flake eval",
+    "uses" => "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d",
+    "with" => { "use-gha-cache" => false, "use-flakehub" => false },
+  }
+  check(magic_steps == [expected_magic_step], "Magic Nix action mapping changed")
 
   expected_outputs = {
     "matrix" => "${{ steps.matrix.outputs.matrix }}",
@@ -268,12 +289,43 @@ def check_maintenance(workflow)
   check(exact_permissions?(rollback["permissions"], expected_rollback_permissions),
         "maintenance rollback permissions are not exact")
   rollback_steps = job_steps(rollback, "maintenance rollback")
-  checkout_refs = rollback_steps.filter_map do |step|
+  checkout_steps = rollback_steps.select do |step|
     next unless step["uses"].to_s.downcase.start_with?("actions/checkout@")
-    [step.dig("with", "repository"), step.dig("with", "ref")]
+    step
   end
-  check(checkout_refs == [["Automattic/kandelo-homebrew", "main"], ["Automattic/kandelo", "main"]],
-        "maintenance rollback does not check out first-party main refs")
+  expected_checkout_steps = [
+    {
+      "name" => "Checkout tap",
+      "uses" => "actions/checkout@v6.0.2",
+      "with" => {
+        "repository" => "Automattic/kandelo-homebrew",
+        "ref" => "main",
+        "path" => "tap",
+      },
+    },
+    {
+      "name" => "Checkout Kandelo workflow source",
+      "uses" => "actions/checkout@v6.0.2",
+      "with" => {
+        "repository" => "Automattic/kandelo",
+        "ref" => "main",
+        "path" => "kandelo",
+        "submodules" => false,
+      },
+    },
+  ]
+  check(checkout_steps == expected_checkout_steps,
+        "maintenance rollback checkout mapping changed")
+  maintenance_nix_steps = rollback_steps.select do |step|
+    step["uses"] == "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
+  end
+  expected_maintenance_nix_step = {
+    "name" => "Install Nix",
+    "uses" => "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
+    "with" => { "github-token" => "" },
+  }
+  check(maintenance_nix_steps == [expected_maintenance_nix_step],
+        "maintenance Nix installer action mapping changed")
 
   record_step = rollback_steps.find do |step|
     step["name"] == "Record rollback without replacing last-green metadata"
@@ -415,6 +467,22 @@ def self_test(publisher, maintenance)
     step.fetch("with")["use-gha-cache"] = true
     check_publisher(mutated)
   end
+  expect_rejection("a Magic Nix source override") do
+    mutated = deep_copy(publisher)
+    step = mutated.dig("jobs", "build-and-publish", "steps").find do |candidate|
+      candidate["uses"].to_s.start_with?("DeterminateSystems/magic-nix-cache-action@")
+    end
+    step.fetch("with")["source-url"] = "https://attacker.invalid/magic-nix-cache"
+    check_publisher(mutated)
+  end
+  expect_rejection("a Nix installer source override") do
+    mutated = deep_copy(publisher)
+    step = mutated.dig("jobs", "build-and-publish", "steps").find do |candidate|
+      candidate["uses"].to_s.start_with?("DeterminateSystems/nix-installer-action@")
+    end
+    step.fetch("with")["source-url"] = "https://attacker.invalid/nix-installer"
+    check_publisher(mutated)
+  end
   expect_rejection("an Actions cache restore") do
     mutated = deep_copy(publisher)
     mutated.dig("jobs", "build-and-publish", "steps") << {
@@ -454,6 +522,14 @@ def self_test(publisher, maintenance)
   expect_rejection("a self-hosted rollback") do
     mutated = deep_copy(maintenance)
     mutated.dig("jobs", "rollback")["runs-on"] = "self-hosted"
+    check_maintenance(mutated)
+  end
+  expect_rejection("a maintenance Nix installer source override") do
+    mutated = deep_copy(maintenance)
+    step = mutated.dig("jobs", "rollback", "steps").find do |candidate|
+      candidate["uses"].to_s.start_with?("DeterminateSystems/nix-installer-action@")
+    end
+    step.fetch("with")["source-url"] = "https://attacker.invalid/nix-installer"
     check_maintenance(mutated)
   end
   expect_rejection("removed rollback identifier validation") do
