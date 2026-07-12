@@ -309,7 +309,7 @@ pub fn compute_sha(
             // Fold in declared outputs so changing what a build is
             // expected to produce invalidates the cache. Without this,
             // renaming a program's `wasm = "..."` (or any library
-            // libs/headers/pkgconfig path) leaves cache_key_sha
+            // libs/headers/pkgconfig/files path) leaves cache_key_sha
             // unchanged — the resolver then serves a canonical
             // directory that doesn't match the new declaration and
             // archive-stage packs broken archives. Bug discovered in
@@ -340,6 +340,18 @@ pub fn compute_sha(
                 h.update(b"|");
             }
             h.update(b"\n");
+            // Preserve every existing package's cache key: the additive files
+            // field participates only when authored. A universally empty
+            // section would invalidate the entire package registry merely for
+            // learning a new output kind.
+            if !target.outputs.files.is_empty() {
+                h.update(b"outputs.files:\n");
+                for s in &target.outputs.files {
+                    h.update(s.as_bytes());
+                    h.update(b"|");
+                }
+                h.update(b"\n");
+            }
             h.update(b"program_outputs:\n");
             for out in &target.program_outputs {
                 h.update(out.name.as_bytes());
@@ -2059,7 +2071,7 @@ fn build_into_cache(
     }
 
     // Kind-aware validation. Library and program manifests carry a
-    // declared outputs list (libs/headers/pkgconfig or program wasms)
+    // declared outputs list (libs/headers/pkgconfig/files or program wasms)
     // that `validate_outputs` checks one-by-one. Source manifests have
     // no declared outputs — design 11 calls for emptiness as the only
     // signal — so we just verify the script populated OUT_DIR with at
@@ -2395,6 +2407,9 @@ fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String>
             }
             for rel in &target.outputs.pkgconfig {
                 check(rel, "pkgconfig")?;
+            }
+            for rel in &target.outputs.files {
+                check(rel, "files")?;
             }
         }
         ManifestKind::Program => {
@@ -2758,6 +2773,9 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
     println!("outputs.headers  = {:?}", m.outputs.headers);
     if !m.outputs.pkgconfig.is_empty() {
         println!("outputs.pkgconfig= {:?}", m.outputs.pkgconfig);
+    }
+    if !m.outputs.files.is_empty() {
+        println!("outputs.files    = {:?}", m.outputs.files);
     }
     Ok(())
 }
@@ -4254,6 +4272,33 @@ fork_instrumentation = "disabled"
         );
     }
 
+    #[test]
+    fn cache_key_sha_changes_when_library_runtime_file_added() {
+        let root = tempdir("sha-lib-runtime-file-added");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "libZ");
+
+        let toml_path = root.join("libZ/package.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace(
+                "libs = [\"lib/liblibZ.a\"]",
+                "libs = [\"lib/liblibZ.a\"]\nfiles = [\"share/libZ.dat\"]",
+            ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "adding a library runtime file output must invalidate the cache key"
+        );
+    }
+
     // --- ensure_built / build_into_cache tests ---
 
     /// Create a package.toml + build-<name>.sh pair. The build script uses
@@ -4483,6 +4528,59 @@ libs = ["lib/libC.a"]
                 );
             }
         }
+    }
+
+    #[test]
+    fn ensure_built_fails_when_declared_runtime_file_missing() {
+        let root = tempdir("built-missing-runtime-file");
+        let cache = tempdir("built-missing-runtime-file-cache");
+        write_lib(
+            &root,
+            "libRuntimeMissing",
+            "1.0.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libRuntimeMissing.a""#,
+            r#"[outputs]
+libs = ["lib/libRuntimeMissing.a"]
+files = ["share/runtime.dat"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRuntimeMissing").unwrap();
+
+        let err =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap_err();
+        assert!(err.contains("declared files output"), "got: {err}");
+        assert!(err.contains("share/runtime.dat"), "got: {err}");
+    }
+
+    #[test]
+    fn ensure_built_accepts_declared_runtime_file() {
+        let root = tempdir("built-runtime-file");
+        let cache = tempdir("built-runtime-file-cache");
+        write_lib(
+            &root,
+            "libRuntime",
+            "1.0.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib" "$WASM_POSIX_DEP_OUT_DIR/share"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libRuntime.a"
+printf runtime > "$WASM_POSIX_DEP_OUT_DIR/share/runtime.dat""#,
+            r#"[outputs]
+libs = ["lib/libRuntime.a"]
+files = ["share/runtime.dat"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRuntime").unwrap();
+
+        let path =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.join("share/runtime.dat")).unwrap(),
+            "runtime"
+        );
     }
 
     #[test]

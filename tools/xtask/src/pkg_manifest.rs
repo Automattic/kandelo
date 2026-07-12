@@ -707,6 +707,10 @@ pub struct Outputs {
     pub headers: Vec<String>,
     #[serde(default)]
     pub pkgconfig: Vec<String>,
+    /// Runtime data or other package files that are neither link libraries,
+    /// headers, nor pkg-config metadata.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 /// `name@version` reference, parsed from `depends_on` strings.
@@ -1331,7 +1335,7 @@ impl DepsManifest {
         }
 
         // Dispatch on `kind` to decide whether `outputs` is the
-        // library shape (`[outputs]` table with libs/headers/pkgconfig)
+        // library shape (`[outputs]` table with libs/headers/pkgconfig/files)
         // or the program shape (`[[outputs]]` array-of-tables with
         // name/wasm). A mismatch between the two is rejected at parse
         // time: each kind enforces its own grammar.
@@ -1587,6 +1591,7 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
         assert_eq!(m.revision, 1);
         assert!(m.depends_on.is_empty());
         assert_eq!(m.outputs.libs, vec!["lib/libz.a"]);
+        assert!(m.outputs.files.is_empty());
         assert_eq!(m.spec(), "zlib@1.3.1");
         // Fallback (no [build].script_path) resolves against self.dir,
         // so the repo_root argument is irrelevant.
@@ -1594,6 +1599,16 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
             m.build_script_path(Path::new("/repo")),
             PathBuf::from("/x/build-zlib.sh")
         );
+    }
+
+    #[test]
+    fn parses_library_runtime_file_outputs() {
+        let text = EXAMPLE.replace(
+            "headers = [\"include/zlib.h\"]",
+            "headers = [\"include/zlib.h\"]\nfiles = [\"share/zlib/runtime.dat\"]",
+        );
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.outputs.files, vec!["share/zlib/runtime.dat"]);
     }
 
     #[test]
@@ -2113,6 +2128,7 @@ wasm = "vim.wasm"
         assert!(m.outputs.libs.is_empty());
         assert!(m.outputs.headers.is_empty());
         assert!(m.outputs.pkgconfig.is_empty());
+        assert!(m.outputs.files.is_empty());
     }
 
     #[test]
