@@ -87,6 +87,12 @@ assert_matches binary_materialization_changed_files \
   "scripts/fetch-binaries.sh" \
   "scripts/fetch-binaries.sh"
 assert_matches binary_materialization_changed_files \
+  "scripts/wasm-artifact-guards.sh" \
+  "scripts/wasm-artifact-guards.sh"
+assert_matches binary_materialization_changed_files \
+  "scripts/test-wasm-artifact-guards.sh" \
+  "scripts/test-wasm-artifact-guards.sh"
+assert_matches binary_materialization_changed_files \
   "tests/package-system/fetch-binaries-allow-stale.test.ts" \
   "tests/package-system/fetch-binaries-allow-stale.test.ts"
 
