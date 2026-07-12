@@ -268,8 +268,29 @@ ordered state machines and two save buffers: side then main during unwind, main
 then side during rewind. Versioned fork-instrument capability metadata lets
 marker-present artifacts prove their role. ABI 16 defines the historical
 five-export fallback, while ABI 18 and later require role claims and reject
-stale call-graph artifacts. Dlopen replay records both the parent's memory base
-and exact table base, including null gaps left by failed loads. The supported
+stale call-graph artifacts. The ABI 36 epoch combines that contract with
+side-module replay state and concurrent pthread-fork arbitration. Dlopen replay
+records both the parent's memory base and exact table base, including null gaps
+left by failed loads. TLS-bearing side modules additionally record their live,
+positive `__tls_base`. A child restores the pointer-width-correct mutable
+global without calling `__wasm_init_tls`, because copied memory already holds
+the parent's live TLS bytes and reinitialization would reset C++ unwinder state
+and application `thread_local` values. C++ exceptions and longjmp use one
+canonical pointer-width tag identity across the main image and all side
+modules; a main-exported tag wins over the host-created fallback.
+
+The dlopen replay list and its atomic pthread-fork lock live in a transient,
+host-private control record. The same host build writes and reads that record
+during one process lifetime; guest code and persisted artifacts never
+interpret it. Changing that record's size is therefore not a guest ABI change,
+while the public ABI snapshot/classifier remains authoritative.
+
+Pthread workers have separate Wasm instances, tables, and exception tags, none
+of which can be structured-cloned from the process worker. `dlopen()` from a
+pthread therefore fails normally with `dlerror()`. If the process has loaded a
+side module, `fork()` from a pthread returns `ENOTSUP`; an atomic process lock
+excludes a racing main-worker dlopen across the pthread's archive check,
+unwind, memory copy, and parent rewind. The supported
 direct-main-to-side boundary and the remaining opaque cross-side callback
 limitation are specified in
 [fork-instrumentation.md](fork-instrumentation.md#fork-from-a-dlopened-side-module).
