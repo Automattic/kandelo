@@ -3602,6 +3602,20 @@ libs = ["lib/lib{name}.a"]
         wasm_importing_kernel_fork_exporting_names(&names)
     }
 
+    fn minimal_executable_wasm() -> Vec<u8> {
+        wasm_exporting_names(&EXECUTABLE_PROGRAM_REQUIRED_EXPORTS)
+    }
+
+    fn emit_wasm_build_script(rel: &str, bytes: &[u8]) -> String {
+        let escaped = bytes
+            .iter()
+            .map(|byte| format!("\\x{byte:02x}"))
+            .collect::<String>();
+        format!(
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && printf '{escaped}' > "$WASM_POSIX_DEP_OUT_DIR/{rel}""#
+        )
+    }
+
     #[test]
     fn registry_find_returns_first_hit() {
         let root1 = tempdir("find-root1");
@@ -6268,9 +6282,10 @@ cache_key_sha = "{cache_key_hex}"
             &[TEST_ABI],
             &cache_key_hex,
         );
+        let prog_wasm = minimal_executable_wasm();
         let archive_bytes = crate::remote_fetch::build_test_archive(
             &manifest_text,
-            &[("progIdx.wasm", b"\0asm\x01\0\0\0")],
+            &[("progIdx.wasm", prog_wasm.as_slice())],
         );
         let archive_sha_hex = sha256_hex(&archive_bytes);
         let archive_path = archive_dir.join("progIdx-1.0.0.tar.zst");
@@ -6295,10 +6310,7 @@ cache_key_sha = "{cache_key_hex}"
         };
         let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
 
-        assert_eq!(
-            std::fs::read(path.join("progIdx.wasm")).unwrap(),
-            b"\0asm\x01\0\0\0"
-        );
+        assert_eq!(std::fs::read(path.join("progIdx.wasm")).unwrap(), prog_wasm);
         let baddep_cached = std::fs::read_dir(cache.join("programs"))
             .unwrap()
             .filter_map(Result::ok)
@@ -7039,6 +7051,38 @@ wasm = "bad.wasm"
         assert!(err.contains("missing required exports"), "got: {err}");
         assert!(err.contains("__abi_version"), "got: {err}");
         assert!(err.contains("_start"), "got: {err}");
+    }
+
+    #[test]
+    fn wasm_artifact_policy_rejects_empty_and_exportless_executables() {
+        let required = &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS;
+
+        assert_eq!(
+            wasm_artifact_policy_failures_for(&[], ForkInstrumentationPolicy::Auto, required),
+            ["is not a wasm binary"]
+        );
+
+        let failures = wasm_artifact_policy_failures_for(
+            b"\0asm\x01\0\0\0",
+            ForkInstrumentationPolicy::Auto,
+            required,
+        );
+        assert_eq!(failures.len(), 1, "got: {failures:?}");
+        assert!(
+            failures[0].contains("missing required exports")
+                && failures[0].contains("__abi_version")
+                && failures[0].contains("_start"),
+            "got: {failures:?}"
+        );
+
+        assert!(
+            wasm_artifact_policy_failures_for(
+                &minimal_executable_wasm(),
+                ForkInstrumentationPolicy::Auto,
+                required,
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -8231,7 +8275,7 @@ libs = ["lib/libF3b.a"]
             "tinybin",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/tinybin.wasm""#,
+            &emit_wasm_build_script("tinybin.wasm", &minimal_executable_wasm()),
             &[("tinybin", "tinybin.wasm")],
         );
         let reg = Registry {
@@ -8307,7 +8351,10 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             "kernel",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm""#,
+            &emit_wasm_build_script(
+                "kandelo-kernel.wasm",
+                &wasm_exporting_names(wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS),
+            ),
             &[("kernel", "kandelo-kernel.wasm")],
         );
         let reg = Registry {
@@ -8342,9 +8389,11 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             "twobin",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-touch "$WASM_POSIX_DEP_OUT_DIR/alpha.wasm"
-touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
+            &format!(
+                "{}\n{}",
+                emit_wasm_build_script("alpha.wasm", &minimal_executable_wasm()),
+                emit_wasm_build_script("beta.wasm", &minimal_executable_wasm()),
+            ),
             &[("alpha", "alpha.wasm"), ("beta", "beta.wasm")],
         );
         let reg = Registry {
@@ -8373,7 +8422,7 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             "noflag",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/noflag.wasm""#,
+            &emit_wasm_build_script("noflag.wasm", &minimal_executable_wasm()),
             &[("noflag", "noflag.wasm")],
         );
         let reg = Registry {
@@ -8403,7 +8452,7 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             "rep",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/rep.wasm""#,
+            &emit_wasm_build_script("rep.wasm", &minimal_executable_wasm()),
             &[("rep", "rep.wasm")],
         );
         let reg = Registry {
