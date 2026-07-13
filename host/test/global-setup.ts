@@ -53,6 +53,7 @@ const TEST_PROGRAMS = [
   "mount_probe_test.c",
   "getpwent_smoke.c",
   "initial-credentials-test.c",
+  "locale_info_test.c",
   "thread-exit-group.c",
 ];
 
