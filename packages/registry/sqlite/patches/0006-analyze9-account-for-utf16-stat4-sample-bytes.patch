@@ -1,0 +1,10 @@
+--- test/analyze9.test
++++ test/analyze9.test
+@@ -813,2 +813,6 @@ do_test 16.1 {
+-  expr {$nByte2 > $nByte+900 && $nByte2 < $nByte+1100}
++  set minDelta 900
++  set maxDelta 1100
++  if {[permutation]=="utf16"} { set minDelta 1900; set maxDelta 2100 }
++
++  expr {$nByte2 > $nByte+$minDelta && $nByte2 < $nByte+$maxDelta}
+ } {1}
