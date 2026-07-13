@@ -145,13 +145,21 @@ export interface KernelLike {
    */
   kmsAttachStats?(crtcId: number, stats: SharedArrayBuffer): void;
   /**
-   * Drain PCM bytes buffered in `/dev/dsp` for browser playback.
+   * Legacy main-thread PCM drain endpoint.
+   *
+   * @deprecated PCM playback is owned by the machine-level host and its
+   * AudioWorklet transport. New callers should use `resumeAudio`.
    */
   drainAudio?(maxBytes: number): Promise<{
     bytes: Uint8Array;
     sampleRate: number;
     channels: number;
   }>;
+  prepareAudio?(): Promise<void>;
+  resumeAudio?(): Promise<void>;
+  suspendAudio?(): Promise<void>;
+  getAudioState?(): MachineAudioState;
+  onAudioStateChange?(cb: (state: MachineAudioState) => void): () => void;
   /**
    * Subscribe to the kernel-worker's live syscall trace. Each event
    * carries the raw syscall number + args + firing pid. The underlying
@@ -293,12 +301,12 @@ export interface PtyHandle {
 
 /**
  * Handle returned by `attachFramebuffer`. The canvas is wired up to paint
- * frames; this handle lets the embedder bridge input/audio for whichever
+ * frames; this handle lets the embedder bridge input for whichever
  * process is currently bound to `/dev/fb0` (fbDOOM, fbtest, etc.).
  *
  * Keyboard input is delivered as raw bytes to the bound process's stdin —
  * the same channel fbDOOM reads scancodes from. Mouse input goes through
- * `/dev/input/mice`; audio drains from `/dev/dsp`.
+ * `/dev/input/mice`. PCM playback belongs to the machine-level host.
  */
 export interface FramebufferHandle {
   /** Send raw bytes to the fb-bound process's stdin. No-op if nothing is bound. */
@@ -309,8 +317,11 @@ export interface FramebufferHandle {
    */
   sendMouseEvent(dx: number, dy: number, buttons: number): void;
   /**
-   * Start draining `/dev/dsp` into Web Audio. Returns null when the wrapped
-   * kernel does not expose audio draining.
+   * Return a compatibility handle for the machine-level PCM output.
+   *
+   * @deprecated PCM is not framebuffer-scoped. Call `KernelHost.resumeAudio`
+   * from a trusted user gesture instead. Closing this compatibility handle
+   * does not stop machine audio.
    */
   startAudio(): Promise<AudioOutputHandle | null>;
   /** Pid currently bound to /dev/fb0, or null if no binding is live. */
@@ -321,11 +332,25 @@ export interface FramebufferHandle {
   close(): void;
 }
 
+/**
+ * Legacy Web Audio-shaped output handle retained for source compatibility.
+ *
+ * @deprecated Use the machine-level audio methods on `KernelHost`.
+ */
 export interface AudioOutputHandle {
   resume(): Promise<void>;
   close(): void;
   getState(): AudioContextState | "unavailable";
 }
+
+export type MachineAudioState =
+  | "unavailable"
+  | "unprepared"
+  | "suspended"
+  | "running"
+  | "interrupted"
+  | "closed"
+  | "error";
 
 /**
  * Handle returned by `attachKmsDisplay`. The wrapped canvas is wired up
@@ -558,9 +583,18 @@ export interface KernelHost {
   subscribeSyscalls(cb: (e: SyscallEvent) => void, filter?: SyscallFilter): () => void;
   syscallHistory(filter?: SyscallFilter): SyscallEvent[];
 
+  // Machine-level physical/default PCM sink. Browser callers should invoke
+  // resumeAudio directly from a trusted user gesture.
+  prepareAudio(): Promise<void>;
+  resumeAudio(): Promise<void>;
+  suspendAudio(): Promise<void>;
+  getAudioState(): MachineAudioState;
+  subscribeAudioState(cb: (state: MachineAudioState) => void): () => void;
+
   // framebuffer — mirrors /dev/fb0 into a 2D canvas and returns a handle
-  // that the embedder uses to forward keyboard, mouse, and audio device
-  // traffic for the bound process.
+  // that the embedder uses to forward keyboard and mouse input for the bound
+  // process. PCM output is machine-level; startAudio remains as a deprecated
+  // compatibility adapter.
   attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle;
 
   // KMS display — registers a canvas as the scanout target for a
@@ -788,6 +822,7 @@ export class LiveKernelHost implements KernelHost {
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
+  private audioStateListeners = new ListenerSet<MachineAudioState>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
@@ -798,6 +833,7 @@ export class LiveKernelHost implements KernelHost {
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
+  private offAudioState: (() => void) | null = null;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
@@ -847,6 +883,8 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
     this.offLazyDownloads = null;
+    this.offAudioState?.();
+    this.offAudioState = null;
     this.kernel = kernel;
     this.ptySessions.clear();
     this.ptyAttachPromises.clear();
@@ -862,6 +900,12 @@ export class LiveKernelHost implements KernelHost {
         this.emitLazyDownloadEvent(event);
       });
     }
+    if (kernel.onAudioStateChange) {
+      this.offAudioState = kernel.onAudioStateChange((state) => {
+        this.audioStateListeners.emit(state);
+      });
+    }
+    this.audioStateListeners.emit(this.getAudioState());
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.refreshKmsAvailability();
@@ -875,11 +919,14 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
     this.offLazyDownloads = null;
+    this.offAudioState?.();
+    this.offAudioState = null;
     this.kernel = undefined;
     this.ptySessions.clear();
     this.ptyAttachPromises.clear();
     this.ptyCommandQueues.clear();
     this.shellPids.clear();
+    this.audioStateListeners.emit("unavailable");
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
@@ -1120,6 +1167,8 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
     this.offLazyDownloads = null;
+    this.offAudioState?.();
+    this.offAudioState = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     await this.kernel?.destroy?.();
@@ -1544,6 +1593,34 @@ export class LiveKernelHost implements KernelHost {
     return history.slice();
   }
 
+  async prepareAudio(): Promise<void> {
+    if (!this.kernel?.prepareAudio) {
+      throw new Error("PCM output is unavailable");
+    }
+    await this.kernel.prepareAudio();
+  }
+
+  async resumeAudio(): Promise<void> {
+    if (!this.kernel?.resumeAudio) {
+      throw new Error("PCM output is unavailable");
+    }
+    await this.kernel.resumeAudio();
+  }
+
+  async suspendAudio(): Promise<void> {
+    await this.kernel?.suspendAudio?.();
+  }
+
+  getAudioState(): MachineAudioState {
+    return this.kernel?.getAudioState?.() ?? "unavailable";
+  }
+
+  subscribeAudioState(cb: (state: MachineAudioState) => void): () => void {
+    const off = this.audioStateListeners.add(cb);
+    cb(this.getAudioState());
+    return off;
+  }
+
   /**
    * Walk the parent chain of `pid` and return the shell pid it descends from
    * when it shares a terminal PTY for stdin. Used by attachFramebuffer to pick
@@ -1693,11 +1770,28 @@ export class LiveKernelHost implements KernelHost {
         kernel.injectMouseEvent?.(dx, dy, buttons);
       },
       startAudio: async () => {
-        if (!kernel.drainAudio) return null;
-        const { createPcmAudioScheduler } = await import("../../../host/src/framebuffer/browser-controls.js");
-        return createPcmAudioScheduler({
-          drainAudio: kernel.drainAudio.bind(kernel),
-        });
+        if (!kernel.resumeAudio) return null;
+        return {
+          resume: () => kernel.resumeAudio!(),
+          // Audio is a machine resource shared by all Unix applications. A
+          // framebuffer-scoped compatibility handle must not tear it down.
+          close: () => {},
+          getState: () => {
+            switch (kernel.getAudioState?.() ?? "unavailable") {
+              case "running":
+                return "running";
+              case "closed":
+                return "closed";
+              case "suspended":
+              case "interrupted":
+              case "unprepared":
+                return "suspended";
+              case "unavailable":
+              case "error":
+                return "unavailable";
+            }
+          },
+        };
       },
       getBoundPid: () => attachedPid,
       onBoundPidChange: (cb) => boundPidListeners.add(cb),

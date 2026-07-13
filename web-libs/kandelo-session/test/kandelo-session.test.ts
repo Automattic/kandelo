@@ -303,6 +303,83 @@ describe("LiveKernelHost: process listing", () => {
   });
 });
 
+describe("LiveKernelHost: machine PCM lifecycle", () => {
+  it("forwards explicit activation and state changes independently of framebuffer", async () => {
+    let state: import("../src/kernel-host").MachineAudioState = "suspended";
+    let emit: ((next: import("../src/kernel-host").MachineAudioState) => void) | null = null;
+    const prepareAudio = vi.fn(async () => {});
+    const resumeAudio = vi.fn(async () => {
+      state = "running";
+      emit?.(state);
+    });
+    const suspendAudio = vi.fn(async () => {
+      state = "suspended";
+      emit?.(state);
+    });
+    const host = new LiveKernelHost({
+      kernel: {
+        prepareAudio,
+        resumeAudio,
+        suspendAudio,
+        getAudioState: () => state,
+        onAudioStateChange: (cb: typeof emit) => {
+          emit = cb;
+          cb?.(state);
+          return () => { emit = null; };
+        },
+      } as never,
+    });
+    const observed: string[] = [];
+    const off = host.subscribeAudioState((next) => observed.push(next));
+
+    await host.prepareAudio();
+    await host.resumeAudio();
+    expect(prepareAudio).toHaveBeenCalledOnce();
+    expect(resumeAudio).toHaveBeenCalledOnce();
+    expect(host.getAudioState()).toBe("running");
+    await host.suspendAudio();
+    expect(host.getAudioState()).toBe("suspended");
+    expect(observed).toContain("running");
+    expect(observed.at(-1)).toBe("suspended");
+
+    host.detachKernel();
+    expect(observed.at(-1)).toBe("unavailable");
+    off();
+  });
+
+  it("retains framebuffer startAudio as a non-owning machine-audio adapter", async () => {
+    let state: import("../src/kernel-host").MachineAudioState = "suspended";
+    const resumeAudio = vi.fn(async () => { state = "running"; });
+    const suspendAudio = vi.fn(async () => { state = "suspended"; });
+    const framebuffers = {
+      list: () => [],
+      onChange: () => () => {},
+    };
+    const host = new LiveKernelHost({
+      kernel: {
+        framebuffers,
+        getProcessMemory: () => undefined,
+        resumeAudio,
+        suspendAudio,
+        getAudioState: () => state,
+      } as never,
+    });
+
+    const framebuffer = host.attachFramebuffer({} as HTMLCanvasElement);
+    const output = await framebuffer.startAudio();
+    expect(output).not.toBeNull();
+    expect(output!.getState()).toBe("suspended");
+    await output!.resume();
+    expect(resumeAudio).toHaveBeenCalledOnce();
+    expect(output!.getState()).toBe("running");
+
+    output!.close();
+    expect(suspendAudio).not.toHaveBeenCalled();
+    expect(output!.getState()).toBe("running");
+    framebuffer.close();
+  });
+});
+
 describe("LiveKernelHost: shell command queue", () => {
   it("does not treat heredoc continuation prompts as command completion", async () => {
     const encoder = new TextEncoder();
