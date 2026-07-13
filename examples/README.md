@@ -18,6 +18,11 @@ wasm32posix-cc examples/hello.c -o hello.wasm
 npx tsx examples/run-example.ts hello
 ```
 
+`run-example.ts` starts guests as root by default. Set `KERNEL_UID` and
+`KERNEL_GID` to decimal values from 0 through 4294967294 when a test needs a
+different initial user or group. The maximum unsigned 32-bit value is reserved
+by the host protocol and is rejected rather than being mistaken for an ID.
+
 See [docs/sdk-guide.md](../docs/sdk-guide.md) for full SDK documentation.
 
 ## Programs

@@ -10,6 +10,7 @@
  * Example:
  *   npx tsx examples/run-example.ts hello
  *   npx tsx examples/run-example.ts /path/to/test.wasm
+ *   KERNEL_UID=1000 KERNEL_GID=1000 npx tsx examples/run-example.ts hello
  */
 
 import { closeSync, existsSync, openSync, readFileSync, statSync, writeSync } from "fs";
@@ -19,6 +20,29 @@ import { tryResolveBinary } from "../host/src/binary-resolver";
 import { isWithinRealDirectory } from "./run-example-paths";
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
+
+const MAX_CONFIGURABLE_CREDENTIAL = 0xfffffffe;
+
+function parseKernelCredential(name: "KERNEL_UID" | "KERNEL_GID"): number | undefined {
+    const raw = process.env[name];
+    if (raw === undefined || raw === "") return undefined;
+
+    // u32::MAX is the host/kernel protocol's "leave unchanged" sentinel. If
+    // it were accepted here, a request for that ID would silently leave the
+    // new process running as root.
+    if (!/^[0-9]+$/.test(raw)) {
+        throw new Error(
+            `${name} must be a decimal integer from 0 to ${MAX_CONFIGURABLE_CREDENTIAL}`,
+        );
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value > MAX_CONFIGURABLE_CREDENTIAL) {
+        throw new Error(
+            `${name} must be a decimal integer from 0 to ${MAX_CONFIGURABLE_CREDENTIAL}`,
+        );
+    }
+    return value;
+}
 
 // Built-in program resolution via the binary-resolver. Resolver returns
 // null for programs that aren't fetched or locally built; callers that
@@ -312,6 +336,8 @@ async function main() {
         console.error("Usage: npx tsx examples/run-example.ts <name>");
         process.exit(1);
     }
+    const uid = parseKernelCredential("KERNEL_UID");
+    const gid = parseKernelCredential("KERNEL_GID");
 
     let programPath: string;
     if (name.endsWith(".wasm")) {
@@ -386,6 +412,8 @@ async function main() {
                 ...gitEnv,
             ],
             cwd: process.env.KERNEL_CWD || process.cwd(),
+            uid,
+            gid,
             stdin: stdinData,
         });
         const timeoutPromise = new Promise<number>((_, reject) => {

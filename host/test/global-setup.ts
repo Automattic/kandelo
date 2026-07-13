@@ -51,6 +51,7 @@ const TEST_PROGRAMS = [
   "spawn-pause.c",
   "mount_probe_test.c",
   "getpwent_smoke.c",
+  "initial-credentials-test.c",
   "thread-exit-group.c",
 ];
 
