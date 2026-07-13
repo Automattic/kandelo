@@ -28,7 +28,9 @@ function runCredentialProbe(overrides: Record<string, string | undefined>) {
     ],
     {
       cwd: repoRoot,
-      env: { ...env, TIMEOUT: "30000" },
+      // The probe only inspects credentials. Keep its guest cwd independent
+      // of checkout ownership and group modes on the CI host.
+      env: { ...env, KERNEL_CWD: "/tmp", TIMEOUT: "30000" },
       encoding: "utf8",
       timeout: 45_000,
     },
@@ -39,14 +41,14 @@ describe("run-example initial credentials", () => {
   it("starts the guest with the requested real and effective IDs", () => {
     const result = runCredentialProbe({ KERNEL_UID: "1000", KERNEL_GID: "1001" });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("uid=1000 euid=1000 gid=1001 egid=1001");
   });
 
   it("leaves an omitted credential at the kernel default", () => {
     const result = runCredentialProbe({ KERNEL_UID: "2000" });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("uid=2000 euid=2000 gid=0 egid=0");
   });
 
@@ -56,7 +58,7 @@ describe("run-example initial credentials", () => {
       KERNEL_GID: "4294967294",
     });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain(
       "uid=4294967294 euid=4294967294 gid=4294967294 egid=4294967294",
     );
