@@ -4532,8 +4532,15 @@ export class CentralizedKernelWorker {
         if (!(desc.direction === "out" && retVal < 0)) {
           let copySize = size;
           if (desc.direction === "out" && desc.size.type === "arg") {
+            // For read/recv/getdents-like syscalls, retVal is the number of
+            // bytes produced. Successful EOF must not copy the zero-filled
+            // scratch buffer over bytes the caller already owns. Some
+            // descriptors prepend fixed metadata that is still produced when
+            // the variable-length result is empty.
             const copyRetvalAdd = desc.copyRetvalAdd ?? 0;
-            if (retVal > 0 && retVal + copyRetvalAdd < size) {
+            if (retVal === 0) {
+              copySize = Math.min(copyRetvalAdd, size);
+            } else if (retVal + copyRetvalAdd < size) {
               copySize = retVal + copyRetvalAdd;
             }
           }
