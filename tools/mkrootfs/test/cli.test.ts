@@ -14,6 +14,7 @@ import {
   readlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { zipSync } from "fflate";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { parseManifest } from "../src/manifest.ts";
 
@@ -71,6 +72,66 @@ describe("mkrootfs build — happy paths", () => {
       expect(() => mfs.stat("/etc")).not.toThrow();
       expect(() => mfs.stat("/etc/passwd")).not.toThrow();
       expect(mfs.readlink("/usr/bin/sh")).toBe("/bin/dash");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("build + inspect reports an archived Homebrew tool shim as a symlink", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-archive-link-"));
+    const image = join(tmp, "homebrew.vfs");
+    const target = "../../shared/curl";
+    try {
+      writeFileSync(
+        join(tmp, "homebrew.zip"),
+        zipSync({
+          "Library/Homebrew/shims/shared/curl": new TextEncoder().encode("curl shim\n"),
+          "Library/Homebrew/shims/linux/super/curl": [
+            new TextEncoder().encode(target),
+            { os: 3, attrs: (0o120777 << 16) >>> 0 },
+          ],
+        }),
+      );
+      writeFileSync(
+        join(tmp, "MANIFEST"),
+        "archive url=homebrew.zip base=/home/linuxbrew/.linuxbrew uid=1000 gid=1000\n",
+      );
+
+      const build = run(
+        "build",
+        join(tmp, "MANIFEST"),
+        tmp,
+        "-o", image,
+        "--repo-root", tmp,
+      );
+      expect(build.status).toBe(0);
+
+      const inspect = run("inspect", image, "--format", "json");
+      expect(inspect.status).toBe(0);
+      const entries = JSON.parse(inspect.stdout) as Array<{
+        path: string;
+        type: string;
+        mode: string;
+        uid: number;
+        gid: number;
+        target?: string;
+      }>;
+      const link = entries.find(
+        (entry) => entry.path ===
+          "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/linux/super/curl",
+      );
+      expect(link).toEqual({
+        path: "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/linux/super/curl",
+        type: "l",
+        mode: "0777",
+        uid: 1000,
+        gid: 1000,
+        size: null,
+        target,
+      });
+
+      const mfs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync(image)));
+      expect(mfs.readlink(link!.path)).toBe(target);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

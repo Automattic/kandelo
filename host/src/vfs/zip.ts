@@ -32,9 +32,16 @@ const CREATOR_UNIX = 3;
 // Unix file type mask for symlinks
 const S_IFLNK = 0xa000;
 const S_IFMT = 0xf000;
+const fileNameDecoder = new TextDecoder("utf-8", {
+  fatal: true,
+  ignoreBOM: true,
+});
+const textEncoder = new TextEncoder();
 
 export interface ZipEntry {
   fileName: string;
+  /** Exact filename bytes from the central directory. */
+  fileNameBytes: Uint8Array;
   compressedSize: number;
   uncompressedSize: number;
   compressionMethod: number;
@@ -93,11 +100,27 @@ export function parseZipCentralDirectory(data: Uint8Array): ZipEntry[] {
     const externalAttrs = view.getUint32(offset + 38, true);
     const localHeaderOffset = view.getUint32(offset + 42, true);
 
-    const fileNameBytes = data.subarray(
-      offset + CENTRAL_DIR_FIXED_SIZE,
-      offset + CENTRAL_DIR_FIXED_SIZE + fileNameLength,
+    // Copy the member name so a parsed entry does not retain the entire ZIP
+    // backing buffer merely to expose its original bytes.
+    const fileNameBytes = new Uint8Array(
+      data.subarray(
+        offset + CENTRAL_DIR_FIXED_SIZE,
+        offset + CENTRAL_DIR_FIXED_SIZE + fileNameLength,
+      ),
     );
-    const fileName = new TextDecoder().decode(fileNameBytes);
+    let fileName: string;
+    try {
+      fileName = fileNameDecoder.decode(fileNameBytes);
+    } catch {
+      throw new Error(
+        `Invalid UTF-8 in ZIP member name at central directory offset ${offset}`,
+      );
+    }
+    if (!bytesEqual(fileNameBytes, textEncoder.encode(fileName))) {
+      throw new Error(
+        `ZIP member name at central directory offset ${offset} cannot be preserved byte-for-byte`,
+      );
+    }
 
     const creatorOS = versionMadeBy >> 8;
 
@@ -125,6 +148,7 @@ export function parseZipCentralDirectory(data: Uint8Array): ZipEntry[] {
 
     entries.push({
       fileName,
+      fileNameBytes,
       compressedSize,
       uncompressedSize,
       compressionMethod,
@@ -142,6 +166,14 @@ export function parseZipCentralDirectory(data: Uint8Array): ZipEntry[] {
   }
 
   return entries;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 /**

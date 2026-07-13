@@ -8,7 +8,8 @@
 //   2. Regular files (implicit src=sourceTree/<path>, or explicit src=)
 //   3. Symlinks
 //   4. Archives (zip extraction; per-archive fmode/dmode/uid/gid override
-//      the zip's embedded values for deterministic builds)
+//      regular-file and directory values for deterministic builds, while
+//      Unix symlink entries retain their targets)
 //
 // Validation (manifest path duplicates, missing source files, archive
 // collisions, archive-vs-explicit overlaps) runs ahead of any FS work — see
@@ -23,7 +24,6 @@ import {
 import {
   parseZipCentralDirectory,
   extractZipEntry,
-  type ZipEntry,
 } from "../../../host/src/vfs/zip";
 import {
   parseManifest,
@@ -36,9 +36,17 @@ import {
   validateAndPlanArchives,
   type ArchiveBundle,
   type ArchiveExtractionPlan,
+  type PlannedArchiveMember,
 } from "./validate.ts";
 
 const DEFAULT_SAB_SIZE = 16 * 1024 * 1024;
+const S_IFMT = 0o170000;
+const S_IFDIR = 0o040000;
+const textEncoder = new TextEncoder();
+const symlinkTargetDecoder = new TextDecoder("utf-8", {
+  fatal: true,
+  ignoreBOM: true,
+});
 
 export interface BuildOptions {
   /** Absolute or repo-relative path to the implicit source tree (typically `images/rootfs/`). */
@@ -188,47 +196,89 @@ function buildArchives(
   plan: ArchiveExtractionPlan,
 ): void {
   for (const loaded of archives) {
-    const skip =
-      plan.skipByArchiveUrl.get(loaded.archive.url) ?? new Set<string>();
-    extractArchive(mfs, loaded.zipBytes, loaded.zipEntries, loaded.archive, skip);
+    const members = plan.membersByArchive.get(loaded.archive);
+    const skip = plan.skipByArchive.get(loaded.archive);
+    if (!members || !skip) {
+      throw new Error(
+        `internal: archive "${loaded.archive.url}" has no validated extraction plan`,
+      );
+    }
+    extractArchive(mfs, loaded.zipBytes, members, loaded.archive, skip);
   }
 }
 
 function extractArchive(
   mfs: MemoryFileSystem,
   zipBytes: Uint8Array,
-  zipEntries: ZipEntry[],
+  members: PlannedArchiveMember[],
   a: ManifestArchive,
   skipPaths: Set<string>,
 ): void {
-  // Strip trailing slash on base so concatenation produces a clean path;
-  // base="/" becomes "" so "/" + entry.fileName works.
-  const base = a.base === "/" ? "" : a.base.replace(/\/+$/, "");
+  // Directories must land first so parents exist before regular files and
+  // symlinks. The planner has already rejected every non-canonical or unsafe
+  // path graph, so extraction never normalizes archive-supplied names.
+  const directories = members
+    .filter((member) => member.kind === "directory")
+    .sort((x, y) => depth(x.vfsPath) - depth(y.vfsPath));
+  const files = members.filter((member) => member.kind === "file");
+  const symlinks = members.filter((member) => member.kind === "symlink");
 
-  // Two passes inside the archive: directories first (sorted by depth) so
-  // parent dirs exist before their files. Tolerate leading-/ in entries.
-  const dirEntries: ZipEntry[] = [];
-  const fileEntries: ZipEntry[] = [];
-  for (const ze of zipEntries) {
-    const cleaned = { ...ze, fileName: ze.fileName.replace(/^\/+/, "") };
-    if (cleaned.isDirectory) dirEntries.push(cleaned);
-    else fileEntries.push(cleaned);
-  }
-  dirEntries.sort((x, y) => depth(x.fileName) - depth(y.fileName));
-
-  for (const ze of dirEntries) {
-    const vfsPath = base + "/" + ze.fileName.replace(/\/+$/, "");
-    if (vfsPath === "" || existsAt(mfs, vfsPath)) continue;
-    mfs.mkdirWithOwner(vfsPath, a.dmode, a.uid, a.gid);
+  for (const member of directories) {
+    if (existsAt(mfs, member.vfsPath)) {
+      requireDirectory(mfs, member.vfsPath, a);
+      continue;
+    }
+    mfs.mkdirWithOwner(member.vfsPath, a.dmode, a.uid, a.gid);
   }
 
-  for (const ze of fileEntries) {
-    const vfsPath = base + "/" + ze.fileName;
-    if (skipPaths.has(vfsPath)) continue;
-    ensureParentDirs(mfs, vfsPath, a);
-    const content = extractZipEntry(zipBytes, ze);
-    mfs.createFileWithOwner(vfsPath, a.fmode, a.uid, a.gid, content);
+  for (const member of files) {
+    if (skipPaths.has(member.vfsPath)) continue;
+    ensureParentDirs(mfs, member.vfsPath, a);
+    const content = extractZipEntry(zipBytes, member.entry);
+    mfs.createFileWithOwner(member.vfsPath, a.fmode, a.uid, a.gid, content);
   }
+
+  for (const member of symlinks) {
+    if (skipPaths.has(member.vfsPath)) continue;
+    ensureParentDirs(mfs, member.vfsPath, a);
+    const targetBytes = extractZipEntry(zipBytes, member.entry);
+    const target = decodeSymlinkTarget(targetBytes, member);
+    mfs.symlinkWithOwner(target, member.vfsPath, a.uid, a.gid);
+  }
+}
+
+function decodeSymlinkTarget(
+  bytes: Uint8Array,
+  member: PlannedArchiveMember,
+): string {
+  const context = `archive symlink "${member.vfsPath}" (member ${JSON.stringify(member.entry.fileName)})`;
+  if (bytes.byteLength === 0) {
+    throw new Error(`${context} has an empty target`);
+  }
+  if (bytes.includes(0)) {
+    throw new Error(`${context} target contains a NUL byte`);
+  }
+
+  let target: string;
+  try {
+    target = symlinkTargetDecoder.decode(bytes);
+  } catch {
+    throw new Error(`${context} target is not valid UTF-8`);
+  }
+
+  const roundTrip = textEncoder.encode(target);
+  if (!bytesEqual(bytes, roundTrip)) {
+    throw new Error(`${context} target cannot be preserved byte-for-byte`);
+  }
+  return target;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function ensureParentDirs(
@@ -241,8 +291,24 @@ function ensureParentDirs(
   let cur = "";
   for (const part of parts) {
     cur += "/" + part;
-    if (existsAt(mfs, cur)) continue;
+    if (existsAt(mfs, cur)) {
+      requireDirectory(mfs, cur, a);
+      continue;
+    }
     mfs.mkdirWithOwner(cur, a.dmode, a.uid, a.gid);
+  }
+}
+
+function requireDirectory(
+  mfs: MemoryFileSystem,
+  path: string,
+  a: ManifestArchive,
+): void {
+  const st = mfs.lstat(path);
+  if ((st.mode & S_IFMT) !== S_IFDIR) {
+    throw new Error(
+      `archive "${a.url}" cannot create a member below "${path}": existing path is not a directory`,
+    );
   }
 }
 
