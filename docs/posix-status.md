@@ -70,8 +70,8 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `splice()` | Full | Emulated through the copy loop with optional offsets. The output RLIMIT_FSIZE budget is fixed before input is consumed. |
 | `tee()` / `vmsplice()` | Stub | Returns ENOSYS. |
 | `readahead()` | Stub | Returns 0 (no-op advisory). |
-| `fstatat()` | Partial | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW and real dirfds are supported. ABI 39 omits `st_rdev`, `st_blksize`, and `st_blocks`; libc reports zero for those fields pending [issue #928](https://github.com/Automattic/kandelo/issues/928). |
-| `statx()` | Partial | Delegates to fstatat and fills the 256-byte statx structure from WasmStat. Basic identity, mode, ownership, size, and timestamp fields are reported, but block and device metadata are incomplete pending [issue #928](https://github.com/Automattic/kandelo/issues/928). |
+| `fstatat()` | Partial | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW and Linux AT_EMPTY_PATH are supported; an empty path targets either the supplied fd or the current working directory for AT_FDCWD. Real dirfds are supported through stored OFD paths. Cwd- and dirfd-relative lookup inherit the pathname-backed directory-identity limitation documented below. ABI 39 omits `st_rdev`, `st_blksize`, and `st_blocks`; libc reports zero for those fields pending [issue #928](https://github.com/Automattic/kandelo/issues/928). |
+| `statx()` | Partial | Delegates to fstatat, accepts the statx synchronization flags, and fills the 256-byte statx structure from WasmStat using the STATX_BASIC_STATS mask. Basic identity, mode, ownership, size, and timestamp fields are reported, but block and device metadata are incomplete pending [issue #928](https://github.com/Automattic/kandelo/issues/928). It inherits fstatat's pathname-backed directory-identity limitation. |
 | `unlinkat()` | Full | AT_FDCWD delegates to unlink/rmdir. AT_REMOVEDIR flag supported. Real dirfd supported. |
 | `mkdirat()` | Full | AT_FDCWD delegates to mkdir. umask applied. Real dirfd supported. |
 | `renameat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
