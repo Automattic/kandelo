@@ -197,6 +197,8 @@ while IFS= read -r -d '' entry; do
 done < <(find "$HANDOFF" -mindepth 1 -print0)
 
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-publication-limits.sh"
 bash "$SCRIPT_ROOT/homebrew-validate-upload-receipt.sh" \
   --receipt "$RECEIPT" \
   --handoff "$BUILD_ROOT" \
@@ -235,7 +237,7 @@ require_max_size() {
     exit 1
   fi
 }
-require_max_size "composition input" "$COMPOSITION_INPUT" 4194304
+require_max_size "composition input" "$COMPOSITION_INPUT" "$HOMEBREW_MAX_COMPOSITION_INPUT_BYTES"
 
 BOTTLE_SHA256="$(jq -r '.bottle.sha256' "$RECEIPT")"
 BOTTLE_BYTES="$(jq -r '.bottle.bytes' "$RECEIPT")"
@@ -379,12 +381,12 @@ if [ "${#sidecar_files[@]}" -ne 5 ]; then
   exit 1
 fi
 
-require_max_size "Formula" "$FORMULA_RB" 1048576
-require_max_size "tap Formula" "$TAP_FORMULA" 1048576
-require_max_size "metadata.json" "$METADATA_JSON" 16777216
-require_max_size "formula JSON" "$FORMULA_JSON" 2097152
-require_max_size "link JSON" "$LINK_JSON" 2097152
-require_max_size "provenance JSON" "$PROVENANCE_JSON" 4194304
+require_max_size "Formula" "$FORMULA_RB" "$HOMEBREW_MAX_FORMULA_BYTES"
+require_max_size "tap Formula" "$TAP_FORMULA" "$HOMEBREW_MAX_FORMULA_BYTES"
+require_max_size "metadata.json" "$METADATA_JSON" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES"
+require_max_size "formula JSON" "$FORMULA_JSON" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES"
+require_max_size "link JSON" "$LINK_JSON" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES"
+require_max_size "provenance JSON" "$PROVENANCE_JSON" "$HOMEBREW_MAX_PROVENANCE_BYTES"
 
 OWNER_LOWER="$(printf '%s' "${TAP_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
 REPO_LOWER="$(printf '%s' "${TAP_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"

@@ -480,6 +480,7 @@ jobs:
         with:
           name: homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-build-handoff
+          compression-level: 0
           if-no-files-found: error
           retention-days: 2
 
@@ -1190,6 +1191,7 @@ jobs:
         with:
           name: homebrew-publish-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-publish-handoff
+          compression-level: 0
           if-no-files-found: error
           retention-days: 2
 

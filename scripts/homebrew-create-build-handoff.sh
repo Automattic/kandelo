@@ -2,6 +2,10 @@
 # Create the minimal, credential-free output of one Homebrew bottle build.
 set -euo pipefail
 
+SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-publication-limits.sh"
+
 FORMULA=""
 ARCH=""
 RELEASE_TAG=""
@@ -119,11 +123,10 @@ require_max_size() {
   fi
 }
 
-require_max_size "bottle JSON" "$BOTTLE_JSON" 1048576
-require_max_size "dependency provenance" "$DEPENDENCY_PROVENANCE" 1048576
-require_max_size "compressed bottle" "$BOTTLE" 536870912
+require_max_size "bottle JSON" "$BOTTLE_JSON" "$HOMEBREW_MAX_BOTTLE_JSON_BYTES"
+require_max_size "dependency provenance" "$DEPENDENCY_PROVENANCE" "$HOMEBREW_MAX_DEPENDENCY_PROVENANCE_BYTES"
+require_max_size "compressed bottle" "$BOTTLE" "$HOMEBREW_MAX_BOTTLE_BYTES"
 
-SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
   --input "$DEPENDENCY_PROVENANCE" \
   --formula "$FORMULA" \

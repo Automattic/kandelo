@@ -3,6 +3,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/homebrew-publication-limits.sh"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -236,6 +238,7 @@ EOF
 
 make_build_handoff() {
   local handoff="$1"
+  local extra_file_count="${BUILD_HANDOFF_EXTRA_FILE_COUNT:-0}"
   local source_dir="${handoff}.source"
   local bottle="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.tar.gz"
   local bottle_json="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.json"
@@ -280,6 +283,15 @@ EOF
       }
     }
   }' >"$bottle_json"
+  if [ "$extra_file_count" -gt 0 ]; then
+    local expanded_json="$source_dir/expanded-bottle.json"
+    jq --argjson count "$extra_file_count" '
+      .[].bottle.tags.wasm32_kandelo.all_files += [
+        range(0; $count) | "share/texmf-dist/fixture/path-\(.).tex"
+      ]
+    ' "$bottle_json" >"$expanded_json"
+    mv "$expanded_json" "$bottle_json"
+  fi
   jq -nS '{
     schema: 1,
     formula: "hello",
@@ -378,6 +390,13 @@ assert_build_handoff_is_minimal_and_validated() {
     fail "validator did not reconstruct the exact minimal Homebrew merge JSON"
   ! grep -q "artifact-only" "$canonical_json" ||
     fail "canonical bottle JSON copied untrusted artifact-only fields"
+
+  handoff="$TMPDIR/build-handoff-large-valid-json"
+  BUILD_HANDOFF_EXTRA_FILE_COUNT=30000 make_build_handoff "$handoff"
+  [ "$(wc -c <"$handoff/bottle.json" | tr -d '[:space:]')" -gt 1048576 ] ||
+    fail "large bottle JSON fixture did not exceed the old 1 MiB bound"
+  validate_build_handoff "$handoff" >/dev/null ||
+    fail "build handoff validator rejected a valid large file inventory"
 }
 
 assert_build_handoff_rejects_untrusted_content() {
@@ -514,16 +533,16 @@ assert_build_handoff_rejects_untrusted_content() {
 
   handoff="$TMPDIR/build-handoff-large-json"
   make_build_handoff "$handoff"
-  head -c 1048577 /dev/zero | tr '\0' ' ' >>"$handoff/bottle.json"
+  head -c 16777217 /dev/zero | tr '\0' ' ' >>"$handoff/bottle.json"
   if validate_build_handoff "$handoff" >/dev/null 2>&1; then
-    fail "build handoff validator accepted bottle JSON larger than 1 MiB"
+    fail "build handoff validator accepted bottle JSON larger than 16 MiB"
   fi
 
   handoff="$TMPDIR/build-handoff-large-bottle"
   make_build_handoff "$handoff"
-  truncate -s 536870913 "$handoff/bottle.tar.gz"
+  truncate -s 2147483649 "$handoff/bottle.tar.gz"
   if validate_build_handoff "$handoff" >/dev/null 2>&1; then
-    fail "build handoff validator accepted a compressed bottle larger than 512 MiB"
+    fail "build handoff validator accepted a compressed bottle larger than 2 GiB"
   fi
 
   handoff="$TMPDIR/build-handoff-large-dependency-provenance"
@@ -639,6 +658,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
 make_publish_handoff() {
   local handoff="$1" tap_root="$2"
   local build_stage="${handoff}.build"
+  local extra_link_count="${PUBLISH_HANDOFF_EXTRA_LINK_COUNT:-0}"
   local bottle_sha bottle_bytes bottle_url formula_sha
 
   rm -rf "$handoff" "$tap_root" "$build_stage"
@@ -720,6 +740,19 @@ EOF
         }]
       }]
     }' >"$handoff/composition/sidecars-input.json"
+  if [ "$extra_link_count" -gt 0 ]; then
+    local expanded_input="$handoff/composition/sidecars-input.expanded.json"
+    jq --argjson count "$extra_link_count" '
+      .packages[0].bottles[0].links += [
+        range(0; $count) | {
+          type: "symlink",
+          source: "bin/hello",
+          target: "share/texmf-dist/fixture/path-\(.).tex"
+        }
+      ]
+    ' "$handoff/composition/sidecars-input.json" >"$expanded_input"
+    mv "$expanded_input" "$handoff/composition/sidecars-input.json"
+  fi
 }
 
 validate_publish_handoff() {
@@ -737,12 +770,42 @@ validate_publish_handoff() {
 }
 
 assert_publish_handoff_is_exact_inert_data() {
-  local handoff tap_root tmp external before after err
+  local handoff tap_root tmp external before after err generated composed host link
 
   handoff="$TMPDIR/publish-handoff-valid"
   tap_root="$TMPDIR/publish-handoff-valid-tap"
   make_publish_handoff "$handoff" "$tap_root"
   validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+
+  handoff="$TMPDIR/publish-handoff-large-valid-sidecar"
+  tap_root="$TMPDIR/publish-handoff-large-valid-sidecar-tap"
+  generated="$TMPDIR/publish-handoff-large-valid-sidecar-generated"
+  composed="$TMPDIR/publish-handoff-large-valid-sidecar.rb"
+  PUBLISH_HANDOFF_EXTRA_LINK_COUNT=25000 make_publish_handoff "$handoff" "$tap_root"
+  validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+  cp -a "$tap_root" "$generated"
+  ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$generated/Formula/hello.rb" "$tap_root/Formula/hello.rb" \
+    https://ghcr.io/v2/automattic/kandelo-homebrew \
+    0 wasm32_kandelo any_skip_relocation \
+    "$(jq -r '.bottle.sha256' "$handoff/receipt.json")" \
+    discard "$composed"
+  mv "$composed" "$generated/Formula/hello.rb"
+  host="$(rustc -vV | awk '/^host/ {print $2}')"
+  (
+    cd "$REPO_ROOT"
+    cargo run --release -p xtask --target "$host" --quiet -- \
+      homebrew-sidecars --tap-root "$generated" \
+      --input "$handoff/composition/sidecars-input.json"
+    cargo run --release -p xtask --target "$host" --quiet -- \
+      homebrew-validate --tap-root "$generated"
+  ) >/dev/null
+  link="$(find "$generated/Kandelo/link" -mindepth 1 -maxdepth 1 -type f -print -quit)"
+  [ -n "$link" ] || fail "large sidecar fixture did not generate a link manifest"
+  [ "$(wc -c <"$link" | tr -d '[:space:]')" -gt 2097152 ] ||
+    fail "valid large link sidecar did not exceed the old 2 MiB bound"
+  [ "$(wc -c <"$link" | tr -d '[:space:]')" -le "$HOMEBREW_MAX_SIDECAR_JSON_BYTES" ] ||
+    fail "valid large link sidecar exceeded the current 16 MiB bound"
 
   handoff="$TMPDIR/publish-handoff-extra"
   tap_root="$TMPDIR/publish-handoff-extra-tap"
@@ -1245,6 +1308,40 @@ RUBY
   [ "$output" = $'automattic/kandelo-homebrew/dep-a\nautomattic/kandelo-homebrew/dep-b\nautomattic/kandelo-homebrew/dep-recommended' ] ||
     fail "static Formula resolver did not produce the recursive runtime closure: $output"
 
+  cat >"$tap/Formula/rich-static.rb" <<'RUBY'
+class RichStatic < Formula
+  PAYLOAD_VERSION = "1.0".freeze
+  PAYLOAD_NAME = "payload-#{PAYLOAD_VERSION}".freeze
+
+  depends_on "automattic/kandelo-homebrew/dep-a"
+
+  on_macos do
+    keg_only :provided_by_macos
+  end
+
+  resource "payload" do
+    url "https://example.invalid/payload.tar.gz"
+    version PAYLOAD_VERSION
+    sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  end
+
+  def install
+    verify_payload_contract
+  end
+
+  private
+
+  def verify_payload_contract
+    dependencies = [PAYLOAD_NAME]
+    dependencies.fetch(0)
+  end
+end
+RUBY
+  output="$(ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" Automattic/kandelo-homebrew rich-static)"
+  [ "$output" = $'automattic/kandelo-homebrew/dep-a\nautomattic/kandelo-homebrew/dep-b' ] ||
+    fail "static Formula resolver rejected safe constants, resources, or private helpers: $output"
+
   expect_static_closure_failure() {
     local formula="$1" label="$2"
     if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
@@ -1296,6 +1393,15 @@ end
 RUBY
   expect_static_closure_failure initializer "an initialization-time dependency dispatch"
 
+  cat >"$tap/Formula/dependencies-override.rb" <<'RUBY'
+class DependenciesOverride < Formula
+  def dependencies
+    []
+  end
+end
+RUBY
+  expect_static_closure_failure dependencies-override "a Formula dependency accessor override"
+
   cat >"$tap/Formula/receiver.rb" <<'RUBY'
 class Receiver < Formula
   self.depends_on "automattic/kandelo-homebrew/dep-a"
@@ -1329,6 +1435,52 @@ end
 RUBY
   expect_static_closure_failure patch-execution "executable dependency dispatch in a patch block"
 
+  cat >"$tap/Formula/on-macos-argument.rb" <<'RUBY'
+class OnMacosArgument < Formula
+  on_macos(system("touch", "/tmp/untrusted-formula-block")) do
+  end
+end
+RUBY
+  expect_static_closure_failure on-macos-argument "executable arguments on an on_macos block"
+
+  cat >"$tap/Formula/patch-argument.rb" <<'RUBY'
+class PatchArgument < Formula
+  patch(system("touch", "/tmp/untrusted-formula-block")) do
+  end
+end
+RUBY
+  expect_static_closure_failure patch-argument "executable arguments on a patch block"
+
+  cat >"$tap/Formula/test-argument.rb" <<'RUBY'
+class TestArgument < Formula
+  test(system("touch", "/tmp/untrusted-formula-block")) do
+  end
+end
+RUBY
+  expect_static_closure_failure test-argument "executable arguments on a test block"
+
+  cat >"$tap/Formula/private-hook.rb" <<'RUBY'
+class PrivateHook < Formula
+  private
+
+  def recursive_dependencies
+    []
+  end
+end
+RUBY
+  expect_static_closure_failure private-hook "a private Formula dependency hook override"
+
+  cat >"$tap/Formula/private-copy-hook.rb" <<'RUBY'
+class PrivateCopyHook < Formula
+  private
+
+  def initialize_copy(other)
+    super
+  end
+end
+RUBY
+  expect_static_closure_failure private-copy-hook "a private Ruby initialization hook override"
+
   cat >"$tap/Formula/foreign-include.rb" <<'RUBY'
 class ForeignInclude < Formula
   include DependencyDeclaringSupport
@@ -1343,6 +1495,12 @@ require "json"
 require "shellwords"
 
 module KandeloFormulaSupport
+  KANDELO_TAP_FORMULA_PREFIX = "automattic/kandelo-homebrew/"
+
+  def formula_opt_prefix(name)
+    name.delete_prefix(KANDELO_TAP_FORMULA_PREFIX)
+  end
+
   def kandelo_fixture
     "fixture"
   end
@@ -1500,6 +1658,62 @@ assert_failure_preserves_metadata() {
   [ "$before" = "$after" ] || fail "failure path modified metadata.json"
   find "$tap/Kandelo/reports/failures" -type f -name '*-hello-wasm32.json' -print -quit |
     grep -q . || fail "failure path did not write failure report"
+}
+
+assert_success_payload_size_bounds_are_final() {
+  local tap="$TMPDIR/oversized-sidecar-tap"
+  local payload="$TMPDIR/oversized-sidecar-payload"
+  local err="$TMPDIR/oversized-sidecar.err"
+  local link
+  make_tap "$tap"
+  mkdir -p "$tap/Kandelo/formula" "$tap/Kandelo/link"
+  printf '{}\n' >"$tap/Kandelo/formula/hello.json"
+  printf '{}\n' >"$tap/Kandelo/link/hello-1-rebuild0-wasm32.json"
+  git -C "$tap" add Kandelo
+  git -C "$tap" commit -q -m "add sidecar size fixtures"
+  link="$(find "$tap/Kandelo/link" -mindepth 1 -maxdepth 1 -type f -print -quit)"
+
+  for relative in \
+    Kandelo/metadata.json \
+    Kandelo/formula/hello.json \
+    "Kandelo/link/$(basename "$link")"; do
+    rm -rf "$payload"
+    cp -a "$tap" "$payload"
+    truncate -s "$((HOMEBREW_MAX_SIDECAR_JSON_BYTES + 1))" "$payload/$relative"
+    if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+      --tap-root "$tap" \
+      --sidecar-root "$payload" \
+      --formula hello \
+      --arch wasm32 \
+      --release-tag bottles-abi-v15 \
+      --status success \
+      --dry-run \
+      --no-lock >/dev/null 2>"$err"; then
+      fail "sidecar publisher accepted oversized final $relative"
+    fi
+    grep -q "exceeds $HOMEBREW_MAX_SIDECAR_JSON_BYTES bytes" "$err" ||
+      fail "sidecar publisher did not explain oversized final $relative"
+  done
+
+  rm -rf "$payload"
+  cp -a "$tap" "$payload"
+  truncate -s "$((HOMEBREW_MAX_SIDECAR_JSON_BYTES + 1))" \
+    "$tap/Kandelo/formula/stale.json"
+  git -C "$tap" add Kandelo/formula/stale.json
+  git -C "$tap" commit -q -m "add stale oversized sidecar"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --tap-root "$tap" \
+    --sidecar-root "$payload" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v15 \
+    --status success \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    fail "sidecar publisher accepted an oversized stale file in the final merged tap"
+  fi
+  grep -q "exceeds $HOMEBREW_MAX_SIDECAR_JSON_BYTES bytes" "$err" ||
+    fail "sidecar publisher did not explain an oversized stale file in the final merged tap"
 }
 
 assert_failure_reports_do_not_collide_within_one_second() {
@@ -1855,6 +2069,7 @@ assert_build_handoff_rejects_untrusted_content
 assert_upload_receipt_is_bound_to_build_handoff
 assert_publish_handoff_is_exact_inert_data
 assert_failure_preserves_metadata
+assert_success_payload_size_bounds_are_final
 assert_failure_reports_do_not_collide_within_one_second
 assert_write_publish_requires_attached_branch_and_pushes_explicit_ref
 assert_failed_payload_rejects_success_status

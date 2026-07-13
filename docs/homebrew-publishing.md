@@ -172,13 +172,16 @@ digest, tag, and digest-bound URL. Fresh validation requires the submitted
 prior-bottle record to equal that exact tap data; a closure member with no
 selected-architecture bottle fails validation.
 
-This non-evaluating boundary permits only the Formula load-time structures the
-tap currently uses. `patch do` is limited to static resource declarations,
-class constants and build-time instance methods use explicit allowlists, and
-the shared `KandeloFormulaSupport` file is accepted only when its top level is
-the three standard-library requires plus a module containing unique
-`kandelo_` instance methods. Load-time hooks, arbitrary class methods, and
-other executable structures fail closed.
+This non-evaluating boundary permits normal static Formula structure without
+executing it. `patch do` and `resource do` are limited to canonical literal
+metadata, class constants must be static data, and private instance helpers use
+an explicit reviewed name allowlist so Formula, Ruby initialization, and
+dependency hooks cannot be overridden. The
+shared `KandeloFormulaSupport` file is accepted only when its top level is the
+three standard-library requires plus a module containing static `KANDELO_`
+constants and unique `kandelo_` or `formula_opt_` instance methods. Load-time
+hooks, arbitrary class methods, dependency metaprogramming, and other
+executable class/module structures fail closed.
 
 ## Trusted Publish Flow
 
@@ -258,6 +261,16 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    contains only `manifest.json`, Homebrew's bottle JSON, one gzip bottle
    archive, and bounded `dependency-provenance.json`. It contains no Formula
    source, scripts, environment files, raw logs, or credentials.
+
+   The handoff remains explicitly bounded while supporting complete large
+   packages: Homebrew bottle JSON is capped at 16 MiB, dependency provenance at
+   1 MiB, and the compressed bottle at 2 GiB. Generated formula and link
+   sidecars are each capped at 16 MiB. Artifact transport uses compression level
+   zero because the bottle is already a gzip stream. Validators reject the
+   first byte beyond each bound; large packages are not made publishable by
+   truncating their file inventories or installed payloads.
+   `scripts/homebrew-publication-limits.sh` owns these byte limits; creators,
+   validators, and the final refreshed-tap publisher consume the same values.
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
    against the plan before exposing the token to an isolated ORAS upload. Its
