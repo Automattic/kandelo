@@ -2706,12 +2706,18 @@ export class WasmPosixKernel {
           return 0;
         }
         case WasmPosixKernel.F_SETLK: {
-          const ok = this.sharedLockTable.setLock(pathHash, pid, lockType, start, len);
-          return ok ? 0 : -11; // -EAGAIN
+          const result = this.sharedLockTable.setLockResult(pathHash, pid, lockType, start, len);
+          if (result === "acquired") return 0;
+          if (result === "blocked") return -11; // -EAGAIN
+          return -37; // -ENOLCK
         }
         case WasmPosixKernel.F_SETLKW: {
-          const ok = this.sharedLockTable.setLock(pathHash, pid, lockType, start, len);
-          return ok ? 0 : -11; // -EAGAIN, kernel-worker retries blocking fcntl
+          const result = this.sharedLockTable.setLockResult(pathHash, pid, lockType, start, len);
+          // The worker retries EAGAIN for a blocking lock. ENOLCK is a real
+          // capacity failure and must be returned instead of spinning.
+          if (result === "acquired") return 0;
+          if (result === "blocked") return -11; // -EAGAIN
+          return -37; // -ENOLCK
         }
         default:
           return -22; // -EINVAL

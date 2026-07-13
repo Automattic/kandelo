@@ -98,6 +98,24 @@ describe("SharedLockTable", () => {
     expect(result).toBe(false);
   });
 
+  it("distinguishes table exhaustion from a conflicting lock", () => {
+    const table = SharedLockTable.create(1);
+
+    expect(table.setLockResult(100, 1, 1, 0n, 1n)).toBe("acquired");
+    expect(table.setLockResult(100, 2, 1, 0n, 1n)).toBe("blocked");
+    expect(table.setLockResult(200, 2, 1, 0n, 1n)).toBe("no-space");
+    // Keep the existing boolean API compatible for callers that only need a
+    // success/failure answer.
+    expect(table.setLock(200, 2, 1, 0n, 1n)).toBe(false);
+  });
+
+  it("does not wait when a blocking request exhausts the table", () => {
+    const table = SharedLockTable.create(1);
+
+    expect(table.setLock(100, 1, 1, 0n, 1n)).toBe(true);
+    expect(table.setLockWait(200, 2, 1, 0n, 1n)).toBe("no-space");
+  });
+
   it("should removeLocksByPid", () => {
     const table = SharedLockTable.create();
     table.setLock(100, 1, 1, 0n, 50n);

@@ -55,6 +55,8 @@ export interface LockInfo {
   len: bigint;
 }
 
+export type LockSetResult = "acquired" | "blocked" | "no-space";
+
 export class SharedLockTable {
   private view: Int32Array;
   private sab: SharedArrayBuffer;
@@ -231,7 +233,8 @@ export class SharedLockTable {
 
   /**
    * Set a lock (non-blocking). For F_UNLCK, removes matching locks.
-   * Returns true on success, false if conflicting lock exists (EAGAIN).
+   * Returns true on success, false if the lock conflicts or the table is full.
+   * Errno-producing callers must use setLockResult() to preserve the cause.
    */
   setLock(
     pathHash: number,
@@ -240,6 +243,23 @@ export class SharedLockTable {
     start: bigint,
     len: bigint,
   ): boolean {
+    return (
+      this.setLockResult(pathHash, pid, lockType, start, len) === "acquired"
+    );
+  }
+
+  /**
+   * Set a lock and preserve the reason it could not be installed. Callers
+   * that translate the result to an errno must distinguish a conflicting
+   * lock (EAGAIN) from an exhausted system lock table (ENOLCK).
+   */
+  setLockResult(
+    pathHash: number,
+    pid: number,
+    lockType: number,
+    start: bigint,
+    len: bigint,
+  ): LockSetResult {
     this.acquire();
     try {
       return this._setLockUnsafe(pathHash, pid, lockType, start, len);
@@ -254,7 +274,7 @@ export class SharedLockTable {
     lockType: number,
     start: bigint,
     len: bigint,
-  ): boolean {
+  ): LockSetResult {
     // For unlock: remove overlapping locks from same pid on same path, then wake waiters
     if (lockType === F_UNLCK) {
       let i = 0;
@@ -274,12 +294,12 @@ export class SharedLockTable {
       // Wake any F_SETLKW waiters
       Atomics.add(this.view, WAKE_COUNTER, 1);
       Atomics.notify(this.view, WAKE_COUNTER);
-      return true;
+      return "acquired";
     }
 
     // Check for conflicts
     if (this._getBlockingLockUnsafe(pathHash, lockType, start, len, pid)) {
-      return false; // caller should return EAGAIN
+      return "blocked";
     }
 
     // Remove overlapping locks from same pid on same path (upgrade/replace)
@@ -301,16 +321,17 @@ export class SharedLockTable {
     const count = this.view[COUNT];
     const capacity = this.view[CAPACITY];
     if (count >= capacity) {
-      return false; // table full — treat as EAGAIN
+      return "no-space";
     }
     this.writeEntry(count, { pathHash, pid, lockType, start, len });
     this.view[COUNT] = count + 1;
-    return true;
+    return "acquired";
   }
 
   /**
    * Set a lock, blocking until it can be acquired (F_SETLKW).
    * Uses Atomics.wait on wake_counter to sleep between retries.
+   * Returns no-space instead of waiting when the fixed-size table is full.
    */
   setLockWait(
     pathHash: number,
@@ -318,7 +339,7 @@ export class SharedLockTable {
     lockType: number,
     start: bigint,
     len: bigint,
-  ): void {
+  ): "acquired" | "no-space" {
     while (true) {
       this.acquire();
       const blocker = this._getBlockingLockUnsafe(
@@ -329,9 +350,10 @@ export class SharedLockTable {
         pid,
       );
       if (!blocker) {
-        this._setLockUnsafe(pathHash, pid, lockType, start, len);
+        const result = this._setLockUnsafe(pathHash, pid, lockType, start, len);
         this.release();
-        return;
+        if (result !== "blocked") return result;
+        continue;
       }
       const wakeCount = Atomics.load(this.view, WAKE_COUNTER);
       this.release();
