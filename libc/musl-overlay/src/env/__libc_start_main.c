@@ -31,6 +31,7 @@ int __init_tp(void *);
 
 void __init_libc(char **envp, char *pn)
 {
+	size_t i;
 	__environ = envp;
 
 	/* On Wasm, there is no auxv, TLS, or secure-execution mode.
@@ -46,6 +47,7 @@ void __init_libc(char **envp, char *pn)
 
 	if (!pn) pn = "";
 	__progname = __progname_full = pn;
+	for (i=0; pn[i]; i++) if (pn[i]=='/') __progname = pn+i+1;
 
 	/* Initialize the thread pointer for the main thread.
 	 * Set __wasm_thread_pointer to point at __wasm_tp_storage,
