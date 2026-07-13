@@ -407,7 +407,13 @@ VFS images can also carry image-level metadata outside the guest file tree. The 
 
 `BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top.
 
-The legacy `kernel.spawn(programBytes, argv, { fsSab })` path is still supported for demos that own a single `MemoryFileSystem` SAB at `/` (used by `benchmark`, `erlang`, `shell`). To keep `getpwnam`/`gethostbyname` working on that path after `synthetic_file_content` was removed, the browser kernel worker overlays `/etc/*` from `rootfs.vfs` into the demo SAB at boot (`overlayEtcFromRootfs` in `host/src/browser-kernel-worker-entry.ts`), preserving any `/etc` files the demo wrote itself. This is a temporary bridge until those demos move to the `vfsImage` boot path.
+The browser test runner and Git test assemble kernel-owned VFS images with
+`createBuildFsWithEtc`, then serialize them with `finalizeKernelOwnedImage` and
+boot them through `initFromImage`. Before serialization,
+`overlayEtcFromRootfs` in `host/src/vfs/rootfs-overlay.ts` recursively merges
+`/etc/**` from the canonical `rootfs.vfs`. It preserves caller-owned leaves and
+directory metadata, and fails image assembly on missing source state, short
+reads, or target capacity errors.
 
 ### Lazy Files
 

@@ -9,8 +9,11 @@
 // left is the small, transient per-boot image-build FS; these helpers track it
 // and nudge WebKit's collector to reclaim it between boots.
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
+import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
 // @ts-expect-error — vite ?url virtual module (resolved by the kernel-artifacts plugin)
 import rootfsVfsUrl from "@rootfs-vfs?url";
+
+export { overlayEtcFromRootfs };
 
 const WEBKIT_RECLAIM_TIMEOUT_MS = 1_500;
 const WEBKIT_RECLAIM_STEP_MS = 150;
@@ -92,53 +95,8 @@ export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): MemoryFile
 }
 
 /**
- * Copy `/etc/*` regular files from a rootfs image into `target`, without
- * overwriting files the caller already wrote. This replaces the legacy
- * worker-side `/etc` overlay that `kernel.init()` performed: demos that used to
- * start from an empty FS and depend on `/etc/{passwd,group,hosts,services}` for
- * `getpwnam`/`gethostbyname` must now bake `/etc` into their image.
- */
-export function overlayEtcFromRootfs(target: MemoryFileSystem, rootfsImage: Uint8Array): void {
-  const source = MemoryFileSystem.fromImage(rootfsImage);
-  try { target.mkdir("/etc", 0o755); } catch { /* exists */ }
-
-  let dh: number;
-  try { dh = source.opendir("/etc"); }
-  catch { return; /* no /etc in image */ }
-  try {
-    for (;;) {
-      const entry = source.readdir(dh);
-      if (entry === null) break;
-      if (entry.name === "." || entry.name === "..") continue;
-      const path = `/etc/${entry.name}`;
-      let exists = false;
-      try { target.stat(path); exists = true; } catch { /* not present */ }
-      if (exists) continue;
-      const st = source.stat(path);
-      if ((st.mode & 0xf000) !== 0x8000) continue; // regular files only
-      const size = st.size;
-      const buf = new Uint8Array(size);
-      const fdR = source.open(path, 0, 0);
-      let read = 0;
-      while (read < size) {
-        const n = source.read(fdR, buf.subarray(read), null, size - read);
-        if (n <= 0) break;
-        read += n;
-      }
-      source.close(fdR);
-      const fdW = target.open(path, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, st.mode & 0o777);
-      if (read > 0) target.write(fdW, buf.subarray(0, read), null, read);
-      target.close(fdW);
-    }
-  } finally {
-    source.closedir(dh);
-  }
-}
-
-/**
- * Convenience: an empty build FS pre-seeded with `/etc` from the canonical
- * rootfs — the kernel-owned equivalent of the legacy empty-FS + init()-overlay
- * starting point.
+ * Convenience: an empty build FS recursively pre-seeded with `/etc` from the
+ * canonical rootfs. Existing caller-owned leaves remain authoritative.
  */
 export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<MemoryFileSystem> {
   const buildFs = createEmptyBuildFs(maxByteLength);
