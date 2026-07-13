@@ -4607,7 +4607,7 @@ pub fn sys_pipe2(proc: &mut Process, flags: u32) -> Result<(i32, i32), Errno> {
 }
 
 /// Get file status information.
-pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmStat, Errno> {
+pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmStat, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
 
@@ -4784,6 +4784,23 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
         // the file's real uid/gid, so just propagate.
         host.host_fstat(ofd.host_handle)
     }
+}
+
+/// Return the same live OFD metadata through a procfs fd link as `fstat(fd)`.
+/// A numeric procfs fd name that is not open is absent, not an EBADF syscall
+/// argument owned by the caller.
+pub(crate) fn procfs_fd_target_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Result<WasmStat, Errno> {
+    sys_fstat(proc, host, fd).map_err(|error| {
+        if error == Errno::EBADF {
+            Errno::ENOENT
+        } else {
+            error
+        }
+    })
 }
 
 /// fcntl operations on a file descriptor.
@@ -5207,6 +5224,31 @@ fn realtime_timestamp(host: &mut dyn HostIO) -> Result<(u64, u32), Errno> {
     ))
 }
 
+fn procfs_entry_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    entry: &crate::procfs::ProcfsEntry,
+    follow: bool,
+) -> Result<WasmStat, Errno> {
+    crate::procfs::validate_entry(proc, entry)?;
+    if follow {
+        if let crate::procfs::ProcfsEntry::FdLink(pid, fd) = entry {
+            if *pid == proc.pid {
+                return procfs_fd_target_stat(proc, host, *fd);
+            }
+            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+            {
+                return crate::wasm_api::procfs_fstat_for_pid(*pid, *fd, host);
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+            {
+                return Err(Errno::ENOENT);
+            }
+        }
+    }
+    Ok(crate::procfs::procfs_stat(entry, 0, follow))
+}
+
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
@@ -5235,8 +5277,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
-        return Ok(crate::procfs::procfs_stat(&entry, 0, true));
+        return procfs_entry_stat(proc, host, &entry, true);
     }
     if !is_host_backed_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
@@ -5290,8 +5331,7 @@ pub fn sys_lstat(
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
-        return Ok(crate::procfs::procfs_stat(&entry, 0, false));
+        return procfs_entry_stat(proc, host, &entry, false);
     }
     if !is_host_backed_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
@@ -11642,9 +11682,8 @@ pub fn sys_fstatat(
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
-        return Ok(crate::procfs::procfs_stat(&entry, 0, follow));
+        return procfs_entry_stat(proc, host, &entry, follow);
     }
     if !is_host_backed_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
@@ -30195,6 +30234,63 @@ mod tests {
         let mut host = MockHostIO::new();
         let st = sys_lstat(&mut proc, &mut host, b"/proc/self").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFLNK);
+    }
+
+    #[test]
+    fn procfs_fd_stat_follows_the_live_ofd() {
+        fn assert_same_stat(actual: &WasmStat, expected: &WasmStat) {
+            assert_eq!(actual.st_dev, expected.st_dev);
+            assert_eq!(actual.st_ino, expected.st_ino);
+            assert_eq!(actual.st_mode, expected.st_mode);
+            assert_eq!(actual.st_nlink, expected.st_nlink);
+            assert_eq!(actual.st_uid, expected.st_uid);
+            assert_eq!(actual.st_gid, expected.st_gid);
+            assert_eq!(actual.st_size, expected.st_size);
+            assert_eq!(actual.st_atime_sec, expected.st_atime_sec);
+            assert_eq!(actual.st_atime_nsec, expected.st_atime_nsec);
+            assert_eq!(actual.st_mtime_sec, expected.st_mtime_sec);
+            assert_eq!(actual.st_mtime_nsec, expected.st_mtime_nsec);
+            assert_eq!(actual.st_ctime_sec, expected.st_ctime_sec);
+            assert_eq!(actual.st_ctime_nsec, expected.st_ctime_nsec);
+        }
+
+        let mut proc = Process::new(42);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"procfs-stat", 0).unwrap();
+        sys_write(&mut proc, &mut host, fd, b"live-ofd").unwrap();
+        let expected = sys_fstat(&proc, &mut host, fd).unwrap();
+        let path = alloc::format!("/proc/self/fd/{fd}");
+
+        let followed = sys_stat(&mut proc, &mut host, path.as_bytes()).unwrap();
+        assert_same_stat(&followed, &expected);
+        let followed_at =
+            sys_fstatat(&mut proc, &mut host, AT_FDCWD, path.as_bytes(), 0).unwrap();
+        assert_same_stat(&followed_at, &expected);
+        let followed_statx =
+            sys_statx(&mut proc, &mut host, AT_FDCWD, path.as_bytes(), 0, 0).unwrap();
+        assert_same_stat(&followed_statx, &expected);
+
+        let link = sys_lstat(&mut proc, &mut host, path.as_bytes()).unwrap();
+        assert_eq!(link.st_mode & S_IFMT, S_IFLNK);
+        let link_at = sys_fstatat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            path.as_bytes(),
+            AT_SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+        assert_eq!(link_at.st_mode & S_IFMT, S_IFLNK);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            sys_stat(&mut proc, &mut host, path.as_bytes()).unwrap_err(),
+            Errno::ENOENT,
+        );
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, path.as_bytes()).unwrap_err(),
+            Errno::ENOENT,
+        );
     }
 
     #[test]
