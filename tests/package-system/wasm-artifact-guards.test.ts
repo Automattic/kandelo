@@ -23,7 +23,10 @@ describe("wasm artifact ABI guards", () => {
   let wrappedWasm: string;
   let wrappedStrippedWasm: string;
   let arbitraryWrapperWasm: string;
+  let missingAbiWasm: string;
   let failingObjdumpBin: string;
+  let failingBinaryenBin: string;
+  let failingDecodersBin: string;
 
   beforeAll(() => {
     fixtureDir = mkdtempSync(path.join(tmpdir(), "kandelo-wasm-abi-guard-"));
@@ -72,6 +75,17 @@ describe("wasm artifact ABI guards", () => {
     copyFileSync(wrappedWasm, wrappedStrippedWasm);
     execFileSync("wasm-strip", [wrappedStrippedWasm]);
 
+    const missingAbiWatPath = path.join(fixtureDir, "missing-abi.wat");
+    missingAbiWasm = path.join(fixtureDir, "missing-abi.wasm");
+    writeFileSync(
+      missingAbiWatPath,
+      `(module
+        (func $not_the_abi (result i32)
+          i32.const 18)
+        (export "not_the_abi" (func $not_the_abi)))\n`,
+    );
+    execFileSync("wat2wasm", [missingAbiWatPath, "-o", missingAbiWasm]);
+
     const arbitraryWrapperWatPath = path.join(
       fixtureDir,
       "arbitrary-wrapper-abi.wat",
@@ -99,8 +113,8 @@ describe("wasm artifact ABI guards", () => {
 
     // Current LLVM output can use instructions that the pinned WABT reads in
     // the export table but rejects while disassembling. Model that split so
-    // the Binaryen fallback remains covered without checking in a large SDK
-    // binary fixture.
+    // the preferred Binaryen path remains independent of WABT without checking
+    // in a large SDK binary fixture.
     const realObjdump = execFileSync(
       "bash",
       ["-c", "command -v wasm-objdump"],
@@ -121,6 +135,20 @@ describe("wasm artifact ABI guards", () => {
       ].join("\n"),
     );
     chmodSync(objdumpWrapper, 0o755);
+
+    failingBinaryenBin = path.join(fixtureDir, "failing-binaryen-bin");
+    mkdirSync(failingBinaryenBin);
+    const wasmDisWrapper = path.join(failingBinaryenBin, "wasm-dis");
+    writeFileSync(wasmDisWrapper, "#!/usr/bin/env bash\nexit 1\n");
+    chmodSync(wasmDisWrapper, 0o755);
+
+    failingDecodersBin = path.join(fixtureDir, "failing-decoders-bin");
+    mkdirSync(failingDecodersBin);
+    for (const decoder of ["wasm-dis", "wasm-objdump"]) {
+      const decoderWrapper = path.join(failingDecodersBin, decoder);
+      writeFileSync(decoderWrapper, "#!/usr/bin/env bash\nexit 1\n");
+      chmodSync(decoderWrapper, 0o755);
+    }
   });
 
   afterAll(() => {
@@ -168,11 +196,21 @@ describe("wasm artifact ABI guards", () => {
     expect(result.stdout.trim()).toBe("17");
   });
 
-  it("falls back when WABT cannot disassemble the mapped function", () => {
+  it("uses Binaryen when WABT cannot disassemble the mapped function", () => {
     const result = runGuardWithEnv(
       'wasm_extract_abi_version "$1"',
       { PATH: `${failingObjdumpBin}:${process.env.PATH ?? ""}` },
       namedWasm,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("17");
+  });
+
+  it("falls back to WABT's numeric export target when Binaryen fails", () => {
+    const result = runGuardWithEnv(
+      'wasm_extract_abi_version "$1"',
+      { PATH: `${failingBinaryenBin}:${process.env.PATH ?? ""}` },
+      strippedWasm,
     );
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe("17");
@@ -200,11 +238,21 @@ describe("wasm artifact ABI guards", () => {
     expect(result.stdout.trim()).toBe("18");
   });
 
-  it("falls back for a wrapped ABI when WABT cannot disassemble it", () => {
+  it("uses Binaryen for a wrapped ABI when WABT cannot disassemble it", () => {
     const result = runGuardWithEnv(
       'wasm_extract_abi_version "$1"',
       { PATH: `${failingObjdumpBin}:${process.env.PATH ?? ""}` },
       wrappedWasm,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("18");
+  });
+
+  it("falls back to WABT for a stripped wasm-ld command export thunk", () => {
+    const result = runGuardWithEnv(
+      'wasm_extract_abi_version "$1"',
+      { PATH: `${failingBinaryenBin}:${process.env.PATH ?? ""}` },
+      wrappedStrippedWasm,
     );
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe("18");
@@ -217,6 +265,14 @@ describe("wasm artifact ABI guards", () => {
     );
     expect(result.status).not.toBe(0);
     expect(result.stdout).toBe("");
+
+    const wabtResult = runGuardWithEnv(
+      'wasm_extract_abi_version "$1"',
+      { PATH: `${failingBinaryenBin}:${process.env.PATH ?? ""}` },
+      arbitraryWrapperWasm,
+    );
+    expect(wabtResult.status).not.toBe(0);
+    expect(wabtResult.stdout).toBe("");
   });
 
   it("classifies aliased artifacts by their extracted ABI", () => {
@@ -225,5 +281,34 @@ describe("wasm artifact ABI guards", () => {
 
     const stale = runGuard('wasm_has_stale_abi "$1" "$2"', namedWasm, "18");
     expect(stale.status, stale.stderr).toBe(0);
+  });
+
+  it("distinguishes an absent ABI export from decoder failure", () => {
+    const absent = runGuard('wasm_extract_abi_version "$1"', missingAbiWasm);
+    expect(absent.status, absent.stderr).toBe(1);
+    expect(absent.stdout).toBe("");
+
+    const absentIsStale = runGuard(
+      'wasm_has_stale_abi "$1" "$2"',
+      missingAbiWasm,
+      "18",
+    );
+    expect(absentIsStale.status, absentIsStale.stderr).toBe(1);
+
+    const decoderFailure = runGuardWithEnv(
+      'wasm_extract_abi_version "$1"',
+      { PATH: `${failingDecodersBin}:${process.env.PATH ?? ""}` },
+      namedWasm,
+    );
+    expect(decoderFailure.status, decoderFailure.stderr).toBe(2);
+    expect(decoderFailure.stdout).toBe("");
+
+    const decoderFailureIsStale = runGuardWithEnv(
+      'wasm_has_stale_abi "$1" "$2"',
+      { PATH: `${failingDecodersBin}:${process.env.PATH ?? ""}` },
+      namedWasm,
+      "17",
+    );
+    expect(decoderFailureIsStale.status, decoderFailureIsStale.stderr).toBe(0);
   });
 });

@@ -72,7 +72,7 @@ _wasm_stream_awk() {
     return "${statuses[1]:-1}"
 }
 
-wasm_extract_abi_version() {
+_wasm_extract_abi_version_wabt() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 1
     command -v wasm-objdump >/dev/null 2>&1 || return 1
@@ -95,7 +95,11 @@ wasm_extract_abi_version() {
             else exit 1
         }
     ' wasm-objdump -x "$path")" || export_status=$?
-    [ "$export_status" -eq 0 ] && [ -n "$func_index" ] || return 1
+    case "$export_status" in
+        0) [ -n "$func_index" ] || return 1 ;;
+        1) return 1 ;;
+        *) return "$export_status" ;;
+    esac
 
     # Accept only constants that form the direct return value. This avoids
     # mistaking an unrelated instrumentation constant in the same function for
@@ -213,7 +217,13 @@ wasm_extract_abi_version() {
         printf '%s\n' "$version"
         return 0
     fi
+    [ "$disassembly_status" -eq 0 ] && return 1
+    return "$disassembly_status"
+}
 
+_wasm_extract_abi_version_binaryen() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 1
     # WABT 1.0.37 can read the export section of current LLVM output but may
     # fail later while disassembling modern exception-reference instructions.
     # Binaryen handles those modules. Its text format retains the export-to-
@@ -221,7 +231,7 @@ wasm_extract_abi_version() {
     # for a function whose debug name happens to match the export. As above,
     # recognize only a two-call command thunk and inspect its final callee.
     command -v wasm-dis >/dev/null 2>&1 || return 1
-    disassembly_status=0
+    local version disassembly_status=0
     version="$(_wasm_stream_awk '
         function trim(value) {
             sub(/^[[:space:]]+/, "", value)
@@ -323,8 +333,58 @@ wasm_extract_abi_version() {
             }
         }
     ' wasm-dis "$path" -o -)" || disassembly_status=$?
-    [ "$disassembly_status" -eq 0 ] && [ -n "$version" ] || return 1
-    printf '%s\n' "$version"
+    if [ "$disassembly_status" -eq 0 ] && [ -n "$version" ]; then
+        printf '%s\n' "$version"
+        return 0
+    fi
+    [ "$disassembly_status" -eq 0 ] && return 1
+    return "$disassembly_status"
+}
+
+wasm_extract_abi_version() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 1
+
+    # Keep the disassembly streaming. Large package binaries (PHP is roughly
+    # 37 MiB) can produce hundreds of MiB of text and must not be captured in a
+    # shell variable merely to inspect one function. Prefer Binaryen here:
+    # WABT 1.0.37 cannot finish disassembling LLVM 21 exception-reference code
+    # after fork instrumentation, even though the module is valid in V8.
+    local version extract_status=1 decoder_status=0
+    if command -v wasm-dis >/dev/null 2>&1; then
+        extract_status=0
+        version="$(_wasm_extract_abi_version_binaryen "$path")" || extract_status=$?
+        case "$extract_status" in
+            0)
+                [ -n "$version" ] || return 1
+                printf '%s\n' "$version"
+                return 0
+                ;;
+            1) return 1 ;;
+            *) decoder_status="$extract_status" ;;
+        esac
+    fi
+
+    # Binaryen is optional, and a decoder failure there does not make a module
+    # uninspectable when WABT can still parse both the export and code sections.
+    # A clean WABT negative is authoritative; only propagate a decoder error
+    # when no available decoder completed the inspection.
+    if command -v wasm-objdump >/dev/null 2>&1; then
+        extract_status=0
+        version="$(_wasm_extract_abi_version_wabt "$path")" || extract_status=$?
+        case "$extract_status" in
+            0)
+                [ -n "$version" ] || return 1
+                printf '%s\n' "$version"
+                return 0
+                ;;
+            1) return 1 ;;
+            *) return "$extract_status" ;;
+        esac
+    fi
+
+    [ "$decoder_status" -gt 1 ] && return "$decoder_status"
+    return 1
 }
 
 wasm_has_stale_abi() {
