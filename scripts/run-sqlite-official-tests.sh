@@ -133,28 +133,11 @@ if [ ! -f "$TESTFIXTURE" ] || [ ! -f "$SQLITE3" ] || [ ! -d "$SQLITE_FULL/test" 
 fi
 
 if [ -z "$GUEST_SHELL" ]; then
-  for candidate in \
-    "$REPO_ROOT/local-binaries/programs/wasm32/sh.wasm" \
-    "$REPO_ROOT/local-binaries/programs/sh.wasm" \
-    "$REPO_ROOT/local-binaries/programs/wasm32/dash.wasm" \
-    "$REPO_ROOT/local-binaries/programs/dash.wasm" \
-    "$REPO_ROOT/binaries/programs/wasm32/sh.wasm" \
-    "$REPO_ROOT/binaries/programs/sh.wasm" \
-    "$REPO_ROOT/binaries/programs/wasm32/dash.wasm" \
-    "$REPO_ROOT/binaries/programs/dash.wasm" \
-    "$REPO_ROOT/packages/registry/dash/bin/dash.wasm"
-  do
-    if [ -f "$candidate" ]; then
-      GUEST_SHELL="$candidate"
-      break
-    fi
-  done
-fi
-
-if [ "$PERMUTATION" = "all" ] && [ -z "$GUEST_SHELL" ]; then
-  echo "ERROR: SQLite all-mode config jobs require a guest /bin/sh-compatible shell." >&2
-  echo "Build or fetch dash/sh, or set SQLITE_TEST_SHELL=/path/to/sh.wasm." >&2
-  exit 1
+  if ! GUEST_SHELL="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/dash.wasm)"; then
+    echo "ERROR: SQLite testrunner child jobs require a current guest /bin/sh-compatible shell." >&2
+    echo "Fetch/build dash, or set SQLITE_TEST_SHELL=/path/to/sh.wasm." >&2
+    exit 1
+  fi
 fi
 
 if [ -z "$WORKDIR" ]; then
