@@ -70,6 +70,12 @@ that preflight unconditionally before splitting one guest operation into
 scratch-buffer chunks, so a kernel without it must fail manifest validation
 rather than bypassing operation-wide file-size enforcement.
 
+ABI 39 makes `kernel_posix_timer_fire` required. The host uses it for every
+host-scheduled POSIX timer expiration so the kernel can preserve exact
+`SIGEV_THREAD_ID` targets, `SI_TIMER` metadata, overruns, and signal-wait wake
+selection. A kernel without it must fail manifest validation rather than fall
+back to process-wide delivery.
+
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI
 changes and do not require a bump.

@@ -825,6 +825,22 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 
 Features: RT signal queuing with `si_value`, cross-process `kill`/`killpg`, `sigaltstack` with shadow stack swap, `sigsuspend`, `sigtimedwait`, `setitimer`/`alarm` via host timers.
 
+POSIX timer scheduling is split at an explicit ownership boundary. The shared
+Node/browser host owns wall-clock `setTimeout`/`setInterval` scheduling, while
+the kernel owns the timer object, notification-pending state, exact
+`SIGEV_THREAD_ID` target, `SI_TIMER` metadata, overrun accounting, and queued
+signal lifetime. At each expiration the host calls the ABI-required
+`kernel_posix_timer_fire` export and wakes only the thread selected by the
+kernel (or the eligible process-wide waiters for `SIGEV_SIGNAL`). The host does
+not synthesize timer signals or fall back to a process-wide notification.
+
+Musl implements POSIX `SIGEV_THREAD` with a detached helper pthread and an
+exact-thread kernel notification. The helper retains the callback and native
+`union sigval` locally—including a full-width wasm64 pointer—while the
+kernel-facing `sigevent` remains a fixed four-i32 wire. Direct wasm64 signal
+notifications therefore remain limited to `sival_int` until that wire is
+extended in a later ABI.
+
 Normal exit status and signal termination are stored separately. `_exit()` and
 `exit_group()` retain the low eight status bits, including values 128 through
 255; a default terminating signal records its signal number independently.

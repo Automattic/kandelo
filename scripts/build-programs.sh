@@ -203,6 +203,12 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
             ;;
+        posix-timer-thread.c)
+            # Keep the fixture's pthread capacity small so its timer-helper
+            # churn test proves detached helpers are actually reclaimed.
+            build_program "$src" "$OUT_DIR_32" \
+                -DWASM_POSIX_THREAD_SLOT_DECL=8
+            ;;
         *)
             build_program "$src" "$OUT_DIR_32"
             ;;
@@ -270,11 +276,17 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
     for src in \
         "$REPO_ROOT/programs/"hello64.c \
         "$REPO_ROOT/programs/"ifhwaddr.c \
+        "$REPO_ROOT/programs/"posix-timer-thread.c \
         "$REPO_ROOT/programs/"sched-getaffinity.c; do
         [ -f "$src" ] || continue
         local_name=$(basename "$src" .c)
         echo "  Compiling $local_name (wasm64)..."
-        "$CC" "${CFLAGS64[@]}" "$src" "${LINK_FLAGS64[@]}" -o "$OUT_DIR_64/${local_name}.wasm"
+        extra_flags=()
+        if [ "$local_name" = "posix-timer-thread" ]; then
+            extra_flags=(-DWASM_POSIX_THREAD_SLOT_DECL=8)
+        fi
+        "$CC" "${CFLAGS64[@]}" "${extra_flags[@]}" "$src" "${LINK_FLAGS64[@]}" \
+            -o "$OUT_DIR_64/${local_name}.wasm"
     done
 
     # Keep the memory64 wait-lifecycle browser fixture on the same owned build

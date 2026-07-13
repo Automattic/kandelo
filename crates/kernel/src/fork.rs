@@ -253,6 +253,7 @@ fn write_directed_signal_state(
         w.write_u32(entry.signum)?;
         w.write_i32(entry.si_value)?;
         w.write_i32(entry.si_code)?;
+        w.write_i32(entry.timer_id.map(|id| id as i32).unwrap_or(-1))?;
     }
     Ok(())
 }
@@ -273,13 +274,36 @@ fn read_directed_signal_state(r: &mut Reader<'_>) -> Result<PerThreadSignalState
         {
             return Err(Errno::EINVAL);
         }
+        let si_value = r.read_i32()?;
+        let si_code = r.read_i32()?;
+        let timer_id = match r.read_i32()? {
+            -1 => None,
+            id if id >= 0 => Some(id as u32),
+            _ => return Err(Errno::EINVAL),
+        };
         state.rt_queue.push_back(RtSigEntry {
             signum,
-            si_value: r.read_i32()?,
-            si_code: r.read_i32()?,
+            si_value,
+            si_code,
+            timer_id,
         });
     }
     Ok(state)
+}
+
+fn discard_legacy_exec_timer_notifications(state: &mut PerThreadSignalState) {
+    let timer_signums: Vec<u32> = state
+        .rt_queue
+        .iter()
+        .filter(|entry| entry.timer_id.is_some())
+        .map(|entry| entry.signum)
+        .collect();
+    state.rt_queue.retain(|entry| entry.timer_id.is_none());
+    for signum in timer_signums {
+        if !state.rt_queue.iter().any(|entry| entry.signum == signum) {
+            state.pending &= !crate::signal::sig_bit(signum);
+        }
+    }
 }
 
 fn write_bounded_len(w: &mut Writer<'_>, len: usize, max: usize) -> Result<(), Errno> {
@@ -1669,7 +1693,10 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     // Read pending signals (exec preserves them, unlike fork)
     let pending = r.read_u64()?;
     let signals = SignalState::from_parts_with_pending(handlers, blocked, pending);
-    let main_thread_signals = read_directed_signal_state(&mut r)?;
+    let mut main_thread_signals = read_directed_signal_state(&mut r)?;
+    // POSIX timer objects do not survive exec. The legacy serialized exec path
+    // must not retain directed notifications that refer to discarded timers.
+    discard_legacy_exec_timer_notifications(&mut main_thread_signals);
 
     // ── FD table ──
     let max_fds = r.read_u32()? as usize;
@@ -2058,12 +2085,14 @@ mod tests {
         proc.main_thread_signals.raise(25);
         proc.main_thread_signals.raise_with_value(32, 101);
         proc.main_thread_signals.raise_with_value(32, 202);
+        proc.main_thread_signals.raise_timer(10, 303, 7);
 
         let serialized = serialize_exec_state_with_growing_buffer(&proc).unwrap();
         let mut restored = deserialize_exec_state(&serialized, proc.pid).unwrap();
 
         assert_eq!(restored.signals.pending, 0);
         assert!(restored.main_thread_signals.pending != 0);
+        assert!(!restored.main_thread_signals.is_pending(10));
         assert_eq!(restored.main_thread_signals.consume_one(25), Some((0, 0)));
         assert_eq!(
             restored.main_thread_signals.consume_one(32),

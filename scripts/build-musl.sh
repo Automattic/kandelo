@@ -219,7 +219,7 @@ prefix = $SYSROOT
 CC = $CC --target=$TARGET
 AR = $AR
 RANLIB = $RANLIB
-CFLAGS = -O2 -matomics -mbulk-memory -fno-exceptions -fno-trapping-math
+CFLAGS = -O2 -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fno-trapping-math
 CFLAGS_AUTO =
 LDFLAGS_AUTO =
 LIBCC =

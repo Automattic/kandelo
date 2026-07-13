@@ -50,6 +50,8 @@ function createWorkerHarness(): any {
     processes: new Map(),
     channelTids: new Map(),
     pendingSleeps: new Map(),
+    pendingSignalWaits: new Map(),
+    signalWaitDeadlines: new Map(),
     pendingPollRetries: new Map(),
     pendingSelectRetries: new Map(),
   });

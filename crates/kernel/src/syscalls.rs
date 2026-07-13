@@ -733,6 +733,9 @@ pub(crate) fn commit_exec_state(
     proc.alt_stack_flags = 2; // SS_DISABLE
     proc.alt_stack_size = 0;
     proc.alt_stack_depth = 0;
+    for timer_id in 0..proc.posix_timers.len() as u32 {
+        proc.remove_posix_timer_notification(timer_id);
+    }
     proc.posix_timers.clear();
     proc.fork_child = false;
     proc.fork_exec_path = None;
@@ -2858,13 +2861,30 @@ pub fn sys_read(
             }
             // Find lowest matching signal (bit N = signal N+1, musl 0-based convention)
             let signo = matching.trailing_zeros() + 1;
-            // Consume the signal from pending
-            proc.consume_signal_for(tid, signo).ok_or(Errno::EAGAIN)?;
-            // Write signalfd_siginfo (128 bytes): only ssi_signo at offset 0
+            let info = proc
+                .consume_signal_for(tid, signo)
+                .ok_or(Errno::EAGAIN)?;
+            let (sender_pid, sender_uid, timer_id, overrun) = match info.timer_id {
+                Some(timer_id) => (
+                    0,
+                    0,
+                    timer_id,
+                    proc.accept_posix_timer_notification(timer_id).unwrap_or(0),
+                ),
+                None => (proc.pid, proc.uid, 0, 0),
+            };
+            // Write the signal-specific fields in Linux signalfd_siginfo.
             for b in buf[..128].iter_mut() {
                 *b = 0;
             }
             buf[..4].copy_from_slice(&signo.to_le_bytes());
+            buf[8..12].copy_from_slice(&info.si_code.to_le_bytes());
+            buf[12..16].copy_from_slice(&sender_pid.to_le_bytes());
+            buf[16..20].copy_from_slice(&sender_uid.to_le_bytes());
+            buf[24..28].copy_from_slice(&timer_id.to_le_bytes());
+            buf[32..36].copy_from_slice(&overrun.to_le_bytes());
+            buf[44..48].copy_from_slice(&info.si_value.to_le_bytes());
+            buf[48..56].copy_from_slice(&(info.si_value as u32 as u64).to_le_bytes());
             Ok(128)
         }
         FileType::EventFd => {
@@ -6016,13 +6036,15 @@ pub fn sys_getitimer(
 /// Checks if any signal in `mask` is already pending and dequeues it.
 /// Blocking waits are retried by the host; this returns EAGAIN when no
 /// matching signal is immediately pending.
-/// Returns (signum, si_value, si_code) on success.
+/// Returns `(signum, si_value, si_code, siginfo_word_1, siginfo_word_2)` on
+/// success. The final words are `si_pid`/`si_uid` for ordinary signals and
+/// `si_timerid`/`si_overrun` for `SI_TIMER`.
 pub fn sys_sigtimedwait(
     proc: &mut Process,
     _host: &mut dyn HostIO,
     mask: u64,
     _timeout_ms: i32,
-) -> Result<(u32, i32, i32), Errno> {
+) -> Result<(u32, i32, i32, i32, i32), Errno> {
     use wasm_posix_shared::signal::NSIG;
 
     let tid = crate::process_table::current_tid();
@@ -6032,10 +6054,17 @@ pub fn sys_sigtimedwait(
     if pending_in_mask != 0 {
         let signum = pending_in_mask.trailing_zeros() + 1;
         if signum < NSIG {
-            let (si_value, si_code) = proc
+            let info = proc
                 .consume_signal_for(tid, signum)
                 .ok_or(Errno::EAGAIN)?;
-            return Ok((signum, si_value, si_code));
+            let (word_1, word_2) = match info.timer_id {
+                Some(timer_id) => (
+                    timer_id as i32,
+                    proc.accept_posix_timer_notification(timer_id).unwrap_or(0),
+                ),
+                None => (proc.pid as i32, proc.uid as i32),
+            };
+            return Ok((signum, info.si_value, info.si_code, word_1, word_2));
         }
     }
 
@@ -6107,6 +6136,11 @@ pub fn sys_sigaction(
         mask,
     };
 
+    let discard_pending = crate::signal::should_discard_pending(sig, &new_handler);
+    if discard_pending {
+        proc.discard_pending_signal(sig);
+    }
+
     let old = proc
         .signals
         .set_action(sig, new_action)
@@ -6127,11 +6161,19 @@ pub fn sys_sigaction(
 /// signal() — set signal handler (legacy API, wraps sigaction semantics)
 /// Returns previous handler value: SIG_DFL=0, SIG_IGN=1, or function pointer
 pub fn sys_signal(proc: &mut Process, signum: u32, handler_val: u32) -> Result<i32, Errno> {
+    if signum == 0 || signum >= NSIG || signum == SIGKILL || signum == SIGSTOP {
+        return Err(Errno::EINVAL);
+    }
     let new_handler = match handler_val {
         SIG_DFL => SignalHandler::Default,
         SIG_IGN => SignalHandler::Ignore,
         ptr => SignalHandler::Handler(ptr),
     };
+
+    let discard_pending = crate::signal::should_discard_pending(signum, &new_handler);
+    if discard_pending {
+        proc.discard_pending_signal(signum);
+    }
 
     let old = proc
         .signals
@@ -15884,6 +15926,34 @@ mod tests {
     }
 
     #[test]
+    fn test_sigaction_ignore_accepts_pending_timer_notification() {
+        let mut proc = Process::new(1);
+        proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
+        proc.posix_timers.push(Some(crate::process::PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 7,
+            sigev_notify: 4,
+            sigev_tid: 2,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: true,
+            overrun_current: 2,
+            overrun_last: 0,
+        }));
+        proc.get_thread_mut(2).unwrap().signals.raise_timer(10, 7, 0);
+
+        sys_sigaction(&mut proc, 10, SIG_IGN, 0, 0).unwrap();
+
+        assert!(!proc.get_thread(2).unwrap().signals.is_pending(10));
+        let timer = proc.posix_timers[0].as_ref().unwrap();
+        assert!(!timer.notification_pending);
+        assert_eq!(timer.overrun_last, 2);
+    }
+
+    #[test]
     fn test_sigaction_with_flags_and_mask() {
         use wasm_posix_shared::signal::SA_RESTART;
         let mut proc = Process::new(1);
@@ -18198,11 +18268,15 @@ mod tests {
             clock_id: 0,
             sigev_signo: SIGINT,
             sigev_value: 0,
+            sigev_notify: 0,
+            sigev_tid: 0,
             interval_sec: 1,
             interval_nsec: 0,
             value_sec: 1,
             value_nsec: 0,
-            overrun: 0,
+            notification_pending: false,
+            overrun_current: 0,
+            overrun_last: 0,
         }));
 
         commit_exec_state(&mut proc, &mut host, 11).unwrap();
@@ -18230,14 +18304,30 @@ mod tests {
 
         let mut proc = Process::new(20);
         let mut host = MockHostIO::new();
+        let pid = proc.pid;
         proc.main_thread_signals.raise_with_value(32, 77);
+        proc.posix_timers.push(Some(crate::process::PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 88,
+            sigev_notify: 4,
+            sigev_tid: pid,
+            interval_sec: 0,
+            interval_nsec: 0,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: true,
+            overrun_current: 0,
+            overrun_last: 0,
+        }));
+        proc.main_thread_signals.raise_timer(10, 88, 0);
         proc.signals.raise(SIGTERM);
 
-        let pid = proc.pid;
         commit_exec_state(&mut proc, &mut host, pid).unwrap();
 
         assert_eq!(proc.main_thread_signals.consume_one(32), Some((77, -1)));
-        assert_eq!(proc.signals.consume_one(SIGTERM), (0, 0));
+        assert!(!proc.main_thread_signals.is_pending(10));
+        assert_eq!(proc.signals.consume_one(SIGTERM), Default::default());
     }
 
     #[test]
@@ -23294,7 +23384,7 @@ mod tests {
         proc.signals.pending |= crate::signal::sig_bit(10);
         // Wait for SIGUSR1
         let mask = crate::signal::sig_bit(10);
-        let (sig, _val, _code) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        let (sig, ..) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
         assert_eq!(sig, 10);
         // Signal should be dequeued
         assert_eq!(proc.signals.pending & crate::signal::sig_bit(10), 0);
@@ -23316,7 +23406,7 @@ mod tests {
         // Raise both SIGUSR1 (10) and SIGUSR2 (12)
         proc.signals.pending |= crate::signal::sig_bit(10) | crate::signal::sig_bit(12);
         let mask = crate::signal::sig_bit(10) | crate::signal::sig_bit(12);
-        let (sig, _val, _code) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        let (sig, ..) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
         assert_eq!(sig, 10); // lowest first
         // Only SIGUSR1 should be dequeued
         assert_eq!(proc.signals.pending & crate::signal::sig_bit(10), 0);
@@ -23333,21 +23423,21 @@ mod tests {
         proc.signals.raise(32);
         let mask = crate::signal::sig_bit(32);
         // First dequeue should return signal 32 and leave 2 queued
-        let (s1, _, _) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        let (s1, ..) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
         assert_eq!(s1, 32);
         assert!(
             proc.signals.is_pending(32),
             "should still be pending with 2 queued"
         );
         // Second
-        let (s2, _, _) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        let (s2, ..) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
         assert_eq!(s2, 32);
         assert!(
             proc.signals.is_pending(32),
             "should still be pending with 1 queued"
         );
         // Third
-        let (s3, _, _) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        let (s3, ..) = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
         assert_eq!(s3, 32);
         assert!(!proc.signals.is_pending(32), "should no longer be pending");
         // Fourth should fail
@@ -26557,6 +26647,39 @@ mod tests {
         assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Ok(128));
         assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), SIGXFSZ);
         assert!(!proc.signal_pending_for(proc.pid, SIGXFSZ));
+    }
+
+    #[test]
+    fn test_signalfd4_accepts_timer_metadata_and_overrun() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.posix_timers.push(Some(crate::process::PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 77,
+            sigev_notify: 0,
+            sigev_tid: 0,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: true,
+            overrun_current: 3,
+            overrun_last: 0,
+        }));
+        proc.signals.raise_timer(10, 77, 0);
+        let fd = sys_signalfd4(&mut proc, -1, crate::signal::sig_bit(10), O_NONBLOCK).unwrap();
+        let mut buf = [0u8; 128];
+
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Ok(128));
+        assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), 10);
+        assert_eq!(i32::from_le_bytes(buf[8..12].try_into().unwrap()), -2);
+        assert_eq!(u32::from_le_bytes(buf[24..28].try_into().unwrap()), 0);
+        assert_eq!(i32::from_le_bytes(buf[32..36].try_into().unwrap()), 3);
+        assert_eq!(i32::from_le_bytes(buf[44..48].try_into().unwrap()), 77);
+        let timer = proc.posix_timers[0].as_ref().unwrap();
+        assert!(!timer.notification_pending);
+        assert_eq!(timer.overrun_last, 3);
     }
 
     #[test]
