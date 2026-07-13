@@ -15,6 +15,14 @@ const USAGE = `Usage: mkrootfs {build|inspect|extract|add} ...
   add     <image> <vfs-path> {--file <src>|--dir|--symlink <target>} [--mode=N] [--uid=N] [--gid=N] [--force]
 `;
 
+process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EPIPE") {
+    process.exitCode = 0;
+    return;
+  }
+  throw error;
+});
+
 async function main(argv: string[]): Promise<number> {
   const cmd = argv[2];
   if (!cmd || cmd === "--help" || cmd === "-h") {
@@ -45,4 +53,6 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-main(process.argv).then((code) => process.exit(code));
+main(process.argv).then((code) => {
+  process.exitCode = code;
+});
