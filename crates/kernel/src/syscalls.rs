@@ -29,6 +29,12 @@ use wasm_posix_shared::signal::{
 const CREATION_FLAGS: u32 =
     O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_CLOFORK | O_DIRECTORY | O_NOFOLLOW;
 
+// Linux fstatat/statx flags mirrored by the guest's <fcntl.h>.
+const AT_NO_AUTOMOUNT: u32 = 0x800;
+const AT_EMPTY_PATH: u32 = 0x1000;
+const AT_STATX_SYNC_TYPE: u32 = 0x6000;
+const FSTATAT_VALID_FLAGS: u32 = AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH;
+
 /// Convert O_CLOEXEC / O_CLOFORK open flags to FD_CLOEXEC / FD_CLOFORK fd flags.
 #[inline]
 fn oflags_to_fd_flags(oflags: u32) -> u32 {
@@ -4114,8 +4120,12 @@ pub fn sys_statx(
     flags: u32,
     _mask: u32,
 ) -> Result<WasmStat, Errno> {
-    // statx is essentially fstatat with extra fields we don't track
-    sys_fstatat(proc, host, dirfd, path, flags)
+    // The two statx synchronization modes are accepted but have no observable
+    // effect for Kandelo's local VFS. Linux rejects selecting both modes.
+    if flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE {
+        return Err(Errno::EINVAL);
+    }
+    sys_fstatat(proc, host, dirfd, path, flags & !AT_STATX_SYNC_TYPE)
 }
 
 /// Duplicate a file descriptor, returning the new fd number.
@@ -10794,7 +10804,8 @@ pub fn sys_openat(
 /// fstatat -- stat relative to directory fd.
 ///
 /// Resolves the path relative to dirfd, then stats the file.
-/// When AT_SYMLINK_NOFOLLOW is set, uses lstat instead of stat.
+/// When AT_SYMLINK_NOFOLLOW is set, uses lstat instead of stat. An empty path
+/// with AT_EMPTY_PATH stats dirfd itself, or the cwd when dirfd is AT_FDCWD.
 pub fn sys_fstatat(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -10802,7 +10813,20 @@ pub fn sys_fstatat(
     path: &[u8],
     flags: u32,
 ) -> Result<WasmStat, Errno> {
-    use wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW;
+    if flags & !FSTATAT_VALID_FLAGS != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    if path.is_empty() {
+        if flags & AT_EMPTY_PATH == 0 {
+            return Err(Errno::ENOENT);
+        }
+        if dirfd == AT_FDCWD {
+            let cwd = proc.cwd.clone();
+            return sys_stat(proc, host, &cwd);
+        }
+        return sys_fstat(proc, host, dirfd);
+    }
 
     let options = if flags & AT_SYMLINK_NOFOLLOW != 0 {
         PathResolveOptions::NOFOLLOW
@@ -19643,6 +19667,85 @@ mod tests {
         let mut host = MockHostIO::new();
         let result = sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"/tmp/test", 0);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fstatat_empty_path_targets_fd_and_cwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/file", 123, 456, 0o640, b"data");
+
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDONLY, 0).unwrap();
+        let via_empty =
+            sys_fstatat(&mut proc, &mut host, fd, b"", AT_EMPTY_PATH).unwrap();
+        let via_fstat = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(via_empty.st_ino, via_fstat.st_ino);
+        assert_eq!(via_empty.st_mode, via_fstat.st_mode);
+        assert_eq!(via_empty.st_uid, via_fstat.st_uid);
+        assert_eq!(via_empty.st_gid, via_fstat.st_gid);
+        assert_eq!(via_empty.st_size, via_fstat.st_size);
+
+        let (pipe_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let pipe =
+            sys_fstatat(&mut proc, &mut host, pipe_fd, b"", AT_EMPTY_PATH).unwrap();
+        assert_eq!(pipe.st_mode & S_IFMT, S_IFIFO);
+
+        proc.cwd = b"/home/user".to_vec();
+        let cwd = sys_fstatat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"",
+            AT_EMPTY_PATH | AT_NO_AUTOMOUNT,
+        )
+        .unwrap();
+        assert_eq!(cwd.st_mode & S_IFMT, S_IFDIR);
+        let via_dot = sys_stat(&mut proc, &mut host, b".").unwrap();
+        assert_eq!(cwd.st_ino, via_dot.st_ino);
+        assert_eq!(cwd.st_mode, via_dot.st_mode);
+    }
+
+    #[test]
+    fn test_fstatat_empty_path_preserves_linux_errors() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDONLY, 0).unwrap();
+
+        assert!(matches!(
+            sys_fstatat(&mut proc, &mut host, fd, b"", 0),
+            Err(Errno::ENOENT)
+        ));
+        assert!(matches!(
+            sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"", 0),
+            Err(Errno::ENOENT)
+        ));
+        assert!(matches!(
+            sys_fstatat(&mut proc, &mut host, 9999, b"", AT_EMPTY_PATH),
+            Err(Errno::EBADF)
+        ));
+        assert!(matches!(
+            sys_fstatat(&mut proc, &mut host, fd, b"", AT_EMPTY_PATH | 0x400),
+            Err(Errno::EINVAL)
+        ));
+    }
+
+    #[test]
+    fn test_statx_preserves_sync_flag_validation() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert!(
+            sys_statx(&mut proc, &mut host, AT_FDCWD, b"/tmp/file", 0x2000, 0)
+                .is_ok()
+        );
+        assert!(
+            sys_statx(&mut proc, &mut host, AT_FDCWD, b"/tmp/file", 0x4000, 0)
+                .is_ok()
+        );
+        assert!(matches!(
+            sys_statx(&mut proc, &mut host, AT_FDCWD, b"/tmp/file", 0x6000, 0),
+            Err(Errno::EINVAL)
+        ));
     }
 
     #[test]

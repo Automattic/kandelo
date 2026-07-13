@@ -27,6 +27,7 @@ const TEST_PROGRAMS = [
   "lseek_invalid_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
+  "fstatat_empty_path_test.c",
   "pthread_channel_reuse_test.c",
   "wait_lifecycle_test.c",
   "pathconf_test.c",
@@ -64,6 +65,7 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
 /** Operation-boundary regressions that must also run through a memory64 guest. */
 const WASM64_TEST_PROGRAMS = [
   "chown_sentinel_test.c",
+  "fstatat_empty_path_test.c",
   "pathconf_test.c",
   "rlimit_fsize_test.c",
   "socket_timeout_options_test.c",
