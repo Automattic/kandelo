@@ -1,5 +1,5 @@
 {
-  "abi_version": 39,
+  "abi_version": 40,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 39,
+      "abi_version": 40,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -204,6 +204,11 @@
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
       "kernel_mark_process_signaled",
+      "kernel_pcm_claim_transport",
+      "kernel_pcm_clock_update",
+      "kernel_pcm_reconcile",
+      "kernel_pcm_transport_len",
+      "kernel_pcm_transport_ptr",
       "kernel_pipe_has_readers",
       "kernel_posix_timer_fire",
       "kernel_prepare_write_operation",
@@ -1078,6 +1083,31 @@
     },
     {
       "kind": "func",
+      "name": "kernel_pcm_claim_transport",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pcm_clock_update",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pcm_reconcile",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pcm_transport_len",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pcm_transport_ptr",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pick_signal_target_tid",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -1722,6 +1752,60 @@
     }
   ],
   "marshalled_structs": {
+    "AudioBufInfo": {
+      "align": 4,
+      "fields": [
+        {
+          "name": "fragments",
+          "offset": 0,
+          "span": 4,
+          "type": "i32"
+        },
+        {
+          "name": "fragstotal",
+          "offset": 4,
+          "span": 4,
+          "type": "i32"
+        },
+        {
+          "name": "fragsize",
+          "offset": 8,
+          "span": 4,
+          "type": "i32"
+        },
+        {
+          "name": "bytes",
+          "offset": 12,
+          "span": 4,
+          "type": "i32"
+        }
+      ],
+      "size": 16
+    },
+    "CountInfo": {
+      "align": 4,
+      "fields": [
+        {
+          "name": "bytes",
+          "offset": 0,
+          "span": 4,
+          "type": "i32"
+        },
+        {
+          "name": "blocks",
+          "offset": 4,
+          "span": 4,
+          "type": "i32"
+        },
+        {
+          "name": "ptr",
+          "offset": 8,
+          "span": 4,
+          "type": "i32"
+        }
+      ],
+      "size": 12
+    },
     "FbBitfield": {
       "fields": [
         {
@@ -2106,6 +2190,174 @@
         }
       ],
       "size": 160
+    },
+    "PcmSharedControl": {
+      "align": 4,
+      "fields": [
+        {
+          "name": "magic",
+          "offset": 0,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "offset": 4,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "header_bytes",
+          "offset": 8,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "physical_capacity_bytes",
+          "offset": 12,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "active_capacity_bytes",
+          "offset": 16,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "format",
+          "offset": 20,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "rate",
+          "offset": 24,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "channels",
+          "offset": 28,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "frame_bytes",
+          "offset": 32,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "fragment_bytes",
+          "offset": 36,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "fragment_count",
+          "offset": 40,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "state",
+          "offset": 44,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "generation",
+          "offset": 48,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "offset": 52,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "transport_mode",
+          "offset": 56,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "producer_seq",
+          "offset": 60,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "producer_lo",
+          "offset": 64,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "producer_hi",
+          "offset": 68,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "consumer_seq",
+          "offset": 72,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "consumer_lo",
+          "offset": 76,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "consumer_hi",
+          "offset": 80,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "discard_seq",
+          "offset": 84,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "discard_lo",
+          "offset": 88,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "discard_hi",
+          "offset": 92,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "underruns",
+          "offset": 96,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "wake_seq",
+          "offset": 100,
+          "span": 4,
+          "type": "u32"
+        },
+        {
+          "name": "reserved",
+          "offset": 104,
+          "span": 24,
+          "type": "[u32; 6]"
+        }
+      ],
+      "size": 128
     },
     "WasmDirent": {
       "fields": [
@@ -3133,6 +3385,83 @@
       "size": 16
     }
   },
+  "oss_source_abi": {
+    "capabilities": {
+      "PCM_CAP_BATCH": 1024,
+      "PCM_CAP_BIND": 32768,
+      "PCM_CAP_COPROC": 2048,
+      "PCM_CAP_DEFAULT": 1073741824,
+      "PCM_CAP_DUPLEX": 256,
+      "PCM_CAP_INPUT": 65536,
+      "PCM_CAP_MMAP": 8192,
+      "PCM_CAP_MULTI": 16384,
+      "PCM_CAP_OUTPUT": 131072,
+      "PCM_CAP_REALTIME": 512,
+      "PCM_CAP_REVISION": 255,
+      "PCM_CAP_TRIGGER": 4096,
+      "PCM_CAP_VIRTUAL": 262144
+    },
+    "formats": {
+      "AFMT_AC3": 1024,
+      "AFMT_A_LAW": 2,
+      "AFMT_F32_BE": 536870912,
+      "AFMT_F32_LE": 268435456,
+      "AFMT_IMA_ADPCM": 4,
+      "AFMT_MPEG": 512,
+      "AFMT_MU_LAW": 1,
+      "AFMT_QUERY": 0,
+      "AFMT_S16_BE": 32,
+      "AFMT_S16_LE": 16,
+      "AFMT_S24_BE": 131072,
+      "AFMT_S24_LE": 65536,
+      "AFMT_S32_BE": 8192,
+      "AFMT_S32_LE": 4096,
+      "AFMT_S8": 64,
+      "AFMT_U16_BE": 256,
+      "AFMT_U16_LE": 128,
+      "AFMT_U24_BE": 524288,
+      "AFMT_U24_LE": 262144,
+      "AFMT_U32_BE": 32768,
+      "AFMT_U32_LE": 16384,
+      "AFMT_U8": 8
+    },
+    "ioctls": {
+      "SNDCTL_DSP_CHANNELS": 3221508102,
+      "SNDCTL_DSP_GETBLKSIZE": 3221508100,
+      "SNDCTL_DSP_GETCAPS": 2147766287,
+      "SNDCTL_DSP_GETFMTS": 2147766283,
+      "SNDCTL_DSP_GETIPTR": 2148290577,
+      "SNDCTL_DSP_GETISPACE": 2148552717,
+      "SNDCTL_DSP_GETODELAY": 2147766295,
+      "SNDCTL_DSP_GETOPTR": 2148290578,
+      "SNDCTL_DSP_GETOSPACE": 2148552716,
+      "SNDCTL_DSP_GETTRIGGER": 2147766288,
+      "SNDCTL_DSP_MAPINBUF": 2148028435,
+      "SNDCTL_DSP_MAPOUTBUF": 2148028436,
+      "SNDCTL_DSP_NONBLOCK": 20494,
+      "SNDCTL_DSP_POST": 20488,
+      "SNDCTL_DSP_RESET": 20480,
+      "SNDCTL_DSP_SETBLKSIZE": 1074024452,
+      "SNDCTL_DSP_SETDUPLEX": 20502,
+      "SNDCTL_DSP_SETFMT": 3221508101,
+      "SNDCTL_DSP_SETFRAGMENT": 3221508106,
+      "SNDCTL_DSP_SETSYNCRO": 20501,
+      "SNDCTL_DSP_SETTRIGGER": 1074024464,
+      "SNDCTL_DSP_SPEED": 3221508098,
+      "SNDCTL_DSP_STEREO": 3221508099,
+      "SNDCTL_DSP_SUBDIVIDE": 3221508105,
+      "SNDCTL_DSP_SYNC": 20481,
+      "SOUND_PCM_READ_BITS": 2147766277,
+      "SOUND_PCM_READ_CHANNELS": 2147766278,
+      "SOUND_PCM_READ_FILTER": 2147766279,
+      "SOUND_PCM_READ_RATE": 2147766274,
+      "SOUND_PCM_WRITE_FILTER": 3221508103
+    },
+    "trigger_values": {
+      "PCM_ENABLE_INPUT": 1,
+      "PCM_ENABLE_OUTPUT": 2
+    }
+  },
   "pathconf_names": {
     "ALLOC_SIZE_MIN": 18,
     "ASYNC_IO": 10,
@@ -3158,6 +3487,27 @@
     "TEXTDOMAIN_MAX": 22,
     "TIMESTAMP_RESOLUTION": 23,
     "VDISABLE": 8
+  },
+  "pcm_transport_abi": {
+    "flag_configuring": 1,
+    "flag_fatal_error": 4,
+    "flag_underrun_active": 2,
+    "format_s16_be": 3,
+    "format_s16_le": 2,
+    "format_u8": 1,
+    "format_unknown": 0,
+    "header_bytes": 128,
+    "magic": 827147088,
+    "ring_bytes": 65536,
+    "state_closed": 0,
+    "state_draining": 3,
+    "state_running": 2,
+    "state_stopped": 1,
+    "total_bytes": 65664,
+    "transport_legacy_pull": 1,
+    "transport_shared_clock": 2,
+    "transport_unclaimed": 0,
+    "version": 1
   },
   "process_expected_globals": [
     "__channel_base",
@@ -4590,9 +4940,10 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "nullable": true,
         "size": {
-          "size": 256,
-          "type": "fixed"
+          "requestArgIndex": 1,
+          "type": "ioctl"
         }
       }
     ],

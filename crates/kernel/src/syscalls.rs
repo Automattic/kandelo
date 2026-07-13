@@ -303,121 +303,177 @@ fn proc_has_mice_fd(proc: &Process) -> bool {
     proc_has_virtual_device_fd(proc, VirtualDevice::Mice)
 }
 
-/// Try to claim `/dev/dsp` for the calling process.
+/// Convert the PCM core's internal "park until the audio clock advances"
+/// sentinel into a real signal interruption at the syscall boundary.
 ///
-/// Single-owner like `/dev/fb0` and `/dev/input/mice` — second open from
-/// a different pid is `EBUSY`. Re-opens by the current owner are
-/// accepted (matches the typical OSS exclusive-grab model).
-fn acquire_dsp_or_busy(pid: u32) -> Result<(), Errno> {
-    let pid = pid as i32;
-    let owner = crate::audio::DSP_OWNER.load(core::sync::atomic::Ordering::SeqCst);
-    if owner != -1 && owner != pid {
-        return Err(Errno::EBUSY);
+/// The host owns the asynchronous retry loop for `EAGAIN`, so allowing a
+/// caught signal to pass through as `EAGAIN` would leave the guest asleep and
+/// could let a later retry overwrite the undelivered channel signal record.
+/// Only an operation which made no progress reaches this helper: a partial
+/// write remains a successful short write, as POSIX requires.
+fn interrupt_pcm_wait<T>(proc: &Process, result: Result<T, Errno>) -> Result<T, Errno> {
+    if !matches!(result, Err(Errno::EAGAIN)) {
+        return result;
     }
-    let _ = crate::audio::DSP_OWNER.compare_exchange(
-        -1,
-        pid,
-        core::sync::atomic::Ordering::SeqCst,
-        core::sync::atomic::Ordering::SeqCst,
-    );
-    Ok(())
-}
 
-/// Release `/dev/dsp` ownership held by `pid`, if any. Drops any
-/// pending samples so the next opener starts from silence. Idempotent.
-pub(crate) fn maybe_release_dsp(pid: u32) {
-    let prev = crate::audio::DSP_OWNER.compare_exchange(
-        pid as i32,
-        -1,
-        core::sync::atomic::Ordering::SeqCst,
-        core::sync::atomic::Ordering::SeqCst,
-    );
-    if prev.is_ok() {
-        crate::audio::reset();
+    let tid = crate::process_table::current_tid();
+    let caught = proc
+        .next_deliverable_signal(tid)
+        .is_some_and(|signum| {
+            matches!(
+                proc.signals.get_action(signum).handler,
+                SignalHandler::Handler(_)
+            )
+        });
+    if caught {
+        Err(Errno::EINTR)
+    } else {
+        result
     }
 }
 
-/// True iff `proc` still has an open fd referencing `/dev/dsp`.
-fn proc_has_dsp_fd(proc: &Process) -> bool {
-    proc_has_virtual_device_fd(proc, VirtualDevice::Dsp)
-}
-
-/// Handle ioctl on `/dev/dsp`.
-///
-/// Implements the OSS commands fbDOOM (and most OSS clients) actually
-/// emit during init:
-/// - `SNDCTL_DSP_RESET` — clear the ring (no-op besides side effect).
-/// - `SNDCTL_DSP_SPEED` — set sample rate; in/out: i32 hz.
-/// - `SNDCTL_DSP_STEREO` — set channel count; in/out: i32 (0=mono, 1=stereo).
-/// - `SNDCTL_DSP_SETFMT` — set sample format; only `AFMT_S16_LE`.
-/// - `SNDCTL_DSP_GETFMTS` — bitmask of supported formats; we report only `AFMT_S16_LE`.
-/// - `SNDCTL_DSP_SETFRAGMENT` — accept and ignore (host buffering is RAF-paced).
-/// - `SNDCTL_DSP_SYNC` — accept; the kernel ring is the boundary.
-///
-/// Anything else returns `ENOTTY`.
-fn handle_dsp_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+/// OSS `/dev/dsp` translation frontend. The PCM core deliberately exposes no
+/// OSS ioctl numbers or ABI structs.
+fn handle_dsp_ioctl(
+    proc: &mut Process,
+    ofd_idx: usize,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
     use wasm_posix_shared::oss::*;
-    match request {
-        SNDCTL_DSP_RESET => {
-            crate::audio::reset();
-            Ok(())
+    let handle = proc
+        .ofd_table
+        .get(ofd_idx)
+        .filter(|ofd| ofd.file_type == FileType::PcmPlayback)
+        .map(|ofd| ofd.host_handle)
+        .ok_or(Errno::EBADF)?;
+
+    fn read_i32(buf: &[u8]) -> Result<i32, Errno> {
+        let bytes: [u8; 4] = buf.get(..4).ok_or(Errno::EINVAL)?.try_into().unwrap();
+        Ok(i32::from_le_bytes(bytes))
+    }
+    fn write_i32(buf: &mut [u8], value: i32) -> Result<(), Errno> {
+        buf.get_mut(..4)
+            .ok_or(Errno::EINVAL)?
+            .copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+    fn oss_to_pcm(format: u32) -> Option<u32> {
+        match format {
+            AFMT_QUERY => Some(wasm_posix_shared::pcm::PCM_FORMAT_UNKNOWN),
+            AFMT_U8 => Some(wasm_posix_shared::pcm::PCM_FORMAT_U8),
+            AFMT_S16_LE => Some(wasm_posix_shared::pcm::PCM_FORMAT_S16_LE),
+            AFMT_S16_BE => Some(wasm_posix_shared::pcm::PCM_FORMAT_S16_BE),
+            _ => None,
         }
-        SNDCTL_DSP_SYNC => Ok(()),
+    }
+    fn pcm_to_oss(format: u32) -> Result<u32, Errno> {
+        match format {
+            wasm_posix_shared::pcm::PCM_FORMAT_U8 => Ok(AFMT_U8),
+            wasm_posix_shared::pcm::PCM_FORMAT_S16_LE => Ok(AFMT_S16_LE),
+            wasm_posix_shared::pcm::PCM_FORMAT_S16_BE => Ok(AFMT_S16_BE),
+            _ => Err(Errno::EIO),
+        }
+    }
+
+    match request {
+        SNDCTL_DSP_RESET => crate::audio::reset_stream(handle),
+        SNDCTL_DSP_SYNC => interrupt_pcm_wait(proc, crate::audio::sync(handle)),
+        SNDCTL_DSP_POST => crate::audio::post(handle),
         SNDCTL_DSP_SPEED => {
-            if buf.len() < 4 {
+            let requested = read_i32(buf)?;
+            if requested < 0 {
                 return Err(Errno::EINVAL);
             }
-            let req = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]).max(0) as u32;
-            let actual = crate::audio::set_sample_rate(req);
-            buf[0..4].copy_from_slice(&(actual as i32).to_le_bytes());
-            Ok(())
+            write_i32(buf, crate::audio::set_rate(handle, requested as u32)? as i32)
         }
         SNDCTL_DSP_STEREO => {
-            if buf.len() < 4 {
-                return Err(Errno::EINVAL);
-            }
-            let req = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-            // OSS: arg = 0 means mono, anything else = stereo.
-            let chans = if req == 0 { 1 } else { 2 };
-            let actual = crate::audio::set_channels(chans);
-            // Report back the boolean (1 = stereo, 0 = mono).
-            let report: i32 = if actual == 2 { 1 } else { 0 };
-            buf[0..4].copy_from_slice(&report.to_le_bytes());
-            Ok(())
+            let requested = if read_i32(buf)? == 0 { 1 } else { 2 };
+            let actual = crate::audio::set_channels(handle, requested)?;
+            write_i32(buf, i32::from(actual == 2))
         }
         SNDCTL_DSP_CHANNELS => {
-            if buf.len() < 4 {
+            let requested = read_i32(buf)?;
+            if requested < 0 {
                 return Err(Errno::EINVAL);
             }
-            let req = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]).max(0) as u32;
-            let actual = crate::audio::set_channels(req);
-            buf[0..4].copy_from_slice(&(actual as i32).to_le_bytes());
-            Ok(())
+            write_i32(
+                buf,
+                crate::audio::set_channels(handle, requested as u32)? as i32,
+            )
         }
         SNDCTL_DSP_SETFMT => {
-            if buf.len() < 4 {
-                return Err(Errno::EINVAL);
-            }
-            let req = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-            if !crate::audio::set_format(req) {
-                return Err(Errno::EINVAL);
-            }
-            // Echo the format back.
-            buf[0..4].copy_from_slice(&req.to_le_bytes());
-            Ok(())
+            let requested = read_i32(buf)? as u32;
+            let pcm = oss_to_pcm(requested).ok_or(Errno::EINVAL)?;
+            let actual = pcm_to_oss(crate::audio::set_format(handle, pcm)?)?;
+            write_i32(buf, actual as i32)
         }
-        SNDCTL_DSP_GETFMTS => {
-            if buf.len() < 4 {
-                return Err(Errno::EINVAL);
-            }
-            buf[0..4].copy_from_slice(&crate::audio::AFMT_S16_LE.to_le_bytes());
-            Ok(())
-        }
+        SNDCTL_DSP_GETFMTS => write_i32(buf, SUPPORTED_FORMATS as i32),
         SNDCTL_DSP_SETFRAGMENT => {
-            // Accept silently — fragment hints don't apply to the
-            // host-side AudioContext path. Echo the value the caller
-            // provided so it doesn't second-guess us.
+            let actual = crate::audio::set_fragment(handle, read_i32(buf)? as u32)?;
+            write_i32(buf, actual as i32)
+        }
+        SNDCTL_DSP_GETOSPACE => {
+            let space = crate::audio::output_space(handle)?;
+            if buf.len() < 16 {
+                return Err(Errno::EINVAL);
+            }
+            for (offset, value) in [
+                space.available_fragments,
+                space.total_fragments,
+                space.fragment_bytes,
+                space.available_bytes,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let start = offset * 4;
+                buf[start..start + 4].copy_from_slice(&(value as i32).to_le_bytes());
+            }
             Ok(())
+        }
+        SNDCTL_DSP_GETBLKSIZE => {
+            let (fragment_bytes, _) = crate::audio::geometry(handle)?;
+            write_i32(buf, fragment_bytes as i32)
+        }
+        SNDCTL_DSP_GETODELAY => write_i32(buf, crate::audio::output_delay(handle)?),
+        SNDCTL_DSP_GETCAPS => write_i32(buf, SUPPORTED_CAPS as i32),
+        SNDCTL_DSP_GETOPTR => {
+            let position = crate::audio::output_pointer(handle)?;
+            if buf.len() < 12 {
+                return Err(Errno::EINVAL);
+            }
+            let values = [
+                position.played_bytes as u32 as i32,
+                position.completed_fragments as i32,
+                position.ring_offset as i32,
+            ];
+            for (index, value) in values.into_iter().enumerate() {
+                let start = index * 4;
+                buf[start..start + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            Ok(())
+        }
+        SNDCTL_DSP_NONBLOCK => {
+            crate::audio::set_nonblock(handle, true)?;
+            proc.ofd_table
+                .get_mut(ofd_idx)
+                .ok_or(Errno::EBADF)?
+                .status_flags |= O_NONBLOCK;
+            Ok(())
+        }
+        SOUND_PCM_READ_RATE => {
+            let (_, rate, _) = crate::audio::config(handle)?;
+            write_i32(buf, rate as i32)
+        }
+        SOUND_PCM_READ_CHANNELS => {
+            let (_, _, channels) = crate::audio::config(handle)?;
+            write_i32(buf, channels as i32)
+        }
+        SOUND_PCM_READ_BITS => {
+            let (format, _, _) = crate::audio::config(handle)?;
+            let bits = if format == wasm_posix_shared::pcm::PCM_FORMAT_U8 { 8 } else { 16 };
+            write_i32(buf, bits)
         }
         _ => Err(Errno::ENOTTY),
     }
@@ -662,9 +718,8 @@ pub(crate) fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO
             maybe_release_fb0(proc.pid);
         }
     }
-    // Mouse and DSP state belongs to their surviving open descriptions, not
-    // the discarded Wasm image. A CLOEXEC close (or the eventual last close)
-    // releases ownership and drains the corresponding queue.
+    // Device state belongs to surviving open descriptions, not the discarded
+    // Wasm image. A final PCM CLOEXEC close leaves its tail to the audio clock.
     release_process_dri_mappings(proc, host);
 }
 
@@ -703,7 +758,7 @@ pub(crate) fn commit_exec_state(
         .map(|(fd, _)| fd)
         .collect();
     for fd in cloexec_fds {
-        let _ = sys_close(proc, host, fd);
+        let _ = sys_close_implicit(proc, host, fd);
     }
     for stream in proc.dir_streams.iter_mut().filter_map(Option::take) {
         let _ = host.host_closedir(stream.host_handle);
@@ -2288,8 +2343,13 @@ pub fn sys_open(
         let ofd_ref = entry.ofd_ref;
         proc.ofd_table.inc_ref(ofd_ref.0);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-        return Ok(fd);
+        return match proc.fd_table.alloc(ofd_ref, fd_flags) {
+            Ok(fd) => Ok(fd),
+            Err(err) => {
+                proc.ofd_table.dec_ref(ofd_ref.0);
+                Err(err)
+            }
+        };
     }
 
     // Virtual device nodes — handle in-kernel, no host call
@@ -2300,10 +2360,29 @@ pub fn sys_open(
         if dev == VirtualDevice::Mice {
             acquire_mice_or_busy(proc.pid)?;
         }
-        if dev == VirtualDevice::Dsp {
-            acquire_dsp_or_busy(proc.pid)?;
-        }
         let status_flags = oflags & !CREATION_FLAGS;
+        if dev == VirtualDevice::Dsp {
+            if status_flags & O_ACCMODE != O_WRONLY {
+                return Err(Errno::EOPNOTSUPP);
+            }
+            let pcm_handle = crate::audio::open_stream()?;
+            crate::audio::set_nonblock(pcm_handle, status_flags & O_NONBLOCK != 0)?;
+            let ofd_idx = proc.ofd_table.create(
+                FileType::PcmPlayback,
+                status_flags,
+                pcm_handle,
+                resolved,
+            );
+            let fd_flags = oflags_to_fd_flags(oflags);
+            return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+                Ok(fd) => Ok(fd),
+                Err(error) => {
+                    proc.ofd_table.dec_ref(ofd_idx);
+                    crate::audio::rollback_open(pcm_handle);
+                    Err(error)
+                }
+            };
+        }
         let ofd_idx = proc.ofd_table.create(
             FileType::CharDevice,
             status_flags,
@@ -2441,6 +2520,45 @@ pub fn sys_open(
 
 /// Close a file descriptor.
 pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(), Errno> {
+    sys_close_impl(proc, host, fd, true)
+}
+
+/// Close without waiting for a PCM tail. Used by process teardown and other
+/// implicit-close paths where POSIX does not permit delaying descriptor-table
+/// mutation. The final PCM backing remains exclusively owned while it drains.
+pub(crate) fn sys_close_implicit(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Result<(), Errno> {
+    sys_close_impl(proc, host, fd, false)
+}
+
+fn sys_close_impl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    drain_pcm: bool,
+) -> Result<(), Errno> {
+    let mut deferred_pcm_error = None;
+    if drain_pcm {
+        let entry = proc.fd_table.get(fd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        // A dup-shared OFD is not being destroyed until its final local fd
+        // closes. Cross-process inherited OFDs are checked by the PCM table.
+        if ofd.file_type == FileType::PcmPlayback && ofd.ref_count == 1 {
+            match interrupt_pcm_wait(proc, crate::audio::preflight_close(ofd.host_handle)) {
+                Ok(()) => {}
+                // A fatal sink cannot drain. The PCM core has discarded its
+                // tail, so close must still release the fd/OFD and exclusive
+                // device ownership while reporting the sink failure.
+                Err(Errno::EIO) => deferred_pcm_error = Some(Errno::EIO),
+                // EAGAIN and its caught-signal EINTR translation leave the fd
+                // live so the explicit close can be retried deterministically.
+                Err(err) => return Err(err),
+            }
+        }
+    }
     let ofd_ref = proc.fd_table.free(fd)?;
     let idx = ofd_ref.0;
 
@@ -2640,6 +2758,9 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
             FileType::MemFd => {
                 crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
+            FileType::PcmPlayback => {
+                crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+            }
             FileType::PtyMaster => {
                 let pty_idx = host_handle as usize;
                 if let Some(pty) = crate::pty::get_pty(pty_idx) {
@@ -2712,17 +2833,10 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         maybe_release_mice(proc.pid);
     }
 
-    // /dev/dsp ownership: same pattern — release once the last Dsp fd
-    // is gone and drop any unflushed PCM bytes so a successor open
-    // starts from silence.
-    if file_type == FileType::CharDevice
-        && VirtualDevice::from_host_handle(host_handle) == Some(VirtualDevice::Dsp)
-        && !proc_has_dsp_fd(proc)
-    {
-        maybe_release_dsp(proc.pid);
+    match deferred_pcm_error {
+        Some(err) => Err(err),
+        None => Ok(()),
     }
-
-    Ok(())
 }
 
 /// Read from a file descriptor into `buf`, returning the number of bytes read.
@@ -2942,13 +3056,10 @@ pub fn sys_read(
                         // /dev/fb0 doesn't support direct read — software is
                         // expected to mmap. Return 0 (EOF-like) rather than
                         // making up pixel bytes, matching the existing
-                        // "no-op for unsupported access" pattern. /dev/dsp
-                        // is write-only too: the host drains via the
-                        // dedicated wasm export, not via user-space read().
-                        VirtualDevice::Null
-                        | VirtualDevice::Fb0
-                        | VirtualDevice::Dsp
-                        | VirtualDevice::DriRenderD128 => 0,
+                        // "no-op for unsupported access" pattern.
+                        VirtualDevice::Null | VirtualDevice::Fb0 | VirtualDevice::DriRenderD128 => 0,
+                        // Real DSP descriptors use PcmPlayback and O_WRONLY.
+                        VirtualDevice::Dsp => return Err(Errno::EBADF),
                         VirtualDevice::DriCard0 => {
                             // Drain queued DRM events (DRM_EVENT_FLIP_COMPLETE)
                             // into the caller buffer, one byte at a time so a
@@ -3111,6 +3222,15 @@ pub fn sys_write(
     }
 
     match file_type {
+        FileType::PcmPlayback => {
+            let nonblock = crate::audio::is_nonblock(host_handle)?;
+            let result = crate::audio::write(host_handle, buf, nonblock);
+            if nonblock {
+                result
+            } else {
+                interrupt_pcm_wait(proc, result)
+            }
+        }
         FileType::Pipe => {
             if host_handle >= 0 {
                 // Host-delegated pipe (cross-process): use host_write
@@ -3298,16 +3418,9 @@ pub fn sys_write(
                             // when capping at smem_len; we mirror that.
                             Ok(buf.len())
                         }
-                        VirtualDevice::Dsp => {
-                            // OSS write semantics: append PCM to the device
-                            // queue. The kernel ring drops oldest whole
-                            // frames on overflow (matches what real OSS
-                            // drivers do under hardware overrun) but always
-                            // reports `buf.len()` to the caller — same as
-                            // /dev/null/zero/urandom: we never short-write.
-                            crate::audio::write_pcm(buf);
-                            Ok(buf.len())
-                        }
+                        // `/dev/dsp` opens are represented by PcmPlayback,
+                        // never by this legacy virtual-character path.
+                        VirtualDevice::Dsp => Err(Errno::EBADF),
                         _ => Ok(buf.len()), // Null, Zero, Urandom, Mice: discard
                     };
                 }
@@ -3383,6 +3496,7 @@ pub fn sys_lseek(
             | FileType::SignalFd
             | FileType::PtyMaster
             | FileType::PtySlave
+            | FileType::PcmPlayback
     ) {
         return Err(Errno::ESPIPE);
     }
@@ -3603,6 +3717,7 @@ pub fn sys_pread(
             | FileType::SignalFd
             | FileType::PtyMaster
             | FileType::PtySlave
+            | FileType::PcmPlayback
     ) {
         return Err(Errno::ESPIPE);
     }
@@ -3787,6 +3902,7 @@ fn validate_transfer_input(proc: &Process, fd: i32, offset: Option<i64>) -> Resu
                 | FileType::SignalFd
                 | FileType::PtyMaster
                 | FileType::PtySlave
+                | FileType::PcmPlayback
         )
     {
         return Err(Errno::ESPIPE);
@@ -3824,6 +3940,7 @@ pub fn sys_pwrite(
             | FileType::SignalFd
             | FileType::PtyMaster
             | FileType::PtySlave
+            | FileType::PcmPlayback
     ) {
         return Err(Errno::ESPIPE);
     }
@@ -4151,7 +4268,7 @@ pub fn sys_dup2(
     }
 
     // Close newfd if it's open (ignore errors).
-    let _ = sys_close(proc, host, newfd);
+    let _ = sys_close_implicit(proc, host, newfd);
 
     // Re-read oldfd entry since sys_close may have mutated tables
     // (only if newfd happened to share an OFD with oldfd).
@@ -4311,6 +4428,16 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
             st_ctime_nsec: 0,
             _pad: 0,
         })
+    } else if ofd.file_type == FileType::PcmPlayback {
+        // `/dev/dsp` is represented by an OFD-owned PCM stream instead of the
+        // generic virtual-character sentinel path, but its Unix identity is
+        // still a character device. SDL3's canonical OSS enumeration opens
+        // the endpoint and verifies this with fstat(2).
+        Ok(virtual_device_stat(
+            VirtualDevice::Dsp,
+            proc.euid,
+            proc.egid,
+        ))
     } else if ofd.file_type == FileType::CharDevice {
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
             return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
@@ -4478,12 +4605,28 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
             let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-            Ok(ofd.status_flags as i32)
+            let mut flags = ofd.status_flags;
+            if ofd.file_type == FileType::PcmPlayback {
+                if crate::audio::is_nonblock(ofd.host_handle)? {
+                    flags |= O_NONBLOCK;
+                } else {
+                    flags &= !O_NONBLOCK;
+                }
+            }
+            Ok(flags as i32)
         }
         F_SETFL => {
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
+            let pcm_handle = proc
+                .ofd_table
+                .get(ofd_idx)
+                .filter(|ofd| ofd.file_type == FileType::PcmPlayback)
+                .map(|ofd| ofd.host_handle);
             proc.ofd_table.set_status_flags(ofd_idx, arg);
+            if let Some(handle) = pcm_handle {
+                crate::audio::set_nonblock(handle, arg & O_NONBLOCK != 0)?;
+            }
             Ok(0)
         }
         F_SETOWN => {
@@ -6228,7 +6371,7 @@ fn cleanup_process_for_exit(proc: &mut Process, host: &mut dyn HostIO) {
     // and F_DUPFD can place live descriptors above the default 1024 slots.
     let open_fds: Vec<i32> = proc.fd_table.iter().map(|(fd, _)| fd).collect();
     for fd in open_fds {
-        let _ = sys_close(proc, host, fd);
+        let _ = sys_close_implicit(proc, host, fd);
     }
 
     // Close all directory streams
@@ -6629,6 +6772,9 @@ pub fn sys_mmap(
         // must request exactly that length.
         let entry = proc.fd_table.get(fd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::PcmPlayback {
+            return Err(Errno::ENODEV);
+        }
         if ofd.file_type == FileType::CharDevice
             && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Fb0)
         {
@@ -10246,6 +10392,22 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
         let mut revents: i16 = 0;
 
         match ofd.file_type {
+            FileType::PcmPlayback => {
+                match crate::audio::has_fatal_error(ofd.host_handle) {
+                    // Error readiness is reported regardless of the requested
+                    // event mask, and a failed sink is never simultaneously
+                    // advertised as writable.
+                    Ok(true) => revents |= POLLERR,
+                    Ok(false)
+                        if pollfd.events & POLLOUT != 0
+                            && crate::audio::poll_writable(ofd.host_handle)
+                                .unwrap_or(false) =>
+                    {
+                        revents |= POLLOUT;
+                    }
+                    _ => {}
+                }
+            }
             FileType::EventFd => {
                 let efd_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some((counter, semaphore_room)) =
@@ -10300,15 +10462,6 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         revents |= POLLIN;
                     }
                     // Mice doesn't accept writes — never report POLLOUT.
-                } else if ofd.file_type == FileType::CharDevice
-                    && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
-                {
-                    // /dev/dsp is write-only. POLLOUT is always ready —
-                    // the ring drops oldest frames on overflow rather
-                    // than blocking — and POLLIN never fires.
-                    if pollfd.events & POLLOUT != 0 {
-                        revents |= POLLOUT;
-                    }
                 } else {
                     // Regular files and char devices are always ready
                     if pollfd.events & POLLIN != 0 {
@@ -10638,8 +10791,13 @@ pub fn sys_openat(
         let ofd_ref = entry.ofd_ref;
         proc.ofd_table.inc_ref(ofd_ref.0);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-        return Ok(fd);
+        return match proc.fd_table.alloc(ofd_ref, fd_flags) {
+            Ok(fd) => Ok(fd),
+            Err(err) => {
+                proc.ofd_table.dec_ref(ofd_ref.0);
+                Err(err)
+            }
+        };
     }
 
     // Virtual device nodes — handle in-kernel, no host call
@@ -10650,10 +10808,29 @@ pub fn sys_openat(
         if dev == VirtualDevice::Mice {
             acquire_mice_or_busy(proc.pid)?;
         }
-        if dev == VirtualDevice::Dsp {
-            acquire_dsp_or_busy(proc.pid)?;
-        }
         let status_flags = oflags & !CREATION_FLAGS;
+        if dev == VirtualDevice::Dsp {
+            if status_flags & O_ACCMODE != O_WRONLY {
+                return Err(Errno::EOPNOTSUPP);
+            }
+            let pcm_handle = crate::audio::open_stream()?;
+            crate::audio::set_nonblock(pcm_handle, status_flags & O_NONBLOCK != 0)?;
+            let ofd_idx = proc.ofd_table.create(
+                FileType::PcmPlayback,
+                status_flags,
+                pcm_handle,
+                resolved,
+            );
+            let fd_flags = oflags_to_fd_flags(oflags);
+            return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+                Ok(fd) => Ok(fd),
+                Err(error) => {
+                    proc.ofd_table.dec_ref(ofd_idx);
+                    crate::audio::rollback_open(pcm_handle);
+                    Err(error)
+                }
+            };
+        }
         let ofd_idx = proc.ofd_table.create(
             FileType::CharDevice,
             status_flags,
@@ -11070,10 +11247,14 @@ pub fn sys_ioctl(
         }
         let val = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+        let pcm_handle = (ofd.file_type == FileType::PcmPlayback).then_some(ofd.host_handle);
         if val != 0 {
             ofd.status_flags |= wasm_posix_shared::flags::O_NONBLOCK;
         } else {
             ofd.status_flags &= !wasm_posix_shared::flags::O_NONBLOCK;
+        }
+        if let Some(handle) = pcm_handle {
+            crate::audio::set_nonblock(handle, val != 0)?;
         }
         return Ok(());
     }
@@ -11217,10 +11398,8 @@ pub fn sys_ioctl(
     // --- /dev/dsp ioctls — OSS surface ---
     {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-        if ofd.file_type == FileType::CharDevice
-            && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
-        {
-            return handle_dsp_ioctl(request, buf);
+        if ofd.file_type == FileType::PcmPlayback {
+            return handle_dsp_ioctl(proc, ofd_idx, request, buf);
         }
     }
 
@@ -12608,7 +12787,11 @@ pub fn sys_fpathconf(
                 virtual_filesystem_pathconf_value(name)
             }
         }
-        FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd => {
+        FileType::EventFd
+        | FileType::Epoll
+        | FileType::TimerFd
+        | FileType::SignalFd
+        | FileType::PcmPlayback => {
             Err(Errno::EINVAL)
         }
     }
@@ -28987,22 +29170,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // /dev/dsp tests — mirror the fb0 / mice surface for OSS audio.
+    // /dev/dsp tests — OSS frontend over the OFD-owned PCM core.
     // -----------------------------------------------------------------
 
-    /// Serializes tests that touch DSP_OWNER + the audio ring + the
-    /// audio config atomics. Shares the lock with `audio::tests` so
-    /// concurrent runs across the two modules don't race on the global
-    /// ring (single mutex, two test modules).
-    use crate::audio::TEST_RING_LOCK as DSP_OWNER_LOCK;
-
-    fn reset_dsp_state() {
-        use core::sync::atomic::Ordering;
-        crate::audio::DSP_OWNER.store(-1, Ordering::SeqCst);
-        crate::audio::reset();
-        crate::audio::SAMPLE_RATE.store(11025, Ordering::Relaxed);
-        crate::audio::CHANNELS.store(2, Ordering::Relaxed);
-    }
+    use crate::audio::TEST_AUDIO_LOCK;
 
     #[test]
     fn match_virtual_device_recognizes_dsp() {
@@ -29021,196 +29192,590 @@ mod tests {
     }
 
     #[test]
-    fn open_dsp_acquires_ownership_and_second_open_from_other_pid_is_ebusy() {
-        use core::sync::atomic::Ordering;
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
+    fn opened_dsp_fstat_is_chr() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/dev/dsp",
+            O_WRONLY | O_NONBLOCK,
+            0,
+        )
+        .unwrap();
+        let st = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            st.st_mode & wasm_posix_shared::mode::S_IFMT,
+            wasm_posix_shared::mode::S_IFCHR
+        );
+        assert_eq!(st.st_ino, VirtualDevice::Dsp.ino());
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn open_dsp_is_exclusive_per_open_description_and_rejects_capture() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
 
         let mut proc1 = Process::new(1);
         let mut proc2 = Process::new(2);
         let mut host = MockHostIO::new();
 
         let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
-        assert_eq!(
-            crate::audio::DSP_OWNER.load(Ordering::SeqCst),
-            proc1.pid as i32
-        );
-
         let err = sys_open(&mut proc2, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap_err();
         assert_eq!(err, Errno::EBUSY);
-
-        // Re-open by SAME process is allowed.
-        let fd1b = sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
-        assert_ne!(fd1, fd1b);
+        assert_eq!(
+            sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(
+            sys_open(&mut proc2, &mut host, b"/dev/dsp", O_RDONLY, 0),
+            Err(Errno::EOPNOTSUPP)
+        );
+        assert_eq!(
+            sys_open(&mut proc2, &mut host, b"/dev/dsp", O_RDWR, 0),
+            Err(Errno::EOPNOTSUPP)
+        );
         sys_close(&mut proc1, &mut host, fd1).unwrap();
-        sys_close(&mut proc1, &mut host, fd1b).unwrap();
     }
 
     #[test]
-    fn write_dsp_buffers_pcm_into_ring() {
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
+    fn inherited_dsp_descriptor_shares_ownership_and_nonblock_state() {
+        use crate::process_table::ProcessTable;
 
+        const PARENT: u32 = 980_100;
+        const CHILD: u32 = 980_101;
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+        let fd = sys_open(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            b"/dev/dsp",
+            O_WRONLY,
+            0,
+        )
+        .unwrap();
+        table.fork_process(PARENT, CHILD).unwrap();
+
+        sys_fcntl(table.get_mut(PARENT).unwrap(), fd, F_SETFL, O_NONBLOCK).unwrap();
+        assert_ne!(
+            sys_fcntl(table.get_mut(CHILD).unwrap(), fd, F_GETFL, 0).unwrap() as u32
+                & O_NONBLOCK,
+            0
+        );
+        sys_fcntl(table.get_mut(CHILD).unwrap(), fd, F_SETFL, 0).unwrap();
+        assert_eq!(
+            sys_fcntl(table.get_mut(PARENT).unwrap(), fd, F_GETFL, 0).unwrap() as u32
+                & O_NONBLOCK,
+            0
+        );
+
+        sys_close(table.get_mut(CHILD).unwrap(), &mut host, fd).unwrap();
+        let mut contender = Process::new(980_102);
+        assert_eq!(
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
+        sys_close(table.get_mut(PARENT).unwrap(), &mut host, fd).unwrap();
+        let contender_fd =
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_close(&mut contender, &mut host, contender_fd).unwrap();
+    }
+
+    #[test]
+    fn duplicated_dsp_descriptor_keeps_one_ofd_and_exclusive_owner() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut owner = Process::new(1);
+        let mut contender = Process::new(2);
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(&mut owner, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        let alias = sys_dup(&mut owner, fd).unwrap();
+        sys_close(&mut owner, &mut host, fd).unwrap();
+        assert_eq!(
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
+        sys_close(&mut owner, &mut host, alias).unwrap();
+
+        let contender_fd =
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_close(&mut contender, &mut host, contender_fd).unwrap();
+    }
+
+    #[test]
+    fn dsp_dup2_replacement_keeps_owner_until_the_final_alias_closes() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut owner = Process::new(1);
+        let mut contender = Process::new(2);
+        let mut host = MockHostIO::new();
+
+        let dsp_fd = sys_open(&mut owner, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        let replaced_fd = sys_open(&mut owner, &mut host, b"/dev/null", O_WRONLY, 0).unwrap();
+        assert_eq!(sys_dup2(&mut owner, &mut host, dsp_fd, replaced_fd), Ok(replaced_fd));
+        assert_eq!(sys_dup2(&mut owner, &mut host, replaced_fd, replaced_fd), Ok(replaced_fd));
+
+        sys_close(&mut owner, &mut host, dsp_fd).unwrap();
+        assert_eq!(
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
+        sys_close(&mut owner, &mut host, replaced_fd).unwrap();
+
+        let contender_fd =
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_close(&mut contender, &mut host, contender_fd).unwrap();
+    }
+
+    #[test]
+    fn non_cloexec_dsp_descriptor_survives_exec_with_the_same_owner() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut owner = Process::new(1);
+        let mut contender = Process::new(2);
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(&mut owner, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        let pid = owner.pid;
+        commit_exec_state(&mut owner, &mut host, pid).unwrap();
+        assert!(owner.fd_table.get(fd).is_ok());
+        assert_eq!(sys_write(&mut owner, &mut host, fd, &[1; 4]), Ok(4));
+        assert_eq!(
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
+
+        crate::audio::reset_stream(
+            owner
+                .ofd_table
+                .get(owner.fd_table.get(fd).unwrap().ofd_ref.0)
+                .unwrap()
+                .host_handle,
+        )
+        .unwrap();
+        sys_close(&mut owner, &mut host, fd).unwrap();
+        let contender_fd =
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_close(&mut contender, &mut host, contender_fd).unwrap();
+    }
+
+    #[test]
+    fn inherited_dsp_owner_survives_child_exit_until_parent_closes() {
+        use crate::process_table::ProcessTable;
+
+        const PARENT: u32 = 980_200;
+        const CHILD: u32 = 980_201;
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+        let fd = sys_open(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            b"/dev/dsp",
+            O_WRONLY,
+            0,
+        )
+        .unwrap();
+        table.fork_process(PARENT, CHILD).unwrap();
+
+        sys_exit(table.get_mut(CHILD).unwrap(), &mut host, 0);
+        let mut contender = Process::new(980_202);
+        assert_eq!(
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(
+            sys_write(table.get_mut(PARENT).unwrap(), &mut host, fd, &[7; 4]),
+            Ok(4)
+        );
+        crate::audio::reset_stream(
+            table
+                .get(PARENT)
+                .unwrap()
+                .ofd_table
+                .get(table.get(PARENT).unwrap().fd_table.get(fd).unwrap().ofd_ref.0)
+                .unwrap()
+                .host_handle,
+        )
+        .unwrap();
+        sys_close(table.get_mut(PARENT).unwrap(), &mut host, fd).unwrap();
+
+        let contender_fd =
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_close(&mut contender, &mut host, contender_fd).unwrap();
+    }
+
+    #[test]
+    fn caught_signal_interrupts_only_unprogressed_dsp_waits_and_keeps_close_live() {
+        use wasm_posix_shared::oss::{SNDCTL_DSP_RESET, SNDCTL_DSP_SETFRAGMENT, SNDCTL_DSP_SYNC};
+        use wasm_posix_shared::signal::{SA_RESTART, SIGUSR1};
+
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        let mut fragments = ((2i32 << 16) | 4).to_le_bytes();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            SNDCTL_DSP_SETFRAGMENT,
+            &mut fragments,
+        )
+        .unwrap();
+
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &[1; 32]), Ok(32));
+        sys_sigaction(&mut proc, SIGUSR1, 42, SA_RESTART, 0).unwrap();
+        proc.signals.raise(SIGUSR1);
+
+        // A nonblocking no-progress write reports buffer pressure, not an
+        // interruption: it never slept. The caught signal stays pending for
+        // the next syscall boundary.
+        sys_fcntl(&mut proc, fd, F_SETFL, O_NONBLOCK).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &[2; 1]), Err(Errno::EAGAIN));
+        assert!(proc.signals.is_pending(SIGUSR1));
+        sys_fcntl(&mut proc, fd, F_SETFL, 0).unwrap();
+
+        // No bytes fit, so write, drain, and final close are interruptible.
+        // The kernel leaves the caught record queued for the host/glue to
+        // deliver, and close has not removed the descriptor.
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &[2; 1]), Err(Errno::EINTR));
+        assert!(proc.signals.is_pending(SIGUSR1));
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SYNC, &mut []),
+            Err(Errno::EINTR)
+        );
+        assert_eq!(sys_close(&mut proc, &mut host, fd), Err(Errno::EINTR));
+        assert!(proc.fd_table.get(fd).is_ok());
+
+        // A write larger than the configured capacity may make partial
+        // progress. That progress wins over EINTR and the signal stays queued
+        // for delivery at the successful syscall boundary.
+        assert_eq!(crate::audio::drain_into(&mut [0; 16]), 16);
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &[3; 33]), Ok(16));
+        assert!(proc.signals.is_pending(SIGUSR1));
+
+        // Changing the disposition to ignore discards the pending instance,
+        // allowing deterministic reset and close cleanup.
+        sys_sigaction(&mut proc, SIGUSR1, SIG_IGN, 0, 0).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_RESET, &mut []).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn exec_cloexec_and_process_exit_leave_pcm_tail_to_the_audio_clock() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut host = MockHostIO::new();
+
+        crate::audio::reset_for_test();
+        let mut exec_owner = Process::new(10);
+        let exec_fd = sys_open(
+            &mut exec_owner,
+            &mut host,
+            b"/dev/dsp",
+            O_WRONLY | O_CLOEXEC,
+            0,
+        )
+        .unwrap();
+        sys_write(&mut exec_owner, &mut host, exec_fd, &[1; 8]).unwrap();
+        let exec_pid = exec_owner.pid;
+        commit_exec_state(&mut exec_owner, &mut host, exec_pid).unwrap();
+        assert!(exec_owner.fd_table.get(exec_fd).is_err());
+
+        let mut contender = Process::new(11);
+        assert_eq!(
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(crate::audio::drain_into(&mut [0; 8]), 8);
+        let reopened =
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_close(&mut contender, &mut host, reopened).unwrap();
+
+        crate::audio::reset_for_test();
+        let mut exit_owner = Process::new(20);
+        let exit_fd =
+            sys_open(&mut exit_owner, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_write(&mut exit_owner, &mut host, exit_fd, &[2; 8]).unwrap();
+        sys_exit(&mut exit_owner, &mut host, 0);
+        assert!(exit_owner.fd_table.get(exit_fd).is_err());
+
+        let mut exit_contender = Process::new(21);
+        assert_eq!(
+            sys_open(
+                &mut exit_contender,
+                &mut host,
+                b"/dev/dsp",
+                O_WRONLY,
+                0,
+            ),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(crate::audio::drain_into(&mut [0; 8]), 8);
+        let reopened = sys_open(
+            &mut exit_contender,
+            &mut host,
+            b"/dev/dsp",
+            O_WRONLY,
+            0,
+        )
+        .unwrap();
+        sys_close(&mut exit_contender, &mut host, reopened).unwrap();
+    }
+
+    #[test]
+    fn dsp_reconfiguration_and_unsupported_operations_fail_truthfully() {
+        use wasm_posix_shared::oss::*;
+
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
 
-        let pcm: [u8; 8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-        let n = sys_write(&mut proc, &mut host, fd, &pcm).unwrap();
-        assert_eq!(n, 8);
-        assert_eq!(crate::audio::pending_bytes(), 8);
+        let mut query = (AFMT_QUERY as i32).to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SETFMT, &mut query).unwrap();
+        assert_eq!(u32::from_le_bytes(query), AFMT_S16_LE);
 
-        let mut out = [0u8; 8];
-        let drained = crate::audio::drain_into(&mut out);
-        assert_eq!(drained, 8);
-        assert_eq!(out, pcm);
+        let mut unsupported_format = (AFMT_S32_LE as i32).to_le_bytes();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                SNDCTL_DSP_SETFMT,
+                &mut unsupported_format,
+            ),
+            Err(Errno::EINVAL)
+        );
 
+        let mut low_rate = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SPEED, &mut low_rate).unwrap();
+        assert_eq!(i32::from_le_bytes(low_rate), 8_000);
+        let mut channels = 9i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_CHANNELS, &mut channels).unwrap();
+        assert_eq!(i32::from_le_bytes(channels), 2);
+
+        sys_write(&mut proc, &mut host, fd, &[0; 4]).unwrap();
+        let mut rate = 44_100i32.to_le_bytes();
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SPEED, &mut rate),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(
+            sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x02, fd, 0),
+            Err(Errno::ENODEV)
+        );
+
+        for (request, size) in [
+            (SNDCTL_DSP_SETBLKSIZE, 4),
+            (SOUND_PCM_WRITE_FILTER, 4),
+            (SOUND_PCM_READ_FILTER, 4),
+            (SNDCTL_DSP_SUBDIVIDE, 4),
+            (SNDCTL_DSP_GETISPACE, 16),
+            (SNDCTL_DSP_SETTRIGGER, 4),
+            (SNDCTL_DSP_GETTRIGGER, 4),
+            (SNDCTL_DSP_GETIPTR, 12),
+            (SNDCTL_DSP_MAPINBUF, 8),
+            (SNDCTL_DSP_MAPOUTBUF, 8),
+            (SNDCTL_DSP_SETSYNCRO, 0),
+            (SNDCTL_DSP_SETDUPLEX, 0),
+        ] {
+            let mut argument = alloc::vec![0; size];
+            assert_eq!(
+                sys_ioctl(&mut proc, &mut host, fd, request, &mut argument),
+                Err(Errno::ENOTTY),
+                "request {request:#x}"
+            );
+        }
+
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_RESET, &mut []).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
-    fn read_dsp_returns_zero() {
-        // OSS write-only: read returns 0 (EOF-like), not EAGAIN — same
-        // policy as /dev/null. Stops fbDOOM from spinning if it ever
-        // tries to read back the ring.
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
-
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_RDONLY, 0).unwrap();
-
-        let mut buf = [0u8; 8];
-        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
-        assert_eq!(n, 0);
-        sys_close(&mut proc, &mut host, fd).unwrap();
-    }
-
-    #[test]
-    fn ioctl_dsp_speed_roundtrips_through_ring_config() {
+    fn dsp_ioctl_negotiation_geometry_and_queries_are_truthful() {
         use wasm_posix_shared::oss::*;
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
 
         let mut arg = 44100i32.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_SPEED, &mut arg).unwrap();
-        // The kernel echoes back the rate it actually configured.
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SPEED, &mut arg).unwrap();
         assert_eq!(i32::from_le_bytes(arg), 44100);
-        assert_eq!(crate::audio::current_config().0, 44100);
+        let mut format = (AFMT_U8 as i32).to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SETFMT, &mut format).unwrap();
+        assert_eq!(i32::from_le_bytes(format), AFMT_U8 as i32);
 
+        let mut fragments = ((2i32 << 16) | 4).to_le_bytes();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            SNDCTL_DSP_SETFRAGMENT,
+            &mut fragments,
+        )
+        .unwrap();
+        assert_eq!(i32::from_le_bytes(fragments), (2 << 16) | 4);
+
+        let mut formats = [0; 4];
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_GETFMTS, &mut formats).unwrap();
+        assert_eq!(u32::from_le_bytes(formats), SUPPORTED_FORMATS);
+        let mut caps = [0; 4];
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_GETCAPS, &mut caps).unwrap();
+        assert_eq!(u32::from_le_bytes(caps), SUPPORTED_CAPS);
+        let mut space = [0; 16];
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_GETOSPACE, &mut space).unwrap();
+        assert_eq!(i32::from_le_bytes(space[0..4].try_into().unwrap()), 2);
+        assert_eq!(i32::from_le_bytes(space[8..12].try_into().unwrap()), 16);
+        assert_eq!(i32::from_le_bytes(space[12..16].try_into().unwrap()), 32);
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
-    fn ioctl_dsp_setfmt_rejects_non_s16_le() {
+    fn dsp_backpressure_poll_reset_and_final_close_follow_audio_clock() {
         use wasm_posix_shared::oss::*;
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
-
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        let mut fragments = ((2i32 << 16) | 4).to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SETFRAGMENT, &mut fragments).unwrap();
 
-        let mut arg = 0x08u32.to_le_bytes(); // AFMT_U8 — unsupported
-        let err = sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap_err();
-        assert_eq!(err, Errno::EINVAL);
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &[1; 32]), Ok(32));
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &[2; 1]), Err(Errno::EAGAIN));
+        let mut pollfd = WasmPollFd { fd, events: POLLOUT, revents: 0 };
+        assert_eq!(
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0),
+            Ok(0)
+        );
+        let mut drained = [0; 16];
+        assert_eq!(crate::audio::drain_into(&mut drained), 16);
+        assert_eq!(
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0),
+            Ok(1)
+        );
+        assert_eq!(pollfd.revents, POLLOUT);
 
-        let mut arg = AFMT_S16_LE.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap();
+        assert_eq!(sys_close(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+        assert!(proc.fd_table.get(fd).is_ok(), "blocking close keeps fd live");
+        let mut tail = [0; 16];
+        assert_eq!(crate::audio::drain_into(&mut tail), 16);
         sys_close(&mut proc, &mut host, fd).unwrap();
+
+        let fd2 = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_write(&mut proc, &mut host, fd2, &[3; 7]).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd2, SNDCTL_DSP_RESET, &mut []).unwrap();
+        assert_eq!(crate::audio::pending_bytes(), 0);
+        sys_close(&mut proc, &mut host, fd2).unwrap();
     }
 
     #[test]
-    fn ioctl_dsp_getfmts_reports_s16_le_only() {
-        use wasm_posix_shared::oss::*;
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
+    fn dsp_fatal_sink_polls_error_and_final_close_releases_ownership() {
+        use wasm_posix_shared::oss::SNDCTL_DSP_GETOSPACE;
+        use wasm_posix_shared::poll::{POLLERR, POLLOUT};
 
-        let mut proc = Process::new(1);
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut owner = Process::new(1);
+        let mut contender = Process::new(2);
         let mut host = MockHostIO::new();
-        let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        let fd = sys_open(&mut owner, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_write(&mut owner, &mut host, fd, &[1; 8]).unwrap();
+        crate::audio::mark_fatal_error_for_test();
 
-        let mut arg = [0u8; 4];
-        sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_GETFMTS, &mut arg).unwrap();
-        assert_eq!(u32::from_le_bytes(arg), AFMT_S16_LE);
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut owner,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            ),
+            Ok(1)
+        );
+        assert_eq!(pollfd.revents, POLLERR);
 
-        sys_close(&mut proc, &mut host, fd).unwrap();
-    }
+        let mut output_space =
+            [0; core::mem::size_of::<wasm_posix_shared::oss::AudioBufInfo>()];
+        assert_eq!(
+            sys_ioctl(
+                &mut owner,
+                &mut host,
+                fd,
+                SNDCTL_DSP_GETOSPACE,
+                &mut output_space,
+            ),
+            Err(Errno::EIO)
+        );
 
-    #[test]
-    fn ioctl_dsp_reset_drains_ring() {
-        use wasm_posix_shared::oss::*;
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
-
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
-
-        sys_write(&mut proc, &mut host, fd, &[1, 2, 3, 4]).unwrap();
-        assert_eq!(crate::audio::pending_bytes(), 4);
-
-        let mut arg = [0u8; 0];
-        sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_RESET, &mut arg).unwrap();
+        assert_eq!(sys_close(&mut owner, &mut host, fd), Err(Errno::EIO));
+        assert!(
+            owner.fd_table.get(fd).is_err(),
+            "fatal close must remove the descriptor even while returning EIO"
+        );
         assert_eq!(crate::audio::pending_bytes(), 0);
 
-        sys_close(&mut proc, &mut host, fd).unwrap();
-    }
-
-    #[test]
-    fn close_dsp_releases_owner_and_clears_ring() {
-        use core::sync::atomic::Ordering;
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
-
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        let contender_fd =
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
         assert_eq!(
-            crate::audio::DSP_OWNER.load(Ordering::SeqCst),
-            proc.pid as i32
-        );
-
-        sys_write(&mut proc, &mut host, fd, &[1, 2, 3, 4]).unwrap();
-        sys_close(&mut proc, &mut host, fd).unwrap();
-        assert_eq!(crate::audio::DSP_OWNER.load(Ordering::SeqCst), -1);
-        assert_eq!(
-            crate::audio::pending_bytes(),
-            0,
-            "close should drain the ring when releasing ownership"
+            sys_close(&mut contender, &mut host, contender_fd),
+            Err(Errno::EIO),
+            "a persistent host sink failure is reported without retaining ownership"
         );
     }
 
     #[test]
-    fn exec_keeps_dsp_owner_and_ring_for_open_fd() {
-        use core::sync::atomic::Ordering;
-        let _g = DSP_OWNER_LOCK.lock().unwrap();
-        reset_dsp_state();
-
-        let mut proc = Process::new(1);
+    fn failed_dev_fd_alias_opens_do_not_leak_dsp_ofd_owner() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut owner = Process::new(1);
+        let mut contender = Process::new(2);
         let mut host = MockHostIO::new();
-        let _fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+
+        let fd = sys_open(&mut owner, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        assert_eq!(fd, 3);
+        sys_setrlimit(&mut owner, 7, 4, 4096).unwrap();
+
         assert_eq!(
-            crate::audio::DSP_OWNER.load(Ordering::SeqCst),
-            proc.pid as i32
+            sys_open(&mut owner, &mut host, b"/dev/fd/3", O_WRONLY, 0),
+            Err(Errno::EMFILE)
+        );
+        assert_eq!(
+            sys_openat(
+                &mut owner,
+                &mut host,
+                AT_FDCWD,
+                b"/dev/fd/3",
+                O_WRONLY,
+                0,
+            ),
+            Err(Errno::EMFILE)
         );
 
-        sys_write(&mut proc, &mut host, _fd, &[5, 5, 5, 5]).unwrap();
-        sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
-        assert_eq!(
-            crate::audio::DSP_OWNER.load(Ordering::SeqCst),
-            proc.pid as i32
-        );
-        assert_eq!(
-            crate::audio::pending_bytes(),
-            4,
-            "exec should retain samples behind a surviving open fd"
-        );
-        sys_close(&mut proc, &mut host, _fd).unwrap();
+        sys_close(&mut owner, &mut host, fd).unwrap();
+        let contender_fd =
+            sys_open(&mut contender, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+        sys_close(&mut contender, &mut host, contender_fd).unwrap();
     }
 
     // -----------------------------------------------------------------

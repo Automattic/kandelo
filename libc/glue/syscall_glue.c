@@ -320,8 +320,8 @@
 #define FCNTL_F_SETLK  13
 #define FCNTL_F_SETLKW 14
 
-/* Buffer size hints for ioctl/termios where kernel needs a length */
-#define IOCTL_BUF_SIZE    256
+/* Buffer size hint for the dedicated termios calls. ioctl sizes are decoded
+ * from the request below so no-argument commands never form a null slice. */
 #define TERMIOS_BUF_SIZE  256
 
 /* mmap2 page unit — musl divides the byte offset by this before syscall */
@@ -335,6 +335,40 @@ static inline unsigned int slen(const char *s)
 {
     if (!s) return 0;
     return (unsigned int)__builtin_strlen(s);
+}
+
+static inline unsigned int ioctl_arg_size(uint32_t request)
+{
+    unsigned int encoded = (request >> 16) & 0x3fffU;
+    if (encoded) return encoded;
+    switch (request) {
+    case 0x5421: case 0x5452: case 0x541b: case 0x8905:
+    case 0x540f: case 0x5410: case 0x5429:
+    case 0x4b44: case 0x4b45:
+        return 4;
+    case 0x5401: case 0x5402: case 0x5403: case 0x5404:
+        return 60;
+    case 0x5413: case 0x5414:
+        return 8;
+    case 0x4b33:
+        return 1;
+    case 0x4600: case 0x4601: case 0x4606:
+        return 160;
+    case 0x4602:
+        return 80;
+    case 0x40:
+        return 4;
+    case 0x42:
+        return 16;
+    case 0x44:
+        return 32;
+    case 0x47:
+        return 8;
+    case 0x49:
+        return 24;
+    default:
+        return 0;
+    }
 }
 
 /* ================================================================== */
@@ -848,7 +882,7 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_IOCTL:
         return (long)kernel_ioctl((int32_t)a1, (uint32_t)a2,
                                   (uint8_t *)(uintptr_t)a3,
-                                  IOCTL_BUF_SIZE);
+                                  ioctl_arg_size((uint32_t)a2));
 
     /* ============================================================== */
     /* Environment                                                     */
