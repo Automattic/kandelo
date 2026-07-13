@@ -8,10 +8,16 @@
  * commit, and pump input events. See
  * docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §4.
  *
- * v1 scope: a single fixed-size toplevel per connection, software
- * rendering into a wl_shm buffer the compositor imports via gbm, keyboard
- * (keysym + UTF-8) and pointer (motion + button) input. No server-side
- * decoration, no surface resize.
+ * Scope: a single fixed-size toplevel per connection, software rendering
+ * into a wl_shm buffer the compositor imports via gbm, keyboard (keysym +
+ * UTF-8) and pointer (motion + button) input. No surface resize.
+ *
+ * Decoration is client-side (CSD): libkwl draws a KWL_TITLEBAR_H-px
+ * titlebar (title text + close box) above the app's content. The app draws
+ * only the content area — kwl_window_surface() is w×h as requested — and
+ * receives pointer coordinates content-local. Pressing the close box emits
+ * KWL_CLOSE; dragging the titlebar hands the interaction to the compositor
+ * via xdg_toplevel.move (the window moves; the app sees nothing).
  */
 #ifndef KWL_H
 #define KWL_H
@@ -21,6 +27,10 @@
 
 /* Opaque connection + toplevel window handle. */
 struct kwl_window;
+
+/* Height of the client-side decoration bar libkwl adds above the content.
+ * The wl_surface the compositor sees is (w × h + KWL_TITLEBAR_H). */
+#define KWL_TITLEBAR_H 28
 
 enum kwl_event_type {
     KWL_NONE = 0,
@@ -48,8 +58,11 @@ struct kwl_event {
 };
 
 /* Connect to the compositor (/tmp/wayland-0) and map a single CSD toplevel
- * of the requested size. Blocks until the initial xdg configure is acked
- * and the wl_shm buffers are ready. Returns NULL on failure. */
+ * with a w×h CONTENT area (the surface is KWL_TITLEBAR_H taller). `title`
+ * is drawn in the titlebar and doubles as the xdg app_id, which the
+ * compositor's placement rules key on. Blocks until the initial xdg
+ * configure is acked and the wl_shm buffers are ready. Returns NULL on
+ * failure. */
 struct kwl_window *kwl_window_create(const char *title, int w, int h);
 
 void kwl_window_destroy(struct kwl_window *win);

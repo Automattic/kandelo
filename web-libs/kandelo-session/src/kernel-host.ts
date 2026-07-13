@@ -126,16 +126,25 @@ export interface KernelLike {
    * blit + page-flip telemetry. `opts.mode` declares how the canvas
    * is painted (see `CentralizedKernelWorker.attachKmsCanvas`):
    * `"auto"` (default) defers context acquisition to whichever path
-   * arrives first; `"2d"` opts into the legacy CPU-blit pump; `"webgl2"`
-   * tells the pump the canvas is GL-owned so it stays hands-off and
-   * lets a libdrm/libgbm/EGL program (e.g. modeset.c) claim it.
+   * arrives first; `"2d"` opts into the legacy CPU-blit pump;
+   * `"webgl2-scanout"` has the pump present the scanout through a
+   * WebGL2 texture (GPU swizzle + scaling); `"webgl2"` tells the pump
+   * the canvas is GL-owned so it stays hands-off and lets a
+   * libdrm/libgbm/EGL program (e.g. modeset.c) claim it.
    */
   kmsAttachCanvas?(
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void;
+  /**
+   * Report the CRTC canvas's display size in device pixels. The
+   * `webgl2-scanout` presenter resizes its drawing buffer to match, so
+   * the scanout is GPU-scaled exactly once — at display resolution —
+   * instead of the page compositor rescaling an fb-sized bitmap.
+   */
+  kmsSetDisplaySize?(crtcId: number, width: number, height: number): void;
   /**
    * Register a stats SAB for `crtcId` without binding a scanout
    * canvas. Used by WebGL-rendered demos that want page-flip
@@ -333,6 +342,9 @@ export interface AudioOutputHandle {
  *   4: last blit µs
  *   5: kernel-side PAGE_FLIP commit count
  *   6: kernel-side last frame µs (clock at PAGE_FLIP completion)
+ *   7: renderer that owns the canvas (1 = 2d blit, 2 = webgl2 scanout,
+ *      3 = a GL program claimed the canvas and paints it directly;
+ *      0 = nothing painting)
  */
 export interface KmsDisplayHandle {
   /** CRTC the canvas is bound to (matches what the wasm process passes
@@ -565,15 +577,18 @@ export interface KernelHost {
   // KMS display — registers a canvas as the scanout target for a
   // DRM CRTC. `opts.mode` (default "webgl2") selects how the canvas
   // is painted: "webgl2" hands ownership to the libdrm/libgbm/EGL
-  // path (modeset.c etc.); "2d" keeps the legacy CPU-blit pump that
-  // copies the kernel's scanout BO into the canvas at 60 Hz; "auto"
-  // defers the choice to whichever path arrives first. Returns null
-  // when the wrapped kernel does not yet expose `kmsAttachCanvas`
-  // (older ABI, Node host without an OffscreenCanvas polyfill, etc.).
+  // path (modeset.c etc.); "webgl2-scanout" has the vblank pump
+  // present the scanout BO through a WebGL2 texture (GPU swizzle +
+  // scaling — the path for CPU compositors like wlcompositor); "2d"
+  // keeps the legacy CPU-blit pump that copies the scanout BO into
+  // the canvas at 60 Hz; "auto" defers the choice to whichever path
+  // arrives first. Returns null when the wrapped kernel does not yet
+  // expose `kmsAttachCanvas` (older ABI, Node host without an
+  // OffscreenCanvas polyfill, etc.).
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId?: number,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): KmsDisplayHandle | null;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
@@ -790,6 +805,23 @@ export class LiveKernelHost implements KernelHost {
    * lets the handle drop naturally when the canvas itself is GC'd.
    */
   private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
+  /**
+   * Default paint mode for `attachKmsDisplay` when the caller passes no
+   * explicit `opts.mode`. Boot flows that know the demo renders CPU-side
+   * (dumb-bo memcpy + PAGE_FLIP, e.g. the wayland compositor) set this to
+   * `"webgl2-scanout"` so the kernel worker's vblank pump presents the
+   * scanout BO through a WebGL2 texture (`"2d"` is the legacy CPU blit);
+   * GL-driven demos keep the `"webgl2"` default and let the GL bridge
+   * claim the canvas.
+   */
+  private kmsDisplayModeDefault: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null = null;
+  /**
+   * Last display size (device pixels) reported per CRTC by the
+   * attachKmsDisplay ResizeObserver. Boot flows read it via
+   * {@link getKmsDisplaySize} to derive the advertised video mode
+   * before spawning a mode-picking client (wlcompositor).
+   */
+  private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
 
   constructor(opts: LiveKernelHostOptions = {}) {
     this._status = opts.status ?? "idle";
@@ -1542,10 +1574,24 @@ export class LiveKernelHost implements KernelHost {
 
   // ── KernelHost: KMS display ──────────────────────────────────────────────
 
+  /** See {@link kmsDisplayModeDefault}. Call before the display pane
+   *  mounts (attachKmsDisplay memoizes per canvas). */
+  setKmsDisplayMode(mode: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null): void {
+    this.kmsDisplayModeDefault = mode;
+  }
+
+  /** See {@link kmsDisplaySizes}: last device-pixel display size the
+   *  attached pane reported for `crtcId`, or undefined before the
+   *  first ResizeObserver delivery. */
+  getKmsDisplaySize(crtcId: number = 1): { width: number; height: number } | undefined {
+    const size = this.kmsDisplaySizes.get(crtcId);
+    return size ? { ...size } : undefined;
+  }
+
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId: number = 1,
-    opts: { mode?: "auto" | "2d" | "webgl2" } = { mode: "webgl2" },
+    opts: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" } = {},
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
     if (typeof canvas.transferControlToOffscreen !== "function") return null;
@@ -1556,12 +1602,44 @@ export class LiveKernelHost implements KernelHost {
     // statsSab/OffscreenCanvas alive across the StrictMode unmount.
     const cached = this.kmsHandles.get(canvas);
     if (cached) return cached;
-    // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
+    // 8 i32 slots × 4 bytes = 32 bytes; align to 64 so atomics are happy.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
+    const mode = opts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
     const offscreen = canvas.transferControlToOffscreen();
-    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
+    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, {
+      ...opts,
+      mode,
+    });
     const kernel = this.kernel;
+    // The webgl2-scanout presenter renders at display resolution: track
+    // the canvas element's device-pixel size and forward it so the pump
+    // sizes its drawing buffer to the pixels the user actually sees.
+    // `devicePixelContentBoxSize` gives exact device pixels where
+    // supported; fall back to CSS size × devicePixelRatio.
+    if (
+      mode === "webgl2-scanout" &&
+      kernel.kmsSetDisplaySize &&
+      typeof ResizeObserver !== "undefined"
+    ) {
+      const resizeObserver = new ResizeObserver((entries) => {
+        const entry = entries[entries.length - 1];
+        const dp = entry.devicePixelContentBoxSize?.[0];
+        const width = dp
+          ? dp.inlineSize
+          : entry.contentRect.width * (globalThis.devicePixelRatio || 1);
+        const height = dp
+          ? dp.blockSize
+          : entry.contentRect.height * (globalThis.devicePixelRatio || 1);
+        // A hidden pane reports 0×0 — keep the last real size (the
+        // worker ignores non-positive dims too).
+        if (width >= 1 && height >= 1) {
+          this.kmsDisplaySizes.set(crtcId, { width, height });
+          kernel.kmsSetDisplaySize?.(crtcId, width, height);
+        }
+      });
+      resizeObserver.observe(canvas);
+    }
     // evdev codes for the pointer path (struct input_event).
     const EV_SYN = 0x00, EV_KEY = 0x01, EV_REL = 0x02;
     const SYN_REPORT = 0x00, REL_X = 0x00, REL_Y = 0x01;
@@ -1610,7 +1688,11 @@ export class LiveKernelHost implements KernelHost {
         // The worker auto-stops the pump tick for unused CRTCs on the
         // next teardown; there's no explicit detach API yet. Closing
         // the handle just drops the local view so callers can drop
-        // their reference.
+        // their reference. The ResizeObserver intentionally stays
+        // live: StrictMode's mount → cleanup → mount cycle closes the
+        // handle once and then reuses it from the cache, and the
+        // cached handle must keep feeding display sizes. The observer
+        // dies with the canvas (WeakMap entry) instead.
       },
     };
     this.kmsHandles.set(canvas, handle);

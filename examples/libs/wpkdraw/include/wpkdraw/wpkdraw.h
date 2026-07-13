@@ -43,4 +43,18 @@ void wpk_pixel(struct wpk_surface *s, int x, int y, wpk_color color);
 void wpk_rect(struct wpk_surface *s, int x, int y, int w, int h,
               wpk_color color);
 
+/* Anti-aliased line from (x0,y0) to (x1,y1), `width` pixels thick with
+ * round caps (a capsule). Edge pixels get the colour's alpha scaled by
+ * their coverage, so shallow angles stay smooth. Coordinates are pixel
+ * centres (a coordinate of 3.0 means the centre of column 3). Zero or
+ * negative width is a no-op; a zero-length segment draws a disc of
+ * diameter `width`. */
+void wpk_line_aa(struct wpk_surface *s, float x0, float y0,
+                 float x1, float y1, float width, wpk_color color);
+
+/* Anti-aliased filled disc of radius `r` centred on (cx,cy), coverage
+ * blended like wpk_line_aa. Zero or negative radius is a no-op. */
+void wpk_disc_aa(struct wpk_surface *s, float cx, float cy, float r,
+                 wpk_color color);
+
 #endif /* WPKDRAW_H */

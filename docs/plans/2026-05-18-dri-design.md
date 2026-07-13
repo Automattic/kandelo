@@ -902,6 +902,10 @@ for the popup menu engine = **~1.2 kLoC** of in-tree compositor.
 
 ### §9.2 Custom protocol (not Wayland)
 
+> **⚠️ AMENDED (2026-07-08).** v1 now uses **Wayland**, not this custom
+> wire. See [`2026-07-08-dri-wayland-compositor-plan.md`](2026-07-08-dri-wayland-compositor-plan.md).
+> The frame format below is retained as history.
+
 The wire is a binary frame format on the unix socket:
 
 ```
@@ -967,6 +971,13 @@ file-manager:
   `SDL_OpenAudioDevice` dummy beep to exercise the audio stack.
 
 ### §9.5 Why custom protocol, not Wayland, in v1
+
+> **⚠️ REVERSED (2026-07-08).** The conclusion of this section no longer
+> holds: v1 *is* Wayland. Feasibility exploration confirmed every primitive
+> Wayland needs (AF_UNIX + SCM_RIGHTS + parking epoll) already exists and is
+> tested, and the libffi risk is contained by a Wayland-scoped shim. See
+> [`2026-07-08-dri-wayland-compositor-plan.md`](2026-07-08-dri-wayland-compositor-plan.md)
+> §1–§4. Kept below as the original rationale.
 
 Wayland is two pieces: wire (libwayland-server / -client; ~5 kLoC)
 and protocol (xdg-shell, wp_seat, wp_data_device_manager, ...).
@@ -1146,6 +1157,12 @@ skipping (6) leaves the compositor with nothing to draw; skipping
 (7) leaves the SDL2 demo with no window manager.
 
 ## §15. What this design intentionally does not cover
+
+> **⚠️ AMENDED (2026-07-08).** Wayland is **promoted** from a deferred
+> post-v1 compat layer to the v1 display protocol. See
+> [`2026-07-08-dri-wayland-compositor-plan.md`](2026-07-08-dri-wayland-compositor-plan.md).
+> The remaining items below (WebGPU, unmodified GTK/Qt, full libffi) stay
+> deferred.
 
 - **WebGPU.** Mentioned as a second device-file later; the WebGPU
   ioctl surface diverges enough from DRM/GBM (different memory

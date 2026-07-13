@@ -43,6 +43,27 @@ int main(void) {
             if (buf[y * W + x] & 0x00ffffffu) coverage++;
     printf("GLYPH_COVERAGE n=%d\n", coverage);
 
+    /* AA primitives over black: fringe pixels blend to intermediate
+     * channel values, which hard-edged wpk_rect can never produce. Core
+     * samples sit well inside the shape and must be fully saturated. */
+    wpk_line_aa(&s, 40.0f, 50.0f, 90.0f, 58.0f, 3.0f, WPK_RGB(0, 255, 0));
+    int line_fringe = 0;
+    for (int y = 46; y < 62; y++)
+        for (int x = 36; x < 94; x++) {
+            uint32_t g = (buf[y * W + x] >> 8) & 0xff;
+            if (g > 0 && g < 0xff) line_fringe++;
+        }
+    printf("AA_LINE core=0x%08x fringe=%d\n", buf[54 * W + 65], line_fringe);
+
+    wpk_disc_aa(&s, 105.0f, 20.0f, 6.0f, WPK_RGB(0, 0, 255));
+    int disc_fringe = 0;
+    for (int y = 12; y < 28; y++)
+        for (int x = 97; x < 113; x++) {
+            uint32_t b = buf[y * W + x] & 0xff;
+            if (b > 0 && b < 0xff) disc_fringe++;
+        }
+    printf("AA_DISC core=0x%08x fringe=%d\n", buf[20 * W + 105], disc_fringe);
+
     wpk_font_destroy(f);
     free(buf);
     printf("WPKDRAW_SMOKE_OK\n");

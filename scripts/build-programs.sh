@@ -372,8 +372,8 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libwpkdraw.a"
             ;;
-        kwldemo.c)
-            # PR7 Phase 2: links libkwl — built in a dedicated pass after the
+        kwldemo.c|wlclock.c|wlpaint.c)
+            # Link libkwl — built in a dedicated pass after the
             # wlcompositor block (which resolves the wayland/xkb archives and
             # generates the xdg-shell client header libkwl needs). Skip here.
             ;;
@@ -526,6 +526,9 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
 
     # Server. Link order: dependents (compositor + xdg glue) before
     # dependencies; libffi last so wl_closure_invoke's ffi_call resolves.
+    # libwpkdraw renders the compositor's wallpaper (gradient + wordmark);
+    # libEGL/libGLESv2 drive the GPU compositing path (CPU fallback when
+    # the host has no WebGL2).
     comp_wasm="$OUT_DIR_32/wlcompositor.wasm"
     echo "  Compiling wlcompositor (server)..."
     "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
@@ -533,11 +536,13 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$WLC_GEN/xdg-shell-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-server.a" \
+        "$SYSROOT/lib/libwpkdraw.a" \
         "$SYSROOT/lib/libxkbcommon.a" \
         "$WLC_LIBINPUT/lib/libinput.a" \
         "$WLC_LIBEVDEV/lib/libevdev.a" \
         "$WLC_LIBUDEV/lib/libudev.a" \
         "$WLC_MTDEV/lib/libmtdev.a" \
+        "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
         "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
         "$SYSROOT/lib/libffi.a" \
         "${LINK_POST_LIBS[@]}" \
@@ -603,6 +608,28 @@ if [ -d "$LIBKWL_DIR/src" ]; then
         "$FORK_INSTRUMENT" "$kwldemo_wasm" -o "$kwldemo_wasm.instr"
         mv "$kwldemo_wasm.instr" "$kwldemo_wasm"
     fi
+
+    # Wayland desktop demo clients: wlclock (animated analog clock) and
+    # wlpaint (palette + pointer-drag painting). Same link line as kwldemo.
+    for kwl_app in wlclock wlpaint; do
+        [ -f "$REPO_ROOT/programs/$kwl_app.c" ] || continue
+        kwl_app_wasm="$OUT_DIR_32/$kwl_app.wasm"
+        echo "  Compiling $kwl_app (libkwl desktop client)..."
+        "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+            "$REPO_ROOT/programs/$kwl_app.c" \
+            "$KWL_GEN/xdg-shell-protocol.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libkwl.a" \
+            "$SYSROOT/lib/libwpkdraw.a" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libxkbcommon.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$kwl_app_wasm"
+        "$FORK_INSTRUMENT" "$kwl_app_wasm" -o "$kwl_app_wasm.instr"
+        mv "$kwl_app_wasm.instr" "$kwl_app_wasm"
+    done
 fi
 
 # wlterm (PR7 Phase 3): a real terminal — a libkwl window + an in-tree VT100

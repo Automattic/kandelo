@@ -35,10 +35,20 @@ const hasBinaries = !!compositorBin && !!clientBin;
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
 
+// The v2 compositor is a floating-window desktop: an unmatched app_id gets
+// the first cascade slot (160,120), and a pointer button is routed to the
+// surface UNDER the cursor (not broadcast). The wlclient-test window is
+// 200×150, so move the cursor inside it before pressing.
+const POINT_X = 260;
+const POINT_Y = 200;
+
 // linux/input-event-codes.h
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
+const EV_ABS = 0x03;
 const SYN_REPORT = 0x00;
+const ABS_X = 0x00;
+const ABS_Y = 0x01;
 const KEY_A = 30;
 const BTN_LEFT = 0x110;
 
@@ -105,10 +115,14 @@ describe("wlcompositor — server composites + routes input to a client", () => 
           .toBe(0xff0000);
         expect(out.value).toMatch(/FLIP fb=\d+ first=1/);
 
-        // Inject a keyboard key on event0 and a pointer button on event1;
-        // the compositor forwards both to the focused client.
+        // Inject a keyboard key on event0 (routed to the keyboard-focused
+        // window) and — after moving the cursor over the window — a pointer
+        // button on event1 (routed to the surface under the cursor).
         host.injectInputEvent(0, EV_KEY, KEY_A, 1);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(1, EV_ABS, ABS_X, POINT_X);
+        host.injectInputEvent(1, EV_ABS, ABS_Y, POINT_Y);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
         host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
 

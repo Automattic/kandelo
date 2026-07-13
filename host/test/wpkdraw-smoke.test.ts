@@ -50,6 +50,19 @@ describe("wpkdraw — CPU raster into a wrapped heap buffer", () => {
         expect(cover, out.value).not.toBeNull();
         expect(Number(cover![1])).toBeGreaterThan(0);
 
+        // AA line: fully-saturated core, partially-covered fringe pixels
+        // (intermediate channel values — impossible with hard-edged rects).
+        const line = out.value.match(/AA_LINE core=0x([0-9a-f]{8}) fringe=(\d+)/);
+        expect(line, out.value).not.toBeNull();
+        expect(parseInt(line![1], 16) >>> 0).toBe(0xff00ff00);
+        expect(Number(line![2])).toBeGreaterThan(0);
+
+        // AA disc: same contract.
+        const disc = out.value.match(/AA_DISC core=0x([0-9a-f]{8}) fringe=(\d+)/);
+        expect(disc, out.value).not.toBeNull();
+        expect(parseInt(disc![1], 16) >>> 0).toBe(0xff0000ff);
+        expect(Number(disc![2])).toBeGreaterThan(0);
+
         expect(out.value).toContain("WPKDRAW_SMOKE_OK");
       } finally {
         await host.destroy().catch(() => {});

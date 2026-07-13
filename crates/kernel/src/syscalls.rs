@@ -1039,6 +1039,39 @@ fn handle_dri_ioctl(
             }
             Ok(())
         }
+        DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE => {
+            if buf.len() < core::mem::size_of::<WpkDrmBindForeignTexture>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmBindForeignTexture =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // Both the bo handle and the GL context must live on THIS fd:
+            // texture binds go to the caller's own GL session (libEGL's
+            // renderD128 fd), so the caller imports the producer's
+            // prime-fd here first (PRIME_FD_TO_HANDLE).
+            let bo_id;
+            {
+                let dri = dri_state(proc, ofd_idx)?;
+                bo_id = *dri.handles.get(&req.bo_handle).ok_or(Errno::ENOENT)?;
+                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized || gls.context_id != Some(req.ctx_id) {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            // The host owns pixel storage and the texture table; it
+            // returns the stable guest-visible texture id. Negative =
+            // no GL backing (headless host) or upload failure — the
+            // caller degrades to its CPU path.
+            let tex = host.gl_bind_foreign_texture(pid, req.ctx_id, bo_id, req.gl_target);
+            if tex <= 0 {
+                return Err(Errno::EIO);
+            }
+            req.gl_texture_id = tex as u32;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
         // --- GLES2 session ioctls --------------------------------------
         //
         // libEGL / libGLESv2 drive these. The cmdbuf mmap lives in the
@@ -1604,6 +1637,16 @@ fn handle_dri_card_ioctl(
                     + (nsec as u64) / 1000;
                 crate::dri::record_kms_commit(req.crtc_id, now_us);
             }
+            // Latch the new scanout fb NOW. The fb is fully painted
+            // before the flip ioctl, and the client only reuses the
+            // old bo after the flip-complete event (next vblank), so
+            // an immediate latch is race-free. Without this the host
+            // keeps blitting the fb from the initial SETCRTC forever —
+            // for a double-buffered compositor that's the BACK buffer
+            // half the time, so the 60 Hz pump samples frames
+            // mid-composite (wallpaper painted, windows not yet) and
+            // the desktop flickers randomly.
+            host.kms_set_fb(pid, req.crtc_id, req.fb_id);
             // Queue the flip but do NOT synthesize the completion
             // event here. `dri::drain_pending_flips`, called from
             // `kernel_vblank` on each host vblank tick (16.67 ms),
@@ -2559,10 +2602,21 @@ pub fn sys_read(
                 return Err(Errno::EINVAL);
             }
             let tfd_idx = (-(host_handle + 1)) as usize;
-            // Compute expirations lazily
-            let (now_sec, now_nsec) = host.host_clock_gettime(0)?;
-            if let Some(Some(tfd)) = proc.timerfds.get_mut(tfd_idx) {
-                timerfd_compute_expirations(tfd, now_sec, now_nsec);
+            // Compute expirations lazily, against the timer's OWN clock.
+            // TFD_TIMER_ABSTIME targets live in the domain of tfd.clock_id
+            // (libinput arms CLOCK_MONOTONIC absolutes); comparing them
+            // against CLOCK_REALTIME makes every monotonic timer look
+            // already-expired on hosts where the two epochs differ.
+            if let Some(clock_id) = proc
+                .timerfds
+                .get(tfd_idx)
+                .and_then(|s| s.as_ref())
+                .map(|t| t.clock_id)
+            {
+                let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
+                if let Some(Some(tfd)) = proc.timerfds.get_mut(tfd_idx) {
+                    timerfd_compute_expirations(tfd, now_sec, now_nsec);
+                }
             }
             let tfd = proc
                 .timerfds
@@ -8139,8 +8193,24 @@ fn poll_check_depth(
             }
             FileType::TimerFd => {
                 let tfd_idx = (-(ofd.host_handle + 1)) as usize;
+                // Expirations are computed lazily, and poll is a consumer
+                // too: evaluate against the current time of the timer's
+                // OWN clock (see FileType::TimerFd in sys_read) so a
+                // parked poller sees a timer that expired while it slept
+                // instead of waiting forever on the cached counter.
+                let clock_id = proc
+                    .timerfds
+                    .get(tfd_idx)
+                    .and_then(|s| s.as_ref())
+                    .map(|t| t.clock_id);
+                if let Some(clock_id) = clock_id {
+                    if let (Ok((now_sec, now_nsec)), Some(Some(tfd))) =
+                        (host.host_clock_gettime(clock_id), proc.timerfds.get_mut(tfd_idx))
+                    {
+                        timerfd_compute_expirations(tfd, now_sec, now_nsec);
+                    }
+                }
                 if let Some(Some(tfd)) = proc.timerfds.get(tfd_idx) {
-                    // Check if timer has expired (lazy: just check expirations counter)
                     if pollfd.events & POLLIN != 0 && tfd.expirations > 0 {
                         revents |= POLLIN;
                     }
@@ -11562,6 +11632,10 @@ mod tests {
         sigsuspend_signal: u32,
         sigsuspend_error: bool,
         clock_time: (i64, i64),
+        /// When set, CLOCK_MONOTONIC (1) reads return this instead of
+        /// `clock_time`, letting tests model hosts where the monotonic and
+        /// realtime epochs differ (Node: hrtime-since-boot vs Unix epoch).
+        monotonic_time: Option<(i64, i64)>,
         /// Per-path owner overrides for host_stat / host_lstat. Mirrors how a real
         /// host-side VFS owns ownership; tests use `set_file_with_owner` to seed.
         file_owners: std::collections::HashMap<Vec<u8>, (u32, u32)>,
@@ -11580,6 +11654,15 @@ mod tests {
         /// Override for `gbm_bo_bind`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gbm_bo_bind_rc: i32,
+        /// Recorded `(pid, crtc_id, fb_id)` for every `kms_set_fb` call so
+        /// SETCRTC/PAGE_FLIP scanout latching can be asserted against.
+        kms_set_fb_calls: Vec<(i32, u32, u32)>,
+        /// Recorded `(pid, ctx_id, bo_id, gl_target)` for every
+        /// `gl_bind_foreign_texture` call.
+        gl_bind_foreign_texture_calls: Vec<(i32, u32, u32, u32)>,
+        /// Return value for `gl_bind_foreign_texture` (> 0 = texture id,
+        /// <= 0 = failure → the ioctl surfaces EIO).
+        gl_bind_foreign_texture_rc: i32,
     }
 
     impl MockHostIO {
@@ -11592,6 +11675,7 @@ mod tests {
                 sigsuspend_signal: 0,
                 sigsuspend_error: false,
                 clock_time: (1234567890, 123456789),
+                monotonic_time: None,
                 file_owners: std::collections::HashMap::new(),
                 file_modes: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
@@ -11601,6 +11685,9 @@ mod tests {
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
                 gbm_bo_bind_rc: 0,
+                kms_set_fb_calls: Vec::new(),
+                gl_bind_foreign_texture_calls: Vec::new(),
+                gl_bind_foreign_texture_rc: 7,
             }
         }
 
@@ -11869,7 +11956,12 @@ mod tests {
             Ok(())
         }
 
-        fn host_clock_gettime(&mut self, _clock_id: u32) -> Result<(i64, i64), Errno> {
+        fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno> {
+            if clock_id == wasm_posix_shared::clock::CLOCK_MONOTONIC {
+                if let Some(t) = self.monotonic_time {
+                    return Ok(t);
+                }
+            }
             Ok(self.clock_time)
         }
 
@@ -12070,6 +12162,20 @@ mod tests {
         }
         fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
             self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
+        }
+        fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
+            self.kms_set_fb_calls.push((pid, crtc_id, fb_id));
+        }
+        fn gl_bind_foreign_texture(
+            &mut self,
+            pid: i32,
+            ctx_id: u32,
+            bo_id: u32,
+            gl_target: u32,
+        ) -> i32 {
+            self.gl_bind_foreign_texture_calls
+                .push((pid, ctx_id, bo_id, gl_target));
+            self.gl_bind_foreign_texture_rc
         }
     }
 
@@ -19026,6 +19132,112 @@ mod tests {
     }
 
     #[test]
+    fn test_timerfd_poll_reports_expiry_without_read() {
+        // Regression: poll must lazily evaluate timerfd expirations against
+        // the current clock. Before the fix it only read the cached
+        // `expirations` counter (updated by read/settime), so a poller
+        // parked across an expiry never woke — libinput's button-debounce
+        // timer (which gates button RELEASE delivery to Wayland clients)
+        // hung on exactly this.
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::poll::POLLIN;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_timerfd_create(&mut proc, 0, 0).unwrap();
+
+        // Arm: expires at t=105s.
+        host.clock_time = (100, 0);
+        sys_timerfd_settime(&mut proc, &mut host, fd, 0, 0, 0, 5, 0).unwrap();
+
+        // Not yet expired → poll reports nothing.
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        };
+        host.clock_time = (104, 0);
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents, 0);
+
+        // Clock passes the expiry with NO intervening read/settime → poll
+        // alone must surface POLLIN.
+        host.clock_time = (106, 0);
+        pollfd.revents = 0;
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLIN, 0);
+
+        // And the subsequent read drains the expiration count as usual.
+        let mut buf = [0u8; 8];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(u64::from_le_bytes(buf), 1);
+    }
+
+    #[test]
+    fn test_timerfd_poll_uses_timers_own_clock() {
+        // Regression: expiry must be evaluated against the timer's OWN clock
+        // (tfd.clock_id), not CLOCK_REALTIME. TFD_TIMER_ABSTIME targets live
+        // in the clock_id domain; on real hosts monotonic (since boot) and
+        // realtime (Unix epoch) differ by ~1.7e9 s, so comparing a monotonic
+        // target against realtime "now" made every CLOCK_MONOTONIC timer look
+        // already-expired the instant it was armed — libinput's 25 ms button
+        // debounce fired immediately and its dispatch loop then never saw the
+        // real expiry.
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::clock::CLOCK_MONOTONIC;
+        use wasm_posix_shared::poll::POLLIN;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Realtime is far in the "future" relative to monotonic, as on Node.
+        host.clock_time = (1_700_000_000, 0);
+        host.monotonic_time = Some((100, 0));
+
+        let fd = sys_timerfd_create(&mut proc, CLOCK_MONOTONIC, 0).unwrap();
+        // Arm ABSTIME at monotonic t=100.025s (a libinput-style debounce).
+        const TFD_TIMER_ABSTIME: u32 = 1;
+        sys_timerfd_settime(
+            &mut proc,
+            &mut host,
+            fd,
+            TFD_TIMER_ABSTIME,
+            0,
+            0,
+            100,
+            25_000_000,
+        )
+        .unwrap();
+
+        // Monotonic hasn't reached the target: poll must NOT report POLLIN,
+        // even though realtime "now" is numerically far past the target.
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents, 0);
+        // Nor may read consume a phantom expiration.
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            sys_read(&mut proc, &mut host, fd, &mut buf),
+            Err(Errno::EAGAIN)
+        );
+
+        // Monotonic passes the target → poll reports POLLIN and read drains.
+        host.monotonic_time = Some((100, 30_000_000));
+        pollfd.revents = 0;
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLIN, 0);
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(u64::from_le_bytes(buf), 1);
+    }
+
+    #[test]
     fn test_timerfd_settime_disarm() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -22447,6 +22659,106 @@ mod tests {
     }
 
     #[test]
+    fn kms_page_flip_latches_host_scanout_fb() {
+        // A double-buffered client (gbm_surface ring) SETCRTCs bo A once,
+        // then ping-pongs PAGE_FLIP between A and B. The host-side blit
+        // pump reads `currentFb` — if PAGE_FLIP doesn't latch the new fb
+        // via `kms_set_fb`, the pump keeps scanning out the SETCRTC-era
+        // fb forever, which is the client's BACK buffer every other
+        // frame, and the desktop flickers with half-composited frames.
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let mut master_buf = [0u8; 16];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut master_buf).unwrap();
+
+        // Two dumb buffers + fbs — the double-buffer ring.
+        let mut fb_ids = [0u32; 2];
+        for slot in &mut fb_ids {
+            let create = WpkDrmModeCreateDumb {
+                width: 64,
+                height: 32,
+                bpp: 32,
+                ..Default::default()
+            };
+            let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+            unsafe {
+                core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+            };
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+            let created: WpkDrmModeCreateDumb =
+                unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+            let mut fb_req = WpkDrmModeFbCmd2 {
+                width: 64,
+                height: 32,
+                pixel_format: DRM_FORMAT_ARGB8888,
+                ..Default::default()
+            };
+            fb_req.handles[0] = created.handle;
+            fb_req.pitches[0] = created.pitch;
+            let mut fbuf = [0u8; core::mem::size_of::<WpkDrmModeFbCmd2>()];
+            unsafe { core::ptr::write_unaligned(fbuf.as_mut_ptr() as *mut WpkDrmModeFbCmd2, fb_req) };
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut fbuf).unwrap();
+            let fb_out: WpkDrmModeFbCmd2 =
+                unsafe { core::ptr::read_unaligned(fbuf.as_ptr() as *const WpkDrmModeFbCmd2) };
+            *slot = fb_out.fb_id;
+        }
+        assert_ne!(fb_ids[0], fb_ids[1]);
+
+        // SETCRTC to fb A latches the initial scanout.
+        let crtc_req = WpkDrmModeGetCrtc {
+            crtc_id: 1,
+            fb_id: fb_ids[0],
+            ..Default::default()
+        };
+        let mut crtcbuf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
+        unsafe { core::ptr::write_unaligned(crtcbuf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, crtc_req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, &mut crtcbuf).unwrap();
+        assert_eq!(host.kms_set_fb_calls, vec![(1, 1, fb_ids[0])]);
+
+        // PAGE_FLIP to fb B must latch the host scanout to B immediately.
+        let flip = WpkDrmModeCrtcPageFlip {
+            crtc_id: 1,
+            fb_id: fb_ids[1],
+            flags: 0,
+            reserved: 0,
+            user_data: 0,
+        };
+        let mut flipbuf = [0u8; core::mem::size_of::<WpkDrmModeCrtcPageFlip>()];
+        unsafe { core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap();
+        assert_eq!(
+            host.kms_set_fb_calls,
+            vec![(1, 1, fb_ids[0]), (1, 1, fb_ids[1])]
+        );
+
+        // A rejected flip (EBUSY while one is pending) must NOT latch.
+        let flip_back = WpkDrmModeCrtcPageFlip {
+            crtc_id: 1,
+            fb_id: fb_ids[0],
+            flags: 0,
+            reserved: 0,
+            user_data: 0,
+        };
+        unsafe {
+            core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip_back)
+        };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap_err(),
+            Errno::EBUSY
+        );
+        assert_eq!(host.kms_set_fb_calls.len(), 2);
+    }
+
+    #[test]
     fn kms_setcrtc_without_master_returns_eacces() {
         use wasm_posix_shared::dri::*;
         let _g_master = crate::dri::master::lock_for_test();
@@ -22926,6 +23238,113 @@ mod tests {
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_CONTEXT, &mut nullbuf).unwrap();
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+    }
+
+    #[test]
+    fn drm_bind_foreign_texture_uploads_and_writes_texture_id() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::gl;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // A first bo on a separate fd offsets the global bo ids from the
+        // per-fd handles, so the happy path below can tell whether the host
+        // was handed the resolved bo id or the raw handle.
+        let fd_a = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let dumb = WpkDrmModeCreateDumb {
+            width: 64,
+            height: 32,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut dbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(dbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, dumb) };
+        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_MODE_CREATE_DUMB, &mut dbuf).unwrap();
+        unsafe { core::ptr::write_unaligned(dbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, dumb) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut dbuf).unwrap();
+        let dumb_out: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(dbuf.as_ptr() as *const _) };
+        assert_eq!(dumb_out.handle, 1);
+
+        let mut req = WpkDrmBindForeignTexture {
+            bo_handle: dumb_out.handle,
+            gl_target: 0x0DE1, // GL_TEXTURE_2D
+            ctx_id: 1,
+            gl_texture_id: 0,
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmBindForeignTexture>()];
+
+        // Short buffer → EINVAL.
+        let mut short = [0u8; 8];
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut short)
+                .unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // No GL session on the fd yet → EINVAL.
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
+                .unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // Bring up the GL session + context on the same fd.
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        let attrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 3] };
+        let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
+
+        // Unknown handle → ENOENT.
+        req.bo_handle = 999;
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
+                .unwrap_err(),
+            Errno::ENOENT,
+        );
+
+        // Wrong ctx_id → EINVAL.
+        req.bo_handle = dumb_out.handle;
+        req.ctx_id = 2;
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
+                .unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // Happy path: the host's texture id round-trips into the struct,
+        // and the host saw the resolved kernel-global bo id (2 — second
+        // bo in the reset registry), not this fd's local handle (1).
+        req.ctx_id = 1;
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf).unwrap();
+        let out: WpkDrmBindForeignTexture =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(out.gl_texture_id, 7);
+        assert_eq!(
+            host.gl_bind_foreign_texture_calls[0],
+            (1, 1, 2, 0x0DE1),
+        );
+
+        // Host failure (headless: no WebGL backing) → EIO.
+        host.gl_bind_foreign_texture_rc = -(Errno::ENOSYS as i32);
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
+                .unwrap_err(),
+            Errno::EIO,
+        );
     }
 
     #[test]

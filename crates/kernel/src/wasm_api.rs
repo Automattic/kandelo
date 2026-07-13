@@ -189,6 +189,7 @@ unsafe extern "C" {
         in_ptr: *const u8, in_len: usize,
         out_ptr: *mut u8, out_len: usize,
     ) -> i32;
+    fn host_gl_bind_foreign_texture(pid: i32, ctx_id: u32, bo_id: u32, gl_target: u32) -> i32;
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
     fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
@@ -994,6 +995,16 @@ impl HostIO for WasmHostIO {
                 out.as_mut_ptr(), out.len(),
             )
         }
+    }
+
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
+        unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
     }
 
     fn kms_set_master(&mut self, pid: i32) {

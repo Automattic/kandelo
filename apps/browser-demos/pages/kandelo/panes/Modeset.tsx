@@ -10,11 +10,15 @@ import { PaneHead } from "./PaneHead";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
 // auto-attach resizes the OffscreenCanvas drawing buffer to match the
-// FB before `getContext("webgl2")`, but the placeholder HTMLCanvas in
-// the main thread keeps whatever `width`/`height` we set BEFORE
-// `transferControlToOffscreen()`. We need correct attribute dims here
-// so the pointer scaling math (`canvas.width / rect.width`) matches
-// the framebuffer the wasm program actually paints into.
+// FB before `getContext("webgl2")`. The placeholder HTMLCanvas in the
+// main thread keeps whatever `width`/`height` we set BEFORE
+// `transferControlToOffscreen()` only until the worker commits a
+// differently-sized bitmap — Chrome then reflects the committed size
+// back into the placeholder attributes (observed: the webgl2-scanout
+// presenter's display-sized buffer shows up in `canvas.width`). The
+// pointer math therefore maps through the kernel-reported scanout
+// dims (stats slots 2/3, `fbDims` below), with these constants as the
+// pre-first-frame fallback.
 const MODESET_FB_W = 1920;
 const MODESET_FB_H = 1080;
 
@@ -40,6 +44,11 @@ interface KmsStats {
   height: number;
   commitCount: number;
   lastFrameUs: number;
+  /** Vblank-pump presenter id from stats slot 7: 1 = legacy 2d blit,
+   *  2 = WebGL2 scanout presenter, 3 = program-owned WebGL2 (the app —
+   *  e.g. a GPU compositor — renders the canvas itself; pump stood
+   *  down), 0 = pump not painting this canvas. */
+  renderer: number;
 }
 
 const ZERO_STATS: KmsStats = {
@@ -47,7 +56,10 @@ const ZERO_STATS: KmsStats = {
   height: 0,
   commitCount: 0,
   lastFrameUs: 0,
+  renderer: 0,
 };
+
+const RENDERER_LABELS: Record<number, string> = { 1: "2d", 2: "webgl2", 3: "webgl2-gl" };
 
 export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaximize, isMax, crtcId = 1 }) => {
   const host = useKernelHost();
@@ -121,11 +133,39 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
         handleRef.current?.sendMouseEvent(dx, dy, bts);
       },
     };
+    // The framebuffer dimensions the pointer math must map into. Do NOT
+    // read `canvas.width` here: after `transferControlToOffscreen()` the
+    // placeholder's width/height reflect whatever bitmap the worker last
+    // committed — under the webgl2-scanout presenter that's the DISPLAY
+    // size, not the framebuffer. The kernel publishes the real scanout
+    // dims in stats slots 2/3; fall back to the modeset constants until
+    // the first frame lands.
+    const fbDims = () => {
+      const s = handleRef.current?.stats;
+      const w = (s && Atomics.load(s, 2)) || MODESET_FB_W;
+      const h = (s && Atomics.load(s, 3)) || MODESET_FB_H;
+      return { w, h };
+    };
     const toCanvasCoords = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
+      // The framebuffer keeps its aspect ratio inside the element with
+      // letterbox bars — via CSS `object-fit: contain` when the bitmap
+      // is fb-sized (2d / GL-owned modes), or via the webgl2-scanout
+      // presenter's GL viewport when the bitmap tracks the display
+      // size. Both letterbox the framebuffer into the element with the
+      // same contain math, so one mapping covers every mode: map
+      // through the fitted content box, clamping bar-area pointers to
+      // the nearest framebuffer edge.
+      const { w: fbW, h: fbH } = fbDims();
+      const scale = Math.min(rect.width / fbW, rect.height / fbH);
+      const offX = rect.left + (rect.width - fbW * scale) / 2;
+      const offY = rect.top + (rect.height - fbH * scale) / 2;
+      const clamp = (v: number, max: number) =>
+        Math.min(Math.max(v, 0), max);
       return {
-        x: rect.width > 0 ? ((clientX - rect.left) * canvas.width) / rect.width : 0,
-        y: rect.height > 0 ? ((clientY - rect.top) * canvas.height) / rect.height : 0,
+        x: clamp((clientX - offX) / scale, fbW),
+        y: clamp((clientY - offY) / scale, fbH),
       };
     };
     const sendDelta = (dx: number, dy: number) => {
@@ -217,6 +257,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
         height: Atomics.load(s, 3),
         commitCount: Atomics.load(s, 5),
         lastFrameUs: Atomics.load(s, 6),
+        renderer: s.length > 7 ? Atomics.load(s, 7) : 0,
       });
     };
     tick();
@@ -249,7 +290,8 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
             fontWeight: 600,
           }}>
             {hasFrame
-              ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs`
+              ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs` +
+                (RENDERER_LABELS[stats.renderer] ? ` · ${RENDERER_LABELS[stats.renderer]}` : "")
               : "waiting for PAGE_FLIP"}
           </span>
         }
@@ -275,9 +317,18 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
           <canvas
             ref={canvasRef}
             style={{
+              // Fill the pane but keep the framebuffer's aspect ratio:
+              // `object-fit: contain` letterboxes instead of stretching.
+              // A stretched 16:9 desktop in a wider pane smears every
+              // 1-px line/glyph non-uniformly — the whole demo reads as
+              // "pixelated". Pointer mapping (toCanvasCoords) mirrors
+              // this fitted content box. In webgl2-scanout mode the
+              // bitmap already matches the element's device-pixel size
+              // (the presenter letterboxes in GL), so object-fit is a
+              // rounding-error no-op there.
               width: "100%",
-              height: "auto",
-              maxHeight: "100%",
+              height: "100%",
+              objectFit: "contain",
               imageRendering: "auto",
               background: "var(--k-fb-bg)",
               display: showCanvas ? "block" : "none",

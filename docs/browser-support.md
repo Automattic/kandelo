@@ -150,12 +150,118 @@ Located in `apps/browser-demos/pages/`:
 | network | dash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a Linux-distro mirror (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
 | sdl2 | SDL2 GLSL playground | legacy spawn | Split-pane shader live-coding playground on a 1920×1080 `/dev/dri/card0` KMS surface (GLES2). Left pane is a gap-buffer code editor (syntax highlighting, selection, undo/redo, clipboard, vertical column memory); right pane renders the fragment shader live, auto-recompiling 250 ms after the last keystroke. F1 edits the **image** shader; F2 edits a **sound** shader whose PCM is synthesized to the host AudioContext (48 kHz stereo) and exposed back to the image shader as an `iAudio` FFT texture. Ctrl+S persists the buffer under `/home/shaders/`, Ctrl+L cycles bundled presets, F5 reloads, ESC quits. Keyboard arrives via evdev (`BrowserInputSource`); no mouse (wheel scrolls the editor). |
+| modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
+| wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.
 - **dinit** — `kernelOwnedFs: true`, exec dinit (PID 1), which brings up the per-demo service tree.
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
+- **`kernel.boot` + spawn** — the machine boots to a shell; the page stages the demo binaries into the VFS and spawns them via `kernel.spawn()` / `runShellCommand`.
 - **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary.
+
+### Wayland desktop demo
+
+`/?demo=wayland` boots a four-program Wayland desktop:
+
+- **wlcompositor** — a floating-window Wayland server (`wl_shm`,
+  `xdg_shell`, `wl_seat`, `wl_output`) built on the wasm32 libwayland
+  port. It opens `/dev/dri/card0`, becomes DRM master, and composites
+  all client windows (wallpaper + CSD titlebars + focus border) —
+  **on the GPU** when the host has WebGL2 (see below), with a CPU
+  dumb-bo blit fallback — while committing real `drmModePageFlip`
+  ioctls. Input arrives through the real libinput stack (libevdev on
+  `/dev/input/event*`).
+- **wlclock** — an animated analog clock (paced by `poll` timeouts;
+  hands/ticks drawn with wpkdraw's anti-aliased primitives).
+- **wlpaint** — a pointer-driven painting canvas.
+- **wlterm** — a libkwl VT100 terminal running a forkpty'd `dash`.
+
+The Modeset pane bridges card0 to an OffscreenCanvas.
+
+**GPU compositing (default in the browser).** At boot wlcompositor
+probes the `/dev/dri/renderD128` GLES bridge (shader compile via sync
+queries, which fail cleanly on headless hosts) and, when available,
+composites with GLES3: each client `wl_shm` buffer — a gbm dumb bo
+whose prime-fd arrived over `SCM_RIGHTS` — is imported on the EGL fd
+and bound as a `WebGLTexture` through the
+`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` ioctl (the host uploads pixels
+straight from the bo's shared storage; nothing marshals through the
+cmdbuf). Frames render as textured quads (wallpaper texture + z-ordered
+windows + focus border) in a single cmdbuf flush, so the canvas
+transitions atomically between complete frames. The compositor's GL
+context claims the CRTC canvas (`markKmsCanvasGlOwned`), the vblank
+pump's presenter stands down, and stats slot 7 reports `3`
+(`webgl2-gl` in the chip). KMS PAGE_FLIPs still pace frame callbacks
+and the flip counters — only pixel production moves to the GPU. The
+compositor prints a one-shot `WLC_RENDERER gpu|cpu` marker;
+`WLC_NO_GPU=1` forces the CPU path.
+
+**CPU compositing (Node smokes, headless degrade, or `WLC_NO_GPU`).**
+The compositor blits committed buffers into the dumb-bo scanout as
+before, and the pane's canvas stays in `mode: "webgl2-scanout"`: the
+kernel worker's vblank pump owns a WebGL2 context on the canvas and
+presents the currently scanned-out framebuffer (the fb latched by the
+most recent `PAGE_FLIP`) as a texture draw — the DRM XRGB8888 → RGBA
+swizzle happens in the fragment shader and the scaling on the GPU
+(trilinear over a per-frame mip chain, so a downscaled desktop doesn't
+shimmer). A runtime GPU-compositing failure tears the compositor's EGL
+session down, which hands the canvas back to the pump presenter
+(`markKmsCanvasGlReleased`) so the desktop keeps painting. A
+main-thread ResizeObserver reports the pane's device-pixel size so the
+presenter renders at display resolution instead of letting the page
+compositor rescale an fb-sized bitmap; any letterbox is drawn in GL
+with the same contain math the pane's pointer mapping uses.
+
+The desktop itself also fills the pane: the boot flow feeds the pane's
+size to the kernel before spawning the compositor, and
+`host_kms_mode_info` advertises a preferred mode matching the pane's
+aspect ratio (`round(1080 × aspect) × 1080`, width clamped
+[1440, 3840]; 1920×1080 fallback when no size is known). wlcompositor
+sizes its scanout from that mode and its placement rules are
+edge-anchored (wlterm left, wlclock/wlpaint offsets from the right
+edge), so wider panes spread the demo across the full width with no
+black bars. The mode is fixed at boot — resizing the browser window
+afterwards letterboxes rather than re-modes.
+
+Pump presents are change-driven (kernel commit count, with a ~15 Hz
+strided-checksum content probe as a backstop) rather than
+unconditional at 60 Hz, and a presenter that detects software-GL frame
+times (headless Chromium) drops to plain bilinear. The Modeset status
+chip appends the active renderer (`webgl2-gl` / `webgl2` / `2d`, from
+stats slot 7). The legacy `mode: "2d"` CPU blit (`putImageData` + CPU
+swizzle) remains available. GL demos (modeset, sdl2) keep the WebGL2
+bridge instead and the pump never touches their canvas.
+
+Interactions, all end-to-end through the compositor:
+
+- **Typing** — `BrowserInputSource` writes keystrokes to `event0`;
+  the compositor's libinput picks them up and routes them to the
+  keyboard-focused window (wlterm, which echoes through the pty).
+- **Window drags** — pressing a CSD titlebar triggers
+  `xdg_toplevel.move`; the compositor grabs and the window tracks the
+  pointer until release.
+- **Drag-painting** — pointer strokes inside wlpaint's canvas paint
+  through `wl_pointer` motion events.
+- **Pointer** — the Modeset pane maps the host pointer absolutely
+  onto the desktop (EV_REL peg-and-jump emulation into
+  `event1`; the compositor coalesces each input batch into one repaint
+  and treats the peg frame as position-only so the artifact never
+  renders). The compositor draws **no software cursor**: the host
+  pointer is already visible and mapped 1:1, so a sprite would sit
+  exactly under it. The desktop is letterboxed aspect-true into the
+  pane (by the presenter's GL viewport in `webgl2-scanout` mode,
+  by CSS `object-fit: contain` in the legacy modes) and pointers map
+  through the fitted content box using the kernel-reported scanout
+  dimensions (stats slots 2/3 — the placeholder canvas's `width`
+  attribute tracks the committed display-sized bitmap, not the fb).
+
+Regression gates: `apps/browser-demos/test/kandelo-wayland.spec.ts`
+(client connection, the `WLC_RENDERER gpu` marker proving GPU
+compositing engaged, typing, window drag, drag-paint liveness via the
+PAGE_FLIP counter, and flicker stability via canvas PNG-size
+distribution) and the node-side twins under `host/test/wl*-smoke.test.ts`
+(including `wldesktop-liveness-smoke.test.ts`).
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
