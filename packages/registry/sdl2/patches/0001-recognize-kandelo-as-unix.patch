@@ -1,0 +1,37 @@
+diff --git a/configure.ac b/configure.ac
+index 7e03714..6e35ee4 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3757,6 +3757,6 @@ have_locale=no
+ dnl Set up the configuration based on the host platform!
+ case "$host" in
+-    *-*-linux*|*-*-uclinux*|*-*-gnu*|*-*-k*bsd*-gnu|*-*-bsdi*|*-*-freebsd*|*-*-dragonfly*|*-*-netbsd*|*-*-openbsd*|*-*-sysv5*|*-*-solaris*|*-*-hpux*|*-*-aix*|*-*-minix*|*-*-nto*)
++    wasm32-*-none*|*-*-linux*|*-*-uclinux*|*-*-gnu*|*-*-k*bsd*-gnu|*-*-bsdi*|*-*-freebsd*|*-*-dragonfly*|*-*-netbsd*|*-*-openbsd*|*-*-sysv5*|*-*-solaris*|*-*-hpux*|*-*-aix*|*-*-minix*|*-*-nto*)
+         case "$host" in
+             *-*-android*)
+                 # Android
+@@ -3774,5 +3774,6 @@ case "$host" in
+                 fi
+                 ;;
++            wasm32-*-none*)     ARCH=kandelo ;;
+             *-*-linux*)         ARCH=linux ;;
+             *-*-uclinux*)       ARCH=linux ;;
+             *-*-kfreebsd*-gnu)  ARCH=kfreebsd-gnu ;;
+diff --git a/configure b/configure
+index d64ae91..42a8f9b 100755
+--- a/configure
++++ b/configure
+@@ -28635,5 +28635,5 @@ have_locale=no
+ case "$host" in
+-    *-*-linux*|*-*-uclinux*|*-*-gnu*|*-*-k*bsd*-gnu|*-*-bsdi*|*-*-freebsd*|*-*-dragonfly*|*-*-netbsd*|*-*-openbsd*|*-*-sysv5*|*-*-solaris*|*-*-hpux*|*-*-aix*|*-*-minix*|*-*-nto*)
++    wasm32-*-none*|*-*-linux*|*-*-uclinux*|*-*-gnu*|*-*-k*bsd*-gnu|*-*-bsdi*|*-*-freebsd*|*-*-dragonfly*|*-*-netbsd*|*-*-openbsd*|*-*-sysv5*|*-*-solaris*|*-*-hpux*|*-*-aix*|*-*-minix*|*-*-nto*)
+         case "$host" in
+             *-*-android*)
+                 # Android
+@@ -28653,5 +28653,6 @@ case "$host" in
+                 fi
+                 ;;
++            wasm32-*-none*)     ARCH=kandelo ;;
+             *-*-linux*)         ARCH=linux ;;
+             *-*-uclinux*)       ARCH=linux ;;
+             *-*-kfreebsd*-gnu)  ARCH=kfreebsd-gnu ;;

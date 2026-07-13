@@ -1,0 +1,13 @@
+script_path = "packages/registry/sdl3/build-sdl3.sh"
+inputs = [
+  "packages/registry/sdl3/build-sdl3.sh",
+  "packages/registry/sdl3/cmake/kandelo-toolchain.cmake",
+  "packages/registry/sdl3/cmake/Platform/Kandelo.cmake",
+  "packages/registry/sdl3/patches/0001-recognize-kandelo-platform.patch",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
