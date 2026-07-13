@@ -1,4 +1,5 @@
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "@host/kernel-worker";
+import { installBrowserSetImmediatePolyfill } from "@host/browser-immediate-polyfill";
 import { BrowserWorkerAdapter } from "@host/worker-adapter-browser";
 import { detectPtrWidth, extractHeapBase } from "@host/constants";
 import { LocalVirtualNetwork } from "@host/networking/virtual-network";
@@ -16,43 +17,7 @@ import workerEntryUrl from "@host/worker-entry-browser.ts?worker&url";
 import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
 
-if (typeof (globalThis as typeof globalThis & { setImmediate?: unknown }).setImmediate === "undefined") {
-  const queue: Array<{ id: number; fn: (...args: unknown[]) => void; args: unknown[] }> = [];
-  const cancelled = new Set<number>();
-  const channel = new MessageChannel();
-  let nextId = 0;
-  let scheduled = false;
-  let flushing = false;
-
-  channel.port1.onmessage = () => {
-    scheduled = false;
-    flushing = true;
-    const count = queue.length;
-    for (let i = 0; i < count && queue.length > 0; i++) {
-      const entry = queue.shift()!;
-      if (cancelled.delete(entry.id)) continue;
-      entry.fn(...entry.args);
-    }
-    flushing = false;
-    if (queue.length > 0 && !scheduled) {
-      scheduled = true;
-      channel.port2.postMessage(null);
-    }
-  };
-
-  (globalThis as typeof globalThis & { setImmediate: (fn: (...args: unknown[]) => void, ...args: unknown[]) => number }).setImmediate =
-    (fn, ...args) => {
-      const id = ++nextId;
-      queue.push({ id, fn, args });
-      if (!scheduled && !flushing) {
-        scheduled = true;
-        channel.port2.postMessage(null);
-      }
-      return id;
-    };
-  (globalThis as typeof globalThis & { clearImmediate: (id: number) => void }).clearImmediate =
-    (id) => { cancelled.add(id); };
-}
+installBrowserSetImmediatePolyfill();
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
