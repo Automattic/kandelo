@@ -1,9 +1,8 @@
 export const testrunnerPlatformShim = [
-  "# Kandelo platform shim for child testrunner jobs.",
-  "# SQLite all-mode reruns config variants by invoking test/testrunner.tcl",
-  "# directly, so the platform override has to live in that file too.",
-  "set ::tcl_platform(os) OpenBSD",
-  "set ::tcl_platform(platform) unix",
+  "# Kandelo testrunner host selection for child jobs.",
+  "# This controls only SQLite's helper-script launcher. Keep tcl_platform",
+  "# unchanged so the tests continue to observe the real Tcl target.",
+  "set ::kandelo_testrunner_host Kandelo",
 ].join("\n");
 
 const testrunnerGuestPathShim = [
@@ -27,6 +26,7 @@ const testrunnerGuestPathShim = [
   "  return $path",
   "}",
   "set ::kandelo_inline_run_sh 1",
+  "set ::kandelo_chunk_pipe_output 1",
 ].join("\n");
 
 function replaceRequired(source: string, search: string, replacement: string, label: string): string {
@@ -39,13 +39,43 @@ function replaceRequired(source: string, search: string, replacement: string, la
 export function patchTestrunnerForKandelo(runner: string): string {
   let patched = runner;
 
-  if (!patched.includes("Kandelo platform shim for child testrunner jobs")) {
+  if (!patched.includes("Kandelo testrunner host selection for child jobs")) {
     const lines = patched.split("\n");
     if (lines.length < 4) {
       throw new Error("SQLite testrunner patch is incompatible: file is shorter than four lines");
     }
     lines.splice(3, 0, "", testrunnerPlatformShim);
     patched = lines.join("\n");
+    patched = replaceRequired(
+      patched,
+      "switch -nocase -glob -- $tcl_platform(os) {",
+      [
+        "set testrunner_host $tcl_platform(os)",
+        "if {[info exists ::kandelo_testrunner_host]} {",
+        "  set testrunner_host $::kandelo_testrunner_host",
+        "}",
+        "switch -nocase -glob -- $testrunner_host {",
+      ].join("\n"),
+      "host-selection switch",
+    );
+    patched = replaceRequired(
+      patched,
+      "  *openbsd* {\n",
+      [
+        "  *kandelo* {",
+        "    set TRG(platform)    linux",
+        "    set TRG(make)        make.sh",
+        "    set TRG(makecmd)     \"sh make.sh\"",
+        "    set TRG(testfixture) testfixture",
+        "    set TRG(shell)       sqlite3",
+        "    set TRG(run)         run.sh",
+        "    set TRG(runcmd)      \"sh run.sh\"",
+        "  }",
+        "  *openbsd* {",
+        "",
+      ].join("\n"),
+      "OpenBSD host branch",
+    );
   }
 
   if (!patched.includes("Kandelo guest path shim for all-mode child jobs")) {
@@ -98,16 +128,57 @@ export function patchTestrunnerForKandelo(runner: string): string {
       ].join("\n"),
       "child shell command anchor",
     );
+    patched = replaceRequired(
+      patched,
+      "    set rc [catch { gets $fd line } res]",
+      [
+        "    if {[info exists ::kandelo_chunk_pipe_output] && $::kandelo_chunk_pipe_output} {",
+        "      set rc [catch { read $fd 4096 } res]",
+        "      if {$rc} {",
+        "        puts \"ERROR $res\"",
+        "      }",
+        "      if {!$rc && [string length $res] > 0} {",
+        "        append O($iJob) $res",
+        "      }",
+        "    } else {",
+        "      set rc [catch { gets $fd line } res]",
+      ].join("\n"),
+      "pipe read anchor",
+    );
+    patched = replaceRequired(
+      patched,
+      "    if {$res>=0} {",
+      [
+        "    if {![info exists ::kandelo_chunk_pipe_output] || !$::kandelo_chunk_pipe_output} {",
+        "      if {$res>=0} {",
+      ].join("\n"),
+      "line-result anchor",
+    );
+    patched = replaceRequired(
+      patched,
+      "      append O($iJob) \"$line\\n\"",
+      [
+        "      append O($iJob) \"$line\\n\"",
+        "      }",
+        "    }",
+      ].join("\n"),
+      "line append anchor",
+    );
   }
 
   for (const required of [
-    "Kandelo platform shim for child testrunner jobs",
+    "Kandelo testrunner host selection for child jobs",
+    "set ::kandelo_testrunner_host Kandelo",
+    "switch -nocase -glob -- $testrunner_host",
+    "*kandelo* {",
     "Kandelo guest path shim for all-mode child jobs",
     "set testfixture_guest [kandelo_guest_path $testfixture]",
     "set cmd \"$testfixture_guest $f_guest\"",
     "set cmd \"$testfixture_guest $testrunner_tcl_guest $config $f_guest\"",
     "set set_tmp_dir \"export SQLITE_TMPDIR=.\"",
     "set fd [open \"|sh -c [list $inline_cmd] 2>@1\" r]",
+    "set ::kandelo_chunk_pipe_output 1",
+    "set rc [catch { read $fd 4096 } res]",
   ]) {
     if (!patched.includes(required)) {
       throw new Error(`SQLite testrunner patch is incomplete: missing ${required}`);

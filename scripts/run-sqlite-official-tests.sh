@@ -367,7 +367,7 @@ patch_sqlite_testrunner_platform() {
   local runner="$1"
   local tmp
 
-  if grep -q "Kandelo platform shim for child testrunner jobs" "$runner"; then
+  if grep -q "Kandelo testrunner host selection for child jobs" "$runner"; then
     return
   fi
 
@@ -375,17 +375,45 @@ patch_sqlite_testrunner_platform() {
   awk '
     NR == 4 {
       print ""
-      print "# Kandelo platform shim for child testrunner jobs."
-      print "# SQLite all-mode reruns config variants by invoking this file directly,"
-      print "# so the platform override has to live in the copied runner as well as"
-      print "# the initial kandelo-testrunner.tcl wrapper."
-      print "set ::tcl_platform(os) OpenBSD"
-      print "set ::tcl_platform(platform) unix"
+      print "# Kandelo testrunner host selection for child jobs."
+      print "# This controls only the SQLite helper-script launcher. Keep tcl_platform"
+      print "# unchanged so the tests continue to observe the real Tcl target."
+      print "set ::kandelo_testrunner_host Kandelo"
+    }
+    $0 == "switch -nocase -glob -- $tcl_platform(os) {" {
+      print "set testrunner_host $tcl_platform(os)"
+      print "if {[info exists ::kandelo_testrunner_host]} {"
+      print "  set testrunner_host $::kandelo_testrunner_host"
+      print "}"
+      print "switch -nocase -glob -- $testrunner_host {"
+      next
+    }
+    $0 == "  *openbsd* {" {
+      print "  *kandelo* {"
+      print "    set TRG(platform)    linux"
+      print "    set TRG(make)        make.sh"
+      print "    set TRG(makecmd)     \"sh make.sh\""
+      print "    set TRG(testfixture) testfixture"
+      print "    set TRG(shell)       sqlite3"
+      print "    set TRG(run)         run.sh"
+      print "    set TRG(runcmd)      \"sh run.sh\""
+      print "  }"
     }
     { print }
   ' "$runner" > "$tmp"
   mv "$tmp" "$runner"
   chmod a+r "$runner"
+
+  for required in \
+    'set ::kandelo_testrunner_host Kandelo' \
+    'switch -nocase -glob -- $testrunner_host {' \
+    '*kandelo* {'
+  do
+    if ! grep -Fq "$required" "$runner"; then
+      echo "ERROR: failed to patch SQLite testrunner.tcl host selection: missing $required" >&2
+      exit 1
+    fi
+  done
 }
 
 patch_sqlite_testrunner_guest_paths() {
@@ -531,12 +559,9 @@ patch_sqlite_testrunner_guest_paths "$WORKDIR/test/testrunner.tcl"
 
 RUNNER_TCL="$WORKDIR/kandelo-testrunner.tcl"
 cat > "$RUNNER_TCL" <<'TCL'
-# Kandelo's Tcl build reports a target OS name that SQLite's testrunner.tcl
-# does not classify. Present a Unix-like platform to the upstream runner and
-# use its OpenBSD branch so generated helper scripts run with sh instead of
-# bash.
-set ::tcl_platform(os) OpenBSD
-set ::tcl_platform(platform) unix
+# Select Kandelo's helper-script launcher without changing Tcl target metadata
+# observed by SQLite's tests.
+set ::kandelo_testrunner_host Kandelo
 set argv0 test/testrunner.tcl
 source $argv0
 TCL
