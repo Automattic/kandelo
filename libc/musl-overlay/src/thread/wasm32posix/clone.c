@@ -27,9 +27,17 @@ int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...)
     int *ctid = __builtin_va_arg(ap, int *);
     __builtin_va_end(ap);
 
+    /*
+     * pthread_create places its start_args object on the child stack, but only
+     * realigns the resulting stack pointer to pointer width. Wasm codegen
+     * assumes a 16-byte-aligned __stack_pointer at function entry; starting a
+     * thread at a 4-byte residue corrupts stack-based varargs such as %llx%c.
+     */
+    uintptr_t stack_ptr = (uintptr_t)stack & ~(uintptr_t)15;
+
     return kernel_clone(
         (uint32_t)(uintptr_t)fn,
-        (uint32_t)(uintptr_t)stack,
+        (uint32_t)stack_ptr,
         (uint32_t)flags,
         (uint32_t)(uintptr_t)arg,
         (uint32_t)(uintptr_t)ptid,
