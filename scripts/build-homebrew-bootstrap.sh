@@ -216,7 +216,9 @@ BOOTSTRAP_MANIFEST="$BUILD_DIR/bootstrap.MANIFEST"
 IMAGE_METADATA="$BUILD_DIR/homebrew-image.json"
 
 echo "==> Generating rootfs package manifest"
-node scripts/generate-rootfs-package-manifest.mjs --out "$ROOTFS_PACKAGE_MANIFEST"
+node scripts/generate-rootfs-package-manifest.mjs \
+    --binaries-dir "$REPO_ROOT/binaries" \
+    --out "$ROOTFS_PACKAGE_MANIFEST"
 
 WASM_ARTIFACTS=(
     "$REPO_ROOT/binaries/programs/wasm32/$RUBY_REL"
