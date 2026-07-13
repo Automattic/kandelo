@@ -2408,6 +2408,22 @@ export class SharedFS {
     }
   }
 
+  readAt(fd: number, buffer: Uint8Array, offset: number): number {
+    const entry = this.fdGet(fd);
+    if (!entry) throw new SFSError(EBADF);
+    const inoOff = this.inodeOffset(entry.ino);
+    const mode = this.r32(inoOff + INO_MODE);
+    if ((mode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
+    this.validateSeekPosition(offset);
+
+    this.inodeReadLock(entry.ino);
+    try {
+      return this.inodeReadData(entry.ino, offset, buffer, buffer.length);
+    } finally {
+      this.inodeReadUnlock(entry.ino);
+    }
+  }
+
   write(fd: number, data: Uint8Array): number {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
@@ -2440,6 +2456,26 @@ export class SharedFS {
       const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
       this.w64(base + FD_OFFSET, offset + nwritten);
       return nwritten;
+    } finally {
+      this.inodeWriteUnlock(entry.ino);
+    }
+  }
+
+  writeAt(fd: number, data: Uint8Array, offset: number): number {
+    const entry = this.fdGet(fd);
+    if (!entry) throw new SFSError(EBADF);
+
+    const accMode = entry.flags & O_ACCMODE;
+    if (accMode === O_RDONLY) throw new SFSError(EBADF);
+    this.validateSeekPosition(offset);
+
+    this.inodeWriteLock(entry.ino);
+    try {
+      // Positioned writes use their explicit offset even on an O_APPEND fd.
+      if (offset > MAX_FILE_SIZE || data.length > MAX_FILE_SIZE - offset) {
+        throw new SFSError(EFBIG);
+      }
+      return this.inodeWriteData(entry.ino, offset, data, data.length);
     } finally {
       this.inodeWriteUnlock(entry.ino);
     }
