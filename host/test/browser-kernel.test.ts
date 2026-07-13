@@ -107,7 +107,10 @@ describe("BrowserKernel", () => {
 
   it("boot() spawns a worker, sends init, and resolves on `ready`", async () => {
     const BrowserKernel = await loadBrowserKernel();
-    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      corsProxyUrl: "https://proxy.example/?url=",
+    });
 
     const bootPromise = kernel.boot({
       kernelWasm: new ArrayBuffer(8),
@@ -123,6 +126,7 @@ describe("BrowserKernel", () => {
     expect(init).toBeDefined();
     expect(init.argv).toBeUndefined(); // argv goes in the spawn message
     expect(init.kernelWasmBytes).toBeInstanceOf(ArrayBuffer);
+    expect(init.config.corsProxyUrl).toBe("https://proxy.example/?url=");
 
     // Simulate the worker becoming ready, then reply to the spawn request.
     w.simulateMessage({ type: "ready" });
