@@ -163,7 +163,12 @@ describe("image builder — pass 2: regular files", () => {
       expect(mfs.exportLazyEntries()).toEqual([
         {
           ino: st.ino,
+          // Root, /usr, /usr/bin, then the untouched lazy stub allocate
+          // generations 1 through 4; a fresh lazy stub starts at sequence 1.
+          generation: 4,
+          dataSequence: 1,
           path: "/usr/bin/find",
+          paths: ["/usr/bin/find"],
           url: "binaries/programs/wasm32/findutils/find.wasm",
           size: 12345,
         },
