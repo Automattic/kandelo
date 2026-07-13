@@ -110,6 +110,29 @@ fi
 
 cd "$SRC_DIR"
 
+# Clang lowers Wasm setjmp/longjmp to an exception transfer. Dasynq's pselect
+# backend places the sigsetjmp landing pad inside pull_events(), but marks that
+# same function noexcept. A SIGCHLD then reaches std::terminate before the
+# internal landing pad can consume the longjmp. This is a Wasm toolchain
+# compatibility boundary: keep C++ EH for dinit's real try/catch paths and
+# remove only the conflicting noexcept declaration.
+PATCH_FILE="$SCRIPT_DIR/patches/0001-wasm-sjlj-pselect-noexcept.patch"
+echo "==> Applying dinit Wasm SjLj compatibility patch..."
+if git apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
+    echo "    $(basename "$PATCH_FILE") already applied"
+elif git apply --check "$PATCH_FILE" >/dev/null 2>&1; then
+    git apply "$PATCH_FILE"
+else
+    echo "ERROR: $(basename "$PATCH_FILE") does not apply cleanly" >&2
+    exit 1
+fi
+
+HOST_CXX="${CXX_FOR_BUILD:-c++}"
+if [ -n "${NIX_CC_FOR_BUILD:-}" ] \
+    && [ -x "$NIX_CC_FOR_BUILD/bin/c++" ]; then
+    HOST_CXX="$NIX_CC_FOR_BUILD/bin/c++"
+fi
+
 # --- Configure ---
 # dinit's build is driven by mconfig (a make-included config file). We
 # generate one by hand for the cross-compile rather than running
@@ -123,22 +146,21 @@ cat > mconfig <<EOF
 CXX = wasm32posix-c++
 CC = wasm32posix-cc
 
-# Host toolchain — used by build/tools/mconfig-gen and any other
-# generator binary that runs on the developer machine. The default
-# c++ resolves to clang++ on macOS or g++ on Linux.
-CXX_FOR_BUILD = c++
+# Host toolchain — used by build/tools/mconfig-gen and any other generator
+# binary that runs on the developer machine. Prefer Nix's declared build
+# compiler when the dev shell exposes one; otherwise use the caller's compiler
+# or the platform c++ default.
+CXX_FOR_BUILD = $HOST_CXX
 CXXFLAGS_FOR_BUILD = -std=c++14 -O1
 CPPFLAGS_FOR_BUILD =
 LDFLAGS_FOR_BUILD =
 
-# Target flags. dinit uses C++ exceptions in its client code (dinitctl,
-# dinit-monitor), so compile with the WebAssembly exception model as well as
-# leaving C++ exceptions enabled. Without -fwasm-exceptions, clang emits
-# Wasm throw instructions but no catch handlers, and an expected dinitctl
-# connection failure escapes to the host as WebAssembly.Exception. Add the
-# libc++ include path
-# explicitly since the wasm32posix toolchain does not auto-include it;
-# the library is picked up at link time via -lc++ -lc++abi.
+# Target flags. dinit uses C++ exceptions in both its supervisor and client
+# tools. Compile all targets with the WebAssembly exception model so normal
+# service-description and connection errors stay inside dinit's catch paths.
+# Add the libc++ include path explicitly since the wasm32posix toolchain does
+# not auto-include it; the library is picked up at link time via -lc++
+# -lc++abi.
 CPPFLAGS = -D_POSIX_C_SOURCE=200809L -isystem $SYSROOT/include/c++/v1
 CXXFLAGS = -std=c++14 -O2 -Wall -Wextra -fwasm-exceptions
 CFLAGS = -O2 -Wall

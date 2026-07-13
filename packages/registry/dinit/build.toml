@@ -1,7 +1,7 @@
 script_path = "packages/registry/dinit/build-dinit.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 4
+revision    = 5
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
