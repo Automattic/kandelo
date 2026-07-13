@@ -8421,12 +8421,13 @@ export class CentralizedKernelWorker {
       try { handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+      const errVal = kernelView.getUint32(CH_ERRNO, true);
       if (retVal >= 0) {
         // Copy 72-byte struct back to process memory
         const processMem = new Uint8Array(channel.memory.buffer);
         processMem.set(kernelMem.subarray(dataStart, dataStart + 72), arg);
       }
-      this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
+      this.completeChannelRaw(channel, retVal, errVal);
       this.relistenChannel(channel);
       return;
     }
@@ -8448,12 +8449,13 @@ export class CentralizedKernelWorker {
       try { handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+      const errVal = kernelView.getUint32(CH_ERRNO, true);
       if (retVal >= 0) {
         // Copy written data back — kernel wrote u16[] to scratch
         const processMem = new Uint8Array(channel.memory.buffer);
         processMem.set(kernelMem.subarray(dataStart, dataStart + maxBytes), arg);
       }
-      this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
+      this.completeChannelRaw(channel, retVal, errVal);
       this.relistenChannel(channel);
       return;
     }
@@ -8477,7 +8479,8 @@ export class CentralizedKernelWorker {
       try { handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
+      const errVal = kernelView.getUint32(CH_ERRNO, true);
+      this.completeChannelRaw(channel, retVal, errVal);
       this.relistenChannel(channel);
       return;
     }
@@ -8497,7 +8500,8 @@ export class CentralizedKernelWorker {
     try { handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    this.completeChannelRaw(channel, retVal, errVal);
     this.relistenChannel(channel);
   }
 

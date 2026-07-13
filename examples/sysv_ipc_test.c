@@ -2,6 +2,7 @@
  * Test SysV IPC message queues, semaphores, and shared memory.
  * Basic smoke test to verify the IPC table is wired up.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ipc.h>
@@ -120,6 +121,46 @@ int test_sem(void) {
         perror("semctl IPC_RMID");
         return 1;
     }
+
+    struct semid_ds removed;
+    arg.buf = &removed;
+    errno = 0;
+    int removed_result = semctl(semid, 0, IPC_STAT, arg);
+    if (removed_result != -1 || errno != EINVAL) {
+        printf("FAIL: post-RMID IPC_STAT returned %d with errno %d, expected -1/EINVAL\n",
+               removed_result, errno);
+        return 1;
+    }
+    printf("semctl post-RMID IPC_STAT: EINVAL\n");
+
+    unsigned short removed_values[1] = {0};
+    arg.array = removed_values;
+    errno = 0;
+    removed_result = semctl(semid, 0, GETALL, arg);
+    if (removed_result != -1 || errno != EINVAL) {
+        printf("FAIL: post-RMID GETALL returned %d with errno %d, expected -1/EINVAL\n",
+               removed_result, errno);
+        return 1;
+    }
+    printf("semctl post-RMID GETALL: EINVAL\n");
+
+    errno = 0;
+    removed_result = semctl(semid, 0, SETALL, arg);
+    if (removed_result != -1 || errno != EINVAL) {
+        printf("FAIL: post-RMID SETALL returned %d with errno %d, expected -1/EINVAL\n",
+               removed_result, errno);
+        return 1;
+    }
+    printf("semctl post-RMID SETALL: EINVAL\n");
+
+    errno = 0;
+    removed_result = semctl(semid, 0, GETVAL);
+    if (removed_result != -1 || errno != EINVAL) {
+        printf("FAIL: post-RMID GETVAL returned %d with errno %d, expected -1/EINVAL\n",
+               removed_result, errno);
+        return 1;
+    }
+    printf("semctl post-RMID GETVAL: EINVAL\n");
     printf("sem: PASS\n");
     return 0;
 }
