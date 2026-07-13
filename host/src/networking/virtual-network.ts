@@ -7,6 +7,7 @@ import type {
   UdpReceiveTarget,
 } from "../types";
 import { EagainError } from "./fetch-backend";
+import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
 
 const EADDRINUSE = 98;
 const EADDRNOTAVAIL = 99;
@@ -20,6 +21,7 @@ const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
 const POLLERR = 0x0008;
 const POLLHUP = 0x0010;
+const MSG_PEEK = 0x0002;
 
 const ANY = "0.0.0.0";
 
@@ -51,7 +53,10 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   private peer?: VirtualTcpPeer;
   private readClosed = false;
   private writeClosed = false;
+  private orphanedReceive = false;
   private reset = false;
+
+  constructor(private onRelease?: (peer: VirtualTcpPeer) => void) {}
 
   pairWith(peer: VirtualTcpPeer): void {
     this.peer = peer;
@@ -68,16 +73,32 @@ class VirtualTcpPeer implements TcpConnectionPeer {
       err.errno = ECONNRESET;
       throw err;
     }
-    if (this.writeClosed || !this.peer || this.peer.readClosed || this.peer.reset) {
+    if (this.writeClosed || !this.peer) {
       const err = new Error("EPIPE") as Error & { errno?: number };
       err.errno = 32;
       throw err;
+    }
+    if (this.peer.reset) {
+      const err = new Error("ECONNRESET") as Error & { errno?: number };
+      err.errno = ECONNRESET;
+      throw err;
+    }
+    if (this.peer.readClosed) {
+      const err = new Error("EPIPE") as Error & { errno?: number };
+      err.errno = 32;
+      throw err;
+    }
+    // Normal TCP close is simplex: the peer's FIN closes its write half while
+    // its orphaned receive half continues to consume packets. Keep an explicit
+    // discard sink rather than inventing a fixed successful-write count.
+    if (this.peer.orphanedReceive) {
+      return data.length;
     }
     this.peer.enqueue(data.slice());
     return data.length;
   }
 
-  recv(maxLen: number, _flags: number): Uint8Array {
+  recv(maxLen: number, flags: number): Uint8Array {
     if (this.reset) {
       const err = new Error("ECONNRESET") as Error & { errno?: number };
       err.errno = ECONNRESET;
@@ -86,7 +107,9 @@ class VirtualTcpPeer implements TcpConnectionPeer {
     if (this.recvBuf.length > 0) {
       const len = Math.min(maxLen, this.recvBuf.length);
       const out = this.recvBuf.slice(0, len);
-      this.recvBuf = this.recvBuf.slice(len);
+      if ((flags & MSG_PEEK) === 0) {
+        this.recvBuf = this.recvBuf.slice(len);
+      }
       return out;
     }
     if (!this.peer || this.peer.writeClosed) {
@@ -127,12 +150,31 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   }
 
   close(): void {
-    this.shutdown(2);
+    this.writeClosed = true;
+    this.orphanedReceive = true;
+    this.recvBuf = new Uint8Array(0);
+    this.releaseFromOwner();
+  }
+
+  abort(): void {
+    this.readClosed = true;
+    this.writeClosed = true;
+    this.orphanedReceive = false;
+    this.reset = true;
+    this.recvBuf = new Uint8Array(0);
+    this.releaseFromOwner();
+    this.peer?.resetPeer();
   }
 
   resetPeer(): void {
     this.reset = true;
     this.recvBuf = new Uint8Array(0);
+  }
+
+  private releaseFromOwner(): void {
+    const onRelease = this.onRelease;
+    this.onRelease = undefined;
+    onRelease?.(this);
   }
 }
 
@@ -204,17 +246,16 @@ export class LocalVirtualNetwork {
     this.tcpListeners = this.tcpListeners.filter((l) => l.machineId !== machineId);
     this.udpEndpoints = this.udpEndpoints.filter((e) => e.machineId !== machineId);
     for (const peer of this.tcpPeersByMachine.get(machineId) ?? []) {
-      peer.close();
+      peer.abort();
     }
     this.tcpPeersByMachine.delete(machineId);
     backend.resetAllConnections();
   }
 
   resolve(hostname: string): Uint8Array | null {
-    const direct = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-    if (direct) {
-      return new Uint8Array(direct.slice(1).map((part) => Number(part)));
-    }
+    const direct = parseNumericIpv4Hostname(hostname);
+    if (direct) return direct;
+    validateDnsHostname(hostname);
     const addr = this.hostnames.get(hostname);
     return addr ? copyAddr(addr) : null;
   }
@@ -272,12 +313,10 @@ export class LocalVirtualNetwork {
       return { peer: new VirtualTcpPeer(), status: ECONNREFUSED };
     }
 
-    const client = new VirtualTcpPeer();
-    const server = new VirtualTcpPeer();
+    const client = this.createTcpPeer(sourceMachineId);
+    const server = this.createTcpPeer(targetMachineId);
     client.pairWith(server);
     server.pairWith(client);
-    this.trackTcpPeer(sourceMachineId, client);
-    this.trackTcpPeer(targetMachineId, server);
     const accepted = listener.target.accept(
       server,
       { addr: copyAddr(destination.addr), port: destination.port },
@@ -356,6 +395,16 @@ export class LocalVirtualNetwork {
       this.tcpPeersByMachine.set(machineId, peers);
     }
     peers.add(peer);
+  }
+
+  private createTcpPeer(machineId: string): VirtualTcpPeer {
+    const peer = new VirtualTcpPeer((released) => {
+      const peers = this.tcpPeersByMachine.get(machineId);
+      peers?.delete(released);
+      if (peers?.size === 0) this.tcpPeersByMachine.delete(machineId);
+    });
+    this.trackTcpPeer(machineId, peer);
+    return peer;
   }
 }
 
@@ -450,7 +499,7 @@ export class VirtualNetworkBackend implements NetworkIO {
   }
 
   resetAllConnections(): void {
-    for (const conn of this.connections.values()) conn.close();
+    for (const conn of this.connections.values()) conn.abort();
     this.connections.clear();
     this.connectErrors.clear();
   }

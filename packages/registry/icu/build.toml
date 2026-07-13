@@ -1,0 +1,16 @@
+script_path = "packages/registry/icu/build-icu.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+# Revision 3: ICU static libs rebuilt with -fPIC so they can be absorbed into
+# intl.so (a wasm side module built with -shared --experimental-pic, which
+# requires all inputs to be position-independent).
+# Revision 4: Stage-1 host tools statically link the GNU C++/GCC runtime on
+# Linux so icupkg/pkgdata do not need libstdc++.so.6 on the Nix CI runner.
+# Revision 5: compile ICU's default data directory as the stable guest path
+# /usr/lib/php instead of the resolver's random temporary install prefix.
+# Revision 6: make the three pkg-config prefixes relative to pcfiledir so a
+# fetched or moved archive resolves its own headers and libraries.
+revision    = 6
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

@@ -30,7 +30,7 @@ describe.skipIf(!hasPthreadTrapBinaries)("pthread trap POSIX semantics", () => {
   }, 15_000);
 
   it("terminates the process when a pthread worker hits an uncaught guest trap", async () => {
-    const { exitCode, stderr } = await runCentralizedProgram({
+    const { exitCode, stderr, hostDiagnostics } = await runCentralizedProgram({
       programPath: trapChildBinary,
       argv: ["pthread-trap-child"],
       timeout: 10_000,
@@ -38,7 +38,9 @@ describe.skipIf(!hasPthreadTrapBinaries)("pthread trap POSIX semantics", () => {
     });
 
     expect(stderr).toContain("pthread-trap-child: before trap");
-    expect(stderr).toContain("Thread worker failed");
+    expect(stderr).not.toContain("Thread worker failed");
+    expect(hostDiagnostics.map((entry) => entry.message).join("\n"))
+      .toContain("Thread worker failed");
     expect(stderr).not.toContain("FAIL pthread_join returned");
     expect(exitCode).toBe(signalExitStatus(SIGILL));
   }, 15_000);

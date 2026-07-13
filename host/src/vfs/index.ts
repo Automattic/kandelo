@@ -16,6 +16,10 @@ export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
 export type { FileSystemBackend, TimeProvider, MountConfig, DirEntry } from "./types";
+export { PATHCONF_NAMES } from "../generated/abi";
+export { filesystemPathconf } from "../pathconf";
+export type { PathconfProfile } from "../pathconf";
+export type { PathconfValue } from "../types";
 export {
   DEFAULT_MOUNT_SPEC,
   ensureMountParentDirectories,

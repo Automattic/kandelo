@@ -30,6 +30,8 @@ interface MetadataBackend {
   stat(path: string): { mode: number; uid: number; gid: number };
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
+  read(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
+  seek(handle: number, offset: number, whence: number): number;
   fstat(handle: number): { mode: number; uid: number; gid: number };
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
@@ -111,6 +113,29 @@ const backendFactories: Array<[string, () => BackendCase]> = [
 ];
 
 describe.each(backendFactories)("%s", (_name, makeCase) => {
+  it("rejects negative seek targets without changing the file offset", () => {
+    const c = makeCase();
+    const native = c.nativePath("seek-file");
+    writeFileSync(native, "abcdef");
+
+    const fd = c.backend.open(c.vfsPath("seek-file"), O_RDWR, 0);
+    try {
+      expect(c.backend.seek(fd, 2, 0 /* SEEK_SET */)).toBe(2);
+      expect(() => c.backend.seek(fd, -1, 0 /* SEEK_SET */)).toThrow(/EINVAL/);
+      expect(() => c.backend.seek(fd, -5, 1 /* SEEK_CUR */)).toThrow(/EINVAL/);
+      expect(() => c.backend.seek(fd, -7, 2 /* SEEK_END */)).toThrow(/EINVAL/);
+      expect(() => c.backend.seek(fd, Number.MAX_SAFE_INTEGER, 1 /* SEEK_CUR */))
+        .toThrow(/EOVERFLOW/);
+      expect(c.backend.seek(fd, 0, 1 /* SEEK_CUR */)).toBe(2);
+
+      const buf = new Uint8Array(1);
+      expect(c.backend.read(fd, buf, null, 1)).toBe(1);
+      expect(new TextDecoder().decode(buf)).toBe("c");
+    } finally {
+      c.backend.close(fd);
+    }
+  });
+
   it("keeps path chmod/chown changes in VFS metadata only", () => {
     const c = makeCase();
     const native = c.nativePath("path-file");
@@ -269,6 +294,26 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
     expect(virtual.mode & MODE_MASK).not.toBe(0o711);
     expect(virtual.uid).toBe(0);
     expect(virtual.gid).toBe(0);
+  });
+});
+
+describe("HostFileSystem default virtual ownership", () => {
+  it("can present existing host-backed files as owned by a chosen guest uid/gid", () => {
+    const root = makeTempRoot("wasm-posix-host-fs-default-owner-");
+    const native = join(root, "owned-by-mount");
+    writeFileSync(native, "data");
+    const before = statSync(native);
+
+    const backend = new HostFileSystem(root, "/", { uid: 65534, gid: 65533 });
+    const virtual = backend.stat("/owned-by-mount");
+    expect(virtual.uid).toBe(65534);
+    expect(virtual.gid).toBe(65533);
+
+    backend.chown("/owned-by-mount", 1000, 1001);
+    const changed = backend.stat("/owned-by-mount");
+    expect(changed.uid).toBe(1000);
+    expect(changed.gid).toBe(1001);
+    expectNativeMetadataUnchanged(native, before);
   });
 });
 

@@ -70,6 +70,9 @@ export interface CentralizedThreadInitMessage {
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
   memory: WebAssembly.Memory;
+  /** Main process channel offset. The thread reads the process-wide dlopen
+   * archive head relative to this live shared-memory anchor before fork. */
+  processChannelOffset: number;
   channelOffset: number;
   fnPtr: number;
   argPtr: number;
@@ -99,7 +102,8 @@ export type WorkerToHostMessage =
   | WorkerErrorMessage
   | ExecRequestMessage
   | ExecCompleteMessage
-  | AlarmSetMessage;
+  | AlarmSetMessage
+  | VmInterruptTimerMessage;
 
 export interface WorkerReadyMessage {
   type: "ready";
@@ -138,6 +142,14 @@ export interface ExecCompleteMessage {
 export interface AlarmSetMessage {
   type: "alarm_set";
   pid: number;
+  seconds: number;
+}
+
+export interface VmInterruptTimerMessage {
+  type: "vm_interrupt_timer";
+  pid: number;
+  timedOutPtr: number;
+  vmInterruptPtr: number;
   seconds: number;
 }
 

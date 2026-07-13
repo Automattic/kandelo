@@ -38,6 +38,10 @@ ABI version: `12` (see
 - Do not keep compiler/linker flags solely for the retired legacy path. The
   fork instrumenter does not require preserved function names or onlylists; if
   a build keeps debug-info flags, it should be for a current diagnostic reason.
+- On Unix hosts, the CLI preserves the input Wasm file's permission mode on
+  its output, including when `--output` names the input file. Package build
+  scripts can therefore instrument installed executables in place without
+  making them non-executable.
 
 ## State machine
 
@@ -106,6 +110,37 @@ wpk_fork_state() -> i32
   Returns current state. Exported for host-side assertions.
 ```
 
+The five exports identify the state-machine ABI, but they do not prove which
+import seeded call-graph discovery. The tool therefore also emits the custom
+section `kandelo.wpk_fork.capabilities`. Its two-byte payload is
+`[version, flags]`; version 1 defines:
+
+- bit 0 (`0x01`): the module was instrumented with `--entry env.fork`, so an
+  `env.fork`-importing side module has complete side-entry coverage;
+- bit 1 (`0x02`): a default-entry main module imported Kandelo's dynamic-linker
+  functions and conservatively instrumented every `call_indirect` boundary
+  plus its direct callers.
+
+Capability enforcement follows the compiled kernel ABI. ABI 16 predates this
+section, so an artifact with no section retains the legacy five-export fallback
+and can still coordinate a main/side-module fork. If an ABI-16 artifact does
+carry the section, its marker is authoritative and malformed, unknown, or
+role-inconsistent claims fail loudly. Starting with ABI 18, the
+role-appropriate bit is mandatory: generic five-export artifacts and binaries
+produced by the older call-graph pass fail with a rebuild diagnostic. This
+threshold ensures that mandatory enforcement and the incompatible artifact
+contract activate in the same ABI-bump commit. Changing the meaning or encoding
+of these capability claims changes fork replay assumptions and must follow the
+ABI-versioning policy.
+
+ABI 17 was intentionally skipped. ABI 18 activated the mandatory role marker.
+ABI 16 remains only a historical compatibility boundary. The reconstructed
+line enforces role claims and this ABI 36 epoch adds side-module replay state
+and pthread-fork arbitration. ABI-16 artifacts without a marker remain
+historical inputs for the parser's explicit compatibility tests; they do not
+satisfy an ABI-36 launch. Any future capability-contract change must still
+advance `ABI_VERSION` and regenerate `abi/snapshot.json` atomically.
+
 `ptr` is `i32` on wasm32 user programs and `i64` on wasm64 user programs. The
 tool picks the pointer width from the module's primary memory — a memory64
 memory yields `i64`, anything else yields `i32`.
@@ -168,6 +203,59 @@ fork in the child before exec), `host/test/fork-instrument-coverage.test.ts`
 P-06 (`pthread_create` worker calls `fork`), and K-03
 (`pthread_cleanup_push` handler calls `fork`).
 
+## Fork from a dlopened side module
+
+The supported dynamic-linking shape is a direct main-module `call_indirect`
+into one side-module instance whose call stack reaches `env.fork`:
+
+1. Instrument the main program normally. If it imports Kandelo's dlopen host
+   functions, the tool marks and preserves all possible dynamic indirect-call
+   boundaries.
+2. Instrument the fork-capable side module with `--entry env.fork`. It receives
+   its own fork save buffer and versioned side-entry capability.
+3. The process worker unwinds the side module, then the main module. Fork replay
+   restores dlopen instances at their exact memory and table bases, rewinds the
+   main module, then rewinds the active side module.
+
+The main fork trampoline is captured before side exports enter the symbol
+table, so a later extension cannot interpose the coordinator's `fork` target.
+Failed dlopen attempts may leave non-shrinkable null table gaps; each successful
+archive entry records its exact parent table base, and child replay pads to and
+validates that base.
+
+The loader preserves ordinary independent multi-extension loading. When a
+fork-capable extension participates, it rejects statically visible
+side-to-side function/GOT linkage and side-originated `dlopen`/`dlsym`, because
+an intervening side-module frame would need a third ordered unwind. Opaque
+function pointers passed through main-module memory or the shared table cannot
+currently be attributed to their originating module; using such a pointer to
+create a side A -> side B -> fork path is unsupported and is not yet guaranteed
+to fail before control-flow corruption. A future module-activation protocol is
+required to close that residual.
+
+Pthread workers do not own the process worker's side-module instances, table,
+or exception-tag identities. `dlopen()` from a pthread consequently returns
+NULL with a precise `dlerror()`. Once the process main worker has published a
+dlopen archive entry, `fork()` from a pthread returns `ENOTSUP` without
+creating a child. A host-private atomic lock prevents main-worker dlopen from
+racing the pthread's archive check and is held through unwind, SYS_FORK/memory
+copy, and parent rewind; the child clears its copied lock before replay. Fork
+from a pthread remains supported while that process-wide archive is empty.
+
+For TLS-bearing side modules, each archive entry also preserves the live
+positive `__tls_base`. Replay restores only that mutable global using the
+process pointer type. It does not call `__wasm_init_tls`: the child memory copy
+already contains live TLS, and reinitialization would overwrite C++ landing-pad
+and application `thread_local` state. TLS-relative exports relocate from that
+base, while `__tls_size` and `__tls_align` remain scalar constants.
+
+Every participating module still uses the fixed 16 KiB save-buffer limit
+described below. A dynamically allocated side buffer avoids overlap with the
+main control slab but does not make deep/unbounded frame use safe. Before the
+worker sends `SYS_FORK`, it checks both the main module's buffer and the active
+side module's independent buffer; either overrun terminates the process instead
+of creating a child from corrupted continuation state.
+
 ## Save buffer format
 
 All offsets are byte-exact, all values little-endian. `P` is pointer width
@@ -187,6 +275,17 @@ time and 0 in modules that do not contain plain-catch capture sites.
 `frames_start_offset = 2P + N + B`. It is exposed as metadata on the tool's
 internal `Runtime` struct, and `wpk_fork_unwind_begin` writes
 `buf + frames_start_offset` into `*(buf + 0)` on every invocation.
+
+After an unwind, the host compares this absolute `current_pos` with the explicit
+`buf + FORK_SAVE_BUFFER_SIZE` bound before sending `SYS_FORK`. Main-process and
+pthread buffers sit next to their syscall channels; a fork-capable side module
+has a separately allocated buffer recorded in its active-fork state. A cursor
+beyond either end means frame writes crossed that module's reserved boundary.
+The process fails with the required and reserved byte counts instead of
+creating a child from corrupted continuation state. This is detection, not
+prevention: the instrumented unwind has already written past the fixed reserve,
+so the host discards the process and its memory. Increasing or making the
+reserve elastic is a separate ABI layout change.
 
 For wasm32 (`P = 4`) with a module that declares three additional scalar
 mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one

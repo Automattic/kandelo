@@ -83,6 +83,21 @@ static int check_servbyname(const char *name, const char *proto, int expect_port
     return port == (unsigned)expect_port ? 0 : 1;
 }
 
+static int check_service_query(const char *query, const char *proto,
+                               const char *expect_name, int expect_port) {
+    struct servent *se = getservbyname(query, proto);
+    if (se == NULL) {
+        printf("SERVENT query=%s proto=%s result=NULL\n", query, proto);
+        return 1;
+    }
+    unsigned short port = ((unsigned short)se->s_port << 8) |
+                          ((unsigned short)se->s_port >> 8);
+    printf("SERVENT query=%s name=%s proto=%s port=%u\n",
+           query, se->s_name, proto, (unsigned)port);
+    return (strcmp(se->s_name, expect_name) == 0 &&
+            port == (unsigned)expect_port) ? 0 : 1;
+}
+
 int main(void) {
     int rc = 0;
     rc |= check_pwent_iteration();
@@ -94,6 +109,11 @@ int main(void) {
     rc |= check_grent_iteration();
     rc |= check_servbyname("ssh", "tcp", 22);
     rc |= check_servbyname("http", "tcp", 80);
+    rc |= check_service_query("www", "tcp", "www", 80);
+    rc |= check_service_query("www-http", "tcp", "www-http", 80);
+    rc |= check_service_query("https", "tcp", "https", 443);
+    rc |= check_service_query("mysql", "tcp", "mysql", 3306);
+    rc |= check_service_query("postgresql", "tcp", "postgresql", 5432);
     printf("DONE rc=%d\n", rc);
     return rc;
 }

@@ -4,7 +4,12 @@
 // setNextChildPid, and fork flow.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
+import { join } from "node:path";
+import {
+  CAPTURED_STDIO,
+  CentralizedKernelWorker,
+  shouldDeliverPosixTimerSignal,
+} from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { SharedLockTable } from "../src/shared-lock-table";
@@ -16,9 +21,13 @@ import {
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
 import {
   ABI_SYSCALLS,
+  CH_ARGS,
+  CH_ARG_SIZE,
   CH_DATA,
   CH_ERRNO,
   CH_RETURN,
+  CH_SYSCALL,
+  HOST_INTERCEPTED_SYSCALLS,
 } from "../src/generated/abi";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
@@ -59,6 +68,12 @@ function registerProcess(
 }
 
 describe("CentralizedKernelWorker Process Management", () => {
+  it("does not deliver SIGEV_NONE as a signal-zero wakeup", () => {
+    expect(shouldDeliverPosixTimerSignal(0)).toBe(false);
+    expect(shouldDeliverPosixTimerSignal(14)).toBe(true);
+    expect(shouldDeliverPosixTimerSignal(65)).toBe(false);
+  });
+
   it("releases host-backed advisory locks when deactivating an exited process", () => {
     const pid = 126;
     const peerPid = 127;
@@ -76,6 +91,8 @@ describe("CentralizedKernelWorker Process Management", () => {
       alarmTimers: new Map(),
       posixTimers: new Map(),
       pendingSleeps: new Map(),
+      pendingSignalWaits: new Map(),
+      signalWaitDeadlines: new Map(),
       lockTable,
       cleanupPendingPollRetries: vi.fn(),
       cleanupPendingSelectRetries: vi.fn(),
@@ -90,6 +107,156 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect((kw as any).processes.has(pid)).toBe(false);
     expect((kw as any).activeChannels).toEqual([{ pid: peerPid }]);
     expect((kw as any).hostReaped.has(pid)).toBe(false);
+  });
+
+  it("retries fork allocation when the kernel still owns a zombie pid", async () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    const kernelForkProcess = vi.fn((_parent: number, child: number) =>
+      child === 100 ? -17 : 0,
+    );
+    const completeChannel = vi.fn();
+    const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork },
+      nextChildPid: 100,
+      processes: new Map([[parentPid, { channels: [channel] }]]),
+      threadForkContexts: new Map(),
+      sharedMappings: new Map(),
+      tcpListenerTargets: new Map(),
+      epollInterests: new Map(),
+      completeChannel,
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: kernelForkProcess,
+          kernel_clear_fork_child: vi.fn(() => 0),
+          kernel_reset_signal_mask: vi.fn(() => 0),
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+        },
+      },
+    }) as CentralizedKernelWorker;
+
+    (kw as any).handleFork(channel, [0]);
+    await Promise.resolve();
+
+    expect(kernelForkProcess).toHaveBeenNthCalledWith(1, parentPid, 100);
+    expect(kernelForkProcess).toHaveBeenNthCalledWith(2, parentPid, 101);
+    expect(onFork).toHaveBeenCalledWith(parentPid, 101, memory, undefined);
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+      undefined,
+      101,
+      0,
+    );
+  });
+
+  it("inherits child fd mirrors when the parent channel becomes stale during fork", async () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+    const oldChannel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    const replacementChannel = {
+      pid: parentPid,
+      channelOffset: 2 * WASM_PAGE_SIZE,
+      memory,
+    };
+    const completeChannel = vi.fn();
+    let finishFork!: (offsets: number[]) => void;
+    const forkLaunch = new Promise<number[]>((resolve) => {
+      finishFork = resolve;
+    });
+    const close = vi.fn();
+    const listener = {
+      server: { close },
+      pid: parentPid,
+      port: 8080,
+      connections: new Set(),
+    };
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork: vi.fn(() => forkLaunch) },
+      nextChildPid: 100,
+      processes: new Map([[parentPid, { channels: [replacementChannel] }]]),
+      threadForkContexts: new Map(),
+      sharedMappings: new Map(),
+      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
+      tcpListenerRRIndex: new Map([[8080, 0]]),
+      tcpVirtualListenerKeys: new Map(),
+      tcpListeners: new Map([[`${parentPid}:4`, listener]]),
+      tcpConnections: new Map(),
+      shmMappings: new Map(),
+      io: { network: undefined },
+      epollInterests: new Map([[`${parentPid}:6`, [
+        { fd: 8, events: 1, data: 11n },
+      ]]]),
+      completeChannel,
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: vi.fn(() => 0),
+          kernel_clear_fork_child: vi.fn(() => 0),
+          kernel_reset_signal_mask: vi.fn(() => 0),
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+        },
+      },
+    }) as CentralizedKernelWorker;
+
+    (kw as any).handleFork(oldChannel, [0]);
+    expect((kw as any).tcpListenerTargets.get(8080)).toContainEqual({ pid: 100, fd: 4 });
+    (kw as any).cleanupTcpListeners(parentPid);
+    expect(close).not.toHaveBeenCalled();
+    expect((kw as any).tcpListeners.has("100:4")).toBe(true);
+    finishFork([WASM_PAGE_SIZE]);
+    await Promise.resolve();
+
+    expect((kw as any).tcpListenerTargets.get(8080)).toEqual([{ pid: 100, fd: 4 }]);
+    expect((kw as any).epollInterests.get("100:6")).toEqual([
+      { fd: 8, events: 1, data: 11n },
+    ]);
+    expect(completeChannel).not.toHaveBeenCalled();
+  });
+
+  it("removes eager child registrations and mirrors when fork worker launch fails", async () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    const completeChannel = vi.fn();
+    const deactivateProcess = vi.fn();
+    const removeProcess = vi.fn(() => 0);
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork: vi.fn(() => Promise.reject(new Error("launch failed"))) },
+      nextChildPid: 100,
+      processes: new Map([[parentPid, { channels: [channel] }]]),
+      threadForkContexts: new Map(),
+      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
+      epollInterests: new Map(),
+      completeChannel,
+      deactivateProcess,
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: vi.fn(() => 0),
+          kernel_clear_fork_child: vi.fn(() => 0),
+          kernel_reset_signal_mask: vi.fn(() => 0),
+          kernel_remove_process: removeProcess,
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+        },
+      },
+    }) as CentralizedKernelWorker;
+
+    (kw as any).handleFork(channel, [0]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(deactivateProcess).toHaveBeenCalledWith(100);
+    expect(removeProcess).toHaveBeenCalledWith(100);
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+      undefined,
+      -1,
+      12,
+    );
   });
 
   it("completes pthread SYS_EXIT channels (clearing the exiting guest's atomic-wait waiter) even when the host terminates the worker", () => {
@@ -214,11 +381,14 @@ describe("CentralizedKernelWorker Process Management", () => {
         [pid, { memory, channels: [{ channelOffset: mainChannelOffset }, channel] }],
       ]),
       activeChannels: [channel],
+      pendingSleeps: new Map(),
       channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
       threadForkContexts: new Map([
         [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
       ]),
       threadCtidPtrs: new Map([[`${pid}:${tid}`, ctidPtr]]),
+      pendingSignalWaits: new Map(),
+      signalWaitDeadlines: new Map(),
       notifyThreadExit: vi.fn(),
     }) as CentralizedKernelWorker;
 
@@ -261,6 +431,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         resolveClone = resolve;
       });
     });
+    const channel = { pid, channelOffset: mainChannelOffset, memory };
 
     const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
       callbacks: { onClone },
@@ -273,7 +444,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       scratchOffset: 0,
       currentHandlePid: 0,
       processes: new Map([
-        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
+        [pid, { channels: [channel] }],
       ]),
       threadCtidPtrs,
       completeChannel: vi.fn(),
@@ -290,7 +461,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     });
 
     (kw as any).handleClone(
-      { pid, channelOffset: mainChannelOffset, memory },
+      channel,
       [0, stackPtr, 0, tlsPtr, ctidPtr, 0],
     );
 
@@ -299,6 +470,67 @@ describe("CentralizedKernelWorker Process Management", () => {
     resolveClone(tid);
     await Promise.resolve();
     expect((kw as any).completeChannel).toHaveBeenCalled();
+  });
+
+  it("does not erase replacement clear-TID metadata from a stale clone completion", async () => {
+    const pid = 126;
+    const tid = 79;
+    const oldMemory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const newMemory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const channelOffset = WASM_PAGE_SIZE;
+    const oldChannel = { pid, channelOffset, memory: oldMemory };
+    const newChannel = { pid, channelOffset, memory: newMemory };
+    const processView = new DataView(oldMemory.buffer, channelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const kernelView = new DataView(kernelMemory.buffer);
+    const threadCtidPtrs = new Map<string, number>();
+    let resolveClone!: (value: number) => void;
+    const onClone = vi.fn(() => new Promise<number>((resolve) => {
+      resolveClone = resolve;
+    }));
+    const completeChannel = vi.fn();
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone },
+      kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes: new Map([[pid, { channels: [oldChannel] }]]),
+      threadCtidPtrs,
+      completeChannel,
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    (kw as any).handleClone(
+      oldChannel,
+      [0, 0x00800000, 0, 0x00900000, 0x00040000, 0],
+    );
+    (kw as any).processes.set(pid, { channels: [newChannel] });
+    threadCtidPtrs.set(`${pid}:${tid}`, 0x00050000);
+    resolveClone(tid);
+    await Promise.resolve();
+
+    expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(0x00050000);
+    expect(completeChannel).not.toHaveBeenCalled();
   });
 
   it("does not lower compact process max_addr when adding dynamic pthread channels", () => {
@@ -397,6 +629,133 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     // Unregistering non-existent pid should not throw
     kw.unregisterProcess(999);
+  });
+
+  it("closes live host file handles when unregistering a process", async () => {
+    const io = new NodePlatformIO();
+    const open = vi.spyOn(io, "open");
+    const close = vi.spyOn(io, "close");
+    const kw = new CentralizedKernelWorker(
+      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      io,
+    );
+    await kw.init(loadKernelWasm());
+
+    const pid = 150;
+    const procMemory = createProcessMemory();
+    registerProcess(kw, pid, procMemory);
+
+    // Issue open(2) directly through the real kernel export so the Rust
+    // Process owns the exact host handle that unregisterProcess must release.
+    const kernelMemory = (kw as any).kernelMemory as WebAssembly.Memory;
+    const scratchOffset = (kw as any).scratchOffset as number;
+    const pathPtr = scratchOffset + CH_DATA;
+    const path = new TextEncoder().encode(
+      `${join(process.cwd(), "../Cargo.toml")}\0`,
+    );
+    new Uint8Array(kernelMemory.buffer).set(path, pathPtr);
+    const channel = new DataView(kernelMemory.buffer, scratchOffset);
+    channel.setUint32(CH_SYSCALL, ABI_SYSCALLS.Open, true);
+    for (let i = 0; i < 6; i++) {
+      channel.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+    }
+    channel.setBigInt64(CH_ARGS, BigInt(pathPtr), true);
+    const handleChannel = (kw as any).kernelInstance.exports
+      .kernel_handle_channel as (offset: number, pid: number) => number;
+    handleChannel(kw.toKernelPtr(scratchOffset) as number, pid);
+
+    expect(channel.getUint32(CH_ERRNO, true)).toBe(0);
+    expect(Number(channel.getBigInt64(CH_RETURN, true))).toBeGreaterThanOrEqual(
+      3,
+    );
+    expect(open).toHaveBeenCalledOnce();
+    const hostHandle = open.mock.results[0].value;
+    expect(close).not.toHaveBeenCalledWith(hostHandle);
+
+    kw.unregisterProcess(pid);
+
+    expect(close).toHaveBeenCalledWith(hostHandle);
+  });
+
+  it("releases a retained mmap handle before forced descriptor teardown", async () => {
+    const io = new NodePlatformIO();
+    const open = vi.spyOn(io, "open");
+    const close = vi.spyOn(io, "close");
+    const kw = new CentralizedKernelWorker(
+      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      io,
+    );
+    await kw.init(loadKernelWasm());
+
+    const pid = 151;
+    const procMemory = createProcessMemory();
+    registerProcess(kw, pid, procMemory);
+    const kernelMemory = (kw as any).kernelMemory as WebAssembly.Memory;
+    const scratchOffset = (kw as any).scratchOffset as number;
+    const pathPtr = scratchOffset + CH_DATA;
+    const path = new TextEncoder().encode(
+      `${join(process.cwd(), "../Cargo.toml")}\0`,
+    );
+    new Uint8Array(kernelMemory.buffer).set(path, pathPtr);
+    const channel = new DataView(kernelMemory.buffer, scratchOffset);
+    channel.setUint32(CH_SYSCALL, ABI_SYSCALLS.Open, true);
+    for (let i = 0; i < 6; i++) {
+      channel.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+    }
+    channel.setBigInt64(CH_ARGS, BigInt(pathPtr), true);
+    const handleChannel = (kw as any).kernelInstance.exports
+      .kernel_handle_channel as (offset: number, pid: number) => number;
+    handleChannel(kw.toKernelPtr(scratchOffset) as number, pid);
+    const guestFd = Number(channel.getBigInt64(CH_RETURN, true));
+    expect(channel.getUint32(CH_ERRNO, true)).toBe(0);
+    expect(guestFd).toBeGreaterThanOrEqual(3);
+    const hostHandle = open.mock.results[0].value;
+    const stat = io.fstat(hostHandle);
+    const backingKey = io.fileHandleIdentity(
+      hostHandle,
+      BigInt(stat.dev),
+      BigInt(stat.ino),
+    )!;
+
+    const retainedKernel = (kw as any).kernel;
+    retainedKernel.retainHostFileHandle(hostHandle);
+    const release = vi.spyOn(retainedKernel, "releaseHostFileHandle");
+    (kw as any).sharedMmapBackings.set(backingKey, {
+      key: backingKey,
+      handle: hostHandle,
+      writable: false,
+      size: stat.size,
+      sizeValid: true,
+      pages: new Map(),
+      dirtyPages: new Set(),
+      refCount: 1,
+      version: 0,
+    });
+    (kw as any).sharedMappings.set(pid, new Map([[0x1000, {
+      fd: guestFd,
+      fileOffset: 0,
+      len: 4096,
+      writable: false,
+      writeAllowed: false,
+      backingKind: "file",
+      backingKey,
+      snapshot: new Uint8Array(4096),
+      seenVersion: 0,
+    }]]));
+
+    kw.unregisterProcess(pid);
+
+    expect(release).toHaveBeenCalledWith(hostHandle);
+    expect(close).toHaveBeenCalledWith(hostHandle);
+    const hostCloseCall = close.mock.calls.findIndex(([handle]) => handle === hostHandle);
+    expect(hostCloseCall).toBeGreaterThanOrEqual(0);
+    expect(release.mock.invocationCallOrder[0]!).toBeLessThan(
+      close.mock.invocationCallOrder[hostCloseCall]!,
+    );
+    expect((kw as any).sharedMappings.has(pid)).toBe(false);
+    expect((kw as any).sharedMmapBackings.has(backingKey)).toBe(false);
+    expect((retainedKernel as any).retainedHostFileHandles.size).toBe(0);
+    expect(open).toHaveBeenCalledOnce();
   });
 
   it("repeated compact-layout launches do not leave process registrations behind", async () => {

@@ -30,10 +30,11 @@
  *      blocked, the call is a no-op — the next cancel point will observe
  *      the flag.
  *   3. libc/glue/channel_syscall.c::__syscall_cp calls __testcancel() before
- *      and after the blocking dispatch.  __testcancel reads self->cancel
- *      and, if set (and cancellation is enabled), calls __cancel(), which
- *      in turn runs pthread_exit(PTHREAD_CANCELED) — unwinding cleanup
- *      handlers and TSD destructors before the thread terminates.
+ *      the blocking dispatch and __syscall_cp_check() after it. A pending
+ *      cancel terminates the thread only before dispatch or when the host
+ *      interrupted an in-flight cancellation point with EINTR. A syscall
+ *      that already completed keeps its result and leaves cancellation
+ *      pending for the next cancellation point.
  *
  * Async cancellation (PTHREAD_CANCEL_ASYNCHRONOUS) is explicitly not
  * supported: wasm cannot preempt a running thread mid-computation.
@@ -77,8 +78,11 @@ void __testcancel(void)
  * one-function moral equivalent of stock musl's __syscall_cp_asm +
  * __syscall_cp_c combo:
  *
+ *   - If the syscall was not interrupted with EINTR, return `r` unchanged.
+ *     In particular, do not discard a successful syscall after its externally
+ *     visible side effects have already happened.
  *   - If the thread has cancellation entirely disabled or no cancel is
- *     pending, return `r` unchanged (or 0 on the pre-call edge).
+ *     pending, return `r` unchanged.
  *   - If `self->cancel` is set and the state is ENABLE (or async),
  *     terminate the thread via pthread_exit(PTHREAD_CANCELED) — same
  *     path as stock __testcancel.
@@ -94,6 +98,7 @@ void __testcancel(void)
 hidden long __syscall_cp_check(long r)
 {
 	pthread_t self = __pthread_self();
+	if (r != -EINTR) return r;
 	if (!self->cancel) return r;
 	if (self->canceldisable == PTHREAD_CANCEL_DISABLE) return r;
 	if (self->canceldisable == PTHREAD_CANCEL_ENABLE || self->cancelasync)

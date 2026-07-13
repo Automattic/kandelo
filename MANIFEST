@@ -8,9 +8,9 @@
 # The mkrootfs builder refuses to silently drop on-disk files that
 # aren't declared here, so every images/rootfs/* addition needs a line below.
 #
-# Ownership defaults to 0:0 (root). uid/gid are honest once the
-# kernel's synthetic /etc interception is removed in PR 4/5 — user
-# programs will see these exact values via stat().
+# Ownership defaults to 0:0 (root). User programs observe these exact values
+# through the mounted VFS image; the kernel's dynamic `/etc/mtab` exception
+# does not shadow any manifest-owned path.
 #
 # The /dev tree is intentionally absent: the kernel intercepts
 # /dev/{null,zero,full,random,urandom,tty,console,fb0,stdin,stdout,
@@ -32,6 +32,8 @@
 /usr/bin         d  0755  0  0
 /usr/share       d  0755  0  0
 /usr/share/misc  d  0755  0  0
+/etc/ssl         d  0755  0  0
+/etc/ssl/certs   d  0755  0  0
 
 # ── User home ──────────────────────────────────────────────────────
 /home/user       d  0755  1000  1000
@@ -51,10 +53,17 @@
 /etc/os-release    f  0644  0  0
 /etc/profile       f  0644  0  0
 /etc/motd          f  0644  0  0
-# services matches the ad-hoc table in
-# apps/browser-demos/lib/browser-kernel.ts byte-for-byte so the cutover
-# is invisible to getservbyname/getservbyport callers.
+# The rootfs file is the authoritative services database. Rootfs-derived
+# images inherit it rather than rebuilding or synthesizing a second table.
 /etc/services      f  0644  0  0
+
+# OpenSSL was built with --openssldir=/etc/ssl. Static policy and public trust
+# roots are ordinary image state, not kernel-synthesized files. The browser
+# host may replace ca-certificates.crt with its per-session MITM root while
+# leaving OpenSSL's compiled-in cert.pem path unchanged.
+/etc/ssl/openssl.cnf                    f  0644  0  0
+/etc/ssl/cert.pem                       f  0644  0  0
+/etc/ssl/certs/ca-certificates.crt      f  0644  0  0  src=images/rootfs/etc/ssl/cert.pem
 
 # ── Shells ─────────────────────────────────────────────────────────
 # /bin/sh is provided by the generated package manifest as a symlink to

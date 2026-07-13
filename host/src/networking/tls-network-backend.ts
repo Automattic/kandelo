@@ -15,12 +15,22 @@
 
 import type { NetworkIO } from "../types";
 import { EagainError } from "./fetch-backend";
+import {
+  parseNumericIpv4Hostname,
+  validateSyntheticDnsHostname,
+} from "./hostname";
 import { TLS_1_2_Connection } from "../../../packages/registry/openssl/src/tls/1_2/connection";
 import {
   generateCertificate,
   certificateToPEM,
   type GeneratedCertificate,
 } from "../../../packages/registry/openssl/src/tls/certificates";
+
+const POLLIN = 0x0001;
+const POLLOUT = 0x0004;
+const POLLERR = 0x0008;
+const POLLHUP = 0x0010;
+const MSG_PEEK = 0x0002;
 
 // ------------------------------------------------------------------ types
 
@@ -229,6 +239,10 @@ export class TlsNetworkBackend implements NetworkIO {
   // ---- NetworkIO implementation ----
 
   getaddrinfo(hostname: string): Uint8Array {
+    const literalIp = parseNumericIpv4Hostname(hostname);
+    if (literalIp) return literalIp;
+    validateSyntheticDnsHostname(hostname, this.dnsAliases);
+
     const ip = this.syntheticIp(hostname);
     const ipStr = this.ipKey(ip);
     this.hostnameMap.set(ipStr, hostname);
@@ -270,14 +284,14 @@ export class TlsNetworkBackend implements NetworkIO {
     return this.httpSend(conn, data);
   }
 
-  recv(handle: number, maxLen: number, _flags: number): Uint8Array {
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
 
     if (conn.kind === "tls") {
-      return this.tlsRecv(conn, maxLen);
+      return this.tlsRecv(conn, maxLen, flags);
     }
-    return this.httpRecv(conn, maxLen);
+    return this.httpRecv(conn, maxLen, flags);
   }
 
   close(handle: number): void {
@@ -417,14 +431,16 @@ export class TlsNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  private tlsRecv(conn: TlsConnectionState, maxLen: number): Uint8Array {
+  private tlsRecv(conn: TlsConnectionState, maxLen: number, flags: number): Uint8Array {
     if (conn.error) throw conn.error;
 
     // Check if we have encrypted data buffered from the TLS engine
     if (conn.clientDownstreamBuf.length > 0) {
       const n = Math.min(maxLen, conn.clientDownstreamBuf.length);
       const result = conn.clientDownstreamBuf.slice(0, n);
-      conn.clientDownstreamBuf = conn.clientDownstreamBuf.subarray(n);
+      if ((flags & MSG_PEEK) === 0) {
+        conn.clientDownstreamBuf = conn.clientDownstreamBuf.subarray(n);
+      }
       return result;
     }
 
@@ -615,7 +631,7 @@ export class TlsNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  private httpRecv(conn: HttpConnectionState, maxLen: number): Uint8Array {
+  private httpRecv(conn: HttpConnectionState, maxLen: number, flags: number): Uint8Array {
     if (!conn.fetchDone) {
       throw new EagainError();
     }
@@ -631,8 +647,48 @@ export class TlsNetworkBackend implements NetworkIO {
     if (len === 0) return new Uint8Array(0);
 
     const result = conn.responseBuf.slice(conn.responseOffset, conn.responseOffset + len);
-    conn.responseOffset += len;
+    if ((flags & MSG_PEEK) === 0) {
+      conn.responseOffset += len;
+    }
     return result;
+  }
+
+  poll(handle: number, events: number): number {
+    const conn = this.connections.get(handle);
+    if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
+
+    let revents = 0;
+    if ((events & POLLOUT) !== 0 && (conn.kind === "http" || !conn.closed)) {
+      revents |= POLLOUT;
+    }
+
+    if (conn.kind === "http") {
+      if (conn.fetchError) return revents | POLLERR;
+      if (
+        (events & POLLIN) !== 0 &&
+        conn.responseBuf &&
+        conn.responseOffset < conn.responseBuf.length
+      ) {
+        revents |= POLLIN;
+      }
+      if (
+        conn.fetchDone &&
+        conn.responseBuf &&
+        conn.responseOffset >= conn.responseBuf.length
+      ) {
+        revents |= POLLHUP;
+      }
+      return revents;
+    }
+
+    if (conn.error) return revents | POLLERR;
+    if ((events & POLLIN) !== 0 && conn.clientDownstreamBuf.length > 0) {
+      revents |= POLLIN;
+    }
+    if (conn.closed && conn.clientDownstreamBuf.length === 0) {
+      revents |= POLLHUP;
+    }
+    return revents;
   }
 
   // ---- Utilities ----

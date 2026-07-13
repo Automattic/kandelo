@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { buildClangArgs } from '../src/bin/cc.ts';
 
 describe('buildClangArgs', () => {
   const toolchain = {
     llvmDir: '/opt/llvm/bin',
+    lldMajor: 21,
     cc: '/opt/llvm/bin/clang',
     cxx: '/opt/llvm/bin/clang++',
     ar: '/opt/llvm/bin/llvm-ar',
@@ -71,5 +74,48 @@ describe('buildClangArgs', () => {
     const args = buildClangArgs(['--kandelo-thread-slots=2', 'foo.c', '-o', 'foo.wasm'], toolchain);
     expect(args).toContain('-DWASM_POSIX_THREAD_SLOT_DECL=2');
     expect(args).not.toContain('--kandelo-thread-slots=2');
+  });
+
+  it('pins lld to the same resolved LLVM tree as clang', () => {
+    const args = buildClangArgs(['foo.c', '-o', 'foo.wasm'], toolchain);
+
+    expect(args).toContain('-fuse-ld=/opt/llvm/bin/wasm-ld');
+  });
+
+  it('rejects executable link arguments before wasm-ld is versioned', () => {
+    expect(() =>
+      buildClangArgs(
+        ['foo.c', '-o', 'foo.wasm'],
+        { ...toolchain, lldMajor: null },
+      ),
+    ).toThrow(/wasm-ld version is unresolved/);
+  });
+
+  it('pins the packaged SDK driver to clang\'s adjacent wasm-ld', () => {
+    const script = readFileSync(
+      join(import.meta.dirname, '../kandelo/bin/wasm32posix-cc'),
+      'utf8',
+    );
+
+    expect(script).toContain('WASM_LD="${TOOL_DIR}/wasm-ld"');
+    expect(script).not.toContain('WASM_LD="$(find_tool wasm-ld');
+  });
+
+  it('preserves stack-after-data layout with LLD 22 and newer', () => {
+    const args = buildClangArgs(
+      ['foo.c', '-o', 'foo.wasm'],
+      { ...toolchain, lldMajor: 22 },
+    );
+
+    expect(args).toContain('-Wl,--no-stack-first');
+  });
+
+  it('uses LLD 21 defaults without passing its unsupported negative option', () => {
+    const args = buildClangArgs(
+      ['foo.c', '-o', 'foo.wasm'],
+      { ...toolchain, lldMajor: 21 },
+    );
+
+    expect(args).not.toContain('-Wl,--no-stack-first');
   });
 });

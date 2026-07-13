@@ -17,11 +17,18 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::slice;
 
-use wasm_posix_shared::fd_flags::FD_CLOEXEC;
-use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmStatfs, WasmTimespec};
+use wasm_posix_shared::{
+    Errno, KernelWaitResult, WasmDirent, WasmStat, WasmStatfs, WasmTimespec,
+};
 
 use crate::ofd::FileType;
-use crate::process::{HostIO, Process, StdioConfig, StdioKind};
+use crate::process::{
+    HostIO, Process, ProcessState, StdioConfig, StdioKind, normalize_posix_timer_signo,
+};
+use crate::signal::{
+    DefaultSignalOutcome, apply_default_signal_action, deliver_pending_signals,
+    dequeue_signal_for, terminate_process_by_signal,
+};
 use crate::syscalls;
 
 // ---------------------------------------------------------------------------
@@ -40,6 +47,8 @@ unsafe extern "C" {
     fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_statfs(path_ptr: *const u8, path_len: u32, statfs_ptr: *mut u8) -> i32;
+    fn host_pathconf(path_ptr: *const u8, path_len: u32, name: i32, value_ptr: *mut i64) -> i32;
+    fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
     fn host_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
     fn host_rmdir(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_unlink(path_ptr: *const u8, path_len: u32) -> i32;
@@ -54,6 +63,7 @@ unsafe extern "C" {
     fn host_readlink(path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
     fn host_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
+    fn host_lchown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
     fn host_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32;
     fn host_opendir(path_ptr: *const u8, path_len: u32) -> i64;
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
@@ -372,6 +382,27 @@ impl HostIO for WasmHostIO {
         Ok(statfs)
     }
 
+    fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
+        let mut value = -1i64;
+        let result = unsafe {
+            host_pathconf(
+                path.as_ptr(),
+                path.len() as u32,
+                name,
+                &mut value as *mut i64,
+            )
+        };
+        i32_to_result(result)?;
+        Ok((value != -1).then_some(value))
+    }
+
+    fn host_fpathconf(&mut self, handle: i64, name: i32) -> Result<Option<i64>, Errno> {
+        let mut value = -1i64;
+        let result = unsafe { host_fpathconf(handle, name, &mut value as *mut i64) };
+        i32_to_result(result)?;
+        Ok((value != -1).then_some(value))
+    }
+
     fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
         let result = unsafe { host_mkdir(path.as_ptr(), path.len() as u32, mode) };
         i32_to_result(result)
@@ -449,6 +480,11 @@ impl HostIO for WasmHostIO {
 
     fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
         let result = unsafe { host_chown(path.as_ptr(), path.len() as u32, uid, gid) };
+        i32_to_result(result)
+    }
+
+    fn host_lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+        let result = unsafe { host_lchown(path.as_ptr(), path.len() as u32, uid, gid) };
         i32_to_result(result)
     }
 
@@ -1058,7 +1094,7 @@ use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
 /// Get all active PIDs from the process table.
 pub(crate) fn procfs_all_pids() -> Vec<u32> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    table.all_pids()
+    table.procfs_pids()
 }
 
 /// Generate procfs content for a foreign process (cross-process access).
@@ -1101,7 +1137,7 @@ pub(crate) fn procfs_getdents64_for_pid(
 ) -> Option<(usize, i64, bool)> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
-    let pids = table.all_pids();
+    let pids = table.procfs_pids();
     crate::procfs::procfs_getdents64(proc, ofd_path, buf, offset, &pids).ok()
 }
 
@@ -1190,45 +1226,6 @@ fn ensure_memory_covers(_end_addr: usize) {
 
 // 3c. Signal delivery at syscall boundaries
 // ---------------------------------------------------------------------------
-
-/// Check for and deliver pending signals before/after syscall.
-fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
-    use crate::signal::{DefaultAction, SignalHandler, default_action};
-    let tid = crate::process_table::current_tid();
-    let _ = host;
-    loop {
-        // Caught signals are delivered by the glue code via
-        // kernel_dequeue_signal; default and ignored signals are consumed here.
-        let deliverable = proc.deliverable_for(tid);
-        if deliverable == 0 {
-            break;
-        }
-        let signum = deliverable.trailing_zeros() + 1;
-        if signum >= wasm_posix_shared::signal::NSIG {
-            break;
-        }
-        let action = proc.signals.get_action(signum);
-        match action.handler {
-            SignalHandler::Handler(_) => break,
-            SignalHandler::Default => {
-                let _ = dequeue_signal_for(proc, tid, signum);
-                match default_action(signum) {
-                    DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
-                    }
-                    _ => {}
-                }
-            }
-            SignalHandler::Ignore => {
-                let _ = dequeue_signal_for(proc, tid, signum);
-            }
-        }
-        if proc.state == crate::process::ProcessState::Exited {
-            break;
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // 4. Exported kernel functions
@@ -1433,14 +1430,17 @@ pub extern "C" fn kernel_reserve_host_region_at(pid: u32, addr: usize, len: usiz
 
 /// Set the working directory for a process.
 /// Called by host to set the initial cwd before the process starts.
-/// Returns 0 on success, -ESRCH if pid not found.
+/// Returns 0 on success or a negative errno if the process/path is invalid.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = table.get_mut(pid) {
         let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
-        proc.cwd = path.to_vec();
-        0
+        let mut host = WasmHostIO;
+        match syscalls::sys_chdir(proc, &mut host, path) {
+            Ok(()) => 0,
+            Err(error) => -(error as i32),
+        }
     } else {
         -(Errno::ESRCH as i32)
     }
@@ -1489,10 +1489,61 @@ pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_le
     }
 }
 
+/// Clear one process string vector before bounded, entry-at-a-time replacement.
+///
+/// `kind == 0` selects argv and `kind == 1` selects the environment. The host
+/// uses this together with `kernel_push_process_metadata_entry` instead of
+/// copying an arbitrarily large NUL-joined payload into its fixed-size scratch
+/// allocation. Clearing without any subsequent pushes deliberately represents
+/// an empty vector, which is required when exec installs an empty environment.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clear_process_metadata(pid: u32, kind: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    match proc.clear_metadata(kind) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Append one argv or environment entry from the host's bounded scratch area.
+/// Empty entries are preserved; entry boundaries are supplied by the call
+/// itself rather than inferred from NUL bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_push_process_metadata_entry(
+    pid: u32,
+    kind: u32,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    match proc.push_metadata_entry(kind, data) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
     use core::sync::atomic::Ordering;
 
     let removed = result.process;
+    // A process removed without reaching sys_exit (worker crash or explicit
+    // host termination) can still own host-side VFS handles. Close directory
+    // iterators before their backing file handles,
+    // matching sys_close/process-exit ordering. Normal exited zombies already
+    // have empty OFD and directory-stream tables, so reaping is a no-op here.
+    for dir_handle in result.host_dir_closes {
+        unsafe { host_closedir(dir_handle) };
+    }
+    for handle in result.host_closes {
+        unsafe { host_close(handle) };
+    }
     // /dev/fb0 cleanup: if the exiting process held a live mmap, tell the host
     // to drop the canvas binding before the process Memory disappears. Then
     // release the global owner claim — best-effort CAS makes this idempotent.
@@ -1660,13 +1711,35 @@ pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
     }
 }
 
-/// Get process exit status.
-/// Returns exit_status if process is exited, -1 if still alive, -ESRCH if not found.
+/// Get the shell-style process exit status used by the host lifecycle scan.
+/// Returns a normal exit code, 128+signal for signal termination, -1 while
+/// alive, or -ESRCH when the process does not exist.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     match table.get(pid) {
-        Some(proc) if proc.state == crate::process::ProcessState::Exited => proc.exit_status,
+        Some(proc) if proc.state == crate::process::ProcessState::Exited => {
+            if proc.exit_signal != 0 {
+                128 + proc.exit_signal as i32
+            } else {
+                proc.exit_status
+            }
+        }
+        Some(_) => -1,
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Return the signal that terminated an exited process, or zero for a normal
+/// exit. Returns -1 while the process is alive and -ESRCH when it is absent.
+/// Hosts use this explicit cause instead of guessing from high exit codes.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_exit_signal(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) if proc.state == crate::process::ProcessState::Exited => {
+            proc.exit_signal as i32
+        }
         Some(_) => -1,
         None => -(Errno::ESRCH as i32),
     }
@@ -1682,6 +1755,24 @@ pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
     }
 }
 
+/// Return the host-visible lifecycle state. Reaped limbo group identities are
+/// not processes and report ESRCH just like an absent pid.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_state(pid: u32) -> i32 {
+    use crate::process::ProcessState;
+    use wasm_posix_shared::wait::{
+        PROCESS_STATE_EXITED, PROCESS_STATE_RUNNING, PROCESS_STATE_STOPPED,
+    };
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid).map(|proc| proc.state) {
+        Some(ProcessState::Running) => PROCESS_STATE_RUNNING,
+        Some(ProcessState::Stopped) => PROCESS_STATE_STOPPED,
+        Some(ProcessState::Exited) => PROCESS_STATE_EXITED,
+        Some(ProcessState::Limbo) | None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Mark a process as signal-terminated without removing it from the table.
 ///
 /// Used by the host when the Worker dies before the guest reaches SYS_EXIT.
@@ -1689,25 +1780,55 @@ pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.mark_process_signaled(pid, signum) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
+    match table.get_mut(pid) {
+        Some(proc) => {
+            let mut host = WasmHostIO;
+            terminate_process_by_signal(proc, &mut host, signum);
+            0
+        }
+        None => -(Errno::ESRCH as i32),
     }
 }
 
-/// Poll for a waitable child matching waitpid-style `target_pid`.
-///
-/// Returns a child pid and writes its wait status to `status_ptr` when a
-/// zombie matches, 0 when a matching child is still running, or negative
-/// errno when no matching child exists.
+/// Atomically select and optionally consume one child status record. A
+/// consuming exit selection also reaps the child in this serialized kernel
+/// operation; WNOWAIT peeks without consuming or reaping.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_wait4_poll(parent_pid: u32, target_pid: i32, status_ptr: *mut i32) -> i32 {
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    match table.poll_waitable_child(parent_pid, target_pid) {
-        Ok(Some((child_pid, wait_status))) => {
-            if !status_ptr.is_null() {
-                unsafe {
-                    *status_ptr = wait_status;
+pub extern "C" fn kernel_wait_child_poll(
+    parent_pid: u32,
+    target_pid: i32,
+    event_mask: u32,
+    flags: u32,
+    out_ptr: *mut KernelWaitResult,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+
+    let selected = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        table.poll_wait_event(parent_pid, target_pid, event_mask, flags)
+    };
+
+    match selected {
+        Ok(Some((child_pid, event))) => {
+            let result = KernelWaitResult {
+                wait_status: event.wait_status,
+                si_code: event.si_code,
+                si_status: event.si_status,
+                child_uid: event.child_uid,
+                rusage: event.rusage,
+            };
+            unsafe {
+                core::ptr::write_unaligned(out_ptr, result);
+            }
+
+            if flags & wasm_posix_shared::wait::WNOWAIT == 0
+                && event.event_mask == wasm_posix_shared::wait::EVENT_EXITED
+            {
+                let reaped = reap_process_and_cleanup(child_pid);
+                if reaped < 0 {
+                    return reaped;
                 }
             }
             child_pid as i32
@@ -1747,6 +1868,20 @@ pub extern "C" fn kernel_has_sa_nocldwait(pid: u32) -> i32 {
                     _ => 0,
                 }
             }
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Check whether SIGCHLD stop/continue notifications are suppressed.
+/// SA_NOCLDSTOP never suppresses the wait status record itself.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_has_sa_nocldstop(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => {
+            let action = proc.signals.get_action(wasm_posix_shared::signal::SIGCHLD);
+            i32::from(action.flags & wasm_posix_shared::signal::SA_NOCLDSTOP != 0)
         }
         None => -(Errno::ESRCH as i32),
     }
@@ -1900,15 +2035,37 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
     }
 }
 
+/// Return 1 when `fd` names a live descriptor in `pid`, 0 when it does not,
+/// and a negative errno when the process itself is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fd_is_open(pid: u32, fd: i32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => i32::from(proc.fd_table.get(fd).is_ok()),
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Return 1 when `fd` can back host-persisted MAP_SHARED writeback, 0 for an
+/// unsupported or absent descriptor, and `-ESRCH` when `pid` is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fd_supports_mmap_writeback(pid: u32, fd: i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => i32::from(syscalls::fd_supports_mmap_writeback(proc, fd)),
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Snapshot the process table for the host (Kandelo Inspector → Procs tab,
 /// and any host that wants a `ps`-equivalent view without spawning a user
 /// process). Walks every active pid and writes a compact, length-prefixed
 /// binary record per process into the host-supplied scratch buffer.
 ///
 /// Zombie (Exited) processes are omitted by default — the kandelo Inspector
-/// wants a "currently running" view, and the kernel keeps zombies around for
-/// waitpid() reap semantics that aren't visible at this layer. The internal
-/// procfs ABI still surfaces them via /proc/[pid] for processes that care.
+/// wants a live-process view, including stopped processes, and the kernel
+/// keeps zombies around for waitpid() reap semantics. Procfs still surfaces
+/// them via /proc/[pid].
 ///
 /// Wire format (all integers little-endian):
 ///
@@ -1919,7 +2076,7 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
 ///     u32  uid             -- effective uid for ps-style USER display
 ///     u32  gid             -- effective gid
 ///     u64  vsize_bytes    -- sum of mmap-region sizes
-///     u32  state          -- 'R' (running) or 'Z' (zombie) as ASCII
+///     u32  state          -- 'R' (running) or 'T' (stopped) as ASCII
 ///     u32  comm_len
 ///     u32  cmdline_len
 ///     [comm_len bytes]    -- process_name(proc) — basename of argv[0]
@@ -1942,7 +2099,10 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
             Some(p) => p,
             None => continue,
         };
-        if proc.state != crate::process::ProcessState::Running {
+        if matches!(
+            proc.state,
+            crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+        ) {
             continue;
         }
         let cmdline = crate::procfs::generate_cmdline(proc);
@@ -1965,15 +2125,23 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
             Some(p) => p,
             None => continue,
         };
-        // Drop zombies: the kernel keeps Exited entries for waitpid()
-        // reap semantics, but a "currently running" view shouldn't show
-        // them.
-        if proc.state != crate::process::ProcessState::Running {
+        // Drop zombies and reaped limbo identities, but retain stopped
+        // processes in the live-process view.
+        if matches!(
+            proc.state,
+            crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+        ) {
             continue;
         }
         let cmdline = crate::procfs::generate_cmdline(proc);
         let comm = process_name_bytes(proc);
-        let state: u32 = b'R' as u32;
+        let state: u32 = match proc.state {
+            crate::process::ProcessState::Running => b'R' as u32,
+            crate::process::ProcessState::Stopped => b'T' as u32,
+            crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => {
+                unreachable!("non-live processes were filtered above")
+            }
+        };
         let vsize: u64 = proc.memory.mappings().iter().map(|r| r.len as u64).sum();
 
         write_u32(buf, &mut off, proc.pid);
@@ -2066,18 +2234,14 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
         // shared-pending bits (Process.signals.pending), but we collapse to a
         // single bitmask here — the actual dequeue routine below picks the
         // right queue.
-        let deliverable = proc.deliverable_for(tid);
-        if deliverable == 0 {
+        let Some(signum) = proc.next_deliverable_signal(tid) else {
             return 0;
-        }
-        let signum = deliverable.trailing_zeros() + 1;
-        if signum >= wasm_posix_shared::signal::NSIG {
-            return 0;
-        }
+        };
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
-                let (_sig, si_value, si_code) = dequeue_signal_for(proc, tid, signum);
+                let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =
+                    dequeue_signal_for(proc, tid, signum);
                 // If returning from sigsuspend/ppoll/pselect, restore original
                 // mask *before* saving old_mask for the handler, so the
                 // handler's saved mask is the pre-sigsuspend mask.
@@ -2109,7 +2273,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 // Write to output buffer:
                 //   [0..4] signum, [4..8] handler_idx, [8..12] flags,
                 //   [12..16] si_value, [16..24] old_mask,
-                //   [24..28] si_code, [28..32] si_pid, [32..36] si_uid,
+                //   [24..28] si_code, [28..32] first siginfo union word,
+                //   [32..36] second siginfo union word,
                 //   [36..40] alt_sp (0 if no switch), [40..44] alt_size
                 let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 44) };
                 buf[0..4].copy_from_slice(&signum.to_le_bytes());
@@ -2118,8 +2283,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 buf[12..16].copy_from_slice(&si_value.to_le_bytes());
                 buf[16..24].copy_from_slice(&old_mask.to_le_bytes());
                 buf[24..28].copy_from_slice(&si_code.to_le_bytes());
-                buf[28..32].copy_from_slice(&proc.pid.to_le_bytes());
-                buf[32..36].copy_from_slice(&proc.uid.to_le_bytes());
+                buf[28..32].copy_from_slice(&siginfo_word_1.to_le_bytes());
+                buf[32..36].copy_from_slice(&siginfo_word_2.to_le_bytes());
                 if switch_to_alt_stack {
                     buf[36..40].copy_from_slice(&(proc.alt_stack_sp as u32).to_le_bytes());
                     buf[40..44].copy_from_slice(&(proc.alt_stack_size as u32).to_le_bytes());
@@ -2129,20 +2294,11 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 return signum as i32;
             }
             SignalHandler::Default => {
-                use crate::signal::{DefaultAction, default_action};
                 let _ = dequeue_signal_for(proc, tid, signum);
-                match default_action(signum) {
-                    DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        // Process is dying; clear sigsuspend state
-                        proc.sigsuspend_saved_mask = None;
-                        for t in proc.threads.iter_mut() {
-                            t.signals.sigsuspend_saved_mask = None;
-                        }
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
-                        return 0;
-                    }
-                    _ => continue,
+                let mut host = WasmHostIO;
+                match apply_default_signal_action(proc, &mut host, signum) {
+                    DefaultSignalOutcome::Continue => continue,
+                    DefaultSignalOutcome::Stopped | DefaultSignalOutcome::Exited => return 0,
                 }
             }
             SignalHandler::Ignore => {
@@ -2153,159 +2309,111 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
     }
 }
 
-/// Dequeue one pending instance of `signum` for the given thread. Prefers the
-/// thread's directed pending queue over the shared process-level queue —
-/// POSIX requires that signals sent via `pthread_kill` / `tkill` / `tgkill`
-/// be delivered to that thread specifically, even when the shared queue also
-/// carries an instance of the same signal.
-///
-/// Returns `(signum, si_value, si_code)`; `si_value`/`si_code` default to 0
-/// for coalesced standard signals without `sigqueue` metadata.
-fn dequeue_signal_for(
-    proc: &mut crate::process::Process,
-    tid: u32,
-    signum: u32,
-) -> (u32, i32, i32) {
-    use crate::signal::sig_bit;
-    // Prefer per-thread directed delivery for non-main threads.
-    if !proc.is_main_thread(tid) {
-        if let Some(t) = proc.get_thread_mut(tid) {
-            if (t.signals.pending & sig_bit(signum)) != 0 {
-                // Pull the entry from the thread's rt_queue if present,
-                // then clear the pending bit exactly as `SignalState::dequeue`
-                // does (coalesced for standard signals; queued for RT).
-                let (mut si_value, mut si_code) = (0i32, 0i32);
-                if let Some(pos) = t.signals.rt_queue.iter().position(|e| e.signum == signum) {
-                    si_value = t.signals.rt_queue[pos].si_value;
-                    si_code = t.signals.rt_queue[pos].si_code;
-                    t.signals.rt_queue.remove(pos);
-                }
-                if signum >= crate::signal::SIGRTMIN {
-                    if !t.signals.rt_queue.iter().any(|e| e.signum == signum) {
-                        t.signals.pending &= !sig_bit(signum);
-                    }
-                } else {
-                    t.signals.pending &= !sig_bit(signum);
-                }
-                return (signum, si_value, si_code);
-            }
-        }
-    }
-    // Fall back to the shared process-level queue.
-    let (si_value, si_code) = proc.signals.consume_one(signum);
-    (signum, si_value, si_code)
-}
-
 /// Handle exec semantics on a process in the process table.
-/// Serializes the process as exec state (closes CLOEXEC, resets handlers), then
-/// re-creates the process from that sanitized state.
+/// Closes CLOEXEC descriptors and resets image-specific state in place so
+/// surviving kernel objects retain their exact identity and queues.
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    {
-        let proc = match table.get_mut(pid) {
-            Some(p) => p,
-            None => return -(Errno::ESRCH as i32),
-        };
+    kernel_exec_setup_inner(pid, pid)
+}
 
-        // Apply pending fork fd actions (from posix_spawn) before exec.
-        // These are dup2/close ops that rearrange fds (e.g., pipe write end → fd 1)
-        // and must take effect before CLOEXEC removal during exec serialization.
-        if !proc.fork_fd_actions.is_empty() {
-            let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
-            let mut host = WasmHostIO;
-            for action in actions {
-                use crate::process::FdAction;
-                match action {
-                    FdAction::Dup2 { old_fd, new_fd } => {
-                        if let Err(e) = syscalls::sys_dup2(proc, &mut host, old_fd, new_fd) {
-                            return -(e as i32);
-                        }
-                    }
-                    FdAction::Close { fd } => {
-                        if let Err(e) = syscalls::sys_close(proc, &mut host, fd) {
-                            return -(e as i32);
-                        }
-                    }
-                    FdAction::Open {
-                        fd,
-                        ref path,
-                        flags,
-                        mode,
-                    } => {
-                        match syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32) {
-                            Ok(opened_fd) => {
-                                if opened_fd != fd {
-                                    if let Err(e) =
-                                        syscalls::sys_dup2(proc, &mut host, opened_fd, fd)
-                                    {
-                                        return -(e as i32);
-                                    }
-                                    let _ = syscalls::sys_close(proc, &mut host, opened_fd);
-                                }
-                            }
-                            Err(e) => return -(e as i32),
-                        }
-                    }
+/// Thread-aware exec setup. When a pthread invokes exec, its signal mask and
+/// directed pending signals become the surviving process thread's state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_setup_for_thread(pid: u32, caller_tid: u32) -> i32 {
+    kernel_exec_setup_inner(pid, caller_tid)
+}
+
+/// Validate the exec caller and apply any deferred posix_spawn file actions.
+///
+/// The host calls this before it starts the irreversible address-space
+/// transition. Keeping these fallible operations separate means a bad caller
+/// tid or failed file action cannot strand a process after its old image has
+/// already been discarded.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_prepare(pid: u32, caller_tid: u32) -> i32 {
+    match prepare_exec_state(pid, caller_tid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = table.get_mut(pid).ok_or(Errno::ESRCH)?;
+
+    if matches!(
+        proc.state,
+        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+    ) {
+        return Err(Errno::ESRCH);
+    }
+
+    if caller_tid != 0
+        && caller_tid != pid
+        && !proc.threads.iter().any(|thread| thread.tid == caller_tid)
+    {
+        return Err(Errno::ESRCH);
+    }
+
+    // Apply pending fork fd actions (from posix_spawn) before exec.
+    // These are dup2/close/open operations that rearrange descriptors (for
+    // example, a pipe write end onto fd 1) and must precede CLOEXEC removal.
+    let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
+    let mut host = WasmHostIO;
+    for action in actions {
+        use crate::process::FdAction;
+        match action {
+            FdAction::Dup2 { old_fd, new_fd } => {
+                syscalls::sys_dup2(proc, &mut host, old_fd, new_fd)?;
+            }
+            FdAction::Close { fd } => {
+                syscalls::sys_close(proc, &mut host, fd)?;
+            }
+            FdAction::Open {
+                fd,
+                ref path,
+                flags,
+                mode,
+            } => {
+                let opened_fd =
+                    syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32)?;
+                if opened_fd != fd {
+                    syscalls::sys_dup2(proc, &mut host, opened_fd, fd)?;
+                    let _ = syscalls::sys_close(proc, &mut host, opened_fd);
                 }
             }
         }
     }
+    Ok(())
+}
 
-    // Close CLOEXEC fds BEFORE serialization so pipe/host-handle refcounts
-    // are properly decremented. Without this, the exec serialization silently
-    // drops CLOEXEC fds from the FD table without adjusting global refcounts,
-    // leaving pipes with phantom writers and preventing EOF on reads.
-    {
-        let proc = match table.get_mut(pid) {
-            Some(p) => p,
+fn kernel_exec_setup_inner(pid: u32, caller_tid: u32) -> i32 {
+    // Compatibility fallback for hosts that have not adopted the explicit
+    // prepare step yet. New hosts call kernel_exec_prepare first, leaving no
+    // actions here; validating twice is deliberate and harmless.
+    let has_pending_actions = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        match table.get(pid) {
+            Some(proc) => !proc.fork_fd_actions.is_empty(),
             None => return -(Errno::ESRCH as i32),
-        };
-        let cloexec_fds: alloc::vec::Vec<i32> = proc
-            .fd_table
-            .iter()
-            .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC != 0)
-            .map(|(fd, _)| fd)
-            .collect();
-        let mut host = WasmHostIO;
-        for fd in cloexec_fds {
-            let _ = syscalls::sys_close(proc, &mut host, fd);
+        }
+    };
+    if has_pending_actions {
+        if let Err(e) = prepare_exec_state(pid, caller_tid) {
+            return -(e as i32);
         }
     }
 
-    {
-        let proc = match table.get_mut(pid) {
-            Some(p) => p,
-            None => return -(Errno::ESRCH as i32),
-        };
-        let mut host = WasmHostIO;
-        syscalls::release_exec_image_state(proc, &mut host);
-    }
-
-    // Re-borrow after fd action scope ends
-    let proc = match table.get(pid) {
-        Some(p) => p,
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(proc) => proc,
         None => return -(Errno::ESRCH as i32),
     };
-
-    // Serialize as exec state (signal handler reset, etc.)
-    // CLOEXEC fds were already closed above, so serialization just preserves what's left.
-    let mut buf = alloc::vec![0u8; 64 * 1024];
-    let written = match crate::fork::serialize_exec_state(proc, &mut buf) {
-        Ok(n) => n,
-        Err(e) => return -(e as i32),
-    };
-
-    // Deserialize back to replace the process with exec-sanitized version
-    match crate::fork::deserialize_exec_state(&buf[..written], pid) {
-        Ok(new_proc) => {
-            table.get_mut(pid).map(|p| {
-                *p = new_proc;
-                p.has_exec = true;
-            });
-            0
-        }
+    let mut host = WasmHostIO;
+    match syscalls::commit_exec_state(proc, &mut host, caller_tid) {
+        Ok(()) => 0,
         Err(e) => -(e as i32),
     }
 }
@@ -2737,7 +2845,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             if a1 != 0 {
                 let ptr = a1 as usize as *mut u8;
                 unsafe {
-                    let bytes = proc.signals.pending.to_le_bytes();
+                    let bytes = proc
+                        .pending_for(crate::process_table::current_tid())
+                        .to_le_bytes();
                     for i in 0..8 {
                         *ptr.add(i) = bytes[i];
                     }
@@ -2782,16 +2892,18 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 -1 // NULL timeout = wait indefinitely
             };
             let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
-                Ok((sig, si_value, si_code)) => {
+                Ok((sig, si_value, si_code, siginfo_word_1, siginfo_word_2)) => {
                     // Write siginfo_t if pointer is non-null
                     if a2 != 0 {
                         let p = a2 as usize as *mut u8;
-                        // siginfo_t layout: si_signo(0), si_errno(4), si_code(8),
-                        //   si_pid(12), si_uid(16), si_value(20)
+                        // Fixed channel siginfo transport: si_signo(0),
+                        // si_errno(4), si_code(8), first union words (12/16),
+                        // and sival_int(20). The host expands these fields to
+                        // musl's eight-byte-aligned wasm64 siginfo_t layout.
                         let sig_bytes = (sig as i32).to_le_bytes();
                         let code_bytes = si_code.to_le_bytes();
-                        let pid_bytes = proc.pid.to_le_bytes();
-                        let uid_bytes = proc.uid.to_le_bytes();
+                        let word_1_bytes = siginfo_word_1.to_le_bytes();
+                        let word_2_bytes = siginfo_word_2.to_le_bytes();
                         let val_bytes = si_value.to_le_bytes();
                         unsafe {
                             for i in 0..4 {
@@ -2801,10 +2913,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                                 *p.add(8 + i) = code_bytes[i];
                             }
                             for i in 0..4 {
-                                *p.add(12 + i) = pid_bytes[i];
+                                *p.add(12 + i) = word_1_bytes[i];
                             }
                             for i in 0..4 {
-                                *p.add(16 + i) = uid_bytes[i];
+                                *p.add(16 + i) = word_2_bytes[i];
                             }
                             for i in 0..4 {
                                 *p.add(20 + i) = val_bytes[i];
@@ -3153,7 +3265,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         105 => kernel_setgid(a1 as u32),  // SYS_SETGID
         106 => kernel_seteuid(a1 as u32), // SYS_SETEUID
         107 => kernel_setegid(a1 as u32), // SYS_SETEGID
-        108 => kernel_getrusage(a1, a2 as *mut u8, 144), // SYS_GETRUSAGE (musl passes 2 args; time64 rusage = 18x8 = 144)
+        108 => kernel_getrusage(
+            a1,
+            a2 as *mut u8,
+            wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE,
+        ), // SYS_GETRUSAGE (musl passes 2 args)
         131 => kernel_setresuid(a1 as u32, a2 as u32, a3 as u32), // SYS_SETRESUID
         132 => kernel_getresuid(a1 as *mut u32, a2 as *mut u32, a3 as *mut u32), // SYS_GETRESUID
         133 => kernel_setresgid(a1 as u32, a2 as u32, a3 as u32), // SYS_SETRESGID
@@ -3213,9 +3329,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             // SYS_PATHCONF
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
-            kernel_pathconf(p, len as u32, a2) as i32
+            kernel_pathconf(p, len as u32, a2, a3 as *mut i64)
         }
-        113 => kernel_fpathconf(a1, a2) as i32, // SYS_FPATHCONF
+        113 => kernel_fpathconf(a1, a2, a3 as *mut i64), // SYS_FPATHCONF
 
         // setreuid/setregid — map to setresuid/setresgid with -1 for saved ID
         215 => kernel_setresuid(a1 as u32, a2 as u32, 0xFFFFFFFF), // SYS_SETREUID
@@ -3600,10 +3716,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             )
         }
         299 => {
-            // SYS_LCHOWN: (path, uid, gid) — treat like chown (no symlink distinction)
+            // SYS_LCHOWN: (path, uid, gid)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
-            kernel_chown(p, len, a2 as u32, a3 as u32)
+            kernel_lchown(p, len, a2 as u32, a3 as u32)
         }
         307 => 0, // SYS_FADVISE64: advisory, always succeed
 
@@ -3657,7 +3773,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let bytes = unsafe { slice::from_raw_parts(off_out_ptr, 8) };
                 Some(i64::from_le_bytes(bytes.try_into().unwrap()))
             };
-            match syscalls::sys_copy_file_range(
+            let result = match syscalls::sys_copy_file_range(
                 proc,
                 &mut host,
                 a1,
@@ -3685,7 +3801,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     n as i32
                 }
                 Err(e) => -(e as i32),
-            }
+            };
+            deliver_pending_signals(proc, &mut host);
+            result
         }
 
         291 => {
@@ -3706,7 +3824,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let bytes = unsafe { slice::from_raw_parts(off_out_ptr, 8) };
                 Some(i64::from_le_bytes(bytes.try_into().unwrap()))
             };
-            match syscalls::sys_splice(
+            let result = match syscalls::sys_splice(
                 proc,
                 &mut host,
                 a1,
@@ -3732,7 +3850,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     n as i32
                 }
                 Err(e) => -(e as i32),
-            }
+            };
+            deliver_pending_signals(proc, &mut host);
+            result
         }
         293 => 0, // SYS_READAHEAD: advisory, always succeed
         297 => kernel_preadv(a1, a2 as *mut u8, a3, a4 as u32, a5), // SYS_PREADV2 (ignore flags in a6)
@@ -3740,21 +3860,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // -- Scheduling stubs (single-CPU Wasm) --
         237 => 0, // SYS_SCHED_SETAFFINITY: no-op (single CPU)
-        238 => {
-            // SYS_SCHED_GETAFFINITY: return a 1-bit cpuset
-            let size = a2 as usize;
-            let mask_ptr = a3 as *mut u8;
-            if size == 0 || mask_ptr.is_null() {
-                -(Errno::EINVAL as i32)
-            } else {
-                let mask = unsafe { slice::from_raw_parts_mut(mask_ptr, size) };
-                for b in mask.iter_mut() {
-                    *b = 0;
-                }
-                mask[0] = 1; // CPU 0 available
-                0
-            }
-        }
+        238 => kernel_sched_getaffinity(a1, args[1] as u32, a3 as *mut u8),
 
         // -- Memory/sync stubs --
         257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
@@ -3786,10 +3892,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let mut host = WasmHostIO;
                 let offset = args[2];
                 let len = args[3];
-                match syscalls::sys_fallocate(proc, &mut host, a1, offset, len) {
+                let result = match syscalls::sys_fallocate(proc, &mut host, a1, offset, len) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
-                }
+                };
+                deliver_pending_signals(proc, &mut host);
+                result
             }
         }
         323 => 0, // SYS_SYNC_FILE_RANGE: advisory, no-op
@@ -4494,11 +4602,16 @@ pub extern "C" fn kernel_get_fork_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
 /// Initialize kernel from serialized fork state (child side).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_init_from_fork(buf_ptr: *const u8, buf_len: u32, child_pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if table.get(child_pid).is_some() {
+        return -(Errno::EEXIST as i32);
+    }
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_fork_state(buf, child_pid) {
         Ok(proc) => {
-            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-            table.processes.insert(child_pid, proc);
+            if let Err(e) = table.insert_legacy_fork_process(proc) {
+                return -(e as i32);
+            }
             table.set_current_pid(child_pid);
             0
         }
@@ -4523,11 +4636,13 @@ pub extern "C" fn kernel_get_exec_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_init_from_exec(buf_ptr: *const u8, buf_len: u32, pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_exec_state(buf, pid) {
         Ok(proc) => {
-            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-            table.processes.insert(pid, proc);
+            if let Err(e) = table.replace_legacy_exec_process(pid, proc) {
+                return -(e as i32);
+            }
             table.set_current_pid(pid);
             0
         }
@@ -4665,6 +4780,43 @@ pub extern "C" fn kernel_write(fd: i32, buf_ptr: *const u8, buf_len: u32) -> i32
     let result = match syscalls::sys_write(proc, &mut host, fd, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Resolve one logical write's operation-wide byte budget before the host
+/// decomposes it into scratch-buffer-sized kernel calls.
+///
+/// `positioned != 0` selects the supplied offset (pwrite/pwritev); otherwise
+/// the open-file-description cursor and O_APPEND state are authoritative.
+/// The host binds the calling TID before entering this export so SIGXFSZ is
+/// queued for the thread that issued the operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_prepare_write_operation(
+    pid: u32,
+    fd: i32,
+    offset: i64,
+    requested_len: u32,
+    positioned: u32,
+) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.set_current_pid(pid);
+    let proc = match table.get_mut(pid) {
+        Some(proc) => proc,
+        None => return -(Errno::ESRCH as i64),
+    };
+    let mut host = WasmHostIO;
+    let result = match syscalls::write_operation_budget(
+        proc,
+        &mut host,
+        fd,
+        (positioned != 0).then_some(offset),
+        requested_len as usize,
+    ) {
+        Ok(len) => len as i64,
+        Err(e) => -(e as i64),
     };
     deliver_pending_signals(proc, &mut host);
     result
@@ -5267,6 +5419,24 @@ pub extern "C" fn kernel_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid
     result
 }
 
+/// Change symlink ownership without following the final link.
+fn kernel_lchown(
+    path_ptr: *const u8,
+    path_len: u32,
+    uid: u32,
+    gid: u32,
+) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_lchown(proc, &mut host, path, uid, gid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
 /// Check file accessibility. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32 {
@@ -5313,11 +5483,11 @@ pub extern "C" fn kernel_fchdir(fd: i32) -> i32 {
 pub extern "C" fn kernel_getcwd(buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    let result = match syscalls::sys_getcwd(proc, buf) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_getcwd(proc, &mut host, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -5572,7 +5742,7 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
                     -(Errno::EPERM as i32)
                 } else {
                     if sig > 0 {
-                        target.signals.raise_with_value(sig, si_value);
+                        target.raise_signal_with_value(sig, si_value);
                         deliver_pending_signals(target, &mut host);
                     }
                     0
@@ -5611,7 +5781,7 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
                 }
                 delivered = true;
                 if sig > 0 {
-                    target.signals.raise_with_value(sig, si_value);
+                    target.raise_signal_with_value(sig, si_value);
                     deliver_pending_signals(target, &mut host);
                 }
             }
@@ -5630,7 +5800,7 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
 
     // For local sigqueue, raise with value on the current process directly.
     if si_value != 0 && sig > 0 {
-        proc.signals.raise_with_value(sig, si_value);
+        proc.raise_signal_with_value(sig, si_value);
         deliver_pending_signals(proc, &mut host);
         return 0;
     }
@@ -5709,6 +5879,63 @@ fn kernel_sched_validate_pid(pid: i32) -> i32 {
     }
 }
 
+/// Resolve the Linux task selected by sched_getaffinity.
+///
+/// Process leaders use their PID as their TID. Worker threads live in their
+/// owning Process record, while pid 0 selects the exact calling thread. Limbo
+/// records are already reaped and no longer name a task.
+fn sched_affinity_target_process(
+    table: &crate::process_table::ProcessTable,
+    pid: i32,
+) -> Result<&Process, Errno> {
+    if pid == 0 {
+        let caller = table.get(table.current_pid()).ok_or(Errno::ESRCH)?;
+        let current_tid = table.current_tid();
+        if !matches!(caller.state, ProcessState::Running | ProcessState::Stopped) {
+            return Err(Errno::ESRCH);
+        }
+        if caller.is_main_thread(current_tid) || caller.get_thread(current_tid).is_some() {
+            return Ok(caller);
+        }
+        return Err(Errno::ESRCH);
+    }
+
+    if pid < 0 {
+        return Err(Errno::ESRCH);
+    }
+
+    table
+        .get_process_containing_task(pid as u32)
+        .ok_or(Errno::ESRCH)
+}
+
+/// Linux sched_getaffinity compatibility for Kandelo's one-CPU kernel.
+///
+/// Linux validates the unsigned byte length against one kernel-word mask,
+/// requires kernel-word alignment, and returns the number of bytes copied by
+/// the raw syscall. Musl converts that positive raw result to public success 0
+/// and zero-fills the caller's remaining cpu_set_t bytes.
+fn kernel_sched_getaffinity(pid: i32, cpusetsize: u32, mask_ptr: *mut u8) -> i32 {
+    const MASK_SIZE: u32 = wasm_posix_shared::SCHED_AFFINITY_MASK_SIZE;
+
+    if cpusetsize < MASK_SIZE || cpusetsize % MASK_SIZE != 0 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(error) = sched_affinity_target_process(table, pid) {
+        return -(error as i32);
+    }
+    if mask_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+
+    let mask = unsafe { slice::from_raw_parts_mut(mask_ptr, MASK_SIZE as usize) };
+    mask.fill(0);
+    mask[0] = 1;
+    MASK_SIZE as i32
+}
+
 /// sched_getparam — write scheduling parameters (sched_priority = 0) to param_ptr.
 /// struct sched_param starts with int sched_priority at offset 0.
 #[unsafe(no_mangle)]
@@ -5735,7 +5962,7 @@ pub extern "C" fn kernel_deliver_signal(sig: u32) -> i32 {
     if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
         return -(Errno::EINVAL as i32);
     }
-    proc.signals.raise(sig);
+    proc.raise_signal(sig);
     let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     0
@@ -5758,8 +5985,7 @@ pub extern "C" fn kernel_raise(sig: u32) -> i32 {
 /// process. POSIX requires that directed signals go to that thread's pending
 /// queue, not the process-wide shared queue.
 ///
-/// - `tid == 0` or `tid == pid` targets the main thread (process-level
-///   pending, same as `raise`).
+/// - `tid == 0` or `tid == pid` targets the main thread's directed queue.
 /// - Other `tid` values look up the thread in `Process::threads` and raise
 ///   on its own per-thread pending queue.
 /// - Unknown `tid` → `-ESRCH`.
@@ -5799,14 +6025,13 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
         return -(Errno::EINVAL as i32);
     }
 
-    // Main thread: route to process-level (shared) pending. This preserves
-    // existing behaviour for raise() on a single-threaded process.
+    // Main thread: use its directed queue rather than the process-shared set.
     if proc.is_main_thread(tid) {
         if sig > 0 {
             if si_code != 0 || si_value != 0 {
-                proc.signals.raise_with_value(sig, si_value);
+                proc.raise_for_thread_with_value(tid, sig, si_value);
             } else {
-                proc.signals.raise(sig);
+                proc.raise_for_thread(tid, sig);
             }
         }
         deliver_pending_signals(proc, &mut host);
@@ -5822,30 +6047,22 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
     // in-process signalling that uses `tkill(self_tid, sig)`; aligning with
     // the previous "tkill is raise" behaviour keeps those paths alive while
     // per-thread routing is still correct for genuinely-known TIDs.
-    match proc.get_thread_mut(tid) {
-        Some(t) => {
-            if sig > 0 {
-                if si_code != 0 || si_value != 0 {
-                    t.signals.raise_with_value(sig, si_value);
-                } else {
-                    t.signals.raise(sig);
-                }
+    if sig > 0 {
+        let directed = if si_code != 0 || si_value != 0 {
+            proc.raise_for_thread_with_value(tid, sig, si_value)
+        } else {
+            proc.raise_for_thread(tid, sig)
+        };
+        if !directed {
+            if si_code != 0 || si_value != 0 {
+                proc.raise_signal_with_value(sig, si_value);
+            } else {
+                proc.raise_signal(sig);
             }
-            deliver_pending_signals(proc, &mut host);
-            0
-        }
-        None => {
-            if sig > 0 {
-                if si_code != 0 || si_value != 0 {
-                    proc.signals.raise_with_value(sig, si_value);
-                } else {
-                    proc.signals.raise(sig);
-                }
-            }
-            deliver_pending_signals(proc, &mut host);
-            0
         }
     }
+    deliver_pending_signals(proc, &mut host);
+    0
 }
 
 /// Set signal action. act_ptr/oldact_ptr point to structs:
@@ -6037,7 +6254,8 @@ pub extern "C" fn kernel_utimensat(
     result
 }
 
-/// Remap memory. Returns MAP_FAILED (-1 as u32) since Wasm doesn't support this.
+/// Remap memory. Supports in-place resize and MREMAP_MAYMOVE; unsupported
+/// Linux-specific flag combinations are rejected by sys_mremap with EINVAL.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mremap(
     old_addr: usize,
@@ -6602,7 +6820,11 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let base = u32::from_le_bytes([iov[0], iov[1], iov[2], iov[3]]) as usize;
     let len = u32::from_le_bytes([iov[4], iov[5], iov[6], iov[7]]) as usize;
 
-    let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, len) };
+    let buf = if len == 0 {
+        &mut []
+    } else {
+        unsafe { slice::from_raw_parts_mut(base as *mut u8, len) }
+    };
 
     // Use recvfrom if msg_name is provided (to fill source address)
     let result = if name_ptr != 0 && name_len > 0 {
@@ -6955,7 +7177,8 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
         if unsafe { host_is_thread_worker() } != 0 {
             // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
             // Just set exit status and return — the glue will trap via unreachable.
-            proc.exit_status = status;
+            proc.exit_status = status & 0xff;
+            proc.exit_signal = 0;
             // Drop GKL guard before trapping
         } else {
             let mut host = WasmHostIO;
@@ -7047,6 +7270,13 @@ pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
     result
 }
 
+/// Return whether `flags` contains only the accept4 flags this kernel supports.
+fn accept4_flags_are_valid(flags: u32) -> bool {
+    use wasm_posix_shared::socket::{SOCK_CLOEXEC, SOCK_NONBLOCK};
+
+    flags & !(SOCK_CLOEXEC | SOCK_NONBLOCK) == 0
+}
+
 /// Accept a connection with flags. Returns new fd or negative errno.
 /// Flags: SOCK_CLOEXEC, SOCK_NONBLOCK (same values as socket()).
 #[unsafe(no_mangle)]
@@ -7062,6 +7292,10 @@ pub extern "C" fn kernel_accept4(
 
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
+    if !accept4_flags_are_valid(flags) {
+        deliver_pending_signals(proc, &mut host);
+        return -(Errno::EINVAL as i32);
+    }
     let result = match syscalls::sys_accept(proc, &mut host, fd) {
         Ok(new_fd) => {
             // Apply SOCK_CLOEXEC flag
@@ -7104,8 +7338,7 @@ pub extern "C" fn kernel_accept4(
                                         addrlen_buf.copy_from_slice(&2u32.to_le_bytes());
                                     }
                                 }
-                                _ => {
-                                    // Existing AF_INET logic
+                                crate::socket::SocketDomain::Inet => {
                                     let mut sa = [0u8; 16];
                                     sa[0] = 2; // AF_INET
                                     let port_be = sock.peer_port.to_be_bytes();
@@ -7120,6 +7353,19 @@ pub extern "C" fn kernel_accept4(
                                         unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
                                     addr_buf.copy_from_slice(&sa[..n]);
                                     addrlen_buf.copy_from_slice(&16u32.to_le_bytes());
+                                }
+                                crate::socket::SocketDomain::Inet6 => {
+                                    let mut sa = [0u8; 28];
+                                    sa[0] = 10; // AF_INET6
+                                    let port_be = sock.peer_port.to_be_bytes();
+                                    sa[2] = port_be[0];
+                                    sa[3] = port_be[1];
+                                    sa[8..24].copy_from_slice(&sock.peer_addr6);
+                                    let n = max_len.min(28);
+                                    let addr_buf =
+                                        unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
+                                    addr_buf.copy_from_slice(&sa[..n]);
+                                    addrlen_buf.copy_from_slice(&28u32.to_le_bytes());
                                 }
                             }
                         }
@@ -7153,7 +7399,7 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
             let family = u16::from_le_bytes([addr[0], addr[1]]);
             if family == 1 {
                 // AF_UNIX — try cross-process connect
-                match cross_process_unix_connect(proc, fd, addr) {
+                match cross_process_unix_connect(proc, &mut host, fd, addr) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
@@ -7167,6 +7413,12 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
                     }
                 } else {
                     -(Errno::ECONNREFUSED as i32)
+                }
+            } else if family == 10 && addr_len >= 28 {
+                // AF_INET6 loopback
+                match cross_process_loopback_connect6(proc, fd, addr) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
                 }
             } else {
                 -(Errno::ECONNREFUSED as i32)
@@ -7184,7 +7436,8 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
 /// target port, then creates global pipe pairs to connect the two processes.
 fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
-    use crate::socket::{SocketState, SocketType};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+    use wasm_posix_shared::socket::{IPPROTO_IPV6, IPV6_V6ONLY};
 
     let port = u16::from_be_bytes([addr[2], addr[3]]);
     let ip = [addr[4], addr[5], addr[6], addr[7]];
@@ -7192,23 +7445,20 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
     // Get the client socket info
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
-
-    // For UDP DGRAM connect, just record peer address (no cross-process search needed)
-    {
-        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-        if sock.sock_type == SocketType::Dgram {
-            let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-            client.state = SocketState::Connected;
-            client.peer_addr = ip;
-            client.peer_port = port;
-            return Ok(());
-        }
+    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if client_sock.domain != SocketDomain::Inet || client_sock.sock_type != SocketType::Stream {
+        return Err(Errno::ECONNREFUSED);
     }
 
     // Search ALL processes for a listener on the target port
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let my_pid = proc.pid;
+    // Do not read through `proc` after reborrowing the containing global
+    // process table.
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
 
     // Find the listener process and socket index
     let mut listener_pid: Option<u32> = None;
@@ -7227,7 +7477,16 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
                 if s.state == SocketState::Listening
                     && s.bind_port == port
                     && s.sock_type == SocketType::Stream
-                    && (s.bind_addr == [0, 0, 0, 0] || s.bind_addr == [127, 0, 0, 1])
+                    && match s.domain {
+                        SocketDomain::Inet => {
+                            s.bind_addr == [0, 0, 0, 0] || s.bind_addr == ip
+                        }
+                        SocketDomain::Inet6 => {
+                            s.bind_addr6 == [0; 16]
+                                && s.get_option(IPPROTO_IPV6, IPV6_V6ONLY).unwrap_or(0) == 0
+                        }
+                        SocketDomain::Unix => false,
+                    }
                 {
                     listener_pid = Some(pid);
                     listener_sock_idx = Some(idx);
@@ -7296,7 +7555,11 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
 
     let pc = crate::socket::PendingConnection {
         peer_addr: client_addr,
+        peer_addr6: [0; 16],
+        peer_is_ipv6: false,
         peer_port: client_port,
+        peer_pid: 0,
+        peer_sock_idx: None,
         recv_pipe_idx: pipe_a_idx, // server reads client's writes
         send_pipe_idx: pipe_b_idx, // server writes to client's reads
     };
@@ -7311,28 +7574,182 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
     Ok(())
 }
 
+/// Cross-process AF_INET6 loopback connect. The listener's shared backlog
+/// carries a native IPv6 peer address so accept/getpeername retain the family
+/// and do not collapse the connection onto the IPv4 host bridge.
+fn cross_process_loopback_connect6(
+    proc: &mut Process,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
+    use crate::pipe::PipeBuffer;
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+
+    let port = u16::from_be_bytes([addr[2], addr[3]]);
+    let mut ip = [0u8; 16];
+    ip.copy_from_slice(&addr[8..24]);
+    let loopback = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    if ip == [0; 16] {
+        ip = loopback;
+    }
+    if ip != loopback {
+        return Err(Errno::ECONNREFUSED);
+    }
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if client_sock.domain != SocketDomain::Inet6 || client_sock.sock_type != SocketType::Stream {
+        return Err(Errno::ECONNREFUSED);
+    }
+
+    let my_pid = proc.pid;
+    // Do not read through `proc` after reborrowing the containing global
+    // process table.
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut listener = None;
+    for (&pid, target_proc) in table.processes.iter().rev() {
+        if pid == my_pid {
+            continue;
+        }
+        for idx in 0..target_proc.sockets.len() {
+            let Some(sock) = target_proc.sockets.get(idx) else {
+                continue;
+            };
+            if sock.domain == SocketDomain::Inet6
+                && sock.sock_type == SocketType::Stream
+                && sock.state == SocketState::Listening
+                && sock.bind_port == port
+                && (sock.bind_addr6 == [0; 16] || sock.bind_addr6 == ip)
+            {
+                listener = Some((pid, idx));
+                break;
+            }
+        }
+        if listener.is_some() {
+            break;
+        }
+    }
+    let (listener_pid, listener_sock_idx) = listener.ok_or(Errno::ECONNREFUSED)?;
+
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+
+    let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+    let client_sock = client_proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    let client_addr6 = if client_sock.bind_addr6 == [0; 16] {
+        loopback
+    } else {
+        client_sock.bind_addr6
+    };
+    let mut client_port = client_sock.bind_port;
+    if client_port == 0 {
+        client_port = client_proc.next_ephemeral_port;
+        client_proc.next_ephemeral_port = client_proc.next_ephemeral_port.wrapping_add(1);
+        if client_proc.next_ephemeral_port == 0 {
+            client_proc.next_ephemeral_port = 49152;
+        }
+    }
+    let client = client_proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    client.send_buf_idx = Some(pipe_a_idx);
+    client.recv_buf_idx = Some(pipe_b_idx);
+    client.state = SocketState::Connected;
+    client.peer_addr6 = ip;
+    client.peer_port = port;
+    client.global_pipes = true;
+    if client.bind_port == 0 {
+        client.bind_addr6 = loopback;
+        client.bind_port = client_port;
+    }
+
+    let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ESRCH)?;
+    let listener_sock = listener_proc
+        .sockets
+        .get(listener_sock_idx)
+        .ok_or(Errno::ECONNREFUSED)?;
+    let shared_idx = listener_sock
+        .shared_backlog_idx
+        .ok_or(Errno::ECONNREFUSED)?;
+    let accept_wake_idx = listener_sock.accept_wake_idx;
+    let pending = crate::socket::PendingConnection {
+        peer_addr: [0; 4],
+        peer_addr6: client_addr6,
+        peer_is_ipv6: true,
+        peer_port: client_port,
+        peer_pid: 0,
+        peer_sock_idx: None,
+        recv_pipe_idx: pipe_a_idx,
+        send_pipe_idx: pipe_b_idx,
+    };
+    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pending) } {
+        return Err(Errno::ECONNREFUSED);
+    }
+    if let Some(idx) = accept_wake_idx {
+        crate::wakeup::push_accept(idx);
+    }
+    Ok(())
+}
+
 /// Cross-process AF_UNIX connect.
 ///
 /// Looks up the target path in the global UnixSocketRegistry, then creates
 /// global pipe pairs to connect the client (current process) to the listener
 /// (possibly in a different process).
-fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
+fn cross_process_unix_connect(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
-    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
 
     // Parse path from sockaddr_un
     if addr.len() < 3 {
         return Err(Errno::EINVAL);
     }
     let path_bytes = &addr[2..];
-    let path_end = path_bytes
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(path_bytes.len());
-    if path_end == 0 {
+    let resolved = if path_bytes.first().copied() == Some(0) {
+        if path_bytes.len() < 2 {
+            return Err(Errno::ECONNREFUSED);
+        }
+        path_bytes.to_vec()
+    } else {
+        let path_end = path_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_bytes.len());
+        if path_end == 0 {
+            return Err(Errno::ECONNREFUSED);
+        }
+        syscalls::resolve_existing_namespace_path(proc, host, &path_bytes[..path_end])?
+    };
+
+    // Only AF_UNIX stream sockets can enter the cross-process stream-pipe
+    // connection path. In particular, never reinterpret a datagram socket as
+    // a stream merely because its registry lookup found another process.
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let client = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    // sys_connect already returned ECONNREFUSED for this attempt. Datagram
+    // routing is deliberately not retried through the stream-only
+    // cross-process path: doing so would rewrite the truthful datagram error
+    // to EPROTOTYPE at the exported syscall boundary.
+    if client.domain == SocketDomain::Unix && client.sock_type == SocketType::Dgram {
         return Err(Errno::ECONNREFUSED);
     }
-    let resolved = crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd);
+    if client.domain != SocketDomain::Unix || client.sock_type != SocketType::Stream {
+        return Err(Errno::EPROTOTYPE);
+    }
 
     // Look up in global registry
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -7340,19 +7757,11 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     let listener_pid = entry.pid;
     let listener_sock_idx = entry.sock_idx;
 
-    // Get client socket info
-    let entry = proc.fd_table.get(fd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
-
-    // Allocate global pipe pair
-    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
-    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
-
     // Access process table for cross-process operation
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let my_pid = proc.pid;
+    // Do not read through `proc` after reborrowing the containing global
+    // process table.
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
 
     // Verify listener exists and is listening
     let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ECONNREFUSED)?;
@@ -7360,25 +7769,38 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         .sockets
         .get(listener_sock_idx)
         .ok_or(Errno::ECONNREFUSED)?;
-    if listener.state != SocketState::Listening {
+    if listener.domain != SocketDomain::Unix
+        || listener.sock_type != SocketType::Stream
+        || listener.state != SocketState::Listening
+    {
         return Err(Errno::ECONNREFUSED);
     }
-
-    // Create accepted socket in the listener's process
-    let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
-    accepted_sock.state = SocketState::Connected;
-    accepted_sock.recv_buf_idx = Some(pipe_a_idx);
-    accepted_sock.send_buf_idx = Some(pipe_b_idx);
-    accepted_sock.global_pipes = true;
-    let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
-
-    // Push to listener's backlog
-    let listener = listener_proc
-        .sockets
-        .get_mut(listener_sock_idx)
-        .ok_or(Errno::EBADF)?;
-    listener.listen_backlog.push(accepted_idx);
+    let shared_idx = listener
+        .shared_backlog_idx
+        .ok_or(Errno::ECONNREFUSED)?;
     let accept_wake_idx = listener.accept_wake_idx;
+
+    // Allocate pipes only after both endpoints have been validated, so a
+    // stale or wrong-type registry entry cannot leak global pipe slots.
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+
+    let pending = crate::socket::PendingConnection {
+        peer_addr: [0; 4],
+        peer_addr6: [0; 16],
+        peer_is_ipv6: false,
+        peer_port: 0,
+        peer_pid: my_pid,
+        peer_sock_idx: Some(sock_idx),
+        recv_pipe_idx: pipe_a_idx,
+        send_pipe_idx: pipe_b_idx,
+    };
+    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pending) } {
+        pipe_table.discard_unclaimed(pipe_a_idx);
+        pipe_table.discard_unclaimed(pipe_b_idx);
+        return Err(Errno::ECONNREFUSED);
+    }
 
     // Set up client socket (in current process)
     let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
@@ -7386,6 +7808,7 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     client.send_buf_idx = Some(pipe_a_idx);
     client.recv_buf_idx = Some(pipe_b_idx);
     client.state = SocketState::Connected;
+    client.peer_idx = None;
     client.global_pipes = true;
 
     if let Some(idx) = accept_wake_idx {
@@ -7393,6 +7816,74 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod socket_wrapper_tests {
+    use super::{WasmHostIO, cross_process_unix_connect, write_getsockopt_bytes};
+    use crate::errno::Errno;
+    use crate::fd::OpenFileDescRef;
+    use crate::ofd::FileType;
+    use crate::process::Process;
+    use crate::socket::{SocketDomain, SocketInfo, SocketType};
+    use wasm_posix_shared::flags::O_RDWR;
+
+    #[test]
+    fn unix_datagram_cross_process_retry_preserves_connrefused() {
+        let mut proc = Process::new(9040);
+        let sock_idx =
+            proc.sockets
+                .alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Socket,
+            O_RDWR,
+            -((sock_idx as i64) + 1),
+            b"/dev/socket".to_vec(),
+        );
+        let fd = proc
+            .fd_table
+            .alloc(OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        // Abstract names do not touch HostIO, which keeps this wrapper test
+        // focused on the retry's socket-type guard.
+        let addr = [1, 0, 0, b'm', b'i', b's', b's'];
+        let mut host = WasmHostIO;
+
+        assert_eq!(
+            cross_process_unix_connect(&mut proc, &mut host, fd, &addr),
+            Err(Errno::ECONNREFUSED),
+        );
+    }
+
+    #[test]
+    fn getsockopt_copy_honors_short_and_unaligned_lengths() {
+        let mut out = [0xaau8; 4];
+        let mut length = 2u32;
+        write_getsockopt_bytes(out.as_mut_ptr(), &mut length, &[1, 2, 3, 4]).unwrap();
+        assert_eq!(out, [1, 2, 0xaa, 0xaa]);
+        assert_eq!(length, 2);
+
+        let mut unaligned_storage = [0u8; 5];
+        unaligned_storage[1..5].copy_from_slice(&3u32.to_ne_bytes());
+        let unaligned_length = unsafe { unaligned_storage.as_mut_ptr().add(1).cast::<u32>() };
+        write_getsockopt_bytes(out.as_mut_ptr(), unaligned_length, &[5, 6, 7, 8]).unwrap();
+        assert_eq!(&out[..3], &[5, 6, 7]);
+        assert_eq!(&unaligned_storage[1..5], &3u32.to_ne_bytes());
+    }
+
+    #[test]
+    fn getsockopt_copy_rejects_null_guest_pointers() {
+        let mut out = [0u8; 4];
+        let mut length = 4u32;
+        assert_eq!(
+            write_getsockopt_bytes(core::ptr::null_mut(), &mut length, &[1, 2, 3, 4]),
+            Err(Errno::EFAULT),
+        );
+        assert_eq!(
+            write_getsockopt_bytes(out.as_mut_ptr(), core::ptr::null_mut(), &[1, 2, 3, 4]),
+            Err(Errno::EFAULT),
+        );
+    }
 }
 
 /// Send data on a socket. Returns bytes sent or negative errno.
@@ -7414,7 +7905,13 @@ pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: 
 pub extern "C" fn kernel_recv(fd: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    // A zero-length output is not assigned scratch space by the host. Avoid
+    // treating the unchanged guest pointer as a kernel-memory pointer.
+    let buf = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) }
+    };
     let result = match syscalls::sys_recv(proc, &mut host, fd, buf, flags) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
@@ -7436,6 +7933,30 @@ pub extern "C" fn kernel_shutdown(fd: i32, how: u32) -> i32 {
     result
 }
 
+/// Copy a socket option to the caller without exceeding its guest buffer.
+///
+/// `optlen` is a value-result parameter: the input bounds the copy and the
+/// output reports the number of bytes actually copied, including truncation.
+/// Both pointers are required for these option shapes.
+fn write_getsockopt_bytes(
+    optval_ptr: *mut u8,
+    optlen_ptr: *mut u32,
+    value: &[u8],
+) -> Result<(), Errno> {
+    if optval_ptr.is_null() || optlen_ptr.is_null() {
+        return Err(Errno::EFAULT);
+    }
+
+    let available = unsafe { core::ptr::read_unaligned(optlen_ptr) as usize };
+    let write_len = available.min(value.len());
+    if write_len > 0 {
+        let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+        out.copy_from_slice(&value[..write_len]);
+    }
+    unsafe { core::ptr::write_unaligned(optlen_ptr, write_len as u32) };
+    Ok(())
+}
+
 /// Get socket option. Returns 0 on success, negative errno on error.
 /// Writes the option value to optval_ptr. optlen_ptr points to buffer size
 /// on input, receives actual written size on output.
@@ -7453,25 +7974,28 @@ pub extern "C" fn kernel_getsockopt(
     // Handle struct tcp_info (TCP_INFO)
     if level == IPPROTO_TCP && optname == TCP_INFO {
         let result = match syscalls::sys_getsockopt_tcp_info(proc, fd) {
-            Ok(info_buf) => {
-                let avail = if !optlen_ptr.is_null() {
-                    unsafe { *optlen_ptr as usize }
-                } else {
-                    syscalls::TCP_INFO_SIZE
-                };
-                let write_len = if avail < syscalls::TCP_INFO_SIZE {
-                    avail
-                } else {
-                    syscalls::TCP_INFO_SIZE
-                };
-                let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
-                out.copy_from_slice(&info_buf[..write_len]);
-                if !optlen_ptr.is_null() {
-                    unsafe {
-                        *optlen_ptr = write_len as u32;
-                    }
+            Ok(info_buf) => match write_getsockopt_bytes(optval_ptr, optlen_ptr, &info_buf) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            },
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle struct linger (SO_LINGER).
+    if level == SOL_SOCKET && optname == SO_LINGER {
+        let result = match syscalls::sys_getsockopt_linger(proc, fd) {
+            Ok((l_onoff, l_linger)) => {
+                let mut tmp = [0u8; 8];
+                tmp[0..4].copy_from_slice(&l_onoff.to_le_bytes());
+                tmp[4..8].copy_from_slice(&l_linger.to_le_bytes());
+                match write_getsockopt_bytes(optval_ptr, optlen_ptr, &tmp) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
                 }
-                0
             }
             Err(e) => -(e as i32),
         };
@@ -7480,21 +8004,57 @@ pub extern "C" fn kernel_getsockopt(
         return result;
     }
 
-    // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO)
-    if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
-        let result = match syscalls::sys_getsockopt_timeout(proc, fd, optname) {
+    // Handle string-valued SO_BINDTODEVICE.
+    if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
+        let result = match syscalls::sys_getsockopt_bindtodevice(proc, fd) {
+            Ok(name) => {
+                let mut value = name;
+                if !value.is_empty() {
+                    value.push(0);
+                }
+                match write_getsockopt_bytes(optval_ptr, optlen_ptr, &value) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued TCP_CONGESTION.
+    if level == IPPROTO_TCP && optname == TCP_CONGESTION {
+        let result = match syscalls::sys_getsockopt_tcp_congestion(proc, fd) {
+            Ok(mut name) => {
+                name.push(0);
+                match write_getsockopt_bytes(optval_ptr, optlen_ptr, &name) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO), accepting
+    // both musl's wasm32 time64 and wasm64 long64 option numbers.
+    if let Some(timeout_optname) = syscalls::canonical_socket_timeout_optname(level, optname) {
+        let result = match syscalls::sys_getsockopt_timeout(proc, fd, timeout_optname) {
             Ok(timeout_us) => {
                 let tv_sec = (timeout_us / 1_000_000) as i64;
                 let tv_usec = (timeout_us % 1_000_000) as i64;
-                let buf = unsafe { slice::from_raw_parts_mut(optval_ptr, 16) };
-                buf[0..8].copy_from_slice(&tv_sec.to_le_bytes());
-                buf[8..16].copy_from_slice(&tv_usec.to_le_bytes());
-                if !optlen_ptr.is_null() {
-                    unsafe {
-                        *optlen_ptr = 16;
-                    }
+                let mut value = [0u8; 16];
+                value[0..8].copy_from_slice(&tv_sec.to_le_bytes());
+                value[8..16].copy_from_slice(&tv_usec.to_le_bytes());
+                match write_getsockopt_bytes(optval_ptr, optlen_ptr, &value) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
                 }
-                0
             }
             Err(e) => -(e as i32),
         };
@@ -7505,17 +8065,10 @@ pub extern "C" fn kernel_getsockopt(
 
     let result = match syscalls::sys_getsockopt(proc, fd, level, optname) {
         Ok(val) => {
-            // Write as u32 (4 bytes) for int-valued options
-            let val_ptr = optval_ptr as *mut u32;
-            unsafe {
-                *val_ptr = val;
+            match write_getsockopt_bytes(optval_ptr, optlen_ptr, &val.to_le_bytes()) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
             }
-            if !optlen_ptr.is_null() {
-                unsafe {
-                    *optlen_ptr = 4;
-                }
-            }
-            0
         }
         Err(e) => -(e as i32),
     };
@@ -7538,8 +8091,9 @@ pub extern "C" fn kernel_setsockopt(
     let (_gkl, proc) = unsafe { get_process() };
 
     // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO).
-    // On wasm32 time64: struct timeval = { i64 tv_sec, i64 tv_usec } = 16 bytes.
-    if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
+    // Both supported ABIs use two 64-bit fields here: wasm32 uses time64,
+    // while wasm64 uses native 64-bit long. Their option numbers differ.
+    if let Some(timeout_optname) = syscalls::canonical_socket_timeout_optname(level, optname) {
         if optval_ptr.is_null() || optlen < 16 {
             let mut host = WasmHostIO;
             deliver_pending_signals(proc, &mut host);
@@ -7554,7 +8108,7 @@ pub extern "C" fn kernel_setsockopt(
             return -(Errno::EINVAL as i32);
         }
         let timeout_us = (tv_sec as u64) * 1_000_000 + (tv_usec as u64);
-        let result = match syscalls::sys_setsockopt_timeout(proc, fd, optname, timeout_us) {
+        let result = match syscalls::sys_setsockopt_timeout(proc, fd, timeout_optname, timeout_us) {
             Ok(()) => 0,
             Err(e) => -(e as i32),
         };
@@ -7563,6 +8117,181 @@ pub extern "C" fn kernel_setsockopt(
         return result;
     }
 
+    // Handle struct linger (SO_LINGER).
+    if level == SOL_SOCKET && optname == SO_LINGER {
+        if optval_ptr.is_null() || optlen < 8 {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EINVAL as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, 8) };
+        let l_onoff = i32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let l_linger = i32::from_le_bytes(buf[4..8].try_into().unwrap());
+        let result = match syscalls::sys_setsockopt_linger(proc, fd, l_onoff, l_linger) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued SO_BINDTODEVICE.
+    if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+        let result = match syscalls::sys_setsockopt_bindtodevice(proc, fd, buf) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued TCP_CONGESTION.
+    if level == IPPROTO_TCP && optname == TCP_CONGESTION {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+        let result = match syscalls::sys_setsockopt_tcp_congestion(proc, fd, buf) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle IPv4 multicast membership/source-filter options. These options
+    // carry struct ip_mreq/ip_mreq_source/group_req/group_source_req payloads,
+    // not plain integers, so the wrapper must parse the guest ABI buffer.
+    if level == IPPROTO_IP
+        && matches!(
+            optname,
+            IP_ADD_MEMBERSHIP
+                | IP_DROP_MEMBERSHIP
+                | IP_BLOCK_SOURCE
+                | IP_UNBLOCK_SOURCE
+                | IP_ADD_SOURCE_MEMBERSHIP
+                | IP_DROP_SOURCE_MEMBERSHIP
+                | MCAST_JOIN_GROUP
+                | MCAST_LEAVE_GROUP
+                | MCAST_BLOCK_SOURCE
+                | MCAST_UNBLOCK_SOURCE
+                | MCAST_JOIN_SOURCE_GROUP
+                | MCAST_LEAVE_SOURCE_GROUP
+        )
+    {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+
+        let parse_sockaddr_in_at = |offset: usize| -> Result<[u8; 4], Errno> {
+            if buf.len() < offset + 8 {
+                return Err(Errno::EINVAL);
+            }
+            let family = u16::from_le_bytes([buf[offset], buf[offset + 1]]);
+            if family as u32 != AF_INET {
+                return Err(Errno::EAFNOSUPPORT);
+            }
+            Ok([
+                buf[offset + 4],
+                buf[offset + 5],
+                buf[offset + 6],
+                buf[offset + 7],
+            ])
+        };
+
+        let parse_ifindex_at = |offset: usize| -> Result<[u8; 4], Errno> {
+            if buf.len() < offset + 4 {
+                return Err(Errno::EINVAL);
+            }
+            let ifindex = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
+            syscalls::ipv4_multicast_interface_from_index(ifindex)
+        };
+
+        let parsed = (|| -> Result<([u8; 4], [u8; 4], Option<[u8; 4]>), Errno> {
+            match optname {
+                IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP => {
+                    if buf.len() < 8 {
+                        Err(Errno::EINVAL)
+                    } else {
+                        Ok((
+                            [buf[0], buf[1], buf[2], buf[3]],
+                            [buf[4], buf[5], buf[6], buf[7]],
+                            None,
+                        ))
+                    }
+                }
+                IP_BLOCK_SOURCE
+                | IP_UNBLOCK_SOURCE
+                | IP_ADD_SOURCE_MEMBERSHIP
+                | IP_DROP_SOURCE_MEMBERSHIP => {
+                    if buf.len() < 12 {
+                        Err(Errno::EINVAL)
+                    } else {
+                        Ok((
+                            [buf[0], buf[1], buf[2], buf[3]],
+                            [buf[4], buf[5], buf[6], buf[7]],
+                            Some([buf[8], buf[9], buf[10], buf[11]]),
+                        ))
+                    }
+                }
+                MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP => {
+                    let (group_offset, _) =
+                        syscalls::multicast_group_request_offsets(buf, false)?;
+                    Ok((
+                        parse_sockaddr_in_at(group_offset)?,
+                        parse_ifindex_at(0)?,
+                        None,
+                    ))
+                }
+                MCAST_BLOCK_SOURCE
+                | MCAST_UNBLOCK_SOURCE
+                | MCAST_JOIN_SOURCE_GROUP
+                | MCAST_LEAVE_SOURCE_GROUP => {
+                    let (group_offset, source_offset) =
+                        syscalls::multicast_group_request_offsets(buf, true)?;
+                    Ok((
+                        parse_sockaddr_in_at(group_offset)?,
+                        parse_ifindex_at(0)?,
+                        Some(parse_sockaddr_in_at(
+                            source_offset.expect("source request has source offset"),
+                        )?),
+                    ))
+                }
+                _ => unreachable!(),
+            }
+        })();
+
+        let result = match parsed.and_then(|(group, interface_addr, source)| {
+            syscalls::sys_setsockopt_ipv4_multicast(
+                proc,
+                fd,
+                optname,
+                group,
+                interface_addr,
+                source,
+            )
+        }) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
     // Read first 4 bytes as u32 value (covers most int-valued options)
     let optval = if !optval_ptr.is_null() && optlen >= 4 {
         let buf = unsafe { slice::from_raw_parts(optval_ptr, 4) };
@@ -7641,7 +8370,14 @@ pub extern "C" fn kernel_recvfrom(
 ) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    // The generic host marshaller leaves a zero-sized pointer unadjusted.
+    // Construct a real empty slice instead of interpreting that guest-memory
+    // address inside the kernel instance.
+    let buf = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) }
+    };
     // addrlen_ptr is a channel-rewritten pointer to a u32 containing the buffer size
     let addr_len = if !addrlen_ptr.is_null() {
         unsafe { *addrlen_ptr }
@@ -8026,7 +8762,7 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
             break 'done -(Errno::EINVAL as i32);
         }
 
-        let mut total: usize = 0;
+        let mut buffers = Vec::with_capacity(iovcnt as usize);
         for i in 0..iovcnt as usize {
             let iov = unsafe { iov_ptr.add(i * 8) };
             let base = unsafe { u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)]) };
@@ -8036,23 +8772,12 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
             if len == 0 {
                 continue;
             }
-            let buf = unsafe { slice::from_raw_parts(base as *const u8, len as usize) };
-            match syscalls::sys_write(proc, &mut host, fd, buf) {
-                Ok(n) => {
-                    total += n;
-                    if n < len as usize {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if total > 0 {
-                        break 'done total as i32;
-                    }
-                    break 'done -(e as i32);
-                }
-            }
+            buffers.push(unsafe { slice::from_raw_parts(base as *const u8, len as usize) });
         }
-        total as i32
+        match syscalls::sys_writev(proc, &mut host, fd, &buffers) {
+            Ok(n) => n as i32,
+            Err(e) => -(e as i32),
+        }
     };
     deliver_pending_signals(proc, &mut host);
     result
@@ -8179,8 +8904,7 @@ pub extern "C" fn kernel_pwritev(
             break 'done -(Errno::EINVAL as i32);
         }
 
-        let mut total: usize = 0;
-        let mut cur_offset = offset;
+        let mut buffers = Vec::with_capacity(iovcnt as usize);
         for i in 0..iovcnt as usize {
             let iov = unsafe { iov_ptr.add(i * 8) };
             let base = unsafe { u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)]) };
@@ -8190,24 +8914,12 @@ pub extern "C" fn kernel_pwritev(
             if len == 0 {
                 continue;
             }
-            let buf = unsafe { slice::from_raw_parts(base as *const u8, len as usize) };
-            match syscalls::sys_pwrite(proc, &mut host, fd, buf, cur_offset) {
-                Ok(n) => {
-                    total += n;
-                    cur_offset += n as i64;
-                    if n < len as usize {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if total > 0 {
-                        break 'done total as i32;
-                    }
-                    break 'done -(e as i32);
-                }
-            }
+            buffers.push(unsafe { slice::from_raw_parts(base as *const u8, len as usize) });
         }
-        total as i32
+        match syscalls::sys_pwritev(proc, &mut host, fd, &buffers, offset) {
+            Ok(n) => n as i32,
+            Err(e) => -(e as i32),
+        }
     };
     deliver_pending_signals(proc, &mut host);
     result
@@ -8589,9 +9301,12 @@ pub extern "C" fn kernel_setegid(egid: u32) -> i32 {
 // Phase 12: getrusage
 // ---------------------------------------------------------------------------
 
-/// getrusage — get resource usage. Writes 144-byte rusage struct.
+/// getrusage — get resource usage. Writes the shared fixed-width wire record.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getrusage(who: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    if buf_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
     let (_gkl, proc) = unsafe { get_process() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_getrusage(proc, who, buf) {
@@ -8996,10 +9711,85 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
 // POSIX timers (timer_create / timer_settime / timer_gettime / etc.)
 // ---------------------------------------------------------------------------
 
-/// SIGEV_SIGNAL = 0, SIGEV_NONE = 1.
+/// Kernel-facing sigevent notification modes used by musl.
 const SIGEV_SIGNAL: u32 = 0;
+const SIGEV_NONE: u32 = 1;
+/// Linux extension used internally by musl to implement POSIX SIGEV_THREAD.
+const SIGEV_THREAD_ID: u32 = 4;
 /// TIMER_ABSTIME flag for timer_settime.
 const TIMER_ABSTIME: i32 = 1;
+
+fn timer_clock_to_host_clock(clock_id: u32) -> Option<u32> {
+    use wasm_posix_shared::clock::*;
+    match clock_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => Some(clock_id),
+        CLOCK_BOOTTIME => Some(CLOCK_MONOTONIC),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod posix_timer_tests {
+    use super::*;
+    use wasm_posix_shared::clock::*;
+
+    #[test]
+    fn boottime_timers_use_monotonic_host_clock() {
+        assert_eq!(timer_clock_to_host_clock(CLOCK_BOOTTIME), Some(CLOCK_MONOTONIC));
+    }
+
+    #[test]
+    fn timer_create_rejects_unsupported_clock_ids() {
+        assert_eq!(timer_clock_to_host_clock(CLOCK_THREAD_CPUTIME_ID), None);
+        assert_eq!(timer_clock_to_host_clock(99), None);
+    }
+
+    fn directed_timer(target_tid: u32) -> crate::process::PosixTimerState {
+        crate::process::PosixTimerState {
+            clock_id: CLOCK_MONOTONIC,
+            sigev_signo: 10,
+            sigev_value: 77,
+            sigev_notify: SIGEV_THREAD_ID,
+            sigev_tid: target_tid,
+            interval_sec: 0,
+            interval_nsec: 0,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: false,
+            overrun_current: 0,
+            overrun_last: 0,
+        }
+    }
+
+    #[test]
+    fn directed_timer_fire_targets_main_and_worker_queues_exactly() {
+        let mut proc = Process::new(41);
+        proc.add_thread(crate::process::ThreadInfo::new(42, 0, 0, 0));
+        proc.posix_timers.push(Some(directed_timer(41)));
+        proc.posix_timers.push(Some(directed_timer(42)));
+
+        assert_eq!(queue_posix_timer_fire(&mut proc, 0), 41);
+        assert!(proc.main_thread_signals.is_pending(10));
+        assert!(!proc.get_thread(42).unwrap().signals.is_pending(10));
+
+        assert_eq!(queue_posix_timer_fire(&mut proc, 1), 42);
+        assert!(proc.get_thread(42).unwrap().signals.is_pending(10));
+    }
+
+    #[test]
+    fn directed_timer_fire_rejects_a_target_that_died_after_create() {
+        let mut proc = Process::new(41);
+        proc.add_thread(crate::process::ThreadInfo::new(42, 0, 0, 0));
+        proc.posix_timers.push(Some(directed_timer(42)));
+        proc.remove_thread(42);
+
+        assert_eq!(queue_posix_timer_fire(&mut proc, 0), -(Errno::ESRCH as i32));
+        assert!(!proc.posix_timers[0]
+            .as_ref()
+            .unwrap()
+            .notification_pending);
+    }
+}
 
 /// timer_create(clock_id, sigevent_ptr, timerid_ptr)
 /// musl sends ksigevent = {sigev_value(i32), sigev_signo(i32), sigev_notify(i32), sigev_tid(i32)} = 16 bytes.
@@ -9014,19 +9804,28 @@ pub extern "C" fn kernel_timer_create(
 
     let (_gkl, proc) = unsafe { get_process() };
 
+    let host_clock_id = match timer_clock_to_host_clock(clock_id) {
+        Some(id) => id,
+        None => return -(Errno::EINVAL as i32),
+    };
+
     // Parse sigevent (default: SIGEV_SIGNAL with SIGALRM)
-    let (sigev_signo, sigev_value, sigev_notify) = if sevp_ptr.is_null() {
-        (14u32, 0i32, SIGEV_SIGNAL) // default: SIGALRM
+    let (sigev_signo, sigev_value, sigev_notify, sigev_tid) = if sevp_ptr.is_null() {
+        (14u32, 0i32, SIGEV_SIGNAL, 0u32) // default: SIGALRM
     } else {
         let buf = unsafe { slice::from_raw_parts(sevp_ptr, 16) };
         let value = i32::from_le_bytes(buf[0..4].try_into().unwrap());
         let signo = i32::from_le_bytes(buf[4..8].try_into().unwrap()) as u32;
         let notify = i32::from_le_bytes(buf[8..12].try_into().unwrap()) as u32;
-        (signo, value, notify)
+        let tid = i32::from_le_bytes(buf[12..16].try_into().unwrap()) as u32;
+        (signo, value, notify, tid)
     };
 
-    // Only SIGEV_SIGNAL and SIGEV_NONE are supported
-    if sigev_notify != SIGEV_SIGNAL && sigev_notify != 1 {
+    let sigev_signo = match normalize_posix_timer_signo(sigev_notify, sigev_signo) {
+        Ok(signo) => signo,
+        Err(errno) => return -(errno as i32),
+    };
+    if sigev_notify == SIGEV_THREAD_ID && !proc.is_live_explicit_tid(sigev_tid) {
         return -(Errno::EINVAL as i32);
     }
 
@@ -9050,14 +9849,18 @@ pub extern "C" fn kernel_timer_create(
     };
 
     proc.posix_timers[timer_id] = Some(PosixTimerState {
-        clock_id,
+        clock_id: host_clock_id,
         sigev_signo,
         sigev_value,
+        sigev_notify,
+        sigev_tid,
         interval_sec: 0,
         interval_nsec: 0,
         value_sec: 0,
         value_nsec: 0,
-        overrun: 0,
+        notification_pending: false,
+        overrun_current: 0,
+        overrun_last: 0,
     });
 
     if !timerid_ptr.is_null() {
@@ -9069,6 +9872,71 @@ pub extern "C" fn kernel_timer_create(
     let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     0
+}
+
+/// Queue one POSIX timer expiration in the timer owner's signal state.
+///
+/// The host owns wall-clock scheduling, but the kernel owns notification
+/// semantics and siginfo metadata. Return values tell the host which blocked
+/// signal-wait channel to wake:
+/// - positive TID: thread-directed `SIGEV_THREAD_ID`
+/// - zero: process-wide `SIGEV_SIGNAL`
+/// - negative: no notification was queued (SIGEV_NONE, overrun, or error)
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_posix_timer_fire(pid: u32, timer_id: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(proc) => proc,
+        None => return -(Errno::ESRCH as i32),
+    };
+    queue_posix_timer_fire(proc, timer_id)
+}
+
+fn queue_posix_timer_fire(proc: &mut Process, timer_id: u32) -> i32 {
+    let (notify, target_tid, signo, value) = {
+        let timer = match proc.posix_timers.get_mut(timer_id as usize) {
+            Some(Some(timer)) => timer,
+            _ => return -(Errno::EINVAL as i32),
+        };
+        if timer.sigev_notify == SIGEV_NONE {
+            return -(Errno::EAGAIN as i32);
+        }
+        if crate::signal::should_discard_pending(
+            timer.sigev_signo,
+            &proc.signals.get_handler(timer.sigev_signo),
+        ) {
+            return -(Errno::EAGAIN as i32);
+        }
+        if timer.notification_pending {
+            timer.overrun_current = timer.overrun_current.saturating_add(1);
+            return -(Errno::EAGAIN as i32);
+        }
+        timer.notification_pending = true;
+        (
+            timer.sigev_notify,
+            timer.sigev_tid,
+            timer.sigev_signo,
+            timer.sigev_value,
+        )
+    };
+
+    match notify {
+        SIGEV_SIGNAL => {
+            proc.signals.raise_timer(signo, value, timer_id);
+            0
+        }
+        SIGEV_THREAD_ID => {
+            if proc.raise_timer_for_thread(target_tid, signo, value, timer_id) {
+                target_tid as i32
+            } else {
+                if let Some(Some(timer)) = proc.posix_timers.get_mut(timer_id as usize) {
+                    timer.notification_pending = false;
+                }
+                -(Errno::ESRCH as i32)
+            }
+        }
+        _ => -(Errno::EINVAL as i32),
+    }
 }
 
 /// timer_settime(timerid, flags, new_value_ptr, old_value_ptr)
@@ -9115,7 +9983,6 @@ pub extern "C" fn kernel_timer_settime(
     timer.interval_nsec = int_nsec;
     timer.value_sec = val_sec;
     timer.value_nsec = val_nsec;
-    timer.overrun = 0;
 
     // Convert to milliseconds for the host timer.
     // 0 = disarm, 1+ = armed.
@@ -9184,7 +10051,7 @@ pub extern "C" fn kernel_timer_getoverrun(timerid: i32) -> i32 {
 
     let tid = timerid as usize;
     let result = match proc.posix_timers.get(tid) {
-        Some(Some(t)) => t.overrun,
+        Some(Some(t)) => t.overrun_last,
         _ => return -(Errno::EINVAL as i32),
     };
 
@@ -9206,39 +10073,23 @@ pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
 
     // Disarm the host timer
     let _ = host.host_set_posix_timer(timerid, 0, 0, 0);
+    proc.remove_posix_timer_notification(timerid as u32);
     proc.posix_timers[tid] = None;
 
     deliver_pending_signals(proc, &mut host);
     0
 }
 
-/// Called by the host when a repeating POSIX timer fires to increment the overrun counter.
-/// This is used for timer_getoverrun() support.
+/// Backward-compatible interval hook for hosts predating
+/// `kernel_posix_timer_fire`. Its return contract is unchanged: zero tells the
+/// legacy host to queue a process-wide signal, while one suppresses an overrun.
 #[unsafe(no_mangle)]
-/// Called by the host when a POSIX timer's interval fires.
-/// If the timer's signal is already pending (blocked), increments overrun and
-/// returns 1 (don't send signal again). If not pending, resets overrun to 0
-/// and returns 0 (host should call sendSignalToProcess for a new delivery cycle).
 pub extern "C" fn kernel_posix_timer_interval_fire(pid: u32, timer_id: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if let Some(proc) = table.get_mut(pid) {
-        if let Some(Some(timer)) = proc.posix_timers.get_mut(timer_id as usize) {
-            let signo = timer.sigev_signo as u64;
-            if signo > 0 && signo <= 64 {
-                let mask = 1u64 << (signo - 1);
-                if proc.signals.pending & mask != 0 {
-                    // Signal already pending — this is an overrun
-                    timer.overrun += 1;
-                    return 1;
-                } else {
-                    // New delivery cycle — reset overrun
-                    timer.overrun = 0;
-                    return 0;
-                }
-            }
-        }
+    match table.get_mut(pid) {
+        Some(proc) => proc.note_legacy_posix_timer_interval_fire(timer_id) as i32,
+        None => 0,
     }
-    0
 }
 
 // ---------------------------------------------------------------------------
@@ -9284,7 +10135,7 @@ pub extern "C" fn kernel_rt_sigtimedwait(mask_lo: u32, mask_hi: u32, timeout_ms:
     let mut host = WasmHostIO;
     let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
     let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
-        Ok((sig, _si_value, _si_code)) => sig as i32,
+        Ok((sig, ..)) => sig as i32,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals(proc, &mut host);
@@ -9293,27 +10144,44 @@ pub extern "C" fn kernel_rt_sigtimedwait(mask_lo: u32, mask_hi: u32, timeout_ms:
 
 /// pathconf -- get configurable pathname variable for a path.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pathconf(path_ptr: *const u8, path_len: u32, name: i32) -> i64 {
+pub extern "C" fn kernel_pathconf(
+    path_ptr: *const u8,
+    path_len: u32,
+    name: i32,
+    value_ptr: *mut i64,
+) -> i32 {
+    if path_ptr.is_null() || value_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
     let (_gkl, proc) = unsafe { get_process() };
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
-    let result = match syscalls::sys_pathconf(path, name) {
-        Ok(v) => v,
-        Err(e) => -(e as i64),
-    };
     let mut host = WasmHostIO;
+    let result = match syscalls::sys_pathconf(proc, &mut host, path, name) {
+        Ok(value) => {
+            unsafe { core::ptr::write_unaligned(value_ptr, value.unwrap_or(-1)) };
+            0
+        }
+        Err(e) => -(e as i32),
+    };
     deliver_pending_signals(proc, &mut host);
     result
 }
 
 /// fpathconf -- get configurable pathname variable for an open fd.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_fpathconf(fd: i32, name: i32) -> i64 {
+pub extern "C" fn kernel_fpathconf(fd: i32, name: i32, value_ptr: *mut i64) -> i32 {
+    if value_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
     let (_gkl, proc) = unsafe { get_process() };
-    let result = match syscalls::sys_fpathconf(proc, fd, name) {
-        Ok(v) => v,
-        Err(e) => -(e as i64),
-    };
     let mut host = WasmHostIO;
+    let result = match syscalls::sys_fpathconf(proc, &mut host, fd, name) {
+        Ok(value) => {
+            unsafe { core::ptr::write_unaligned(value_ptr, value.unwrap_or(-1)) };
+            0
+        }
+        Err(e) => -(e as i32),
+    };
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -9601,7 +10469,7 @@ pub extern "C" fn kernel_inject_connection(
     }
     let shared_idx = match sock.shared_backlog_idx {
         Some(i) => i,
-        // Should always be set for AF_INET listeners (sys_listen allocates
+        // Should always be set for AF_INET/AF_INET6 listeners (sys_listen allocates
         // it). Defensive: refuse the inject rather than fall back to a
         // per-process backlog that fork siblings can't see.
         None => return -(Errno::EINVAL as i32),
@@ -9624,15 +10492,19 @@ pub extern "C" fn kernel_inject_connection(
             peer_addr_c as u8,
             peer_addr_d as u8,
         ],
+        peer_addr6: [0; 16],
+        peer_is_ipv6: false,
         peer_port: peer_port as u16,
+        peer_pid: 0,
+        peer_sock_idx: None,
         recv_pipe_idx,
         send_pipe_idx,
     };
     let pushed = unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) };
     if !pushed {
         // Slot was freed (last listener closed concurrently) — release pipes
-        pipe_table.free_if_closed(recv_pipe_idx);
-        pipe_table.free_if_closed(send_pipe_idx);
+        pipe_table.discard_unclaimed(recv_pipe_idx);
+        pipe_table.discard_unclaimed(send_pipe_idx);
         return -(Errno::EBADF as i32);
     }
 
@@ -9781,7 +10653,7 @@ pub extern "C" fn kernel_pipe_is_write_open(_pid: u32, pipe_idx: u32) -> i32 {
     if pipe.is_write_end_open() { 1 } else { 0 }
 }
 
-/// Check if a pipe's read end is still open.
+/// Check if a pipe accepts writes through a real reader or TCP discard sink.
 /// Returns 1 if open, 0 if closed, negative errno on error.
 ///
 /// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
@@ -9794,6 +10666,22 @@ pub extern "C" fn kernel_pipe_is_read_open(_pid: u32, pipe_idx: u32) -> i32 {
         None => return -(Errno::EBADF as i32),
     };
     if pipe.is_read_end_open() { 1 } else { 0 }
+}
+
+/// Check if a pipe has at least one application-owned reader.
+/// Returns 1 for a real reader, 0 for a TCP discard sink or closed read end,
+/// and negative errno on error.
+///
+/// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
+/// pipe table.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pipe_has_readers(_pid: u32, pipe_idx: u32) -> i32 {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = match pipe_table.get(pipe_idx as usize) {
+        Some(p) => p,
+        None => return -(Errno::EBADF as i32),
+    };
+    if pipe.has_readers() { 1 } else { 0 }
 }
 
 /// Look up the recv pipe index for a socket fd.
@@ -9870,34 +10758,31 @@ pub extern "C" fn kernel_get_fd_pipe_idx(pid: u32, fd: i32) -> i32 {
 /// Returns -1 if the fd is not a listening socket with a wake token.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fd_accept_wake_idx(pid: u32, fd: i32) -> i32 {
-    use crate::ofd::FileType;
-    use crate::socket::SocketState;
-
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let proc = match table.get(pid) {
-        Some(p) => p,
-        None => return -1,
-    };
-    let entry = match proc.fd_table.get(fd) {
-        Ok(e) => e,
-        Err(_) => return -1,
-    };
-    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
-        Some(o) => o,
-        None => return -1,
-    };
-    if ofd.file_type != FileType::Socket {
+    let Some(proc) = table.get(pid) else {
         return -1;
-    }
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
-    let sock = match proc.sockets.get(sock_idx) {
-        Some(s) => s,
-        None => return -1,
     };
-    if sock.state != SocketState::Listening {
+    let Ok(entry) = proc.fd_table.get(fd) else {
         return -1;
-    }
-    sock.accept_wake_idx.map(|idx| idx as i32).unwrap_or(-1)
+    };
+    syscalls::listener_accept_wake_for_entry(proc, entry)
+        .map(|idx| idx as i32)
+        .unwrap_or(-1)
+}
+
+/// Find the lowest live listener fd carrying `wake_idx` in `pid`.
+///
+/// The wake token identifies the shared listener/open-description state across
+/// descriptor aliases. Iterating the kernel fd table lets the host remap a
+/// listener mirror after exec closes a CLOEXEC alias without guessing the
+/// process's current `RLIMIT_NOFILE` ceiling.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_find_listener_fd_by_accept_wake(pid: u32, wake_idx: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    table
+        .get(pid)
+        .and_then(|proc| syscalls::find_listener_fd_by_accept_wake(proc, wake_idx))
+        .unwrap_or(-1)
 }
 
 /// Check if a file descriptor has O_NONBLOCK set.
@@ -10126,7 +11011,7 @@ pub extern "C" fn kernel_pty_master_write(pty_idx: u32, buf_ptr: *const u8, buf_
                 let pids = table.pids_in_group(fg_pgid as u32);
                 for pid in pids {
                     if let Some(proc) = table.get_mut(pid) {
-                        proc.signals.raise(signum);
+                        proc.raise_signal(signum);
                     }
                 }
             }

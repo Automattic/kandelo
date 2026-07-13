@@ -1,31 +1,61 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { resolveBinary } from "../src/binary-resolver";
+import { LocalVirtualNetwork } from "../src/networking/virtual-network";
+import { NodePlatformIO } from "../src/platform/node";
 
-describe("SIOCGIFCONF / SIOCGIFHWADDR", () => {
-  it("returns a virtual MAC address via ioctl", async () => {
-    const result = await runCentralizedProgram({
-      programPath: resolveBinary("programs/ifhwaddr.wasm"),
-      timeout: 10_000,
-    });
+describe("virtual network interface ioctls", () => {
+  it.each([
+    {
+      arch: "wasm32",
+      programPath: "programs/ifhwaddr.wasm",
+      ifreqSize: 32,
+    },
+    {
+      arch: "wasm64",
+      programPath: "programs/wasm64/ifhwaddr.wasm",
+      ifreqSize: 40,
+    },
+  ])(
+    "honors interface and guest-memory contracts for $arch",
+    async ({ arch, programPath, ifreqSize }) => {
+      const network = new LocalVirtualNetwork();
+      const io = new NodePlatformIO();
+      io.network = network.attachMachine({
+        id: `ifhwaddr-${arch}`,
+        address: [10, 23, 45, 67],
+      });
 
-    expect(result.exitCode).toBe(0);
+      const result = await runCentralizedProgram({
+        programPath: resolveBinary(programPath),
+        io,
+        timeout: 30_000,
+      });
 
-    // Should find one interface named "eth0"
-    expect(result.stdout).toContain("interfaces: 1");
-    expect(result.stdout).toContain("name: eth0");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).not.toContain("FAIL:");
+      expect(result.stdout).toContain(`ifreq-size: ${ifreqSize}`);
+      expect(result.stdout).toContain("ifconf: lo=127.0.0.1 eth0=10.23.45.67");
+      expect(result.stdout).toContain("eth0-address: 10.23.45.67");
+      expect(result.stdout).toContain(
+        "libc-name-to-index: lo=1 eth0=2 missing=0 errno=19",
+      );
+      expect(result.stdout).toContain("libc-invalid-index: errno=6");
+      expect(result.stdout).toContain("nameindex: lo=1");
+      expect(result.stdout).toContain("nameindex: eth0=2");
+      expect(result.stdout).toContain(
+        "PASS: virtual interface ioctl and libc contracts",
+      );
 
-    // MAC should be locally-administered and non-zero
-    expect(result.stdout).toContain("locally-administered: yes");
-    expect(result.stdout).toContain("non-zero: yes");
+      const macMatch = result.stdout.match(
+        /eth0-mac: ([0-9a-f]{2}(?::[0-9a-f]{2}){5})/,
+      );
+      expect(macMatch).not.toBeNull();
 
-    // MAC format: xx:xx:xx:xx:xx:xx
-    const macMatch = result.stdout.match(/mac: ([0-9a-f]{2}(?::[0-9a-f]{2}){5})/);
-    expect(macMatch).not.toBeNull();
-
-    // Verify locally-administered bit (second-lowest bit of first octet)
-    const firstOctet = parseInt(macMatch![1].split(":")[0], 16);
-    expect(firstOctet & 0x02).toBe(0x02); // locally administered
-    expect(firstOctet & 0x01).toBe(0x00); // unicast
-  });
+      const firstOctet = parseInt(macMatch![1].split(":")[0], 16);
+      expect(firstOctet & 0x02).toBe(0x02);
+      expect(firstOctet & 0x01).toBe(0x00);
+    },
+    30_000,
+  );
 });

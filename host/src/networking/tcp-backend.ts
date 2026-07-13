@@ -2,11 +2,13 @@ import * as net from "net";
 import type { NetworkIO } from "../types";
 import { lookup } from "dns";
 import { EagainError } from "./fetch-backend";
+import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
 
 const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
 const POLLERR = 0x0008;
 const POLLHUP = 0x0010;
+const MSG_PEEK = 0x0002;
 
 /**
  * Map a Node.js network error code to a POSIX errno value.
@@ -52,6 +54,7 @@ interface Connection {
   socket: net.Socket;
   recvBuf: Buffer;
   closed: boolean;
+  readEnded: boolean;
   /** True once net.Socket has emitted 'connect' (TCP handshake done). */
   connected: boolean;
   error: Error | null;
@@ -68,11 +71,12 @@ export class TcpNetworkBackend implements NetworkIO {
 
   connect(handle: number, addr: Uint8Array, port: number): void {
     const ip = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
-    const socket = new net.Socket();
+    const socket = new net.Socket({ allowHalfOpen: true });
     const conn: Connection = {
       socket,
       recvBuf: Buffer.alloc(0),
       closed: false,
+      readEnded: false,
       connected: false,
       error: null,
     };
@@ -83,11 +87,15 @@ export class TcpNetworkBackend implements NetworkIO {
     socket.on("data", (data: Buffer) => {
       conn.recvBuf = Buffer.concat([conn.recvBuf, data]);
     });
+    socket.on("end", () => {
+      conn.readEnded = true;
+    });
     socket.on("error", (err: Error) => {
       conn.error = err;
     });
     socket.on("close", () => {
       conn.closed = true;
+      conn.readEnded = true;
     });
 
     socket.connect(port, ip);
@@ -115,14 +123,23 @@ export class TcpNetworkBackend implements NetworkIO {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
     if (conn.error) throw conn.error;
-    if (conn.closed) throw new Error("EPIPE");
+    if (
+      conn.closed ||
+      conn.socket.destroyed ||
+      conn.socket.writableEnded ||
+      !conn.socket.writable
+    ) {
+      throw Object.assign(new Error("EPIPE"), { code: "EPIPE", errno: 32 });
+    }
     // `net.Socket.write` buffers internally before the TCP handshake
-    // completes, so we don't need to gate on `connected`.
+    // completes, so we don't need to gate on `connected`. With allowHalfOpen,
+    // this also permits writes after a peer FIN while Node still has an open
+    // writable half, matching TCP half-close semantics.
     conn.socket.write(Buffer.from(data));
     return data.length;
   }
 
-  recv(handle: number, maxLen: number, _flags: number): Uint8Array {
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
     if (conn.error) throw conn.error;
@@ -134,11 +151,13 @@ export class TcpNetworkBackend implements NetworkIO {
         conn.recvBuf.byteOffset,
         len,
       );
-      conn.recvBuf = conn.recvBuf.subarray(len);
+      if ((flags & MSG_PEEK) === 0) {
+        conn.recvBuf = conn.recvBuf.subarray(len);
+      }
       return result;
     }
 
-    if (conn.closed) return new Uint8Array(0);
+    if (conn.readEnded || conn.closed) return new Uint8Array(0);
 
     throw new EagainError();
   }
@@ -150,13 +169,20 @@ export class TcpNetworkBackend implements NetworkIO {
     if (conn.error) return POLLERR;
 
     let revents = 0;
-    if ((events & POLLIN) !== 0 && conn.recvBuf.length > 0) {
+    if ((events & POLLIN) !== 0 && (conn.recvBuf.length > 0 || conn.readEnded || conn.closed)) {
       revents |= POLLIN;
     }
     if (conn.closed) {
       revents |= POLLHUP;
     }
-    if ((events & POLLOUT) !== 0 && conn.connected && !conn.closed) {
+    if (
+      (events & POLLOUT) !== 0 &&
+      conn.connected &&
+      !conn.closed &&
+      !conn.socket.destroyed &&
+      !conn.socket.writableEnded &&
+      conn.socket.writable
+    ) {
       revents |= POLLOUT;
     }
     return revents;
@@ -165,12 +191,22 @@ export class TcpNetworkBackend implements NetworkIO {
   close(handle: number): void {
     const conn = this.connections.get(handle);
     if (conn) {
-      conn.socket.destroy();
+      // destroySoon() ends the writable half, flushes queued bytes, and only
+      // then releases the Node handle. The operating system retains whatever
+      // TCP close state is needed; no timer or fabricated post-FIN write count
+      // is imposed here.
+      if (!conn.socket.destroyed) {
+        conn.socket.destroySoon();
+      }
       this.connections.delete(handle);
     }
   }
 
   getaddrinfo(hostname: string): Uint8Array {
+    const literalIp = parseNumericIpv4Hostname(hostname);
+    if (literalIp) return literalIp;
+    validateDnsHostname(hostname);
+
     // Atomics.wait would deadlock libuv's dns.lookup callback on the kernel
     // thread — same shape as connect/recv. Kick off async, throw EAGAIN,
     // pick up the cached result on the worker's next retry.

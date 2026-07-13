@@ -8,34 +8,43 @@
  *   npx tsx benchmarks/run.ts --suite=wordpress      # Single suite
  *   npx tsx benchmarks/run.ts --rounds=5             # Multiple rounds (median)
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "fs";
+import { resolve, dirname, relative, sep } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import os from "os";
 import type {
   BenchmarkArtifactFile,
+  BenchmarkArtifactDirectory,
   BenchmarkArtifacts,
   BenchmarkOutput,
   ForkBenchSymbolReport,
   BenchmarkSuite,
 } from "./types.js";
+import type { BrowserBenchmarkAssetSelection } from "./browser/run-browser.js";
+import {
+  BENCHMARK_STATIC_ARTIFACTS,
+  RUNNABLE_BENCHMARK_SUITES,
+  benchmarkInputEvidenceFlags,
+  benchmarkStaticArtifactEvidenceFlags,
+  selectBrowserBenchmarkRuntimeArtifacts,
+  selectNodeBenchmarkRuntimeArtifacts,
+  type BenchmarkRuntimeArtifactSelections,
+} from "./artifact-selection.js";
+import { assertRequiredBenchmarkArtifacts } from "./artifact-evidence.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
-
-const BENCHMARK_ARTIFACT_PATHS = [
-  "local-binaries/kernel.wasm",
-  "benchmarks/wasm/pipe-throughput.wasm",
-  "benchmarks/wasm/file-throughput.wasm",
-  "benchmarks/wasm/syscall-latency.wasm",
-  "benchmarks/wasm/hello.wasm",
-  "benchmarks/wasm/fork-bench.wasm",
-  "benchmarks/wasm/exec-bench.wasm",
-  "benchmarks/wasm/clone-bench.wasm",
-  "benchmarks/wasm/spawn-bench.wasm",
-];
 
 function parseArgs(argv: string[]): { host: "node" | "browser"; suite?: string; rounds: number } {
   let host: "node" | "browser" = "node";
@@ -110,18 +119,154 @@ function runGit(args: string[]): string {
   }
 }
 
-function fingerprintFile(relativePath: string): BenchmarkArtifactFile {
-  const absolutePath = resolve(repoRoot, relativePath);
-  if (!existsSync(absolutePath)) {
-    return { path: relativePath, missing: true };
+type ArtifactFileMetadata = Omit<
+  Partial<BenchmarkArtifactFile>,
+  "path" | "selectedPath" | "sizeBytes" | "sha256" | "missing"
+>;
+
+function repoRelativePath(path: string): string {
+  const rel = relative(repoRoot, path);
+  if (rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`)) {
+    return rel.split(sep).join("/");
+  }
+  return path;
+}
+
+function fingerprintSelectedFile(
+  logicalPath: string,
+  selectedPath: string | null,
+  metadata: ArtifactFileMetadata = {},
+): BenchmarkArtifactFile {
+  if (!selectedPath || !existsSync(selectedPath)) {
+    return {
+      path: logicalPath,
+      ...(selectedPath ? { selectedPath } : {}),
+      ...metadata,
+      missing: true,
+    };
   }
 
-  const bytes = readFileSync(absolutePath);
-  return {
-    path: relativePath,
-    sizeBytes: statSync(absolutePath).size,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+  try {
+    const bytes = readFileSync(selectedPath);
+    return {
+      path: logicalPath,
+      selectedPath,
+      ...metadata,
+      sizeBytes: statSync(selectedPath).size,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+  } catch (error) {
+    return {
+      path: logicalPath,
+      selectedPath,
+      ...metadata,
+      missing: true,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function fingerprintDirectory(
+  logicalPath: string,
+  selectedPath: string,
+  excludedPaths: string[],
+): BenchmarkArtifactDirectory {
+  const exclusions = [...excludedPaths].map((path) => path.replaceAll("\\", "/")).sort();
+  if (!existsSync(selectedPath)) {
+    return {
+      path: logicalPath,
+      selectedPath,
+      missing: true,
+      required: true,
+      excludedPaths: exclusions,
+    };
+  }
+
+  const hash = createHash("sha256");
+  let fileCount = 0;
+  let sizeBytes = 0;
+  const activeDirectories = new Set<string>();
+
+  const excluded = (logicalEntry: string): boolean => exclusions.some(
+    (entry) => logicalEntry === entry || logicalEntry.startsWith(`${entry}/`),
+  );
+  const compareNames = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
+
+  const hashFile = (physicalPath: string, logicalEntry: string, kind: string): void => {
+    const bytes = readFileSync(physicalPath);
+    hash.update(`${kind}\0${logicalEntry}\0${bytes.length}\0`);
+    hash.update(bytes);
+    hash.update("\0");
+    fileCount++;
+    sizeBytes += bytes.length;
   };
+
+  const walk = (physicalDirectory: string, logicalDirectory: string): void => {
+    const realDirectory = realpathSync(physicalDirectory);
+    if (activeDirectories.has(realDirectory)) {
+      hash.update(`cycle\0${logicalDirectory}\0`);
+      return;
+    }
+
+    activeDirectories.add(realDirectory);
+    try {
+      const entries = readdirSync(physicalDirectory, { withFileTypes: true })
+        .sort((a, b) => compareNames(a.name, b.name));
+      for (const entry of entries) {
+        const logicalEntry = logicalDirectory
+          ? `${logicalDirectory}/${entry.name}`
+          : entry.name;
+        if (excluded(logicalEntry)) continue;
+
+        const physicalEntry = resolve(physicalDirectory, entry.name);
+        const stat = lstatSync(physicalEntry);
+        if (stat.isSymbolicLink()) {
+          const realEntry = realpathSync(physicalEntry);
+          const targetStat = statSync(realEntry);
+          if (targetStat.isDirectory()) {
+            hash.update(`symlink-directory\0${logicalEntry}\0`);
+            walk(realEntry, logicalEntry);
+          } else if (targetStat.isFile()) {
+            hashFile(realEntry, logicalEntry, "symlink-file");
+          } else {
+            hash.update(`symlink-other\0${logicalEntry}\0`);
+          }
+        } else if (stat.isDirectory()) {
+          hash.update(`directory\0${logicalEntry}\0`);
+          walk(physicalEntry, logicalEntry);
+        } else if (stat.isFile()) {
+          hashFile(physicalEntry, logicalEntry, "file");
+        } else {
+          hash.update(`other\0${logicalEntry}\0`);
+        }
+      }
+    } finally {
+      activeDirectories.delete(realDirectory);
+    }
+  };
+
+  try {
+    hash.update("kandelo-benchmark-directory-v1\0");
+    walk(selectedPath, "");
+    return {
+      path: logicalPath,
+      selectedPath,
+      fileCount,
+      sizeBytes,
+      sha256: hash.digest("hex"),
+      required: true,
+      excludedPaths: exclusions,
+    };
+  } catch (error) {
+    return {
+      path: logicalPath,
+      selectedPath,
+      missing: true,
+      required: true,
+      excludedPaths: exclusions,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function expectedForkBenchSymbols(_gitHead: string): ForkBenchSymbolReport["expected"] {
@@ -160,17 +305,222 @@ function inspectForkBench(gitHead: string): ForkBenchSymbolReport {
   };
 }
 
-function collectArtifacts(): BenchmarkArtifacts {
+function suiteRequested(filter: string | undefined, names: string[]): boolean {
+  return filter === undefined || names.includes(filter);
+}
+
+async function collectNodeApplicationArtifacts(
+  suiteFilter: string | undefined,
+  files: Record<string, BenchmarkArtifactFile>,
+  directories: Record<string, BenchmarkArtifactDirectory>,
+): Promise<void> {
+  if (suiteRequested(suiteFilter, ["wordpress"])) {
+    try {
+      const { describeWordPressBenchmarkInputs } = await import("./suites/wordpress.js");
+      const inputs = describeWordPressBenchmarkInputs();
+      files["node.wordpress.php"] = fingerprintSelectedFile(
+        inputs.phpResolverRequest,
+        inputs.phpBinaryPath,
+        {
+          required: true,
+          used: true,
+          resolverRequest: inputs.phpResolverRequest,
+          resolverSelectedPath: inputs.phpResolverSelectedPath ?? undefined,
+        },
+      );
+      files["node.wordpress.opcache"] = fingerprintSelectedFile(
+        inputs.opcacheResolverRequest,
+        inputs.opcachePath,
+        {
+          required: false,
+          used: inputs.opcacheUsed,
+          resolverRequest: inputs.opcacheResolverRequest,
+          resolverSelectedPath: inputs.opcachePath ?? undefined,
+        },
+      );
+      files["node.wordpress.config"] = fingerprintSelectedFile(
+        repoRelativePath(inputs.wpConfigPath),
+        inputs.wpConfigPath,
+        { required: true, used: true },
+      );
+      files["node.wordpress.router"] = fingerprintSelectedFile(
+        repoRelativePath(inputs.routerScript),
+        inputs.routerScript,
+        { required: true, used: true },
+      );
+      directories["node.wordpress.sourceTree"] = fingerprintDirectory(
+        repoRelativePath(inputs.wpDir),
+        inputs.wpDir,
+        [
+          "wp-content/database",
+          "wp-content/debug.log",
+        ],
+      );
+    } catch (error) {
+      files["node.wordpress.inputs"] = {
+        path: "node WordPress benchmark inputs",
+        missing: true,
+        required: true,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  const mariaArches = [
+    {
+      arch: "wasm32" as const,
+      suites: ["mariadb-aria", "mariadb-innodb"],
+    },
+    {
+      arch: "wasm64" as const,
+      suites: ["mariadb-aria-64", "mariadb-innodb-64"],
+    },
+  ];
+  for (const { arch, suites } of mariaArches) {
+    if (!suiteRequested(suiteFilter, suites)) continue;
+
+    try {
+      const { describeMariaDBBenchmarkInputs } = await import("./suites/mariadb.js");
+      const inputs = describeMariaDBBenchmarkInputs(arch);
+      files[`node.mariadb.${arch}.server`] = fingerprintSelectedFile(
+        inputs.serverResolverRequest,
+        inputs.serverPath,
+        {
+          required: true,
+          used: true,
+          resolverRequest: inputs.serverResolverRequest,
+          resolverSelectedPath: inputs.serverResolverSelectedPath ?? undefined,
+        },
+      );
+      files[`node.mariadb.${arch}.client`] = fingerprintSelectedFile(
+        inputs.clientResolverRequest,
+        inputs.clientPath,
+        {
+          required: true,
+          used: true,
+          resolverRequest: inputs.clientResolverRequest,
+          resolverSelectedPath: inputs.clientResolverSelectedPath ?? undefined,
+        },
+      );
+
+      const sqlError = inputs.bootstrapSqlError;
+      files[`node.mariadb.${arch}.bootstrap.systemTables`] = fingerprintSelectedFile(
+        inputs.bootstrapSql
+          ? repoRelativePath(inputs.bootstrapSql.systemTables)
+          : `${arch} MariaDB system-tables bootstrap SQL`,
+        inputs.bootstrapSql?.systemTables ?? null,
+        { required: true, used: true, ...(sqlError ? { error: sqlError } : {}) },
+      );
+      files[`node.mariadb.${arch}.bootstrap.systemData`] = fingerprintSelectedFile(
+        inputs.bootstrapSql
+          ? repoRelativePath(inputs.bootstrapSql.systemData)
+          : `${arch} MariaDB system-data bootstrap SQL`,
+        inputs.bootstrapSql?.systemData ?? null,
+        { required: true, used: true, ...(sqlError ? { error: sqlError } : {}) },
+      );
+    } catch (error) {
+      files[`node.mariadb.${arch}.inputs`] = {
+        path: `node MariaDB ${arch} benchmark inputs`,
+        missing: true,
+        required: true,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+}
+
+function collectBrowserApplicationArtifacts(
+  selections: Record<string, BrowserBenchmarkAssetSelection>,
+  files: Record<string, BenchmarkArtifactFile>,
+): void {
+  for (const [name, selection] of Object.entries(selections)) {
+    files[name] = fingerprintSelectedFile(
+      repoRelativePath(selection.publicPath),
+      selection.selectedPath,
+      {
+        required: true,
+        used: true,
+        resolverRequest: selection.resolverRequest,
+        resolverSelectedPath: selection.resolverSelectedPath ?? undefined,
+      },
+    );
+  }
+}
+
+function collectRuntimeArtifacts(
+  selections: BenchmarkRuntimeArtifactSelections,
+  files: Record<string, BenchmarkArtifactFile>,
+  options: { host: "node" | "browser"; suiteFilter?: string },
+): void {
+  for (const [name, selection] of Object.entries(selections)) {
+    const evidenceFlags = benchmarkInputEvidenceFlags({
+      ...options,
+      suites: name === "rootfs"
+        ? ["syscall-io", "process-lifecycle"]
+        : RUNNABLE_BENCHMARK_SUITES,
+      ...(name === "rootfs" ? { hosts: ["node" as const] } : {}),
+    });
+    files[`runtime.${name}`] = fingerprintSelectedFile(
+      selection.logicalPath,
+      selection.selectedPath,
+      {
+        ...evidenceFlags,
+        ...(selection.resolverRequest
+          ? { resolverRequest: selection.resolverRequest }
+          : {}),
+        ...(selection.resolverSelectedPath
+          ? { resolverSelectedPath: selection.resolverSelectedPath }
+          : {}),
+        ...(selection.error ? { error: selection.error } : {}),
+      },
+    );
+  }
+}
+
+export async function collectBenchmarkArtifacts(options: {
+  host: "node" | "browser";
+  suiteFilter?: string;
+  browserSelections?: Record<string, BrowserBenchmarkAssetSelection>;
+  runtimeSelections?: BenchmarkRuntimeArtifactSelections;
+}): Promise<BenchmarkArtifacts> {
   const gitHead = runGit(["rev-parse", "HEAD"]);
   const gitRef = runGit(["name-rev", "--name-only", "--refs=refs/remotes/origin/*", "HEAD"]);
-  const files = Object.fromEntries(
-    BENCHMARK_ARTIFACT_PATHS.map((path) => [path, fingerprintFile(path)]),
+  const files: Record<string, BenchmarkArtifactFile> = Object.fromEntries(
+    BENCHMARK_STATIC_ARTIFACTS.map((artifact) => {
+      const evidenceFlags = benchmarkStaticArtifactEvidenceFlags({
+        host: options.host,
+        suiteFilter: options.suiteFilter,
+        artifact,
+      });
+      return [
+        artifact.path,
+        fingerprintSelectedFile(
+          artifact.path,
+          resolve(repoRoot, artifact.path),
+          evidenceFlags,
+        ),
+      ];
+    }),
   );
+  const directories: Record<string, BenchmarkArtifactDirectory> = {};
+  const runtimeSelections = options.runtimeSelections ?? (
+    options.host === "node"
+      ? selectNodeBenchmarkRuntimeArtifacts()
+      : selectBrowserBenchmarkRuntimeArtifacts()
+  );
+  collectRuntimeArtifacts(runtimeSelections, files, options);
+
+  if (options.host === "node") {
+    await collectNodeApplicationArtifacts(options.suiteFilter, files, directories);
+  } else if (options.browserSelections) {
+    collectBrowserApplicationArtifacts(options.browserSelections, files);
+  }
 
   return {
     gitHead,
     gitRef,
     files,
+    ...(Object.keys(directories).length > 0 ? { directories } : {}),
     forkBench: inspectForkBench(gitHead),
   };
 }
@@ -178,11 +528,37 @@ function collectArtifacts(): BenchmarkArtifacts {
 function logArtifacts(artifacts: BenchmarkArtifacts) {
   console.log("\nArtifact fingerprints:");
   console.log(`  git HEAD: ${artifacts.gitHead} (${artifacts.gitRef})`);
-  for (const artifact of Object.values(artifacts.files)) {
+  for (const [name, artifact] of Object.entries(artifacts.files)) {
+    const label = name === artifact.path ? artifact.path : `${name} (${artifact.path})`;
+    const selected = artifact.selectedPath ? ` selected=${artifact.selectedPath}` : "";
+    const resolver = artifact.resolverSelectedPath
+      ? ` resolver-selected=${artifact.resolverSelectedPath}`
+      : "";
+    const usage = artifact.used === false ? " used=false" : "";
     if (artifact.missing) {
-      console.log(`  ${artifact.path}: MISSING`);
+      const required = artifact.required ? " REQUIRED" : "";
+      console.log(`  ${label}: MISSING${required}${usage}${selected}${resolver}`);
+      if (artifact.error) console.log(`    error: ${artifact.error}`);
     } else {
-      console.log(`  ${artifact.path}: ${artifact.sizeBytes} bytes sha256=${artifact.sha256}`);
+      console.log(
+        `  ${label}: ${artifact.sizeBytes} bytes sha256=${artifact.sha256}` +
+        `${usage}${selected}${resolver}`,
+      );
+    }
+  }
+  for (const [name, artifact] of Object.entries(artifacts.directories ?? {})) {
+    const label = name === artifact.path ? artifact.path : `${name} (${artifact.path})`;
+    if (artifact.missing) {
+      console.log(`  ${label}: MISSING${artifact.required ? " REQUIRED" : ""}`);
+      if (artifact.error) console.log(`    error: ${artifact.error}`);
+    } else {
+      console.log(
+        `  ${label}: ${artifact.fileCount} files ${artifact.sizeBytes} bytes ` +
+        `sha256=${artifact.sha256} selected=${artifact.selectedPath}`,
+      );
+      if (artifact.excludedPaths?.length) {
+        console.log(`    excluded runtime state: ${artifact.excludedPaths.join(", ")}`);
+      }
     }
   }
   console.log(
@@ -291,14 +667,29 @@ async function runSuites(
 
 async function main() {
   const { host, suite: suiteFilter, rounds } = parseArgs(process.argv);
-  const artifacts = collectArtifacts();
-  logArtifacts(artifacts);
 
   if (host === "browser") {
     // Browser execution via Playwright
-    const { runBrowserBenchmarks } = await import("./browser/run-browser.js");
+    const {
+      prepareBrowserBenchmarkAssets,
+      runBrowserBenchmarks,
+    } = await import("./browser/run-browser.js");
     const suiteNames = suiteFilter ? [suiteFilter] : undefined;
-    const results = await runBrowserBenchmarks({ suites: suiteNames, rounds });
+    const runtimeSelections = selectBrowserBenchmarkRuntimeArtifacts();
+    const browserSelections = prepareBrowserBenchmarkAssets(suiteNames);
+    const artifacts = await collectBenchmarkArtifacts({
+      host,
+      suiteFilter,
+      browserSelections,
+      runtimeSelections,
+    });
+    logArtifacts(artifacts);
+    assertRequiredBenchmarkArtifacts(artifacts);
+    const results = await runBrowserBenchmarks({
+      suites: suiteNames,
+      rounds,
+      runtimeSelections,
+    });
 
     const output: BenchmarkOutput = {
       timestamp: new Date().toISOString(),
@@ -321,6 +712,9 @@ async function main() {
   }
 
   // Node.js execution
+  const artifacts = await collectBenchmarkArtifacts({ host, suiteFilter });
+  logArtifacts(artifacts);
+  assertRequiredBenchmarkArtifacts(artifacts);
   const suites = await loadNodeSuites(suiteFilter);
   if (suites.length === 0) {
     console.error("No suites available to run.");
@@ -349,7 +743,9 @@ async function main() {
   console.log(`\nResults saved to ${filepath}`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

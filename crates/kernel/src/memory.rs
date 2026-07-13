@@ -92,7 +92,11 @@ impl MemoryManager {
     }
 
     /// Restore mmap mappings from fork (used by deserialize_fork_state).
-    pub fn set_mappings(&mut self, mappings: Vec<MappedRegion>) {
+    pub fn set_mappings(&mut self, mut mappings: Vec<MappedRegion>) {
+        // Ordinary mmap/munmap mutations preserve address order. Restore that
+        // invariant explicitly at the fork-state boundary so later first-fit
+        // scans do not depend on serialized input order.
+        mappings.sort_by_key(|mapping| mapping.addr);
         self.mappings = mappings;
     }
 
@@ -133,9 +137,23 @@ impl MemoryManager {
             });
             hint
         } else {
-            // Find first gap in [mmap_base, max_addr) that fits aligned_len.
-            // Mappings are kept sorted by address.
-            match self.find_gap(aligned_len) {
+            // A non-null address without MAP_FIXED is a placement hint. Wasm
+            // mappings use 64 KiB pages, so mirror mmap's page-boundary
+            // behavior by rounding the hint down and using it only when the
+            // complete range is available. An unusable hint falls back to
+            // the ordinary first-fit search without replacing anything.
+            let rounded_hint = hint & !0xFFFF;
+            let hinted_addr = if rounded_hint >= self.mmap_base.max(self.program_break)
+                && self.can_grow_at(rounded_hint, aligned_len)
+            {
+                Some(rounded_hint)
+            } else {
+                None
+            };
+
+            // Find the first gap in [mmap_base, max_addr) when the hint is
+            // absent or unusable. Mappings are kept sorted by address.
+            match hinted_addr.or_else(|| self.find_gap(aligned_len)) {
                 Some(a) => a,
                 None => return wasm_posix_shared::mmap::MAP_FAILED,
             }
@@ -159,13 +177,43 @@ impl MemoryManager {
     /// Find the first gap in [mmap_base, max_addr) that can fit `needed` bytes.
     fn find_gap(&self, needed: usize) -> Option<usize> {
         let mut cursor = self.mmap_base.max(self.program_break);
-        let mut occupied: Vec<(usize, usize)> =
-            Vec::with_capacity(self.mappings.len() + self.reserved_regions.len());
-        occupied.extend(self.mappings.iter().map(|m| (m.addr, m.len)));
-        occupied.extend(self.reserved_regions.iter().map(|r| (r.addr, r.len)));
-        occupied.sort_by_key(|(addr, _)| *addr);
 
-        for (addr, len) in occupied {
+        // Both collections are maintained in address order. Merge them as two
+        // sorted streams so the first-fit decision is identical to scanning a
+        // combined sorted list without materializing that temporary list.
+        let mut mapping_idx = 0;
+        let mut reserved_idx = 0;
+        loop {
+            let next_mapping = self
+                .mappings
+                .get(mapping_idx)
+                .map(|mapping| (mapping.addr, mapping.len, true));
+            let next_reserved = self
+                .reserved_regions
+                .get(reserved_idx)
+                .map(|reserved| (reserved.addr, reserved.len, false));
+            let Some((addr, len, is_mapping)) = (match (next_mapping, next_reserved) {
+                (Some(mapping), Some(reserved)) => {
+                    // The old stable address sort saw mappings before reserved
+                    // regions at an equal start address.
+                    if mapping.0 <= reserved.0 {
+                        Some(mapping)
+                    } else {
+                        Some(reserved)
+                    }
+                }
+                (Some(mapping), None) => Some(mapping),
+                (None, Some(reserved)) => Some(reserved),
+                (None, None) => None,
+            }) else {
+                break;
+            };
+
+            if is_mapping {
+                mapping_idx += 1;
+            } else {
+                reserved_idx += 1;
+            }
             if addr < cursor {
                 let end = addr.saturating_add(len);
                 if end > cursor {
@@ -267,7 +315,11 @@ impl MemoryManager {
         if len == 0 {
             return false;
         }
-        let unmap_end = addr.saturating_add(len);
+        let aligned_len = match len.checked_add(0xFFFF) {
+            Some(value) => value & !0xFFFF,
+            None => return false,
+        };
+        let unmap_end = addr.saturating_add(aligned_len);
         let mut found = false;
         let mut new_mappings: Vec<MappedRegion> = Vec::new();
 
@@ -534,6 +586,42 @@ mod tests {
     use super::*;
     use wasm_posix_shared::mmap::*;
 
+    fn mapped_region(addr: usize, len: usize) -> MappedRegion {
+        MappedRegion {
+            addr,
+            len,
+            prot: PROT_READ | PROT_WRITE,
+            flags: MAP_PRIVATE | MAP_ANONYMOUS,
+        }
+    }
+
+    /// Reference the former combined-list implementation so the stream merge
+    /// is checked against the exact first-fit policy it replaces.
+    fn reference_find_gap(mm: &MemoryManager, needed: usize) -> Option<usize> {
+        let mut cursor = mm.mmap_base.max(mm.program_break);
+        let mut occupied = Vec::with_capacity(mm.mappings.len() + mm.reserved_regions.len());
+        occupied.extend(mm.mappings.iter().map(|mapping| (mapping.addr, mapping.len)));
+        occupied.extend(
+            mm.reserved_regions
+                .iter()
+                .map(|reserved| (reserved.addr, reserved.len)),
+        );
+        occupied.sort_by_key(|(addr, _)| *addr);
+
+        for (addr, len) in occupied {
+            if addr < cursor {
+                cursor = cursor.max(addr.saturating_add(len));
+                continue;
+            }
+            if addr - cursor >= needed {
+                return Some(cursor);
+            }
+            cursor = cursor.max(addr.saturating_add(len));
+        }
+
+        (cursor.saturating_add(needed) <= mm.max_addr).then_some(cursor)
+    }
+
     #[test]
     fn test_mmap_anonymous() {
         let mut mm = MemoryManager::new();
@@ -648,6 +736,159 @@ mod tests {
             MAP_PRIVATE | MAP_ANONYMOUS,
         );
         assert_eq!(addr2, addr + 0x10000);
+    }
+
+    #[test]
+    fn test_mmap_gap_stream_merge_matches_combined_reference() {
+        let page = 0x10000;
+        let base = MemoryManager::MMAP_BASE;
+        let layouts = [
+            // Empty address space.
+            (vec![], vec![], base + 8 * page),
+            // Guest and host ranges interleave with exact and undersized gaps.
+            (
+                vec![mapped_region(base, page), mapped_region(base + 4 * page, page)],
+                vec![ReservedRegion {
+                    addr: base + 2 * page,
+                    len: page,
+                }],
+                base + 8 * page,
+            ),
+            // Equal starts retain the former stable-sort order, while the
+            // longer overlapping reservation still advances the cursor.
+            (
+                vec![mapped_region(base, page)],
+                vec![ReservedRegion {
+                    addr: base,
+                    len: 3 * page,
+                }],
+                base + 8 * page,
+            ),
+            // Occupancy beginning before mmap_base can overlap and extend
+            // through later entries from the other stream.
+            (
+                vec![mapped_region(base - page, 3 * page)],
+                vec![ReservedRegion {
+                    addr: base + page,
+                    len: 3 * page,
+                }],
+                base + 8 * page,
+            ),
+            // No trailing range is large enough.
+            (
+                vec![mapped_region(base, 2 * page)],
+                vec![ReservedRegion {
+                    addr: base + 2 * page,
+                    len: 2 * page,
+                }],
+                base + 4 * page,
+            ),
+        ];
+
+        for (case, (mappings, reserved_regions, max_addr)) in layouts.into_iter().enumerate() {
+            let mut mm = MemoryManager::new();
+            mm.max_addr = max_addr;
+            mm.set_mappings(mappings);
+            mm.reserved_regions = reserved_regions;
+            mm.reserved_regions
+                .sort_unstable_by_key(|reserved| reserved.addr);
+
+            for needed in [page, 2 * page, 3 * page] {
+                assert_eq!(
+                    mm.find_gap(needed),
+                    reference_find_gap(&mm, needed),
+                    "layout {case}, needed {needed:#x}",
+                );
+            }
+        }
+
+        // Exhaust the relative ordering and overlap combinations for one
+        // range from each stream, including starts below mmap_base and equal
+        // starts. The table above covers multiple entries within one stream.
+        for mapping_slot in 0..=5 {
+            for mapping_pages in 1..=3 {
+                for reserved_slot in 0..=5 {
+                    for reserved_pages in 1..=3 {
+                        let mut mm = MemoryManager::new();
+                        mm.max_addr = base + 8 * page;
+                        mm.set_mappings(vec![mapped_region(
+                            base - page + mapping_slot * page,
+                            mapping_pages * page,
+                        )]);
+                        mm.reserved_regions = vec![ReservedRegion {
+                            addr: base - page + reserved_slot * page,
+                            len: reserved_pages * page,
+                        }];
+
+                        for needed in [page, 2 * page, 3 * page] {
+                            assert_eq!(mm.find_gap(needed), reference_find_gap(&mm, needed));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_set_mappings_restores_address_order() {
+        let page = 0x10000;
+        let base = MemoryManager::MMAP_BASE;
+        let mut mm = MemoryManager::new();
+
+        mm.set_mappings(vec![
+            mapped_region(base + 2 * page, page),
+            mapped_region(base, page),
+        ]);
+
+        assert_eq!(
+            mm.mappings()
+                .iter()
+                .map(|mapping| mapping.addr)
+                .collect::<Vec<_>>(),
+            vec![base, base + 2 * page],
+        );
+        assert_eq!(mm.find_gap(page), Some(base + page));
+    }
+
+    #[test]
+    fn test_mmap_non_fixed_prefers_free_address_hint() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let base = MemoryManager::MMAP_BASE;
+
+        assert_eq!(mm.mmap_anonymous(base, 0x10000, rw, anon | MAP_FIXED), base);
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x20000, 0x10000, rw, anon | MAP_FIXED),
+            base + 0x20000
+        );
+
+        // Prefer a usable hint even though an earlier first-fit gap exists,
+        // and round an unaligned hint down to the Wasm page boundary.
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x30042, 0x10000, rw, anon),
+            base + 0x30000
+        );
+
+        // An occupied hint must not replace the existing mapping.
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x20000, 0x10000, rw, anon),
+            base + 0x10000
+        );
+        assert!(mm.is_mapped(base + 0x20000));
+    }
+
+    #[test]
+    fn test_munmap_rounds_length_up_to_wasm_page() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let addr = mm.mmap_anonymous(0, 0x20000, rw, anon);
+
+        assert!(mm.munmap(addr, 0x10001));
+        assert!(!mm.is_mapped(addr));
+        assert!(!mm.is_mapped(addr + 0x10000));
+        assert_eq!(mm.mmap_anonymous(0, 0x20000, rw, anon), addr);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use wasm_posix_shared::flags::O_ACCMODE;
 use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
-use crate::process::{Process, ProcessState, StdioConfig};
+use crate::process::{ChildWaitEvent, Process, ProcessState, StdioConfig};
 
 const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
@@ -58,12 +58,19 @@ pub struct ProcessTable {
 }
 
 /// Outcome of `ProcessTable::remove_process`. Bundles the removed
-/// `Process` with side-effect lists the caller must drain — currently
-/// just AF_INET host net handles whose cross-process refcount hit zero
-/// during cleanup. The caller is `kernel_remove_process`, which has
-/// access to the raw `host_net_close` extern; this layer doesn't.
+/// `Process` with side-effect lists the caller must drain: file, directory,
+/// and AF_INET host handles released during cleanup. The caller is
+/// `kernel_remove_process`, which has access to the raw host-close externs;
+/// this layer doesn't.
 pub struct RemoveProcessResult {
     pub process: Process,
+    /// Host file handles whose cross-process refcount reached 0 during
+    /// teardown. The caller must invoke `host_close(h)` on each.
+    pub host_closes: Vec<i64>,
+    /// Per-process directory-iteration handles that were still open during
+    /// teardown. These are never inherited across fork, so every retained
+    /// handle must be closed by the caller.
+    pub host_dir_closes: Vec<i64>,
     /// Host net handles whose cross-process refcount reached 0 during
     /// teardown. The caller must invoke `host_net_close(h)` on each —
     /// this kernel-side bookkeeping intentionally doesn't touch the
@@ -106,8 +113,30 @@ struct SpawnInheritFromParent {
 /// out from under the child.
 ///
 /// The function operates only on global tables and the child's own state,
-/// so it does not need access to `ProcessTable`.
-fn bump_inherited_resource_refcounts(child: &Process) {
+/// so it does not need access to `ProcessTable`. `parent_pid` identifies the
+/// exact source owner when copying machine-wide INET binding ownership.
+pub(crate) fn bump_inherited_resource_refcounts(
+    parent_pid: u32,
+    child: &Process,
+) -> Result<(), Errno> {
+    // Backings for eventfd/timerfd/signalfd/memfd/procfs are indexed by the
+    // inherited OFD's stable negative handle. Add these fallible references
+    // first, rolling them back if a stale handle is encountered, before
+    // touching the older infallible global-resource refcounts below.
+    let mut shared_backings_bumped: Vec<(FileType, i64)> = Vec::new();
+    for (_idx, ofd) in child.ofd_table.iter() {
+        match crate::descriptor_backing::add_ref_for_ofd(ofd.file_type, ofd.host_handle) {
+            Ok(true) => shared_backings_bumped.push((ofd.file_type, ofd.host_handle)),
+            Ok(false) => {}
+            Err(err) => {
+                for (file_type, host_handle) in shared_backings_bumped.into_iter().rev() {
+                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+                }
+                return Err(err);
+            }
+        }
+    }
+
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
 
     // Pipe-OFDs (host_handle is the negative-encoded global pipe index).
@@ -177,7 +206,7 @@ fn bump_inherited_resource_refcounts(child: &Process) {
         }
     }
 
-    // Shared listener backlog (AF_INET listeners) and host_net_handle
+    // Shared listener backlog (AF_INET/AF_INET6 listeners) and host_net_handle
     // (connected AF_INET sockets): increment one ref per socket entry that
     // carries one. close() and process exit each drop one ref; last-drop
     // either frees the listener slot or calls host_net_close. Iterates
@@ -187,14 +216,21 @@ fn bump_inherited_resource_refcounts(child: &Process) {
     let backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
     for sock_idx in 0..child.sockets.len() {
         if let Some(sock) = child.sockets.get(sock_idx) {
+            crate::socket::inherit_inet_binding_owners(parent_pid, child.pid, sock_idx);
             if let Some(shared_idx) = sock.shared_backlog_idx {
                 backlog_table.add_ref(shared_idx);
             }
             if let Some(net_handle) = sock.host_net_handle {
                 crate::socket::host_net_handle_fork_ref(net_handle);
             }
+            if let Some(path) = sock.bind_path.as_deref() {
+                let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+                registry.add_owner(path, child.pid, sock_idx);
+            }
         }
     }
+
+    Ok(())
 }
 
 /// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
@@ -204,18 +240,16 @@ fn bump_inherited_resource_refcounts(child: &Process) {
 fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
     use alloc::collections::BTreeMap;
     let mut pipe_fd_pairs: BTreeMap<usize, (i32, i32)> = BTreeMap::new();
-    for fd in 0..1024i32 {
-        if let Ok(entry) = child.fd_table.get(fd) {
-            if let Some(ofd) = child.ofd_table.get(entry.ofd_ref.0) {
-                if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
-                    let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                    let access_mode = ofd.status_flags & O_ACCMODE;
-                    let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
-                    if access_mode == wasm_posix_shared::flags::O_RDONLY {
-                        pair.0 = fd;
-                    } else {
-                        pair.1 = fd;
-                    }
+    for (fd, entry) in child.fd_table.iter() {
+        if let Some(ofd) = child.ofd_table.get(entry.ofd_ref.0) {
+            if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
+                let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+                let access_mode = ofd.status_flags & O_ACCMODE;
+                let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
+                if access_mode == wasm_posix_shared::flags::O_RDONLY {
+                    pair.0 = fd;
+                } else {
+                    pair.1 = fd;
                 }
             }
         }
@@ -309,6 +343,8 @@ impl ProcessTable {
         retain_limbo_leader: bool,
     ) -> Option<RemoveProcessResult> {
         let proc = self.processes.remove(&pid)?;
+        let mut host_closes: Vec<i64> = Vec::new();
+        let mut host_dir_closes: Vec<i64> = Vec::new();
         let mut host_net_closes: Vec<i32> = Vec::new();
 
         let pipe_table = unsafe { crate::pipe::global_pipe_table() };
@@ -360,7 +396,41 @@ impl ProcessTable {
             }
         }
 
-        // Clean up socket OFDs: close pipe endpoints so peers get EOF/EPIPE.
+        // Drop kernel-global eventfd/timerfd/signalfd/memfd/procfs backing
+        // references for every OFD the process still owns. Normal exit closes
+        // fds first; this also covers crash removal and spawn rollback.
+        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
+            crate::descriptor_backing::release_for_ofd(ofd.file_type, ofd.host_handle);
+        }
+
+        // Drop host-backed file and directory handles that a process still
+        // owned when it was removed without reaching sys_exit (worker crash,
+        // explicit host termination, or failed fork/spawn launch). Normal
+        // exit closes every fd first, so these lists are empty on the zombie
+        // reaping path. Fork/spawn share positive host handles by refcount;
+        // only the last process queues the underlying host_close.
+        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
+            if ofd.dir_host_handle >= 0 {
+                host_dir_closes.push(ofd.dir_host_handle);
+            }
+            if ofd.host_handle < 0 {
+                continue;
+            }
+            if matches!(
+                ofd.file_type,
+                FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe
+            ) && crate::ofd::host_handle_close_ref(ofd.host_handle)
+            {
+                host_closes.push(ofd.host_handle);
+            }
+        }
+        for stream in proc.dir_streams.iter().flatten() {
+            host_dir_closes.push(stream.host_handle);
+        }
+
+        // Clean up socket OFDs. Active TCP streams use the same orderly FIN
+        // and orphaned receive state as close(2); other socket kinds close
+        // their pipe endpoints directly.
         // Without this, a peer process reading from a connected socket would
         // block forever instead of getting EOF when this process exits.
         //
@@ -374,6 +444,14 @@ impl ProcessTable {
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
                     if sock.global_pipes {
+                        let orderly_tcp_close = matches!(
+                            (sock.domain, sock.sock_type),
+                            (
+                                crate::socket::SocketDomain::Inet
+                                    | crate::socket::SocketDomain::Inet6,
+                                crate::socket::SocketType::Stream,
+                            )
+                        );
                         // Cross-process socket: close pipe ends in global table
                         if let Some(send_idx) = sock.send_buf_idx {
                             if let Some(pipe) = pipe_table.get_mut(send_idx) {
@@ -383,7 +461,11 @@ impl ProcessTable {
                         }
                         if let Some(recv_idx) = sock.recv_buf_idx {
                             if let Some(pipe) = pipe_table.get_mut(recv_idx) {
-                                pipe.close_read_end();
+                                if orderly_tcp_close {
+                                    pipe.close_read_end_orderly();
+                                } else {
+                                    pipe.close_read_end();
+                                }
                             }
                             pipe_table.free_if_closed(recv_idx);
                         }
@@ -443,7 +525,9 @@ impl ProcessTable {
 
         // Clean up AF_INET bind table entries for sockets the process held.
         crate::socket::udp_cleanup_process(pid);
+        crate::socket::udp6_cleanup_process(pid);
         crate::socket::tcp_cleanup_process(pid);
+        crate::socket::tcp6_cleanup_process(pid);
 
         // Release any PTHREAD_PROCESS_SHARED primitives owned by this pid
         // so peers aren't wedged on mutexes or waiter queues.
@@ -466,6 +550,8 @@ impl ProcessTable {
 
         Some(RemoveProcessResult {
             process: proc,
+            host_closes,
+            host_dir_closes,
             host_net_closes,
         })
     }
@@ -488,6 +574,7 @@ impl ProcessTable {
         limbo.is_session_leader = proc.is_session_leader;
         limbo.state = ProcessState::Limbo;
         limbo.exit_status = proc.exit_status;
+        limbo.exit_signal = proc.exit_signal;
         limbo.cwd = proc.cwd.clone();
         limbo.environ = proc.environ.clone();
         limbo.argv = proc.argv.clone();
@@ -564,6 +651,12 @@ impl ProcessTable {
         }
         let serialized_parent = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if matches!(
+                parent.state,
+                crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+            ) {
+                return Err(Errno::ESRCH);
+            }
             serialize_fork_state_with_growing_buffer(parent)?
         };
 
@@ -573,7 +666,7 @@ impl ProcessTable {
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
         // factored out into a free helper.
-        bump_inherited_resource_refcounts(&child);
+        bump_inherited_resource_refcounts(parent_pid, &child)?;
 
         // Build fork-only `fork_pipe_replay` (fork replay needs it to
         // return the same fds as the parent did when re-running
@@ -589,6 +682,83 @@ impl ProcessTable {
             parent.increment_fork_count();
         }
 
+        Ok(())
+    }
+
+    /// Insert a process produced by the retained legacy fork-state ABI.
+    /// Unlike a raw map insert, this refuses to replace an existing pid and
+    /// either establishes same-instance inherited refs or preserves fresh-
+    /// kernel sole ownership before moving the process into the table.
+    #[cfg_attr(
+        not(any(target_arch = "wasm32", target_arch = "wasm64")),
+        allow(dead_code)
+    )]
+    pub(crate) fn insert_legacy_fork_process(&mut self, child: Process) -> Result<(), Errno> {
+        if self.processes.contains_key(&child.pid) {
+            return Err(Errno::EEXIST);
+        }
+
+        if self.processes.contains_key(&child.ppid) {
+            // Same-instance legacy install: the parent still owns every
+            // inherited resource, so establish the child's additional refs.
+            bump_inherited_resource_refcounts(child.ppid, &child)?;
+        } else {
+            // The retained ABI also initializes a fresh kernel instance where
+            // the parent Process is intentionally absent. Ordinary host-backed
+            // handles are sole-owned by that child and must not receive a
+            // phantom parent ref. Kernel-global descriptor backings are not
+            // serialized, however, so accepting one here could alias a reused
+            // slot; fail truthfully instead.
+            if child.ofd_table.iter().any(|(_, ofd)| {
+                crate::descriptor_backing::manages_ofd(ofd.file_type, ofd.host_handle)
+            }) {
+                return Err(Errno::EBADF);
+            }
+        }
+        self.processes.insert(child.pid, child);
+        Ok(())
+    }
+
+    /// Replace an existing process through the retained legacy exec-state
+    /// ABI, transferring one ownership reference for surviving descriptor
+    /// backings and releasing old CLOEXEC-only/orphaned OFDs exactly once.
+    #[cfg_attr(
+        not(any(target_arch = "wasm32", target_arch = "wasm64")),
+        allow(dead_code)
+    )]
+    pub(crate) fn replace_legacy_exec_process(
+        &mut self,
+        pid: u32,
+        mut replacement: Process,
+    ) -> Result<(), Errno> {
+        if replacement.pid != pid {
+            return Err(Errno::EINVAL);
+        }
+        if let Some(old) = self.processes.get(&pid) {
+            if matches!(old.state, ProcessState::Exited | ProcessState::Limbo) {
+                return Err(Errno::ESRCH);
+            }
+            // Exec replaces the image, not the process identity or its
+            // job-control state or unconsumed parent-visible status record.
+            replacement.state = old.state;
+            replacement.wait_event = old.wait_event;
+            let removed = crate::descriptor_backing::removed_backings_for_exec(old, &replacement)?;
+            let old = self.processes.insert(pid, replacement).unwrap();
+            crate::descriptor_backing::release_backings(&removed);
+            drop(old);
+        } else {
+            // A fresh kernel instance has no old Process from which to
+            // transfer global backing ownership, and the retained wire format
+            // does not serialize those backing values. Reject them instead of
+            // letting a stale stable index alias this instance's current or
+            // future allocation at the same slot.
+            if replacement.ofd_table.iter().any(|(_, ofd)| {
+                crate::descriptor_backing::manages_ofd(ofd.file_type, ofd.host_handle)
+            }) {
+                return Err(Errno::EBADF);
+            }
+            self.processes.insert(pid, replacement);
+        }
         Ok(())
     }
 
@@ -618,6 +788,12 @@ impl ProcessTable {
         // Snapshot inheritable parent state under an immutable borrow.
         let inherit = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if matches!(
+                parent.state,
+                crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+            ) {
+                return Err(Errno::ESRCH);
+            }
             // Compute the SIG_IGN-disposition bitmask for signals 1..=64.
             let mut ignored_signals: u64 = 0;
             for sig in 1u32..=64 {
@@ -726,12 +902,11 @@ impl ProcessTable {
             }
         }
 
-        self.processes.insert(child_pid, child);
-
         // Bump cross-process refcounts on the inherited fd state. The same
         // helper fork uses — this is the genuinely-shared concern.
-        let child_ref = self.processes.get(&child_pid).unwrap();
-        bump_inherited_resource_refcounts(child_ref);
+        bump_inherited_resource_refcounts(parent_pid, &child)?;
+
+        self.processes.insert(child_pid, child);
 
         // Apply file actions in forward order against the child. Any failure
         // rolls back the partial child via remove_process — which runs the
@@ -739,6 +914,12 @@ impl ProcessTable {
         // any newly-opened fds, queues last-ref host net handles for close).
         if let Err(e) = self.apply_spawn_file_actions(child_pid, file_actions, host) {
             if let Some(removed) = self.remove_process(child_pid) {
+                for dir_handle in removed.host_dir_closes {
+                    let _ = host.host_closedir(dir_handle);
+                }
+                for handle in removed.host_closes {
+                    let _ = host.host_close(handle);
+                }
                 for net_handle in removed.host_net_closes {
                     let _ = host.host_net_close(net_handle);
                 }
@@ -846,9 +1027,43 @@ impl ProcessTable {
         self.processes.get(&pid)
     }
 
-    /// Collect all active PIDs.
+    /// Find the process record that owns a retained Linux-style task ID.
+    ///
+    /// A process leader's TID is its PID; pthread TIDs live in the owning
+    /// Process record. Exited leaders remain addressable until reaped, while a
+    /// Limbo record is only an internal process-group/session placeholder.
+    pub fn get_process_containing_task(&self, tid: u32) -> Option<&Process> {
+        if let Some(leader) = self
+            .processes
+            .get(&tid)
+            .filter(|process| process.state != ProcessState::Limbo)
+        {
+            return Some(leader);
+        }
+
+        self.processes.values().find(|process| {
+            matches!(process.state, ProcessState::Running | ProcessState::Stopped)
+                && process.get_thread(tid).is_some()
+        })
+    }
+
+    /// Collect every retained PID, including internal limbo identities.
     pub fn all_pids(&self) -> Vec<u32> {
         self.processes.keys().copied().collect()
+    }
+
+    /// Collect PIDs that should be visible through procfs.
+    ///
+    /// Exited processes remain visible as zombies until their parent reaps
+    /// them. Limbo entries are already reaped and retained only as internal
+    /// process-group/session identities, so exposing them as `/proc/<pid>`
+    /// would resurrect a process that no longer exists.
+    pub fn procfs_pids(&self) -> Vec<u32> {
+        self.processes
+            .iter()
+            .filter(|(_, proc)| proc.state != ProcessState::Limbo)
+            .map(|(&pid, _)| pid)
+            .collect()
     }
 
     /// Collect PIDs of all processes in a given process group.
@@ -872,40 +1087,54 @@ impl ProcessTable {
     /// parent reaps it, so wait semantics stay kernel-owned.
     pub fn mark_process_signaled(&mut self, pid: u32, signum: u32) -> Result<(), Errno> {
         let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
-        proc.state = ProcessState::Exited;
-        proc.exit_status = 128 + signum as i32;
+        proc.record_signal_exit(signum);
         Ok(())
     }
 
-    /// Poll for a waitable child owned by `parent_pid` matching a waitpid-style
-    /// target.
-    ///
-    /// Returns:
-    /// - `Ok(Some((child_pid, wait_status)))` when a matching zombie exists.
-    /// - `Ok(None)` when a matching child exists but is still running.
-    /// - `Err(ECHILD)` when no matching child belongs to the parent.
-    pub fn poll_waitable_child(
-        &self,
+    /// Select the latest status-information record for a direct child.
+    /// Nonmatching masks and WNOWAIT leave that single record untouched.
+    pub fn poll_wait_event(
+        &mut self,
         parent_pid: u32,
         target_pid: i32,
-    ) -> Result<Option<(u32, i32)>, Errno> {
-        let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+        event_mask: u32,
+        flags: u32,
+    ) -> Result<Option<(u32, ChildWaitEvent)>, Errno> {
+        use wasm_posix_shared::wait::{
+            EVENT_CONTINUED, EVENT_EXITED, EVENT_STOPPED, WNOWAIT,
+        };
+
+        let valid_events = EVENT_EXITED | EVENT_STOPPED | EVENT_CONTINUED;
+        if event_mask == 0 || event_mask & !valid_events != 0 || flags & !WNOWAIT != 0 {
+            return Err(Errno::EINVAL);
+        }
+
+        let parent_pgid = self
+            .processes
+            .get(&parent_pid)
+            .ok_or(Errno::ESRCH)?
+            .pgid;
         let mut saw_matching_child = false;
 
-        for (&child_pid, child) in &self.processes {
-            if child.ppid != parent_pid {
+        for (&child_pid, child) in &mut self.processes {
+            if child.ppid != parent_pid || child.state == ProcessState::Limbo {
                 continue;
             }
-            if !Self::child_matches_wait_target(child_pid, child, target_pid, parent.pgid) {
+            if !Self::child_matches_wait_target(child_pid, child, target_pid, parent_pgid) {
                 continue;
             }
             saw_matching_child = true;
-            if child.state == ProcessState::Exited {
-                return Ok(Some((
-                    child_pid,
-                    Self::wait_status_from_exit_status(child.exit_status),
-                )));
+
+            let Some(event) = child.wait_event else {
+                continue;
+            };
+            if event.event_mask & event_mask == 0 {
+                continue;
             }
+            if flags & WNOWAIT == 0 {
+                child.wait_event = None;
+            }
+            return Ok(Some((child_pid, event)));
         }
 
         if saw_matching_child {
@@ -943,14 +1172,6 @@ impl ProcessTable {
         };
         child.pgid == target_pgid
     }
-
-    fn wait_status_from_exit_status(exit_status: i32) -> i32 {
-        if exit_status >= 128 {
-            (exit_status - 128) & 0x7f
-        } else {
-            (exit_status & 0xff) << 8
-        }
-    }
 }
 
 #[cfg(test)]
@@ -982,12 +1203,22 @@ mod wait_tests {
         table.processes.get_mut(&102).unwrap().pgid = 101;
         table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
 
+        assert!(
+            table.procfs_pids().contains(&101),
+            "an unreaped zombie remains visible through procfs"
+        );
+
         table.reap_process(101).expect("reap group leader");
 
         let limbo = table.get(101).expect("limbo leader retained");
         assert_eq!(limbo.state, ProcessState::Limbo);
         assert_eq!(limbo.pgid, 101);
         assert_eq!(limbo.ppid, 100);
+        assert!(table.all_pids().contains(&101));
+        assert!(
+            !table.procfs_pids().contains(&101),
+            "a reaped limbo identity must not remain visible through procfs"
+        );
 
         table.processes.get_mut(&102).unwrap().state = ProcessState::Exited;
         table.reap_process(102).expect("reap final member");
@@ -1042,6 +1273,205 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_state_install_rejects_collisions_but_allows_fresh_kernel_tables() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.get_mut(100).unwrap().argv = alloc::vec![b"original".to_vec()];
+
+        let mut colliding_fork = Process::new(100);
+        colliding_fork.ppid = 100;
+        assert_eq!(
+            table.insert_legacy_fork_process(colliding_fork),
+            Err(Errno::EEXIST)
+        );
+        assert_eq!(table.get(100).unwrap().argv[0], b"original");
+
+        let mut child_without_local_parent = Process::new(101);
+        child_without_local_parent.ppid = 999;
+        table
+            .insert_legacy_fork_process(child_without_local_parent)
+            .unwrap();
+        assert_eq!(table.get(101).unwrap().ppid, 999);
+
+        table
+            .replace_legacy_exec_process(777, Process::new(777))
+            .unwrap();
+        assert!(table.get(777).is_some());
+        assert_eq!(
+            table.replace_legacy_exec_process(100, Process::new(102)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(table.get(100).unwrap().argv[0], b"original");
+    }
+
+    #[test]
+    fn legacy_exec_preserves_stopped_state_and_parent_visible_status_record() {
+        use wasm_posix_shared::signal::SIGTSTP;
+        use wasm_posix_shared::wait::EVENT_STOPPED;
+
+        let mut table = ProcessTable::new();
+        table.create_process(200).unwrap();
+        assert!(table.get_mut(200).unwrap().record_stop(SIGTSTP));
+
+        table
+            .replace_legacy_exec_process(200, Process::new(200))
+            .unwrap();
+
+        assert_eq!(table.get(200).unwrap().state, ProcessState::Stopped);
+        let event = table.get(200).unwrap().wait_event.unwrap();
+        assert_eq!(event.event_mask, EVENT_STOPPED);
+        assert_eq!(event.si_status, SIGTSTP as i32);
+    }
+
+    #[test]
+    fn fork_pipe_replay_includes_fds_above_default_nofile_limit() {
+        use crate::fd::OpenFileDescRef;
+        use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
+
+        let mut child = Process::new(100);
+        child.fd_table.set_max_fds(4096);
+        let read_ofd = child
+            .ofd_table
+            .create(FileType::Pipe, O_RDONLY, -1, b"pipe-read".to_vec());
+        let write_ofd = child
+            .ofd_table
+            .create(FileType::Pipe, O_WRONLY, -1, b"pipe-write".to_vec());
+        let read_fd = child
+            .fd_table
+            .alloc_at_min(OpenFileDescRef(read_ofd), 0, 2048)
+            .unwrap();
+        let write_fd = child
+            .fd_table
+            .alloc_at_min(OpenFileDescRef(write_ofd), 0, 2049)
+            .unwrap();
+
+        assert_eq!(build_fork_pipe_replay(&child), vec![(read_fd, write_fd)]);
+    }
+
+    #[test]
+    fn exited_parent_cannot_fork_or_spawn() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.get_mut(100).unwrap().state = crate::process::ProcessState::Exited;
+
+        assert_eq!(table.fork_process(100, 101), Err(Errno::ESRCH));
+        let mut host = NoopHost;
+        assert_eq!(
+            table.spawn_child(
+                100,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            ),
+            Err(Errno::ESRCH),
+        );
+    }
+
+    #[test]
+    fn stopped_parent_can_finish_spawn_after_async_resolution() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::signal::SIGSTOP;
+
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        assert!(table.get_mut(100).unwrap().record_stop(SIGSTOP));
+
+        // The host resolves a posix_spawn executable asynchronously. A stop
+        // can land during that await; the parent remains a live process and
+        // the resolved continuation must still be allowed to create its child.
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child(
+                100,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .expect("stopped parent remains eligible to complete spawn");
+
+        assert_eq!(table.get(100).unwrap().state, ProcessState::Stopped);
+        assert_eq!(table.get(child_pid).unwrap().ppid, 100);
+        assert_eq!(table.get(child_pid).unwrap().state, ProcessState::Running);
+    }
+
+    #[test]
+    fn process_exit_closes_tcp_pipes_orderly() {
+        use crate::pipe::{global_pipe_table, PipeBuffer, DEFAULT_PIPE_CAPACITY};
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+
+        let pipe_table = unsafe { global_pipe_table() };
+        let send_idx = pipe_table.alloc(PipeBuffer::new(DEFAULT_PIPE_CAPACITY));
+        let recv_idx = pipe_table.alloc(PipeBuffer::new(DEFAULT_PIPE_CAPACITY));
+
+        let mut table = ProcessTable::new();
+        table.create_process(950_001).unwrap();
+        let proc = table.processes.get_mut(&950_001).unwrap();
+        let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 6);
+        socket.state = SocketState::Connected;
+        socket.send_buf_idx = Some(send_idx);
+        socket.recv_buf_idx = Some(recv_idx);
+        socket.global_pipes = true;
+        let sock_idx = proc.sockets.alloc(socket);
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Socket,
+            wasm_posix_shared::flags::O_RDWR,
+            -((sock_idx as i64) + 1),
+            Vec::new(),
+        );
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        table.remove_process(950_001).unwrap();
+
+        let send_pipe = pipe_table.get_mut(send_idx).unwrap();
+        assert!(!send_pipe.is_write_end_open());
+        assert!(send_pipe.is_read_end_open());
+        let recv_pipe = pipe_table.get_mut(recv_idx).unwrap();
+        assert!(recv_pipe.is_read_end_open());
+        assert_eq!(recv_pipe.write(b"after-exit-one"), 14);
+        assert_eq!(recv_pipe.write(b"after-exit-two"), 14);
+        assert_eq!(recv_pipe.available(), 0);
+
+        pipe_table.get_mut(send_idx).unwrap().close_read_end();
+        pipe_table.free_if_closed(send_idx);
+        pipe_table.get_mut(recv_idx).unwrap().close_write_end();
+        pipe_table.free_if_closed(recv_idx);
+        assert!(pipe_table.get(send_idx).is_none());
+        assert!(pipe_table.get(recv_idx).is_none());
+    }
+
+    fn install_bound_udp4_socket(table: &mut ProcessTable, pid: u32, port: u16) -> usize {
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+
+        let sock_idx = {
+            let proc = table.processes.get_mut(&pid).unwrap();
+            let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
+            socket.state = SocketState::Bound;
+            socket.bind_addr = [127, 0, 0, 1];
+            socket.bind_port = port;
+            proc.sockets.alloc(socket)
+        };
+        crate::socket::udp_register(pid, sock_idx, [127, 0, 0, 1], port, false).unwrap();
+        sock_idx
+    }
+
+    fn assert_udp_owner(port: u16, pid: u32, sock_idx: usize, present: bool) {
+        let present_in_lookup = crate::socket::udp_lookup([127, 0, 0, 1], port)
+            .iter()
+            .any(|target| target.pid == pid && target.sock_idx == sock_idx);
+        assert_eq!(present_in_lookup, present);
+    }
+
+    #[test]
     fn fork_process_grows_state_buffer_for_large_parent_state() {
         const LARGE_FD_COUNT: usize = 80;
         const LARGE_PATH_LEN: usize = 1024;
@@ -1055,7 +1485,7 @@ mod tests {
 
             for _ in 0..LARGE_FD_COUNT {
                 let path = alloc::vec![b'x'; LARGE_PATH_LEN];
-                let ofd_ref = parent.ofd_table.create(FileType::MemFd, 0, -1, path);
+                let ofd_ref = parent.ofd_table.create(FileType::Regular, 0, -10, path);
                 last_fd = parent
                     .fd_table
                     .alloc(crate::fd::OpenFileDescRef(ofd_ref), 0)
@@ -1084,50 +1514,178 @@ mod tests {
         let child_ofd = child.ofd_table.get(child_fd.ofd_ref.0).unwrap();
 
         assert_eq!(child.ppid, 100);
-        assert_eq!(child_ofd.file_type, FileType::MemFd);
+        assert_eq!(child_ofd.file_type, FileType::Regular);
         assert_eq!(child_ofd.path.len(), LARGE_PATH_LEN);
     }
 
     #[test]
-    fn poll_waitable_child_returns_exited_child_status() {
+    fn fork_inherits_udp_binding_owner_before_parent_exit() {
+        const PARENT: u32 = 930_001;
+        const CHILD: u32 = 930_002;
+        const PORT: u16 = 64_905;
+
+        crate::socket::udp_cleanup_process(PARENT);
+        crate::socket::udp_cleanup_process(CHILD);
+        let mut table = ProcessTable::new();
+        table.create_process(PARENT).unwrap();
+        let sock_idx = install_bound_udp4_socket(&mut table, PARENT, PORT);
+
+        table.fork_process(PARENT, CHILD).unwrap();
+        assert_udp_owner(PORT, PARENT, sock_idx, true);
+        assert_udp_owner(PORT, CHILD, sock_idx, true);
+
+        table.remove_process(PARENT).unwrap();
+        assert_udp_owner(PORT, PARENT, sock_idx, false);
+        assert_udp_owner(PORT, CHILD, sock_idx, true);
+        assert!(!crate::socket::udp_can_bind(
+            930_003,
+            0,
+            [127, 0, 0, 1],
+            PORT,
+            false
+        ));
+
+        table.remove_process(CHILD).unwrap();
+        assert!(crate::socket::udp_lookup([127, 0, 0, 1], PORT).is_empty());
+        assert!(crate::socket::udp_can_bind(
+            930_003,
+            0,
+            [127, 0, 0, 1],
+            PORT,
+            false
+        ));
+    }
+
+    #[test]
+    fn spawn_inherits_udp_binding_owner_before_parent_exit() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        const PARENT: u32 = 940_001;
+        const PORT: u16 = 64_906;
+
+        crate::socket::udp_cleanup_process(PARENT);
+        let mut table = ProcessTable::new();
+        table.create_process(PARENT).unwrap();
+        let sock_idx = install_bound_udp4_socket(&mut table, PARENT, PORT);
+        let mut host = NoopHost;
+
+        let child_pid = table
+            .spawn_child(
+                PARENT,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+        assert_udp_owner(PORT, PARENT, sock_idx, true);
+        assert_udp_owner(PORT, child_pid, sock_idx, true);
+
+        table.remove_process(PARENT).unwrap();
+        assert_udp_owner(PORT, PARENT, sock_idx, false);
+        assert_udp_owner(PORT, child_pid, sock_idx, true);
+
+        table.remove_process(child_pid).unwrap();
+        assert!(crate::socket::udp_lookup([127, 0, 0, 1], PORT).is_empty());
+    }
+
+    #[test]
+    fn poll_wait_event_selects_and_consumes_exit_status() {
+        use wasm_posix_shared::wait::{CLD_EXITED, EVENT_EXITED};
+
         let mut table = ProcessTable::new();
         table.create_process(10).unwrap();
         table.create_process(11).unwrap();
         let child = table.processes.get_mut(&11).unwrap();
         child.ppid = 10;
-        child.state = ProcessState::Exited;
-        child.exit_status = 7;
+        assert!(child.record_normal_exit(7));
 
+        let (pid, event) = table
+            .poll_wait_event(10, -1, EVENT_EXITED, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pid, 11);
+        assert_eq!(event.wait_status, 7 << 8);
+        assert_eq!(event.si_code, CLD_EXITED);
+        assert_eq!(event.si_status, 7);
+        assert!(table.get(11).unwrap().wait_event.is_none());
+        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
+    }
+
+    #[test]
+    fn poll_wait_event_wnowait_repeats_the_same_signal_exit() {
+        use wasm_posix_shared::wait::{CLD_KILLED, EVENT_EXITED, WNOWAIT};
+
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
+        table.mark_process_signaled(11, 15).unwrap();
+
+        for _ in 0..2 {
+            let (_, event) = table
+                .poll_wait_event(10, 11, EVENT_EXITED, WNOWAIT)
+                .unwrap()
+                .unwrap();
+            assert_eq!(event.wait_status, 15);
+            assert_eq!(event.si_code, CLD_KILLED);
+            assert_eq!(event.si_status, 15);
+        }
+        assert!(table.get(11).unwrap().wait_event.is_some());
+    }
+
+    #[test]
+    fn poll_wait_event_nonmatching_mask_preserves_latest_record() {
+        use wasm_posix_shared::signal::SIGTSTP;
+        use wasm_posix_shared::wait::{EVENT_EXITED, EVENT_STOPPED};
+
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        let child = table.processes.get_mut(&11).unwrap();
+        child.ppid = 10;
+        assert!(child.record_stop(SIGTSTP));
+
+        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
         assert_eq!(
-            table.poll_waitable_child(10, -1).unwrap(),
-            Some((11, 7 << 8))
+            table.get(11).unwrap().wait_event.unwrap().event_mask,
+            EVENT_STOPPED
+        );
+        assert!(
+            table
+                .poll_wait_event(10, -1, EVENT_STOPPED, 0)
+                .unwrap()
+                .is_some()
         );
     }
 
     #[test]
-    fn poll_waitable_child_encodes_signal_status() {
-        let mut table = ProcessTable::new();
-        table.create_process(10).unwrap();
-        table.create_process(11).unwrap();
-        table.mark_process_signaled(11, 15).unwrap();
-        table.processes.get_mut(&11).unwrap().ppid = 10;
+    fn poll_wait_event_distinguishes_running_from_no_child_and_validates_input() {
+        use wasm_posix_shared::wait::{EVENT_EXITED, WNOWAIT};
 
-        assert_eq!(table.poll_waitable_child(10, 11).unwrap(), Some((11, 15)));
-    }
-
-    #[test]
-    fn poll_waitable_child_distinguishes_running_from_no_child() {
         let mut table = ProcessTable::new();
         table.create_process(10).unwrap();
         table.create_process(11).unwrap();
         table.processes.get_mut(&11).unwrap().ppid = 10;
 
-        assert_eq!(table.poll_waitable_child(10, -1).unwrap(), None);
-        assert_eq!(table.poll_waitable_child(10, 12), Err(Errno::ECHILD));
+        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
+        assert_eq!(
+            table.poll_wait_event(10, 12, EVENT_EXITED, 0),
+            Err(Errno::ECHILD)
+        );
+        assert_eq!(table.poll_wait_event(10, -1, 0, 0), Err(Errno::EINVAL));
+        assert_eq!(
+            table.poll_wait_event(10, -1, EVENT_EXITED, WNOWAIT | 2),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]
-    fn poll_waitable_child_matches_process_groups() {
+    fn poll_wait_event_matches_process_groups() {
+        use wasm_posix_shared::wait::EVENT_EXITED;
+
         let mut table = ProcessTable::new();
         table.create_process(10).unwrap();
         table.processes.get_mut(&10).unwrap().pgid = 20;
@@ -1136,22 +1694,31 @@ mod tests {
             let child = table.processes.get_mut(&11).unwrap();
             child.ppid = 10;
             child.pgid = 20;
-            child.state = ProcessState::Exited;
-            child.exit_status = 0;
+            child.record_normal_exit(0);
         }
         table.create_process(12).unwrap();
         {
             let child = table.processes.get_mut(&12).unwrap();
             child.ppid = 10;
             child.pgid = 30;
-            child.state = ProcessState::Exited;
-            child.exit_status = 1;
+            child.record_normal_exit(1);
         }
 
-        assert_eq!(table.poll_waitable_child(10, 0).unwrap(), Some((11, 0)));
         assert_eq!(
-            table.poll_waitable_child(10, -30).unwrap(),
-            Some((12, 1 << 8))
+            table
+                .poll_wait_event(10, 0, EVENT_EXITED, 0)
+                .unwrap()
+                .unwrap()
+                .0,
+            11
+        );
+        assert_eq!(
+            table
+                .poll_wait_event(10, -30, EVENT_EXITED, 0)
+                .unwrap()
+                .unwrap()
+                .0,
+            12
         );
     }
 
@@ -1220,5 +1787,38 @@ mod tests {
                 .is_none()
         );
         locks.clear();
+    }
+
+    #[test]
+    fn task_lookup_prefers_leaders_and_excludes_dead_worker_threads() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.create_process(200).unwrap();
+        table
+            .get_mut(100)
+            .unwrap()
+            .add_thread(crate::process::ThreadInfo::new(900, 0, 0, 0));
+        table
+            .get_mut(100)
+            .unwrap()
+            .add_thread(crate::process::ThreadInfo::new(200, 0, 0, 0));
+
+        assert_eq!(table.get_process_containing_task(100).unwrap().pid, 100);
+        // An exact process leader wins over a numerically colliding worker TID.
+        assert_eq!(table.get_process_containing_task(200).unwrap().pid, 200);
+        assert_eq!(table.get_process_containing_task(900).unwrap().pid, 100);
+
+        table.get_mut(100).unwrap().state = ProcessState::Stopped;
+        assert_eq!(table.get_process_containing_task(900).unwrap().pid, 100);
+        table.get_mut(100).unwrap().state = ProcessState::Exited;
+        assert_eq!(table.get_process_containing_task(100).unwrap().pid, 100);
+        assert!(table.get_process_containing_task(900).is_none());
+
+        table.get_mut(200).unwrap().state = ProcessState::Exited;
+        assert_eq!(table.get_process_containing_task(200).unwrap().pid, 200);
+        table.get_mut(200).unwrap().state = ProcessState::Limbo;
+        assert!(table.get_process_containing_task(200).is_none());
+
+        assert!(table.get_process_containing_task(9999).is_none());
     }
 }

@@ -179,9 +179,13 @@ fn render_c_header() -> String {
          /* Default process-wasm pthread slot declaration. */\n\
          #define WASM_POSIX_THREAD_SLOT_DECL_DEFAULT {thread_slots_default}\n\
          \n\
+         /* Fixed kernel/musl resource-usage wire record size. */\n\
+         #define WASM_POSIX_RUSAGE_WIRE_SIZE {rusage_wire_size}u\n\
+         \n\
          #endif /* WASM_POSIX_ABI_CONSTANTS_H */\n",
         version = shared::ABI_VERSION,
         thread_slots_default = shared::process_memory::THREAD_SLOTS_USE_HOST_DEFAULT,
+        rusage_wire_size = shared::WASM_RUSAGE_WIRE_SIZE,
     )
 }
 
@@ -208,6 +212,10 @@ fn render_ts_module() -> String {
     out.push_str(&format!(
         "export const ABI_KERNEL_EXPORT = {:?} as const;\n\n",
         shared::abi::ABI_KERNEL_EXPORT
+    ));
+    out.push_str(&format!(
+        "export const SCHED_AFFINITY_MASK_SIZE = {} as const;\n\n",
+        shared::SCHED_AFFINITY_MASK_SIZE
     ));
 
     out.push_str(&format!(
@@ -426,6 +434,79 @@ fn render_ts_module() -> String {
     ));
 
     out.push_str(&format!(
+        "export const WAIT_EVENT_EXITED = {} as const;\n",
+        shared::wait::EVENT_EXITED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_EVENT_STOPPED = {} as const;\n",
+        shared::wait::EVENT_STOPPED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_EVENT_CONTINUED = {} as const;\n",
+        shared::wait::EVENT_CONTINUED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WNOHANG = {} as const;\n",
+        shared::wait::WNOHANG
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WUNTRACED = {} as const;\n",
+        shared::wait::WUNTRACED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WSTOPPED = {} as const;\n",
+        shared::wait::WSTOPPED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WEXITED = {} as const;\n",
+        shared::wait::WEXITED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WCONTINUED = {} as const;\n",
+        shared::wait::WCONTINUED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_WNOWAIT = {} as const;\n",
+        shared::wait::WNOWAIT
+    ));
+    out.push_str(&format!(
+        "export const WAIT_CLD_EXITED = {} as const;\n",
+        shared::wait::CLD_EXITED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_CLD_KILLED = {} as const;\n",
+        shared::wait::CLD_KILLED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_CLD_STOPPED = {} as const;\n",
+        shared::wait::CLD_STOPPED
+    ));
+    out.push_str(&format!(
+        "export const WAIT_CLD_CONTINUED = {} as const;\n",
+        shared::wait::CLD_CONTINUED
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_STATE_RUNNING = {} as const;\n",
+        shared::wait::PROCESS_STATE_RUNNING
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_STATE_STOPPED = {} as const;\n",
+        shared::wait::PROCESS_STATE_STOPPED
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_STATE_EXITED = {} as const;\n",
+        shared::wait::PROCESS_STATE_EXITED
+    ));
+    out.push_str(&format!(
+        "export const WAKE_PROCESS_STOPPED = {} as const;\n",
+        shared::wait::WAKE_PROCESS_STOPPED
+    ));
+    out.push_str(&format!(
+        "export const WAKE_PROCESS_CONTINUED = {} as const;\n\n",
+        shared::wait::WAKE_PROCESS_CONTINUED
+    ));
+
+    out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_STAT = {} as const;\n",
         size_of::<shared::WasmStat>()
     ));
@@ -442,8 +523,36 @@ fn render_ts_module() -> String {
         size_of::<shared::WasmPollFd>()
     ));
     out.push_str(&format!(
-        "export const STRUCT_SIZE_WASM_STATFS = {} as const;\n\n",
+        "export const STRUCT_SIZE_WASM_STATFS = {} as const;\n",
         size_of::<shared::WasmStatfs>()
+    ));
+    out.push_str(&format!(
+        "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = {} as const;\n",
+        size_of::<shared::WasmRusageWire>()
+    ));
+    out.push_str(&format!(
+        "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = {} as const;\n",
+        size_of::<shared::KernelWaitResult>()
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelWaitResult, wait_status)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelWaitResult, si_code)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelWaitResult, si_status)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelWaitResult, child_uid)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = {} as const;\n\n",
+        offset_of!(shared::KernelWaitResult, rusage)
     ));
 
     out.push_str("export const HOST_INTERCEPTED_SYSCALLS = {\n");
@@ -457,6 +566,12 @@ fn render_ts_module() -> String {
 
     out.push_str("export const ABI_SYSCALLS = {\n");
     for (number, name) in all_syscall_metadata() {
+        out.push_str(&format!("  {name}: {number},\n"));
+    }
+    out.push_str("} as const;\n\n");
+
+    out.push_str("export const PATHCONF_NAMES = {\n");
+    for (name, number) in shared::pathconf::ABI_NAMES {
         out.push_str(&format!("  {name}: {number},\n"));
     }
     out.push_str("} as const;\n\n");
@@ -477,6 +592,8 @@ fn render_ts_module() -> String {
     out.push_str("  argIndex: number;\n");
     out.push_str("  direction: SyscallArgDirection;\n");
     out.push_str("  size: SyscallArgSizeSpec;\n");
+    out.push_str("  nullable?: boolean;\n");
+    out.push_str("  required?: boolean;\n");
     out.push_str("  copyRetvalAdd?: number;\n");
     out.push_str("}\n\n");
 
@@ -500,6 +617,12 @@ fn ts_syscall_arg_desc(desc: &shared::host_abi::SyscallArgDesc) -> String {
         syscall_arg_direction_name(desc.direction),
         ts_syscall_arg_size(desc.size)
     );
+    if desc.nullable {
+        s.push_str(", nullable: true");
+    }
+    if desc.required {
+        s.push_str(", required: true");
+    }
     if desc.copy_retval_add != 0 {
         s.push_str(&format!(", copyRetvalAdd: {}", desc.copy_retval_add));
     }
@@ -663,6 +786,8 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
 
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("syscalls".into(), syscalls());
+    root.insert("pathconf_names".into(), pathconf_names());
+    root.insert("wait_contract".into(), wait_contract());
     root.insert(
         "host_intercepted_syscalls".into(),
         host_intercepted_syscalls(),
@@ -892,7 +1017,10 @@ fn marshalled_structs() -> Value {
     };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
     use shared::gl::{GlContextAttrs, GlQueryInfo, GlSubmitInfo, GlSurfaceAttrs};
-    use shared::{WasmDirent, WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
+    use shared::{
+        KernelWaitResult, WasmDirent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat,
+        WasmStatfs, WasmTimespec,
+    };
 
     let mut structs: JsonMap = BTreeMap::new();
     structs.insert(
@@ -961,6 +1089,39 @@ fn marshalled_structs() -> Value {
             f_frsize,
             f_flags,
             _pad,
+        }),
+    );
+    structs.insert(
+        "WasmRusageWire".into(),
+        struct_layout!(WasmRusageWire {
+            ru_utime_sec,
+            ru_utime_usec,
+            ru_stime_sec,
+            ru_stime_usec,
+            ru_maxrss,
+            ru_ixrss,
+            ru_idrss,
+            ru_isrss,
+            ru_minflt,
+            ru_majflt,
+            ru_nswap,
+            ru_inblock,
+            ru_oublock,
+            ru_msgsnd,
+            ru_msgrcv,
+            ru_nsignals,
+            ru_nvcsw,
+            ru_nivcsw,
+        }),
+    );
+    structs.insert(
+        "KernelWaitResult".into(),
+        struct_layout!(KernelWaitResult {
+            wait_status,
+            si_code,
+            si_status,
+            child_uid,
+            rusage,
         }),
     );
     structs.insert(
@@ -1281,6 +1442,62 @@ fn syscalls() -> Value {
     Value::Array(list)
 }
 
+fn pathconf_names() -> Value {
+    let mut names: JsonMap = BTreeMap::new();
+    for (name, number) in shared::pathconf::ABI_NAMES {
+        names.insert((*name).into(), json!(number));
+    }
+    Value::Object(names.into_iter().collect())
+}
+
+fn wait_contract() -> Value {
+    let mut contract: JsonMap = BTreeMap::new();
+    for (name, value) in [
+        ("WAIT_EVENT_EXITED", json!(shared::wait::EVENT_EXITED)),
+        ("WAIT_EVENT_STOPPED", json!(shared::wait::EVENT_STOPPED)),
+        (
+            "WAIT_EVENT_CONTINUED",
+            json!(shared::wait::EVENT_CONTINUED),
+        ),
+        ("WAIT_WNOHANG", json!(shared::wait::WNOHANG)),
+        ("WAIT_WUNTRACED", json!(shared::wait::WUNTRACED)),
+        ("WAIT_WSTOPPED", json!(shared::wait::WSTOPPED)),
+        ("WAIT_WEXITED", json!(shared::wait::WEXITED)),
+        ("WAIT_WCONTINUED", json!(shared::wait::WCONTINUED)),
+        ("WAIT_WNOWAIT", json!(shared::wait::WNOWAIT)),
+        ("WAIT_CLD_EXITED", json!(shared::wait::CLD_EXITED)),
+        ("WAIT_CLD_KILLED", json!(shared::wait::CLD_KILLED)),
+        ("WAIT_CLD_STOPPED", json!(shared::wait::CLD_STOPPED)),
+        (
+            "WAIT_CLD_CONTINUED",
+            json!(shared::wait::CLD_CONTINUED),
+        ),
+        (
+            "PROCESS_STATE_RUNNING",
+            json!(shared::wait::PROCESS_STATE_RUNNING),
+        ),
+        (
+            "PROCESS_STATE_STOPPED",
+            json!(shared::wait::PROCESS_STATE_STOPPED),
+        ),
+        (
+            "PROCESS_STATE_EXITED",
+            json!(shared::wait::PROCESS_STATE_EXITED),
+        ),
+        (
+            "WAKE_PROCESS_STOPPED",
+            json!(shared::wait::WAKE_PROCESS_STOPPED),
+        ),
+        (
+            "WAKE_PROCESS_CONTINUED",
+            json!(shared::wait::WAKE_PROCESS_CONTINUED),
+        ),
+    ] {
+        contract.insert(name.into(), value);
+    }
+    Value::Object(contract.into_iter().collect())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HostInterceptedSyscall {
     constant_name: &'static str,
@@ -1511,6 +1728,12 @@ fn syscall_arg_desc_json(desc: &shared::host_abi::SyscallArgDesc) -> Value {
         json!(syscall_arg_direction_name(desc.direction)),
     );
     m.insert("size".into(), syscall_arg_size_json(desc.size));
+    if desc.nullable {
+        m.insert("nullable".into(), json!(true));
+    }
+    if desc.required {
+        m.insert("required".into(), json!(true));
+    }
     if desc.copy_retval_add != 0 {
         m.insert("copyRetvalAdd".into(), json!(desc.copy_retval_add));
     }
@@ -1839,6 +2062,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "kernel_exports" => {
                 classify_additive_array_by_name(key, old_value, new_value, &mut report)?
             }
+            "host_adapter" => classify_host_adapter(old_value, new_value, &mut report)?,
             "marshalled_structs" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
@@ -1859,6 +2083,57 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 
 fn additive_top_level_section(section: &str) -> bool {
     matches!(section, "host_adapter" | "syscall_arg_descriptors")
+}
+
+fn classify_host_adapter(
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    let old_obj = old
+        .as_object()
+        .ok_or("old host_adapter section must be a JSON object")?;
+    let new_obj = new
+        .as_object()
+        .ok_or("new host_adapter section must be a JSON object")?;
+
+    for key in old_obj.keys() {
+        let Some(new_value) = new_obj.get(key) else {
+            report
+                .breaking
+                .push(format!("removed host_adapter field {key:?}"));
+            continue;
+        };
+        if key == "optional_kernel_exports" {
+            classify_additive_array(
+                "host_adapter.optional_kernel_exports",
+                &old_obj[key],
+                new_value,
+                report,
+                |entry| {
+                    entry.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        format!(
+                            "host_adapter.optional_kernel_exports entry must be a string: {entry}",
+                        )
+                    })
+                },
+            )?;
+        } else if &old_obj[key] != new_value {
+            report
+                .breaking
+                .push(format!("changed host_adapter field {key:?}"));
+        }
+    }
+
+    for key in new_obj.keys() {
+        if !old_obj.contains_key(key) {
+            report
+                .breaking
+                .push(format!("added host_adapter field {key:?}"));
+        }
+    }
+
+    Ok(())
 }
 
 fn classify_additive_object_by_key(
@@ -2026,6 +2301,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn generated_typescript_contains_pathconf_names_and_required_outputs() {
+        let rendered = render_ts_module();
+        assert!(rendered.contains("export const SCHED_AFFINITY_MASK_SIZE = 4 as const;"));
+        assert!(rendered.contains("export const PATHCONF_NAMES = {"));
+        assert!(rendered.contains("  PATH_MAX: 4,"));
+        assert!(rendered.contains("  TIMESTAMP_RESOLUTION: 23,"));
+        assert!(rendered.contains(
+            "{ argIndex: 2, direction: \"out\", size: { type: \"fixed\", size: 8 }, required: true }"
+        ));
+
+        let names = pathconf_names();
+        assert_eq!(names["LINK_MAX"], json!(0));
+        assert_eq!(names["TIMESTAMP_RESOLUTION"], json!(23));
+        assert_eq!(names.as_object().unwrap().len(), 24);
+    }
+
+    #[test]
+    fn generated_wait_abi_metadata_matches_shared_layouts() {
+        let rendered = render_ts_module();
+        for expected in [
+            "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;",
+            "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = 160 as const;",
+            "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = 0 as const;",
+            "export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = 4 as const;",
+            "export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = 8 as const;",
+            "export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = 12 as const;",
+            "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = 16 as const;",
+            "export const WAIT_EVENT_EXITED = 1 as const;",
+            "export const WAIT_EVENT_STOPPED = 2 as const;",
+            "export const WAIT_EVENT_CONTINUED = 4 as const;",
+            "export const PROCESS_STATE_RUNNING = 0 as const;",
+            "export const PROCESS_STATE_STOPPED = 1 as const;",
+            "export const PROCESS_STATE_EXITED = 2 as const;",
+            "export const WAKE_PROCESS_STOPPED = 16 as const;",
+            "export const WAKE_PROCESS_CONTINUED = 32 as const;",
+            "\"kernel_get_process_state\"",
+            "\"kernel_has_sa_nocldstop\"",
+            "\"kernel_wait_child_poll\"",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing generated TS: {expected}"
+            );
+        }
+
+        let header = render_c_header();
+        assert!(header.contains("#define WASM_POSIX_RUSAGE_WIRE_SIZE 144u"));
+
+        let structs = marshalled_structs();
+        assert_eq!(structs["WasmRusageWire"]["size"], json!(144));
+        assert_eq!(structs["KernelWaitResult"]["size"], json!(160));
+        assert_eq!(
+            structs["KernelWaitResult"]["fields"][4],
+            json!({"name": "rusage", "offset": 16, "span": 144})
+        );
+
+        let contract = wait_contract();
+        assert_eq!(contract["WAIT_WNOWAIT"], json!(0x0100_0000));
+        assert_eq!(contract["WAIT_CLD_CONTINUED"], json!(6));
+        assert_eq!(contract["PROCESS_STATE_STOPPED"], json!(1));
+        assert_eq!(contract["WAKE_PROCESS_CONTINUED"], json!(32));
+        assert_eq!(contract.as_object().unwrap().len(), 18);
+    }
+
     fn base_snapshot() -> Value {
         json!({
             "abi_version": 10,
@@ -2147,6 +2487,50 @@ mod tests {
     }
 
     #[test]
+    fn adding_wait_contract_section_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["wait_contract"] = wait_contract();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["added top-level section \"wait_contract\""]
+        );
+    }
+
+    #[test]
+    fn adding_optional_host_adapter_export_is_compatible() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["host_adapter"]["optional_kernel_exports"] =
+            json!(["kernel_get_process_exit_signal",]);
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec![
+                "added host_adapter.optional_kernel_exports entry \"kernel_get_process_exit_signal\"",
+            ],
+        );
+    }
+
+    #[test]
+    fn changing_required_host_adapter_export_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["host_adapter"]["required_kernel_exports"] =
+            json!(["__abi_version", "kernel_new_requirement",]);
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed host_adapter field \"required_kernel_exports\""],
+        );
+    }
+
+    #[test]
     fn changed_existing_export_is_breaking() {
         let old = base_snapshot();
         let mut new = old.clone();
@@ -2174,6 +2558,19 @@ mod tests {
         let old = base_snapshot();
         let mut new = old.clone();
         new["syscall_arg_descriptors"]["1"][0]["direction"] = json!("out");
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed syscall_arg_descriptors entry \"1\""]
+        );
+    }
+
+    #[test]
+    fn making_existing_syscall_pointer_required_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["syscall_arg_descriptors"]["1"][0]["required"] = json!(true);
 
         let report = classify_compat_change(&old, &new).unwrap();
         assert_eq!(

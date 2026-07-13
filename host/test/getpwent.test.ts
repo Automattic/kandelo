@@ -1,9 +1,9 @@
 /**
  * Task 4.6 — getpwent + friends round-trip via the rootfs.vfs mount.
  *
- * After Task 4.5 removed `synthetic_file_content`, the only path for a
- * user program to read /etc/passwd, /etc/group, /etc/services et al. is
- * through the rootfs image mounted at / by the default Node host setup.
+ * After Task 4.5 removed static `/etc` interception from the kernel, the only
+ * path for a user program to read /etc/passwd, /etc/group, /etc/services et
+ * al. is through the rootfs image mounted at / by the default Node host setup.
  *
  * This test runs `examples/getpwent_smoke.wasm` (which calls the libc
  * NSS-style readers — getpwent/getpwnam/getpwuid/getgrent/getservbyname)
@@ -91,7 +91,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
     expect(result.stdout).toContain("GRENT count=8");
   });
 
-  it("resolves service names from /etc/services via getservbyname", async () => {
+  it("resolves canonical service names and aliases from the rootfs image", async () => {
     const result = await runCentralizedProgram({
       programPath: smokeWasm,
       argv: ["getpwent_smoke"],
@@ -101,5 +101,12 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
     expect(result.stdout).toContain("SERV name=ssh proto=tcp port=22");
     expect(result.stdout).toContain("SERV name=http proto=tcp port=80");
+    expect(result.stdout).toContain("SERVENT query=www name=www proto=tcp port=80");
+    expect(result.stdout).toContain("SERVENT query=www-http name=www-http proto=tcp port=80");
+    expect(result.stdout).toContain("SERVENT query=https name=https proto=tcp port=443");
+    expect(result.stdout).toContain("SERVENT query=mysql name=mysql proto=tcp port=3306");
+    expect(result.stdout).toContain(
+      "SERVENT query=postgresql name=postgresql proto=tcp port=5432",
+    );
   });
 });

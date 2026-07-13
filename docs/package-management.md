@@ -150,8 +150,8 @@ The split is load-bearing post the
 Required fields:
 
 ```toml
-name = "zlib"              # logical library name
-version = "1.3.1"          # upstream version
+name = "zlib"              # logical library name; one safe path component
+version = "1.3.1"          # upstream version; one safe path component
 depends_on = []            # ["zlib@1.3.1", ...] — exact versions, no ranges
 
 [source]
@@ -176,7 +176,50 @@ script_path = "packages/registry/zlib/build-zlib.sh"
 libs = ["lib/libz.a"]                            # must exist post-build
 headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
+files = ["share/runtime-data.bin"]                   # other runtime data
 ```
+
+Program packages use `[[outputs]]` for executable/side-module artifacts. A
+non-Wasm file required at runtime is declared separately so it remains part of
+the same reproducible archive and cache key:
+
+```toml
+[[outputs]]
+name = "php"
+wasm = "php.wasm"
+
+[[runtime_files]]
+artifact = "icu.dat"                 # relative to the package cache/archive
+guest_path = "/usr/lib/php/icu.dat"  # installation path in a VFS image
+mode = 420                            # optional decimal TOML; default 0644
+```
+
+`[[runtime_files]]` is program-only. Artifact paths are normalized portable
+relative paths; guest paths are normalized absolute POSIX paths; files,
+ancestor paths, and resolver-mirror destinations may not collide. The resolver
+requires regular non-symlink runtime files after fresh builds, cache hits, and
+remote fetches. It mirrors them at
+`{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
+number of `[[outputs]]` entries. Missing fetched files make the archive stale
+and trigger source fallback (or a hard failure in fetch-only mode).
+
+Repo-side VFS/test builders query the authoritative path and mode with
+`xtask build-deps runtime-file-metadata <package> <artifact>`; they must not
+scan library caches or invent environment-only guest paths. Published VFS
+images contain the installed bytes already, so this query is a build-tool
+contract rather than a runtime host API. The structured metadata also lists
+the package's complete mirror closure (every `[[outputs]]` artifact plus every
+`[[runtime_files]]` file). Repo-side consumers resolve that set from one
+complete provenance root: a partial local override may fall back wholesale to
+a complete fetched package, but local, fetched, and installed-package tiers
+are never combined. If artifacts exist but no tier has the complete accepted
+closure, resolution fails loudly.
+
+Top-level keys are closed-schema: misspellings such as `[[runtime_file]]`
+(singular) are rejected instead of silently dropping a runtime dependency.
+Package names, versions, dependency names, and exact dependency-version tokens
+must each be safe single filesystem components; `/`, `\`, NUL, `.` and `..`
+spellings are rejected before cache, archive, or registry path construction.
 
 `package.toml` **must NOT** carry `revision`, `[binary]`,
 `[build].repo_url`, or `[build].commit`. Those moved to `build.toml`
@@ -248,9 +291,11 @@ declared arch). Defaults to `["wasm32"]` when omitted.
 The default reflects the project's wasm64 build policy: the kernel
 is wasm64, but most ported user-space programs (dash, vim, perl,
 etc.) ship wasm32 only. The packages that currently opt into
-wasm64 are MariaDB, MariaDB-VFS, PHP, and the libraries PHP
-depends on transitively (zlib, openssl, sqlite, libxml2). Adding
-a manifest to the wasm64 set is one line:
+wasm64 are MariaDB, MariaDB-VFS, libcxx, zlib, OpenSSL, and SQLite.
+PHP, libiconv, and libxml2 remain wasm32-only because their current recipes
+invoke the wasm32 SDK explicitly. Adding a manifest to the wasm64 set is one
+line, but the corresponding recipe and runtime/link validation must support
+that architecture truthfully:
 
 ```toml
 arches = ["wasm32", "wasm64"]
@@ -351,7 +396,7 @@ that doesn't respect them cannot be cached safely.
 
 | Variable | Meaning |
 |---|---|
-| `WASM_POSIX_DEP_OUT_DIR` | Temp dir the script must install into. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` relative paths. |
+| `WASM_POSIX_DEP_OUT_DIR` | Temp dir the script must install into. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` / `outputs.files` relative paths. |
 | `WASM_POSIX_DEP_NAME` | `name` from package.toml. |
 | `WASM_POSIX_DEP_VERSION` | `version` from package.toml. |
 | `WASM_POSIX_DEP_REVISION` | Effective package revision after `build.toml` is overlaid. |
@@ -369,7 +414,7 @@ from source; it does not restrict normal SDK users compiling against a
 published sysroot/libc++ artifact.
 
 After the script exits 0, the resolver verifies every path in
-`outputs.{libs,headers,pkgconfig}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
+`outputs.{libs,headers,pkgconfig,files}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
 A missing output fails the build (and the temp dir is cleaned up,
 so a retry starts clean).
 

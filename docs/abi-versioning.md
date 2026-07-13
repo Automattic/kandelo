@@ -24,7 +24,8 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 - Removing, renaming, or reassigning a syscall number.
 - Changing an existing syscall argument descriptor used by the host for
   pointer marshalling, including direction, size source, multipliers,
-  fixed byte lengths, or return-value copy adjustments.
+  fixed byte lengths, pointer nullability/requiredness, or return-value copy
+  adjustments.
 - Changing the channel header layout (field offsets or sizes in
   [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs)
   `channel` module).
@@ -39,10 +40,41 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   fork-using user program. The kernel does not read these exports
   directly, but the host runtime in `host/src/worker-main.ts` does —
   a rename here silently breaks fork for every already-built binary.
+- Changing the linked musl/glue syscall function types or argument-slot widths,
+  including the wasm32 cancellation-point `__syscall_cp` path. These are not
+  currently visible in the structural snapshot, but stale objects and archives
+  can otherwise link with incompatible Wasm function signatures.
+- Adding or changing a required kernel-Wasm host import. Kernel imports are not
+  yet present in the structural snapshot, so reviewers must track this surface
+  explicitly and coordinate the host implementation in the same ABI epoch.
+- Changing the name, version, encoding, or role semantics of the
+  `kandelo.wpk_fork.capabilities` custom section. The host uses these claims to
+  decide whether a main/side-module pair can safely coordinate fork replay.
 - Renaming the ABI custom section or the process-expected globals.
 - Changing the meaning of a syscall argument, errno, or blocking
   behavior without changing its signature. **This is not caught
   structurally — reviewers must flag it and bump anyway.**
+
+The fork-capability section has an explicit ABI transition rule. ABI 16 accepts
+an absent section through the pre-existing five-export fallback, while treating
+a present marker as authoritative. ABI 17 was intentionally skipped; ABI 18
+was the first epoch above 16 and made the role marker mandatory.
+
+ABI 26 also makes `kernel_get_process_exit_signal` a required host-adapter
+export. The host uses the query unconditionally to distinguish signal death
+from ordinary high exit statuses, so a kernel without it must fail manifest
+validation rather than silently treating the process as live.
+
+ABI 31 makes `kernel_prepare_write_operation` required. Host-backed writes use
+that preflight unconditionally before splitting one guest operation into
+scratch-buffer chunks, so a kernel without it must fail manifest validation
+rather than bypassing operation-wide file-size enforcement.
+
+ABI 39 makes `kernel_posix_timer_fire` required. The host uses it for every
+host-scheduled POSIX timer expiration so the kernel can preserve exact
+`SIGEV_THREAD_ID` targets, `SI_TIMER` metadata, overruns, and signal-wait wake
+selection. A kernel without it must fail manifest validation rather than fall
+back to process-wide delivery.
 
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI
@@ -93,7 +125,10 @@ captures:
   the core enum.
 - `syscall_arg_descriptors` — host marshalling descriptors for pointer
   arguments, including direction, size source, size multipliers/additions,
-  fixed byte lengths, and any return-value-based copy-back adjustment.
+  fixed byte lengths, pointer nullability/requiredness, and any
+  return-value-based copy-back adjustment.
+- `pathconf_names` — the shared numeric `_PC_*` vocabulary consumed by the
+  kernel, generated host bindings, and libc wrappers.
 - `host_adapter` — Rust-owned boot manifest metadata consumed by host
   adapters: manifest layout, host adapter protocol version, required
   worker feature bits, and required/optional kernel exports.

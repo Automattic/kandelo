@@ -1,4 +1,4 @@
-import type { StatResult, StatfsResult } from "../types";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
 
 export interface DirEntry {
   name: string;
@@ -14,6 +14,7 @@ export interface FileSystemBackend {
   write(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
   seek(handle: number, offset: number, whence: number): number;
   fstat(handle: number): StatResult;
+  fpathconf(handle: number, name: number): PathconfValue;
   ftruncate(handle: number, length: number): void;
   fsync(handle: number): void;
   fchmod(handle: number, mode: number): void;
@@ -23,6 +24,7 @@ export interface FileSystemBackend {
   stat(path: string): StatResult;
   lstat(path: string): StatResult;
   statfs(path: string): StatfsResult;
+  pathconf(path: string, name: number): PathconfValue;
   mkdir(path: string, mode: number): void;
   rmdir(path: string): void;
   unlink(path: string): void;
@@ -32,6 +34,7 @@ export interface FileSystemBackend {
   readlink(path: string): string;
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
+  lchown(path: string, uid: number, gid: number): void;
   access(path: string, mode: number): void;
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
 

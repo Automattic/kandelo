@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
@@ -28,6 +28,7 @@ const phpBinaryPath = tryResolveBinary("programs/php/php.wasm");
 const kernelWasmPath = tryResolveBinary("kernel.wasm");
 const wpDir = join(repoRoot, "packages/registry/wordpress/wordpress");
 const routerScript = join(repoRoot, "packages/registry/wordpress/demo/router.php");
+const databasePath = join(wpDir, "wp-content/database/wordpress.db");
 
 const SKIP_REASON = !phpBinaryPath
   ? "PHP binary not built"
@@ -45,8 +46,15 @@ function loadFile(path: string): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+function resetWordPressDatabase(): void {
+  for (const suffix of ["", "-journal", "-shm", "-wal"]) {
+    rmSync(`${databasePath}${suffix}`, { force: true });
+  }
+}
+
 describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server (fetchInKernel)", () => {
   it("serves HTTP requests via fetchInKernel", async () => {
+    resetWordPressDatabase();
     const programBytes = loadFile(phpBinaryPath!);
 
     let stderr = "";
@@ -83,9 +91,7 @@ describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server (fetchInKernel)", () => {
         { timeoutMs: 30_000 },
       );
 
-      expect(response.status).not.toBe(504);
-      expect(response.status).toBeGreaterThanOrEqual(200);
-      expect(response.status).toBeLessThan(600);
+      expect(response.status).toBe(302);
 
       const installResp = await host.fetchInKernel(
         KERNEL_PORT,
@@ -103,6 +109,7 @@ describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server (fetchInKernel)", () => {
       expect(html.toLowerCase()).toMatch(/wordpress/);
     } finally {
       await host.destroy().catch(() => {});
+      resetWordPressDatabase();
     }
   }, 120_000);
 });

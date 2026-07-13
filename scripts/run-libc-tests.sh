@@ -25,8 +25,7 @@ KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 MATH_EXPECTED_FAIL=(acosh asinh erfc j0 jn jnf lgamma lgammaf lgammaf_r sinh tgamma y0 y0f ynf)
 MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that bypass checkulp
 
-# Tests blocked by fundamental Wasm limitations (no cancel-point asm, opaque stack,
-# no file-backed mmap for sem_open).
+# Tests blocked by fundamental Wasm limitations (no cancellation-point asm).
 FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel              # no cancel-point asm (__syscall_cp_asm) for Wasm
 )

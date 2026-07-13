@@ -10,7 +10,13 @@ if [ -z "$out" ]; then
     exit 2
 fi
 
-for required in local-binaries/kernel.wasm host/wasm/rootfs.vfs examples/gencat.wasm; do
+for required in \
+    local-binaries/kernel.wasm \
+    host/wasm/rootfs.vfs \
+    examples/gencat.wasm \
+    examples/pthread_channel_reuse_test.wasm \
+    examples/wait_lifecycle_test.wasm \
+    examples/wait_lifecycle_test.wasm64.wasm; do
     if [ ! -f "$required" ]; then
         echo "pack-ci-test-workspace: missing required artifact: $required" >&2
         exit 1

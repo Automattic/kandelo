@@ -102,9 +102,29 @@ int *__errno_location(void);
 #define CH_SIG_ALT_SIZE (CH_SIG_BASE + 40)
 
 #define SA_SIGINFO 4
+#define SA_RESTART 0x10000000u
+#define EFAULT 14
+#define EINTR 4
+#define EINVAL 22
+#define SYS_SIGACTION 36
+#define SYS_WAIT4 139
+#define SYS_WAITID 288
 #define SYS_SIGPROCMASK 37
 #define SYS_RT_SIGRETURN 208
 #define SIG_SETMASK 2
+
+/* The kernel ABI deliberately keeps sigaction's transport record fixed at
+ * 16 bytes: u32 table index, u32 flags, u64 mask.  musl's internal
+ * k_sigaction happens to match that prefix on wasm32, while its pointer and
+ * unsigned-long fields make the memory64 form 32 bytes. */
+struct kandelo_sigaction_wire {
+    uint32_t handler;
+    uint32_t flags;
+    uint64_t mask;
+};
+
+_Static_assert(sizeof(struct kandelo_sigaction_wire) == 16,
+               "sigaction wire record must stay 16 bytes");
 
 /* Per-thread channel base address.
  *
@@ -157,6 +177,9 @@ uintptr_t __get_channel_base_addr(void) {
 __attribute__((import_module("kernel"), import_name("kernel_fork")))
 int32_t kernel_fork(void);
 
+__attribute__((import_module("kernel"), import_name("kernel_exit")))
+_Noreturn void kernel_exit(int32_t status);
+
 /* Direct fork/vfork/_Fork — call kernel_fork without going through the
  * general syscall dispatcher.  This ensures fork instrumentation only covers
  * fork callers, not every function that makes any syscall. */
@@ -206,15 +229,16 @@ int vfork(void)
 /* Forward declaration */
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6);
+extern long __syscall_cp_check(long r);
 
-static void __deliver_pending_signal(uintptr_t base)
+static uint32_t __deliver_pending_signal(uintptr_t base)
 {
     uint32_t *sig_signum_ptr  = (uint32_t *)(uintptr_t)(base + CH_SIG_SIGNUM);
     uint32_t *sig_handler_ptr = (uint32_t *)(uintptr_t)(base + CH_SIG_HANDLER);
     uint32_t *sig_flags_ptr   = (uint32_t *)(uintptr_t)(base + CH_SIG_FLAGS);
 
     uint32_t signum  = *sig_signum_ptr;
-    if (signum == 0) return;
+    if (signum == 0) return 0;
 
     /* Cooperative hard-exit for host teardown.
      *
@@ -289,16 +313,17 @@ static void __deliver_pending_signal(uintptr_t base)
         int32_t si_code  = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_CODE);
         int32_t si_pid   = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_PID);
         int32_t si_uid   = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_UID);
-        /* siginfo_t layout (128 bytes):
-         *   [0]  si_signo, [4] si_errno, [8] si_code,
-         *   [12] si_pid, [16] si_uid, [20] si_value.sival_int */
+        /* siginfo_t's payload union aligns to long: offset 12 on wasm32 and
+         * 16 on wasm64. pid/uid occupy its first pair and si_value/si_status
+         * occupies the following union member. */
+        const uint32_t fields_offset = __SIZEOF_POINTER__ == 8 ? 16 : 12;
         char siginfo_buf[128];
         __builtin_memset(siginfo_buf, 0, sizeof(siginfo_buf));
         *(int *)(siginfo_buf + 0) = (int)signum;       /* si_signo */
         *(int *)(siginfo_buf + 8) = si_code;            /* si_code */
-        *(int *)(siginfo_buf + 12) = si_pid;            /* si_pid */
-        *(int *)(siginfo_buf + 16) = si_uid;            /* si_uid */
-        *(int *)(siginfo_buf + 20) = si_value_int;      /* si_value.sival_int */
+        *(int *)(siginfo_buf + fields_offset) = si_pid; /* si_pid */
+        *(int *)(siginfo_buf + fields_offset + 4) = si_uid; /* si_uid */
+        *(int *)(siginfo_buf + fields_offset + 8) = si_value_int;
         void (*sa)(int, void *, void *) =
             (void (*)(int, void *, void *))(uintptr_t)handler;
         sa((int)signum, (void *)siginfo_buf, (void *)0);
@@ -321,14 +346,17 @@ static void __deliver_pending_signal(uintptr_t base)
      * (the kernel writes signal info on the sigprocmask return). */
     __do_syscall(SYS_SIGPROCMASK, SIG_SETMASK,
                  (long)(uintptr_t)&old_mask, 0, 8, 0, 0);
+
+    return flags;
 }
 
 /* ------------------------------------------------------------------ */
 /* Central dispatch — writes to channel and blocks for result          */
 /* ------------------------------------------------------------------ */
 
-static long __do_syscall(long n, long long a1, long long a2, long long a3,
-                         long long a4, long long a5, long long a6)
+static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
+                              long long a4, long long a5, long long a6,
+                              int cancellation_point)
 {
     /* Fork/vfork are handled by fork()/_Fork()/vfork() overrides above,
      * which call kernel_fork() directly.  If we somehow get here (e.g. a
@@ -337,6 +365,57 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
     if (n == SYS_FORK || n == SYS_VFORK) {
         return -38; /* ENOSYS */
     }
+
+    /* Per-thread exit is non-returning. Route it through the dedicated import
+     * so worker-main can record the status and unwind the Wasm entry after the
+     * channel completes. Returning through the generic channel path lets
+     * musl's mandatory SYS_exit retry loop park a second time on a channel the
+     * host has already removed, leaving a stale waiter when the pthread slot is
+     * reused. Keep exit_group on the generic path: the host must see that
+     * distinct syscall so exit() from a pthread still terminates the process. */
+    if (n == SYS_EXIT) {
+        kernel_exit((int32_t)a1);
+    }
+
+#if __SIZEOF_POINTER__ == 8
+    struct kandelo_sigaction_wire sigaction_in_wire;
+    struct kandelo_sigaction_wire sigaction_out_wire;
+    uintptr_t sigaction_old_guest = 0;
+    int translate_sigaction = n == SYS_SIGACTION;
+
+    if (translate_sigaction) {
+        const uintptr_t memory_bytes =
+            (uintptr_t)__builtin_wasm_memory_size(0) * 65536u;
+        if (a2 != 0) {
+            const uintptr_t act = (uintptr_t)a2;
+            if (act > memory_bytes || 24u > memory_bytes - act)
+                return -EFAULT;
+
+            uint64_t handler;
+            uint64_t flags;
+            __builtin_memcpy(&handler, (const void *)act, sizeof(handler));
+            __builtin_memcpy(&flags, (const void *)(act + 8), sizeof(flags));
+            __builtin_memcpy(
+                &sigaction_in_wire.mask,
+                (const void *)(act + 16),
+                sizeof(sigaction_in_wire.mask)
+            );
+            if (handler > UINT32_MAX || flags > UINT32_MAX)
+                return -EINVAL;
+            sigaction_in_wire.handler = (uint32_t)handler;
+            sigaction_in_wire.flags = (uint32_t)flags;
+            a2 = (long long)(uintptr_t)&sigaction_in_wire;
+        }
+        if (a3 != 0) {
+            sigaction_old_guest = (uintptr_t)a3;
+            if (sigaction_old_guest > memory_bytes ||
+                24u > memory_bytes - sigaction_old_guest)
+                return -EFAULT;
+            __builtin_memset(&sigaction_out_wire, 0, sizeof(sigaction_out_wire));
+            a3 = (long long)(uintptr_t)&sigaction_out_wire;
+        }
+    }
+#endif
 
     /* IMPORTANT: In multi-threaded wasm programs (like BEAM), all threads
      * share the same linear memory. The compiler may spill local variables
@@ -348,7 +427,13 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
      * in a local variable that might be spilled to the shadow stack.
      * The wasm global is per-instance and immune to cross-thread corruption. */
 
-    uintptr_t base = get_channel_base();
+    uintptr_t base;
+    long result;
+    int32_t err;
+    uint32_t delivered_flags;
+
+restart_wait_syscall:
+    base = get_channel_base();
 
     /* Write syscall number and arguments directly using base offsets.
      * These are one-shot writes — if the shadow stack value of 'base' is
@@ -401,19 +486,63 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
 
     /* Read result — re-read base from global for safety */
     base = get_channel_base();
-    long result = (long)*(int64_t *)(uintptr_t)(base + CH_RETURN);
-    int32_t err = *(int32_t *)(uintptr_t)(base + CH_ERRNO);
+    result = (long)*(int64_t *)(uintptr_t)(base + CH_RETURN);
+    err = *(int32_t *)(uintptr_t)(base + CH_ERRNO);
 
     /* Reset status to IDLE for next syscall */
     __c11_atomic_store((_Atomic int32_t *)(uintptr_t)(base + CH_STATUS),
                        CH_IDLE, __ATOMIC_SEQ_CST);
+
+#if __SIZEOF_POINTER__ == 8
+    if (translate_sigaction && sigaction_old_guest != 0 && err == 0) {
+        const uint64_t handler = sigaction_out_wire.handler;
+        const uint64_t flags = sigaction_out_wire.flags;
+        __builtin_memcpy(
+            (void *)sigaction_old_guest,
+            &handler,
+            sizeof(handler)
+        );
+        __builtin_memcpy(
+            (void *)(sigaction_old_guest + 8),
+            &flags,
+            sizeof(flags)
+        );
+        __builtin_memcpy(
+            (void *)(sigaction_old_guest + 16),
+            &sigaction_out_wire.mask,
+            sizeof(sigaction_out_wire.mask)
+        );
+    }
+#endif
 
     /* Check for pending signal delivery from the kernel.
      * The kernel writes signal info to CH_SIG_* after each syscall if
      * a Handler signal is deliverable. We invoke the handler here,
      * synchronously before returning to the caller, matching POSIX
      * semantics (raise() doesn't return until signal handler completes). */
-    __deliver_pending_signal(get_channel_base());
+    delivered_flags = __deliver_pending_signal(get_channel_base());
+
+    /* wait4()/waitid() are host-deferred, so a caught signal completes the
+     * channel with EINTR in order to run its handler on this guest thread.
+     * SA_RESTART makes that interruption transparent: after the handler and
+     * mask restoration finish, submit the same wait operation again. Keep the
+     * retry list deliberately narrow; several other EINTR-returning calls have
+     * timeout/cancellation rules that forbid this generic treatment. */
+    if (err == EINTR && (delivered_flags & SA_RESTART) != 0 &&
+        (n == SYS_WAIT4 || n == SYS_WAITID)) {
+        /* __syscall_cp's outer cancellation check has not run yet. A signal
+         * handler may have enabled a cancellation that was already pending,
+         * or the host may have used this EINTR completion to wake a canceled
+         * stopped waiter. Honor that cancellation before submitting another
+         * indefinite wait. MASKED cancellation returns -ECANCELED; enabled
+         * cancellation exits through pthread_exit. */
+        if (cancellation_point) {
+            long checked = __syscall_cp_check(-(long)EINTR);
+            if (checked != -(long)EINTR)
+                return checked;
+        }
+        goto restart_wait_syscall;
+    }
 
     /* Return in musl's expected format: negative errno on error.
      * musl's __syscall_ret() converts this to set errno and return -1. */
@@ -421,6 +550,12 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
         return -(long)err;
     }
     return result;
+}
+
+static long __do_syscall(long n, long long a1, long long a2, long long a3,
+                         long long a4, long long a5, long long a6)
+{
+    return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0);
 }
 
 /* ================================================================== */
@@ -490,15 +625,12 @@ long __syscall6(long n, long long a1, long long a2, long long a3, long long a4, 
  * wasm facility to preempt a running thread mid-computation.
  */
 extern void __testcancel(void);
-extern long __syscall_cp_check(long r);
 
-long __syscall_cp(long n, long a1, long a2, long a3, long a4, long a5,
-                  long a6)
+long __syscall_cp(long n, long long a1, long long a2, long long a3,
+                  long long a4, long long a5, long long a6)
 {
     __testcancel();
-    long r = __do_syscall((long long)n, (long long)a1, (long long)a2,
-                          (long long)a3, (long long)a4, (long long)a5,
-                          (long long)a6);
+    long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1);
     return __syscall_cp_check(r);
 }
 

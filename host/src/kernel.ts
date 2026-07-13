@@ -97,7 +97,73 @@ function clampU16(value: number): number {
  * numeric codes from SFSError (2, 17, etc.).
  * Returns -EIO for unknown errors.
  */
-function negErrno(err: unknown): number {
+const NEG_ERRNO_BY_NAME: Readonly<Record<string, number>> = {
+  EPERM: -1,
+  ENOENT: -2,
+  ESRCH: -3,
+  EINTR: -4,
+  EIO: -5,
+  ENXIO: -6,
+  E2BIG: -7,
+  ENOEXEC: -8,
+  EBADF: -9,
+  ECHILD: -10,
+  EAGAIN: -11,
+  EWOULDBLOCK: -11,
+  ENOMEM: -12,
+  EACCES: -13,
+  EFAULT: -14,
+  EBUSY: -16,
+  EEXIST: -17,
+  EXDEV: -18,
+  ENODEV: -19,
+  ENOTDIR: -20,
+  EISDIR: -21,
+  EINVAL: -22,
+  ENFILE: -23,
+  EMFILE: -24,
+  ENOTTY: -25,
+  ETXTBSY: -26,
+  EFBIG: -27,
+  ENOSPC: -28,
+  ESPIPE: -29,
+  EROFS: -30,
+  EMLINK: -31,
+  EPIPE: -32,
+  ERANGE: -34,
+  EDEADLK: -35,
+  ENAMETOOLONG: -36,
+  ENOSYS: -38,
+  ENOTEMPTY: -39,
+  ELOOP: -40,
+  ENOMSG: -42,
+  EIDRM: -43,
+  ENODATA: -61,
+  EOVERFLOW: -75,
+  ENOTSOCK: -88,
+  EDESTADDRREQ: -89,
+  EMSGSIZE: -90,
+  EPROTOTYPE: -91,
+  ENOPROTOOPT: -92,
+  EPROTONOSUPPORT: -93,
+  EOPNOTSUPP: -95,
+  ENOTSUP: -95,
+  EAFNOSUPPORT: -97,
+  EADDRINUSE: -98,
+  EADDRNOTAVAIL: -99,
+  ENETUNREACH: -101,
+  ECONNABORTED: -103,
+  ECONNRESET: -104,
+  EISCONN: -106,
+  ENOTCONN: -107,
+  ESHUTDOWN: -108,
+  ETIMEDOUT: -110,
+  ECONNREFUSED: -111,
+  EALREADY: -114,
+  EINPROGRESS: -115,
+};
+
+export function negErrno(err: unknown): number {
   if (err && typeof err === "object" && "code" in err) {
     const code = (err as { code: string | number }).code;
     // Numeric errno (e.g. SFSError from MemoryFileSystem/SharedFS)
@@ -105,46 +171,24 @@ function negErrno(err: unknown): number {
     if (typeof code === "number" && code !== 0) {
       return code < 0 ? code : -code;
     }
-    // String error code (Node.js fs errors)
-    switch (code) {
-      case "ENOENT": return -2;
-      case "EACCES": return -13;
-      case "EPERM": return -1;
-      case "EEXIST": return -17;
-      case "ENOTDIR": return -20;
-      case "EISDIR": return -21;
-      case "EINVAL": return -22;
-      case "ENOSPC": return -28;
-      case "EROFS": return -30;
-      case "ENOTEMPTY": return -39;
-      case "ELOOP": return -40;
-      case "ENAMETOOLONG": return -36;
-      case "EBADF": return -9;
-      case "EMFILE": return -24;
-      case "ENFILE": return -23;
-      case "EBUSY": return -16;
-      case "EXDEV": return -18;
-      case "ENODEV": return -19;
-      case "EFAULT": return -14;
-      case "ETXTBSY": return -26;
+    if (typeof code === "string") {
+      const mapped = NEG_ERRNO_BY_NAME[code];
+      if (mapped !== undefined) return mapped;
+    }
+  }
+  if (err && typeof err === "object" && "errno" in err) {
+    const errno = (err as { errno: unknown }).errno;
+    if (typeof errno === "number" && Number.isInteger(errno) && errno !== 0) {
+      return errno < 0 ? errno : -errno;
     }
   }
   // Check error message for errno names (e.g. plain Error("ENOENT") from DeviceFS)
   if (err instanceof Error) {
-    const msg = err.message;
-    if (msg.startsWith("ENOENT")) return -2;
-    if (msg.startsWith("EACCES")) return -13;
-    if (msg.startsWith("EPERM")) return -1;
-    if (msg.startsWith("EEXIST")) return -17;
-    if (msg.startsWith("ENOTDIR")) return -20;
-    if (msg.startsWith("EISDIR")) return -21;
-    if (msg.startsWith("EINVAL")) return -22;
-    if (msg.startsWith("ENOSPC")) return -28;
-    if (msg.startsWith("ENOTEMPTY")) return -39;
-    if (msg.startsWith("EBADF")) return -9;
-    if (msg.startsWith("ENOSYS")) return -38;
-    if (msg.startsWith("ENXIO")) return -6;
-    if (msg.startsWith("EXDEV")) return -18;
+    const name = /^([A-Z][A-Z0-9_]*)\b/.exec(err.message)?.[1];
+    if (name !== undefined) {
+      const mapped = NEG_ERRNO_BY_NAME[name];
+      if (mapped !== undefined) return mapped;
+    }
   }
   return -5; // EIO
 }
@@ -211,6 +255,18 @@ export class WasmPosixKernel {
   private programFuncTable: WebAssembly.Table | null = null;
   private forkSab: SharedArrayBuffer | null = null;
   private waitpidSab: SharedArrayBuffer | null = null;
+  /**
+   * Extra host-handle ownership held by regular-file MAP_SHARED backings.
+   * The Rust kernel emits host_close only after the last guest descriptor is
+   * gone; a mapping retain defers that physical close until its backing is
+   * also released.
+   */
+  private retainedHostFileHandles = new Map<
+    number,
+    { mappingRefs: number; descriptorClosePending: boolean }
+  >();
+  /** Active synchronous host_fstat capture used by mmap preflight. */
+  private fstatHandleCapture: { handle: number | null } | null = null;
   isThreadWorker = false;
   /** PID for this kernel instance (set by the worker) */
   pid = 0;
@@ -289,6 +345,64 @@ export class WasmPosixKernel {
     return this.kernelPtrWidth === 8 ? BigInt(numberValue) : numberValue;
   }
 
+  /**
+   * Capture the concrete host handle used by one synchronous kernel fstat.
+   * This lets MAP_SHARED retain the open-file capability itself instead of
+   * reopening a remembered pathname that may already have been unlinked.
+   */
+  withFstatHandleCapture<T>(operation: () => T): {
+    result: T;
+    handle: number | null;
+  } {
+    if (this.fstatHandleCapture) {
+      throw new Error("nested host fstat handle capture");
+    }
+    const capture = { handle: null as number | null };
+    this.fstatHandleCapture = capture;
+    try {
+      return { result: operation(), handle: capture.handle };
+    } finally {
+      this.fstatHandleCapture = null;
+    }
+  }
+
+  /** Retain one mapping-owned reference to an existing host file handle. */
+  retainHostFileHandle(handle: number): void {
+    if (!Number.isSafeInteger(handle) || handle < 0) {
+      throw new Error(`invalid host file handle ${handle}`);
+    }
+    const retained = this.retainedHostFileHandles.get(handle);
+    if (retained) {
+      if (retained.descriptorClosePending) {
+        throw new Error(`cannot retain closed host file handle ${handle}`);
+      }
+      retained.mappingRefs++;
+      return;
+    }
+    this.retainedHostFileHandles.set(handle, {
+      mappingRefs: 1,
+      descriptorClosePending: false,
+    });
+  }
+
+  /**
+   * Release one mapping-owned reference. If the guest descriptor lifetime
+   * ended first, this performs the deferred physical backend close.
+   */
+  releaseHostFileHandle(handle: number): number {
+    const retained = this.retainedHostFileHandles.get(handle);
+    if (!retained || retained.mappingRefs <= 0) return -9; // EBADF
+    retained.mappingRefs--;
+    if (retained.mappingRefs > 0) return 0;
+    this.retainedHostFileHandles.delete(handle);
+    if (!retained.descriptorClosePending) return 0;
+    try {
+      return this.io.close(handle);
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
   private createKernelMemory(): WebAssembly.Memory {
     if (this.kernelPtrWidth === 8) {
       return new WebAssembly.Memory({
@@ -299,11 +413,9 @@ export class WasmPosixKernel {
       } as unknown as WebAssembly.MemoryDescriptor);
     }
     return new WebAssembly.Memory({
-      // 24 pages = 1.5 MiB of initial address space. Must be >= the kernel
-      // wasm's declared minimum, which the linker derives from the data
-      // section. The Mozilla CA bundle (~220 KiB at /etc/ssl/cert.pem)
-      // pushes the kernel's minimum to 20 pages; 24 leaves headroom for
-      // future static data without re-tuning this every time.
+      // 24 pages = 1.5 MiB of initial address space. This must remain above
+      // the kernel Wasm's linker-derived minimum and leaves headroom for
+      // future static data without re-tuning host construction each time.
       initial: 24,
       maximum: 16384,
       shared: true,
@@ -500,6 +612,12 @@ export class WasmPosixKernel {
         host_statfs: (pathPtr: bigint, pathLen: number, statfsPtr: bigint): number => {
           return this.hostStatfs(Number(pathPtr), pathLen, Number(statfsPtr));
         },
+        host_pathconf: (pathPtr: bigint, pathLen: number, name: number, valuePtr: bigint): number => {
+          return this.hostPathconf(Number(pathPtr), pathLen, name, Number(valuePtr));
+        },
+        host_fpathconf: (handle: bigint, name: number, valuePtr: bigint): number => {
+          return this.hostFpathconf(handle, name, Number(valuePtr));
+        },
         host_mkdir: (pathPtr: bigint, pathLen: number, mode: number): number => {
           return this.hostMkdir(Number(pathPtr), pathLen, mode);
         },
@@ -526,6 +644,9 @@ export class WasmPosixKernel {
         },
         host_chown: (pathPtr: bigint, pathLen: number, uid: number, gid: number): number => {
           return this.hostChown(Number(pathPtr), pathLen, uid, gid);
+        },
+        host_lchown: (pathPtr: bigint, pathLen: number, uid: number, gid: number): number => {
+          return this.hostLchown(Number(pathPtr), pathLen, uid, gid);
         },
         host_access: (pathPtr: bigint, pathLen: number, amode: number): number => {
           return this.hostAccess(Number(pathPtr), pathLen, amode);
@@ -1089,6 +1210,12 @@ export class WasmPosixKernel {
       return 0;
     }
 
+    const retained = this.retainedHostFileHandles.get(h);
+    if (retained) {
+      retained.descriptorClosePending = true;
+      return 0;
+    }
+
     try {
       return this.io.close(h);
     } catch (e) {
@@ -1236,6 +1363,7 @@ export class WasmPosixKernel {
     try {
       const stat = this.io.fstat(h);
       this.writeStatToMemory(statPtr, stat);
+      if (this.fstatHandleCapture) this.fstatHandleCapture.handle = h;
       return 0;
     } catch (e) {
       return negErrno(e);
@@ -1361,6 +1489,44 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       const statfs = this.io.statfs(path);
       this.writeStatfsToMemory(statfsPtr, statfs);
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  private hostPathconf(
+    pathPtr: number,
+    pathLen: number,
+    name: number,
+    valuePtr: number,
+  ): number {
+    try {
+      const path = this.readPathFromMemory(pathPtr, pathLen);
+      const value = this.io.pathconf(path, name);
+      this.getMemoryDataView().setBigInt64(
+        valuePtr,
+        BigInt(value ?? -1),
+        true,
+      );
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  private hostFpathconf(
+    handle: bigint,
+    name: number,
+    valuePtr: number,
+  ): number {
+    try {
+      const value = this.io.fpathconf(Number(handle), name);
+      this.getMemoryDataView().setBigInt64(
+        valuePtr,
+        BigInt(value ?? -1),
+        true,
+      );
       return 0;
     } catch (e) {
       return negErrno(e);
@@ -1520,6 +1686,24 @@ export class WasmPosixKernel {
     try {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       this.io.chown(path, uid, gid);
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  /**
+   * host_lchown(path_ptr, path_len, uid, gid) -> i32
+   */
+  private hostLchown(
+    pathPtr: number,
+    pathLen: number,
+    uid: number,
+    gid: number,
+  ): number {
+    try {
+      const path = this.readPathFromMemory(pathPtr, pathLen);
+      this.io.lchown(path, uid, gid);
       return 0;
     } catch (e) {
       return negErrno(e);

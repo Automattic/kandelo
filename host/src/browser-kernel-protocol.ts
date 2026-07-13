@@ -9,8 +9,12 @@ import type {
   HttpResponse,
 } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type {
+  HostDiagnosticMessage,
+} from "./host-diagnostic";
 
 export type { HttpRequest, HttpResponse };
+export type { HostDiagnostic } from "./host-diagnostic";
 
 // ── Main Thread → Kernel Worker ──
 
@@ -43,6 +47,10 @@ export interface InitMessage {
     syscallLogPtrWidth?: 4 | 8;
     /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
     dnsAliases?: Record<string, string>;
+    /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl for browser fetch
+     *  backends that need a same-origin proxy to reach external HTTP(S)
+     *  hosts. */
+    corsProxyUrl?: string;
   };
 }
 
@@ -83,8 +91,29 @@ export interface TerminateProcessMessage {
   status: number;
 }
 
+export interface VfsFileSnapshot {
+  data: Uint8Array;
+  mode: number;
+}
+
 export interface ReadVfsFileMessage {
   type: "read_vfs_file";
+  requestId: number;
+  path: string;
+  /** Return the file's permission bits with its bytes for lossless restore. */
+  includeMode?: boolean;
+}
+
+export interface WriteVfsFileMessage {
+  type: "write_vfs_file";
+  requestId: number;
+  path: string;
+  data: Uint8Array;
+  mode: number;
+}
+
+export interface UnlinkVfsFileMessage {
+  type: "unlink_vfs_file";
   requestId: number;
   path: string;
 }
@@ -321,6 +350,8 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | WriteVfsFileMessage
+  | UnlinkVfsFileMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage
@@ -454,15 +485,12 @@ export interface FbWriteMessage {
  * Posted whenever the kernel forks, execs, or spawns. The main thread
  * uses this to refresh Inspector-style views without polling. `kind ===
  * "exit"` is delivered via the existing ExitMessage instead; we don't
- * duplicate it here.
+ * duplicate it here. Spawn events always carry the authoritative parent pid;
+ * exec events preserve process identity and do not.
  */
-export interface ProcEventMessage {
-  type: "proc_event";
-  kind: "spawn" | "exec";
-  pid: number;
-  /** Parent pid for fork-style spawns. Omitted for execs. */
-  ppid?: number;
-}
+export type ProcEventMessage =
+  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
+  | { type: "proc_event"; kind: "exec"; pid: number };
 
 /**
  * Number of service-worker preview requests currently being served through
@@ -485,6 +513,7 @@ export type KernelToMainMessage =
   | ExitMessage
   | StdoutMessage
   | StderrMessage
+  | HostDiagnosticMessage
   | PtyOutputMessage
   | ListenTcpMessage
   | FbBindMessage

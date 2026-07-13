@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use wasm_posix_shared::{Errno, WasmStat, WasmStatfs};
+use wasm_posix_shared::{Errno, KernelRusage, WasmStat, WasmStatfs};
 
 use crate::fd::FdTable;
 use crate::lock::LockTable;
@@ -34,6 +34,12 @@ pub trait HostIO {
     fn host_statfs(&mut self, _path: &[u8]) -> Result<WasmStatfs, Errno> {
         Err(Errno::ENOSYS)
     }
+    fn host_pathconf(&mut self, _path: &[u8], _name: i32) -> Result<Option<i64>, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn host_fpathconf(&mut self, _handle: i64, _name: i32) -> Result<Option<i64>, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
     fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno>;
     fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno>;
@@ -43,6 +49,9 @@ pub trait HostIO {
     fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
     fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno>;
+    fn host_lchown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno>;
     fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
     fn host_readdir(
@@ -342,10 +351,36 @@ pub trait HostIO {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
     Running,
+    /// Execution is suspended by a default job-control stop action. The
+    /// process remains alive, owns all of its resources, and stays visible in
+    /// procfs until SIGCONT resumes it or a terminating signal exits it.
+    Stopped,
     Exited,
     /// Reaped process-group leader retained only as a pgid/session identity
     /// placeholder while live or zombie members remain in the group.
     Limbo,
+}
+
+/// The latest parent-observable child status record.
+///
+/// POSIX gives each process at most one status-information record: generating
+/// a new status replaces an older unconsumed record. The record stays on the
+/// child whose state changed, where WNOWAIT can repeatedly peek it and an
+/// ordinary matching wait can consume it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildWaitEvent {
+    /// One of `wait::EVENT_{EXITED,STOPPED,CONTINUED}`.
+    pub event_mask: u32,
+    /// Traditional waitpid/wait4 status encoding.
+    pub wait_status: i32,
+    /// `CLD_*` code for waitid's siginfo_t.
+    pub si_code: i32,
+    /// Exit code or signal number for waitid's si_status.
+    pub si_status: i32,
+    /// Real uid of the child when the event occurred.
+    pub child_uid: u32,
+    /// Architecture-neutral kernel/host resource-usage wire snapshot.
+    pub rusage: KernelRusage,
 }
 
 /// Per-process binding tracking the live mmap of `/dev/fb0`.
@@ -458,6 +493,12 @@ pub struct PosixTimerState {
     pub clock_id: u32,
     pub sigev_signo: u32,
     pub sigev_value: i32,
+    /// Kernel-facing notification mode (`SIGEV_SIGNAL`, `SIGEV_NONE`, or
+    /// Linux's `SIGEV_THREAD_ID`). musl implements POSIX `SIGEV_THREAD` by
+    /// creating a helper pthread and asking the kernel to target that TID.
+    pub sigev_notify: u32,
+    /// Target thread for `SIGEV_THREAD_ID`; zero for process-wide modes.
+    pub sigev_tid: u32,
     /// Interval for repeating timers (0 = one-shot).
     pub interval_sec: i64,
     pub interval_nsec: i64,
@@ -465,8 +506,43 @@ pub struct PosixTimerState {
     /// 0/0 = disarmed.
     pub value_sec: i64,
     pub value_nsec: i64,
-    /// Number of overruns (expirations not yet handled).
-    pub overrun: i32,
+    /// True while this timer owns a queued notification not yet accepted.
+    pub notification_pending: bool,
+    /// Expirations accumulated while the current notification is pending.
+    pub overrun_current: i32,
+    /// Overrun count associated with the most recently accepted notification.
+    pub overrun_last: i32,
+}
+
+/// Normalize the guest sigevent notification into the signal number passed to
+/// the host timer. SIGEV_NONE uses zero internally; SIGEV_SIGNAL must name a
+/// real signal so it cannot silently become a no-notification timer.
+const SIGEV_SIGNAL: u32 = 0;
+const SIGEV_NONE: u32 = 1;
+const SIGEV_THREAD_ID: u32 = 4;
+
+pub(crate) fn normalize_posix_timer_signo(
+    sigev_notify: u32,
+    sigev_signo: u32,
+) -> Result<u32, Errno> {
+    match sigev_notify {
+        SIGEV_NONE => Ok(0),
+        SIGEV_SIGNAL if (1..=64).contains(&sigev_signo) => Ok(sigev_signo),
+        SIGEV_THREAD_ID if (1..=64).contains(&sigev_signo) => Ok(sigev_signo),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn posix_timer_notification_validates_and_normalizes_signals() {
+    assert_eq!(normalize_posix_timer_signo(SIGEV_NONE, 14).unwrap(), 0);
+    assert_eq!(normalize_posix_timer_signo(SIGEV_SIGNAL, 1).unwrap(), 1);
+    assert_eq!(normalize_posix_timer_signo(SIGEV_SIGNAL, 64).unwrap(), 64);
+    assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 0).is_err());
+    assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 65).is_err());
+    assert_eq!(normalize_posix_timer_signo(SIGEV_THREAD_ID, 14).unwrap(), 14);
+    assert!(normalize_posix_timer_signo(SIGEV_THREAD_ID, 0).is_err());
 }
 
 /// Per-signalfd state: the set of signals to watch.
@@ -511,7 +587,13 @@ pub struct Process {
     /// POSIX uses this flag (not `sid == pid`) to gate setpgid EPERM checks.
     pub is_session_leader: bool,
     pub state: ProcessState,
+    /// Low 8-bit status supplied to `_exit()`/`exit_group()` for a normal
+    /// exit. Signal termination is recorded separately in `exit_signal` so
+    /// normal statuses 128..=255 remain distinguishable to waiters.
     pub exit_status: i32,
+    pub exit_signal: u32,
+    /// Latest consumable parent wait status, if any.
+    pub wait_event: Option<ChildWaitEvent>,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
     pub lock_table: LockTable,
@@ -519,7 +601,13 @@ pub struct Process {
     pub sockets: SocketTable,
     pub cwd: Vec<u8>,
     pub dir_streams: Vec<Option<DirStream>>,
+    /// Process-directed pending signals and process-wide dispositions. The
+    /// blocked mask remains the main thread's mask for historical ABI reasons.
     pub signals: SignalState,
+    /// Signals directed to the main thread. Its blocked mask and sigsuspend
+    /// save slot remain in the historical Process fields; this state owns the
+    /// directed pending bits and siginfo queue only.
+    pub main_thread_signals: PerThreadSignalState,
     pub memory: MemoryManager,
     pub terminal: TerminalState,
     pub environ: Vec<Vec<u8>>,
@@ -548,14 +636,8 @@ pub struct Process {
     pub threads: Vec<ThreadInfo>,
     /// Next thread ID to allocate.
     pub next_tid: u32,
-    /// Eventfd instances owned by this process.
-    pub eventfds: Vec<Option<EventFdState>>,
     /// Epoll instances owned by this process.
     pub epolls: Vec<Option<EpollInstance>>,
-    /// Timerfd instances owned by this process.
-    pub timerfds: Vec<Option<TimerFdState>>,
-    /// Signalfd instances owned by this process.
-    pub signalfds: Vec<Option<SignalFdState>>,
     /// POSIX timers (timer_create / timer_settime).
     pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
@@ -570,10 +652,6 @@ pub struct Process {
     /// from this list to return the correct FDs when the child re-runs
     /// code before fork(). Empty in non-fork-child processes.
     pub fork_pipe_replay: Vec<(i32, i32)>,
-    /// In-memory file buffers for memfd_create fds.
-    pub memfds: Vec<Option<Vec<u8>>>,
-    /// Content buffers for open procfs files (snapshot at open time).
-    pub procfs_bufs: Vec<Option<Vec<u8>>>,
     /// True if this process has called exec (for POSIX setpgid EACCES check).
     pub has_exec: bool,
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
@@ -647,6 +725,9 @@ impl StdioConfig {
     }
 }
 
+pub(crate) const PROCESS_METADATA_ARGV: u32 = 0;
+pub(crate) const PROCESS_METADATA_ENVIRONMENT: u32 = 1;
+
 impl Process {
     /// Create a new process with captured, pipe-backed stdio.
     pub fn new(pid: u32) -> Self {
@@ -700,6 +781,8 @@ impl Process {
             is_session_leader: false,
             state: ProcessState::Running,
             exit_status: 0,
+            exit_signal: 0,
+            wait_event: None,
             fd_table,
             ofd_table,
             lock_table: LockTable::new(),
@@ -708,6 +791,7 @@ impl Process {
             cwd: alloc::vec![b'/'],
             dir_streams: Vec::new(),
             signals: SignalState::new(),
+            main_thread_signals: PerThreadSignalState::new(),
             memory: MemoryManager::new(),
             terminal: TerminalState::new(),
             environ: Vec::new(),
@@ -726,18 +810,13 @@ impl Process {
             next_ephemeral_port: 49152,
             threads: Vec::new(),
             next_tid: 0, // will be set to pid + 1 after pid is known
-            eventfds: Vec::new(),
             epolls: Vec::new(),
-            timerfds: Vec::new(),
-            signalfds: Vec::new(),
             posix_timers: Vec::new(),
             alt_stack_sp: 0,
             alt_stack_flags: 2, // SS_DISABLE
             alt_stack_size: 0,
             alt_stack_depth: 0,
             fork_pipe_replay: Vec::new(),
-            memfds: Vec::new(),
-            procfs_bufs: Vec::new(),
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),
@@ -754,6 +833,136 @@ impl Process {
     /// the parent after a child is successfully created.
     pub(crate) fn increment_fork_count(&mut self) {
         self.fork_count += 1;
+    }
+
+    fn set_wait_event(
+        &mut self,
+        event_mask: u32,
+        wait_status: i32,
+        si_code: i32,
+        si_status: i32,
+    ) {
+        self.wait_event = Some(ChildWaitEvent {
+            event_mask,
+            wait_status,
+            si_code,
+            si_status,
+            child_uid: self.uid,
+            rusage: KernelRusage::default(),
+        });
+    }
+
+    /// Apply a delivered default stop action. Repeated stop signals while the
+    /// process is already stopped do not create duplicate state transitions.
+    pub fn record_stop(&mut self, signum: u32) -> bool {
+        if self.state != ProcessState::Running {
+            return false;
+        }
+        self.state = ProcessState::Stopped;
+        self.set_wait_event(
+            wasm_posix_shared::wait::EVENT_STOPPED,
+            ((signum as i32) << 8) | 0x7f,
+            wasm_posix_shared::wait::CLD_STOPPED,
+            signum as i32,
+        );
+        crate::wakeup::push(
+            self.pid,
+            wasm_posix_shared::wait::WAKE_PROCESS_STOPPED as u8,
+        );
+        true
+    }
+
+    /// Resume a stopped process. SIGCONT invokes this at signal-generation
+    /// time, before its blocked mask or disposition is consulted.
+    pub fn record_continue(&mut self) -> bool {
+        if self.state != ProcessState::Stopped {
+            return false;
+        }
+        self.state = ProcessState::Running;
+        self.set_wait_event(
+            wasm_posix_shared::wait::EVENT_CONTINUED,
+            0xffff,
+            wasm_posix_shared::wait::CLD_CONTINUED,
+            wasm_posix_shared::signal::SIGCONT as i32,
+        );
+        crate::wakeup::push(
+            self.pid,
+            wasm_posix_shared::wait::WAKE_PROCESS_CONTINUED as u8,
+        );
+        true
+    }
+
+    /// Record one normal process exit after exit cleanup has completed.
+    pub fn record_normal_exit(&mut self, status: i32) -> bool {
+        if self.state == ProcessState::Exited || self.state == ProcessState::Limbo {
+            return false;
+        }
+        let status = status & 0xff;
+        self.state = ProcessState::Exited;
+        self.exit_status = status;
+        self.exit_signal = 0;
+        self.set_wait_event(
+            wasm_posix_shared::wait::EVENT_EXITED,
+            status << 8,
+            wasm_posix_shared::wait::CLD_EXITED,
+            status,
+        );
+        true
+    }
+
+    /// Record one signal-caused process exit after exit cleanup has completed.
+    pub fn record_signal_exit(&mut self, signum: u32) -> bool {
+        if self.state == ProcessState::Exited || self.state == ProcessState::Limbo {
+            return false;
+        }
+        let signum = signum & 0x7f;
+        self.state = ProcessState::Exited;
+        self.exit_status = 0;
+        self.exit_signal = signum;
+        self.set_wait_event(
+            wasm_posix_shared::wait::EVENT_EXITED,
+            signum as i32,
+            wasm_posix_shared::wait::CLD_KILLED,
+            signum as i32,
+        );
+        true
+    }
+
+    pub(crate) fn clear_signal_everywhere(&mut self, signum: u32) {
+        self.signals.clear_pending(signum);
+        self.clear_directed_signal(signum);
+    }
+
+    /// Apply process-control effects when a signal is generated, before the
+    /// signal is queued or tested against a mask/disposition.
+    fn prepare_signal_generation(&mut self, signum: u32) {
+        use wasm_posix_shared::signal::{
+            NSIG, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU,
+        };
+
+        if signum == 0 || signum >= NSIG {
+            return;
+        }
+        if signum == SIGCONT {
+            for stop in [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU] {
+                self.clear_signal_everywhere(stop);
+            }
+            // This transition is mandatory even when SIGCONT is blocked,
+            // ignored, or caught. The signal itself is still queued below.
+            self.record_continue();
+        } else if matches!(signum, SIGSTOP | SIGTSTP | SIGTTIN | SIGTTOU) {
+            self.clear_signal_everywhere(SIGCONT);
+        }
+    }
+
+    pub fn raise_signal(&mut self, signum: u32) -> bool {
+        self.prepare_signal_generation(signum);
+        self.signals.raise(signum)
+    }
+
+    pub fn raise_signal_with_value(&mut self, signum: u32, si_value: i32) -> bool {
+        self.prepare_signal_generation(signum);
+        self.signals.raise_with_value(signum, si_value)
     }
 
     /// Compatibility helper for the legacy pipe slot vector, reusing the first
@@ -824,13 +1033,20 @@ impl Process {
 
     /// True if `tid` names the process's main thread. The main thread's TID
     /// equals the process PID (Linux convention) and is not tracked in
-    /// [`Process::threads`]; per-thread signal state for the main thread lives
-    /// in [`Process::signals`] instead.
+    /// [`Process::threads`]; its blocked mask lives in [`Process::signals`]
+    /// and its directed pending queue in [`Process::main_thread_signals`].
     ///
     /// `tid == 0` is also treated as "main thread" because the host uses 0
     /// for syscalls from the main channel (no thread worker is involved).
     pub fn is_main_thread(&self, tid: u32) -> bool {
         tid == 0 || tid == self.pid
+    }
+
+    /// True when a nonzero TID explicitly names the live process leader or a
+    /// retained worker. Kernel-internal TID 0 aliases the leader but is not a
+    /// valid user-supplied exact-thread target.
+    pub fn is_live_explicit_tid(&self, tid: u32) -> bool {
+        tid != 0 && (tid == self.pid || self.get_thread(tid).is_some())
     }
 
     /// Effective blocked mask for the given TID.
@@ -867,7 +1083,7 @@ impl Process {
     /// unblocked.
     pub fn pending_for(&self, tid: u32) -> u64 {
         if self.is_main_thread(tid) {
-            self.signals.pending
+            self.signals.pending | self.main_thread_signals.pending
         } else {
             let thread_pending = self.get_thread(tid).map(|t| t.signals.pending).unwrap_or(0);
             self.signals.pending | thread_pending
@@ -883,7 +1099,7 @@ impl Process {
         let bit = crate::signal::sig_bit(sig);
         let shared = (self.signals.pending & bit) != 0;
         if self.is_main_thread(tid) {
-            shared
+            shared || (self.main_thread_signals.pending & bit) != 0
         } else {
             let thread_bit = self
                 .get_thread(tid)
@@ -891,6 +1107,22 @@ impl Process {
                 .unwrap_or(false);
             shared || thread_bit
         }
+    }
+
+    /// Whether a pending instance exists in the shared queue or any directed
+    /// thread queue. SIGKILL uses this while stopped because it terminates the
+    /// whole process regardless of which thread was targeted.
+    pub fn signal_pending_anywhere(&self, sig: u32) -> bool {
+        if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        let bit = crate::signal::sig_bit(sig);
+        self.signals.pending & bit != 0
+            || self.main_thread_signals.pending & bit != 0
+            || self
+                .threads
+                .iter()
+                .any(|thread| thread.signals.pending & bit != 0)
     }
 
     /// Pick a thread TID that does not block `sig`. Preference order:
@@ -920,6 +1152,222 @@ impl Process {
         let pending = self.pending_for(tid);
         let blocked = self.blocked_for(tid);
         pending & !blocked
+    }
+
+    /// Return the next signal deliverable in the current lifecycle state.
+    /// Stopped processes retain every pending signal except SIGKILL; SIGCONT
+    /// resumes at generation time and reaches this method as Running.
+    pub fn next_deliverable_signal(&self, tid: u32) -> Option<u32> {
+        if self.state == ProcessState::Stopped {
+            let sigkill = wasm_posix_shared::signal::SIGKILL;
+            return self.signal_pending_anywhere(sigkill).then_some(sigkill);
+        }
+
+        let deliverable = self.deliverable_for(tid);
+        if deliverable == 0 {
+            return None;
+        }
+        let signum = deliverable.trailing_zeros() + 1;
+        (signum < wasm_posix_shared::signal::NSIG).then_some(signum)
+    }
+
+    /// Whether the lowest-numbered signal deliverable to `tid` carries
+    /// SA_RESTART. Dispositions are process-wide even for directed signals.
+    pub fn should_restart_for(&self, tid: u32) -> bool {
+        let deliverable = self.deliverable_for(tid);
+        if deliverable == 0 {
+            return false;
+        }
+        let signum = deliverable.trailing_zeros() + 1;
+        if signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        self.signals.get_action(signum).flags & wasm_posix_shared::signal::SA_RESTART != 0
+    }
+
+    /// Queue a signal for one exact thread. Main-thread-directed signals have
+    /// their own queue because `SignalState::pending` is process-shared.
+    pub fn raise_for_thread(&mut self, tid: u32, signum: u32) -> bool {
+        self.prepare_signal_generation(signum);
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        let handler = self.signals.get_handler(signum);
+        if crate::signal::should_discard_pending(signum, &handler) {
+            return true;
+        }
+        if self.is_main_thread(tid) {
+            self.main_thread_signals.raise(signum)
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread.signals.raise(signum)
+        } else {
+            false
+        }
+    }
+
+    /// Queue a signal with sigqueue metadata for one exact thread.
+    pub fn raise_for_thread_with_value(
+        &mut self,
+        tid: u32,
+        signum: u32,
+        si_value: i32,
+    ) -> bool {
+        self.prepare_signal_generation(signum);
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        let handler = self.signals.get_handler(signum);
+        if crate::signal::should_discard_pending(signum, &handler) {
+            return true;
+        }
+        if self.is_main_thread(tid) {
+            self.main_thread_signals
+                .raise_with_value(signum, si_value)
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread.signals.raise_with_value(signum, si_value)
+        } else {
+            false
+        }
+    }
+
+    /// Queue one timer notification for an exact live thread, including the
+    /// main thread's dedicated directed queue.
+    pub fn raise_timer_for_thread(
+        &mut self,
+        tid: u32,
+        signum: u32,
+        si_value: i32,
+        timer_id: u32,
+    ) -> bool {
+        self.prepare_signal_generation(signum);
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        let handler = self.signals.get_handler(signum);
+        if crate::signal::should_discard_pending(signum, &handler) {
+            return true;
+        }
+        if self.is_main_thread(tid) {
+            self.main_thread_signals
+                .raise_timer(signum, si_value, timer_id)
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread.signals.raise_timer(signum, si_value, timer_id)
+        } else {
+            false
+        }
+    }
+
+    /// Clear a directed signal from every thread. Used when a new
+    /// disposition requires pending instances to be discarded.
+    pub fn clear_directed_signal(&mut self, signum: u32) {
+        self.main_thread_signals.clear_pending(signum);
+        for thread in &mut self.threads {
+            thread.signals.clear_pending(signum);
+        }
+    }
+
+    /// Consume one pending instance visible to `tid`, preferring that exact
+    /// thread's directed queue before the shared process queue.
+    pub fn consume_signal_for(
+        &mut self,
+        tid: u32,
+        signum: u32,
+    ) -> Option<crate::signal::PendingSignalInfo> {
+        let directed = if self.is_main_thread(tid) {
+            self.main_thread_signals
+                .is_pending(signum)
+                .then(|| self.main_thread_signals.consume_one_info(signum))
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread
+                .signals
+                .is_pending(signum)
+                .then(|| thread.signals.consume_one_info(signum))
+        } else {
+            None
+        };
+        if directed.is_some() {
+            return directed;
+        }
+        if self.signals.pending & crate::signal::sig_bit(signum) == 0 {
+            return None;
+        }
+        Some(self.signals.consume_one(signum))
+    }
+
+    /// Mark a timer notification as accepted and snapshot its overrun count.
+    pub fn accept_posix_timer_notification(&mut self, timer_id: u32) -> Option<i32> {
+        let timer = self.posix_timers.get_mut(timer_id as usize)?.as_mut()?;
+        if !timer.notification_pending {
+            return None;
+        }
+        timer.notification_pending = false;
+        timer.overrun_last = timer.overrun_current;
+        timer.overrun_current = 0;
+        Some(timer.overrun_last)
+    }
+
+    /// Preserve the interval-fire contract used by hosts predating the
+    /// kernel-owned POSIX timer notification path. Returns true when the host
+    /// must suppress a duplicate process-wide signal.
+    pub fn note_legacy_posix_timer_interval_fire(&mut self, timer_id: u32) -> bool {
+        let signum = match self.posix_timers.get(timer_id as usize) {
+            Some(Some(timer)) => timer.sigev_signo,
+            _ => return false,
+        };
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+
+        let pending = (self.signals.pending & crate::signal::sig_bit(signum)) != 0;
+        let timer = self.posix_timers[timer_id as usize].as_mut().unwrap();
+        if pending {
+            timer.overrun_last = timer.overrun_last.saturating_add(1);
+        } else {
+            timer.overrun_last = 0;
+        }
+        pending
+    }
+
+    /// Discard every shared and directed pending instance of a signal.
+    pub fn discard_pending_signal(&mut self, signum: u32) {
+        let mut timer_ids: Vec<u32> = self.signals.pending_timer_ids(signum).collect();
+        timer_ids.extend(
+            self.main_thread_signals
+                .rt_queue
+                .iter()
+                .filter(|entry| entry.signum == signum)
+                .filter_map(|entry| entry.timer_id),
+        );
+        for thread in &self.threads {
+            timer_ids.extend(
+                thread
+                    .signals
+                    .rt_queue
+                    .iter()
+                    .filter(|entry| entry.signum == signum)
+                    .filter_map(|entry| entry.timer_id),
+            );
+        }
+        self.signals.clear_pending(signum);
+        self.main_thread_signals.clear_pending(signum);
+        for thread in &mut self.threads {
+            thread.signals.clear_pending(signum);
+        }
+        for timer_id in timer_ids {
+            self.accept_posix_timer_notification(timer_id);
+        }
+    }
+
+    /// Purge a deleted timer's queued notification before its slot is reused.
+    pub fn remove_posix_timer_notification(&mut self, timer_id: u32) -> bool {
+        let mut removed = self.signals.remove_timer_notification(timer_id);
+        removed |= self
+            .main_thread_signals
+            .remove_timer_notification(timer_id);
+        for thread in &mut self.threads {
+            removed |= thread.signals.remove_timer_notification(timer_id);
+        }
+        removed
     }
 
     /// Read the saved sigsuspend/ppoll/pselect mask for TID.
@@ -969,6 +1417,32 @@ impl Process {
             }
         }
         out
+    }
+
+    fn metadata_vector_mut(&mut self, kind: u32) -> Result<&mut Vec<Vec<u8>>, Errno> {
+        match kind {
+            PROCESS_METADATA_ARGV => Ok(&mut self.argv),
+            PROCESS_METADATA_ENVIRONMENT => Ok(&mut self.environ),
+            _ => Err(Errno::EINVAL),
+        }
+    }
+
+    pub(crate) fn clear_metadata(&mut self, kind: u32) -> Result<(), Errno> {
+        self.metadata_vector_mut(kind)?.clear();
+        Ok(())
+    }
+
+    pub(crate) fn push_metadata_entry(&mut self, kind: u32, entry: &[u8]) -> Result<(), Errno> {
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(entry.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        owned.extend_from_slice(entry);
+
+        let entries = self.metadata_vector_mut(kind)?;
+        entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        entries.push(owned);
+        Ok(())
     }
 }
 
@@ -1200,6 +1674,234 @@ mod tests {
     }
 
     #[test]
+    fn child_status_record_is_replaced_by_each_new_transition() {
+        use wasm_posix_shared::signal::{SIGCONT, SIGTERM, SIGTSTP};
+        use wasm_posix_shared::wait::{
+            CLD_CONTINUED, CLD_KILLED, CLD_STOPPED, EVENT_CONTINUED, EVENT_EXITED,
+            EVENT_STOPPED,
+        };
+
+        let mut proc = Process::new(41);
+        assert!(proc.record_stop(SIGTSTP));
+        let stopped = proc.wait_event.unwrap();
+        assert_eq!(stopped.event_mask, EVENT_STOPPED);
+        assert_eq!(stopped.si_code, CLD_STOPPED);
+        assert_eq!(stopped.si_status, SIGTSTP as i32);
+
+        assert!(proc.record_continue());
+        let continued = proc.wait_event.unwrap();
+        assert_eq!(continued.event_mask, EVENT_CONTINUED);
+        assert_eq!(continued.wait_status, 0xffff);
+        assert_eq!(continued.si_code, CLD_CONTINUED);
+        assert_eq!(continued.si_status, SIGCONT as i32);
+
+        assert!(proc.record_signal_exit(SIGTERM));
+        let exited = proc.wait_event.unwrap();
+        assert_eq!(exited.event_mask, EVENT_EXITED);
+        assert_eq!(exited.wait_status, SIGTERM as i32);
+        assert_eq!(exited.si_code, CLD_KILLED);
+        assert_eq!(exited.si_status, SIGTERM as i32);
+    }
+
+    #[test]
+    fn sigcont_resumes_immediately_for_blocked_caught_and_ignored_dispositions() {
+        use crate::signal::{SignalHandler, sig_bit};
+        use wasm_posix_shared::signal::{SIGCONT, SIGSTOP};
+        use wasm_posix_shared::wait::EVENT_CONTINUED;
+
+        for (handler, blocked, expect_pending) in [
+            (SignalHandler::Default, true, true),
+            (SignalHandler::Handler(7), false, true),
+            (SignalHandler::Ignore, false, false),
+        ] {
+            let mut proc = Process::new(42);
+            proc.signals.set_handler(SIGCONT, handler).unwrap();
+            if blocked {
+                proc.signals.blocked |= sig_bit(SIGCONT);
+            }
+            assert!(proc.record_stop(SIGSTOP));
+
+            let queued = proc.raise_signal(SIGCONT);
+
+            assert_eq!(proc.state, ProcessState::Running);
+            assert_eq!(proc.wait_event.unwrap().event_mask, EVENT_CONTINUED);
+            if expect_pending {
+                assert!(queued);
+                assert!(proc.signals.is_pending(SIGCONT));
+            } else {
+                assert!(!proc.signals.is_pending(SIGCONT));
+            }
+        }
+    }
+
+    #[test]
+    fn job_control_generation_cancels_opposing_pending_signals_everywhere() {
+        use crate::signal::sig_bit;
+        use wasm_posix_shared::signal::{SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU};
+
+        let mut proc = Process::new(43);
+        proc.add_thread(ThreadInfo::new(99, 0, 0, 0));
+        proc.signals.raise(SIGSTOP);
+        proc.main_thread_signals.raise(SIGTSTP);
+        proc.threads[0].signals.raise(SIGTTIN);
+        proc.threads[0].signals.raise(SIGTTOU);
+
+        assert!(proc.raise_signal(SIGCONT));
+        let stop_bits = [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU]
+            .into_iter()
+            .fold(0, |bits, sig| bits | sig_bit(sig));
+        assert_eq!(proc.signals.pending & stop_bits, 0);
+        assert_eq!(proc.main_thread_signals.pending & stop_bits, 0);
+        assert_eq!(proc.threads[0].signals.pending & stop_bits, 0);
+
+        proc.main_thread_signals.raise(SIGCONT);
+        proc.threads[0].signals.raise(SIGCONT);
+        assert!(proc.raise_signal(SIGSTOP));
+        assert!(!proc.signals.is_pending(SIGCONT));
+        assert_eq!(proc.main_thread_signals.pending & sig_bit(SIGCONT), 0);
+        assert_eq!(proc.threads[0].signals.pending & sig_bit(SIGCONT), 0);
+    }
+
+    #[test]
+    fn metadata_entry_transport_preserves_empty_values_and_empty_environment() {
+        let mut proc = Process::new(77);
+        proc.argv = vec![b"old".to_vec()];
+        proc.environ = vec![b"OLD=value".to_vec()];
+
+        proc.clear_metadata(PROCESS_METADATA_ARGV).unwrap();
+        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"new")
+            .unwrap();
+        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"")
+            .unwrap();
+        proc.clear_metadata(PROCESS_METADATA_ENVIRONMENT).unwrap();
+
+        assert_eq!(proc.argv, vec![b"new".to_vec(), Vec::new()]);
+        assert!(proc.environ.is_empty());
+    }
+
+    #[test]
+    fn metadata_entry_transport_rejects_unknown_vector_kind() {
+        let mut proc = Process::new(78);
+        assert_eq!(proc.clear_metadata(99), Err(Errno::EINVAL));
+        assert_eq!(proc.push_metadata_entry(99, b"value"), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn accepting_timer_notification_snapshots_overrun() {
+        let mut proc = Process::new(1);
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 32,
+            sigev_value: 7,
+            sigev_notify: 0,
+            sigev_tid: 0,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: true,
+            overrun_current: 3,
+            overrun_last: 1,
+        }));
+
+        assert_eq!(proc.accept_posix_timer_notification(0), Some(3));
+        let timer = proc.posix_timers[0].as_ref().unwrap();
+        assert!(!timer.notification_pending);
+        assert_eq!(timer.overrun_current, 0);
+        assert_eq!(timer.overrun_last, 3);
+        assert_eq!(proc.accept_posix_timer_notification(0), None);
+    }
+
+    #[test]
+    fn exact_thread_targets_accept_leader_and_live_worker_only() {
+        let mut proc = Process::new(41);
+        proc.add_thread(ThreadInfo::new(42, 0, 0, 0));
+
+        assert!(!proc.is_live_explicit_tid(0));
+        assert!(proc.is_live_explicit_tid(41));
+        assert!(proc.is_live_explicit_tid(42));
+        assert!(!proc.is_live_explicit_tid(43));
+        proc.remove_thread(42);
+        assert!(!proc.is_live_explicit_tid(42));
+    }
+
+    #[test]
+    fn legacy_interval_fire_preserves_host_signal_contract() {
+        let mut proc = Process::new(1);
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 7,
+            sigev_notify: 0,
+            sigev_tid: 0,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: false,
+            overrun_current: 0,
+            overrun_last: 4,
+        }));
+
+        assert!(!proc.note_legacy_posix_timer_interval_fire(0));
+        assert_eq!(proc.posix_timers[0].as_ref().unwrap().overrun_last, 0);
+
+        proc.signals.raise(10);
+        assert!(proc.note_legacy_posix_timer_interval_fire(0));
+        assert_eq!(proc.posix_timers[0].as_ref().unwrap().overrun_last, 1);
+        assert!(proc.note_legacy_posix_timer_interval_fire(0));
+        assert_eq!(proc.posix_timers[0].as_ref().unwrap().overrun_last, 2);
+    }
+
+    #[test]
+    fn deleting_timer_notification_prevents_slot_reuse_aba() {
+        let mut proc = Process::new(1);
+        proc.add_thread(ThreadInfo::new(2, 0, 0, 0));
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 7,
+            sigev_notify: 4,
+            sigev_tid: 2,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: true,
+            overrun_current: 2,
+            overrun_last: 0,
+        }));
+        proc.get_thread_mut(2).unwrap().signals.raise_timer(10, 7, 0);
+
+        assert!(proc.remove_posix_timer_notification(0));
+        proc.posix_timers[0] = Some(PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 8,
+            sigev_notify: 0,
+            sigev_tid: 0,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: false,
+            overrun_current: 0,
+            overrun_last: 0,
+        });
+
+        assert!(!proc.get_thread(2).unwrap().signals.is_pending(10));
+        assert_eq!(
+            proc.get_thread_mut(2)
+                .unwrap()
+                .signals
+                .consume_one_info(10)
+                .timer_id,
+            None,
+        );
+        assert_eq!(proc.accept_posix_timer_notification(0), None);
+    }
+
+    #[test]
     fn new_creates_captured_stdio_as_pipes() {
         let proc = Process::new(1);
         for fd in 0..=2 {
@@ -1245,6 +1947,7 @@ mod tests {
         let child = table.get(child_pid).expect("child in table");
         assert_eq!(child.cwd, b"/tmp", "child inherits parent cwd");
         assert_eq!(child.ppid, 100, "child ppid is parent pid");
+        assert!(child.wait_event.is_none(), "spawn child starts without status");
         assert_eq!(
             child.argv,
             alloc::vec![b"/bin/echo".to_vec(), b"hi".to_vec()],
@@ -1381,7 +2084,16 @@ mod tests {
         udp.dgram_queue.push(Datagram {
             data: b"hello".to_vec(),
             src_addr: [127, 0, 0, 1],
+            src_addr6: [0; 16],
+            dst_addr: [127, 0, 0, 1],
+            dst_addr6: [0; 16],
             src_port: 12345,
+            src_sock_idx: None,
+            ipv6_tclass: 0,
+            src_pid: 400,
+            src_uid: 0,
+            src_gid: 0,
+            ancillary_fds: Vec::new(),
         });
         let mut tcp = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         tcp.oob_byte = Some(0xAB);
@@ -1578,6 +2290,82 @@ mod tests {
         );
         // The refcount table entry should be gone (close_ref dropped to 0).
         assert_eq!(host_net_handle_ref_count(HANDLE), 0);
+    }
+
+    #[test]
+    fn remove_process_emits_host_file_close_only_on_last_ref() {
+        // Forced host teardown removes a process without running sys_exit.
+        // Its live host-backed OFDs must still drop their inherited ownership,
+        // and only the last owner may close the shared backend handle.
+        use crate::fd::FdTable;
+        use crate::ofd::{FileType, OfdTable, host_handle_ref_count};
+        use crate::process_table::ProcessTable;
+
+        const HANDLE: i64 = 900_000_091;
+        let mut table = ProcessTable::new();
+        table.create_process(610).unwrap();
+        let parent = table.processes.get_mut(&610).unwrap();
+        // Keep the assertion independent of globally-numbered stdio handles,
+        // which other ProcessTable tests may share while the test runner is
+        // executing in parallel.
+        parent.fd_table = FdTable::new();
+        parent.ofd_table = OfdTable::new();
+        let ofd_idx = parent.ofd_table.create(
+            FileType::Regular,
+            wasm_posix_shared::flags::O_RDONLY,
+            HANDLE,
+            b"/tmp/forced-exit-file".to_vec(),
+        );
+        parent
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        table.fork_process(610, 611).expect("fork_process");
+        assert_eq!(host_handle_ref_count(HANDLE), 2);
+
+        let child = table.remove_process(611).expect("remove child");
+        assert!(child.host_closes.is_empty());
+        assert_eq!(host_handle_ref_count(HANDLE), 1);
+
+        let parent = table.remove_process(610).expect("remove parent");
+        assert_eq!(parent.host_closes, alloc::vec![HANDLE]);
+        assert_eq!(host_handle_ref_count(HANDLE), 0);
+    }
+
+    #[test]
+    fn remove_process_emits_all_uninherited_directory_handles() {
+        use crate::fd::FdTable;
+        use crate::ofd::{FileType, OfdTable};
+        use crate::process::{DirStream, Process};
+        use crate::process_table::ProcessTable;
+
+        let mut table = ProcessTable::new();
+        table.processes.insert(620, Process::new(620));
+        let process = table.processes.get_mut(&620).unwrap();
+        process.fd_table = FdTable::new();
+        process.ofd_table = OfdTable::new();
+        let ofd_idx = process.ofd_table.create(
+            FileType::Directory,
+            wasm_posix_shared::flags::O_RDONLY,
+            92,
+            b"/tmp".to_vec(),
+        );
+        process.ofd_table.get_mut(ofd_idx).unwrap().dir_host_handle = 7;
+        process
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        process.dir_streams.push(Some(DirStream {
+            host_handle: 8,
+            path: b"/var".to_vec(),
+            position: 0,
+            synth_dot_state: 0,
+        }));
+
+        let removed = table.remove_process(620).expect("remove process");
+        assert_eq!(removed.host_dir_closes, alloc::vec![7, 8]);
+        assert_eq!(removed.host_closes, alloc::vec![92]);
     }
 
     #[test]

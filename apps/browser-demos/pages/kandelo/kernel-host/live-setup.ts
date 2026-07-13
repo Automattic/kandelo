@@ -1174,6 +1174,15 @@ async function bootProfile(
       maxMemoryPages: profile.init?.maxMemoryPages,
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
+      onHostDiagnostic: (diagnostic) => {
+        if (!isCurrent()) return;
+        host.pushDmesg({
+          t: bootElapsedMs(bootStartedAt),
+          level: "warn",
+          facility: "kernel",
+          msg: diagnostic.message,
+        });
+      },
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
       onHttpBridgePendingRequests: (count) => {
         if (isCurrent()) host.setWebPreviewPendingRequests(count);

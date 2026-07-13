@@ -1,4 +1,5 @@
-import type { StatResult, StatfsResult } from "../types";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import { filesystemPathconf } from "../pathconf";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { DEVFS_SUPER_MAGIC, zeroCapacityStatfs } from "../statfs";
 
@@ -156,6 +157,14 @@ export class DeviceFileSystem implements FileSystemBackend {
     };
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    const stat = this.fstat(handle);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: false,
+      timestampResolutionNs: null,
+    });
+  }
+
   ftruncate(_handle: number, _length: number): void {}
   fsync(_handle: number): void {}
   fchmod(_handle: number, _mode: number): void {}
@@ -198,6 +207,14 @@ export class DeviceFileSystem implements FileSystemBackend {
     return stats;
   }
 
+  pathconf(path: string, name: number): PathconfValue {
+    const stat = this.stat(path);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: false,
+      timestampResolutionNs: null,
+    });
+  }
+
   mkdir(_path: string, _mode: number): void {
     throw new Error("EACCES");
   }
@@ -228,6 +245,8 @@ export class DeviceFileSystem implements FileSystemBackend {
 
   chmod(_path: string, _mode: number): void {}
   chown(_path: string, _uid: number, _gid: number): void {}
+
+  lchown(_path: string, _uid: number, _gid: number): void {}
 
   access(path: string, _mode: number): void {
     this.stat(path); // throws ENOENT if not found

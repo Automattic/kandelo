@@ -9,8 +9,18 @@ export { SharedPipeBuffer } from "./shared-pipe-buffer";
 export { BrowserWorkerAdapter } from "./worker-adapter-browser";
 export { centralizedWorkerMain, centralizedThreadWorkerMain, patchWasmForThread } from "./worker-main";
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
-export type { KernelConfig, PlatformIO, StatResult, StatfsResult } from "./types";
+export type {
+  KernelConfig,
+  PathconfValue,
+  PlatformIO,
+  StatResult,
+  StatfsResult,
+} from "./types";
+export { PATHCONF_NAMES } from "./generated/abi";
+export { filesystemPathconf } from "./pathconf";
+export type { PathconfProfile } from "./pathconf";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
+export type { HostDiagnostic } from "./host-diagnostic";
 export type {
   HostToWorkerMessage, WorkerToHostMessage,
   WorkerReadyMessage, WorkerExitMessage, WorkerErrorMessage,

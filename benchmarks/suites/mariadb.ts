@@ -16,6 +16,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
 
 const mariadbLibDir = resolve(repoRoot, "packages/registry/mariadb");
+const MARIADB_PROCESS_TIMEOUT_MS = 120_000;
+const MARIADB_CLEANUP_TIMEOUT_MS = 10_000;
 
 export type WasmArch = "wasm32" | "wasm64";
 
@@ -62,6 +64,45 @@ function resolveMariaDBBootstrapSql(arch: WasmArch): { systemTables: string; sys
   };
 }
 
+/** Filesystem inputs selected by one Node MariaDB architecture. */
+export function describeMariaDBBenchmarkInputs(arch: WasmArch): {
+  serverPath: string | null;
+  serverResolverRequest: string;
+  serverResolverSelectedPath: string | null;
+  clientPath: string | null;
+  clientResolverRequest: string;
+  clientResolverSelectedPath: string | null;
+  bootstrapSql: { systemTables: string; systemData: string } | null;
+  bootstrapSqlError?: string;
+} {
+  const serverResolverRequest = resolverPathFor(arch, "mariadbd.wasm");
+  const clientResolverRequest = resolverPathFor(arch, "mysqltest.wasm");
+  const serverPath = resolveMariaDBProgram(arch, "mariadbd.wasm");
+  const clientPath = resolveMariaDBProgram(arch, "mysqltest.wasm");
+  let bootstrapSql: { systemTables: string; systemData: string } | null = null;
+  let bootstrapSqlError: string | undefined;
+  if (serverPath && clientPath) {
+    try {
+      bootstrapSql = resolveMariaDBBootstrapSql(arch);
+    } catch (error) {
+      bootstrapSqlError = error instanceof Error ? error.message : String(error);
+    }
+  } else {
+    bootstrapSqlError = "not resolved because MariaDB program prerequisites are missing";
+  }
+
+  return {
+    serverPath,
+    serverResolverRequest,
+    serverResolverSelectedPath: tryResolveBinary(serverResolverRequest),
+    clientPath,
+    clientResolverRequest,
+    clientResolverSelectedPath: tryResolveBinary(clientResolverRequest),
+    bootstrapSql,
+    bootstrapSqlError,
+  };
+}
+
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
@@ -79,12 +120,35 @@ function getFreePort(): Promise<number> {
   });
 }
 
+async function withRejectingTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
+function outputSuffix(output: string): string {
+  const trimmed = output.trim();
+  return trimmed ? `:\n${trimmed}` : "";
+}
+
 interface MariaDBInstance {
   host: NodeKernelHost;
   port: number;
   getOutput: () => string;
   getProcessOutput: (pid: number) => { stdout: string; stderr: string };
   dataDir: string;
+  assertLiveServer: (activity: string) => void;
+  raceLiveServer: <T>(operation: Promise<T>, activity: string) => Promise<T>;
   cleanup: () => Promise<void>;
 }
 
@@ -154,19 +218,129 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
     stdinData = new TextEncoder().encode(bootstrapSql);
   }
 
+  let livePid: number | undefined;
+  let resolveStarted: ((pid: number) => void) | undefined;
+  const startedPromise = bootstrap
+    ? undefined
+    : new Promise<number>((resolveStartedPromise) => {
+      resolveStarted = resolveStartedPromise;
+    });
   const exitPromise = host.spawn(mysqldBytes, serverArgs, {
     env: ["HOME=/tmp", "PATH=/usr/local/bin:/usr/bin:/bin", "TMPDIR=/tmp"],
     cwd: dataDir,
-    stdin: stdinData,
+    // Supplying onStarted keeps stdin open by default. The live benchmark
+    // server instead needs the same immediate EOF it had before pid tracking.
+    stdin: bootstrap ? stdinData : new Uint8Array(0),
+    onStarted: bootstrap ? undefined : (pid) => resolveStarted?.(pid),
   });
 
   if (bootstrap) {
-    const timeout = new Promise<number>((r) => setTimeout(() => r(0), 120_000));
-    await Promise.race([exitPromise, timeout]);
+    try {
+      const exitCode = await withRejectingTimeout(
+        exitPromise,
+        MARIADB_PROCESS_TIMEOUT_MS,
+        `MariaDB ${arch} bootstrap timed out after ${MARIADB_PROCESS_TIMEOUT_MS}ms`,
+      );
+      if (exitCode !== 0) {
+        throw new Error(
+          `MariaDB ${arch} bootstrap exited with status ${exitCode}` +
+          outputSuffix(output),
+        );
+      }
+    } catch (error) {
+      await host.destroy().catch(() => {});
+      throw error;
+    }
+  } else {
+    try {
+      livePid = await withRejectingTimeout(
+        Promise.race([
+          startedPromise!,
+          exitPromise.then((exitCode) => {
+            throw new Error(
+              `MariaDB ${arch} server exited with status ${exitCode} before startup completed` +
+              outputSuffix(output),
+            );
+          }),
+        ]),
+        MARIADB_PROCESS_TIMEOUT_MS,
+        `MariaDB ${arch} server startup timed out after ${MARIADB_PROCESS_TIMEOUT_MS}ms`,
+      );
+    } catch (error) {
+      await host.destroy().catch(() => {});
+      throw error;
+    }
   }
 
+  let liveExitStatus: number | undefined;
+  let prematureExitObserved = false;
+  if (!bootstrap) {
+    void exitPromise.then(
+      (status) => { liveExitStatus = status; },
+      () => {},
+    );
+  }
+
+  const liveServerError = (activity: string, status: number) => new Error(
+    `MariaDB ${arch} server exited with status ${status} ${activity}` +
+    outputSuffix(output),
+  );
+
+  const assertLiveServer = (activity: string) => {
+    if (liveExitStatus === undefined) return;
+    prematureExitObserved = true;
+    throw liveServerError(activity, liveExitStatus);
+  };
+
+  const raceLiveServer = async <T>(operation: Promise<T>, activity: string): Promise<T> => {
+    if (bootstrap) return operation;
+    assertLiveServer(activity);
+    return Promise.race([
+      operation,
+      exitPromise.then((status) => {
+        prematureExitObserved = true;
+        throw liveServerError(activity, status);
+      }),
+    ]);
+  };
+
+  let cleanedUp = false;
   const cleanup = async () => {
-    await host.destroy().catch(() => {});
+    if (cleanedUp) return;
+    cleanedUp = true;
+
+    let cleanupError: unknown;
+    if (!bootstrap && livePid !== undefined) {
+      if (liveExitStatus === undefined) {
+        try {
+          await host.terminateProcess(livePid, 137);
+        } catch (error) {
+          cleanupError = error;
+        }
+
+        try {
+          const exitCode = await withRejectingTimeout(
+            exitPromise,
+            MARIADB_CLEANUP_TIMEOUT_MS,
+            `MariaDB ${arch} server did not exit after deliberate termination`,
+          );
+          if (exitCode !== 137) {
+            cleanupError = liveServerError("before deliberate cleanup completed", exitCode);
+          }
+        } catch (error) {
+          cleanupError ??= error;
+        }
+      } else if (!prematureExitObserved) {
+        cleanupError = liveServerError("before deliberate cleanup began", liveExitStatus);
+      }
+    }
+
+    try {
+      await host.destroy();
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    if (cleanupError !== undefined) throw cleanupError;
   };
 
   return {
@@ -175,6 +349,8 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
     dataDir,
     getOutput: () => output,
     getProcessOutput: (pid) => processOutput.get(pid) ?? { stdout: "", stderr: "" },
+    assertLiveServer,
+    raceLiveServer,
     cleanup,
   };
 }
@@ -206,10 +382,14 @@ async function runMysqlTest(
       onStarted: (startedPid) => { pid = startedPid; },
     },
   );
-  const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error("mysqltest timed out after 120000ms")), 120_000);
-  });
-  const exitCode = await Promise.race([exitPromise, timeout]);
+  const exitCode = await withRejectingTimeout(
+    instance.raceLiveServer(
+      exitPromise,
+      "during a mysqltest operation",
+    ),
+    MARIADB_PROCESS_TIMEOUT_MS,
+    `mysqltest timed out after ${MARIADB_PROCESS_TIMEOUT_MS}ms`,
+  );
   return { ...instance.getProcessOutput(pid), exitCode };
 }
 
@@ -268,29 +448,31 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
 
   // 2. Start server
   const instance = await startMariaDB(arch, dataDir, false, engineArgs);
-
-  // Wait for server readiness. Avoid a socket-level probe here: the Node TCP
-  // bridge treats the probe as a real MariaDB client connection, and aborting
-  // that connection can destabilize the benchmark before mysqltest starts.
-  const deadline = Date.now() + 120_000;
-  let ready = false;
-  while (Date.now() < deadline) {
-    if (instance.getOutput().includes("ready for connections")) {
-      ready = true;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  if (!ready) {
-    const output = instance.getOutput().trim();
-    await instance.cleanup();
-    throw new Error(
-      `MariaDB ${arch} server did not listen on port ${instance.port}` +
-      (output ? `:\n${output}` : ""),
-    );
-  }
-
   try {
+    // Wait for server readiness. Avoid a socket-level probe here: the Node TCP
+    // bridge treats the probe as a real MariaDB client connection, and aborting
+    // that connection can destabilize the benchmark before mysqltest starts.
+    const deadline = Date.now() + MARIADB_PROCESS_TIMEOUT_MS;
+    let ready = false;
+    while (Date.now() < deadline) {
+      instance.assertLiveServer("while waiting for readiness");
+      if (instance.getOutput().includes("ready for connections")) {
+        ready = true;
+        break;
+      }
+      await instance.raceLiveServer(
+        new Promise((resolveSleep) => setTimeout(resolveSleep, 500)),
+        "while waiting for readiness",
+      );
+    }
+    if (!ready) {
+      const output = instance.getOutput().trim();
+      throw new Error(
+        `MariaDB ${arch} server did not listen on port ${instance.port}` +
+        (output ? `:\n${output}` : ""),
+      );
+    }
+
     // 3. CREATE TABLE
     const t1 = performance.now();
     await runMysqlTestChecked(arch, instance,`

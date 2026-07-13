@@ -68,19 +68,23 @@ This entry is retained below as **optional future hardening work**, not as an XF
 
 ---
 
-### 3. `PTHREAD_PROCESS_SHARED` — pthread primitives only (DONE). Shared data memory still a gap.
+### 3. `PTHREAD_PROCESS_SHARED` and anonymous shared mappings (PARTIAL)
 
-**Status:** Pthread sync primitives (mutex, cond, barrier) with `PTHREAD_PROCESS_SHARED` are now implemented in `crates/kernel/src/pshared.rs`. `pthread_mutexattr_setpshared` and `pthread_barrierattr_setpshared` tests pass. `pthread_condattr_setpshared` remains XFAIL because the test uses `MAP_SHARED|MAP_ANONYMOUS` to share a `state` variable across fork and our wasm model gives each process its own linear memory — a separate architectural gap, not a pthread issue.
+**Status:** Pthread sync primitives (mutex, cond, barrier) with
+`PTHREAD_PROCESS_SHARED` are implemented in `crates/kernel/src/pshared.rs`.
+Anonymous `MAP_SHARED` mappings now publish changed byte runs to authoritative
+host backing and import peer changes when a process crosses a syscall boundary.
+That is sufficient for Sortix's `pthread_condattr_setpshared` test, whose state
+changes cross condition-variable syscalls, so the test passes under both Node
+and the browser and is no longer an XFAIL.
 
-**Affected tests still XFAIL:**
-- sortix basic: `pthread/pthread_condattr_setpshared`
-
-**To fully close this test:** implement cross-process shared memory for `MAP_SHARED|MAP_ANONYMOUS` after fork. Not trivial: each wasm process has its own `WebAssembly.Memory`; direct loads/stores can't be intercepted without wasm instrumentation. One viable angle is to sync specific shared-region ranges on every syscall (lazy coherence), but that's architecturally significant and out of scope for the pthread-primitives target.
-
-**Starting files (for the remaining gap):**
-- `crates/kernel/src/syscalls.rs` — `sys_mmap` (where `MAP_SHARED|MAP_ANONYMOUS` currently falls through to private)
-- `host/src/memory-manager.ts` — per-process mmap tracking
-- `crates/kernel/src/fork.rs` — fork memory snapshot
+This remains syscall-boundary coherence, not shared physical memory. Immediate
+direct-load visibility between processes is unavailable until either process
+enters the kernel, and futex waits/wakes still target the caller's own process
+memory. Cross-process futex-backed synchronization that bypasses Kandelo's
+kernel-owned pshared primitives therefore remains unsupported. See
+`docs/architecture.md` and `docs/wasm-limitations.md` for the maintained
+platform boundary.
 
 ---
 

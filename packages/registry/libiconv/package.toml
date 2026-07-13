@@ -1,0 +1,27 @@
+# Per-library manifest for GNU libiconv. See docs/package-management.md.
+
+kind = "library"
+
+name = "libiconv"
+version = "1.17"
+kernel_abi = 7
+depends_on = []
+# The build script currently uses the wasm32 SDK explicitly. Do not advertise
+# a wasm64 artifact until the recipe is architecture-aware and validated.
+arches = ["wasm32"]
+
+[source]
+url = "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz"
+sha256 = "8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313"
+
+[license]
+spdx = "LGPL-2.1-or-later AND GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/libiconv.git/tree/COPYING?h=v1.17"
+
+[build]
+script_path = "packages/registry/libiconv/build-libiconv.sh"
+
+[outputs]
+libs = ["lib/libiconv.a", "lib/libcharset.a"]
+headers = ["include/iconv.h", "include/libcharset.h", "include/localcharset.h"]
+pkgconfig = ["lib/pkgconfig/libiconv.pc"]

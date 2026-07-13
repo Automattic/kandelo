@@ -147,6 +147,161 @@ describe("BrowserKernel", () => {
     expect(await exit).toBe(7);
   });
 
+  it("preserves a short spawnFromVfs exit that precedes the spawn response continuation", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const spawnPromise = kernel.spawnFromVfs("/bin/true", ["/bin/true"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 101,
+    });
+    // A tiny process can exit before the resolved request promise resumes and
+    // installs its pid-indexed waiter on the browser main thread.
+    worker.simulateMessage({ type: "exit", pid: 101, status: 0 });
+
+    const { pid, exit } = await spawnPromise;
+    expect(pid).toBe(101);
+    expect(await Promise.race([
+      exit,
+      new Promise<number>((resolve) => setTimeout(() => resolve(-999), 50)),
+    ])).toBe(0);
+  });
+
+  it("delivers host diagnostics without contaminating guest stderr", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const onHostDiagnostic = vi.fn();
+    const onStderr = vi.fn();
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic,
+      onStderr,
+    });
+
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/init"],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 100,
+    });
+    await bootPromise;
+
+    worker.simulateMessage({
+      type: "host_diagnostic",
+      pid: 100,
+      status: 7,
+      source: "kernel process exit",
+      message: "[kernel-worker] nonzero process exit pid=100 status=7",
+    });
+
+    expect(onHostDiagnostic).toHaveBeenCalledOnce();
+    expect(onHostDiagnostic).toHaveBeenCalledWith({
+      pid: 100,
+      status: 7,
+      source: "kernel process exit",
+      message: "[kernel-worker] nonzero process exit pid=100 status=7",
+    });
+    expect(onStderr).not.toHaveBeenCalled();
+  });
+
+  it("reports a worker-level error as a host diagnostic, not guest stderr", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const onHostDiagnostic = vi.fn();
+    const onStderr = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic,
+      onStderr,
+    });
+
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/init"],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 100,
+    });
+    await bootPromise;
+
+    worker.onerror?.({ message: "worker crashed" });
+
+    expect(onHostDiagnostic).toHaveBeenCalledOnce();
+    expect(onHostDiagnostic).toHaveBeenCalledWith({
+      pid: 0,
+      source: "kernel worker",
+      message: "[BrowserKernel] kernel worker error: worker crashed",
+    });
+    expect(onStderr).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[BrowserKernel] kernel worker error: worker crashed",
+    );
+  });
+
+  it("forwards posix_spawn parentage from the browser kernel worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const processEvents: Array<{
+      kind: "spawn" | "exec" | "exit";
+      pid: number;
+      ppid?: number;
+      exitStatus?: number;
+    }> = [];
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onProcessEvent: (event) => processEvents.push(event),
+    });
+
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/init"],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({ type: "response", requestId: spawn.requestId, result: 100 });
+    await bootPromise;
+
+    processEvents.length = 0;
+    worker.simulateMessage({ type: "proc_event", kind: "spawn", pid: 2, ppid: 100 });
+    worker.simulateMessage({ type: "proc_event", kind: "exec", pid: 2 });
+
+    expect(processEvents).toEqual([
+      { kind: "spawn", pid: 2, ppid: 100 },
+      { kind: "exec", pid: 2 },
+    ]);
+  });
+
   it("readFileFromVfs round-trips a path to the worker and back", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -164,6 +319,62 @@ describe("BrowserKernel", () => {
     const bytes = new Uint8Array([1, 2, 3]);
     w.simulateMessage({ type: "response", requestId: read.requestId, result: bytes });
     expect(await readPromise).toEqual(bytes);
+  });
+
+  it("mutates files through the VFS-owning worker with lossless snapshots", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const original = new Uint8Array([9, 8, 7]);
+    const writePromise = kernel.writeFileToVfs("/php-src/generated.php", original, 0o640);
+    await new Promise((r) => setTimeout(r, 0));
+    const write = w.lastMessage("write_vfs_file");
+    expect(write).toMatchObject({
+      path: "/php-src/generated.php",
+      mode: 0o640,
+    });
+    expect(write.data).toEqual(original);
+    expect(write.data).not.toBe(original);
+    w.simulateMessage({
+      type: "response",
+      requestId: write.requestId,
+      result: true,
+    });
+    await writePromise;
+
+    const snapshotPromise = kernel.readFileSnapshotFromVfs("/php-src/generated.php");
+    await new Promise((r) => setTimeout(r, 0));
+    const read = w.lastMessage("read_vfs_file");
+    expect(read).toMatchObject({
+      path: "/php-src/generated.php",
+      includeMode: true,
+    });
+    const snapshot = { data: new Uint8Array([1, 2]), mode: 0o751 };
+    w.simulateMessage({
+      type: "response",
+      requestId: read.requestId,
+      result: snapshot,
+    });
+    expect(await snapshotPromise).toEqual(snapshot);
+
+    const unlinkPromise = kernel.unlinkFileFromVfs("/php-src/generated.php");
+    await new Promise((r) => setTimeout(r, 0));
+    const unlink = w.lastMessage("unlink_vfs_file");
+    expect(unlink.path).toBe("/php-src/generated.php");
+    w.simulateMessage({
+      type: "response",
+      requestId: unlink.requestId,
+      result: true,
+    });
+    expect(await unlinkPromise).toBe(true);
   });
 
   describe("fetchInKernel", () => {

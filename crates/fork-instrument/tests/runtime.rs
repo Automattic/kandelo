@@ -11,9 +11,13 @@
 //! - Independently validating via wasmparser that the emitted module
 //!   is well-formed.
 
-use fork_instrument::{Options, instrument};
 use fork_instrument::runtime::names;
+use fork_instrument::{
+    FORK_CAP_DYLINK_MAIN, FORK_CAP_SIDE_ENTRY, FORK_CAPABILITIES_SECTION,
+    FORK_CAPABILITIES_VERSION, Options, instrument,
+};
 use walrus::{ExportItem, Module, ValType};
+use wasmparser::{Parser, Payload};
 
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
     let bytes = wat::parse_str(wat_src).expect("wat parse");
@@ -25,6 +29,18 @@ fn validate(bytes: &[u8]) {
         wasmparser::WasmFeatures::default(),
     );
     validator.validate_all(bytes).expect("valid wasm");
+}
+
+fn fork_capabilities(bytes: &[u8]) -> Vec<Vec<u8>> {
+    Parser::new(0)
+        .parse_all(bytes)
+        .filter_map(|payload| match payload.expect("parse payload") {
+            Payload::CustomSection(section) if section.name() == FORK_CAPABILITIES_SECTION => {
+                Some(section.data().to_vec())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn export_function_id(module: &Module, name: &str) -> walrus::FunctionId {
@@ -55,6 +71,59 @@ const EMPTY_MODULE_WITH_FORK: &str = r#"
 fn instrumented_module_validates() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     validate(&bytes);
+}
+
+#[test]
+fn marks_dlopen_main_indirect_boundary_separately() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (import "env" "__wasm_dlsym" (func $dlsym (param i32 i32 i32) (result i32)))
+          (type $callback (func (result i32)))
+          (table 1 funcref)
+          (memory 1)
+          (func (export "dispatch") (result i32)
+            i32.const 0
+            call_indirect (type $callback)))
+    "#;
+    let output = instrument_wat(wat);
+    assert_eq!(
+        fork_capabilities(&output),
+        vec![vec![FORK_CAPABILITIES_VERSION, FORK_CAP_DYLINK_MAIN]],
+    );
+}
+
+#[test]
+fn marks_env_fork_side_entry_separately() {
+    let input = wat::parse_str(
+        r#"
+        (module
+          (import "env" "fork" (func $fork (result i32)))
+          (memory 1)
+          (func (export "side_fork") (result i32) call $fork))
+        "#,
+    )
+    .expect("wat parse");
+    let output = instrument(
+        &input,
+        &Options {
+            entry_import: "env.fork".into(),
+        },
+    )
+    .expect("instrument side");
+    assert_eq!(
+        fork_capabilities(&output),
+        vec![vec![FORK_CAPABILITIES_VERSION, FORK_CAP_SIDE_ENTRY]],
+    );
+}
+
+#[test]
+fn generic_runtime_exports_do_not_claim_side_or_dylink_coverage() {
+    let output = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    assert_eq!(
+        fork_capabilities(&output),
+        vec![vec![FORK_CAPABILITIES_VERSION, 0]],
+    );
 }
 
 #[test]

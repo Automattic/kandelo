@@ -663,6 +663,29 @@ async function runWordPress(): Promise<Record<string, number>> {
 // ─── mariadb ────────────────────────────────────────────────────────────────
 
 type MariaDbArch = "wasm32" | "wasm64";
+const MARIADB_PROCESS_TIMEOUT_MS = 120_000;
+const MARIADB_CLEANUP_TIMEOUT_MS = 10_000;
+
+async function withRejectingTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
+function mariadbOutputSuffix(output: string): string {
+  const trimmed = output.trim();
+  return trimmed ? `:\n${trimmed}` : "";
+}
 
 async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
@@ -721,18 +744,29 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   log("  Running bootstrap...");
   const tBootstrap = performance.now();
 
+  let mariadbOutput = "";
+  const appendMariaDbOutput = (data: Uint8Array) => {
+    mariadbOutput += new TextDecoder().decode(data);
+    if (mariadbOutput.length > 16_384) {
+      mariadbOutput = mariadbOutput.slice(-16_384);
+    }
+  };
   const bootstrapKernel = new BrowserKernel({
     kernelOwnedFs: true,
     maxWorkers: 12,
-    onStdout: () => {},
-    onStderr: () => {},
+    onStdout: appendMariaDbOutput,
+    onStderr: appendMariaDbOutput,
   });
   await bootstrapKernel.initFromImage({ kernelWasm: kernelBytes, vfsImage });
   let client: MySqlBrowserClient | null = null;
+  let serverPid: number | undefined;
+  let serverExit: Promise<number> | undefined;
+  let serverExitStatus: number | undefined;
+  let prematureServerExitObserved = false;
   try {
 
   const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
-  bootstrapKernel.spawn(mariadbBytes, [
+  const bootstrapExit = bootstrapKernel.spawn(mariadbBytes, [
     "mariadbd", "--no-defaults", "--bootstrap",
     "--user=mysql",
     "--datadir=/data", "--tmpdir=/data/tmp",
@@ -742,26 +776,28 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     "--sort-buffer-size=262144", "--skip-networking", "--log-warnings=0",
   ], { stdin: bootstrapStdin });
 
-  // Wait for bootstrap stdin to be consumed
-  const bootstrapPid = (bootstrapKernel as any).nextPid - 1;
-  for (let i = 0; i < 1200; i++) {
-    try {
-      const consumed = await bootstrapKernel.isStdinConsumed(bootstrapPid);
-      if (consumed) {
-        await new Promise((r) => setTimeout(r, 2000));
-        break;
-      }
-    } catch { break; }
-    await new Promise((r) => setTimeout(r, 500));
+  const bootstrapExitCode = await withRejectingTimeout(
+    bootstrapExit,
+    MARIADB_PROCESS_TIMEOUT_MS,
+    `MariaDB ${arch} bootstrap timed out after ${MARIADB_PROCESS_TIMEOUT_MS}ms`,
+  );
+  if (bootstrapExitCode !== 0) {
+    throw new Error(
+      `MariaDB ${arch} bootstrap exited with status ${bootstrapExitCode}` +
+      mariadbOutputSuffix(mariadbOutput),
+    );
   }
-  try { await bootstrapKernel.terminateProcess(bootstrapPid); } catch {}
 
   results.bootstrap_ms = performance.now() - tBootstrap;
   log(`  Bootstrap: ${results.bootstrap_ms.toFixed(0)}ms`);
 
   // ── Server ──
   log("  Starting server...");
-  const serverExit = bootstrapKernel.spawn(mariadbBytes, [
+  let resolveServerStarted: ((pid: number) => void) | undefined;
+  const serverStarted = new Promise<number>((resolveStarted) => {
+    resolveServerStarted = resolveStarted;
+  });
+  serverExit = bootstrapKernel.spawn(mariadbBytes, [
     "mariadbd", "--no-defaults",
     "--user=mysql",
     "--datadir=/data", "--tmpdir=/data/tmp",
@@ -771,19 +807,67 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     "--sort-buffer-size=262144", "--skip-networking=0",
     "--port=3306", "--bind-address=0.0.0.0", "--socket=",
     "--max-connections=10",
-  ]);
-  void serverExit;
+  ], {
+    // onStarted otherwise changes omitted stdin from immediate EOF to an
+    // appendable stream. Keep the benchmark server's prior stdin contract.
+    stdin: new Uint8Array(0),
+    onStarted: (pid) => resolveServerStarted?.(pid),
+  });
+  void serverExit.then(
+    (status) => { serverExitStatus = status; },
+    () => {},
+  );
+  serverPid = await withRejectingTimeout(
+    Promise.race([
+      serverStarted,
+      serverExit.then((status) => {
+        throw new Error(
+          `MariaDB ${arch} server exited with status ${status} before startup completed` +
+          mariadbOutputSuffix(mariadbOutput),
+        );
+      }),
+    ]),
+    MARIADB_PROCESS_TIMEOUT_MS,
+    `MariaDB ${arch} server startup timed out after ${MARIADB_PROCESS_TIMEOUT_MS}ms`,
+  );
+
+  const serverExitError = (activity: string, status: number) => new Error(
+    `MariaDB ${arch} server exited with status ${status} ${activity}` +
+    mariadbOutputSuffix(mariadbOutput),
+  );
+  const assertLiveServer = (activity: string) => {
+    if (serverExitStatus === undefined) return;
+    prematureServerExitObserved = true;
+    throw serverExitError(activity, serverExitStatus);
+  };
+  const raceLiveServer = async <T>(operation: Promise<T>, activity: string): Promise<T> => {
+    assertLiveServer(activity);
+    return Promise.race([
+      operation,
+      serverExit!.then((status) => {
+        prematureServerExitObserved = true;
+        throw serverExitError(activity, status);
+      }),
+    ]);
+  };
 
   // Wait for port 3306
   log("  Waiting for server to accept connections...");
   let listenerReady = false;
   for (let i = 0; i < 120; i++) {
-    const target = await bootstrapKernel.pickListenerTarget(3306);
+    assertLiveServer("while waiting for readiness");
+    const target = await raceLiveServer(
+      bootstrapKernel.pickListenerTarget(3306),
+      "while waiting for readiness",
+    );
     if (target) {
       listenerReady = true;
       break;
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await raceLiveServer(
+      new Promise((resolveSleep) => setTimeout(resolveSleep, 1000)),
+      "while waiting for readiness",
+    );
   }
   if (!listenerReady) {
     throw new Error(`mariadb-${engine.toLowerCase()}${suiteSuffix} did not listen on port 3306`);
@@ -792,49 +876,105 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   // Connect MySQL client with retries
   for (let attempt = 1; attempt <= 10; attempt++) {
     try {
-      client = await MySqlBrowserClient.connect(bootstrapKernel, 3306);
+      client = await raceLiveServer(
+        MySqlBrowserClient.connect(bootstrapKernel, 3306),
+        "during the MySQL handshake",
+      );
       break;
     } catch {
+      assertLiveServer("during the MySQL handshake");
       if (attempt === 10) throw new Error("MySQL handshake failed after 10 attempts");
-      await new Promise((r) => setTimeout(r, 2000));
+      await raceLiveServer(
+        new Promise((resolveSleep) => setTimeout(resolveSleep, 2000)),
+        "during the MySQL handshake",
+      );
     }
   }
 
   if (!client) throw new Error("Failed to connect MySQL client");
+  const liveClient = client;
 
   // ── Queries ──
   log("  Running CREATE TABLE...");
   const t1 = performance.now();
-  await client.query("CREATE DATABASE IF NOT EXISTS bench");
-  await client.query(`CREATE TABLE bench.t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine}`);
-  await client.query(`CREATE TABLE bench.t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine}`);
+  await raceLiveServer(
+    (async () => {
+      await liveClient.query("CREATE DATABASE IF NOT EXISTS bench");
+      await liveClient.query(`CREATE TABLE bench.t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine}`);
+      await liveClient.query(`CREATE TABLE bench.t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine}`);
+    })(),
+    "during CREATE operations",
+  );
   results.query_create_ms = performance.now() - t1;
 
   log("  Running INSERT (100 rows)...");
   const t2 = performance.now();
-  for (let i = 0; i < 100; i++) {
-    await client.query(`INSERT INTO bench.t1 (name, value) VALUES ('item_${i}', ${i * 10})`);
-  }
-  for (let i = 0; i < 100; i++) {
-    await client.query(`INSERT INTO bench.t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}')`);
-  }
+  await raceLiveServer((async () => {
+    for (let i = 0; i < 100; i++) {
+      await liveClient.query(`INSERT INTO bench.t1 (name, value) VALUES ('item_${i}', ${i * 10})`);
+    }
+    for (let i = 0; i < 100; i++) {
+      await liveClient.query(`INSERT INTO bench.t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}')`);
+    }
+  })(), "during INSERT operations");
   results.query_insert_ms = performance.now() - t2;
 
   log("  Running SELECT...");
   const t3 = performance.now();
-  await client.query("SELECT * FROM bench.t1 WHERE value > 500 AND value < 800");
+  await raceLiveServer(
+    liveClient.query("SELECT * FROM bench.t1 WHERE value > 500 AND value < 800"),
+    "during SELECT",
+  );
   results.query_select_ms = performance.now() - t3;
 
   log("  Running JOIN...");
   const t4 = performance.now();
-  await client.query("SELECT t1.name, t2.data FROM bench.t1 t1 JOIN bench.t2 t2 ON t1.id = t2.t1_id WHERE t1.value > 500");
+  await raceLiveServer(
+    liveClient.query("SELECT t1.name, t2.data FROM bench.t1 t1 JOIN bench.t2 t2 ON t1.id = t2.t1_id WHERE t1.value > 500"),
+    "during JOIN",
+  );
   results.query_join_ms = performance.now() - t4;
 
   return results;
   } finally {
     try { client?.close(); } catch {}
-    try { await bootstrapKernel.destroy(); } catch {}
+    let cleanupError: unknown;
+    if (serverExit !== undefined && serverPid !== undefined) {
+      if (serverExitStatus === undefined) {
+        try {
+          await bootstrapKernel.terminateProcess(serverPid, 137);
+        } catch (error) {
+          cleanupError = error;
+        }
+        try {
+          const exitCode = await withRejectingTimeout(
+            serverExit,
+            MARIADB_CLEANUP_TIMEOUT_MS,
+            `MariaDB ${arch} server did not exit after deliberate termination`,
+          );
+          if (exitCode !== 137) {
+            cleanupError = new Error(
+              `MariaDB ${arch} server exited with status ${exitCode} before deliberate cleanup completed` +
+              mariadbOutputSuffix(mariadbOutput),
+            );
+          }
+        } catch (error) {
+          cleanupError ??= error;
+        }
+      } else if (!prematureServerExitObserved) {
+        cleanupError = new Error(
+          `MariaDB ${arch} server exited with status ${serverExitStatus} before deliberate cleanup began` +
+          mariadbOutputSuffix(mariadbOutput),
+        );
+      }
+    }
+    try {
+      await bootstrapKernel.destroy();
+    } catch (error) {
+      cleanupError ??= error;
+    }
     await settleWebKitReclaim();
+    if (cleanupError !== undefined) throw cleanupError;
   }
 }
 

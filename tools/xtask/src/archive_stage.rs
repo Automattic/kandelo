@@ -16,6 +16,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::build_deps::validate_cache_artifacts;
 use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
 
 /// Caller-supplied build provenance + the locally-computed cache-key
@@ -62,6 +63,13 @@ pub fn stage_archive_with_options(
             cache_dir.display()
         ));
     }
+
+    // A direct archive-stage invocation must enforce the same declared
+    // artifact closure as a resolver build/fetch. In particular, do not ship
+    // an archive whose manifest promises a runtime file that the payload
+    // omits; the consumer should never be the first place that notices.
+    validate_cache_artifacts(target, cache_dir)
+        .map_err(|e| format!("archive_stage: invalid cache entry: {e}"))?;
 
     let manifest_text = build_archive_manifest_text(target, arch, abi_version, opts)?;
 
@@ -140,19 +148,74 @@ pub fn stage_archive_with_options(
     Ok(())
 }
 
-/// Recursively collect every regular file under `dir`. Symlinks and
-/// other special files are not packed — the wasm cache layout is all
-/// regular files (`lib/*.a`, `include/*.h`, `lib/pkgconfig/*.pc`).
+/// Recursively collect every archive leaf under `dir`. Contained symlinks are
+/// deliberately dereferenced into regular archive entries so compatibility
+/// aliases survive the existing tar format. External/cyclic symlinks and
+/// special files fail producer preflight instead of smuggling bytes from
+/// outside the cache root or disappearing from the fetched artifact.
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    for entry in fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
+    let canonical_root = fs::canonicalize(dir)
+        .map_err(|e| format!("resolve archive cache root {}: {e}", dir.display()))?;
+    let mut active_dirs = std::collections::BTreeSet::new();
+    collect_files_inner(dir, &canonical_root, &mut active_dirs, out)
+}
+
+fn collect_files_inner(
+    dir: &Path,
+    canonical_root: &Path,
+    active_dirs: &mut std::collections::BTreeSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let resolved_dir = fs::canonicalize(dir)
+        .map_err(|e| format!("resolve archive directory {}: {e}", dir.display()))?;
+    if !resolved_dir.starts_with(canonical_root) {
+        return Err(format!(
+            "archive directory {} resolves outside cache root {}",
+            dir.display(),
+            canonical_root.display()
+        ));
+    }
+    if !active_dirs.insert(resolved_dir.clone()) {
+        return Err(format!(
+            "archive directory symlink cycle reaches {}",
+            dir.display()
+        ));
+    }
+    let mut entries = fs::read_dir(dir)
+        .map_err(|e| format!("read_dir {}: {e}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
         let p = entry.path();
-        if p.is_dir() {
-            collect_files(&p, out)?;
-        } else if p.is_file() {
+        let link_metadata = fs::symlink_metadata(&p)
+            .map_err(|e| format!("stat archive entry {}: {e}", p.display()))?;
+        let resolved = fs::canonicalize(&p)
+            .map_err(|e| format!("resolve archive entry {}: {e}", p.display()))?;
+        if !resolved.starts_with(canonical_root) {
+            return Err(format!(
+                "archive entry {} resolves outside cache root {}",
+                p.display(),
+                canonical_root.display()
+            ));
+        }
+        let metadata = if link_metadata.file_type().is_symlink() {
+            fs::metadata(&p).map_err(|e| format!("follow archive symlink {}: {e}", p.display()))?
+        } else {
+            link_metadata
+        };
+        if metadata.is_dir() {
+            collect_files_inner(&p, canonical_root, active_dirs, out)?;
+        } else if metadata.is_file() {
             out.push(p);
+        } else {
+            return Err(format!(
+                "archive entry {} is not a regular file, directory, or contained symlink",
+                p.display()
+            ));
         }
     }
+    active_dirs.remove(&resolved_dir);
     Ok(())
 }
 
@@ -368,6 +431,181 @@ headers = ["include/zlib.h"]
     }
 
     #[test]
+    fn program_runtime_file_round_trips_through_archive_and_fetch() {
+        use crate::pkg_manifest::Binary;
+        use crate::remote_fetch::fetch_and_install;
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        let dir = tempdir("program-runtime-round-trip");
+        let registry = dir.join("registry/php");
+        fs::create_dir_all(&registry).unwrap();
+        let manifest_text = r#"
+kind = "program"
+name = "php"
+version = "8.3.15"
+depends_on = []
+
+[source]
+url = "https://example.test/php.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "PHP-3.01"
+
+[[outputs]]
+name = "php"
+wasm = "php.wasm"
+
+[[runtime_files]]
+artifact = "icu.dat"
+guest_path = "/usr/lib/php/icu.dat"
+mode = 420
+"#;
+        let manifest_path = registry.join("package.toml");
+        fs::write(&manifest_path, manifest_text).unwrap();
+        let manifest = DepsManifest::load(&manifest_path).unwrap();
+
+        let cache_dir = dir.join("cache_entry");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(
+            cache_dir.join("php.wasm"),
+            b"\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b",
+        )
+        .unwrap();
+        let runtime_bytes = b"runtime-icu-data\0with-binary-bytes\xff";
+        fs::write(cache_dir.join("icu.dat"), runtime_bytes).unwrap();
+
+        let archive_path = dir.join("php-out.tar.zst");
+        let opts = StageOptions {
+            cache_key_sha: "c".repeat(64),
+            build_timestamp: "2026-07-12T00:00:00Z".to_string(),
+            build_host: "test-host".to_string(),
+        };
+        stage_archive_with_options(
+            &manifest,
+            TargetArch::Wasm32,
+            19,
+            &cache_dir,
+            &archive_path,
+            &opts,
+        )
+        .unwrap();
+
+        let archive_bytes = fs::read(&archive_path).unwrap();
+        let mut archive_hash = Sha256::new();
+        archive_hash.update(&archive_bytes);
+        let binary = Binary {
+            archive_url: format!("file://{}", archive_path.display()),
+            archive_sha256: crate::util::hex(&Into::<[u8; 32]>::into(archive_hash.finalize())),
+        };
+        let install_root = dir.join("install/canonical");
+        fs::create_dir_all(install_root.parent().unwrap()).unwrap();
+        fetch_and_install(
+            &binary,
+            &install_root,
+            &manifest,
+            TargetArch::Wasm32,
+            19,
+            &opts.cache_key_sha,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(install_root.join("icu.dat")).unwrap(),
+            runtime_bytes
+        );
+
+        // Pin the authored installation contract in the embedded manifest,
+        // not just the payload byte round-trip.
+        let decoder = zstd::stream::read::Decoder::new(&archive_bytes[..]).unwrap();
+        let mut tar = tar::Archive::new(decoder);
+        let mut archived_manifest = None;
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if entry.path().unwrap().as_ref() == Path::new("manifest.toml") {
+                let mut text = String::new();
+                entry.read_to_string(&mut text).unwrap();
+                archived_manifest = Some(text);
+                break;
+            }
+        }
+        let parsed = DepsManifest::parse_archived(
+            &archived_manifest.expect("archive must contain manifest.toml"),
+            registry,
+        )
+        .unwrap();
+        assert_eq!(parsed.runtime_files, manifest.runtime_files);
+
+        fs::remove_file(cache_dir.join("icu.dat")).unwrap();
+        let incomplete_archive = dir.join("php-incomplete.tar.zst");
+        let err = stage_archive_with_options(
+            &manifest,
+            TargetArch::Wasm32,
+            19,
+            &cache_dir,
+            &incomplete_archive,
+            &opts,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("runtime file") && err.contains("icu.dat"),
+            "got: {err}"
+        );
+        assert!(!incomplete_archive.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_dereferences_contained_symlinks_and_rejects_external_ones() {
+        use std::io::Read;
+        use std::os::unix::fs::symlink;
+
+        let (cache_dir, archive_path, manifest, opts) = fixture_for_round_trip("symlink-safety");
+        symlink("zlib.h", cache_dir.join("include/zconf.h")).unwrap();
+        stage_archive_with_options(
+            &manifest,
+            TargetArch::Wasm32,
+            4,
+            &cache_dir,
+            &archive_path,
+            &opts,
+        )
+        .unwrap();
+
+        let bytes = fs::read(&archive_path).unwrap();
+        let decoder = zstd::stream::read::Decoder::new(&bytes[..]).unwrap();
+        let mut tar = tar::Archive::new(decoder);
+        let mut alias_bytes = None;
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if entry.path().unwrap().as_ref() == Path::new("artifacts/include/zconf.h") {
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                alias_bytes = Some(bytes);
+                break;
+            }
+        }
+        assert_eq!(alias_bytes.as_deref(), Some(b"#ifndef ZLIB_H\n".as_slice()));
+
+        fs::remove_file(cache_dir.join("include/zconf.h")).unwrap();
+        let outside = archive_path.parent().unwrap().join("outside.dat");
+        fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, cache_dir.join("include/zconf.h")).unwrap();
+        let rejected = archive_path.parent().unwrap().join("external-link.tar.zst");
+        let err = stage_archive_with_options(
+            &manifest,
+            TargetArch::Wasm32,
+            4,
+            &cache_dir,
+            &rejected,
+            &opts,
+        )
+        .unwrap_err();
+        assert!(err.contains("outside cache root"), "got: {err}");
+        assert!(!rejected.exists());
+    }
+
+    #[test]
     fn embedded_manifest_round_trips_through_parse_archived() {
         use std::io::Read;
 
@@ -483,7 +721,9 @@ headers = ["include/zlib.h"]
             stage_archive_with_options(&m, TargetArch::Wasm32, 4, &empty_cache, &archive, &opts)
                 .unwrap_err();
         assert!(
-            err.contains("contains no files") || err.contains("[outputs]"),
+            err.contains("missing from cache entry")
+                || err.contains("contains no files")
+                || err.contains("[outputs]"),
             "got: {err}"
         );
         assert!(

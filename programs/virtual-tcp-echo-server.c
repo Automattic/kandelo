@@ -12,9 +12,46 @@ static void die(const char* what) {
     exit(1);
 }
 
+static void write_all(int fd, const void* data, size_t size) {
+    const unsigned char* bytes = data;
+    size_t offset = 0;
+    while (offset < size) {
+        ssize_t amount = write(fd, bytes + offset, size - offset);
+        if (amount < 0) die("write");
+        if (amount == 0) {
+            fprintf(stderr, "write made no progress\n");
+            exit(1);
+        }
+        offset += (size_t) amount;
+    }
+}
+
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s PORT\n", argv[0]);
+    if (argc < 2 || argc > 4) {
+        fprintf(stderr, "usage: %s PORT [fork | fork-bulk BYTES | half-close | half-close-bulk BYTES | bulk BYTES]\n", argv[0]);
+        return 2;
+    }
+    int test_fork = (argc == 3 && strcmp(argv[2], "fork") == 0) ||
+                    (argc == 4 && strcmp(argv[2], "fork-bulk") == 0);
+    int test_half_close = argc == 3 && strcmp(argv[2], "half-close") == 0;
+    size_t bulk_bytes = 0;
+    size_t post_fin_bytes = 0;
+    if (argc == 4 &&
+        (strcmp(argv[2], "bulk") == 0 ||
+         strcmp(argv[2], "fork-bulk") == 0 ||
+         strcmp(argv[2], "half-close-bulk") == 0)) {
+        char* end;
+        unsigned long value = strtoul(argv[3], &end, 10);
+        if (!argv[3][0] || *end || value > 16 * 1024 * 1024UL) {
+            fprintf(stderr, "invalid byte count: %s\n", argv[3]);
+            return 2;
+        }
+        if (strcmp(argv[2], "bulk") == 0 || strcmp(argv[2], "fork-bulk") == 0)
+            bulk_bytes = (size_t) value;
+        else
+            post_fin_bytes = (size_t) value;
+    } else if (argc != 2 && !test_fork && !test_half_close) {
+        fprintf(stderr, "unknown mode: %s\n", argv[2]);
         return 2;
     }
 
@@ -37,6 +74,18 @@ int main(int argc, char** argv) {
     int conn = accept(fd, (struct sockaddr*) &peer, &peer_len);
     if (conn < 0) die("accept");
 
+    if (test_fork) {
+        pid_t child = fork();
+        if (child < 0) die("fork");
+        if (child > 0) {
+            close(conn);
+            close(fd);
+            return 0;
+        }
+        close(fd);
+        fd = -1;
+    }
+
     char buf[256];
     ssize_t n = read(conn, buf, sizeof(buf));
     if (n < 0) die("read");
@@ -47,9 +96,48 @@ int main(int argc, char** argv) {
         fprintf(stderr, "reply too large\n");
         return 1;
     }
-    if (write(conn, out, (size_t) out_len) != out_len) die("write");
+    write_all(conn, out, (size_t) out_len);
+
+    if (bulk_bytes > 0) {
+        char chunk[16 * 1024];
+        memset(chunk, 'x', sizeof(chunk));
+        while (bulk_bytes > 0) {
+            size_t amount = bulk_bytes < sizeof(chunk) ? bulk_bytes : sizeof(chunk);
+            write_all(conn, chunk, amount);
+            bulk_bytes -= amount;
+        }
+    }
+
+    if (test_half_close || post_fin_bytes > 0) {
+        if (shutdown(conn, SHUT_WR) < 0) die("shutdown");
+
+        /* Let the host-side receive pipe fill before the guest starts reading. */
+        if (post_fin_bytes > 0) usleep(200000);
+
+        char ack[16 * 1024];
+        size_t expected = post_fin_bytes > 0 ? post_fin_bytes : 3;
+        size_t received = 0;
+        while (received < expected) {
+            size_t remaining = expected - received;
+            size_t chunk_size = remaining < sizeof(ack) ? remaining : sizeof(ack);
+            ssize_t amount = read(conn, ack, chunk_size);
+            if (amount < 0) die("read ack");
+            if (amount == 0) {
+                fprintf(stderr, "EOF before acknowledgement\n");
+                return 1;
+            }
+            for (ssize_t i = 0; i < amount; i++) {
+                char expected_byte = post_fin_bytes > 0 ? 'x' : "ack"[received + (size_t) i];
+                if (ack[i] != expected_byte) {
+                    fprintf(stderr, "invalid acknowledgement\n");
+                    return 1;
+                }
+            }
+            received += (size_t) amount;
+        }
+    }
 
     close(conn);
-    close(fd);
+    if (fd >= 0) close(fd);
     return 0;
 }
