@@ -1,16 +1,8 @@
 import * as React from "react";
 import { useWebPreview } from "../kernel-host/react";
-import { PaneHead } from "./PaneHead";
 import { Framebuffer, type FramebufferProps } from "./Framebuffer";
 import { Modeset } from "./Modeset";
 import type { PrimarySurface } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-
-const ICON = (
-  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4">
-    <rect x="1.5" y="2" width="10" height="7.5" rx="1" />
-    <path d="M4 11h5M6.5 9.5v1.5" />
-  </svg>
-);
 
 export interface WordPressLoginOptions {
   username: string;
@@ -31,33 +23,35 @@ export interface DisplayProps extends FramebufferProps {
    * framebuffer) for callers that don't yet pass a surface.
    */
   surface?: PrimarySurface;
+  onDockControlsChange?: (controls: React.ReactNode | null) => void;
 }
 
-export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ surface, ...props }, ref) => {
+export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ surface, onDockControlsChange, ...props }, ref) => {
   const preview = useWebPreview();
-  if (surface === "kms") return <Modeset {...props} />;
-  if (surface === "framebuffer") return <Framebuffer {...props} />;
-  if (surface === "web" && preview) return <WebPreviewPane ref={ref} preview={preview} {...props} />;
-  if (!preview) return <Framebuffer {...props} />;
-  return <WebPreviewPane ref={ref} preview={preview} {...props} />;
+
+  if (surface === "kms") return <Modeset {...props} onDockControlsChange={onDockControlsChange} />;
+  if (surface === "framebuffer") return <Framebuffer {...props} onDockControlsChange={onDockControlsChange} />;
+  if (surface === "web" && preview) {
+    return <WebPreviewPane ref={ref} preview={preview} onDockControlsChange={onDockControlsChange} {...props} />;
+  }
+  if (!preview) return <Framebuffer {...props} onDockControlsChange={onDockControlsChange} />;
+  return <WebPreviewPane ref={ref} preview={preview} onDockControlsChange={onDockControlsChange} {...props} />;
 });
 
 Display.displayName = "Display";
 
 const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   preview: NonNullable<ReturnType<typeof useWebPreview>>;
-}>(({ preview, dragProps, onCollapse, onMaximize, isMax, autoFocus = false }, ref) => {
+  onDockControlsChange?: (controls: React.ReactNode | null) => void;
+}>(({ preview, autoFocus = false, onDockControlsChange }, ref) => {
   const [path, setPath] = React.useState("/");
-  const [draftPath, setDraftPath] = React.useState("/");
   const [iframeSrc, setIframeSrc] = React.useState(() => buildPreviewUrl(preview.url, "/"));
   const ready = preview.status === "running";
   const pendingRequests = preview.pendingRequests ?? 0;
-  const hasPendingRequests = ready && pendingRequests > 0;
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
   React.useEffect(() => {
     setPath("/");
-    setDraftPath("/");
     setIframeSrc(buildPreviewUrl(preview.url, "/"));
   }, [preview.url]);
 
@@ -87,7 +81,6 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   const navigate = React.useCallback((raw: string) => {
     const next = normalizePreviewPath(raw, preview.url);
     setPath(next);
-    setDraftPath(next);
     navigateFrame(buildPreviewUrl(preview.url, next));
   }, [navigateFrame, preview.url]);
 
@@ -98,7 +91,6 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   ) => {
     const next = normalizePreviewPath(raw, preview.url);
     setPath(next);
-    setDraftPath(next);
     navigateFrame(buildPreviewUrl(preview.url, next));
     await waitForFrameDocument(iframeRef, predicate, timeoutMs);
   }, [navigateFrame, preview.url]);
@@ -125,12 +117,29 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
       const next = relativePathFromHref(preview.url, href);
       if (!next) return;
       setPath(next);
-      setDraftPath(next);
     } catch {
       // Cross-origin navigations are not expected for the service bridge,
       // but ignore them so the preview itself keeps working.
     }
   }, [preview.url]);
+
+  const dockControls = React.useMemo(() => (
+    <WebPreviewDockControls
+      baseUrl={preview.url}
+      path={path}
+      ready={ready}
+      pendingRequests={pendingRequests}
+      message={preview.message}
+      onNavigate={navigate}
+      onReload={reloadPreview}
+    />
+  ), [navigate, path, pendingRequests, preview.message, preview.url, ready, reloadPreview]);
+
+  React.useEffect(() => {
+    if (!onDockControlsChange) return;
+    onDockControlsChange(dockControls);
+    return () => onDockControlsChange(null);
+  }, [dockControls, onDockControlsChange]);
 
   React.useImperativeHandle(ref, () => ({
     async loginToWordPress(options) {
@@ -165,115 +174,98 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   }), [navigateAndWait, ready]);
 
   return (
-    <div className="kpane">
-      <PaneHead
-        icon={ICON}
-        title={`WEB · ${preview.label.toUpperCase()}`}
-        dragProps={dragProps}
-        onCollapse={onCollapse}
-        onMaximize={onMaximize}
-        isMax={isMax}
-        right={
-          <button
-            className="kgal-card-btn"
-            onClick={reloadPreview}
-            disabled={!ready}
-            title="Reload preview"
-            aria-label="Reload preview"
-          >
-            Reload
-          </button>
-        }
-      />
-      <div className="kpane-body" style={{
-        background: "var(--k-bg)",
-        display: "flex",
-        flexDirection: "column",
-        minHeight: 0,
-      }}>
-        {ready ? (
-          <>
-            <form
-              className="kweb-urlbar"
-              onSubmit={(event) => {
-                event.preventDefault();
-                navigate(draftPath);
-              }}
-            >
-              <span className="kweb-urlbar-origin">{previewOriginLabel(preview.url)}</span>
-              <input
-                className="kweb-urlbar-input"
-                value={draftPath}
-                onChange={(event) => setDraftPath(event.currentTarget.value)}
-                onBlur={() => setDraftPath((value) => normalizePreviewPath(value, preview.url))}
-                spellCheck={false}
-                aria-label="Preview URL path"
-              />
-              <button className="kweb-urlbar-go" type="submit">Go</button>
-              <RequestIndicator
-                active={hasPendingRequests}
-                pendingRequests={pendingRequests}
-              />
-            </form>
-            <iframe
-              ref={iframeRef}
-              src={iframeSrc}
-              title={preview.label}
-              onLoad={() => {
-                syncFromFrame();
-                if (autoFocus) iframeRef.current?.focus();
-              }}
-              style={{
-                border: 0,
-                width: "100%",
-                flex: 1,
-                minHeight: 0,
-                background: "#fff",
-              }}
-            />
-          </>
-        ) : (
-          <div style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: preview.status === "error" ? "var(--k-err)" : "var(--k-text-faint)",
-            fontFamily: "var(--k-font-mono)",
-            fontSize: 11,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            textAlign: "center",
-            padding: 24,
-          }}>
-            {preview.message ?? "Starting service"}
-          </div>
-        )}
-      </div>
+    <div className="kdisplay-surface">
+      {ready ? (
+        <iframe
+          ref={iframeRef}
+          className="kweb-frame"
+          src={iframeSrc}
+          title={preview.label}
+          onLoad={() => {
+            syncFromFrame();
+            if (autoFocus) iframeRef.current?.focus();
+          }}
+        />
+      ) : (
+        <div className={`kdisplay-status${preview.status === "error" ? " is-error" : ""}`} role="status">
+          {preview.message ?? "Starting service"}
+        </div>
+      )}
     </div>
   );
 });
 
 WebPreviewPane.displayName = "WebPreviewPane";
 
-const RequestIndicator: React.FC<{
-  active: boolean;
+const WebPreviewDockControls: React.FC<{
+  baseUrl: string;
+  path: string;
+  ready: boolean;
   pendingRequests: number;
-}> = ({ active, pendingRequests }) => (
-  <span
-    className={`kweb-request-indicator${active ? " active" : ""}`}
-    role={active ? "status" : undefined}
-    aria-hidden={!active}
-    aria-label={active
-      ? `${pendingRequests} pending preview ${pendingRequests === 1 ? "request" : "requests"}`
-      : undefined}
-    title={active
-      ? `${pendingRequests} pending ${pendingRequests === 1 ? "request" : "requests"}`
-      : undefined}
-  >
-    <span className="kweb-request-spinner" />
-  </span>
-);
+  message?: string;
+  onNavigate: (path: string) => void;
+  onReload: () => void;
+}> = ({ baseUrl, path, ready, pendingRequests, message, onNavigate, onReload }) => {
+  const [draftPath, setDraftPath] = React.useState(path);
+  const loading = ready && pendingRequests > 0;
+  const loadingTitle = loading
+    ? `${pendingRequests} pending preview ${pendingRequests === 1 ? "request" : "requests"}`
+    : undefined;
+
+  React.useEffect(() => {
+    setDraftPath(path);
+  }, [path]);
+
+  return (
+    <form
+      className="kweb-urlbar"
+      title={ready ? undefined : message ?? "Starting service"}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (ready) onNavigate(draftPath);
+      }}
+    >
+      <button
+        type="button"
+        className="kdock-view-iconbtn kweb-reload"
+        onClick={onReload}
+        disabled={!ready}
+        title="Reload preview"
+        aria-label="Reload preview"
+      >
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+          <path d="M13 6.5A5 5 0 1 0 11.4 11" />
+          <path d="M13 3.5v3h-3" />
+        </svg>
+      </button>
+      <input
+        className="kweb-urlbar-input"
+        value={draftPath}
+        onChange={(event) => setDraftPath(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          if (ready) onNavigate(event.currentTarget.value);
+        }}
+        onBlur={() => setDraftPath((value) => normalizePreviewPath(value, baseUrl))}
+        disabled={!ready}
+        spellCheck={false}
+        enterKeyHint="go"
+        aria-label="Preview URL path"
+      />
+      <span
+        className={`kweb-loading${loading ? " is-active" : ""}`}
+        role={loading ? "status" : undefined}
+        aria-hidden={loading ? undefined : true}
+        aria-label={loading ? "Loading preview" : undefined}
+        title={loadingTitle}
+      >
+        <span className="kweb-loading-spinner" aria-hidden="true" />
+        <span className="kweb-loading-text">Loading...</span>
+      </span>
+    </form>
+  );
+};
 
 function buildPreviewUrl(base: string, path: string): string {
   if (base === "about:blank") return base;
@@ -309,17 +301,6 @@ function relativePathFromHref(base: string, href: string): string | null {
     return `/${suffix}${url.search}${url.hash}`;
   } catch {
     return null;
-  }
-}
-
-function previewOriginLabel(base: string): string {
-  if (base === "about:blank") return "about:";
-  try {
-    const root = new URL(base, window.location.href);
-    const path = root.pathname.endsWith("/") ? root.pathname : `${root.pathname}/`;
-    return `${root.origin}${path}`;
-  } catch {
-    return base;
   }
 }
 

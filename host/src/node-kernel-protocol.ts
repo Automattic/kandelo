@@ -11,8 +11,10 @@
  * See docs/plans/2026-04-30-external-kernel-http-request-interface.md.
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+import type { HostDiagnosticMessage } from "./host-diagnostic";
 
 export type { HttpRequest, HttpResponse };
+export type { HostDiagnostic } from "./host-diagnostic";
 
 // ── Main Thread → Kernel Worker ──
 
@@ -37,7 +39,13 @@ export interface InitMessage {
    * (custom-io / legacy path).
    */
   rootfsImage?: ArrayBuffer;
-  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
+  extraMounts?: Array<{
+    mountPoint: string;
+    hostPath: string;
+    readonly?: boolean;
+    uid?: number;
+    gid?: number;
+  }>;
   /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
    *  so wasm programs can dial external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
@@ -245,14 +253,12 @@ export interface ResolveExecRequestMessage {
 /**
  * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
  * browser-side ProcEventMessage. Exit events come via the existing
- * ExitMessage; we don't duplicate them here.
+ * ExitMessage; we don't duplicate them here. Spawn events always carry the
+ * authoritative parent pid; exec events preserve process identity and do not.
  */
-export interface ProcEventMessage {
-  type: "proc_event";
-  kind: "spawn" | "exec";
-  pid: number;
-  ppid?: number;
-}
+export type ProcEventMessage =
+  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
+  | { type: "proc_event"; kind: "exec"; pid: number };
 
 export type KernelToMainMessage =
   | ReadyMessage
@@ -260,6 +266,7 @@ export type KernelToMainMessage =
   | ExitMessage
   | StdoutMessage
   | StderrMessage
+  | HostDiagnosticMessage
   | PtyOutputMessage
   | ResolveExecRequestMessage
   | ProcEventMessage;

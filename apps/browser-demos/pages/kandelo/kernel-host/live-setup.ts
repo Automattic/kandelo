@@ -14,7 +14,17 @@ import {
   type WordPressDatabaseKind,
 } from "../../../lib/init/wordpress-runtime-config";
 import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
+import {
+  WORDPRESS_MARIADB_READY_FILE,
+  WORDPRESS_MARIADB_READY_PATH,
+  WORDPRESS_MARIADB_READY_PHP,
+  WORDPRESS_MARIADB_SOCKET_PATH,
+} from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import {
+  finalizeKernelOwnedImage,
+  settleWebKitReclaim,
+} from "../../../lib/kernel-owned-boot";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -60,8 +70,6 @@ import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
-import nginxVfsUrl from "@binaries/programs/wasm32/nginx-vfs.vfs.zst?url";
-import nginxPhpVfsUrl from "@binaries/programs/wasm32/nginx-php-vfs.vfs.zst?url";
 import wordpressVfsUrl from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
@@ -77,6 +85,18 @@ const OPTIONAL_BINARY_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/fbtest.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -150,7 +170,7 @@ const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
-const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
 const MARIADB_READY_SERVICE = "mariadb-ready";
 const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
 const ROOT_UID = 0;
@@ -186,6 +206,10 @@ type LiveVfsImage =
   | "wordpress"
   | "lamp";
 
+type LiveVfsSource =
+  | { kind: "url"; url: string }
+  | { kind: "optional-binary"; label: string; relPaths: string[] };
+
 type ShellProfile = "default" | "node";
 type InitEnvProfile = "service" | "wordpress";
 
@@ -211,17 +235,32 @@ interface LiveProfileSpec {
       requiredPorts: number[];
       requiredServices?: string[];
       probeHttp?: boolean;
+      probePath?: string;
     };
   };
 }
 
-const VFS_URLS: Record<LiveVfsImage, string> = {
-  shell: shellVfsUrl,
-  node: nodeVfsUrl,
-  nginx: nginxVfsUrl,
-  "nginx-php": nginxPhpVfsUrl,
-  wordpress: wordpressVfsUrl,
-  lamp: lampVfsUrl,
+const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
+  shell: { kind: "url", url: shellVfsUrl },
+  node: { kind: "url", url: nodeVfsUrl },
+  nginx: {
+    kind: "optional-binary",
+    label: "nginx-vfs.vfs.zst",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst",
+    ],
+  },
+  "nginx-php": {
+    kind: "optional-binary",
+    label: "nginx-php-vfs.vfs.zst",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    ],
+  },
+  wordpress: { kind: "url", url: wordpressVfsUrl },
+  lamp: { kind: "url", url: lampVfsUrl },
 };
 
 const DINIT_NGINX_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"];
@@ -239,13 +278,10 @@ const LIVE_DEMO_IDS = [
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
 
+// Kernel teardown reclamation (transient image-build buffers) lives in the
+// shared helper so every kernel-owned demo shares one implementation.
 async function settleAfterKernelDestroy(): Promise<void> {
-  const ua = navigator.userAgent;
-  const isWebKitLikeBrowser = /AppleWebKit/i.test(ua)
-    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
-  if (!isWebKitLikeBrowser) return;
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
+  await settleWebKitReclaim();
 }
 
 const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
@@ -310,7 +346,8 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
       web: {
         requiredPorts: [HTTP_PORT, PHP_FPM_PORT],
         requiredServices: ["mariadb-ready", "php-fpm", "nginx"],
-        probeHttp: false,
+        probeHttp: true,
+        probePath: WORDPRESS_MARIADB_READY_PATH,
       },
     },
   },
@@ -341,6 +378,7 @@ const WEB_BOOT_LOG_DEMO_IDS = new Set<LiveDemoId>([
 interface LiveProfile {
   id: string;
   vfsUrl: string;
+  vfsSource?: LiveVfsSource;
   software?: SoftwareProfile;
   descriptor: BootDescriptor;
   shell: ShellProfile;
@@ -362,6 +400,7 @@ interface LiveProfile {
       requiredPorts: number[];
       requiredServices?: string[];
       probeHttp: boolean;
+      probePath?: string;
     };
   };
   framebufferTest: boolean;
@@ -684,9 +723,11 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
   const normalized = normalizeDemoId(id) ?? "shell";
   const spec = LIVE_PROFILE_SPECS[normalized];
   const desc = descriptorFor(normalized);
+  const vfsSource = VFS_SOURCES[spec.image];
   return {
     id: normalized,
-    vfsUrl: VFS_URLS[spec.image],
+    vfsUrl: vfsSource.kind === "url" ? vfsSource.url : "",
+    vfsSource,
     descriptor: desc,
     shell: spec.shell ?? "default",
     includeNodeUtility: spec.includeNodeUtility ?? false,
@@ -706,6 +747,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         requiredPorts: spec.init.web.requiredPorts.slice(),
         requiredServices: spec.init.web.requiredServices?.slice(),
         probeHttp: spec.init.web.probeHttp ?? true,
+        probePath: spec.init.web.probePath,
       },
     },
     framebufferTest: fb === "test",
@@ -875,12 +917,12 @@ function stripAnsi(text: string): string {
 
 function startDinitStartingPoller(options: {
   kernel: BrowserKernel;
-  memfs: MemoryFileSystem;
+  hasDinitctl: boolean;
   tracker: DinitBootStatusTracker;
   isCurrent: () => boolean;
   shouldStop?: () => boolean;
 }): () => void {
-  if (!vfsPathExists(options.memfs, DINITCTL_PATH)) return () => {};
+  if (!options.hasDinitctl) return () => {};
 
   let stopped = false;
   void (async () => {
@@ -888,10 +930,9 @@ function startDinitStartingPoller(options: {
     let failures = 0;
     while (!stopped && options.isCurrent() && Date.now() < deadline) {
       if (options.shouldStop?.()) break;
-      if (!vfsPathExists(options.memfs, DINITCTL_SOCKET_PATH)) {
-        await delay(DINIT_STARTING_POLL_INTERVAL_MS);
-        continue;
-      }
+      // The kernel owns the FS now, so the main thread can't stat the dinit
+      // control socket. readDinitctlList probes it via an in-kernel
+      // `dinitctl list`, which returns null until the socket is up.
       let output: string | null = null;
       try {
         output = await readDinitctlList(options.kernel);
@@ -1039,7 +1080,14 @@ async function bootProfile(
     ABI_VERSION,
     `${profile.id}.vfs.zst`,
   );
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
+  // Assemble the demo image in a TRANSIENT build-time filesystem. Its
+  // SharedArrayBuffer never becomes the machine's live VFS — after
+  // `saveImage()` it is dropped, and the kernel worker rebuilds+owns the live
+  // FS from the serialized bytes (kernelOwnedFs). This keeps the main thread
+  // out of the live-VFS ownership set so WebKit reclaims it on teardown via
+  // Worker.terminate() rather than lazy GC — the root fix for the Safari
+  // image-switch OOM.
+  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
     maxByteLength: profile.maxVfsByteLength,
   });
   if (
@@ -1047,30 +1095,37 @@ async function bootProfile(
     profile.id === "wordpress-sqlite" ||
     profile.id === "wordpress-mariadb"
   ) {
-    writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
-    ensureDirRecursive(memfs, "/var/cache/opcache");
+    writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+    ensureDirRecursive(buildFs, "/var/cache/opcache");
   }
   if (profile.id === "wordpress-sqlite") {
-    patchWordPressRuntimeConfig(memfs, "sqlite");
+    patchWordPressRuntimeConfig(buildFs, "sqlite");
   } else if (profile.id === "wordpress-mariadb") {
-    patchMariaDbUnixSocketConfig(memfs);
-    patchWordPressRuntimeConfig(memfs, "mariadb");
+    patchMariaDbUnixSocketConfig(buildFs);
+    patchWordPressRuntimeConfig(buildFs, "mariadb");
   }
-  memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
-  rewriteShellLazyFileUrls(memfs);
+  buildFs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
+  rewriteShellLazyFileUrls(buildFs);
   if (profile.includeNodeUtility) {
-    rewriteNodeLazyFileUrl(memfs);
+    rewriteNodeLazyFileUrl(buildFs);
   }
   if (profile.init?.programUrl) {
     tick(`staging ${profile.init.argv[0]}...`);
     const bytes = await fetch(profile.init.programUrl)
       .then(failOn(profile.init.argv[0]))
       .then((r) => r.arrayBuffer());
-    ensureDirRecursive(memfs, dirname(profile.init.argv[0]));
-    writeVfsBinary(memfs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
+    ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
+    writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
   }
-  ensureDemoHomes(memfs);
-  const imageConfig = readImageConfig(memfs);
+  ensureDemoHomes(buildFs);
+  // Bake the shell + gallery-software binaries into the image before the
+  // worker takes ownership. In the legacy path these were written into a
+  // main-thread-shared memfs *after* boot via `kernel.fs`; the kernel-owned FS
+  // has no main-thread handle, so they must be part of the image bytes.
+  stageShellUtilities(buildFs, dashBytes, bashBytes);
+  stageSoftwareBinaries(buildFs, softwareBinaries);
+  const hasDinitctl = vfsPathExists(buildFs, DINITCTL_PATH);
+  const imageConfig = readImageConfig(buildFs);
   const rawPresentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
     ?? builtinDemoPresentation(profile.id)
     ?? genericPresentation;
@@ -1081,7 +1136,17 @@ async function bootProfile(
   host.setDemoGuide(demoGuide);
   const imageAssets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
   const assets = imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
-  await stageConfiguredAssets(memfs, assets, tick);
+  await stageConfiguredAssets(buildFs, assets, tick);
+  assertCurrent();
+
+  // Serialize the assembled image to transferable bytes, then let `buildFs`
+  // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
+  // `MemoryFileSystem.fromImage` restores directly in the worker.
+  tick("assembling kernel-owned VFS image...");
+  // Serialize to transferable bytes + register the transient build buffer for
+  // reclamation tracking, then let `buildFs` fall out of scope when bootProfile
+  // returns. `settleAfterKernelDestroy` reclaims it on WebKit.
+  const vfsImageBytes = await finalizeKernelOwnedImage(buildFs);
   assertCurrent();
 
   tick("instantiating kernel...");
@@ -1104,11 +1169,20 @@ async function bootProfile(
   let stopDinitStartingPoller = () => {};
   try {
     kernel = new BrowserKernel({
-      memfs,
+      kernelOwnedFs: true,
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages: profile.init?.maxMemoryPages,
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
+      onHostDiagnostic: (diagnostic) => {
+        if (!isCurrent()) return;
+        host.pushDmesg({
+          t: bootElapsedMs(bootStartedAt),
+          level: "warn",
+          facility: "kernel",
+          msg: diagnostic.message,
+        });
+      },
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
       onHttpBridgePendingRequests: (count) => {
         if (isCurrent()) host.setWebPreviewPendingRequests(count);
@@ -1122,12 +1196,10 @@ async function bootProfile(
           });
       },
     });
-    await kernel.init(kernelBytes);
-    assertCurrent();
-
-    tick("staging shell utilities...");
-    stageShellUtilities(kernel, dashBytes, bashBytes);
-    stageSoftwareBinaries(kernel, softwareBinaries);
+    await kernel.initFromImage({
+      kernelWasm: kernelBytes,
+      vfsImage: vfsImageBytes,
+    });
     assertCurrent();
     host.attachKernel(kernel);
     const shellIdentity = shellIdentityForProfile(profile, profile.init ? undefined : effectiveBoot);
@@ -1150,7 +1222,12 @@ async function bootProfile(
         message: "Waiting for services",
       });
       try {
-        await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
+        // Unique id for this machine instance. Scopes the service worker's
+        // cookie jar so sessions never share cookies. Temporary instances get a
+        // fresh random id per boot; when machines become persistable this is
+        // where their durable id would be passed instead.
+        const sessionId = crypto.randomUUID();
+        await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, sessionId, {
           timeoutMs: 90_000,
           debugLog: (line) => tick(line),
           onPendingRequests: (count) => {
@@ -1175,23 +1252,24 @@ async function bootProfile(
 
     if (profile.init) {
       const initArgv = effectiveBoot.argv.length > 0 ? effectiveBoot.argv : profile.init.argv;
-      const initBytes = readVfsFile(memfs, initArgv[0]);
       tick(`spawning ${initArgv[0]}...`);
-      void kernel.spawn(initBytes, initArgv, {
+      // The init binary lives in the kernel-owned VFS; spawn it by path rather
+      // than shipping bytes the kernel already has.
+      const { exit: initExit } = await kernel.spawnFromVfs(initArgv[0], initArgv, {
         env: mergeEnvArrays(profile.init.env ?? [], envArray(effectiveBoot.env)),
         cwd: effectiveBoot.cwd || profile.init.cwd || ROOT_HOME,
         uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
         gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
-        onStarted: () => {
-          stopDinitStartingPoller = startDinitStartingPoller({
-            kernel: kernel!,
-            memfs,
-            tracker: dinitBootTracker,
-            isCurrent,
-            shouldStop: () => webReadiness.ready,
-          });
-        },
-      }).then(
+        stdin: new Uint8Array(),
+      });
+      stopDinitStartingPoller = startDinitStartingPoller({
+        kernel,
+        hasDinitctl,
+        tracker: dinitBootTracker,
+        isCurrent,
+        shouldStop: () => webReadiness.ready,
+      });
+      void initExit.then(
         (code) => {
           stopDinitStartingPoller();
           stopDinitStartingPoller = () => {};
@@ -1261,19 +1339,19 @@ function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
 }
 
 function stageShellUtilities(
-  kernel: BrowserKernel,
+  fs: MemoryFileSystem,
   dashBytes: ArrayBuffer,
   bashBytes: ArrayBuffer,
 ): void {
-  ensureDemoHomes(kernel.fs);
-  ensureDirRecursive(kernel.fs, "/bin");
-  ensureDirRecursive(kernel.fs, "/usr/bin");
-  writeVfsBinary(kernel.fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
-  try { kernel.fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-  try { kernel.fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-  try { kernel.fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
-  writeVfsBinary(kernel.fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
-  try { kernel.fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
+  ensureDemoHomes(fs);
+  ensureDirRecursive(fs, "/bin");
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
+  try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
+  try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
+  try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
+  writeVfsBinary(fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
+  try { fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
 }
 
 function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
@@ -1330,6 +1408,8 @@ function patchWordPressRuntimeConfig(
 function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
+  ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
+  writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
 
   const phpIniPath = "/etc/php.ini";
   const phpIni = readOptionalVfsText(fs, phpIniPath);
@@ -1423,7 +1503,8 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
 
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
   if (!profile.software) {
-    return fetch(profile.vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer());
+    const vfsUrl = await resolveProfileVfsUrl(profile);
+    return fetch(vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer());
   }
   const vfsImage = await loadArchiveArtifact(
     profile.software.vfsArchiveUrl,
@@ -1432,6 +1513,15 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
   const copy = new Uint8Array(vfsImage.byteLength);
   copy.set(vfsImage);
   return copy.buffer;
+}
+
+async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
+  if (profile.vfsSource?.kind === "url") return profile.vfsSource.url;
+  if (profile.vfsSource?.kind === "optional-binary") {
+    return optionalBinaryUrl(profile.vfsSource.relPaths, profile.vfsSource.label);
+  }
+  if (profile.vfsUrl) return profile.vfsUrl;
+  throw new Error(`No VFS image URL configured for ${profile.id}`);
 }
 
 async function loadSoftwareBinaries(
@@ -1445,15 +1535,15 @@ async function loadSoftwareBinaries(
 }
 
 function stageSoftwareBinaries(
-  kernel: BrowserKernel,
+  fs: MemoryFileSystem,
   binaries: Array<{ spec: SoftwareBinary; bytes: Uint8Array }>,
 ): void {
   for (const { spec, bytes } of binaries) {
-    ensureDirRecursive(kernel.fs, dirname(spec.installPath));
-    writeVfsBinary(kernel.fs, spec.installPath, bytes, 0o755);
+    ensureDirRecursive(fs, dirname(spec.installPath));
+    writeVfsBinary(fs, spec.installPath, bytes, 0o755);
     for (const symlinkPath of spec.symlinks ?? []) {
-      ensureDirRecursive(kernel.fs, dirname(symlinkPath));
-      try { kernel.fs.symlink(spec.installPath, symlinkPath); } catch { /* exists */ }
+      ensureDirRecursive(fs, dirname(symlinkPath));
+      try { fs.symlink(spec.installPath, symlinkPath); } catch { /* exists */ }
     }
   }
 }
@@ -1625,13 +1715,14 @@ function maybeMarkWebReady(
   }
   if (readiness.probing) return;
   readiness.probing = true;
+  const probeUrl = previewUrlForPath(web.probePath ?? "/");
   host.setWebPreview({
     label: web.label,
     url: APP_PREFIX,
     status: "starting",
-    message: "Waiting for HTTP response",
+    message: web.probePath ? "Waiting for application readiness" : "Waiting for HTTP response",
   });
-  void waitForHttpPreview(APP_PREFIX).then(
+  void waitForHttpPreview(probeUrl, 90_000, { requireOk: Boolean(web.probePath) }).then(
     () => {
       if (!isCurrent()) return;
       readiness.ready = true;
@@ -1660,7 +1751,11 @@ function maybeMarkWebReady(
   });
 }
 
-async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void> {
+async function waitForHttpPreview(
+  url: string,
+  timeoutMs = 90_000,
+  options: { requireOk?: boolean } = {},
+): Promise<void> {
   const started = performance.now();
   let delayMs = 250;
   let lastError = "";
@@ -1668,7 +1763,7 @@ async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void
   while (performance.now() - started < timeoutMs) {
     try {
       const response = await fetchWithTimeout(url, 5_000);
-      if (response.status < 500) return;
+      if (options.requireOk ? response.ok : response.status < 500) return;
       lastError = `HTTP ${response.status}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -1678,6 +1773,12 @@ async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void
   }
 
   throw new Error(lastError || "timed out");
+}
+
+function previewUrlForPath(path: string): string {
+  const root = new URL(APP_PREFIX, window.location.href);
+  const normalized = path.startsWith("/") ? path.slice(1) : path;
+  return new URL(normalized || ".", root).href;
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
@@ -1781,7 +1882,9 @@ function liveGalleryItems(): GalleryItem[] {
 function vfsImageUrlForPreset(id: string): string | undefined {
   const liveId = normalizeDemoId(id);
   if (!liveId) return undefined;
-  const url = new URL(VFS_URLS[LIVE_PROFILE_SPECS[liveId].image], location.href);
+  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
+  if (source.kind !== "url") return undefined;
+  const url = new URL(source.url, location.href);
   url.hash = liveId;
   return url.href;
 }
@@ -1793,11 +1896,15 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
   const url = new URL(normalized);
   const hashId = url.hash.slice(1);
   const baseUrl = withoutHash(url);
-  if (isLiveDemoId(hashId) && baseUrl === profileVfsBaseUrl(hashId)) {
+  const hashBaseUrl = isLiveDemoId(hashId) ? profileVfsBaseUrl(hashId) : null;
+  if (hashBaseUrl && baseUrl === hashBaseUrl) {
     return hashId;
   }
 
-  const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
+  const matches = LIVE_DEMO_IDS.filter((id) => {
+    const profileBaseUrl = profileVfsBaseUrl(id);
+    return profileBaseUrl !== null && baseUrl === profileBaseUrl;
+  });
   if (matches.length === 1) return matches[0];
   // Multiple presets share the shell VFS image (doom, modeset). When the URL
   // doesn't pin one via the hash, fall back to the shell preset so the
@@ -1805,8 +1912,10 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
   return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
 }
 
-function profileVfsBaseUrl(id: LiveDemoId): string {
-  return withoutHash(new URL(VFS_URLS[LIVE_PROFILE_SPECS[id].image], location.href));
+function profileVfsBaseUrl(id: LiveDemoId): string | null {
+  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[id].image];
+  if (source.kind !== "url") return null;
+  return withoutHash(new URL(source.url, location.href));
 }
 
 function withoutHash(url: URL): string {
@@ -1910,9 +2019,7 @@ function softwareEntryToGalleryItem(
   return {
     id,
     title: entry.title,
-    summary: archiveUrl
-      ? `${entry.description} Archive: ${archiveUrl}`
-      : entry.description,
+    summary: entry.description,
     base: `kandelo:shell@abi${ABI_VERSION}`,
     packages: entry.packages.map(packageKey),
     bootCommand: ["bash", "-l", "-i"],

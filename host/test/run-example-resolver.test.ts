@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { isWithinRealDirectory } from "../../examples/run-example-paths";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..", "..");
@@ -11,6 +12,29 @@ const runExample = join(repoRoot, "examples", "run-example.ts");
 const spawnSmokeWasm = join(repoRoot, "examples", "spawn-smoke.wasm");
 
 describe("run-example exec resolver", () => {
+  it("compares canonical workdir paths without allowing symlink escapes", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kandelo-workdir-boundary-"));
+    const realWorkdir = join(tempDir, "real-workdir");
+    const workdirAlias = join(tempDir, "workdir-alias");
+    const outsideDir = join(tempDir, "outside");
+    const guestProgram = join(realWorkdir, "guest-program");
+    const outsideProgram = join(outsideDir, "host-program");
+    const escapedProgram = join(realWorkdir, "escaped-program");
+    try {
+      mkdirSync(realWorkdir);
+      mkdirSync(outsideDir);
+      writeFileSync(guestProgram, "guest");
+      writeFileSync(outsideProgram, "host");
+      symlinkSync(realWorkdir, workdirAlias, "dir");
+      symlinkSync(outsideProgram, escapedProgram, "file");
+
+      expect(isWithinRealDirectory(workdirAlias, guestProgram)).toBe(true);
+      expect(isWithinRealDirectory(workdirAlias, escapedProgram)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not resolve native host executables outside KERNEL_CWD as guest programs", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "kandelo-host-native-"));
     const nativeLikeBinary = join(tempDir, "host-tool");

@@ -6,7 +6,8 @@
  * saved __tls_base/__stack_pointer; (b) route the child Worker into
  * the thread function via `forkChildThreadFnPtr` so the rewind
  * actually reaches the fork() call site (`_start` isn't in the
- * thread's fork-path call chain).
+ * thread's fork-path call chain); and (c) preserve that entry root and buffer
+ * when the child forks again before exec.
  *
  * Without those, the child rewinds zero __tls_base/__stack_pointer
  * and crashes on its first shadow-stack frame — and the parent's
@@ -19,32 +20,56 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const forkFromThreadBinary = tryResolveBinary("programs/fork-from-thread.wasm");
 const hasFork = !!forkFromThreadBinary;
+const concurrentForkBinary = tryResolveBinary(
+  "programs/fork-from-concurrent-threads.wasm",
+);
+const hasConcurrentFork = !!concurrentForkBinary;
 
 describe("fork-from-non-main-thread", () => {
-  it.skipIf(!hasFork)("a pthread_create'd thread can fork(), child resumes at the fork site", async () => {
-    const result = await runCentralizedProgram({
-      programPath: forkFromThreadBinary!,
-      argv: ["fork-from-thread"],
-      timeout: 15_000,
-    });
+  it.skipIf(!hasFork)(
+    "a pthread fork child can fork again from its inherited continuation",
+    async () => {
+      const result = await runCentralizedProgram({
+        programPath: forkFromThreadBinary!,
+        argv: ["fork-from-thread"],
+        timeout: 15_000,
+      });
 
-    expect(result.exitCode, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
+      expect(result.exitCode, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
 
-    // Parent thread reached the fork-callable code path.
-    expect(result.stdout).toContain("THREAD_STARTED");
-    expect(result.stdout).toContain("PRE_FORK_THREAD");
+      // Parent thread reached the fork-callable code path.
+      expect(result.stdout).toContain("THREAD_STARTED");
+      expect(result.stdout).toContain("PRE_FORK_THREAD");
 
-    // Parent thread received a positive child pid.
-    expect(result.stdout).toMatch(/PARENT_THREAD: child=\d+/);
+      // Parent thread received a positive child pid.
+      expect(result.stdout).toMatch(/PARENT_THREAD: child=\d+/);
 
-    // Child resumed inside the thread function, took the pid==0 branch,
-    // ran the post-fork code, and exited cleanly. This is the load-bearing
-    // expectation: without correct fork-from-thread, the child traps in
-    // _start before any thread code runs.
-    expect(result.stdout).toContain("CHILD_THREAD: ok");
+      // Child resumed inside the thread function, took the pid==0 branch,
+      // ran the post-fork code, and exited cleanly. This is the load-bearing
+      // expectation: without correct fork-from-thread, the child traps in
+      // _start before any thread code runs.
+      expect(result.stdout).toContain("GRANDCHILD_THREAD: ok");
+      expect(result.stdout).toMatch(/CHILD_THREAD: grandchild=\d+/);
 
-    // Final PASS line — main thread joined the worker and waitpid()'d
-    // the child to a normal exit.
-    expect(result.stdout).toContain("PASS");
-  });
+      // Final PASS line — main thread joined the worker and waitpid()'d
+      // the child to a normal exit.
+      expect(result.stdout).toContain("PASS");
+    },
+    20_000,
+  );
+
+  it.skipIf(!hasConcurrentFork)(
+    "concurrent pthread forks keep their continuation frames isolated",
+    async () => {
+      const result = await runCentralizedProgram({
+        programPath: concurrentForkBinary!,
+        argv: ["fork-from-concurrent-threads"],
+        timeout: 60_000,
+      });
+
+      expect(result.exitCode, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
+      expect(result.stdout).toContain("PASS: 16 concurrent fork pairs");
+    },
+    70_000,
+  );
 });

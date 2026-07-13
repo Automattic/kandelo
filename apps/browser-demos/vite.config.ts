@@ -2,7 +2,12 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
-import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
+import {
+  defineConfig,
+  type Plugin,
+  type PreviewServer,
+  type ViteDevServer,
+} from "vite";
 import react from "@vitejs/plugin-react";
 import { tryResolveBinary } from "../../host/src/binary-resolver";
 
@@ -39,8 +44,33 @@ function devCorsProxyFetchUrlForBase(base: string): string {
   return `${devCorsProxyPathForBase(base)}?url=`;
 }
 
-function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): string {
+function injectCorsProxyUrlPlaceholder(
+  content: string,
+  corsProxyUrl: string,
+): string {
   return content.replace('"__CORS_PROXY_URL__"', JSON.stringify(corsProxyUrl));
+}
+
+const blobIframeInterceptorPath = path.resolve(
+  __dirname,
+  "public",
+  "blob-iframe-interceptor.js",
+);
+
+/**
+ * Inline the reusable blob-iframe interceptor (public/blob-iframe-interceptor.js)
+ * into the service worker in place of the `"__BLOB_IFRAME_INTERCEPTOR__"`
+ * placeholder. The service worker injects this source into every bridged HTML
+ * document so app-created `blob:` iframes become service-worker-controlled
+ * `about:srcdoc` documents. Kept as a separate file so it stays independently
+ * readable and testable.
+ */
+function injectBlobIframeInterceptorPlaceholder(content: string): string {
+  if (!content.includes('"__BLOB_IFRAME_INTERCEPTOR__"')) {
+    return content;
+  }
+  const interceptor = fs.readFileSync(blobIframeInterceptorPath, "utf-8");
+  return content.replace('"__BLOB_IFRAME_INTERCEPTOR__"', JSON.stringify(interceptor));
 }
 
 /**
@@ -75,7 +105,7 @@ function resolveKernelArtifactsAlias(): Plugin {
         const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
         this.error(
           "kernel.wasm not found, or every candidate is stale. Run `bash build.sh` from the repo root.\n" +
-          `  Looked at: ${local}\n  Looked at: ${fetched}`
+            `  Looked at: ${local}\n  Looked at: ${fetched}`,
         );
       }
       if (pathPart === ROOTFS) {
@@ -91,10 +121,44 @@ function resolveKernelArtifactsAlias(): Plugin {
         }
         this.error(
           "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
-          candidates.map((file) => `  Looked at: ${file}`).join("\n")
+            candidates.map((file) => `  Looked at: ${file}`).join("\n"),
         );
       }
       return null;
+    },
+  };
+}
+
+/**
+ * Vite plugin (worker build only): strip the dead `export { … }` that rolldown
+ * synthesizes on worker entry chunks.
+ *
+ * A worker entry is a terminal module — nothing imports it — so the export is
+ * dead. But its presence makes WebKit/Safari evaluate the module worker TWICE:
+ * the second (uninitialized) evaluation reinstalls `self.onmessage` bound to a
+ * fresh module state whose `initReady` is false, which shadows the first
+ * evaluation's handler and silently parks the kernel's lazy-VFS registration
+ * messages — deadlocking `kernel.init()` so the shell never boots. Chromium and
+ * Firefox evaluate the module once and are unaffected. Dropping the export
+ * makes the worker a plain single-evaluation module on every engine.
+ *
+ * The "proper" lever for this is `preserveEntrySignatures: false`, but as of
+ * 2026-07-02 (Vite 8 / rolldown 1.0.3) setting it under `worker.rollupOptions`
+ * had zero effect here (byte-identical output): rolldown-vite does not thread
+ * that option into the worker build. So we strip the artifact at `renderChunk`
+ * instead — a build-time output transform, not a runtime workaround. Revisit
+ * once rolldown-vite honors `preserveEntrySignatures` for worker builds (or
+ * stops emitting the dead export), and this plugin can be dropped for the
+ * option.
+ */
+function dropWorkerEntryExports(): Plugin {
+  return {
+    name: "drop-worker-entry-exports",
+    enforce: "post",
+    renderChunk(code, chunk) {
+      if (!chunk.isEntry) return null;
+      const stripped = code.replace(/\bexport\s*\{[^}]*\}\s*;?\s*$/, "");
+      return stripped === code ? null : { code: stripped, map: null };
     },
   };
 }
@@ -145,8 +209,8 @@ function resolveBinariesAlias(): Plugin {
       const fetched = path.resolve(repoRoot, "binaries", rest);
       this.error(
         `@binaries: ${rest} not found, or every candidate is stale. ` +
-        `Looked at:\n  ${local}\n  ${fetched}\n` +
-        `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`
+          `Looked at:\n  ${local}\n  ${fetched}\n` +
+          `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
       );
     },
   };
@@ -197,9 +261,7 @@ function injectGitRevision(): Plugin {
           encoding: "utf-8",
         }).trim();
         // Convert git@github.com:user/repo.git or https://github.com/user/repo.git
-        const match = remoteUrl.match(
-          /github\.com[:/](.+?)(?:\.git)?$/
-        );
+        const match = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
         const repoPath = match ? match[1] : "brandonpayton/kandelo";
         const fullRev = execSync("git rev-parse HEAD", {
           cwd: repoRoot,
@@ -259,9 +321,11 @@ function injectCorsProxyUrl(): Plugin {
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
   function serviceWorkerSource(): string {
-    return injectCorsProxyUrlPlaceholder(
-      fs.readFileSync(sourceSwPath, "utf-8"),
-      servedCorsProxyUrl,
+    return injectBlobIframeInterceptorPlaceholder(
+      injectCorsProxyUrlPlaceholder(
+        fs.readFileSync(sourceSwPath, "utf-8"),
+        servedCorsProxyUrl,
+      ),
     );
   }
 
@@ -290,7 +354,8 @@ function injectCorsProxyUrl(): Plugin {
     name: "inject-cors-proxy-url",
     configResolved(config) {
       base = config.base;
-      servedCorsProxyUrl = configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base);
+      servedCorsProxyUrl =
+        configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base);
       outputCorsProxyUrl = buildCorsProxyUrl();
     },
     configureServer(server) {
@@ -305,6 +370,7 @@ function injectCorsProxyUrl(): Plugin {
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
         content = injectCorsProxyUrlPlaceholder(content, outputCorsProxyUrl);
+        content = injectBlobIframeInterceptorPlaceholder(content);
         fs.writeFileSync(swPath, content);
       }
     },
@@ -404,6 +470,8 @@ const defaultDemoInputs = {
 const demoInputs = {
   ...defaultDemoInputs,
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
+  benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
+  "php-test": path.resolve(__dirname, "pages/php-test/index.html"),
   // The perl, python, ruby, erlang, texlive, and redis package entries
   // are not bundled into this static build while their slow builds
   // live in kandelo-software. The root gallery fetches that
@@ -483,7 +551,14 @@ export default defineConfig({
     plugins: () => [
       resolveKernelArtifactsAlias(),
       resolveBinariesAlias(),
+      dropWorkerEntryExports(),
     ],
   },
-  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst", "**/*.zip"],
+  assetsInclude: [
+    "**/*.wasm",
+    "**/*.sql",
+    "**/*.vfs",
+    "**/*.vfs.zst",
+    "**/*.zip",
+  ],
 });

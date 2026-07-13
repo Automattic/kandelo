@@ -1,5 +1,5 @@
 {
-  "abi_version": 16,
+  "abi_version": 39,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 16,
+      "abi_version": 39,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -197,13 +197,19 @@
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_get_parent_pid",
+      "kernel_get_process_exit_signal",
+      "kernel_get_process_state",
       "kernel_handle_channel",
+      "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
       "kernel_mark_process_signaled",
+      "kernel_pipe_has_readers",
+      "kernel_posix_timer_fire",
+      "kernel_prepare_write_operation",
       "kernel_reap_exited_child",
       "kernel_remove_process",
-      "kernel_wait4_poll"
+      "kernel_wait_child_poll"
     ],
     "required_worker_features": 7,
     "version": 1,
@@ -337,6 +343,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_clear_process_metadata",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_clock_getres",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -457,8 +468,18 @@
     },
     {
       "kind": "func",
+      "name": "kernel_exec_prepare",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_exec_setup",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_setup_for_thread",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -517,8 +538,23 @@
     },
     {
       "kind": "func",
+      "name": "kernel_fd_is_open",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fd_supports_mmap_writeback",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_fdatasync",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_find_listener_fd_by_accept_wake",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -538,7 +574,7 @@
     {
       "kind": "func",
       "name": "kernel_fpathconf",
-      "signature": "(i32,i32) -> (i64)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -657,7 +693,17 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_process_exit_signal",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_process_exit_status",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_process_state",
       "signature": "(i32) -> (i32)"
     },
     {
@@ -809,6 +855,11 @@
       "kind": "func",
       "name": "kernel_handle_channel",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_has_sa_nocldstop",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1018,7 +1069,7 @@
     {
       "kind": "func",
       "name": "kernel_pathconf",
-      "signature": "(i32,i32,i32) -> (i64)"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1052,6 +1103,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_pipe_has_readers",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pipe_is_read_open",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -1077,6 +1133,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_posix_timer_fire",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_posix_timer_interval_fire",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -1099,6 +1160,11 @@
       "kind": "func",
       "name": "kernel_preadv",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_prepare_write_operation",
+      "signature": "(i32,i32,i64,i32,i32) -> (i64)"
     },
     {
       "kind": "func",
@@ -1129,6 +1195,11 @@
       "kind": "func",
       "name": "kernel_push_argv",
       "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_push_process_metadata_entry",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1632,8 +1703,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_wait4_poll",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "name": "kernel_wait_child_poll",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2006,6 +2077,36 @@
       ],
       "size": 32
     },
+    "KernelWaitResult": {
+      "fields": [
+        {
+          "name": "wait_status",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "si_code",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "si_status",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "child_uid",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "rusage",
+          "offset": 16,
+          "span": 144
+        }
+      ],
+      "size": 160
+    },
     "WasmDirent": {
       "fields": [
         {
@@ -2085,6 +2186,101 @@
         }
       ],
       "size": 8
+    },
+    "WasmRusageWire": {
+      "fields": [
+        {
+          "name": "ru_utime_sec",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "ru_utime_usec",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "ru_stime_sec",
+          "offset": 16,
+          "span": 8
+        },
+        {
+          "name": "ru_stime_usec",
+          "offset": 24,
+          "span": 8
+        },
+        {
+          "name": "ru_maxrss",
+          "offset": 32,
+          "span": 8
+        },
+        {
+          "name": "ru_ixrss",
+          "offset": 40,
+          "span": 8
+        },
+        {
+          "name": "ru_idrss",
+          "offset": 48,
+          "span": 8
+        },
+        {
+          "name": "ru_isrss",
+          "offset": 56,
+          "span": 8
+        },
+        {
+          "name": "ru_minflt",
+          "offset": 64,
+          "span": 8
+        },
+        {
+          "name": "ru_majflt",
+          "offset": 72,
+          "span": 8
+        },
+        {
+          "name": "ru_nswap",
+          "offset": 80,
+          "span": 8
+        },
+        {
+          "name": "ru_inblock",
+          "offset": 88,
+          "span": 8
+        },
+        {
+          "name": "ru_oublock",
+          "offset": 96,
+          "span": 8
+        },
+        {
+          "name": "ru_msgsnd",
+          "offset": 104,
+          "span": 8
+        },
+        {
+          "name": "ru_msgrcv",
+          "offset": 112,
+          "span": 8
+        },
+        {
+          "name": "ru_nsignals",
+          "offset": 120,
+          "span": 8
+        },
+        {
+          "name": "ru_nvcsw",
+          "offset": 128,
+          "span": 8
+        },
+        {
+          "name": "ru_nivcsw",
+          "offset": 136,
+          "span": 8
+        }
+      ],
+      "size": 144
     },
     "WasmStat": {
       "fields": [
@@ -2937,6 +3133,32 @@
       "size": 16
     }
   },
+  "pathconf_names": {
+    "ALLOC_SIZE_MIN": 18,
+    "ASYNC_IO": 10,
+    "CHOWN_RESTRICTED": 6,
+    "FALLOC": 21,
+    "FILESIZEBITS": 13,
+    "LINK_MAX": 0,
+    "MAX_CANON": 1,
+    "MAX_INPUT": 2,
+    "NAME_MAX": 3,
+    "NO_TRUNC": 7,
+    "PATH_MAX": 4,
+    "PIPE_BUF": 5,
+    "POSIX2_SYMLINKS": 20,
+    "PRIO_IO": 11,
+    "REC_INCR_XFER_SIZE": 14,
+    "REC_MAX_XFER_SIZE": 15,
+    "REC_MIN_XFER_SIZE": 16,
+    "REC_XFER_ALIGN": 17,
+    "SOCK_MAXBUF": 12,
+    "SYMLINK_MAX": 19,
+    "SYNC_IO": 9,
+    "TEXTDOMAIN_MAX": 22,
+    "TIMESTAMP_RESOLUTION": 23,
+    "VDISABLE": 8
+  },
   "process_expected_globals": [
     "__channel_base",
     "__tls_base"
@@ -3067,6 +3289,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 144,
           "type": "fixed"
@@ -3111,6 +3334,35 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      }
+    ],
+    "112": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "size": {
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "required": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      }
+    ],
+    "113": [
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -3224,6 +3476,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "type": "cstring"
         }
@@ -3358,7 +3611,7 @@
         "argIndex": 3,
         "direction": "out",
         "size": {
-          "size": 32,
+          "size": 144,
           "type": "fixed"
         }
       }
@@ -3631,6 +3884,17 @@
         }
       }
     ],
+    "238": [
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "required": true,
+        "size": {
+          "size": 4,
+          "type": "fixed"
+        }
+      }
+    ],
     "24": [
       {
         "argIndex": 0,
@@ -3725,6 +3989,35 @@
     "272": [
       {
         "argIndex": 1,
+        "direction": "in",
+        "size": {
+          "type": "cstring"
+        }
+      }
+    ],
+    "288": [
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "required": true,
+        "size": {
+          "size": 128,
+          "type": "fixed"
+        }
+      },
+      {
+        "argIndex": 4,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "size": 144,
+          "type": "fixed"
+        }
+      }
+    ],
+    "299": [
+      {
+        "argIndex": 0,
         "direction": "in",
         "size": {
           "type": "cstring"
@@ -5079,6 +5372,10 @@
       "number": 236
     },
     {
+      "name": "SchedGetaffinity",
+      "number": 238
+    },
+    {
       "name": "EpollCreate1",
       "number": 239
     },
@@ -5141,6 +5438,10 @@
     {
       "name": "Pwritev",
       "number": 296
+    },
+    {
+      "name": "Lchown",
+      "number": 299
     },
     {
       "name": "Fallocate",
@@ -5262,5 +5563,25 @@
       "name": "ThreadCancel",
       "number": 415
     }
-  ]
+  ],
+  "wait_contract": {
+    "PROCESS_STATE_EXITED": 2,
+    "PROCESS_STATE_RUNNING": 0,
+    "PROCESS_STATE_STOPPED": 1,
+    "WAIT_CLD_CONTINUED": 6,
+    "WAIT_CLD_EXITED": 1,
+    "WAIT_CLD_KILLED": 2,
+    "WAIT_CLD_STOPPED": 5,
+    "WAIT_EVENT_CONTINUED": 4,
+    "WAIT_EVENT_EXITED": 1,
+    "WAIT_EVENT_STOPPED": 2,
+    "WAIT_WCONTINUED": 8,
+    "WAIT_WEXITED": 4,
+    "WAIT_WNOHANG": 1,
+    "WAIT_WNOWAIT": 16777216,
+    "WAIT_WSTOPPED": 2,
+    "WAIT_WUNTRACED": 2,
+    "WAKE_PROCESS_CONTINUED": 32,
+    "WAKE_PROCESS_STOPPED": 16
+  }
 }

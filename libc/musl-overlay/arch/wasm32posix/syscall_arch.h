@@ -25,6 +25,12 @@
 #define __scc(X) ((long long) (X))
 typedef long syscall_arg_t;
 
+/* Cancellation-point syscalls are ordinary, non-variadic C calls. Keep their
+ * slots wide enough for the i64 channel ABI even though public syscall(...)
+ * must continue reading 32-bit `long` values from its va_list. */
+#define SYSCALL_CP_NR_T long
+#define SYSCALL_CP_ARG_T long long
+
 /*
  * Declare the dispatch functions. Args are long long to match the
  * i64 channel layout — on wasm32, long is 32-bit but long long is

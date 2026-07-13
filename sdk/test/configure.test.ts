@@ -21,5 +21,12 @@ describe('buildConfigureEnv', () => {
     expect(env.CC).toBe('wasm32posix-cc');
     expect(env.AR).toBe('wasm32posix-ar');
     expect(env.STRIP).toBe('wasm32posix-strip');
+    expect(env.WASM_POSIX_TARGET_ARCH).toBe('wasm32');
+  });
+
+  it('identifies wasm64 so config.site selects LP64 cache values', () => {
+    const env = buildConfigureEnv('wasm64');
+    expect(env.CC).toBe('wasm64posix-cc');
+    expect(env.WASM_POSIX_TARGET_ARCH).toBe('wasm64');
   });
 });

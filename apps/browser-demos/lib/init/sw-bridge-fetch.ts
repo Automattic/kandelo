@@ -60,15 +60,23 @@ export function attachBridgeToKernel(
  * the SW reincarnates and asks for a fresh bridge, we hand it a new
  * `HttpBridgeHost` already wired to `fetchInKernel` so the iframe keeps
  * working without a kernel restart.
+ *
+ * `sessionId` uniquely identifies this Kandelo machine instance and scopes the
+ * SW cookie jar to it, so cookies are never shared between sessions. It is sent
+ * on both the initial handshake and the restart handshake so the SW reloads the
+ * same session's jar after it is terminated. This page keeps `sessionId` in
+ * memory for its whole lifetime, so it is stable across SW restarts but fresh on
+ * a full reload (a new temporary session).
  */
 export async function setupServiceWorkerFetchBridge(
   swUrl: string,
   appPrefix: string,
   kernel: BrowserKernel,
   port: number,
+  sessionId: string,
   options?: ServiceWorkerFetchBridgeOptions,
 ): Promise<HttpBridgeHost> {
-  const bridge = await initServiceWorkerBridge(swUrl, appPrefix);
+  const bridge = await initServiceWorkerBridge(swUrl, appPrefix, sessionId);
   if (!bridge) {
     throw new Error("Service workers unavailable — HTTP bridge not initialized");
   }
@@ -82,7 +90,7 @@ export async function setupServiceWorkerFetchBridge(
       const fresh = new HttpBridgeHost();
       attachBridgeToKernel(fresh, kernel, port, options);
       replyPort.postMessage(
-        { type: "bridge-restored", appPrefix },
+        { type: "bridge-restored", appPrefix, sessionId },
         [fresh.getSwPort()],
       );
       options?.debugLog?.("Bridge restored after service worker restart");

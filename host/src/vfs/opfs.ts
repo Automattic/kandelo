@@ -5,7 +5,8 @@
  * then block with Atomics.wait() until the OpfsProxyWorker completes
  * the async OPFS operation.
  */
-import type { StatResult, StatfsResult } from "../types";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import { filesystemPathconf } from "../pathconf";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { OpfsChannel, OpfsChannelStatus, OpfsOpcode } from "./opfs-channel";
 
@@ -25,11 +26,12 @@ export class OpfsFileSystem implements FileSystemBackend {
     this.channel.opcode = opcode;
     this.channel.setPending();
     const status = this.channel.waitForComplete();
+    const result = this.channel.result;
+    this.channel.status = OpfsChannelStatus.Idle;
     if (status === OpfsChannelStatus.Error) {
-      const errno = this.channel.result;
-      throw this.errnoToError(errno);
+      throw this.errnoToError(result);
     }
-    return this.channel.result;
+    return result;
   }
 
   private errnoToError(negErrno: number): Error {
@@ -45,10 +47,20 @@ export class OpfsFileSystem implements FileSystemBackend {
       [-22]: "EINVAL",
       [-28]: "ENOSPC",
       [-39]: "ENOTEMPTY",
+      [-75]: "EOVERFLOW",
       [-95]: "ENOTSUP",
     };
     const name = ERRNO_NAMES[negErrno] || `errno(${negErrno})`;
     return new Error(name);
+  }
+
+  private setI64Arg(index: number, value: number): void {
+    try {
+      this.channel.setI64Arg(index, value);
+    } catch (error) {
+      if (error instanceof RangeError) throw this.errnoToError(-75);
+      throw error;
+    }
   }
 
   // --- File handle operations ---
@@ -71,8 +83,7 @@ export class OpfsFileSystem implements FileSystemBackend {
     this.channel.setArg(0, handle);
     this.channel.setArg(1, length);
     if (offset !== null) {
-      this.channel.setArg(2, offset & 0xffffffff); // offset_lo
-      this.channel.setArg(3, (offset / 0x100000000) | 0); // offset_hi
+      this.setI64Arg(2, offset);
       this.channel.setArg(4, 1); // has_offset
     } else {
       this.channel.setArg(2, 0);
@@ -90,8 +101,7 @@ export class OpfsFileSystem implements FileSystemBackend {
     this.channel.setArg(0, handle);
     this.channel.setArg(1, length);
     if (offset !== null) {
-      this.channel.setArg(2, offset & 0xffffffff);
-      this.channel.setArg(3, (offset / 0x100000000) | 0);
+      this.setI64Arg(2, offset);
       this.channel.setArg(4, 1);
     } else {
       this.channel.setArg(2, 0);
@@ -104,10 +114,15 @@ export class OpfsFileSystem implements FileSystemBackend {
 
   seek(handle: number, offset: number, whence: number): number {
     this.channel.setArg(0, handle);
-    this.channel.setArg(1, offset & 0xffffffff);
-    this.channel.setArg(2, (offset / 0x100000000) | 0);
+    this.setI64Arg(1, offset);
     this.channel.setArg(3, whence);
-    return this.call(OpfsOpcode.SEEK);
+    this.call(OpfsOpcode.SEEK);
+    try {
+      return this.channel.i64Result;
+    } catch (error) {
+      if (error instanceof RangeError) throw this.errnoToError(-75);
+      throw error;
+    }
   }
 
   fstat(handle: number): StatResult {
@@ -116,10 +131,17 @@ export class OpfsFileSystem implements FileSystemBackend {
     return this.channel.readStatResult();
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    const stat = this.fstat(handle);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: false,
+      timestampResolutionNs: null,
+    });
+  }
+
   ftruncate(handle: number, length: number): void {
     this.channel.setArg(0, handle);
-    this.channel.setArg(1, length & 0xffffffff);
-    this.channel.setArg(2, (length / 0x100000000) | 0);
+    this.setI64Arg(1, length);
     this.call(OpfsOpcode.FTRUNCATE);
   }
 
@@ -158,6 +180,14 @@ export class OpfsFileSystem implements FileSystemBackend {
     this.channel.setArg(0, pathLen);
     this.call(OpfsOpcode.STATFS);
     return this.channel.readStatfsResult();
+  }
+
+  pathconf(path: string, name: number): PathconfValue {
+    const stat = this.stat(path);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: false,
+      timestampResolutionNs: null,
+    });
   }
 
   mkdir(path: string, mode: number): void {
@@ -203,6 +233,11 @@ export class OpfsFileSystem implements FileSystemBackend {
 
   chown(_path: string, _uid: number, _gid: number): void {
     // OPFS has no ownership model
+  }
+
+  lchown(_path: string, _uid: number, _gid: number): void {
+    // OPFS has neither symlinks nor an ownership model, so this has the same
+    // existing no-op boundary as chown.
   }
 
   access(path: string, mode: number): void {

@@ -10,7 +10,18 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
-import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
+import {
+  createCppExceptionTag,
+  createLongjmpTag,
+  DynamicLinker,
+  FORK_CAP_DYLINK_MAIN,
+  forkInstrumentRoleAvailable,
+  readForkInstrumentCapabilityClaim,
+  requireCppExceptionTag,
+  requireLongjmpTag,
+  type LoadedSharedLibrary,
+  type SideModuleForkState,
+} from "./dylink";
 import { extractAbiVersion } from "./constants";
 import {
   ABI_SYSCALLS,
@@ -117,8 +128,11 @@ function buildKernelImports(
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for complete, then trap
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
       onKernelExit?.(status);
+      // Per-thread exit is non-returning. Throwing here prevents libc's
+      // mandated SYS_exit retry loop from parking a second time on a channel
+      // the host has already removed, and lets the outer worker report exit.
+      throw new WebAssembly.RuntimeError("unreachable");
     },
 
     // Clone dispatches through channel (SYS_CLONE)
@@ -180,6 +194,46 @@ export interface DlopenSupport {
    *  fork-child path AFTER setupChannelBase and BEFORE the wpk_fork
    *  rewind into _start. */
   replayDlopens: () => void;
+  /** Finish the one active side-module unwind after the main image unwinds. */
+  completeSideModuleForkUnwind: () => void;
+  /** Begin the active side-module rewind after fork-child dlopen replay. */
+  beginSideModuleForkRewind: () => void;
+  /** Reject a leaked active side-module identity on a normal main return. */
+  assertNoActiveSideModuleFork: () => void;
+  /** Clear a fork parent's copied archive lock in the child's private memory. */
+  resetForkChildLock: () => void;
+}
+
+/**
+ * Thread workers instantiate a separate Wasm module/table/tag graph, so they
+ * cannot safely load or invoke process side modules. Keep dlopen's ordinary C
+ * failure contract (NULL plus dlerror text) instead of letting a generic
+ * unresolved-import stub trap the pthread.
+ */
+function buildUnsupportedThreadDlopenImports(
+  memory: WebAssembly.Memory,
+): Record<string, WebAssembly.ExportValue> {
+  const message = new TextEncoder().encode(
+    "dlopen is unsupported from pthread workers; load side modules on the process main worker",
+  );
+  const n = (value: number | bigint): number =>
+    typeof value === "bigint" ? Number(value) : value;
+  return {
+    __wasm_dlopen: (): number => 0,
+    __wasm_dlsym: (): number => 0,
+    __wasm_dlclose: (): number => -1,
+    __wasm_dlerror: (bufPtr: number | bigint, bufMax: number | bigint): number => {
+      const ptr = n(bufPtr);
+      const max = n(bufMax);
+      if (!Number.isSafeInteger(ptr) || !Number.isSafeInteger(max) || ptr < 0 || max <= 0) {
+        return 0;
+      }
+      const len = Math.min(message.length, max, memory.buffer.byteLength - ptr);
+      if (len <= 0) return 0;
+      new Uint8Array(memory.buffer, ptr, len).set(message.subarray(0, len));
+      return len;
+    },
+  };
 }
 
 /**
@@ -190,26 +244,41 @@ export interface DlopenSupport {
  * don't use dlopen.
  *
  * Each successful dlopen is also persisted into a per-process archive
- * (linked list in linear memory, head pointer at a fixed slot below
- * forkBufAddr) so the fork child can replay them via `replayDlopens`.
+ * (linked list in linear memory, with control slots below the main process
+ * channel's fork buffer) so the fork child can replay them via
+ * `replayDlopens`. The archive anchor is deliberately independent of the
+ * call-site rewind buffer: a fork issued by a pthread rewinds from that
+ * thread's buffer but still inherits the one process-wide dlopen archive.
  */
 function buildDlopenImports(
   memory: WebAssembly.Memory,
   channelOffset: number,
+  archiveControlAddr: number,
   getTable: () => WebAssembly.Table | undefined,
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8,
+  longjmpTag: WebAssembly.Tag | undefined,
+  cppExceptionTag: WebAssembly.Tag | undefined,
+  mainHasDylinkForkRole: boolean,
 ): DlopenSupport {
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
+  let activeSideFork: SideModuleForkState | null = null;
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
-  const forkBufAddr = channelOffset - FORK_BUF_SIZE;
   const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
-  const headSlot = forkBufAddr - headOffset;
+  const sideForkOffset = ptrWidth === 8
+    ? DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64
+    : DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM32;
+  const lockOffset = ptrWidth === 8
+    ? DLOPEN_LOCK_OFFSET_WASM64
+    : DLOPEN_LOCK_OFFSET_WASM32;
+  const headSlot = archiveControlAddr - headOffset;
+  const activeSideForkSlot = archiveControlAddr - sideForkOffset;
+  const archiveLock = new Int32Array(memory.buffer, archiveControlAddr - lockOffset, 1);
   const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
 
   const readPtr = (view: DataView, addr: number): number =>
@@ -217,6 +286,59 @@ function buildDlopenImports(
   const writePtr = (view: DataView, addr: number, value: number): void => {
     if (ptrWidth === 8) view.setBigUint64(addr, BigInt(value), true);
     else view.setUint32(addr, value, true);
+  };
+  const readArchiveHead = (): number => ptrWidth === 8
+    ? Number(Atomics.load(new BigUint64Array(memory.buffer, headSlot, 1), 0))
+    : Atomics.load(new Uint32Array(memory.buffer, headSlot, 1), 0);
+  const writeArchiveHead = (value: number): void => {
+    if (ptrWidth === 8) {
+      Atomics.store(new BigUint64Array(memory.buffer, headSlot, 1), 0, BigInt(value));
+    } else {
+      Atomics.store(new Uint32Array(memory.buffer, headSlot, 1), 0, value);
+    }
+  };
+  const linkerAllocations = new Map<number, { rawAddr: number; length: number }>();
+  let hostDlopenError: string | null = null;
+  let mainDlopenDepth = 0;
+  const acquireMainDlopenLock = (): boolean => {
+    if (mainDlopenDepth > 0) {
+      mainDlopenDepth++;
+      return true;
+    }
+    const owner = Atomics.compareExchange(
+      archiveLock,
+      0,
+      DLOPEN_LOCK_IDLE,
+      DLOPEN_LOCK_WRITER,
+    );
+    if (owner !== 0) {
+      hostDlopenError = owner > 0
+        ? "dlopen is temporarily unavailable while pthreads are forking"
+        : "dlopen is temporarily unavailable while another dlopen operation owns the process lock";
+      return false;
+    }
+    mainDlopenDepth = 1;
+    return true;
+  };
+  const releaseMainDlopenLock = (): void => {
+    if (mainDlopenDepth <= 0) {
+      throw new Error("dlopen process lock released without ownership");
+    }
+    mainDlopenDepth--;
+    if (mainDlopenDepth === 0) {
+      const owner = Atomics.compareExchange(
+        archiveLock,
+        0,
+        DLOPEN_LOCK_WRITER,
+        DLOPEN_LOCK_IDLE,
+      );
+      if (owner !== DLOPEN_LOCK_WRITER) {
+        throw new Error(
+          `dlopen process lock lost writer ownership (state=${owner})`,
+        );
+      }
+      Atomics.notify(archiveLock, 0);
+    }
   };
 
   // The kernel mmap allocator. Shared with the linker, but also used
@@ -245,7 +367,37 @@ function buildDlopenImports(
     if (err || result < 0) {
       throw new Error(`dlopen: mmap(${requested}) failed errno=${err || -result}`);
     }
-    return alignUp(n(result), Math.max(align, 1));
+    const aligned = alignUp(n(result), Math.max(align, 1));
+    linkerAllocations.set(aligned, { rawAddr: n(result), length: requested });
+    return aligned;
+  };
+
+  const deallocateMemory = (addr: number, _size: number): void => {
+    const allocation = linkerAllocations.get(addr);
+    if (!allocation) {
+      throw new Error(`dlopen rollback: unknown allocation 0x${addr.toString(16)}`);
+    }
+    const view = new DataView(memory.buffer);
+    const base = channelOffset;
+    view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Munmap, true);
+    view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(allocation.rawAddr), true);
+    view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(allocation.length), true);
+    for (let i = 2; i < 6; i++) {
+      view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+    }
+
+    const i32 = new Int32Array(memory.buffer);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+    while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* wait */ }
+
+    const result = Number(view.getBigInt64(base + CH_RETURN, true));
+    const err = view.getUint32(base + CH_ERRNO, true);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+    if (err || result < 0) {
+      throw new Error(`dlopen rollback: munmap failed errno=${err || -result}`);
+    }
+    linkerAllocations.delete(addr);
   };
 
   const getLinker = (): DynamicLinker => {
@@ -262,7 +414,8 @@ function buildDlopenImports(
     // not be shadowed by main exports.
     const RESERVED = new Set([
       "memory", "__indirect_function_table",
-      "__memory_base", "__table_base", "__stack_pointer",
+      "__memory_base", "__table_base", "__stack_pointer", "__c_longjmp",
+      "__cpp_exception",
     ]);
     const globalSymbols = new Map<string, Function | WebAssembly.Global>();
     const inst = getInstance();
@@ -275,14 +428,85 @@ function buildDlopenImports(
       }
     }
 
+    const mainModuleSymbols = new Set(globalSymbols.keys());
+    // A main-defined/exported tag is the process ABI authority. If the main
+    // image instead imports and re-exports the host tag, the identity is the
+    // same; if it has no export, retain the process-owned fallback created
+    // before main instantiation. Every side module must receive this one
+    // canonical identity for cross-module exception propagation.
+    const exportedLongjmpTag = inst?.exports.__c_longjmp;
+    const canonicalLongjmpTag = exportedLongjmpTag === undefined
+      ? longjmpTag
+      : requireLongjmpTag(exportedLongjmpTag, "main module export");
+    const exportedCppExceptionTag = inst?.exports.__cpp_exception;
+    const canonicalCppExceptionTag = exportedCppExceptionTag === undefined
+      ? cppExceptionTag
+      : requireCppExceptionTag(exportedCppExceptionTag, "main module export");
+    const mainFork = inst?.exports.fork;
+    const mainForkState = inst?.exports.wpk_fork_state;
+    const sideModuleFork = mainHasDylinkForkRole
+      && typeof mainFork === "function"
+      && typeof mainForkState === "function"
+      ? {
+          setActiveFork: (state: SideModuleForkState) => {
+            const persisted = readPtr(new DataView(memory.buffer), activeSideForkSlot);
+            if (activeSideFork || persisted !== 0) {
+              throw new Error(
+                `${state.name}: nested or concurrent side-module fork is unsupported`,
+              );
+            }
+            activeSideFork = state;
+            writePtr(new DataView(memory.buffer), activeSideForkSlot, state.forkBufAddr);
+          },
+          clearActiveFork: (state: SideModuleForkState) => {
+            const view = new DataView(memory.buffer);
+            const persisted = readPtr(view, activeSideForkSlot);
+            if (
+              !activeSideFork
+              || activeSideFork.name !== state.name
+              || activeSideFork.instance !== state.instance
+              || activeSideFork.forkBufAddr !== state.forkBufAddr
+              || activeSideFork.forkBufSize !== state.forkBufSize
+              || persisted !== state.forkBufAddr
+            ) {
+              throw new Error(`${state.name}: stale side-module fork identity during rewind`);
+            }
+            activeSideFork = null;
+            writePtr(view, activeSideForkSlot, 0);
+          },
+          invokeMainFork: (expectedStateAfter: 0 | 1): number => {
+            const result = Number((mainFork as () => number)());
+            const actualState = Number((mainForkState as () => number)());
+            if (actualState !== expectedStateAfter) {
+              throw new Error(
+                `main-module fork transition ended in state ${actualState}; ` +
+                  `expected ${expectedStateAfter}`,
+              );
+            }
+            return result;
+          },
+        }
+      : undefined;
+
     linker = new DynamicLinker({
       memory,
       table,
       stackPointer: sp,
       allocateMemory,
+      deallocateMemory,
       globalSymbols,
       got: new Map(),
       loadedLibraries,
+      longjmpTag: canonicalLongjmpTag,
+      cppExceptionTag: canonicalCppExceptionTag,
+      ptrWidth,
+      mainModuleSymbols,
+      sideModuleFork,
+      sideModuleForkUnavailableReason: !mainHasDylinkForkRole
+        ? "main module lacks the versioned dlopen-main fork capability; rebuild it with the current wasm-fork-instrument"
+        : sideModuleFork
+          ? undefined
+          : "main module does not export the fork trampoline and wpk_fork_state required for side-module fork",
     });
     return linker;
   };
@@ -291,7 +515,14 @@ function buildDlopenImports(
   // entry is one mmap block: struct, then name UTF-8 (padded to 8-byte
   // alignment), then the side-module wasm bytes. Pointers are absolute
   // — fork's memcpy preserves the parent's address space.
-  const persistArchiveEntry = (name: string, bytes: Uint8Array, memoryBase: number): void => {
+  const persistArchiveEntry = (
+    name: string,
+    bytes: Uint8Array,
+    memoryBase: number,
+    tableBase: number,
+    sideForkBufAddr: number,
+    tlsBase: number,
+  ): void => {
     const nameBytes = encoder.encode(name);
     const nameLen = nameBytes.length;
     const nameAligned = (nameLen + 7) & ~7;
@@ -309,6 +540,9 @@ function buildDlopenImports(
       view.setBigUint64(entry + 24, BigInt(bytesPtr), true);
       view.setBigUint64(entry + 32, BigInt(bytes.length), true);
       view.setBigUint64(entry + 40, BigInt(memoryBase), true);
+      view.setBigUint64(entry + 48, BigInt(tableBase), true);
+      view.setBigUint64(entry + 56, BigInt(sideForkBufAddr), true);
+      view.setBigUint64(entry + 64, BigInt(tlsBase), true);
     } else {
       view.setUint32(entry + 0, 0, true);
       view.setUint32(entry + 4, namePtr, true);
@@ -316,15 +550,21 @@ function buildDlopenImports(
       view.setUint32(entry + 12, bytesPtr, true);
       view.setUint32(entry + 16, bytes.length, true);
       view.setUint32(entry + 20, memoryBase, true);
+      view.setUint32(entry + 24, tableBase, true);
+      view.setUint32(entry + 28, sideForkBufAddr, true);
+      view.setUint32(entry + 32, tlsBase, true);
     }
 
     new Uint8Array(memory.buffer, namePtr, nameLen).set(nameBytes);
     new Uint8Array(memory.buffer, bytesPtr, bytes.length).set(bytes);
 
     // Append to tail (preserves insertion order).
-    const head = readPtr(view, headSlot);
+    const head = readArchiveHead();
     if (head === 0) {
-      writePtr(view, headSlot, entry);
+      // Publish only after the complete entry and payload are visible. A
+      // pthread fork acquire-loads this word before deciding whether it can
+      // safely fork without access to the process side-module graph.
+      writeArchiveHead(entry);
       return;
     }
     let cursor = head;
@@ -340,7 +580,7 @@ function buildDlopenImports(
 
   const replayDlopens = (): void => {
     const view = new DataView(memory.buffer);
-    let cursor = readPtr(view, headSlot);
+    let cursor = readArchiveHead();
     if (cursor === 0) return;
 
     // Force linker creation: it's lazily built on the first C-side
@@ -349,7 +589,15 @@ function buildDlopenImports(
     const lk = getLinker();
 
     while (cursor !== 0) {
-      let next: number, namePtr: number, nameLen: number, bytesPtr: number, bytesLen: number, memoryBase: number;
+      let next: number;
+      let namePtr: number;
+      let nameLen: number;
+      let bytesPtr: number;
+      let bytesLen: number;
+      let memoryBase: number;
+      let tableBase: number;
+      let sideForkBufAddr: number;
+      let tlsBase: number;
       if (ptrWidth === 8) {
         next = Number(view.getBigUint64(cursor + 0, true));
         namePtr = Number(view.getBigUint64(cursor + 8, true));
@@ -357,6 +605,9 @@ function buildDlopenImports(
         bytesPtr = Number(view.getBigUint64(cursor + 24, true));
         bytesLen = Number(view.getBigUint64(cursor + 32, true));
         memoryBase = Number(view.getBigUint64(cursor + 40, true));
+        tableBase = Number(view.getBigUint64(cursor + 48, true));
+        sideForkBufAddr = Number(view.getBigUint64(cursor + 56, true));
+        tlsBase = Number(view.getBigUint64(cursor + 64, true));
       } else {
         next = view.getUint32(cursor + 0, true);
         namePtr = view.getUint32(cursor + 4, true);
@@ -364,6 +615,9 @@ function buildDlopenImports(
         bytesPtr = view.getUint32(cursor + 12, true);
         bytesLen = view.getUint32(cursor + 16, true);
         memoryBase = view.getUint32(cursor + 20, true);
+        tableBase = view.getUint32(cursor + 24, true);
+        sideForkBufAddr = view.getUint32(cursor + 28, true);
+        tlsBase = view.getUint32(cursor + 32, true);
       }
 
       // Copy name + bytes out of shared memory before passing to
@@ -376,18 +630,108 @@ function buildDlopenImports(
       const bytesCopy = new Uint8Array(new Uint8Array(memory.buffer, bytesPtr, bytesLen));
 
       // DynamicLinker.dlopenSync returns 0 on error, >0 on success.
-      const handle = lk.dlopenSync(name, bytesCopy, { memoryBase });
+      const handle = lk.dlopenSync(name, bytesCopy, {
+        memoryBase,
+        tableBase,
+        forkBufAddr: sideForkBufAddr || undefined,
+        tlsBase: tlsBase === 0 ? undefined : tlsBase,
+      });
       if (handle === 0) {
         throw new Error(`dlopen(${name}): ${lk.dlerror() || "unknown"}`);
+      }
+      if (sideForkBufAddr !== 0) {
+        const loaded = loadedLibraries.get(name);
+        if (!loaded || loaded.forkBufAddr !== sideForkBufAddr) {
+          throw new Error(`${name}: fork replay restored a mismatched save buffer`);
+        }
+      }
+      if (tlsBase !== 0) {
+        const loaded = loadedLibraries.get(name);
+        if (!loaded || loaded.tlsBase !== tlsBase) {
+          throw new Error(`${name}: fork replay restored a mismatched TLS base`);
+        }
       }
 
       cursor = next;
     }
   };
 
+  const findActiveSideFork = (): SideModuleForkState | null => {
+    const persisted = readPtr(new DataView(memory.buffer), activeSideForkSlot);
+    if (persisted === 0) {
+      if (activeSideFork) {
+        throw new Error(`${activeSideFork.name}: active side fork lost its persisted identity`);
+      }
+      return null;
+    }
+    if (activeSideFork) {
+      if (activeSideFork.forkBufAddr !== persisted) {
+        throw new Error(`${activeSideFork.name}: active side fork buffer identity changed`);
+      }
+      return activeSideFork;
+    }
+
+    const matches = Array.from(loadedLibraries.values()).filter(
+      (loaded) => loaded.forkBufAddr === persisted,
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `fork replay could not resolve active side-module buffer 0x${persisted.toString(16)}`,
+      );
+    }
+    const loaded = matches[0]!;
+    activeSideFork = {
+      name: loaded.name,
+      instance: loaded.instance,
+      forkBufAddr: persisted,
+      forkBufSize: FORK_BUF_SIZE,
+    };
+    return activeSideFork;
+  };
+
+  const sideForkState = (state: SideModuleForkState): number =>
+    Number((state.instance.exports.wpk_fork_state as () => number)());
+
+  const completeSideModuleForkUnwind = (): void => {
+    const state = findActiveSideFork();
+    if (!state) return;
+    finalizeSideModuleForkUnwind(memory, state, ptrWidth);
+  };
+
+  const beginSideModuleForkRewind = (): void => {
+    const state = findActiveSideFork();
+    if (!state) return;
+    if (sideForkState(state) !== 0) {
+      throw new Error(`${state.name}: expected NORMAL before side-module rewind`);
+    }
+    (state.instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+      state.forkBufAddr,
+    );
+    if (sideForkState(state) !== 2) {
+      throw new Error(`${state.name}: side-module rewind did not enter REWINDING`);
+    }
+  };
+
+  const assertNoActiveSideModuleFork = (): void => {
+    const persisted = readPtr(new DataView(memory.buffer), activeSideForkSlot);
+    if (activeSideFork || persisted !== 0) {
+      throw new Error(
+        `${activeSideFork?.name ?? "unknown side module"}: main image returned with an active side-module fork`,
+      );
+    }
+  };
+
+  const resetForkChildLock = (): void => {
+    Atomics.store(archiveLock, 0, 0);
+    Atomics.notify(archiveLock, 0);
+  };
+
   const imports: Record<string, WebAssembly.ExportValue> = {
     __wasm_dlopen: (bytesPtr: number, bytesLen: number,
                     namePtr: number, nameLen: number): number => {
+      if (!acquireMainDlopenLock()) return 0;
+      hostDlopenError = null;
+      try {
       const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
       // Copy bytes since memory.buffer may detach during Wasm instantiation
       const bytesCopy = new Uint8Array(bytes);
@@ -408,9 +752,19 @@ function buildDlopenImports(
         if (!loaded) {
           throw new Error(`__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`);
         }
-        persistArchiveEntry(name, bytesCopy, loaded.memoryBase);
+        persistArchiveEntry(
+          name,
+          bytesCopy,
+          loaded.memoryBase,
+          loaded.tableBase,
+          loaded.forkBufAddr ?? 0,
+          loaded.tlsBase ?? 0,
+        );
       }
       return handle;
+      } finally {
+        releaseMainDlopenLock();
+      }
     },
 
     __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
@@ -428,7 +782,8 @@ function buildDlopenImports(
     },
 
     __wasm_dlerror: (bufPtr: number, bufMax: number): number => {
-      const err = getLinker().dlerror();
+      const err = hostDlopenError ?? getLinker().dlerror();
+      hostDlopenError = null;
       if (!err) return 0;
       const encoded = encoder.encode(err);
       const len = Math.min(encoded.length, bufMax);
@@ -437,7 +792,14 @@ function buildDlopenImports(
     },
   };
 
-  return { imports, replayDlopens };
+  return {
+    imports,
+    replayDlopens,
+    completeSideModuleForkUnwind,
+    beginSideModuleForkRewind,
+    assertNoActiveSideModuleFork,
+    resetForkChildLock,
+  };
 }
 
 /**
@@ -451,6 +813,13 @@ function buildImportObject(
   dlopenImports?: Record<string, WebAssembly.ExportValue>,
   getInstance?: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8 = 4,
+  longjmpTag?: WebAssembly.Tag,
+  cppExceptionTag?: WebAssembly.Tag,
+  postVmInterruptTimer?: (
+    timedOutPtr: number,
+    vmInterruptPtr: number,
+    seconds: number,
+  ) => void,
 ): WebAssembly.Imports {
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
@@ -470,19 +839,46 @@ function buildImportObject(
     }
   }
 
-  // llvm/lld ≥22 emit __c_longjmp as a tag import for setjmp users; instantiation fails silently without it.
+  // LLVM/lld >= 22 import this tag for setjmp users. The process owns its
+  // identity so a longjmp thrown through a side module can be caught by the
+  // main image (and vice versa).
   if (moduleImports.some(i => i.module === "env" && i.name === "__c_longjmp" && (i.kind as string) === "tag")) {
-    const Tag = (WebAssembly as typeof WebAssembly & {
-      Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.Tag;
-    }).Tag;
-    if (Tag) {
-      envImports.__c_longjmp = new Tag({ parameters: ["i32"] }) as unknown as WebAssembly.ExportValue;
-    }
+    envImports.__c_longjmp = requireLongjmpTag(
+      longjmpTag,
+      "process module",
+    ) as unknown as WebAssembly.ExportValue;
+  }
+
+  if (moduleImports.some(i => i.module === "env" && i.name === "__cpp_exception" && (i.kind as string) === "tag")) {
+    envImports.__cpp_exception = requireCppExceptionTag(
+      cppExceptionTag,
+      "process module",
+    ) as unknown as WebAssembly.ExportValue;
   }
 
   // Add dlopen imports if provided
   if (dlopenImports) {
     Object.assign(envImports, dlopenImports);
+  }
+
+  if (
+    moduleImports.some(
+      (i) =>
+        i.module === "env" &&
+        i.name === "__wasm_posix_vm_interrupt_after" &&
+        i.kind === "function",
+    )
+  ) {
+    if (!postVmInterruptTimer) {
+      throw new Error("VM interrupt timer import requested without a host timer route");
+    }
+    envImports.__wasm_posix_vm_interrupt_after = (
+      timedOutPtr: number | bigint,
+      vmInterruptPtr: number | bigint,
+      seconds: number | bigint,
+    ): void => {
+      postVmInterruptTimer(n(timedOutPtr), n(vmInterruptPtr), n(seconds));
+    };
   }
 
   // C++ operator new/delete fallbacks — delegate to the wasm instance's malloc/free.
@@ -688,14 +1084,109 @@ function buildImportObject(
 /** Size of the fork save buffer used by wpk_fork_* instrumentation */
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
-// Slot below forkBufAddr that stores the head pointer of the dlopen
-// archive linked list. Fork's memcpy carries the parent's archive into
-// the child intact; the child walks it to replay each dlopen before
-// wpk_fork rewind.
+/**
+ * Detect a fork-continuation save-buffer overrun after an unwind completes.
+ *
+ * The instrumentation keeps `current_pos` — the pointer-width integer at the
+ * base of the save buffer (`forkBufAddr + 0`) — seeded to the absolute address
+ * `forkBufAddr + frames_start_offset` and advanced by every saved frame. After
+ * unwind it is therefore the high-water linear-memory address written (see
+ * crates/fork-instrument/src/runtime.rs, `emit_unwind_begin`). Main-process and
+ * pthread buffers sit below their syscall channels; fork-capable side modules
+ * use independent allocations. The explicit `forkBufSize` keeps the same
+ * bounds check truthful for either placement. Frames grow upward, away from
+ * the header, so the base word holding `current_pos` stays readable here.
+ *
+ * The instrumented unwind carries no bounds check of its own — runtime.rs
+ * documents the requirement `frames_start_offset + Σframe ≤ buffer_size` but
+ * never enforces it. Without this host check the overrun is silent: it
+ * corrupts the channel and only surfaces later as an unexplained trap or a
+ * fork child that never makes progress. Returns the overrun in bytes, or 0
+ * when the save fit within the buffer.
+ */
+export function forkSaveBufferOverrun(
+  memory: WebAssembly.Memory,
+  forkBufAddr: number,
+  ptrWidth: 4 | 8,
+  forkBufSize: number,
+): number {
+  const view = new DataView(memory.buffer);
+  const currentPos = ptrWidth === 8
+    ? Number(view.getBigUint64(forkBufAddr, true))
+    : view.getUint32(forkBufAddr, true);
+  const bufferEnd = forkBufAddr + forkBufSize;
+  return currentPos > bufferEnd ? currentPos - bufferEnd : 0;
+}
+
+/**
+ * Finish the active side-module unwind and reject an overrun before the main
+ * worker is allowed to send SYS_FORK. Side modules own a save-buffer
+ * allocation separate from the main process channel, so checking only the
+ * main buffer cannot protect this continuation.
+ */
+export function finalizeSideModuleForkUnwind(
+  memory: WebAssembly.Memory,
+  state: SideModuleForkState,
+  ptrWidth: 4 | 8,
+): void {
+  const sideForkState = (): number =>
+    Number((state.instance.exports.wpk_fork_state as () => number)());
+  if (sideForkState() !== 1) {
+    throw new Error(`${state.name}: expected UNWINDING before side-module unwind completion`);
+  }
+  (state.instance.exports.wpk_fork_unwind_end as () => void)();
+  if (sideForkState() !== 0) {
+    throw new Error(`${state.name}: side-module unwind did not return to NORMAL`);
+  }
+
+  const overrun = forkSaveBufferOverrun(
+    memory,
+    state.forkBufAddr,
+    ptrWidth,
+    state.forkBufSize,
+  );
+  if (overrun > 0) {
+    throw new Error(
+      `${state.name}: side-module fork() continuation save buffer overflow — ` +
+        `the call stack at fork() needed ${state.forkBufSize + overrun} bytes ` +
+        `but only ${state.forkBufSize} (FORK_SAVE_BUFFER_SIZE) are reserved; ` +
+        `the side-module stack is too deep/wide to fork here. This is a ` +
+        `platform limit of the fork continuation buffer, not a defect in the program.`,
+    );
+  }
+}
+
+// Host-private control slots below the process main channel's fork buffer.
+// Fork's memcpy carries the parent's dlopen archive into the child intact;
+// the child walks it to replay each module before wpk_fork rewind. These are
+// intentionally not relative to a pthread's rewind buffer.
 const DLOPEN_HEAD_OFFSET_WASM32 = 12;
 const DLOPEN_HEAD_OFFSET_WASM64 = 24;
-const DLOPEN_ENTRY_SIZE_WASM32 = 24;
-const DLOPEN_ENTRY_SIZE_WASM64 = 48;
+const DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM32 = 16;
+const DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64 = 32;
+// Atomic host-private reader/writer arbitration between process-main dlopen
+// and pthread fork. A negative value is the exclusive main-worker dlopen
+// writer; a positive value counts concurrent pthread forks from their
+// pre-unwind archive check through memory-copy/SYS_FORK and parent rewind.
+// This preserves Kandelo's existing concurrent-pthread-fork behavior while
+// preventing a new archive entry from racing any fork snapshot. A fork child
+// clears its copied value before replay because its memory is independent.
+const DLOPEN_LOCK_OFFSET_WASM32 = 20;
+const DLOPEN_LOCK_OFFSET_WASM64 = 40;
+const DLOPEN_LOCK_IDLE = 0;
+const DLOPEN_LOCK_WRITER = -1;
+const DLOPEN_LOCK_MAX_READERS = 0x7fff_ffff;
+// Each entry also carries the side module's instance-local TLS base. Fork
+// copies the TLS bytes in memory, but a new replay instance's mutable global
+// must be restored explicitly. Zero is the explicit no-TLS sentinel; TLS
+// allocations are required to have a positive base.
+//
+// This is a host-private, transient replay record: the same host build writes
+// and reads it around one fork, and neither guest code nor persisted package
+// artifacts interpret the layout. Enlarging it therefore does not alter the
+// guest/kernel ABI. The ABI classifier/check still guards the public contract.
+const DLOPEN_ENTRY_SIZE_WASM32 = 40;
+const DLOPEN_ENTRY_SIZE_WASM64 = 72;
 
 const WPK_FORK_EXPORTS = [
   "wpk_fork_unwind_begin",
@@ -865,6 +1356,8 @@ export async function centralizedWorkerMain(
     }
 
     // --- SDK module path (existing) ---
+    const processLongjmpTag = createLongjmpTag(ptrWidth);
+    const processCppExceptionTag = createCppExceptionTag(ptrWidth);
     let kernelExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
       memory,
@@ -878,9 +1371,15 @@ export async function centralizedWorkerMain(
     // and reject stale legacy fork artifacts before they can run.
     const moduleExports = WebAssembly.Module.exports(module);
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
+    const forkCapabilityClaim = readForkInstrumentCapabilityClaim(module);
+    const hasDylinkForkRole = forkInstrumentRoleAvailable(
+      forkCapabilityClaim,
+      FORK_CAP_DYLINK_MAIN,
+    );
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
-    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
+    const forkBufAddr = initData.forkBufAddr ?? channelOffset - FORK_BUF_SIZE;
+    const dlopenArchiveControlAddr = channelOffset - FORK_BUF_SIZE;
 
     if (hasForkInstrumentation) {
       // Override kernel_fork with fork-instrumentation-aware version.
@@ -911,15 +1410,31 @@ export async function centralizedWorkerMain(
       const dlopenSupport = buildDlopenImports(
         memory,
         channelOffset,
+        dlopenArchiveControlAddr,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
         ptrWidth,
+        processLongjmpTag,
+        processCppExceptionTag,
+        hasDylinkForkRole,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
-        () => processInstance ?? undefined, ptrWidth);
+        () => processInstance ?? undefined, ptrWidth, processLongjmpTag, processCppExceptionTag,
+        (timedOutPtr, vmInterruptPtr, seconds) => {
+          port.postMessage({
+            type: "vm_interrupt_timer",
+            pid,
+            timedOutPtr,
+            vmInterruptPtr,
+            seconds,
+          } satisfies WorkerToHostMessage);
+        });
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
+      if (initData.isForkChild) {
+        dlopenSupport.resetForkChildLock();
+      }
       verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
 
       // For the fork-parent case (initial launch, not a fork child), install
@@ -1000,6 +1515,7 @@ export async function centralizedWorkerMain(
               }
               replayedForkChildDlopens = true;
             }
+            dlopenSupport.beginSideModuleForkRewind();
             needsRewind = false;
           }
 
@@ -1020,6 +1536,33 @@ export async function centralizedWorkerMain(
             // Unwind completed (fork) — finalize and send SYS_FORK.
             unwindEnd();
 
+            // The unwind writes saved frames into a fixed FORK_BUF_SIZE buffer
+            // that abuts the syscall channel. If the call stack at fork() was
+            // too deep/wide, those writes overran into the channel. Fail
+            // truthfully here rather than sending a fork on a corrupt channel
+            // and spawning a child whose continuation buffer is already
+            // clobbered (which otherwise surfaces as an unexplained trap or a
+            // child worker that never makes progress). The process is torn
+            // down after this throw, discarding the corrupted channel.
+            const overrun = forkSaveBufferOverrun(
+              memory,
+              forkBufAddr,
+              ptrWidth,
+              FORK_BUF_SIZE,
+            );
+            if (overrun > 0) {
+              throw new Error(
+                `pid=${pid}: fork() continuation save buffer overflow — the ` +
+                  `call stack at fork() needed ${FORK_BUF_SIZE + overrun} bytes ` +
+                  `but only ${FORK_BUF_SIZE} (FORK_SAVE_BUFFER_SIZE) are ` +
+                  `reserved; the stack is too deep/wide to fork here. This is a ` +
+                  `platform limit of the fork continuation buffer, not a defect ` +
+                  `in the program.`,
+              );
+            }
+
+            dlopenSupport.completeSideModuleForkUnwind();
+
             // Send SYS_FORK through the channel now that memory has the
             // fork save buffer populated (saved_globals + frames).
             const childPid = sendForkSyscall(memory, channelOffset);
@@ -1032,6 +1575,7 @@ export async function centralizedWorkerMain(
           }
 
           // Normal return — program finished
+          dlopenSupport.assertNoActiveSideModuleFork();
           if (kernelExitStatus === null) {
             kernelImports.kernel_exit(0);
             exitCode = kernelExitStatus ?? 0;
@@ -1062,13 +1606,26 @@ export async function centralizedWorkerMain(
       const dlopenSupport = buildDlopenImports(
         memory,
         channelOffset,
+        dlopenArchiveControlAddr,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
         ptrWidth,
+        processLongjmpTag,
+        processCppExceptionTag,
+        false,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
-        () => processInstance ?? undefined, ptrWidth);
+        () => processInstance ?? undefined, ptrWidth, processLongjmpTag, processCppExceptionTag,
+        (timedOutPtr, vmInterruptPtr, seconds) => {
+          port.postMessage({
+            type: "vm_interrupt_timer",
+            pid,
+            timedOutPtr,
+            vmInterruptPtr,
+            seconds,
+          } satisfies WorkerToHostMessage);
+        });
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
       verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
@@ -1707,11 +2264,69 @@ export async function centralizedThreadWorkerMain(
   port: MessagePort,
   initData: CentralizedThreadInitMessage,
 ): Promise<void> {
-  const { memory, channelOffset, pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr } = initData;
+  const {
+    memory,
+    processChannelOffset,
+    channelOffset,
+    pid,
+    tid,
+    fnPtr,
+    argPtr,
+    stackPtr,
+    tlsPtr,
+    ctidPtr,
+  } = initData;
   const tlsOffset = initData.tlsOffset ?? initData.tlsAllocAddr;
   const ptrWidth = initData.ptrWidth ?? 4;
 
   let threadInstance: WebAssembly.Instance | undefined;
+  let processDlopenLock: Int32Array | undefined;
+  let pthreadForkLockHeld = false;
+  const acquirePthreadForkLock = (): boolean => {
+    if (!processDlopenLock) {
+      throw new Error(`pid=${pid} tid=${tid}: missing process dlopen lock`);
+    }
+    if (pthreadForkLockHeld) {
+      throw new Error(`pid=${pid} tid=${tid}: pthread fork lock already held`);
+    }
+    for (;;) {
+      const owner = Atomics.load(processDlopenLock, 0);
+      if (owner < DLOPEN_LOCK_IDLE) return false;
+      if (owner >= DLOPEN_LOCK_MAX_READERS) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: process dlopen lock reader overflow`,
+        );
+      }
+      if (
+        Atomics.compareExchange(processDlopenLock, 0, owner, owner + 1)
+          === owner
+      ) {
+        pthreadForkLockHeld = true;
+        return true;
+      }
+    }
+  };
+  const releasePthreadForkLock = (): void => {
+    if (!pthreadForkLockHeld || !processDlopenLock) return;
+    for (;;) {
+      const owner = Atomics.load(processDlopenLock, 0);
+      if (owner <= DLOPEN_LOCK_IDLE) {
+        pthreadForkLockHeld = false;
+        throw new Error(
+          `pid=${pid} tid=${tid}: pthread fork lost reader ownership ` +
+            `(state=${owner})`,
+        );
+      }
+      if (
+        Atomics.compareExchange(processDlopenLock, 0, owner, owner - 1)
+          === owner
+      ) {
+        pthreadForkLockHeld = false;
+        if (owner === 1) Atomics.notify(processDlopenLock, 0);
+        return;
+      }
+    }
+  };
 
   try {
     // Strip the start section AND neuter the constructor function body to prevent
@@ -1728,6 +2343,37 @@ export async function centralizedThreadWorkerMain(
     const moduleExports = WebAssembly.Module.exports(module);
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
     const forkBufAddr = channelOffset - FORK_BUF_SIZE;
+    const processArchiveHeadOffset = ptrWidth === 8
+      ? DLOPEN_HEAD_OFFSET_WASM64
+      : DLOPEN_HEAD_OFFSET_WASM32;
+    const processArchiveHeadAddr = processChannelOffset
+      - FORK_BUF_SIZE
+      - processArchiveHeadOffset;
+    const processArchiveLockOffset = ptrWidth === 8
+      ? DLOPEN_LOCK_OFFSET_WASM64
+      : DLOPEN_LOCK_OFFSET_WASM32;
+    const processArchiveLockAddr = processChannelOffset
+      - FORK_BUF_SIZE
+      - processArchiveLockOffset;
+    if (
+      !Number.isSafeInteger(processArchiveHeadAddr)
+      || processArchiveHeadAddr <= 0
+      || processArchiveHeadAddr + ptrWidth > memory.buffer.byteLength
+      || !Number.isSafeInteger(processArchiveLockAddr)
+      || processArchiveLockAddr <= 0
+      || processArchiveLockAddr + 4 > memory.buffer.byteLength
+    ) {
+      throw new Error(
+        `pid=${pid} tid=${tid}: invalid process dlopen archive anchor ` +
+          `${String(processArchiveHeadAddr)}`,
+      );
+    }
+    processDlopenLock = new Int32Array(memory.buffer, processArchiveLockAddr, 1);
+    const processHasDlopenArchive = (): boolean => {
+      return ptrWidth === 8
+        ? Atomics.load(new BigUint64Array(memory.buffer, processArchiveHeadAddr, 1), 0) !== 0n
+        : Atomics.load(new Uint32Array(memory.buffer, processArchiveHeadAddr, 1), 0) !== 0;
+    };
     let forkResult = 0;
 
     let kernelThreadExitStatus: number | null = null;
@@ -1747,15 +2393,38 @@ export async function centralizedThreadWorkerMain(
         const getState = threadInstance.exports.wpk_fork_state as () => number;
         const state = getState();
         if (state === 2) {
-          (threadInstance.exports.wpk_fork_rewind_end as () => void)();
+          try {
+            (threadInstance.exports.wpk_fork_rewind_end as () => void)();
+          } finally {
+            releasePthreadForkLock();
+          }
           return forkResult;
         }
 
-        (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
+        // Side modules live in the process main worker's module/table/tag
+        // graph. A pthread worker cannot replay that graph into its own
+        // instance, so fork must fail before unwind once the process has ever
+        // loaded a side module. The head is read live from shared memory so a
+        // dlopen after pthread creation is still observed.
+        if (!acquirePthreadForkLock()) {
+          return -95; // ENOTSUP: process-main dlopen is active
+        }
+        if (processHasDlopenArchive()) {
+          releasePthreadForkLock();
+          return -95; // ENOTSUP: pthreads cannot replay process side modules
+        }
+
+        try {
+          (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
+        } catch (error) {
+          releasePthreadForkLock();
+          throw error;
+        }
         return 0;
       };
     } else {
       kernelImports.kernel_fork = (): number => {
+        if (processHasDlopenArchive()) return -95; // ENOTSUP
         throw new Error(
           `pid=${pid} tid=${tid}: kernel_fork reached without complete ` +
             "wasm-fork-instrument exports. Rebuild the program with " +
@@ -1763,8 +2432,20 @@ export async function centralizedThreadWorkerMain(
         );
       };
     }
-    const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
-      () => threadInstance, ptrWidth);
+    const threadLongjmpTag = createLongjmpTag(ptrWidth);
+    const threadCppExceptionTag = createCppExceptionTag(ptrWidth);
+    const threadDlopenImports = buildUnsupportedThreadDlopenImports(memory);
+    const importObject = buildImportObject(module, memory, kernelImports, channelOffset, threadDlopenImports,
+      () => threadInstance, ptrWidth, threadLongjmpTag, threadCppExceptionTag,
+      (timedOutPtr, vmInterruptPtr, seconds) => {
+        port.postMessage({
+          type: "vm_interrupt_timer",
+          pid,
+          timedOutPtr,
+          vmInterruptPtr,
+          seconds,
+        } satisfies WorkerToHostMessage);
+      });
     const instance = new WebAssembly.Instance(module, importObject);
     threadInstance = instance;
 
@@ -1838,8 +2519,34 @@ export async function centralizedThreadWorkerMain(
         const forkState = getState();
         if (forkState === 1) {
           unwindEnd();
+          // See the main-process fork path: a too-deep/wide stack overruns the
+          // fixed save buffer into the channel. Detect and fail truthfully.
+          const overrun = forkSaveBufferOverrun(
+            memory,
+            forkBufAddr,
+            ptrWidth,
+            FORK_BUF_SIZE,
+          );
+          if (overrun > 0) {
+            throw new Error(
+              `pid=${pid} tid=${tid}: fork() continuation save buffer ` +
+                `overflow — the call stack at fork() needed ` +
+                `${FORK_BUF_SIZE + overrun} bytes but only ${FORK_BUF_SIZE} ` +
+                `(FORK_SAVE_BUFFER_SIZE) are reserved; too deep/wide to fork ` +
+                `from this thread. Platform limit, not a program defect.`,
+            );
+          }
+          // Close the race where the process main worker dlopens after this
+          // pthread began unwinding but before it completed. Rewind locally
+          // with ENOTSUP and do not create a child.
+          if (processHasDlopenArchive()) {
+            forkResult = -95;
+            needsRewind = true;
+            continue;
+          }
           const childPid = sendForkSyscall(memory, channelOffset);
           if (childPid < 0) {
+            releasePthreadForkLock();
             throw new Error(`Fork failed: errno=${-childPid}`);
           }
           forkResult = childPid;
@@ -1865,10 +2572,18 @@ export async function centralizedThreadWorkerMain(
       }
     }
 
-    // Send SYS_EXIT through the channel. The kernel worker performs
-    // CLONE_CHILD_CLEARTID after it observes SYS_EXIT; doing it here would
-    // let pthread_join reclaim the stack while this Worker is still running.
-    {
+    // A well-formed fork releases its reader token from the state=2 import
+    // above. Keep normal-return cleanup defensive so an unexpected
+    // instrumenter state cannot strand the process-wide writer lock.
+    releasePthreadForkLock();
+
+    // A normal return has not passed through libc's noreturn kernel_exit
+    // import, so publish SYS_EXIT here. When kernel_exit already ran it sent
+    // and completed SYS_EXIT before the compiler's trailing unreachable was
+    // caught above. Publishing a second exit on that now-removed channel
+    // parks this Worker forever; after slot reuse its stale atomic waiter can
+    // steal the next pthread's first notify.
+    if (kernelThreadExitStatus === null) {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
@@ -1876,9 +2591,15 @@ export async function centralizedThreadWorkerMain(
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      // Wait for kernel to process the exit
+      // Wait for kernel to process the exit. The kernel completes the channel
+      // (CH_STATUS -> COMPLETE), which returns this Atomics.wait.
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+      // Intentionally do NOT reset CH_STATUS back to IDLE here. A normal syscall
+      // resets to IDLE so the next syscall can set PENDING, but an exiting thread
+      // issues no further syscalls — the channel is torn down and the slot is
+      // re-zeroed when it is reclaimed for a future clone(). Writing here would be
+      // the thread's only post-exit touch of the channel, so omitting it removes
+      // any possibility of a late write landing on a reused slot's status word.
     }
 
     port.postMessage({
@@ -1887,6 +2608,7 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
+    releasePthreadForkLock();
     const message = err instanceof Error
       ? `${err.message}\n${err.stack ?? ""}`
       : String(err);

@@ -106,8 +106,7 @@ async function runGuideScript(
 }
 
 async function openTerminalDrawer(page: Page) {
-  const terminalDrawer = page.locator(".kmachine-drawer-toggle").filter({ hasText: "Terminal" });
-  await terminalDrawer.click();
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await expect(page.locator(".kshell-host").first()).toBeVisible({ timeout: 120_000 });
 }
 
@@ -141,16 +140,13 @@ async function attachKandeloDiagnostics(page: Page, label: string) {
       title: document.title,
       readyState: document.readyState,
       bodyText: document.body.innerText,
-      machineCurrent: text(document.querySelector(".kmachine-current")),
-      surfaceButtons: Array.from(document.querySelectorAll(".kmachine-switch-btn")).map((button) => ({
+      machineCurrent: text(document.querySelector(".kdock-status")),
+      surfaceButtons: Array.from(document.querySelectorAll(".kdock-item")).map((button) => ({
         text: text(button),
         disabled: (button as HTMLButtonElement).disabled,
         ariaCurrent: button.getAttribute("aria-current"),
       })),
-      drawers: Array.from(document.querySelectorAll(".kmachine-drawer-toggle")).map((button) => ({
-        text: text(button),
-        expanded: button.getAttribute("aria-expanded"),
-      })),
+      dockPopovers: Array.from(document.querySelectorAll(".kdock-popover, .kdock-pane")).map(text),
       webPreviewMessages: Array.from(document.querySelectorAll(".kpane-body")).map(text)
         .filter((value) => /waiting|starting|ready|error|bridge|service|http/i.test(value)),
       iframes: Array.from(document.querySelectorAll("iframe")).map((iframe) => {

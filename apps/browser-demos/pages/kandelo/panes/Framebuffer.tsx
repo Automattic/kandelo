@@ -25,14 +25,7 @@ import type {
   AudioOutputHandle,
   FramebufferHandle,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { PaneHead } from "./PaneHead";
-
-const ICON = (
-  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4">
-    <rect x="1.5" y="2" width="10" height="7.5" rx="1" />
-    <path d="M4 11h5M6.5 9.5v1.5" />
-  </svg>
-);
+import { useFittedCanvasStyle } from "./canvasFit";
 
 export interface FramebufferProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -40,11 +33,13 @@ export interface FramebufferProps {
   onMaximize?: () => void;
   isMax?: boolean;
   autoFocus?: boolean;
+  onDockControlsChange?: (controls: React.ReactNode | null) => void;
 }
 
-export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse, onMaximize, isMax, autoFocus = false }) => {
+export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
+  const stageRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<FramebufferHandle | null>(null);
   const mouseRef = React.useRef<PointerLockMouseHandle | null>(null);
@@ -167,92 +162,79 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
     : focused
     ? "captured · click locks mouse"
     : boundPid !== null ? "click to play" : "waiting for /dev/fb0";
+  const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, 16 / 10);
+  const dockControls = React.useMemo(() => (
+    <DemoSurfaceDockControls
+      title={`FRAMEBUFFER · /DEV/FB0${boundPid !== null ? ` · pid ${boundPid}` : ""}`}
+      status={captureLabel}
+      active={focused || mouseCaptured}
+    />
+  ), [boundPid, captureLabel, focused, mouseCaptured]);
+
+  React.useEffect(() => {
+    if (!onDockControlsChange) return;
+    onDockControlsChange(dockControls);
+    return () => onDockControlsChange(null);
+  }, [dockControls, onDockControlsChange]);
 
   return (
-    <div className="kpane">
-      <PaneHead
-        icon={ICON}
-        title={`FRAMEBUFFER · /DEV/FB0${boundPid !== null ? ` · pid ${boundPid}` : ""}`}
-        dragProps={dragProps}
-        onCollapse={onCollapse}
-        onMaximize={onMaximize}
-        isMax={isMax}
-        right={
-          <span style={{
-            fontFamily: "var(--k-font-mono)",
-            fontSize: 10,
-            color: focused || mouseCaptured ? "var(--k-accent)" : "var(--k-text-faint)",
-            padding: "2px 6px",
-            borderRadius: 3,
-            background: focused || mouseCaptured
-              ? "color-mix(in oklch, var(--k-accent) 14%, transparent)"
-              : "transparent",
-            border: focused || mouseCaptured
-              ? "1px solid color-mix(in oklch, var(--k-accent) 30%, transparent)"
-              : "1px solid var(--k-border)",
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            fontWeight: 600,
-          }}>
-            {captureLabel}
-          </span>
-        }
+    <div className="kframebuffer-surface" ref={stageRef}>
+      <canvas
+        ref={canvasRef}
+        className="kframebuffer-canvas"
+        tabIndex={0}
+        onClick={onCanvasClick}
+        style={{
+          ...canvasStyle,
+          display: showCanvas ? "block" : "none",
+          cursor: mouseCaptured ? "none" : focused ? "default" : "pointer",
+          outline: focused || mouseCaptured
+            ? "2px solid color-mix(in oklch, var(--k-accent) 60%, transparent)"
+            : "none",
+          outlineOffset: "-2px",
+        }}
       />
-      <div className="kpane-body" style={{
-        background: "var(--k-fb-bg)",
-        color: "var(--k-fb-text)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 0,
-        position: "relative",
-      }}>
-        <canvas
-          ref={canvasRef}
-          tabIndex={0}
-          onClick={onCanvasClick}
-          style={{
-            maxWidth: "100%",
-            maxHeight: "100%",
-            imageRendering: "pixelated",
-            background: "var(--k-fb-bg)",
-            display: showCanvas ? "block" : "none",
-            cursor: mouseCaptured ? "none" : focused ? "default" : "pointer",
-            outline: focused || mouseCaptured
-              ? "2px solid color-mix(in oklch, var(--k-accent) 60%, transparent)"
-              : "none",
-            outlineOffset: "-2px",
-          }}
-        />
-        {showHint && !focused && (
-          <div style={{
-            position: "absolute",
-            inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontFamily: "var(--k-font-mono)",
-            fontSize: 11,
-            color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
-            pointerEvents: "none",
-          }}>
-            Waiting for a process to bind /dev/fb0.
-          </div>
-        )}
-        {(error || status !== "running") && (
-          <div style={{
-            fontFamily: "var(--k-font-mono)",
-            fontSize: 11,
-            color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
-            textAlign: "center",
-            padding: 24,
-          }}>
-            {error
-              ? <>attachFramebuffer failed: {error}</>
-              : <>Waiting for the kernel to reach 'running'.</>}
-          </div>
-        )}
-      </div>
+      {showHint && !focused && (
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "var(--k-font-mono)",
+          fontSize: 11,
+          color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
+          pointerEvents: "none",
+        }}>
+          Waiting for a process to bind /dev/fb0.
+        </div>
+      )}
+      {(error || status !== "running") && (
+        <div style={{
+          fontFamily: "var(--k-font-mono)",
+          fontSize: 11,
+          color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
+          textAlign: "center",
+          padding: 24,
+        }}>
+          {error
+            ? <>attachFramebuffer failed: {error}</>
+            : <>Waiting for the kernel to reach 'running'.</>}
+        </div>
+      )}
     </div>
   );
 };
+
+export const DemoSurfaceDockControls: React.FC<{
+  title: string;
+  status: string;
+  active?: boolean;
+}> = ({ title, status, active = false }) => (
+  <div className="kdemo-surface-controls">
+    <span className="kdemo-surface-title">{title}</span>
+    <span className="kdemo-surface-badge" data-active={active ? "true" : "false"}>
+      {status}
+    </span>
+  </div>
+);

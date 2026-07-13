@@ -11,9 +11,13 @@
 //! - Independently validating via wasmparser that the emitted module
 //!   is well-formed.
 
-use fork_instrument::{Options, instrument};
 use fork_instrument::runtime::names;
+use fork_instrument::{
+    FORK_CAP_DYLINK_MAIN, FORK_CAP_SIDE_ENTRY, FORK_CAPABILITIES_SECTION,
+    FORK_CAPABILITIES_VERSION, Options, instrument,
+};
 use walrus::{ExportItem, Module, ValType};
+use wasmparser::{Parser, Payload};
 
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
     let bytes = wat::parse_str(wat_src).expect("wat parse");
@@ -25,6 +29,18 @@ fn validate(bytes: &[u8]) {
         wasmparser::WasmFeatures::default(),
     );
     validator.validate_all(bytes).expect("valid wasm");
+}
+
+fn fork_capabilities(bytes: &[u8]) -> Vec<Vec<u8>> {
+    Parser::new(0)
+        .parse_all(bytes)
+        .filter_map(|payload| match payload.expect("parse payload") {
+            Payload::CustomSection(section) if section.name() == FORK_CAPABILITIES_SECTION => {
+                Some(section.data().to_vec())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn export_function_id(module: &Module, name: &str) -> walrus::FunctionId {
@@ -55,6 +71,59 @@ const EMPTY_MODULE_WITH_FORK: &str = r#"
 fn instrumented_module_validates() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     validate(&bytes);
+}
+
+#[test]
+fn marks_dlopen_main_indirect_boundary_separately() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (import "env" "__wasm_dlsym" (func $dlsym (param i32 i32 i32) (result i32)))
+          (type $callback (func (result i32)))
+          (table 1 funcref)
+          (memory 1)
+          (func (export "dispatch") (result i32)
+            i32.const 0
+            call_indirect (type $callback)))
+    "#;
+    let output = instrument_wat(wat);
+    assert_eq!(
+        fork_capabilities(&output),
+        vec![vec![FORK_CAPABILITIES_VERSION, FORK_CAP_DYLINK_MAIN]],
+    );
+}
+
+#[test]
+fn marks_env_fork_side_entry_separately() {
+    let input = wat::parse_str(
+        r#"
+        (module
+          (import "env" "fork" (func $fork (result i32)))
+          (memory 1)
+          (func (export "side_fork") (result i32) call $fork))
+        "#,
+    )
+    .expect("wat parse");
+    let output = instrument(
+        &input,
+        &Options {
+            entry_import: "env.fork".into(),
+        },
+    )
+    .expect("instrument side");
+    assert_eq!(
+        fork_capabilities(&output),
+        vec![vec![FORK_CAPABILITIES_VERSION, FORK_CAP_SIDE_ENTRY]],
+    );
+}
+
+#[test]
+fn generic_runtime_exports_do_not_claim_side_or_dylink_coverage() {
+    let output = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    assert_eq!(
+        fork_capabilities(&output),
+        vec![vec![FORK_CAPABILITIES_VERSION, 0]],
+    );
 }
 
 #[test]
@@ -344,9 +413,9 @@ fn export_entry_instrs(module: &Module, export: &str) -> Vec<Instr> {
 }
 
 #[test]
-fn unwind_begin_writes_frames_start_offset_wasm32() {
-    // After Phase 7 Task 1, wpk_fork_unwind_begin must write
-    // `frames_start_offset` to `*(buf + 0)` as its first memory store.
+fn unwind_begin_writes_absolute_frames_start_wasm32() {
+    // wpk_fork_unwind_begin must write `buf + frames_start_offset` to
+    // `*(buf + 0)` as its first memory store.
     // For EMPTY_MODULE_WITH_FORK (no pre-existing mutable scalar
     // globals), frames_start_offset == 2 * sizeof(ptr) == 8 for wasm32.
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
@@ -354,8 +423,8 @@ fn unwind_begin_writes_frames_start_offset_wasm32() {
 
     let instrs = export_entry_instrs(&module, names::EXPORT_UNWIND_BEGIN);
 
-    // Find the first Store instruction. The i32 const immediately
-    // before it should equal frames_start_offset (8).
+    // Find the first Store instruction. Its value must be the buffer
+    // parameter plus frames_start_offset (8).
     let store_idx = instrs
         .iter()
         .position(|i| matches!(i, Instr::Store(_)))
@@ -374,10 +443,17 @@ fn unwind_begin_writes_frames_start_offset_wasm32() {
     assert_eq!(store.arg.offset, 0, "store to buf + 0");
     assert_eq!(store.arg.align, 4, "natural alignment for i32 pointer");
 
-    // The const pushed immediately before the store is the value being
-    // stored; the local.get for `buf` is pushed before that.
-    let value_instr = &instrs[store_idx - 1];
-    match value_instr {
+    assert!(
+        matches!(
+            &instrs[store_idx - 1],
+            Instr::Binop(walrus::ir::Binop {
+                op: walrus::ir::BinaryOp::I32Add,
+            })
+        ),
+        "wasm32 current_pos must add the buffer base",
+    );
+    let offset_instr = &instrs[store_idx - 2];
+    match offset_instr {
         Instr::Const(c) => match c.value {
             walrus::ir::Value::I32(v) => assert_eq!(
                 v, 8,
@@ -385,12 +461,24 @@ fn unwind_begin_writes_frames_start_offset_wasm32() {
             ),
             other => panic!("expected I32 const, got {other:?}"),
         },
-        other => panic!("expected Const immediately before store, got {other:?}"),
+        other => panic!("expected frame offset const before add, got {other:?}"),
     }
+    let value_base = match &instrs[store_idx - 3] {
+        Instr::LocalGet(get) => get.local,
+        other => panic!("expected buffer base before frame offset, got {other:?}"),
+    };
+    let store_base = match &instrs[store_idx - 4] {
+        Instr::LocalGet(get) => get.local,
+        other => panic!("expected store address before value, got {other:?}"),
+    };
+    assert_eq!(
+        store_base, value_base,
+        "store and cursor use the same buffer base",
+    );
 }
 
 #[test]
-fn unwind_begin_writes_frames_start_offset_wasm64() {
+fn unwind_begin_writes_absolute_frames_start_wasm64() {
     // Same as above but for a memory64 module. Store kind must be I64,
     // align 8, value 16 (2 * 8 with no saved globals).
     let wat = r#"
@@ -421,8 +509,17 @@ fn unwind_begin_writes_frames_start_offset_wasm64() {
     assert_eq!(store.arg.offset, 0, "store to buf + 0");
     assert_eq!(store.arg.align, 8, "natural alignment for i64 pointer");
 
-    let value_instr = &instrs[store_idx - 1];
-    match value_instr {
+    assert!(
+        matches!(
+            &instrs[store_idx - 1],
+            Instr::Binop(walrus::ir::Binop {
+                op: walrus::ir::BinaryOp::I64Add,
+            })
+        ),
+        "wasm64 current_pos must add the buffer base",
+    );
+    let offset_instr = &instrs[store_idx - 2];
+    match offset_instr {
         Instr::Const(c) => match c.value {
             walrus::ir::Value::I64(v) => assert_eq!(
                 v, 16,
@@ -430,8 +527,20 @@ fn unwind_begin_writes_frames_start_offset_wasm64() {
             ),
             other => panic!("expected I64 const, got {other:?}"),
         },
-        other => panic!("expected Const immediately before store, got {other:?}"),
+        other => panic!("expected frame offset const before add, got {other:?}"),
     }
+    let value_base = match &instrs[store_idx - 3] {
+        Instr::LocalGet(get) => get.local,
+        other => panic!("expected buffer base before frame offset, got {other:?}"),
+    };
+    let store_base = match &instrs[store_idx - 4] {
+        Instr::LocalGet(get) => get.local,
+        other => panic!("expected store address before value, got {other:?}"),
+    };
+    assert_eq!(
+        store_base, value_base,
+        "store and cursor use the same buffer base",
+    );
 }
 
 // ======================================================================

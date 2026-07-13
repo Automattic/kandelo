@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "../src/vfs/opfs-channel";
+import { OpfsFileSystem } from "../src/vfs/opfs";
 
 describe("OpfsChannel", () => {
   function makeChannel(): OpfsChannel {
@@ -40,6 +41,35 @@ describe("OpfsChannel", () => {
 
     ch.result = -2; // ENOENT
     expect(ch.result).toBe(-2);
+  });
+
+  it("round-trips exactly representable signed i64 arguments and results", () => {
+    const ch = makeChannel();
+    for (const value of [
+      Number.MIN_SAFE_INTEGER,
+      -0x1_0000_0001,
+      -1,
+      0,
+      0x1_0000_0001,
+      Number.MAX_SAFE_INTEGER,
+    ]) {
+      ch.setI64Arg(0, value);
+      ch.i64Result = value;
+      expect(ch.getI64Arg(0)).toBe(value);
+      expect(ch.i64Result).toBe(value);
+    }
+  });
+
+  it("rejects i64 values that JavaScript cannot represent exactly", () => {
+    const ch = makeChannel();
+    expect(() => ch.setI64Arg(0, 2 ** 53)).toThrow(RangeError);
+
+    ch.result = -1;
+    ch.result2 = 0x7fffffff;
+    expect(() => ch.i64Result).toThrow(RangeError);
+
+    const fs = OpfsFileSystem.create(ch.buffer);
+    expect(() => fs.seek(7, 2 ** 53, 0)).toThrow(/EOVERFLOW/);
   });
 
   it("writes and reads strings in data section", () => {

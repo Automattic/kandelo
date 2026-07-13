@@ -672,6 +672,67 @@ fn call_site_post_sequence_sets_call_idx_and_checks_unwinding() {
 }
 
 #[test]
+fn host_parsed_marker_exports_are_not_rewritten_even_when_they_reach_fork() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (memory (export "memory") 1)
+          (global $__tls_base (export "__tls_base") i32 (i32.const 1024))
+
+          (func $__wasm_call_ctors
+            call $fork
+            drop)
+
+          (func $__abi_version_actual (result i32)
+            i32.const 18)
+          (func $__abi_version (export "__abi_version") (result i32)
+            call $__wasm_call_ctors
+            call $__abi_version_actual)
+
+          (func $__wasm_posix_thread_slots_actual (result i32)
+            i32.const -1)
+          (func $__wasm_posix_thread_slots (export "__wasm_posix_thread_slots") (result i32)
+            call $__wasm_call_ctors
+            call $__wasm_posix_thread_slots_actual)
+
+          (func $__get_channel_base_addr_actual (result i32)
+            i32.const 32
+            global.get $__tls_base
+            i32.add)
+          (func $__get_channel_base_addr (export "__get_channel_base_addr") (result i32)
+            call $__wasm_call_ctors
+            call $__get_channel_base_addr_actual)
+
+          (func $_start (export "_start") (result i32)
+            call $__wasm_call_ctors
+            i32.const 0))
+    "#;
+
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    for marker in [
+        "__abi_version",
+        "__wasm_posix_thread_slots",
+        "__get_channel_base_addr",
+    ] {
+        let kinds = entry_instr_kinds(&module, func_by_name(&module, marker));
+        assert_eq!(
+            kinds,
+            vec![InstrKind::Call, InstrKind::Call],
+            "{marker} must keep its raw wasm-ld marker wrapper shape for host byte parsing",
+        );
+    }
+
+    let start_kinds = entry_instr_kinds(&module, func_by_name(&module, "_start"));
+    assert!(
+        start_kinds.contains(&InstrKind::Block),
+        "_start still reaches fork and should be instrumented",
+    );
+}
+
+#[test]
 fn call_with_pure_args_replays_tail_without_spill_locals() {
     let bytes = instrument_wat(FIXTURE_CALL_WITH_ARGS);
     validate(&bytes);
@@ -2349,6 +2410,82 @@ fn b1_stage_2_byte_identity_for_module_without_plain_catch() {
          must not introduce any: got {} try_tables",
         try_tables.len()
     );
+}
+
+#[test]
+fn nested_region_instrumentation_is_byte_reproducible() {
+    // Sibling fork-bearing regions used to be visited through randomized
+    // HashMap iteration. Their body-parameter locals and rewritten instruction
+    // sequences consequently received different Walrus IDs across runs, even
+    // though the input was identical. Alternate parameter types so a changed
+    // allocation order is observable in the emitted local declarations.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $i32_to_i32 (func (param i32) (result i32)))
+          (type $i64_to_i64 (func (param i64) (result i64)))
+          (func $caller (export "caller")
+            i32.const 1
+            (block (type $i32_to_i32)
+              drop
+              call $fork)
+            drop
+            i64.const 2
+            (block (type $i64_to_i64)
+              drop
+              call $fork
+              i64.extend_i32_s)
+            drop
+            i32.const 3
+            (block (type $i32_to_i32)
+              drop
+              call $fork)
+            drop
+            i64.const 4
+            (block (type $i64_to_i64)
+              drop
+              call $fork
+              i64.extend_i32_s)
+            drop)
+          (memory 1))
+    "#;
+
+    let expected = instrument_wat(wat);
+    validate(&expected);
+    for run in 1..=8 {
+        assert_eq!(
+            expected,
+            instrument_wat(wat),
+            "nested instrumentation changed bytes on run {run}"
+        );
+    }
+}
+
+#[test]
+fn fork_instrumentation_keeps_dylink_section_first() {
+    let wat = r#"
+        (module
+          (@custom "dylink.0" (before first) "test metadata")
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (func $caller (export "caller") (result i32)
+            call $fork)
+          (memory 1))
+    "#;
+
+    let output = instrument_wat(wat);
+    validate(&output);
+    let mut payloads = wasmparser::Parser::new(0).parse_all(&output);
+    assert!(matches!(
+        payloads.next().unwrap().unwrap(),
+        wasmparser::Payload::Version { .. }
+    ));
+    match payloads.next().unwrap().unwrap() {
+        wasmparser::Payload::CustomSection(section) => {
+            assert_eq!(section.name(), "dylink.0");
+            assert_eq!(section.data(), b"test metadata");
+        }
+        other => panic!("dylink.0 must remain the first section, got {other:?}"),
+    }
 }
 
 // ======================================================================

@@ -138,8 +138,8 @@ pub fn has_data() -> bool {
     !queue().is_empty()
 }
 
-/// Drop all queued events. Called on process exit / exec by the owner
-/// so a fresh open by a successor sees an empty queue.
+/// Drop all queued events when the owner exits or closes its last fd so a
+/// fresh open by a successor sees an empty queue.
 pub fn reset() {
     queue().clear();
 }

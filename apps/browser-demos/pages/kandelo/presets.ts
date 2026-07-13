@@ -30,7 +30,7 @@ export const PRESET_LIBRARY: Preset[] = [
       "git@local",
       "nano@local",
     ],
-    accent: "#dc6529",
+    accent: "#3858e9",
     glyph: "sh",
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 312,

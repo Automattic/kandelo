@@ -4,10 +4,38 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Kandelo</title>
+  <link rel="icon" type="image/png" href="./pages/kandelo/assets/favicon.png">
   <!-- Fonts are intentionally system-stack only. Cross-origin font hosts
        (rsms.me, jsdelivr) get blocked by Cross-Origin-Embedder-Policy:
        require-corp, which we need set for SharedArrayBuffer. If we want
        Inter/JetBrains Mono we'll need to self-host with @font-face. -->
+  <script>
+    (() => {
+      try {
+        const raw = window.localStorage.getItem("kandelo.theme");
+        const parsed = raw ? JSON.parse(raw) : {};
+        const validStoredPreference = parsed.version === 1 || parsed.version === 2 || parsed.version === 3;
+        const normalizeFamily = (family) => {
+          if (family === "playground") return "wordpress";
+          if (family === "balanced" || family === "terminal") return "kandelo";
+          return ["ubuntu", "wordpress", "kandelo"].includes(family) ? family : "ubuntu";
+        };
+        const family = validStoredPreference ? normalizeFamily(parsed.family) : "ubuntu";
+        const preference = validStoredPreference && ["auto", "light", "dark"].includes(parsed.mode)
+          ? parsed.mode
+          : "auto";
+        const resolvedMode = preference === "auto"
+          ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+          : preference;
+        document.documentElement.dataset.kTheme = family;
+        document.documentElement.dataset.kMode = resolvedMode;
+        document.documentElement.dataset.kModePreference = preference;
+        document.documentElement.style.colorScheme = resolvedMode;
+      } catch {
+        // Preference storage can be unavailable in restricted browser contexts.
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="./pages/kandelo/tokens.css">
   <link rel="stylesheet" href="./pages/kandelo/styles.css">
 </head>

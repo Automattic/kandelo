@@ -79,11 +79,28 @@ if (typeof window !== "undefined") {
   // bridge-destined requests even after the browser terminates and
   // restarts this service worker (which resets all module-level state).
   var BRIDGE_CACHE = "sw-bridge-config";
+  // Cookie jars are persisted per session under "cookie-jar-<sessionId>", so a
+  // temporary Kandelo machine never reads another session's cookies. The prefix
+  // lets us enumerate and GC them. (No ":" in the key — a "name:rest" string
+  // parses as a URL scheme when Cache Storage resolves the key.)
+  var COOKIE_JAR_KEY_PREFIX = "cookie-jar-";
+  // The session whose cookie jar is currently loaded in memory. Learned from
+  // the page via init-bridge / bridge-restored; null until the bridge connects.
+  var currentSessionId = null;
+  // Resolves once the current session's persisted jar has been loaded, so the
+  // fetch path doesn't inject an empty jar during the async load.
+  var cookieJarReady = Promise.resolve();
+
+  // Eagerly restore cached appPrefix on SW startup so we can detect
+  // bridge-destined requests even after the browser terminates and restarts
+  // this service worker (which resets all module-level state). The cookie jar
+  // is NOT restored here: it is scoped to a sessionId we only learn once a
+  // client (re)connects the bridge, so it is loaded in the init-bridge /
+  // bridge-restored handlers instead.
   var appPrefixReady = caches.open(BRIDGE_CACHE).then(function (cache) {
     return cache.match("app-prefix");
   }).then(function (resp) {
-    if (resp) return resp.text();
-    return null;
+    return resp ? resp.text() : null;
   }).then(function (prefix) {
     if (prefix) {
       appPrefix = prefix;
@@ -96,7 +113,17 @@ if (typeof window !== "undefined") {
   // --- Cookie jar ---
   // (Set-Cookie on synthetic SW responses is ignored by the browser,
   // so the SW stores cookies and injects them into outgoing requests)
+  //
+  // Keyed by name AND path: cookies are identified by (name, domain, path) per
+  // RFC 6265. WordPress sets the same auth cookie name for both /wp-admin
+  // (ADMIN_COOKIE_PATH) and /wp-content/plugins (PLUGINS_COOKIE_PATH); keying by
+  // name alone would drop one, breaking auth for that subtree. Domain is always
+  // this origin, so name + path is a sufficient key.
   var cookieJar = new Map();
+
+  function cookieKey(cookie) {
+    return cookie.name + "\n" + cookie.path;
+  }
 
   function parseSetCookie(header) {
     var parts = header.split(";").map(function (s) {
@@ -124,37 +151,147 @@ if (typeof window !== "undefined") {
     return { name: name, value: value, path: path, expires: expires };
   }
 
+  // Returns true if the jar was mutated, so callers can persist it.
   function storeCookies(setCookieValues) {
+    var mutated = false;
     for (var j = 0; j < setCookieValues.length; j++) {
       var cookie = parseSetCookie(setCookieValues[j]);
       if (!cookie) continue;
+      // Prepend app prefix to cookie path so it matches browser-side URLs.
+      // WordPress sets paths like "/" or "/wp-admin/" but the browser sees
+      // "/app/" or "/app/wp-admin/".
+      var prefix = appPrefix.slice(0, -1); // "/app" (or "/base/app")
+      if (!cookie.path.startsWith(prefix)) {
+        cookie.path = prefix + cookie.path;
+      }
+      // Identify by name + path so same-name cookies on different paths coexist.
+      var key = cookieKey(cookie);
       if (cookie.expires !== undefined && cookie.expires < Date.now()) {
-        cookieJar.delete(cookie.name);
+        if (cookieJar.delete(key)) mutated = true;
       } else {
-        // Prepend app prefix to cookie path so it matches browser-side URLs.
-        // WordPress sets paths like "/" or "/wp-admin/" but the browser sees
-        // "/app/" or "/app/wp-admin/".
-        var prefix = appPrefix.slice(0, -1); // "/app" (or "/base/app")
-        if (!cookie.path.startsWith(prefix)) {
-          cookie.path = prefix + cookie.path;
-        }
-        cookieJar.set(cookie.name, cookie);
+        cookieJar.set(key, cookie);
+        mutated = true;
       }
     }
+    return mutated;
   }
 
   function getCookiesForPath(path) {
-    var pairs = [];
-    cookieJar.forEach(function (cookie, name) {
+    var matches = [];
+    var mutated = false;
+    cookieJar.forEach(function (cookie, key) {
       if (cookie.expires !== undefined && cookie.expires < Date.now()) {
-        cookieJar.delete(name);
+        cookieJar.delete(key);
+        mutated = true;
         return;
       }
       if (path.startsWith(cookie.path)) {
-        pairs.push(cookie.name + "=" + cookie.value);
+        matches.push(cookie);
       }
     });
-    return pairs.join("; ");
+    // Expiring a cookie changes durable state; flush it so the eviction
+    // survives an SW restart. Fire-and-forget: this path is not login-critical.
+    if (mutated) persistCookieJar();
+    // RFC 6265: when several cookies match, list longer paths first.
+    matches.sort(function (a, b) {
+      return b.path.length - a.path.length;
+    });
+    return matches
+      .map(function (cookie) {
+        return cookie.name + "=" + cookie.value;
+      })
+      .join("; ");
+  }
+
+  // --- Cookie jar persistence (survives SW termination/restart) ---
+  // The jar is stored as a JSON array of cookie records in the same Cache
+  // Storage bucket as the bridge config, keyed by session so each machine
+  // instance keeps its own cookies. Persist after every mutation; the current
+  // session's jar is loaded when the bridge (re)connects.
+  function cookieJarKeyFor(sessionId) {
+    return COOKIE_JAR_KEY_PREFIX + sessionId;
+  }
+
+  function persistCookieJar() {
+    // No session yet (bridge not connected) — nothing to scope the jar to.
+    if (!currentSessionId) return Promise.resolve();
+    var sessionId = currentSessionId;
+    var records = [];
+    cookieJar.forEach(function (cookie) {
+      records.push(cookie);
+    });
+    return caches.open(BRIDGE_CACHE).then(function (cache) {
+      return cache.put(
+        cookieJarKeyFor(sessionId),
+        new Response(JSON.stringify(records), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }).catch(function () {
+      // Persistence is best-effort; a failed write just means the session may
+      // not survive the next SW restart.
+    });
+  }
+
+  // Replace the in-memory jar with the persisted jar for the given session.
+  // Empty for a fresh temporary session; the machine's prior cookies for a
+  // reopened persisted machine.
+  function loadCookieJarForSession(sessionId) {
+    if (!sessionId) return Promise.resolve();
+    return caches.open(BRIDGE_CACHE).then(function (cache) {
+      return cache.match(cookieJarKeyFor(sessionId));
+    }).then(function (resp) {
+      // Bail if the session changed out from under us mid-load.
+      if (sessionId !== currentSessionId) return;
+      if (resp) return resp.text().then(restoreCookieJarFromJson);
+    }).catch(function () {});
+  }
+
+  // Forget the in-memory session so the next page's requests carry no cookies
+  // until it establishes its own session. Persisted per-session jars are left
+  // on disk (GC'd when the next session connects).
+  function resetSessionState() {
+    currentSessionId = null;
+    cookieJar.clear();
+    cookieJarReady = Promise.resolve();
+  }
+
+  // Delete persisted cookie jars for every session except the one to keep, so
+  // temporary sessions don't accumulate (or leak) their cookies on disk.
+  function gcOtherSessionJars(keepSessionId) {
+    var keepKey = keepSessionId ? cookieJarKeyFor(keepSessionId) : null;
+    return caches.open(BRIDGE_CACHE).then(function (cache) {
+      return cache.keys().then(function (reqs) {
+        return Promise.all(reqs.map(function (req) {
+          var basename = new URL(req.url).pathname.split("/").pop();
+          if (
+            basename &&
+            basename.indexOf(COOKIE_JAR_KEY_PREFIX) === 0 &&
+            basename !== keepKey
+          ) {
+            return cache.delete(req);
+          }
+        }));
+      });
+    }).catch(function () {});
+  }
+
+  function restoreCookieJarFromJson(text) {
+    if (!text) return;
+    try {
+      var records = JSON.parse(text);
+      if (!Array.isArray(records)) return;
+      var now = Date.now();
+      for (var i = 0; i < records.length; i++) {
+        var cookie = records[i];
+        if (!cookie || typeof cookie.name !== "string" || typeof cookie.path !== "string") continue;
+        // Drop cookies that expired while the SW was dead.
+        if (cookie.expires !== undefined && cookie.expires < now) continue;
+        cookieJar.set(cookieKey(cookie), cookie);
+      }
+    } catch (e) {
+      // Corrupt cache entry — ignore and start with an empty jar.
+    }
   }
 
   // --- Bridge port setup ---
@@ -236,6 +373,10 @@ if (typeof window !== "undefined") {
               clearTimeout(timeout);
               initBridgePort(event.ports[0]);
               if (data.appPrefix) appPrefix = data.appPrefix;
+              // Restore the same session's cookie jar this page owned before
+              // the SW was terminated, so the login survives the restart.
+              currentSessionId = data.sessionId || null;
+              cookieJarReady = loadCookieJarForSession(currentSessionId);
               resolve(true);
             }
           };
@@ -277,8 +418,17 @@ if (typeof window !== "undefined") {
         initBridgePort(port);
         appPrefix = msg.appPrefix || "/app/";
         bridgeConfigured = true;
-        // Reset cookie jar when bridge reinitializes (new demo session)
+        // Switch to this session's cookie jar. init-bridge is sent when a page
+        // sets the bridge up from scratch: drop whatever was in memory, load
+        // the persisted jar for this session (empty for a fresh temporary
+        // session; the machine's prior cookies for a reopened persisted
+        // machine), and GC other sessions' jars so temporary sessions don't
+        // accumulate or leak. (An SW restart with a live page instead uses the
+        // need-bridge/bridge-restored path, which keeps the current jar.)
+        currentSessionId = msg.sessionId || null;
         cookieJar.clear();
+        cookieJarReady = loadCookieJarForSession(currentSessionId);
+        gcOtherSessionJars(currentSessionId);
         // Persist appPrefix so we can detect bridge-destined requests
         // after the browser terminates and restarts this SW
         caches.open(BRIDGE_CACHE).then(function (cache) {
@@ -291,6 +441,41 @@ if (typeof window !== "undefined") {
       }
     }
   });
+
+  // --- Blob-URL iframe interceptor (injected at build time) ---
+  // Source of the reusable DOM patch in public/blob-iframe-interceptor.js.
+  // We inline it into every bridged HTML document (see
+  // injectBlobIframeInterceptor) so that apps which mount iframes from
+  // `blob:` URLs — e.g. the WordPress block/site editor canvas — render
+  // those iframes as service-worker-controlled `about:srcdoc` documents
+  // instead. Without this, a blob: document is not SW-controlled, so its
+  // subresource requests (load-scripts.php/load-styles.php, block assets)
+  // escape the bridge and 404 against the static origin.
+  var BLOB_IFRAME_INTERCEPTOR_SRC = "__BLOB_IFRAME_INTERCEPTOR__";
+
+  // Insert the interceptor as the first <head> child so it runs before any
+  // app script creates a blob iframe. Idempotent and HTML-only.
+  function injectBlobIframeInterceptor(html) {
+    if (
+      !BLOB_IFRAME_INTERCEPTOR_SRC ||
+      BLOB_IFRAME_INTERCEPTOR_SRC.indexOf("__BLOB_IFRAME") === 0 ||
+      html.indexOf("__kandeloBlobIframePatched") !== -1
+    ) {
+      return html;
+    }
+    var tag = "<script>" + BLOB_IFRAME_INTERCEPTOR_SRC + "</script>";
+    var headMatch = html.match(/<head[^>]*>/i);
+    if (headMatch) {
+      var at = headMatch.index + headMatch[0].length;
+      return html.slice(0, at) + tag + html.slice(at);
+    }
+    var htmlMatch = html.match(/<html[^>]*>/i);
+    if (htmlMatch) {
+      var htmlAt = htmlMatch.index + htmlMatch[0].length;
+      return html.slice(0, htmlAt) + tag + html.slice(htmlAt);
+    }
+    return tag + html;
+  }
 
   // --- CORS proxy URL (injected at build time, main proxy in dev) ---
   var CORS_PROXY_URL = "__CORS_PROXY_URL__";
@@ -579,6 +764,19 @@ if (typeof window !== "undefined") {
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
 
+    // A top-level navigation to a same-origin, non-app page means a new machine
+    // instance is (re)initializing. Forget the previous session's cookies so
+    // they can never be served to the new page during the window before it
+    // establishes its own session (init-bridge). The kept-alive SW would
+    // otherwise serve the prior session's jar to the reloaded page.
+    if (
+      event.request.mode === "navigate" &&
+      !isCrossOrigin(url) &&
+      !isAppPath(url.pathname)
+    ) {
+      resetSessionState();
+    }
+
     // Fast path: bridge is active and the URL matches app prefix.
     if (bridgePort && isAppPath(url.pathname)) {
       markAppClient(event, event.request);
@@ -642,6 +840,10 @@ if (typeof window !== "undefined") {
   function handleAppRequest(request, url) {
     return (async function () {
       try {
+        // The session this request belongs to. If the session switches while
+        // the request is in flight (page reload / new instance), we must not
+        // inject or store this request's cookies into the new session.
+        var reqSessionId = currentSessionId;
         // Strip appPrefix so nginx sees the original path.
         var hasAppPrefix = isAppPath(url.pathname);
         var appPath = hasAppPrefix
@@ -658,11 +860,16 @@ if (typeof window !== "undefined") {
         headers["x-forwarded-proto"] = url.protocol.replace(":", "");
         headers["x-forwarded-uri"] = url.pathname + url.search;
 
-        // Inject cookies from our jar
+        // Inject cookies from our jar. Wait for the current session's jar to
+        // finish loading so we don't send an empty jar during the async load
+        // right after the bridge (re)connects. Skip if the session changed
+        // out from under this request.
+        await cookieJarReady;
         var cookiePath = hasAppPrefix
           ? url.pathname
           : appPrefix.slice(0, -1) + url.pathname;
-        var jarCookies = getCookiesForPath(cookiePath);
+        var jarCookies =
+          reqSessionId === currentSessionId ? getCookiesForPath(cookiePath) : "";
         if (jarCookies) {
           var existing = headers["cookie"];
           headers["cookie"] = existing
@@ -690,8 +897,16 @@ if (typeof window !== "undefined") {
         var rawSetCookie =
           bridgeResp.headers["Set-Cookie"] ||
           bridgeResp.headers["set-cookie"];
-        if (rawSetCookie) {
-          storeCookies(rawSetCookie.split("\n"));
+        // Only store into the jar if this request still belongs to the current
+        // session — an in-flight response from a superseded session must not
+        // pollute the new session's jar.
+        if (rawSetCookie && reqSessionId === currentSessionId) {
+          // Await the flush so the (possibly new login) cookie is durable
+          // before we hand back the response — otherwise the SW could be
+          // terminated before the write lands and drop the fresh session.
+          if (storeCookies(rawSetCookie.split("\n"))) {
+            await persistCookieJar();
+          }
         }
 
         // Build Response
@@ -701,18 +916,18 @@ if (typeof window !== "undefined") {
           if (
             lower === "transfer-encoding" ||
             lower === "connection" ||
-            lower === "keep-alive"
+            lower === "keep-alive" ||
+            // Never hand Set-Cookie back to the browser. The SW cookie jar
+            // (captured above via storeCookies) is the authoritative store and
+            // replays cookies on outgoing requests. Forwarding Set-Cookie would
+            // let the browser persist Kandelo cookies in its own cookie store,
+            // where they would accumulate across sessions and outlive the
+            // machine instance they belong to.
+            lower === "set-cookie"
           ) {
             continue;
           }
-          if (lower === "set-cookie") {
-            var cookies = bridgeResp.headers[key].split("\n");
-            for (var c = 0; c < cookies.length; c++) {
-              respHeaders.append(key, cookies[c]);
-            }
-          } else {
-            respHeaders.set(key, bridgeResp.headers[key]);
-          }
+          respHeaders.set(key, bridgeResp.headers[key]);
         }
 
         // Rewrite redirect Location: match protocol to request (avoid mixed
@@ -757,6 +972,15 @@ if (typeof window !== "undefined") {
         if (shouldRewriteAppResponseBody(respHeaders)) {
           var text = new TextDecoder().decode(body);
           var rewritten = rewriteSameHostAppUrls(text, url);
+          // Inject the blob-iframe interceptor into HTML documents so that
+          // app-created `blob:` iframes (e.g. the WordPress editor canvas)
+          // render as SW-controlled about:srcdoc documents and their
+          // subresource requests stay on the bridge instead of escaping to
+          // the static origin. See injectBlobIframeInterceptor.
+          var contentType = (respHeaders.get("Content-Type") || "").toLowerCase();
+          if (contentType.indexOf("text/html") === 0) {
+            rewritten = injectBlobIframeInterceptor(rewritten);
+          }
           if (rewritten !== text) {
             body = new TextEncoder().encode(rewritten);
             respHeaders.delete("Content-Length");

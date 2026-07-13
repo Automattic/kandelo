@@ -1,0 +1,13 @@
+diff --git a/dasynq/include/dasynq/pselect.h b/dasynq/include/dasynq/pselect.h
+index d370be6..578ab39 100644
+--- a/dasynq/include/dasynq/pselect.h
++++ b/dasynq/include/dasynq/pselect.h
+@@ -225,7 +225,7 @@ template <class Base> class pselect_events : public signal_events<Base, false>
+     //
+     //  do_wait - if false, returns immediately if no events are
+     //            pending.
+-    void pull_events(bool do_wait) noexcept
++    void pull_events(bool do_wait)
+     {
+         struct timespec ts;
+         struct timespec *wait_ts = nullptr;

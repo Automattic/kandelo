@@ -1,5 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
@@ -78,6 +84,10 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
       calls.push(`fstat:${h}`);
       return { ...dummyStat };
     },
+    fpathconf: (h, name) => {
+      calls.push(`fpathconf:${h}:${name}`);
+      return 4096;
+    },
     ftruncate: (h, l) => {
       calls.push(`ftruncate:${h}`);
     },
@@ -101,6 +111,10 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
     statfs: (p) => {
       calls.push(`statfs:${p}`);
       return { ...dummyStatfs };
+    },
+    pathconf: (p, name) => {
+      calls.push(`pathconf:${p}:${name}`);
+      return 4096;
     },
     mkdir: (p, m) => {
       calls.push(`mkdir:${p}`);
@@ -129,6 +143,9 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
     },
     chown: (p, u, g) => {
       calls.push(`chown:${p}`);
+    },
+    lchown: (p, u, g) => {
+      calls.push(`lchown:${p}`);
     },
     access: (p, m) => {
       calls.push(`access:${p}`);
@@ -178,6 +195,23 @@ describe("VirtualPlatformIO mount resolution", () => {
     vfs.stat("/tmp/foo");
     expect(tmp.calls).toContain("stat:/foo");
     expect(root.calls).not.toContain("stat:/tmp/foo");
+  });
+
+  it("routes lchown by the final link pathname rather than its target", () => {
+    const root = createMockBackend();
+    const tmp = createMockBackend();
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/tmp", backend: tmp },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    vfs.lchown("/tmp/link-to-root", 123, 456);
+
+    expect(tmp.calls).toContain("lchown:/link-to-root");
+    expect(root.calls).not.toContain("lchown:/tmp/link-to-root");
   });
 
   it("does not route /home/foo to /tmp mount", () => {
@@ -235,6 +269,95 @@ describe("VirtualPlatformIO mount resolution", () => {
     );
     vfs.stat("/tmp/abc");
     expect(tmp.calls).toContain("stat:/abc");
+  });
+});
+
+describe("VirtualPlatformIO file identity", () => {
+  it("qualifies colliding inode numbers by backend", () => {
+    const root = createMockBackend();
+    const first = createMockBackend();
+    const second = createMockBackend();
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/first", backend: first },
+        { mountPoint: "/second", backend: second },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.fileIdentity("/first/file", 0n, 2n)).not.toBe(
+      vfs.fileIdentity("/second/file", 0n, 2n),
+    );
+  });
+
+  it("uses one namespace when the same backend is mounted twice", () => {
+    const root = createMockBackend();
+    const shared = createMockBackend();
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/one", backend: shared },
+        { mountPoint: "/two", backend: shared },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.fileIdentity("/one/alias", 0n, 7n)).toBe(
+      vfs.fileIdentity("/two/alias", 0n, 7n),
+    );
+  });
+
+  it("rejects a backend that supplies no stable inode", () => {
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: createMockBackend() }],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.fileIdentity("/file", 0n, 0n)).toBeNull();
+  });
+
+  it("derives identity from live handles after unlink and rename", () => {
+    const backend = MemoryFileSystem.create(
+      new SharedArrayBuffer(4 * 1024 * 1024),
+    );
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend }],
+      new NodeTimeProvider(),
+    );
+
+    const unlinked = vfs.open("/unlinked", O_CREAT | O_RDWR, 0o600);
+    const unlinkedStat = vfs.fstat(unlinked);
+    const unlinkedIdentity = vfs.fileHandleIdentity(
+      unlinked,
+      BigInt(unlinkedStat.dev),
+      BigInt(unlinkedStat.ino),
+    );
+    expect(unlinkedIdentity).not.toBeNull();
+    vfs.unlink("/unlinked");
+    expect(vfs.fileHandleIdentity(
+      unlinked,
+      BigInt(unlinkedStat.dev),
+      BigInt(unlinkedStat.ino),
+    )).toBe(unlinkedIdentity);
+
+    const renamed = vfs.open("/before", O_CREAT | O_RDWR, 0o600);
+    const renamedStat = vfs.fstat(renamed);
+    const renamedIdentity = vfs.fileHandleIdentity(
+      renamed,
+      BigInt(renamedStat.dev),
+      BigInt(renamedStat.ino),
+    );
+    expect(renamedIdentity).not.toBeNull();
+    vfs.rename("/before", "/after");
+    expect(vfs.fileHandleIdentity(
+      renamed,
+      BigInt(renamedStat.dev),
+      BigInt(renamedStat.ino),
+    )).toBe(renamedIdentity);
+
+    vfs.close(unlinked);
+    vfs.close(renamed);
   });
 });
 
@@ -351,13 +474,24 @@ describe("VirtualPlatformIO cross-mount rename (EXDEV)", () => {
 
 describe("HostFileSystem path traversal", () => {
   it("rejects paths that escape rootPath", () => {
-    const hfs = new HostFileSystem("/tmp/sandbox");
-    expect(() => hfs.stat("/../../../etc/passwd")).toThrow("EACCES");
+    const root = mkdtempSync(join(tmpdir(), "kandelo-host-fs-traversal-"));
+    try {
+      const hfs = new HostFileSystem(root);
+      expect(() => hfs.stat("/../../../etc/passwd")).toThrow("EACCES");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects paths with embedded .. sequences", () => {
-    const hfs = new HostFileSystem("/tmp/sandbox");
-    expect(() => hfs.stat("/subdir/../../etc/passwd")).toThrow("EACCES");
+    const root = mkdtempSync(join(tmpdir(), "kandelo-host-fs-traversal-"));
+    try {
+      mkdirSync(join(root, "subdir"));
+      const hfs = new HostFileSystem(root);
+      expect(() => hfs.stat("/subdir/../../etc/passwd")).toThrow("EACCES");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -463,6 +597,90 @@ describe("MemoryFileSystem", () => {
     expect(entries).toContain("file.txt");
   });
 
+  it("reports raw inode numbers that remain representable after inode reuse", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_RDWR = 0x0002,
+      O_TRUNC = 0x0200;
+
+    // SharedFS tracks an internal generation counter for reused inode slots.
+    // POSIX st_ino does not need to include that generation, and exposing it
+    // can overflow 32-bit guest language APIs while tools like ls(1) print the
+    // full kernel value.
+    for (let i = 0; i < 2_100; i++) {
+      const fd = mfs.open("/reuse.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+      mfs.close(fd);
+      mfs.unlink("/reuse.txt");
+    }
+
+    const fd = mfs.open("/reuse.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const stat = mfs.fstat(fd);
+    expect(stat.ino).toBeGreaterThan(0);
+    expect(stat.ino).toBeLessThanOrEqual(0x7fffffff);
+
+    const dh = mfs.opendir("/");
+    let entry;
+    let dirIno: number | null = null;
+    while ((entry = mfs.readdir(dh)) !== null) {
+      if (entry.name === "reuse.txt") {
+        dirIno = entry.ino;
+        break;
+      }
+    }
+    mfs.closedir(dh);
+    expect(dirIno).toBe(stat.ino);
+    mfs.close(fd);
+  });
+
+  it("keeps large-directory indexes coherent across SharedFS instances", () => {
+    const sab = new SharedArrayBuffer(8 * 1024 * 1024);
+    const first = MemoryFileSystem.create(sab);
+    const second = MemoryFileSystem.fromExisting(sab);
+    first.mkdir("/bulk", 0o755);
+
+    const names: string[] = [];
+    for (let i = 0; i < 340; i++) {
+      const name = `/bulk/${String(i).padStart(4, "0")}-${"x".repeat(180)}`;
+      names.push(name);
+      const fd = first.open(name, O_CREAT | O_RDWR, 0o644);
+      first.close(fd);
+    }
+
+    // Populate the first mount's index, then reuse a deleted slot through a
+    // second mount without changing the directory's byte size.
+    expect(first.stat(names.at(-1)!).mode & 0xf000).toBe(0x8000);
+    second.unlink(names[100]);
+    const replacement = `/bulk/repl-${"y".repeat(180)}`;
+    const replacementFd = second.open(replacement, O_CREAT | O_RDWR, 0o644);
+    second.close(replacementFd);
+
+    expect(first.stat(replacement).mode & 0xf000).toBe(0x8000);
+    expect(() => first.stat(names[100])).toThrow(/No such file/);
+  });
+
+  it("honors O_CREAT|O_EXCL by failing when the final path already exists", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_WRONLY = 0x0001,
+      O_CREAT = 0x0040,
+      O_EXCL = 0x0080;
+
+    const fd = mfs.open("/exclusive.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600);
+    mfs.close(fd);
+
+    expect(() =>
+      mfs.open("/exclusive.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600),
+    ).toThrow(/File exists/);
+
+    // POSIX open(O_CREAT|O_EXCL) must fail with EEXIST when the final path is
+    // a symbolic link, even if the symlink points at an existing regular file.
+    mfs.symlink("/exclusive.txt", "/exclusive-link.txt");
+    expect(() =>
+      mfs.open("/exclusive-link.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600),
+    ).toThrow(/File exists/);
+  });
+
   it("stat returns correct size after writing", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
@@ -477,6 +695,37 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
   });
 
+  it("updates mtime and ctime after file writes and truncates", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+      now.mockReturnValue(1_000);
+      const mfs = MemoryFileSystem.create(sab);
+      const O_CREAT = 0x0040,
+        O_RDWR = 0x0002,
+        O_TRUNC = 0x0200;
+      const fd = mfs.open("/timestamps.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+      const initial = mfs.fstat(fd);
+
+      now.mockReturnValue(5_000);
+      mfs.write(fd, new TextEncoder().encode("abc"), null, 3);
+      const afterWrite = mfs.fstat(fd);
+      expect(afterWrite.mtimeMs).toBe(5_000);
+      expect(afterWrite.ctimeMs).toBe(5_000);
+      expect(afterWrite.mtimeMs).toBeGreaterThan(initial.mtimeMs);
+
+      now.mockReturnValue(9_000);
+      mfs.ftruncate(fd, 1);
+      const afterTruncate = mfs.fstat(fd);
+      expect(afterTruncate.mtimeMs).toBe(9_000);
+      expect(afterTruncate.ctimeMs).toBe(9_000);
+      expect(afterTruncate.mtimeMs).toBeGreaterThan(afterWrite.mtimeMs);
+      mfs.close(fd);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("unlink removes a file", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
@@ -486,6 +735,140 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
     mfs.unlink("/todelete.txt");
     expect(() => mfs.stat("/todelete.txt")).toThrow();
+  });
+
+  it("rejects unlink paths with a trailing slash on non-directories", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+    mfs.symlink("/file.txt", "/link.txt");
+
+    expect(() => mfs.unlink("/file.txt/")).toThrow(/Not a directory/);
+    expect(() => mfs.unlink("/link.txt/")).toThrow(/Not a directory/);
+    expect(mfs.stat("/file.txt").mode & 0xf000).toBe(0x8000);
+    expect(mfs.readlink("/link.txt")).toBe("/file.txt");
+  });
+
+  it("rejects rename source paths that require a non-directory to be a directory", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+
+    expect(() => mfs.rename("/file.txt/", "/renamed.txt")).toThrow(
+      /Not a directory/,
+    );
+    expect(mfs.stat("/file.txt").size).toBe(0);
+    expect(() => mfs.stat("/renamed.txt")).toThrow(/No such file/);
+  });
+
+  it("preserves POSIX type checks when renaming directories onto existing paths", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    mfs.mkdir("/dir", 0o755);
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+    mfs.symlink("/file.txt", "/link.txt");
+
+    expect(() => mfs.rename("/dir", "/file.txt")).toThrow(/Not a directory/);
+    expect(() => mfs.rename("/dir", "/link.txt")).toThrow(/Not a directory/);
+
+    expect(mfs.stat("/dir").mode & 0xf000).toBe(0x4000);
+    expect(mfs.stat("/file.txt").mode & 0xf000).toBe(0x8000);
+    expect(mfs.readlink("/link.txt")).toBe("/file.txt");
+  });
+
+  it("renames directories over empty directories and updates dot-dot", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    mfs.mkdir("/old-parent", 0o755);
+    mfs.mkdir("/new-parent", 0o755);
+    mfs.mkdir("/old-parent/child", 0o755);
+    const siblingFd = mfs.open(
+      "/new-parent/sibling.txt",
+      O_CREAT | O_WRONLY,
+      0o644,
+    );
+    mfs.close(siblingFd);
+
+    mfs.rename("/old-parent/child", "/new-parent/child");
+    expect(mfs.stat("/new-parent/child/../sibling.txt").mode & 0xf000).toBe(
+      0x8000,
+    );
+
+    mfs.mkdir("/empty-dest", 0o755);
+    mfs.rename("/new-parent/child", "/empty-dest");
+    expect(mfs.stat("/empty-dest").mode & 0xf000).toBe(0x4000);
+    expect(() => mfs.stat("/new-parent/child")).toThrow(/No such file/);
+  });
+
+  it("rejects rename and rmdir operands ending in dot or dot-dot", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    mfs.mkdir("/dir", 0o755);
+    mfs.mkdir("/dir/child", 0o755);
+
+    expect(() => mfs.rename("/dir/.", "/moved")).toThrow(/Invalid argument/);
+    expect(() => mfs.rename("/dir/child", "/dir/..")).toThrow(/Invalid argument/);
+    expect(() => mfs.rmdir("/dir/.")).toThrow(/Invalid argument/);
+    expect(() => mfs.rmdir("/dir/child/..")).toThrow(/Invalid argument/);
+    expect(mfs.stat("/dir/child").mode & 0xf000).toBe(0x4000);
+  });
+
+  it("chmod and fchmod preserve the inode file type", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const fd = mfs.open("/regular", O_CREAT | O_RDWR, 0o644);
+
+    mfs.chmod("/regular", 0o040755);
+    expect(mfs.stat("/regular").mode & 0xf000).toBe(0x8000);
+    mfs.fchmod(fd, 0o040700);
+    expect(mfs.fstat(fd).mode & 0xf000).toBe(0x8000);
+    mfs.close(fd);
+  });
+
+  it("keeps an unlinked open file alive until close", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_RDWR = 0x0002,
+      O_TRUNC = 0x0200;
+
+    const oldFd = mfs.open("/open.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const oldData = new TextEncoder().encode("old");
+    mfs.write(oldFd, oldData, null, oldData.length);
+    mfs.unlink("/open.txt");
+    expect(() => mfs.stat("/open.txt")).toThrow();
+
+    const newFd = mfs.open("/open.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const newData = new TextEncoder().encode("newer");
+    mfs.write(newFd, newData, null, newData.length);
+
+    mfs.seek(oldFd, 0, 0);
+    const oldBuf = new Uint8Array(8);
+    const oldRead = mfs.read(oldFd, oldBuf, null, oldBuf.length);
+    expect(new TextDecoder().decode(oldBuf.subarray(0, oldRead))).toBe("old");
+
+    mfs.seek(newFd, 0, 0);
+    const newBuf = new Uint8Array(8);
+    const newRead = mfs.read(newFd, newBuf, null, newBuf.length);
+    expect(new TextDecoder().decode(newBuf.subarray(0, newRead))).toBe("newer");
+
+    mfs.close(oldFd);
+    mfs.close(newFd);
   });
 
   it("ftruncate changes file size", () => {
@@ -688,5 +1071,15 @@ describe("NodeTimeProvider", () => {
     const ns1 = BigInt(t1.sec) * 1_000_000_000n + BigInt(t1.nsec);
     const ns2 = BigInt(t2.sec) * 1_000_000_000n + BigInt(t2.nsec);
     expect(ns2).toBeGreaterThanOrEqual(ns1);
+  });
+
+  it("treats CLOCK_BOOTTIME as monotonic-equivalent", () => {
+    const tp = new NodeTimeProvider();
+    const monotonic = tp.clockGettime(1);
+    const boottime = tp.clockGettime(7);
+    const monotonicNs = BigInt(monotonic.sec) * 1_000_000_000n + BigInt(monotonic.nsec);
+    const boottimeNs = BigInt(boottime.sec) * 1_000_000_000n + BigInt(boottime.nsec);
+    expect(boottimeNs).toBeGreaterThanOrEqual(monotonicNs);
+    expect(boottimeNs - monotonicNs).toBeLessThan(100_000_000n);
   });
 });

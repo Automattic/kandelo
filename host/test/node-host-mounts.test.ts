@@ -14,6 +14,9 @@
  *   unmounted /no/such/mount returns ENOENT (proves the mount router
  *             enforces VFS-only-lens — no fallthrough to the host fs).
  *
+ *   path-resolution resolves symlinks and dot-dot component-wise across the
+ *             `/tmp` HostFS and root MemoryFS mount boundary.
+ *
  *   custom    overriding `io` opts out of the default mount setup —
  *             /etc/services is no longer reachable via the rootfs image.
  */
@@ -24,18 +27,49 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
+import { NodeKernelHost } from "../src/node-kernel-host";
+import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const probeWasm = join(repoRoot, "examples/mount_probe_test.wasm");
 const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
 const servicesSource = join(repoRoot, "images/rootfs/etc/services");
-const caCertSource = join(repoRoot, "packages/registry/openssl/cacert.pem");
+const caCertSource = join(repoRoot, "images/rootfs/etc/ssl/cert.pem");
+const opensslConfigSource = join(repoRoot, "images/rootfs/etc/ssl/openssl.cnf");
 
 const haveProbe = existsSync(probeWasm);
 const haveRootfs = existsSync(rootfsImage);
 
 describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () => {
+  it("stores exact root-owned OpenSSL files in the canonical image", () => {
+    const fs = MemoryFileSystem.fromImage(
+      new Uint8Array(readFileSync(rootfsImage)),
+    );
+    for (const [path, source] of [
+      ["/etc/ssl/openssl.cnf", opensslConfigSource],
+      ["/etc/ssl/cert.pem", caCertSource],
+      ["/etc/ssl/certs/ca-certificates.crt", caCertSource],
+    ] as const) {
+      const expected = readFileSync(source);
+      const st = fs.stat(path);
+      expect(st.mode & 0xf000).toBe(0x8000);
+      expect(st.mode & 0o7777).toBe(0o644);
+      expect(st.uid).toBe(0);
+      expect(st.gid).toBe(0);
+      expect(st.size).toBe(expected.byteLength);
+
+      const actual = new Uint8Array(st.size);
+      const fd = fs.open(path, 0, 0);
+      try {
+        expect(fs.read(fd, actual, null, actual.length)).toBe(actual.length);
+      } finally {
+        fs.close(fd);
+      }
+      expect(Buffer.from(actual)).toEqual(expected);
+    }
+  });
+
   it("stat + read /etc/services from the mounted rootfs image", async () => {
     const expected = readFileSync(servicesSource);
     const expectedHead = Array.from(expected.subarray(0, 16))
@@ -65,15 +99,19 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     expect(result.stdout).toContain("content=scratch-mount-roundtrip");
   });
 
-  it("installs the default OpenSSL CA bundle for Node VFS boots", async () => {
-    const expected = readFileSync(caCertSource);
+  it.each([
+    ["/etc/ssl/openssl.cnf", opensslConfigSource],
+    ["/etc/ssl/cert.pem", caCertSource],
+    ["/etc/ssl/certs/ca-certificates.crt", caCertSource],
+  ])("serves rootfs-owned OpenSSL data at %s", async (path, source) => {
+    const expected = readFileSync(source);
     const expectedHead = Array.from(expected.subarray(0, 16))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
 
     const result = await runCentralizedProgram({
       programPath: probeWasm,
-      argv: ["mount_probe_test", "rootfs", "/etc/ssl/certs/ca-certificates.crt"],
+      argv: ["mount_probe_test", "rootfs", path],
       timeout: 10_000,
     });
 
@@ -81,6 +119,38 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     expect(result.stdout).toContain(`ROOTFS size=${expected.length}`);
     expect(result.stdout).toContain(`head=${expectedHead}`);
   });
+
+  it.each(["/etc/ssl/openssl.cnf", "/etc/ssl/cert.pem"])(
+    "does not fabricate caller-missing OpenSSL data at %s",
+    async (path) => {
+      const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+      fs.mkdir("/etc", 0o755);
+      const image = await fs.saveImage();
+      const program = readFileSync(probeWasm);
+      let stdout = "";
+      const host = new NodeKernelHost({
+        rootfsImage: image,
+        onStdout: (_pid, data) => {
+          stdout += new TextDecoder().decode(data);
+        },
+      });
+
+      try {
+        await host.init();
+        const exitCode = await host.spawn(
+          program.buffer.slice(
+            program.byteOffset,
+            program.byteOffset + program.byteLength,
+          ),
+          ["mount_probe_test", "rootfs", path],
+        );
+        expect(exitCode).toBe(1);
+        expect(stdout).toContain("ROOTFS stat-errno=2");
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
 
   it("returns ENOENT for paths outside every mount (no fallthrough)", async () => {
     const result = await runCentralizedProgram({
@@ -92,6 +162,65 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     expect(result.exitCode, result.stderr).toBe(0);
     // ENOENT is 2 on the wasm32 musl ABI used by user programs.
     expect(result.stdout).toContain("UNMOUNTED errno=2");
+  });
+
+  it("resolves pathname components across scratch and rootfs mounts", async () => {
+    const result = await runCentralizedProgram({
+      programPath: probeWasm,
+      argv: [
+        "mount_probe_test",
+        "path-resolution",
+        "/tmp/kandelo-path-resolution",
+      ],
+      timeout: 10_000,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain("PATH_RESOLUTION_PASS");
+    expect(result.stderr).toBe("");
+  });
+
+  it("rejects invalid initial cwd without leaking a registered process", async () => {
+    const program = readFileSync(probeWasm);
+    const programBytes = program.buffer.slice(
+      program.byteOffset,
+      program.byteOffset + program.byteLength,
+    );
+    const host = new NodeKernelHost({ rootfsImage: "default" });
+
+    try {
+      await host.init();
+      // The kernel creates its persistent init process when the first guest is
+      // registered, not when the worker itself is initialized. Warm that path
+      // before taking the baseline so the assertion below measures only the
+      // failed child registration.
+      expect(
+        await host.spawn(programBytes, [
+          "mount_probe_test",
+          "rootfs",
+          "/etc/services",
+        ]),
+      ).toBe(0);
+      const before = await host.enumProcs();
+
+      await expect(
+        host.spawn(programBytes, ["mount_probe_test", "rootfs", "/etc/services"], {
+          cwd: "/no/such/cwd",
+        }),
+      ).rejects.toThrow(/setCwd failed for pid \d+: errno 2/);
+      expect(await host.enumProcs()).toEqual(before);
+
+      await expect(
+        host.spawn(programBytes, ["mount_probe_test", "rootfs", "/etc/services"], {
+          cwd: "/root",
+          uid: 1000,
+          gid: 1000,
+        }),
+      ).rejects.toThrow(/setCwd failed for pid \d+: errno 13/);
+      expect(await host.enumProcs()).toEqual(before);
+    } finally {
+      await host.destroy();
+    }
   });
 
   it("custom `io` override bypasses the default mount setup", async () => {

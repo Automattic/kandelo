@@ -1,9 +1,12 @@
 import { decompress as zstdDecompress } from "fzstd";
-import type { StatResult, StatfsResult } from "../types";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import { filesystemPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
   SharedFS,
+  type NamespaceEntryIdentity,
+  type SharedFsIdentityState,
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
 import type { ZipEntry } from "./zip";
@@ -11,7 +14,13 @@ import type { ZipEntry } from "./zip";
 /** Serializable lazy file entry for transfer between instances. */
 export interface LazyFileEntry {
   ino: number;
+  /** Inode-slot generation; omitted only by legacy serialized metadata. */
+  generation?: number;
+  /** Inode data-mutation sequence; omitted only by legacy metadata. */
+  dataSequence?: number;
   path: string;
+  /** All hard-link names for this inode; omitted by legacy metadata. */
+  paths?: string[];
   url: string;
   size: number;
 }
@@ -37,9 +46,17 @@ export type LazyDownloadListener = (event: LazyDownloadEvent) => void;
 /** Per-file metadata for a file inside a lazy archive. */
 export interface LazyArchiveFileEntry {
   ino: number;
+  /** Inode-slot generation; omitted only by legacy serialized metadata. */
+  generation?: number;
+  /** Inode data-mutation sequence; omitted only by legacy metadata. */
+  dataSequence?: number;
   size: number;
   isSymlink: boolean;
   deleted: boolean;
+  /** True once this inode's archive backing is no longer pending. */
+  materialized?: boolean;
+  /** Original path inside the archive (stable across VFS rename/hard-link). */
+  archivePath?: string;
 }
 
 /**
@@ -61,9 +78,13 @@ export interface SerializedLazyArchiveEntry {
   entries: Array<{
     vfsPath: string;
     ino: number;
+    generation?: number;
+    dataSequence?: number;
     size: number;
     isSymlink: boolean;
     deleted: boolean;
+    materialized?: boolean;
+    archivePath?: string;
   }>;
 }
 
@@ -118,7 +139,9 @@ const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
 
-function cloneMetadata(metadata: VfsImageMetadata | null): VfsImageMetadata | null {
+function cloneMetadata(
+  metadata: VfsImageMetadata | null,
+): VfsImageMetadata | null {
   return metadata === null ? null : { ...metadata };
 }
 
@@ -127,15 +150,22 @@ function validateMetadata(metadata: VfsImageMetadata): VfsImageMetadata {
     throw new Error("VFS image metadata must be an object");
   }
   if (metadata.version !== 1) {
-    throw new Error(`Unsupported VFS image metadata version: ${String(metadata.version)}`);
+    throw new Error(
+      `Unsupported VFS image metadata version: ${String(metadata.version)}`,
+    );
   }
   if (
     metadata.kernelAbi !== undefined &&
     (!Number.isInteger(metadata.kernelAbi) || metadata.kernelAbi < 0)
   ) {
-    throw new Error(`VFS image metadata kernelAbi must be a non-negative integer`);
+    throw new Error(
+      `VFS image metadata kernelAbi must be a non-negative integer`,
+    );
   }
-  if (metadata.createdBy !== undefined && typeof metadata.createdBy !== "string") {
+  if (
+    metadata.createdBy !== undefined &&
+    typeof metadata.createdBy !== "string"
+  ) {
     throw new Error("VFS image metadata createdBy must be a string");
   }
   return { ...metadata };
@@ -196,11 +226,7 @@ function parseImageHeader(input: Uint8Array): ParsedImageHeader {
     throw new Error("VFS image too small");
   }
 
-  const view = new DataView(
-    image.buffer,
-    image.byteOffset,
-    image.byteLength,
-  );
+  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
   const magic = view.getUint32(0, true);
   if (magic !== VFS_IMAGE_MAGIC) {
     throw new Error(
@@ -270,12 +296,23 @@ function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
 export class MemoryFileSystem implements FileSystemBackend {
   private fs: SharedFS;
   private imageMetadata: VfsImageMetadata | null;
-  /** Lazy files: inode → { path, url, size }. Cleared per-inode after materialization. */
-  private lazyFiles = new Map<number, { path: string; url: string; size: number }>();
+  /** Lazy files keyed by inode slot + generation (raw inode numbers are reused). */
+  private lazyFiles = new Map<
+    string,
+    {
+      ino: number;
+      generation: number;
+      dataSequence: number;
+      path: string;
+      paths: Set<string>;
+      url: string;
+      size: number;
+    }
+  >();
   /** Lazy archive groups (bundle of files backed by one zip URL). */
   private lazyArchiveGroups: LazyArchiveGroup[] = [];
-  /** Fast lookup: inode → group it belongs to. Cleared per-group after materialization. */
-  private lazyArchiveInodes = new Map<number, LazyArchiveGroup>();
+  /** Fast lookup keyed by inode slot + generation. */
+  private lazyArchiveInodes = new Map<string, LazyArchiveGroup>();
   private lazyDownloadListeners = new Set<LazyDownloadListener>();
 
   private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
@@ -283,12 +320,177 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.imageMetadata = metadata;
   }
 
+  private static inodeKey(ino: number, generation: number): string {
+    return `${ino}:${generation}`;
+  }
+
+  private static canAdoptLegacyLazyStub(st: SfsStatResult): boolean {
+    // Images from before data-sequence tracking stored regular lazy entries as
+    // untouched zero-length stubs. Current registration performs one initial
+    // O_TRUNC, so any later mutation sequence (or concrete bytes) is unsafe to
+    // associate with metadata that cannot name the content version it saw.
+    return (
+      (st.mode & S_IFMT) === S_IFREG && st.size === 0 && st.dataSequence <= 1
+    );
+  }
+
+  /**
+   * Reconcile process-local lazy metadata with authoritative SharedFS names.
+   * The identity map may come from the same transaction as a filesystem
+   * snapshot, so callers can serialize matching bytes and lazy paths.
+   */
+  private reconcileLazyIdentityState(
+    identities: Map<string, SharedFsIdentityState>,
+  ): void {
+    for (const [key, entry] of this.lazyFiles) {
+      const identity = identities.get(key);
+      if (
+        !identity ||
+        identity.dataSequence !== entry.dataSequence ||
+        identity.paths.length === 0
+      ) {
+        this.lazyFiles.delete(key);
+        continue;
+      }
+      entry.paths = new Set(identity.paths);
+      if (!entry.paths.has(entry.path)) {
+        entry.path = identity.paths[0];
+      }
+    }
+
+    this.lazyArchiveInodes.clear();
+    for (const group of this.lazyArchiveGroups) {
+      const pendingByIdentity = new Map<string, LazyArchiveFileEntry>();
+      for (const entry of group.entries.values()) {
+        if (
+          entry.deleted ||
+          entry.materialized ||
+          entry.generation === undefined
+        )
+          continue;
+        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+        if (!pendingByIdentity.has(key)) pendingByIdentity.set(key, entry);
+      }
+
+      const reconciled = new Map<string, LazyArchiveFileEntry>();
+      for (const [key, entry] of pendingByIdentity) {
+        const identity = identities.get(key);
+        if (!identity || identity.dataSequence !== (entry.dataSequence ?? 0))
+          continue;
+        for (const path of identity.paths) {
+          reconciled.set(path, {
+            ...entry,
+            ino: identity.ino,
+            generation: identity.generation,
+            dataSequence: identity.dataSequence,
+            deleted: false,
+            materialized: false,
+          });
+        }
+        if (identity.paths.length > 0) {
+          this.lazyArchiveInodes.set(key, group);
+        }
+      }
+      group.entries = reconciled;
+      group.materialized = reconciled.size === 0;
+    }
+  }
+
+  private lazyFileForStat(st: SfsStatResult) {
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    const entry = this.lazyFiles.get(key);
+    if (entry && entry.dataSequence !== st.dataSequence) {
+      this.lazyFiles.delete(key);
+      return undefined;
+    }
+    return entry;
+  }
+
+  private lazyArchiveForStat(st: SfsStatResult) {
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    const group = this.lazyArchiveInodes.get(key);
+    if (!group) return undefined;
+    const entries = Array.from(group.entries.values()).filter(
+      (entry) =>
+        entry.ino === st.ino &&
+        entry.generation === st.generation &&
+        !entry.deleted &&
+        !entry.materialized,
+    );
+    if (entries.some((entry) => entry.dataSequence === st.dataSequence)) {
+      return group;
+    }
+    this.lazyArchiveInodes.delete(key);
+    for (const entry of entries) entry.materialized = true;
+    return undefined;
+  }
+
+  /** A successful guest data mutation makes any deferred backing obsolete. */
+  private invalidateLazyData(st: SfsStatResult): void {
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    this.lazyFiles.delete(key);
+
+    const group = this.lazyArchiveInodes.get(key);
+    if (!group) return;
+    this.lazyArchiveInodes.delete(key);
+    for (const entry of group.entries.values()) {
+      if (entry.ino === st.ino && entry.generation === st.generation) {
+        // Keep the concrete inode in the image, but prevent a later archive
+        // fetch from overwriting data the guest supplied through any alias.
+        entry.materialized = true;
+      }
+    }
+  }
+
+  private rewriteLazyNamespacePaths(
+    source: NamespaceEntryIdentity,
+    oldPath: string,
+    newPath: string,
+  ): void {
+    const oldBase = oldPath.length > 1 ? oldPath.replace(/\/+$/, "") : oldPath;
+    const newBase = newPath.length > 1 ? newPath.replace(/\/+$/, "") : newPath;
+    const oldPrefix = `${oldBase}/`;
+    const newPrefix = `${newBase}/`;
+    const sourceKey = MemoryFileSystem.inodeKey(source.ino, source.generation);
+    const directory = (source.mode & S_IFMT) === S_IFDIR;
+    const rewrite = (candidate: string): string =>
+      candidate === oldBase
+        ? newBase
+        : directory && candidate.startsWith(oldPrefix)
+          ? newPrefix + candidate.slice(oldPrefix.length)
+          : candidate;
+
+    for (const [key, lazy] of this.lazyFiles) {
+      if (!directory && key !== sourceKey) continue;
+      lazy.paths = new Set(Array.from(lazy.paths, rewrite));
+      lazy.path = rewrite(lazy.path);
+    }
+
+    for (const group of this.lazyArchiveGroups) {
+      const rewritten = new Map<string, LazyArchiveFileEntry>();
+      for (const [candidate, entry] of group.entries) {
+        const entryKey =
+          entry.generation === undefined
+            ? null
+            : MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+        rewritten.set(
+          directory || entryKey === sourceKey ? rewrite(candidate) : candidate,
+          entry,
+        );
+      }
+      group.entries = rewritten;
+    }
+  }
+
   /** Return the underlying SharedArrayBuffer (for sharing with workers). */
   get sharedBuffer(): SharedArrayBuffer {
     return this.fs.buffer as SharedArrayBuffer;
   }
 
-  static create(sab: SharedArrayBuffer, maxSizeBytes?: number): MemoryFileSystem {
+  static create(
+    sab: SharedArrayBuffer,
+    maxSizeBytes?: number,
+  ): MemoryFileSystem {
     return new MemoryFileSystem(SharedFS.mkfs(sab, maxSizeBytes));
   }
 
@@ -303,24 +505,43 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   rebaseToNewFileSystem(maxByteLength: number): MemoryFileSystem {
     if (!Number.isSafeInteger(maxByteLength) || maxByteLength <= 0) {
-      throw new Error(`Invalid MemoryFileSystem maxByteLength: ${maxByteLength}`);
+      throw new Error(
+        `Invalid MemoryFileSystem maxByteLength: ${maxByteLength}`,
+      );
     }
 
-    const initialByteLength = Math.min(
-      maxByteLength,
-      Math.max(this.sharedBuffer.byteLength, MIN_REBASE_INITIAL_BYTES),
-    );
     const SharedArrayBufferCtor = SharedArrayBuffer as new (
       byteLength: number,
       options?: { maxByteLength?: number },
     ) => SharedArrayBuffer;
+
+    // Copy from one quiescent source image. Exporting lazy paths and then
+    // walking the live SAB would let a peer rename an entry between those two
+    // operations, making the logical lazy size disagree with the copied path.
+    const { bytes: sourceBytes, identities } = this.fs.snapshotState();
+    this.reconcileLazyIdentityState(identities);
+    const lazyEntries = this.serializeLazyEntries();
+    const lazyArchiveEntries = this.serializeLazyArchiveEntries();
+    const sourceSab = new SharedArrayBufferCtor(sourceBytes.byteLength);
+    new Uint8Array(sourceSab).set(sourceBytes);
+    const source = new MemoryFileSystem(
+      SharedFS.mount(sourceSab, { restoreImage: true }),
+      this.imageMetadata,
+    );
+    source.importLazyEntries(lazyEntries);
+    source.importLazyArchiveEntries(lazyArchiveEntries);
+
+    const initialByteLength = Math.min(
+      maxByteLength,
+      Math.max(sourceBytes.byteLength, MIN_REBASE_INITIAL_BYTES),
+    );
     const sab = new SharedArrayBufferCtor(initialByteLength, { maxByteLength });
     const target = MemoryFileSystem.create(sab, maxByteLength);
     target.setImageMetadata(this.imageMetadata);
 
-    const lazyEntries = this.exportLazyEntries();
-    const lazyFilePaths = new Set(lazyEntries.map((entry) => entry.path));
-    const lazyArchiveEntries = this.exportLazyArchiveEntries();
+    const lazyFilePaths = new Set(
+      lazyEntries.flatMap((entry) => entry.paths ?? [entry.path]),
+    );
     const lazyArchiveStubPaths = new Set<string>();
     for (const group of lazyArchiveEntries) {
       if (group.materialized) continue;
@@ -331,19 +552,40 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
     }
 
-    this.copyPathToFreshFileSystem("/", target, lazyFilePaths, lazyArchiveStubPaths);
+    source.copyPathToFreshFileSystem(
+      "/",
+      target,
+      lazyFilePaths,
+      lazyArchiveStubPaths,
+      new Map(),
+    );
 
-    target.importLazyEntries(lazyEntries.map((entry) => ({
-      ...entry,
-      ino: target.lstat(entry.path).ino,
-    })));
-    target.importLazyArchiveEntries(lazyArchiveEntries.map((group) => ({
-      ...group,
-      entries: group.entries.map((entry) => ({
-        ...entry,
-        ino: entry.deleted ? 0 : target.lstat(entry.vfsPath).ino,
+    target.importLazyEntries(
+      lazyEntries.map((entry) => {
+        const st = target.fs.lstat(entry.path);
+        return {
+          ...entry,
+          ino: st.ino,
+          generation: st.generation,
+          dataSequence: st.dataSequence,
+        };
+      }),
+    );
+    target.importLazyArchiveEntries(
+      lazyArchiveEntries.map((group) => ({
+        ...group,
+        entries: group.entries.map((entry) => {
+          if (entry.deleted) return { ...entry, ino: 0, generation: undefined };
+          const st = target.fs.lstat(entry.vfsPath);
+          return {
+            ...entry,
+            ino: st.ino,
+            generation: st.generation,
+            dataSequence: st.dataSequence,
+          };
+        }),
       })),
-    })));
+    );
 
     return target;
   }
@@ -367,20 +609,22 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (this.lazyDownloadListeners.size === 0) return;
     const stamped: LazyDownloadEvent = { ...event, t: monotonicNow() };
     for (const listener of this.lazyDownloadListeners) {
-      try { listener(stamped); } catch { /* listener errors must not break VFS I/O */ }
+      try {
+        listener(stamped);
+      } catch {
+        /* listener errors must not break VFS I/O */
+      }
     }
   }
 
-  private async fetchLazyBytes(
-    details: {
-      id: string;
-      kind: LazyDownloadKind;
-      url: string;
-      path?: string;
-      mountPrefix?: string;
-      fallbackTotalBytes?: number;
-    },
-  ): Promise<Uint8Array> {
+  private async fetchLazyBytes(details: {
+    id: string;
+    kind: LazyDownloadKind;
+    url: string;
+    path?: string;
+    mountPrefix?: string;
+    fallbackTotalBytes?: number;
+  }): Promise<Uint8Array> {
     let loadedBytes = 0;
     let totalBytes = details.fallbackTotalBytes;
     const base = {
@@ -466,23 +710,38 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   /**
    * Register a lazy file: creates an empty stub in SharedFS and records
-   * metadata so that read() will fetch content on demand via sync XHR.
+   * metadata for ensureMaterialized() to fetch asynchronously before a
+   * synchronous read or exec path consumes the file.
    * Returns the inode number (useful for forwarding to other instances).
    */
-  registerLazyFile(path: string, url: string, size: number, mode = 0o755): number {
+  registerLazyFile(
+    path: string,
+    url: string,
+    size: number,
+    mode = 0o755,
+  ): number {
     // Ensure parent directories exist
     const parts = path.split("/").filter(Boolean);
     let current = "";
     for (let i = 0; i < parts.length - 1; i++) {
       current += "/" + parts[i];
-      try { this.fs.mkdir(current, 0o755); } catch { /* exists */ }
+      try {
+        this.fs.mkdir(current, 0o755);
+      } catch {
+        /* exists */
+      }
     }
-    // Create empty stub file
-    const fd = this.fs.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
-    this.fs.close(fd);
-    // Get inode
-    const st = this.fs.stat(path);
-    this.lazyFiles.set(st.ino, { path, url, size });
+    const st = this.fs.createLazyStub(path, mode);
+    this.invalidateLazyData(st);
+    this.lazyFiles.set(MemoryFileSystem.inodeKey(st.ino, st.generation), {
+      ino: st.ino,
+      generation: st.generation,
+      dataSequence: st.dataSequence,
+      path,
+      paths: new Set([path]),
+      url,
+      size,
+    });
     return st.ino;
   }
 
@@ -491,26 +750,105 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Does not create files — assumes the files already exist in the SharedArrayBuffer.
    */
   importLazyEntries(entries: LazyFileEntry[]): void {
+    this.importLazyEntriesInternal(entries, false);
+  }
+
+  private importLazyEntriesInternal(
+    entries: LazyFileEntry[],
+    trustedLegacySnapshot: boolean,
+  ): void {
     for (const e of entries) {
-      this.lazyFiles.set(e.ino, { path: e.path, url: e.url, size: e.size });
+      const isLegacy =
+        e.generation === undefined || e.dataSequence === undefined;
+      if (isLegacy && !trustedLegacySnapshot) {
+        throw new Error(
+          "Live lazy-file metadata requires inode generation and data sequence",
+        );
+      }
+      const validPaths = new Set<string>();
+      let identity: SfsStatResult | null = null;
+      for (const path of new Set([e.path, ...(e.paths ?? [])])) {
+        let st: SfsStatResult;
+        try {
+          st = this.fs.stat(path);
+        } catch {
+          continue;
+        }
+        if (st.ino !== e.ino) continue;
+        if (e.generation !== undefined && st.generation !== e.generation) {
+          continue;
+        }
+        if (e.dataSequence === undefined) {
+          if (!MemoryFileSystem.canAdoptLegacyLazyStub(st)) continue;
+        } else if (st.dataSequence !== e.dataSequence) continue;
+        identity ??= st;
+        validPaths.add(path);
+      }
+      if (!identity || validPaths.size === 0) continue;
+      const primaryPath = validPaths.has(e.path)
+        ? e.path
+        : validPaths.values().next().value!;
+      this.lazyFiles.set(
+        MemoryFileSystem.inodeKey(identity.ino, identity.generation),
+        {
+          ino: identity.ino,
+          generation: identity.generation,
+          dataSequence: identity.dataSequence,
+          path: primaryPath,
+          paths: validPaths,
+          url: e.url,
+          size: e.size,
+        },
+      );
     }
+  }
+
+  private serializeLazyEntries(): LazyFileEntry[] {
+    const entries: LazyFileEntry[] = [];
+    for (const {
+      ino,
+      generation,
+      dataSequence,
+      path,
+      paths,
+      url,
+      size,
+    } of this.lazyFiles.values()) {
+      entries.push({
+        ino,
+        generation,
+        dataSequence,
+        path,
+        paths: Array.from(paths),
+        url,
+        size,
+      });
+    }
+    return entries;
   }
 
   /** Export all pending lazy entries for transfer to another instance. */
   exportLazyEntries(): LazyFileEntry[] {
-    const entries: LazyFileEntry[] = [];
-    for (const [ino, { path, url, size }] of this.lazyFiles) {
-      entries.push({ ino, path, url, size });
-    }
-    return entries;
+    this.reconcileLazyIdentityState(this.fs.identityState());
+    return this.serializeLazyEntries();
   }
 
   /** Return lazy metadata for `path`, following symlinks through stat(). */
   getLazyEntry(path: string): LazyFileEntry | null {
     try {
       const st = this.fs.stat(path);
-      const entry = this.lazyFiles.get(st.ino);
-      return entry ? { ino: st.ino, path: entry.path, url: entry.url, size: entry.size } : null;
+      const entry = this.lazyFileForStat(st);
+      return entry
+        ? {
+            ino: st.ino,
+            generation: st.generation,
+            dataSequence: st.dataSequence,
+            path: entry.path,
+            paths: Array.from(entry.paths),
+            url: entry.url,
+            size: entry.size,
+          }
+        : null;
     } catch {
       return null;
     }
@@ -522,11 +860,8 @@ export class MemoryFileSystem implements FileSystemBackend {
    * them with bundler-produced asset URLs.
    */
   rewriteLazyFileUrls(transform: (url: string, path: string) => string): void {
-    for (const [ino, entry] of this.lazyFiles) {
-      this.lazyFiles.set(ino, {
-        ...entry,
-        url: transform(entry.url, entry.path),
-      });
+    for (const entry of this.lazyFiles.values()) {
+      entry.url = transform(entry.url, entry.path);
     }
   }
 
@@ -562,55 +897,132 @@ export class MemoryFileSystem implements FileSystemBackend {
       let current = "";
       for (let i = 0; i < parts.length - 1; i++) {
         current += "/" + parts[i];
-        try { this.fs.mkdir(current, 0o755); } catch { /* exists */ }
+        try {
+          this.fs.mkdir(current, 0o755);
+        } catch {
+          /* exists */
+        }
       }
 
-      if (ze.isSymlink && symlinkTargets?.has(ze.fileName)) {
+      if (ze.isSymlink) {
+        if (!symlinkTargets?.has(ze.fileName)) {
+          throw new Error(
+            `Lazy archive symlink target was not provided: ${ze.fileName}`,
+          );
+        }
         const target = symlinkTargets.get(ze.fileName)!;
         this.fs.symlink(target, vfsPath);
+        const st = this.fs.lstat(vfsPath);
+        const entry: LazyArchiveFileEntry = {
+          ino: st.ino,
+          generation: st.generation,
+          dataSequence: st.dataSequence,
+          size: ze.uncompressedSize,
+          isSymlink: true,
+          deleted: false,
+          materialized: true,
+          archivePath: ze.fileName,
+        };
+        group.entries.set(vfsPath, entry);
       } else {
-        const fd = this.fs.open(vfsPath, 0o1101, ze.mode); // O_WRONLY | O_CREAT | O_TRUNC
-        this.fs.close(fd);
+        const st = this.fs.createLazyStub(vfsPath, ze.mode);
+        this.invalidateLazyData(st);
+        const entry: LazyArchiveFileEntry = {
+          ino: st.ino,
+          generation: st.generation,
+          dataSequence: st.dataSequence,
+          size: ze.uncompressedSize,
+          isSymlink: false,
+          deleted: false,
+          materialized: false,
+          archivePath: ze.fileName,
+        };
+        group.entries.set(vfsPath, entry);
+        this.lazyArchiveInodes.set(
+          MemoryFileSystem.inodeKey(st.ino, st.generation),
+          group,
+        );
       }
-
-      const st = this.fs.lstat(vfsPath);
-      const entry: LazyArchiveFileEntry = {
-        ino: st.ino,
-        size: ze.uncompressedSize,
-        isSymlink: ze.isSymlink,
-        deleted: false,
-      };
-      group.entries.set(vfsPath, entry);
-      this.lazyArchiveInodes.set(st.ino, group);
     }
 
+    group.materialized = Array.from(group.entries.values()).every(
+      (entry) => entry.deleted || entry.materialized,
+    );
     this.lazyArchiveGroups.push(group);
     return group;
   }
 
   /** Import lazy archive groups from another instance. Assumes stubs already exist. */
   importLazyArchiveEntries(serialized: SerializedLazyArchiveEntry[]): void {
+    this.importLazyArchiveEntriesInternal(serialized, false);
+  }
+
+  private importLazyArchiveEntriesInternal(
+    serialized: SerializedLazyArchiveEntry[],
+    trustedLegacySnapshot: boolean,
+  ): void {
     for (const s of serialized) {
       const entries = new Map<string, LazyArchiveFileEntry>();
+      const normalizedPrefix = s.mountPrefix.replace(/\/+$/, "");
       for (const e of s.entries) {
+        let st: SfsStatResult | null = null;
+        const materialized =
+          s.materialized || e.materialized === true || e.isSymlink;
+        if (!e.deleted && !materialized) {
+          const isLegacy =
+            e.generation === undefined || e.dataSequence === undefined;
+          if (isLegacy && !trustedLegacySnapshot) {
+            throw new Error(
+              "Live lazy-archive metadata requires inode generation and data sequence",
+            );
+          }
+          try {
+            st = this.fs.lstat(e.vfsPath);
+          } catch {
+            continue;
+          }
+          if (st.ino !== e.ino) continue;
+          if (e.generation !== undefined && st.generation !== e.generation) {
+            continue;
+          }
+          if (e.dataSequence === undefined) {
+            if (!MemoryFileSystem.canAdoptLegacyLazyStub(st)) continue;
+          } else if (st.dataSequence !== e.dataSequence) continue;
+        }
         entries.set(e.vfsPath, {
           ino: e.ino,
+          generation: st?.generation ?? e.generation,
+          dataSequence: st?.dataSequence ?? e.dataSequence,
           size: e.size,
           isSymlink: e.isSymlink,
           deleted: e.deleted,
+          materialized,
+          archivePath:
+            e.archivePath ?? e.vfsPath.slice(normalizedPrefix.length + 1),
         });
       }
       const group: LazyArchiveGroup = {
         url: s.url,
         mountPrefix: s.mountPrefix,
-        materialized: s.materialized,
+        materialized:
+          s.materialized ||
+          Array.from(entries.values()).every(
+            (entry) => entry.deleted || entry.materialized,
+          ),
         entries,
       };
       this.lazyArchiveGroups.push(group);
       if (!group.materialized) {
         for (const [, entry] of entries) {
-          if (!entry.deleted) {
-            this.lazyArchiveInodes.set(entry.ino, group);
+          if (
+            !entry.deleted &&
+            !entry.materialized &&
+            entry.generation !== undefined
+          ) {
+            this.lazyArchiveInodes.set(
+              MemoryFileSystem.inodeKey(entry.ino, entry.generation),
+              group,
+            );
           }
         }
       }
@@ -628,20 +1040,35 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
   }
 
-  /** Export all lazy archive groups for transfer to another instance. */
-  exportLazyArchiveEntries(): SerializedLazyArchiveEntry[] {
-    return this.lazyArchiveGroups.map((group) => ({
-      url: group.url,
-      mountPrefix: group.mountPrefix,
-      materialized: group.materialized,
-      entries: Array.from(group.entries, ([vfsPath, entry]) => ({
+  private serializeLazyArchiveEntries(): SerializedLazyArchiveEntry[] {
+    const serialized: SerializedLazyArchiveEntry[] = [];
+    for (const group of this.lazyArchiveGroups) {
+      const entries = Array.from(group.entries, ([vfsPath, entry]) => ({
         vfsPath,
         ino: entry.ino,
+        generation: entry.generation,
+        dataSequence: entry.dataSequence,
         size: entry.size,
         isSymlink: entry.isSymlink,
         deleted: entry.deleted,
-      })),
-    }));
+        materialized: entry.materialized,
+        archivePath: entry.archivePath,
+      })).filter((entry) => !entry.deleted && !entry.materialized);
+      if (entries.length === 0) continue;
+      serialized.push({
+        url: group.url,
+        mountPrefix: group.mountPrefix,
+        materialized: false,
+        entries,
+      });
+    }
+    return serialized;
+  }
+
+  /** Export all pending lazy archive groups for transfer to another instance. */
+  exportLazyArchiveEntries(): SerializedLazyArchiveEntry[] {
+    this.reconcileLazyIdentityState(this.fs.identityState());
+    return this.serializeLazyArchiveEntries();
   }
 
   /**
@@ -651,33 +1078,58 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Returns true if something was materialized, false if already concrete.
    */
   async ensureMaterialized(path: string): Promise<boolean> {
-    if (this.lazyFiles.size === 0 && this.lazyArchiveInodes.size === 0) return false;
-    try {
-      const st = this.fs.stat(path); // follows symlinks
-      const entry = this.lazyFiles.get(st.ino);
-      if (entry) {
-        const data = await this.fetchLazyBytes({
-          id: `file:${st.ino}`,
-          kind: "file",
-          url: entry.url,
-          path: entry.path,
-          fallbackTotalBytes: entry.size,
-        });
-        const fd = this.fs.open(entry.path, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
-        this.fs.write(fd, data);
-        this.fs.close(fd);
-        this.lazyFiles.delete(st.ino);
-        return true;
-      }
-      const group = this.lazyArchiveInodes.get(st.ino);
-      if (group) {
-        await this.ensureArchiveMaterialized(group);
-        return true;
-      }
+    if (this.lazyFiles.size === 0 && this.lazyArchiveInodes.size === 0)
       return false;
+    let st: SfsStatResult;
+    try {
+      st = this.fs.stat(path); // follows symlinks
     } catch {
       return false;
     }
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    const entry = this.lazyFiles.get(key);
+    if (entry) {
+      const data = await this.fetchLazyBytes({
+        id: `file:${st.ino}`,
+        kind: "file",
+        url: entry.url,
+        path: entry.path,
+        fallbackTotalBytes: entry.size,
+      });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (this.lazyFiles.get(key) !== entry) return false;
+        for (const candidate of new Set([path, ...entry.paths])) {
+          const materialized = this.fs.replaceIfIdentity(
+            candidate,
+            entry.ino,
+            entry.generation,
+            entry.dataSequence,
+            data,
+          );
+          if (materialized) {
+            entry.path = candidate;
+            this.lazyFiles.delete(key);
+            return true;
+          }
+        }
+        // A peer may have renamed the inode while the fetch was in flight.
+        // Refresh aliases and retry immediately with the bytes already read.
+        this.reconcileLazyIdentityState(this.fs.identityState());
+      }
+      throw new Error(
+        `Lazy file kept changing names while materializing: ${path}`,
+      );
+    }
+    const group = this.lazyArchiveInodes.get(key);
+    if (group) {
+      await this.ensureArchiveMaterialized(group, {
+        path,
+        ino: st.ino,
+        generation: st.generation,
+      });
+      return !this.lazyArchiveInodes.has(key);
+    }
+    return false;
   }
 
   /**
@@ -685,7 +1137,10 @@ export class MemoryFileSystem implements FileSystemBackend {
    * central directory, and write every non-deleted entry into its stub.
    * Subsequent calls are no-ops.
    */
-  async ensureArchiveMaterialized(group: LazyArchiveGroup): Promise<void> {
+  async ensureArchiveMaterialized(
+    group: LazyArchiveGroup,
+    requested?: { path: string; ino: number; generation: number },
+  ): Promise<void> {
     if (group.materialized) return;
 
     const zipData = await this.fetchLazyBytes({
@@ -701,21 +1156,98 @@ export class MemoryFileSystem implements FileSystemBackend {
     for (const ze of zipEntries) zipLookup.set(ze.fileName, ze);
 
     const normalizedPrefix = group.mountPrefix.replace(/\/+$/, "");
-    for (const [vfsPath, archiveEntry] of group.entries) {
-      if (archiveEntry.deleted) continue;
-      if (archiveEntry.isSymlink) continue; // symlinks already created at registration
-      const zipFileName = vfsPath.slice(normalizedPrefix.length + 1);
-      const ze = zipLookup.get(zipFileName);
-      if (!ze) continue;
-      const content = extractZipEntry(zipData, ze);
-      const fd = this.fs.open(vfsPath, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
-      if (content.length > 0) this.fs.write(fd, content);
-      this.fs.close(fd);
+    const requestedKey = requested
+      ? MemoryFileSystem.inodeKey(requested.ino, requested.generation)
+      : null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      for (const [vfsPath, archiveEntry] of group.entries) {
+        if (archiveEntry.deleted || archiveEntry.materialized) continue;
+        if (archiveEntry.isSymlink) {
+          archiveEntry.materialized = true;
+          continue;
+        }
+        const zipFileName =
+          archiveEntry.archivePath ??
+          vfsPath.slice(normalizedPrefix.length + 1);
+        const ze = zipLookup.get(zipFileName);
+        if (!ze) continue;
+        const content = extractZipEntry(zipData, ze);
+        if (archiveEntry.generation === undefined) continue;
+        const key = MemoryFileSystem.inodeKey(
+          archiveEntry.ino,
+          archiveEntry.generation,
+        );
+        if (this.lazyArchiveInodes.get(key) !== group) continue;
+        const candidates = new Set([vfsPath]);
+        if (
+          requested &&
+          requested.ino === archiveEntry.ino &&
+          requested.generation === archiveEntry.generation
+        )
+          candidates.add(requested.path);
+        let materialized = false;
+        for (const candidate of candidates) {
+          materialized = this.fs.replaceIfIdentity(
+            candidate,
+            archiveEntry.ino,
+            archiveEntry.generation,
+            archiveEntry.dataSequence ?? 0,
+            content,
+          );
+          if (materialized) break;
+        }
+        if (!materialized) continue;
+        this.lazyArchiveInodes.delete(key);
+        for (const alias of group.entries.values()) {
+          if (
+            alias.ino === archiveEntry.ino &&
+            alias.generation === archiveEntry.generation
+          )
+            alias.materialized = true;
+        }
+      }
+
+      group.materialized = Array.from(group.entries.values()).every(
+        (entry) => entry.deleted || entry.materialized,
+      );
+      if (group.materialized) return;
+      this.reconcileLazyIdentityState(this.fs.identityState());
+      if (requestedKey && !this.lazyArchiveInodes.has(requestedKey)) return;
     }
 
-    group.materialized = true;
-    for (const [, archiveEntry] of group.entries) {
-      this.lazyArchiveInodes.delete(archiveEntry.ino);
+    if (requestedKey && this.lazyArchiveInodes.has(requestedKey)) {
+      throw new Error(
+        `Lazy archive member kept changing names while materializing: ${requested?.path}`,
+      );
+    }
+  }
+
+  private async materializeAllLazyEntries(): Promise<void> {
+    // A peer can rename an inode while an asynchronous fetch is in flight.
+    // Refresh and retry a bounded number of times; a continuously mutating
+    // filesystem is not a stable source for a self-contained image.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      this.reconcileLazyIdentityState(this.fs.identityState());
+      if (this.lazyFiles.size === 0 && this.lazyArchiveInodes.size === 0)
+        return;
+
+      const filePaths = Array.from(
+        this.lazyFiles.values(),
+        (entry) => entry.path,
+      );
+      for (const path of filePaths) await this.ensureMaterialized(path);
+
+      const archiveGroups = new Set(this.lazyArchiveInodes.values());
+      for (const group of archiveGroups) {
+        await this.ensureArchiveMaterialized(group);
+      }
+    }
+
+    this.reconcileLazyIdentityState(this.fs.identityState());
+    if (this.lazyFiles.size !== 0 || this.lazyArchiveInodes.size !== 0) {
+      throw new Error(
+        "Cannot create a self-contained VFS image while lazy entries remain pending",
+      );
     }
   }
 
@@ -729,28 +1261,25 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   async saveImage(options?: VfsImageOptions): Promise<Uint8Array> {
     if (options?.materializeAll) {
-      const paths = Array.from(this.lazyFiles.values()).map((e) => e.path);
-      for (const p of paths) {
-        await this.ensureMaterialized(p);
-      }
+      await this.materializeAllLazyEntries();
     }
 
-    const sabBytes = new Uint8Array(this.fs.buffer);
-    const lazyEntries = this.exportLazyEntries();
+    const { bytes: sabBytes, identities } = this.fs.snapshotState();
+    this.reconcileLazyIdentityState(identities);
+    const lazyEntries = this.serializeLazyEntries();
     const hasLazy = lazyEntries.length > 0;
     const lazyJson = hasLazy
       ? new TextEncoder().encode(JSON.stringify(lazyEntries))
       : new Uint8Array(0);
 
-    const archiveEntries = this.exportLazyArchiveEntries();
+    const archiveEntries = this.serializeLazyArchiveEntries();
     const hasArchives = archiveEntries.length > 0;
     const archiveJson = hasArchives
       ? new TextEncoder().encode(JSON.stringify(archiveEntries))
       : new Uint8Array(0);
 
-    const metadata = options?.metadata === undefined
-      ? this.imageMetadata
-      : options.metadata;
+    const metadata =
+      options?.metadata === undefined ? this.imageMetadata : options.metadata;
     const metadataJson = encodeMetadata(metadata);
     const hasMetadata = metadataJson.byteLength > 0;
 
@@ -760,11 +1289,11 @@ export class MemoryFileSystem implements FileSystemBackend {
     const metadataSectionSize = hasMetadata ? 4 + metadataJson.byteLength : 0;
     const totalSize =
       VFS_IMAGE_HEADER_SIZE +
-        sabBytes.byteLength +
-        4 +
-        lazyJson.byteLength +
-        archiveSectionSize +
-        metadataSectionSize;
+      sabBytes.byteLength +
+      4 +
+      lazyJson.byteLength +
+      archiveSectionSize +
+      metadataSectionSize;
     const image = new Uint8Array(totalSize);
     const view = new DataView(image.buffer);
 
@@ -780,10 +1309,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     );
     view.setUint32(12, sabBytes.byteLength, true);
 
-    // SAB data — copy from SharedArrayBuffer (can't use set() directly on SAB-backed views in all environments)
-    const sabCopy = new Uint8Array(sabBytes.byteLength);
-    sabCopy.set(sabBytes);
-    image.set(sabCopy, VFS_IMAGE_HEADER_SIZE);
+    // SAB data is already a detached, runtime-state-free snapshot.
+    image.set(sabBytes, VFS_IMAGE_HEADER_SIZE);
 
     // Lazy entries
     const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabBytes.byteLength;
@@ -801,7 +1328,8 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     // Metadata
     if (hasMetadata) {
-      const metadataOffset = lazyOffset + 4 + lazyJson.byteLength + archiveSectionSize;
+      const metadataOffset =
+        lazyOffset + 4 + lazyJson.byteLength + archiveSectionSize;
       view.setUint32(metadataOffset, metadataJson.byteLength, true);
       image.set(metadataJson, metadataOffset + 4);
     }
@@ -833,7 +1361,10 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
     if (metadataLen === 0) return null;
     return decodeMetadata(
-      parsed.image.subarray(metadataOffset + 4, metadataOffset + 4 + metadataLen),
+      parsed.image.subarray(
+        metadataOffset + 4,
+        metadataOffset + 4 + metadataLen,
+      ),
     );
   }
 
@@ -866,7 +1397,10 @@ export class MemoryFileSystem implements FileSystemBackend {
    * so the filesystem can expand beyond the image's original size, up to the
    * maximum already recorded in the image superblock.
    */
-  static fromImage(image: Uint8Array, options?: { maxByteLength?: number }): MemoryFileSystem {
+  static fromImage(
+    image: Uint8Array,
+    options?: { maxByteLength?: number },
+  ): MemoryFileSystem {
     const parsed = parseImageHeader(image);
     image = parsed.image;
     const view = parsed.view;
@@ -885,25 +1419,33 @@ export class MemoryFileSystem implements FileSystemBackend {
     ) => SharedArrayBuffer;
     const sab = new SharedArrayBufferCtor(sabLen, sabOptions);
     const sabView = new Uint8Array(sab);
-    sabView.set(image.subarray(VFS_IMAGE_HEADER_SIZE, VFS_IMAGE_HEADER_SIZE + sabLen));
+    sabView.set(
+      image.subarray(VFS_IMAGE_HEADER_SIZE, VFS_IMAGE_HEADER_SIZE + sabLen),
+    );
 
     let metadata: VfsImageMetadata | null = null;
     if (flags & VFS_IMAGE_FLAG_HAS_METADATA) {
       metadata = MemoryFileSystem.readImageMetadata(image);
     }
 
-    const mfs = new MemoryFileSystem(SharedFS.mount(sab), metadata);
+    const mfs = new MemoryFileSystem(
+      SharedFS.mount(sab, { restoreImage: true }),
+      metadata,
+    );
 
     // Restore lazy entries
     const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
     const lazyLen = view.getUint32(lazyOffset, true);
     if (flags & VFS_IMAGE_FLAG_HAS_LAZY) {
       if (lazyLen > 0) {
-        const lazyBytes = image.subarray(lazyOffset + 4, lazyOffset + 4 + lazyLen);
+        const lazyBytes = image.subarray(
+          lazyOffset + 4,
+          lazyOffset + 4 + lazyLen,
+        );
         const entries: LazyFileEntry[] = JSON.parse(
           new TextDecoder().decode(lazyBytes),
         );
-        mfs.importLazyEntries(entries);
+        mfs.importLazyEntriesInternal(entries, true);
       }
     }
 
@@ -922,7 +1464,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         const entries: SerializedLazyArchiveEntry[] = JSON.parse(
           new TextDecoder().decode(archiveBytes),
         );
-        mfs.importLazyArchiveEntries(entries);
+        mfs.importLazyArchiveEntriesInternal(entries, true);
       }
     }
 
@@ -944,8 +1486,37 @@ export class MemoryFileSystem implements FileSystemBackend {
     };
   }
 
+  private adaptStatWithLazySize(s: SfsStatResult): StatResult {
+    const result = this.adaptStat(s);
+    const entry = this.lazyFileForStat(s);
+    if (entry) {
+      result.size = entry.size;
+      return result;
+    }
+
+    const group = this.lazyArchiveForStat(s);
+    if (group) {
+      for (const archiveEntry of group.entries.values()) {
+        if (
+          archiveEntry.ino === s.ino &&
+          archiveEntry.generation === s.generation &&
+          !archiveEntry.deleted
+        ) {
+          result.size = archiveEntry.size;
+          break;
+        }
+      }
+    }
+    return result;
+  }
+
   open(path: string, flags: number, mode: number): number {
-    return this.fs.open(path, flags, mode);
+    const handle = this.fs.open(path, flags, mode);
+    if ((flags & 0x0200) !== 0) {
+      // O_TRUNC
+      this.invalidateLazyData(this.fs.fstat(handle));
+    }
+    return handle;
   }
 
   close(handle: number): number {
@@ -982,9 +1553,12 @@ export class MemoryFileSystem implements FileSystemBackend {
       this.fs.lseek(handle, offset, 0); // SEEK_SET
       const n = this.fs.write(handle, buffer.subarray(0, length));
       this.fs.lseek(handle, savedPos, 0); // restore position
+      if (n > 0) this.invalidateLazyData(this.fs.fstat(handle));
       return n;
     }
-    return this.fs.write(handle, buffer.subarray(0, length));
+    const n = this.fs.write(handle, buffer.subarray(0, length));
+    if (n > 0) this.invalidateLazyData(this.fs.fstat(handle));
+    return n;
   }
 
   seek(handle: number, offset: number, whence: number): number {
@@ -992,27 +1566,20 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   fstat(handle: number): StatResult {
-    const result = this.adaptStat(this.fs.fstat(handle));
-    // Override size for unmaterialized lazy files / archive entries
-    const entry = this.lazyFiles.get(result.ino);
-    if (entry) {
-      result.size = entry.size;
-    } else {
-      const group = this.lazyArchiveInodes.get(result.ino);
-      if (group) {
-        for (const archiveEntry of group.entries.values()) {
-          if (archiveEntry.ino === result.ino) {
-            result.size = archiveEntry.size;
-            break;
-          }
-        }
-      }
-    }
-    return result;
+    return this.adaptStatWithLazySize(this.fs.fstat(handle));
+  }
+
+  fpathconf(handle: number, name: number): PathconfValue {
+    const stat = this.fstat(handle);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
   }
 
   ftruncate(handle: number, length: number): void {
     this.fs.ftruncate(handle, length);
+    this.invalidateLazyData(this.fs.fstat(handle));
   }
 
   // SharedFS is memory-backed, fsync is a no-op
@@ -1026,43 +1593,11 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   stat(path: string): StatResult {
-    const result = this.adaptStat(this.fs.stat(path));
-    // Override size for unmaterialized lazy files / archive entries
-    const entry = this.lazyFiles.get(result.ino);
-    if (entry) {
-      result.size = entry.size;
-    } else {
-      const group = this.lazyArchiveInodes.get(result.ino);
-      if (group) {
-        for (const archiveEntry of group.entries.values()) {
-          if (archiveEntry.ino === result.ino) {
-            result.size = archiveEntry.size;
-            break;
-          }
-        }
-      }
-    }
-    return result;
+    return this.adaptStatWithLazySize(this.fs.stat(path));
   }
 
   lstat(path: string): StatResult {
-    const result = this.adaptStat(this.fs.lstat(path));
-    // Override size for unmaterialized lazy files / archive entries
-    const entry = this.lazyFiles.get(result.ino);
-    if (entry) {
-      result.size = entry.size;
-    } else {
-      const group = this.lazyArchiveInodes.get(result.ino);
-      if (group) {
-        for (const archiveEntry of group.entries.values()) {
-          if (archiveEntry.ino === result.ino) {
-            result.size = archiveEntry.size;
-            break;
-          }
-        }
-      }
-    }
-    return result;
+    return this.adaptStatWithLazySize(this.fs.lstat(path));
   }
 
   statfs(path: string): StatfsResult {
@@ -1083,6 +1618,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     };
   }
 
+  pathconf(path: string, name: number): PathconfValue {
+    const stat = this.stat(path);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
+  }
+
   mkdir(path: string, mode: number): void {
     this.fs.mkdir(path, mode);
   }
@@ -1092,28 +1635,119 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   unlink(path: string): void {
-    // If the path belongs to an unmaterialized archive group, mark the entry
-    // as deleted so materialization skips it.
-    if (this.lazyArchiveInodes.size > 0) {
-      try {
-        const st = this.fs.lstat(path);
-        const group = this.lazyArchiveInodes.get(st.ino);
-        if (group) {
-          const entry = group.entries.get(path);
-          if (entry) entry.deleted = true;
-          this.lazyArchiveInodes.delete(st.ino);
-        }
-      } catch { /* not present — unlink will raise the real error */ }
+    const removed = this.fs.unlink(path);
+    const key = MemoryFileSystem.inodeKey(removed.ino, removed.generation);
+    if (
+      removed.linkCount > 1 &&
+      (this.lazyFiles.has(key) || this.lazyArchiveInodes.has(key))
+    ) {
+      // A peer may have added hard-link names this instance never observed.
+      // Rebuild aliases from SharedFS instead of treating an empty local path
+      // set as proof that the inode disappeared.
+      this.reconcileLazyIdentityState(this.fs.identityState());
+      return;
     }
-    this.fs.unlink(path);
+
+    const lazy = this.lazyFiles.get(key);
+    if (lazy) {
+      lazy.paths.delete(path);
+      if (removed.linkCount <= 1) {
+        this.lazyFiles.delete(key);
+      } else if (lazy.path === path) {
+        lazy.path = lazy.paths.values().next().value!;
+      }
+    }
+
+    const group = this.lazyArchiveInodes.get(key);
+    if (group) {
+      const entry = group.entries.get(path);
+      if (removed.linkCount <= 1) {
+        for (const candidate of group.entries.values()) {
+          if (
+            candidate.ino === removed.ino &&
+            candidate.generation === removed.generation
+          )
+            candidate.deleted = true;
+        }
+        this.lazyArchiveInodes.delete(key);
+      } else if (entry) {
+        group.entries.delete(path);
+      }
+    }
   }
 
   rename(oldPath: string, newPath: string): void {
-    this.fs.rename(oldPath, newPath);
+    const { source, replaced } = this.fs.rename(oldPath, newPath);
+
+    if (
+      replaced &&
+      replaced.ino === source.ino &&
+      replaced.generation === source.generation
+    )
+      return;
+
+    let reconciledNamespace = false;
+    if (replaced) {
+      const replacedKey = MemoryFileSystem.inodeKey(
+        replaced.ino,
+        replaced.generation,
+      );
+      if (
+        replaced.linkCount > 1 &&
+        (this.lazyFiles.has(replacedKey) ||
+          this.lazyArchiveInodes.has(replacedKey))
+      ) {
+        // The replaced inode survived through a hard link that may have been
+        // created by a peer. One authoritative reconciliation updates both
+        // that alias and the source paths changed by rename().
+        this.reconcileLazyIdentityState(this.fs.identityState());
+        reconciledNamespace = true;
+      }
+
+      const replacedLazy = this.lazyFiles.get(replacedKey);
+      if (!reconciledNamespace && replacedLazy) {
+        replacedLazy.paths.delete(newPath);
+        if (replaced.linkCount <= 1) {
+          this.lazyFiles.delete(replacedKey);
+        } else if (replacedLazy.path === newPath) {
+          replacedLazy.path = replacedLazy.paths.values().next().value!;
+        }
+      }
+      const replacedGroup = this.lazyArchiveInodes.get(replacedKey);
+      if (!reconciledNamespace && replacedGroup) {
+        const entry = replacedGroup.entries.get(newPath);
+        if (replaced.linkCount <= 1) {
+          if (entry) entry.deleted = true;
+          this.lazyArchiveInodes.delete(replacedKey);
+        } else if (entry) {
+          replacedGroup.entries.delete(newPath);
+        }
+      }
+    }
+
+    if (!reconciledNamespace) {
+      this.rewriteLazyNamespacePaths(source, oldPath, newPath);
+    }
   }
 
   link(existingPath: string, newPath: string): void {
-    this.fs.link(existingPath, newPath);
+    const sourceIdentity = this.fs.link(existingPath, newPath);
+    const key = MemoryFileSystem.inodeKey(
+      sourceIdentity.ino,
+      sourceIdentity.generation,
+    );
+    const lazy = this.lazyFiles.get(key);
+    if (lazy) lazy.paths.add(newPath);
+
+    const group = this.lazyArchiveInodes.get(key);
+    if (group) {
+      const source = Array.from(group.entries.values()).find(
+        (entry) =>
+          entry.ino === sourceIdentity.ino &&
+          entry.generation === sourceIdentity.generation,
+      );
+      if (source) group.entries.set(newPath, { ...source });
+    }
   }
 
   symlink(target: string, path: string): void {
@@ -1154,7 +1788,12 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.chmod(path, mode);
   }
 
-  symlinkWithOwner(target: string, path: string, uid: number, gid: number): void {
+  symlinkWithOwner(
+    target: string,
+    path: string,
+    uid: number,
+    gid: number,
+  ): void {
     this.symlink(target, path);
     this.lchown(path, uid, gid);
   }
@@ -1164,6 +1803,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     target: MemoryFileSystem,
     lazyFilePaths: Set<string>,
     lazyArchiveStubPaths: Set<string>,
+    hardLinks: Map<string, string>,
   ): void {
     const st = this.lstat(path);
     const kind = st.mode & S_IFMT;
@@ -1188,6 +1828,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             target,
             lazyFilePaths,
             lazyArchiveStubPaths,
+            hardLinks,
           );
         }
       } finally {
@@ -1197,8 +1838,16 @@ export class MemoryFileSystem implements FileSystemBackend {
       return;
     }
 
+    const identity = st.nlink > 1 ? `${st.dev}:${st.ino}` : null;
+    const existingHardLink = identity ? hardLinks.get(identity) : undefined;
+    if (existingHardLink) {
+      target.link(existingHardLink, path);
+      return;
+    }
+
     if (kind === S_IFLNK) {
       target.symlinkWithOwner(this.readlink(path), path, st.uid, st.gid);
+      if (identity) hardLinks.set(identity, path);
       return;
     }
 
@@ -1206,14 +1855,17 @@ export class MemoryFileSystem implements FileSystemBackend {
       throw new Error(`Unsupported file type while rebasing VFS: ${path}`);
     }
 
-    const isLazyStub = lazyFilePaths.has(path) || lazyArchiveStubPaths.has(path);
+    const isLazyStub =
+      lazyFilePaths.has(path) || lazyArchiveStubPaths.has(path);
     if (isLazyStub) {
       target.createFileWithOwner(path, mode, st.uid, st.gid, new Uint8Array(0));
       MemoryFileSystem.applyTimes(target, path, st);
+      if (identity) hardLinks.set(identity, path);
       return;
     }
 
     this.copyRegularFileToFreshFileSystem(path, target, st, mode);
+    if (identity) hardLinks.set(identity, path);
   }
 
   private copyRegularFileToFreshFileSystem(
@@ -1226,7 +1878,9 @@ export class MemoryFileSystem implements FileSystemBackend {
     let outFd: number | null = null;
     try {
       outFd = target.open(path, O_WRONLY_CREAT_TRUNC, mode);
-      const chunk = new Uint8Array(Math.min(COPY_CHUNK_BYTES, Math.max(1, st.size)));
+      const chunk = new Uint8Array(
+        Math.min(COPY_CHUNK_BYTES, Math.max(1, st.size)),
+      );
       let remaining = st.size;
       while (remaining > 0) {
         const wanted = Math.min(chunk.byteLength, remaining);
@@ -1258,7 +1912,11 @@ export class MemoryFileSystem implements FileSystemBackend {
     MemoryFileSystem.applyTimes(target, path, st);
   }
 
-  private static applyTimes(fs: MemoryFileSystem, path: string, st: StatResult): void {
+  private static applyTimes(
+    fs: MemoryFileSystem,
+    path: string,
+    st: StatResult,
+  ): void {
     const atimeSec = Math.floor(st.atimeMs / 1000);
     const atimeNsec = Math.floor((st.atimeMs - atimeSec * 1000) * 1_000_000);
     const mtimeSec = Math.floor(st.mtimeMs / 1000);
@@ -1271,7 +1929,13 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.fs.stat(path);
   }
 
-  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
+  utimensat(
+    path: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void {
     this.fs.utimens(path, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
   }
 
@@ -1285,8 +1949,10 @@ export class MemoryFileSystem implements FileSystemBackend {
     // Determine d_type from mode
     const mode = entry.stat.mode;
     let dtype = 0; // DT_UNKNOWN
-    if ((mode & 0xf000) === 0x8000) dtype = 8; // DT_REG
-    else if ((mode & 0xf000) === 0x4000) dtype = 4; // DT_DIR
+    if ((mode & 0xf000) === 0x8000)
+      dtype = 8; // DT_REG
+    else if ((mode & 0xf000) === 0x4000)
+      dtype = 4; // DT_DIR
     else if ((mode & 0xf000) === 0xa000) dtype = 10; // DT_LNK
     return { name: entry.name, type: dtype, ino: entry.stat.ino };
   }

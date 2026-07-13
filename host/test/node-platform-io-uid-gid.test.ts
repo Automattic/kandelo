@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { chmodSync, fstatSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, fstatSync, lstatSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodePlatformIO } from "../src/platform/node";
@@ -86,6 +86,33 @@ describe("NodePlatformIO uid/gid normalization", () => {
     expect(virtual.gid).toBe(5678);
     expect(nativeAfter.uid).toBe(nativeBefore.uid);
     expect(nativeAfter.gid).toBe(nativeBefore.gid);
+  });
+
+  it("lchown updates only symlink metadata, including for dangling links", () => {
+    const target = join(dir, "lchown-target.txt");
+    const link = join(dir, "lchown-link");
+    const dangling = join(dir, "lchown-dangling");
+    writeFileSync(target, "target");
+    symlinkSync(target, link);
+    symlinkSync(join(dir, "missing-target"), dangling);
+    const nativeLinkBefore = lstatSync(link);
+    const nativeTargetBefore = statSync(target);
+
+    const io = new NodePlatformIO();
+    io.lchown(link, 1234, 5678);
+    io.lchown(dangling, 2345, 6789);
+
+    expect(io.lstat(link)).toMatchObject({ uid: 1234, gid: 5678 });
+    expect(io.stat(link)).toMatchObject({ uid: 0, gid: 0 });
+    expect(io.lstat(dangling)).toMatchObject({ uid: 2345, gid: 6789 });
+    expect(lstatSync(link)).toMatchObject({
+      uid: nativeLinkBefore.uid,
+      gid: nativeLinkBefore.gid,
+    });
+    expect(statSync(target)).toMatchObject({
+      uid: nativeTargetBefore.uid,
+      gid: nativeTargetBefore.gid,
+    });
   });
 
   it("fchmod and fchown update virtual metadata without native changes", () => {

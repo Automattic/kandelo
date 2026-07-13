@@ -309,7 +309,7 @@ pub fn compute_sha(
             // Fold in declared outputs so changing what a build is
             // expected to produce invalidates the cache. Without this,
             // renaming a program's `wasm = "..."` (or any library
-            // libs/headers/pkgconfig path) leaves cache_key_sha
+            // libs/headers/pkgconfig/files path) leaves cache_key_sha
             // unchanged — the resolver then serves a canonical
             // directory that doesn't match the new declaration and
             // archive-stage packs broken archives. Bug discovered in
@@ -340,6 +340,17 @@ pub fn compute_sha(
                 h.update(b"|");
             }
             h.update(b"\n");
+            // Preserve every existing package's cache key: the additive files
+            // field participates only when authored. A universally empty
+            // section would invalidate the entire package registry merely for
+            // learning a new output kind.
+            if !target.outputs.files.is_empty() {
+                h.update(b"outputs.files:v1\n");
+                for s in &target.outputs.files {
+                    h.update((s.len() as u64).to_le_bytes());
+                    h.update(s.as_bytes());
+                }
+            }
             h.update(b"program_outputs:\n");
             for out in &target.program_outputs {
                 h.update(out.name.as_bytes());
@@ -350,6 +361,22 @@ pub fn compute_sha(
                     h.update(out.fork_instrumentation.as_str().as_bytes());
                 }
                 h.update(b"\n");
+            }
+            // Additive program runtime closure. Keep the section absent for
+            // existing manifests so learning this schema does not invalidate
+            // every historical package cache key.
+            if !target.runtime_files.is_empty() {
+                h.update(b"runtime_files:v1\n");
+                for runtime_file in &target.runtime_files {
+                    for field in [
+                        runtime_file.artifact.as_bytes(),
+                        runtime_file.guest_path.as_bytes(),
+                    ] {
+                        h.update((field.len() as u64).to_le_bytes());
+                        h.update(field);
+                    }
+                    h.update(runtime_file.mode.to_le_bytes());
+                }
             }
         }
     }
@@ -2059,7 +2086,7 @@ fn build_into_cache(
     }
 
     // Kind-aware validation. Library and program manifests carry a
-    // declared outputs list (libs/headers/pkgconfig or program wasms)
+    // declared outputs list (libs/headers/pkgconfig/files or program wasms)
     // that `validate_outputs` checks one-by-one. Source manifests have
     // no declared outputs — design 11 calls for emptiness as the only
     // signal — so we just verify the script populated OUT_DIR with at
@@ -2350,24 +2377,209 @@ fn required_exports_for_program_output(
     }
 }
 
-fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Result<(), String> {
-    if !matches!(target.kind, ManifestKind::Program) {
-        return Ok(());
+fn validate_declared_artifact(
+    target: &DepsManifest,
+    root: &Path,
+    rel: &str,
+    label: &str,
+    missing_suffix: &str,
+    require_regular_file: bool,
+) -> Result<PathBuf, String> {
+    let path = root.join(rel);
+    let metadata = std::fs::symlink_metadata(&path).map_err(|_| {
+        format!(
+            "{}: declared {} output {:?} {}",
+            target.spec(),
+            label,
+            rel,
+            missing_suffix
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{}: declared {} output {:?} must not be a symlink",
+            target.spec(),
+            label,
+            rel
+        ));
     }
-    for out in &target.program_outputs {
-        let path = dir.join(&out.wasm);
-        if !path.exists() {
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|e| format!("{}: resolve package artifact root: {e}", target.spec()))?;
+    let resolved = std::fs::canonicalize(&path).map_err(|e| {
+        format!(
+            "{}: resolve declared {} output {:?}: {e}",
+            target.spec(),
+            label,
+            rel
+        )
+    })?;
+    if !resolved.starts_with(&canonical_root) {
+        return Err(format!(
+            "{}: declared {} output {:?} resolves outside the package artifact root",
+            target.spec(),
+            label,
+            rel
+        ));
+    }
+    if require_regular_file && !metadata.is_file() {
+        return Err(format!(
+            "{}: declared {} output {:?} must be a regular file",
+            target.spec(),
+            label,
+            rel
+        ));
+    }
+    if !require_regular_file {
+        if metadata.is_file() {
+            return Ok(path);
+        }
+        if !metadata.is_dir() {
             return Err(format!(
-                "{}: declared wasm output {:?} missing from cache entry",
+                "{}: declared {} output {:?} must be a regular file or directory",
                 target.spec(),
-                out.wasm
+                label,
+                rel
             ));
         }
-        validate_wasm_artifact_policy(
-            &path,
-            out.fork_instrumentation,
-            required_exports_for_program_output(target, out),
-        )?;
+        let mut active_dirs = BTreeSet::new();
+        let leaf_count = validate_artifact_tree(&canonical_root, &path, &mut active_dirs)?;
+        if leaf_count == 0 {
+            return Err(format!(
+                "{}: declared {} output {:?} is an empty directory and cannot round-trip through an artifact archive",
+                target.spec(),
+                label,
+                rel
+            ));
+        }
+    }
+    Ok(path)
+}
+
+/// Validate every reachable leaf below a declared artifact directory.
+/// Internal symlinks are allowed because several library packages publish
+/// compatibility aliases; external/cyclic links and special files are not.
+fn validate_artifact_tree(
+    canonical_root: &Path,
+    path: &Path,
+    active_dirs: &mut BTreeSet<PathBuf>,
+) -> Result<usize, String> {
+    let link_metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("stat package artifact {}: {e}", path.display()))?;
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|e| format!("resolve package artifact {}: {e}", path.display()))?;
+    if !resolved.starts_with(canonical_root) {
+        return Err(format!(
+            "package artifact {} resolves outside {}",
+            path.display(),
+            canonical_root.display()
+        ));
+    }
+    let metadata = if link_metadata.file_type().is_symlink() {
+        std::fs::metadata(path)
+            .map_err(|e| format!("follow package artifact symlink {}: {e}", path.display()))?
+    } else {
+        link_metadata
+    };
+    if metadata.is_file() {
+        return Ok(1);
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "package artifact {} is not a regular file, directory, or contained symlink",
+            path.display()
+        ));
+    }
+    if !active_dirs.insert(resolved.clone()) {
+        return Err(format!(
+            "package artifact directory symlink cycle reaches {}",
+            path.display()
+        ));
+    }
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|e| format!("read package artifact directory {}: {e}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("read package artifact directory {}: {e}", path.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    let mut leaves = 0usize;
+    for entry in entries {
+        leaves += validate_artifact_tree(canonical_root, &entry.path(), active_dirs)?;
+    }
+    active_dirs.remove(&resolved);
+    Ok(leaves)
+}
+
+pub(crate) fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Result<(), String> {
+    match target.kind {
+        ManifestKind::Library => {
+            for rel in &target.outputs.libs {
+                validate_declared_artifact(
+                    target,
+                    dir,
+                    rel,
+                    "libs",
+                    "missing from cache entry",
+                    true,
+                )?;
+            }
+            for rel in &target.outputs.headers {
+                validate_declared_artifact(
+                    target,
+                    dir,
+                    rel,
+                    "headers",
+                    "missing from cache entry",
+                    false,
+                )?;
+            }
+            for rel in &target.outputs.pkgconfig {
+                validate_declared_artifact(
+                    target,
+                    dir,
+                    rel,
+                    "pkgconfig",
+                    "missing from cache entry",
+                    true,
+                )?;
+            }
+            for rel in &target.outputs.files {
+                validate_declared_artifact(
+                    target,
+                    dir,
+                    rel,
+                    "files",
+                    "missing from cache entry",
+                    true,
+                )?;
+            }
+        }
+        ManifestKind::Program => {
+            for out in &target.program_outputs {
+                let path = validate_declared_artifact(
+                    target,
+                    dir,
+                    &out.wasm,
+                    "wasm",
+                    "missing from cache entry",
+                    true,
+                )?;
+                validate_wasm_artifact_policy(
+                    &path,
+                    out.fork_instrumentation,
+                    required_exports_for_program_output(target, out),
+                )?;
+            }
+            for runtime_file in &target.runtime_files {
+                validate_declared_artifact(
+                    target,
+                    dir,
+                    &runtime_file.artifact,
+                    "runtime file",
+                    "missing from cache entry",
+                    true,
+                )?;
+            }
+        }
+        ManifestKind::Source => {}
     }
     Ok(())
 }
@@ -2375,42 +2587,71 @@ fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Result<(), Str
 fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String> {
     match target.kind {
         ManifestKind::Library => {
-            let check = |rel: &str, label: &str| -> Result<(), String> {
-                let p = out_dir.join(rel);
-                if !p.exists() {
-                    return Err(format!(
-                        "{}: declared {} output {:?} not produced by build script",
-                        target.spec(),
-                        label,
-                        rel
-                    ));
-                }
-                Ok(())
-            };
             for rel in &target.outputs.libs {
-                check(rel, "libs")?;
+                validate_declared_artifact(
+                    target,
+                    out_dir,
+                    rel,
+                    "libs",
+                    "not produced by build script",
+                    true,
+                )?;
             }
             for rel in &target.outputs.headers {
-                check(rel, "headers")?;
+                validate_declared_artifact(
+                    target,
+                    out_dir,
+                    rel,
+                    "headers",
+                    "not produced by build script",
+                    false,
+                )?;
             }
             for rel in &target.outputs.pkgconfig {
-                check(rel, "pkgconfig")?;
+                validate_declared_artifact(
+                    target,
+                    out_dir,
+                    rel,
+                    "pkgconfig",
+                    "not produced by build script",
+                    true,
+                )?;
+            }
+            for rel in &target.outputs.files {
+                validate_declared_artifact(
+                    target,
+                    out_dir,
+                    rel,
+                    "files",
+                    "not produced by build script",
+                    true,
+                )?;
             }
         }
         ManifestKind::Program => {
             for out in &target.program_outputs {
-                let p = out_dir.join(&out.wasm);
-                if !p.exists() {
-                    return Err(format!(
-                        "{}: declared wasm output {:?} not produced by build script",
-                        target.spec(),
-                        out.wasm
-                    ));
-                }
+                let p = validate_declared_artifact(
+                    target,
+                    out_dir,
+                    &out.wasm,
+                    "wasm",
+                    "not produced by build script",
+                    true,
+                )?;
                 validate_wasm_artifact_policy(
                     &p,
                     out.fork_instrumentation,
                     required_exports_for_program_output(target, out),
+                )?;
+            }
+            for runtime_file in &target.runtime_files {
+                validate_declared_artifact(
+                    target,
+                    out_dir,
+                    &runtime_file.artifact,
+                    "runtime file",
+                    "not produced by build script",
+                    true,
                 )?;
             }
         }
@@ -2599,7 +2840,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
         "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] \
-         <parse|sha|path|resolve|check|output-path|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
+         <parse|sha|path|resolve|check|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
@@ -2694,6 +2935,22 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     })?;
                     cmd_output_path(&manifest, &basename)
                 }
+                "runtime-file-path" => {
+                    let artifact = extra.ok_or_else(|| {
+                        "build-deps runtime-file-path: missing <artifact> \
+                         (usage: build-deps runtime-file-path <name|path> <artifact>)"
+                            .to_string()
+                    })?;
+                    cmd_runtime_file_path(&manifest, &artifact)
+                }
+                "runtime-file-metadata" => {
+                    let artifact = extra.ok_or_else(|| {
+                        "build-deps runtime-file-metadata: missing <artifact> \
+                         (usage: build-deps runtime-file-metadata <name|path> <artifact>)"
+                            .to_string()
+                    })?;
+                    cmd_runtime_file_metadata(&manifest, &artifact)
+                }
                 "output-fork-instrumentation" => {
                     let basename = extra.ok_or_else(|| {
                         "build-deps output-fork-instrumentation: missing <wasm-basename> \
@@ -2759,6 +3016,12 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
     if !m.outputs.pkgconfig.is_empty() {
         println!("outputs.pkgconfig= {:?}", m.outputs.pkgconfig);
     }
+    if !m.outputs.files.is_empty() {
+        println!("outputs.files    = {:?}", m.outputs.files);
+    }
+    if !m.runtime_files.is_empty() {
+        println!("runtime_files    = {:?}", m.runtime_files);
+    }
     Ok(())
 }
 
@@ -2808,6 +3071,63 @@ fn cmd_output_path(m: &DepsManifest, wasm_basename: &str) -> Result<(), String> 
     let rel = m.output_dest_rel(wasm_basename)?;
     println!("{}", rel.display());
     Ok(())
+}
+
+/// `runtime-file-path <name|path> <artifact>`: print the mirror path
+/// below `programs/<arch>/` used by local and resolver materialization.
+fn cmd_runtime_file_path(m: &DepsManifest, artifact: &str) -> Result<(), String> {
+    let rel = m.runtime_file_dest_rel(artifact)?;
+    println!("{}", rel.display());
+    Ok(())
+}
+
+/// Structured installation contract for VFS/image builders. JSON avoids
+/// consumers scraping Debug output and keeps guest path/mode authoritative.
+fn cmd_runtime_file_metadata(m: &DepsManifest, artifact: &str) -> Result<(), String> {
+    let value = runtime_file_metadata_value(m, artifact)?;
+    println!(
+        "{}",
+        serde_json::to_string(&value).map_err(|e| format!("serialize runtime metadata: {e}"))?
+    );
+    Ok(())
+}
+
+fn runtime_file_metadata_value(
+    m: &DepsManifest,
+    artifact: &str,
+) -> Result<serde_json::Value, String> {
+    let runtime_file = m
+        .runtime_files
+        .iter()
+        .find(|runtime_file| runtime_file.artifact == artifact)
+        .ok_or_else(|| {
+            format!(
+                "program {:?} has no [[runtime_files]] artifact {:?}",
+                m.name, artifact
+            )
+        })?;
+    // A runtime file is meaningful only alongside the exact executable and
+    // side-module outputs produced by the same program package archive. Give
+    // repo-side consumers the complete resolver mirror closure so they can
+    // select one materialization tier atomically instead of resolving each
+    // member independently and accidentally mixing builds.
+    let closure_mirror_paths: Vec<PathBuf> = m
+        .program_outputs
+        .iter()
+        .map(|output| m.output_dest_rel_for(output))
+        .chain(
+            m.runtime_files
+                .iter()
+                .map(|runtime_file| m.runtime_file_dest_rel_for(runtime_file)),
+        )
+        .collect();
+    Ok(serde_json::json!({
+        "artifact": runtime_file.artifact,
+        "guest_path": runtime_file.guest_path,
+        "mode": runtime_file.mode,
+        "mirror_path": m.runtime_file_dest_rel_for(runtime_file),
+        "closure_mirror_paths": closure_mirror_paths,
+    }))
 }
 
 fn cmd_output_fork_instrumentation(m: &DepsManifest, wasm_basename: &str) -> Result<(), String> {
@@ -2886,7 +3206,8 @@ fn cmd_resolve(
 }
 
 /// Place symlinks under `binaries_dir/programs/<arch>/` pointing at
-/// each declared `[[outputs]]` wasm in the cache canonical directory.
+/// each declared `[[outputs]]` artifact and `[[runtime_files]]` file in the
+/// cache canonical directory.
 ///
 /// Layout (per arch — wasm32 and wasm64 mirror in parallel):
 ///   * 1 output: `<binaries_dir>/programs/<arch>/<output.name>.wasm`.
@@ -2936,6 +3257,34 @@ fn place_binaries_symlinks(
         // Replace-in-place: remove any existing entry (file or
         // symlink), then create a fresh symlink. Skipping the remove
         // step would cause `symlink` to fail with EEXIST.
+        if dest.exists() || dest.symlink_metadata().is_ok() {
+            let _ = std::fs::remove_file(&dest);
+        }
+        std::os::unix::fs::symlink(&src, &dest)
+            .map_err(|e| format!("symlink {} -> {}: {e}", dest.display(), src.display()))?;
+    }
+    for runtime_file in &m.runtime_files {
+        let src = canonical.join(&runtime_file.artifact);
+        let metadata = std::fs::symlink_metadata(&src).map_err(|e| {
+            format!(
+                "declared runtime file {} not found in cache at {}: {e}",
+                runtime_file.artifact,
+                src.display()
+            )
+        })?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(format!(
+                "declared runtime file {} is not a regular non-symlink file at {}",
+                runtime_file.artifact,
+                src.display()
+            ));
+        }
+        let dest = arch_root.join(m.runtime_file_dest_rel_for(runtime_file));
+        let dest_dir = dest
+            .parent()
+            .ok_or_else(|| format!("dest path {} has no parent", dest.display()))?;
+        std::fs::create_dir_all(dest_dir)
+            .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
         if dest.exists() || dest.symlink_metadata().is_ok() {
             let _ = std::fs::remove_file(&dest);
         }
@@ -4134,6 +4483,70 @@ fork_instrumentation = "disabled"
         );
     }
 
+    #[test]
+    fn cache_key_sha_tracks_program_runtime_file_contract() {
+        let root = tempdir("sha-prog-runtime-file");
+        write_program_manifest(
+            &root,
+            "php",
+            "1.0.0",
+            "[[outputs]]\nname = \"php\"\nwasm = \"php.wasm\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let baseline = sha_of(&reg, "php");
+        let toml_path = root.join("php/package.toml");
+        let original = std::fs::read_to_string(&toml_path).unwrap();
+
+        let with_runtime = format!(
+            "{original}\n[[runtime_files]]\nartifact = \"icu.dat\"\nguest_path = \"/usr/lib/php/icu.dat\"\n"
+        );
+        std::fs::write(&toml_path, &with_runtime).unwrap();
+        let added = sha_of(&reg, "php");
+        assert_ne!(
+            baseline, added,
+            "adding runtime closure must invalidate the key"
+        );
+
+        std::fs::write(
+            &toml_path,
+            with_runtime.replace("/usr/lib/php/icu.dat", "/opt/php/icu.dat"),
+        )
+        .unwrap();
+        let moved = sha_of(&reg, "php");
+        assert_ne!(
+            added, moved,
+            "changing the guest path must invalidate the key"
+        );
+
+        std::fs::write(&toml_path, format!("{with_runtime}mode = 384\n")).unwrap();
+        let remoded = sha_of(&reg, "php");
+        assert_ne!(
+            added, remoded,
+            "changing runtime mode must invalidate the key"
+        );
+
+        // Length prefixes keep delimiter-bearing fields unambiguous. These
+        // two records collide under naive `artifact|guest` concatenation.
+        std::fs::write(
+            &toml_path,
+            format!("{original}\n[[runtime_files]]\nartifact = \"a|/b\"\nguest_path = \"/c\"\n"),
+        )
+        .unwrap();
+        let delimiter_a = sha_of(&reg, "php");
+        std::fs::write(
+            &toml_path,
+            format!("{original}\n[[runtime_files]]\nartifact = \"a\"\nguest_path = \"/b|/c\"\n"),
+        )
+        .unwrap();
+        let delimiter_b = sha_of(&reg, "php");
+        assert_ne!(
+            delimiter_a, delimiter_b,
+            "runtime hash fields must be framed"
+        );
+    }
+
     /// Pins behavior: program outputs are hashed in declaration order.
     /// Re-ordering DOES change cache_key_sha. We deliberately don't
     /// normalize because (a) the manifest preserves authored order
@@ -4251,6 +4664,69 @@ fork_instrumentation = "disabled"
         assert_ne!(
             sha_before, sha_after,
             "adding a library pkgconfig output must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_library_runtime_file_added() {
+        let root = tempdir("sha-lib-runtime-file-added");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "libZ");
+
+        let toml_path = root.join("libZ/package.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace(
+                "libs = [\"lib/liblibZ.a\"]",
+                "libs = [\"lib/liblibZ.a\"]\nfiles = [\"share/libZ.dat\"]",
+            ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "adding a library runtime file output must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn library_runtime_file_cache_keys_frame_delimiter_bearing_paths() {
+        let root = tempdir("sha-lib-runtime-file-framing");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let toml_path = root.join("libZ/package.toml");
+        let original = std::fs::read_to_string(&toml_path).unwrap();
+
+        std::fs::write(
+            &toml_path,
+            original.replace(
+                "libs = [\"lib/liblibZ.a\"]",
+                "libs = [\"lib/liblibZ.a\"]\nfiles = [\"a|b\", \"c\"]",
+            ),
+        )
+        .unwrap();
+        let delimiter_a = sha_of(&reg, "libZ");
+
+        std::fs::write(
+            &toml_path,
+            original.replace(
+                "libs = [\"lib/liblibZ.a\"]",
+                "libs = [\"lib/liblibZ.a\"]\nfiles = [\"a\", \"b|c\"]",
+            ),
+        )
+        .unwrap();
+        let delimiter_b = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            delimiter_a, delimiter_b,
+            "library runtime-file cache-key fields must be length framed"
         );
     }
 
@@ -4483,6 +4959,114 @@ libs = ["lib/libC.a"]
                 );
             }
         }
+    }
+
+    #[test]
+    fn ensure_built_fails_when_declared_runtime_file_missing() {
+        let root = tempdir("built-missing-runtime-file");
+        let cache = tempdir("built-missing-runtime-file-cache");
+        write_lib(
+            &root,
+            "libRuntimeMissing",
+            "1.0.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libRuntimeMissing.a""#,
+            r#"[outputs]
+libs = ["lib/libRuntimeMissing.a"]
+files = ["share/runtime.dat"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRuntimeMissing").unwrap();
+
+        let err =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap_err();
+        assert!(err.contains("declared files output"), "got: {err}");
+        assert!(err.contains("share/runtime.dat"), "got: {err}");
+    }
+
+    #[test]
+    fn ensure_built_accepts_declared_runtime_file() {
+        let root = tempdir("built-runtime-file");
+        let cache = tempdir("built-runtime-file-cache");
+        write_lib(
+            &root,
+            "libRuntime",
+            "1.0.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib" "$WASM_POSIX_DEP_OUT_DIR/share"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libRuntime.a"
+printf runtime > "$WASM_POSIX_DEP_OUT_DIR/share/runtime.dat""#,
+            r#"[outputs]
+libs = ["lib/libRuntime.a"]
+files = ["share/runtime.dat"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRuntime").unwrap();
+
+        let path =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.join("share/runtime.dat")).unwrap(),
+            "runtime"
+        );
+    }
+
+    #[test]
+    fn ensure_built_rejects_declared_runtime_file_directory() {
+        let root = tempdir("built-runtime-file-directory");
+        let cache = tempdir("built-runtime-file-directory-cache");
+        write_lib(
+            &root,
+            "libRuntimeDirectory",
+            "1.0.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib" "$WASM_POSIX_DEP_OUT_DIR/share/runtime.dat"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libRuntimeDirectory.a""#,
+            r#"[outputs]
+libs = ["lib/libRuntimeDirectory.a"]
+files = ["share/runtime.dat"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRuntimeDirectory").unwrap();
+
+        let err =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap_err();
+        assert!(err.contains("must be a regular file"), "got: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_built_rejects_declared_runtime_file_symlink_escape() {
+        let root = tempdir("built-runtime-file-symlink-escape");
+        let cache = tempdir("built-runtime-file-symlink-escape-cache");
+        let outside = root.join("outside.dat");
+        std::fs::write(&outside, b"outside").unwrap();
+        write_lib(
+            &root,
+            "libRuntimeSymlinkEscape",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib" "$WASM_POSIX_DEP_OUT_DIR/share"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libRuntimeSymlinkEscape.a"
+ln -s {:?} "$WASM_POSIX_DEP_OUT_DIR/share/runtime.dat""#,
+                outside
+            ),
+            r#"[outputs]
+libs = ["lib/libRuntimeSymlinkEscape.a"]
+files = ["share/runtime.dat"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRuntimeSymlinkEscape").unwrap();
+
+        let err =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap_err();
+        assert!(err.contains("must not be a symlink"), "got: {err}");
     }
 
     #[test]
@@ -5214,6 +5798,49 @@ cache_key_sha = "{cache_key_sha}"
         )
     }
 
+    fn archived_program_runtime_manifest_text(
+        name: &str,
+        arch: &str,
+        abi_versions: &[u32],
+        cache_key_sha: &str,
+    ) -> String {
+        let abi_csv = abi_versions
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"
+kind = "program"
+name = "{name}"
+version = "1.0.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/{name}.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "MIT"
+
+[[outputs]]
+name = "{name}"
+wasm = "{name}.wasm"
+
+[[runtime_files]]
+artifact = "icu.dat"
+guest_path = "/usr/lib/php/icu.dat"
+
+[compatibility]
+target_arch = "{arch}"
+abi_versions = [{abi_csv}]
+cache_key_sha = "{cache_key_sha}"
+"#,
+            ""
+        )
+    }
+
     /// Write a source `package.toml` + sibling `build.toml` for
     /// index-lookup-based resolution tests. The `build.toml`'s
     /// `[binary]` block points at `index_url` (typically a `file://`
@@ -5285,6 +5912,33 @@ index_url = "{index_url}"
 "#
         );
         std::fs::write(dir.join("build.toml"), build_toml).unwrap();
+    }
+
+    fn write_runtime_program_with_index(root: &Path, name: &str, index_url: &str) {
+        write_program(
+            root,
+            name,
+            "1.0.0",
+            &[],
+            &format!(
+                r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/{name}.wasm"
+printf RUNTIME-BYTES > "$WASM_POSIX_DEP_OUT_DIR/icu.dat"
+touch "$WASM_POSIX_DEP_OUT_DIR/via-build""#,
+            ),
+            &[(name, &format!("{name}.wasm"))],
+        );
+        append_program_runtime_file(root, name, "icu.dat", "/usr/lib/php/icu.dat");
+        let build_toml = format!(
+            r#"script_path = "{name}/build-{name}.sh"
+repo_url = "https://example.test/repo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+[binary]
+index_url = "{index_url}"
+"#,
+        );
+        fs::write(root.join(name).join("build.toml"), build_toml).unwrap();
     }
 
     /// Stage an `index.toml` at `path` declaring `name@1.0.0` with a
@@ -5656,6 +6310,185 @@ cache_key_sha = "{cache_key_hex}"
     }
 
     #[test]
+    fn fetched_program_runtime_file_matches_source_mirror_layout() {
+        let root = tempdir("runtime-fetch-parity-reg");
+        let remote_cache = tempdir("runtime-fetch-parity-remote-cache");
+        let source_cache = tempdir("runtime-fetch-parity-source-cache");
+        let remote_bin = tempdir("runtime-fetch-parity-remote-bin");
+        let source_bin = tempdir("runtime-fetch-parity-source-bin");
+        let archive_dir = tempdir("runtime-fetch-parity-archive");
+        let index_dir = tempdir("runtime-fetch-parity-index");
+        let index_path = index_dir.join("index.toml");
+        let index_url = format!("file://{}", index_path.display());
+        let name = "runtimeFetched";
+        write_runtime_program_with_index(&root, name, &index_url);
+
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = reg.load(name).unwrap();
+        let cache_key_hex = hex(&compute_sha(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap());
+        let archived_manifest = archived_program_runtime_manifest_text(
+            name,
+            TEST_ARCH.as_str(),
+            &[TEST_ABI],
+            &cache_key_hex,
+        );
+        let wasm_name = format!("{name}.wasm");
+        let wasm_bytes = b"\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b";
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &archived_manifest,
+            &[
+                (wasm_name.as_str(), wasm_bytes.as_slice()),
+                ("icu.dat", b"RUNTIME-BYTES"),
+            ],
+        );
+        let archive_path = archive_dir.join(format!("{name}-1.0.0.tar.zst"));
+        fs::write(&archive_path, &archive_bytes).unwrap();
+        stage_index_toml(
+            &index_path,
+            name,
+            TEST_ARCH,
+            &format!("file://{}", archive_path.display()),
+            &sha256_hex(&archive_bytes),
+            &cache_key_hex,
+        );
+
+        let remote_opts = ResolveOpts {
+            cache_root: &remote_cache,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: false,
+            repo_root: Some(&root),
+            binaries_dir: Some(&remote_bin),
+        };
+        let remote_path = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &remote_opts).unwrap();
+        assert!(!remote_path.join("via-build").exists());
+        place_binaries_symlinks(&manifest, &remote_path, &remote_bin, TEST_ARCH).unwrap();
+
+        let force = BTreeSet::from([name.to_string()]);
+        let source_opts = ResolveOpts {
+            cache_root: &source_cache,
+            local_libs: None,
+            force_source_build: Some(&force),
+            fetch_only: false,
+            repo_root: Some(&root),
+            binaries_dir: Some(&source_bin),
+        };
+        let source_path = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &source_opts).unwrap();
+        assert!(source_path.join("via-build").exists());
+        place_binaries_symlinks(&manifest, &source_path, &source_bin, TEST_ARCH).unwrap();
+
+        let mirror_rel = Path::new("programs/wasm32").join(name).join("icu.dat");
+        assert_eq!(
+            fs::read(remote_bin.join(&mirror_rel)).unwrap(),
+            b"RUNTIME-BYTES"
+        );
+        assert_eq!(
+            fs::read(source_bin.join(&mirror_rel)).unwrap(),
+            b"RUNTIME-BYTES"
+        );
+    }
+
+    #[test]
+    fn incomplete_fetched_runtime_file_falls_back_or_fails_fetch_only() {
+        let root = tempdir("runtime-fetch-incomplete-reg");
+        let fallback_cache = tempdir("runtime-fetch-incomplete-fallback-cache");
+        let fetch_only_cache = tempdir("runtime-fetch-incomplete-only-cache");
+        let archive_dir = tempdir("runtime-fetch-incomplete-archive");
+        let index_dir = tempdir("runtime-fetch-incomplete-index");
+        let index_path = index_dir.join("index.toml");
+        let index_url = format!("file://{}", index_path.display());
+        let name = "runtimeIncomplete";
+        write_runtime_program_with_index(&root, name, &index_url);
+
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = reg.load(name).unwrap();
+        let cache_key_hex = hex(&compute_sha(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap());
+        let archived_manifest = archived_program_runtime_manifest_text(
+            name,
+            TEST_ARCH.as_str(),
+            &[TEST_ABI],
+            &cache_key_hex,
+        );
+        let wasm_name = format!("{name}.wasm");
+        let wasm_bytes = b"\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b";
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &archived_manifest,
+            &[(wasm_name.as_str(), wasm_bytes.as_slice())],
+        );
+        let archive_path = archive_dir.join(format!("{name}-1.0.0.tar.zst"));
+        fs::write(&archive_path, &archive_bytes).unwrap();
+        stage_index_toml(
+            &index_path,
+            name,
+            TEST_ARCH,
+            &format!("file://{}", archive_path.display()),
+            &sha256_hex(&archive_bytes),
+            &cache_key_hex,
+        );
+
+        let fallback = ensure_built(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&fallback_cache, None),
+        )
+        .unwrap();
+        assert!(fallback.join("via-build").exists());
+        assert_eq!(
+            fs::read(fallback.join("icu.dat")).unwrap(),
+            b"RUNTIME-BYTES"
+        );
+
+        let fetch_only_opts = ResolveOpts {
+            cache_root: &fetch_only_cache,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: true,
+            repo_root: Some(&root),
+            binaries_dir: None,
+        };
+        let err = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &fetch_only_opts).unwrap_err();
+        assert!(err.contains("fetch-only"), "got: {err}");
+        assert!(!canonical_path(
+            &fetch_only_cache,
+            &manifest,
+            TEST_ARCH,
+            &compute_sha(
+                &manifest,
+                &reg,
+                TEST_ARCH,
+                TEST_ABI,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+            )
+            .unwrap(),
+        )
+        .join("via-build")
+        .exists());
+    }
+
+    #[test]
     fn index_fetch_falls_through_on_archive_sha_mismatch() {
         let root = tempdir("idx-shafail-reg");
         let cache = tempdir("idx-shafail-cache");
@@ -5947,6 +6780,15 @@ spdx = "MIT"
         }
     }
 
+    fn append_program_runtime_file(root: &Path, name: &str, artifact: &str, guest_path: &str) {
+        let manifest_path = root.join(name).join("package.toml");
+        let mut text = fs::read_to_string(&manifest_path).unwrap();
+        text.push_str(&format!(
+            "\n[[runtime_files]]\nartifact = {artifact:?}\nguest_path = {guest_path:?}\n"
+        ));
+        fs::write(manifest_path, text).unwrap();
+    }
+
     #[test]
     fn canonical_path_uses_programs_subdir_for_program_kind() {
         let m = DepsManifest::parse(
@@ -6008,6 +6850,141 @@ wasm = "vim.wasm"
         let err =
             ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None)).unwrap_err();
         assert!(err.contains("miss.wasm"), "got: {err}");
+    }
+
+    #[test]
+    fn program_runtime_file_is_required_and_cached_as_a_regular_file() {
+        let root = tempdir("prog-runtime-file");
+        let cache = tempdir("prog-runtime-file-cache");
+        write_program(
+            &root,
+            "runtimeprog",
+            "0.1.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/runtimeprog.wasm"
+printf runtime-data > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
+            &[("runtimeprog", "runtimeprog.wasm")],
+        );
+        append_program_runtime_file(&root, "runtimeprog", "icu.dat", "/usr/lib/php/icu.dat");
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("runtimeprog").unwrap();
+        assert_eq!(
+            runtime_file_metadata_value(&m, "icu.dat").unwrap(),
+            serde_json::json!({
+                "artifact": "icu.dat",
+                "guest_path": "/usr/lib/php/icu.dat",
+                "mode": 420,
+                "mirror_path": "runtimeprog/icu.dat",
+                "closure_mirror_paths": [
+                    "runtimeprog.wasm",
+                    "runtimeprog/icu.dat",
+                ],
+            })
+        );
+        let path =
+            ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None)).unwrap();
+        assert_eq!(fs::read(path.join("icu.dat")).unwrap(), b"runtime-data");
+
+        fs::remove_file(path.join("icu.dat")).unwrap();
+        let err = validate_cache_artifacts(&m, &path).unwrap_err();
+        assert!(
+            err.contains("runtime file") && err.contains("missing"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_file_metadata_lists_the_complete_multi_output_closure() {
+        let manifest = DepsManifest::parse(
+            r#"kind = "program"
+name = "runtimeprog"
+version = "1.0"
+depends_on = []
+[source]
+url = "https://example.test/runtimeprog.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "runtimeprog"
+wasm = "bin/runtimeprog.wasm"
+[[outputs]]
+name = "module"
+wasm = "extensions/module.so"
+[[runtime_files]]
+artifact = "share/icu.dat"
+guest_path = "/usr/lib/runtimeprog/icu.dat"
+[[runtime_files]]
+artifact = "share/timezone.dat"
+guest_path = "/usr/lib/runtimeprog/timezone.dat"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+
+        let metadata = runtime_file_metadata_value(&manifest, "share/icu.dat").unwrap();
+        assert_eq!(
+            metadata["closure_mirror_paths"],
+            serde_json::json!([
+                "runtimeprog/runtimeprog.wasm",
+                "runtimeprog/module.so",
+                "runtimeprog/share/icu.dat",
+                "runtimeprog/share/timezone.dat",
+            ])
+        );
+    }
+
+    #[test]
+    fn build_fails_when_program_runtime_file_is_missing() {
+        let root = tempdir("prog-runtime-file-missing");
+        let cache = tempdir("prog-runtime-file-missing-cache");
+        write_program(
+            &root,
+            "runtimemissing",
+            "0.1.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/runtimemissing.wasm""#,
+            &[("runtimemissing", "runtimemissing.wasm")],
+        );
+        append_program_runtime_file(&root, "runtimemissing", "icu.dat", "/usr/lib/php/icu.dat");
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("runtimemissing").unwrap();
+        let err =
+            ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None)).unwrap_err();
+        assert!(
+            err.contains("runtime file") && err.contains("icu.dat"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_rejects_program_runtime_file_symlink() {
+        let root = tempdir("prog-runtime-file-symlink");
+        let cache = tempdir("prog-runtime-file-symlink-cache");
+        let outside = root.join("outside.dat");
+        fs::write(&outside, b"outside").unwrap();
+        write_program(
+            &root,
+            "runtimesymlink",
+            "0.1.0",
+            &[],
+            &format!(
+                r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/runtimesymlink.wasm"
+ln -s {:?} "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
+                outside
+            ),
+            &[("runtimesymlink", "runtimesymlink.wasm")],
+        );
+        append_program_runtime_file(&root, "runtimesymlink", "icu.dat", "/usr/lib/php/icu.dat");
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("runtimesymlink").unwrap();
+        let err =
+            ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None)).unwrap_err();
+        assert!(err.contains("must not be a symlink"), "got: {err}");
     }
 
     #[test]
@@ -7285,6 +8262,36 @@ libs = ["lib/libF3b.a"]
             "symlink target unreadable: {}",
             link.display()
         );
+    }
+
+    #[test]
+    fn cmd_resolve_materializes_program_runtime_file_under_package_directory() {
+        let root = tempdir("resolve-bdir-runtime-reg");
+        let cache = tempdir("resolve-bdir-runtime-cache");
+        let bin_dir = tempdir("resolve-bdir-runtime-bin");
+        write_program(
+            &root,
+            "runtimebin",
+            "0.1.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/runtimebin.wasm"
+printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
+            &[("runtimebin", "runtimebin.wasm")],
+        );
+        append_program_runtime_file(&root, "runtimebin", "icu.dat", "/usr/lib/php/icu.dat");
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let m = reg.load("runtimebin").unwrap();
+
+        cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm32, &cache, Some(&bin_dir))
+            .unwrap();
+
+        let runtime = bin_dir.join("programs/wasm32/runtimebin/icu.dat");
+        assert!(runtime.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(runtime).unwrap(), b"canonical-runtime");
+        assert!(bin_dir.join("programs/wasm32/runtimebin.wasm").exists());
     }
 
     #[test]

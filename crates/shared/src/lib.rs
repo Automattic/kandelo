@@ -26,7 +26,61 @@ pub mod host_abi;
 ///     the shared point of contact for all programs.
 /// 16: process creation takes explicit stdio descriptor kinds and removes the
 ///     post-creation stdin pipe mutation export.
-pub const ABI_VERSION: u32 = 16;
+/// 17: intentionally skipped during release coordination.
+/// 18: fork frame cursors are absolute save-buffer addresses, isolating
+///     concurrent pthread unwind payloads.
+/// 19: bridged TCP EPIPE delivery raises SIGPIPE unless the caller suppresses
+///     it, matching the signal contract of local stream writes.
+/// 20: mremap rejects unsupported flag bits instead of silently accepting
+///     them under the existing syscall number.
+/// 21: missing, PID-zero, and reaped procfs paths report ENOENT instead of
+///     returning synthetic success through stat/access/path operations.
+/// 22: socket addresses, option pointers, accepted descriptors, multicast,
+///     routing, hostname errors, and inherited socket state are reconciled.
+/// 23: TCP FIN, EOF, EPIPE, wakeup, bridge-reader, and queued-data behavior
+///     use the required real-reader kernel export.
+/// 24: datagram admission, Unix EAGAIN, blocking, readiness, wakeups, and
+///     finite deadlines expose queue pressure consistently.
+/// 25: broadcast errors, MSG_TRUNC results, and zero-length output pointers
+///     follow the reconciled datagram contract.
+/// 26: wait/signal, mmap, exec, descriptor/socket/shared-memory inheritance,
+///     fork metadata, epoll, sleep, and forced-removal state are preserved.
+/// 27: rebuilt PHP programs require the cooperative VM-interrupt host hook,
+///     and POSIX timer notifications use validated fixed-width signal fields.
+/// 28: host path, clock/timer, exec/spawn, worker, and persistent-VFS behavior
+///     is aligned across Node and browser runtime boundaries.
+/// 29: cancellation-point function types, 64-bit argument slots, lseek state,
+///     and select/pselect signal interruption are reconciled.
+/// 30: launch environments and unchanged-ID chown operations preserve their
+///     process, authorization, and backend-error semantics.
+/// 31: operation-wide file-size preflight and exact-thread SIGXFSZ delivery
+///     are required for write-family operations.
+/// 32: component-wise path, symlink, mount, errno, and current-directory
+///     resolution use one canonical namespace contract.
+/// 33: no-follow symlink ownership requires the lchown host surface and its
+///     descriptor/flag behavior.
+/// 34: pathconf uses 64-bit result storage, live-object queries, and the
+///     required host marshalling surface.
+/// 35: wait/status/rusage, WNOWAIT, stop/continue, blocking, and pthread-exit
+///     lifecycle use the reconciled process wire contract.
+/// 36: side-module replay-control memory and concurrent pthread-fork
+///     arbitration share one host/guest continuation contract.
+/// 37: pending host-delegated AF_INET stream connects expose EINPROGRESS then
+///     EALREADY to non-blocking callers while blocking callers wait for the
+///     same host handshake to complete or fail.
+/// 38: sched_getaffinity marshals its fixed kernel mask across process memory,
+///     validates live task identity, and exposes the Linux raw return contract.
+/// 39: kernel-owned POSIX timer expiration preserves exact thread targets,
+///     SI_TIMER metadata, overruns, and finite signal-wait deadlines through
+///     the required host timer-fire export.
+pub const ABI_VERSION: u32 = 39;
+
+/// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
+///
+/// The current kernel models one CPU and uses one wasm32 kernel word. Both
+/// wasm32 and wasm64 guests therefore receive the same four-byte raw mask;
+/// changing this width is an ABI change.
+pub const SCHED_AFFINITY_MASK_SIZE: u32 = 4;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +371,65 @@ impl Syscall {
     }
 }
 
+/// ABI-visible names accepted by `pathconf()` and `fpathconf()`.
+///
+/// These values are consumed by libc, the kernel, and the generated host
+/// bindings. Keep the numeric contract centralized here rather than copying
+/// the `_PC_*` numbering into each layer.
+pub mod pathconf {
+    pub const LINK_MAX: i32 = 0;
+    pub const MAX_CANON: i32 = 1;
+    pub const MAX_INPUT: i32 = 2;
+    pub const NAME_MAX: i32 = 3;
+    pub const PATH_MAX: i32 = 4;
+    pub const PIPE_BUF: i32 = 5;
+    pub const CHOWN_RESTRICTED: i32 = 6;
+    pub const NO_TRUNC: i32 = 7;
+    pub const VDISABLE: i32 = 8;
+    pub const SYNC_IO: i32 = 9;
+    pub const ASYNC_IO: i32 = 10;
+    pub const PRIO_IO: i32 = 11;
+    pub const SOCK_MAXBUF: i32 = 12;
+    pub const FILESIZEBITS: i32 = 13;
+    pub const REC_INCR_XFER_SIZE: i32 = 14;
+    pub const REC_MAX_XFER_SIZE: i32 = 15;
+    pub const REC_MIN_XFER_SIZE: i32 = 16;
+    pub const REC_XFER_ALIGN: i32 = 17;
+    pub const ALLOC_SIZE_MIN: i32 = 18;
+    pub const SYMLINK_MAX: i32 = 19;
+    pub const POSIX2_SYMLINKS: i32 = 20;
+    pub const FALLOC: i32 = 21;
+    pub const TEXTDOMAIN_MAX: i32 = 22;
+    pub const TIMESTAMP_RESOLUTION: i32 = 23;
+
+    pub const ABI_NAMES: &[(&str, i32)] = &[
+        ("LINK_MAX", LINK_MAX),
+        ("MAX_CANON", MAX_CANON),
+        ("MAX_INPUT", MAX_INPUT),
+        ("NAME_MAX", NAME_MAX),
+        ("PATH_MAX", PATH_MAX),
+        ("PIPE_BUF", PIPE_BUF),
+        ("CHOWN_RESTRICTED", CHOWN_RESTRICTED),
+        ("NO_TRUNC", NO_TRUNC),
+        ("VDISABLE", VDISABLE),
+        ("SYNC_IO", SYNC_IO),
+        ("ASYNC_IO", ASYNC_IO),
+        ("PRIO_IO", PRIO_IO),
+        ("SOCK_MAXBUF", SOCK_MAXBUF),
+        ("FILESIZEBITS", FILESIZEBITS),
+        ("REC_INCR_XFER_SIZE", REC_INCR_XFER_SIZE),
+        ("REC_MAX_XFER_SIZE", REC_MAX_XFER_SIZE),
+        ("REC_MIN_XFER_SIZE", REC_MIN_XFER_SIZE),
+        ("REC_XFER_ALIGN", REC_XFER_ALIGN),
+        ("ALLOC_SIZE_MIN", ALLOC_SIZE_MIN),
+        ("SYMLINK_MAX", SYMLINK_MAX),
+        ("POSIX2_SYMLINKS", POSIX2_SYMLINKS),
+        ("FALLOC", FALLOC),
+        ("TEXTDOMAIN_MAX", TEXTDOMAIN_MAX),
+        ("TIMESTAMP_RESOLUTION", TIMESTAMP_RESOLUTION),
+    ];
+}
+
 /// Status of the shared-memory syscall channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -360,6 +473,7 @@ pub enum Errno {
     EBUSY = 16,
     EEXIST = 17,
     EXDEV = 18,
+    ENODEV = 19,
     ENOTDIR = 20,
     EISDIR = 21,
     EINVAL = 22,
@@ -424,6 +538,7 @@ impl Errno {
             16 => Some(Errno::EBUSY),
             17 => Some(Errno::EEXIST),
             18 => Some(Errno::EXDEV),
+            19 => Some(Errno::ENODEV),
             20 => Some(Errno::ENOTDIR),
             21 => Some(Errno::EISDIR),
             22 => Some(Errno::EINVAL),
@@ -562,6 +677,7 @@ pub mod socket {
     pub const SOCK_CLOEXEC: u32 = 0o2000000;
     pub const SOL_SOCKET: u32 = 1;
     pub const SCM_RIGHTS: u32 = 1;
+    pub const SCM_CREDENTIALS: u32 = 2;
     pub const SO_REUSEADDR: u32 = 2;
     pub const SO_ERROR: u32 = 4;
     pub const SO_KEEPALIVE: u32 = 9;
@@ -570,15 +686,49 @@ pub mod socket {
     pub const SO_TYPE: u32 = 3;
     pub const SO_DOMAIN: u32 = 39;
     pub const SO_ACCEPTCONN: u32 = 30;
+    pub const SO_REUSEPORT: u32 = 15;
+    pub const SO_PASSCRED: u32 = 16;
     pub const SHUT_RD: u32 = 0;
     pub const SHUT_WR: u32 = 1;
     pub const SHUT_RDWR: u32 = 2;
     pub const SO_BROADCAST: u32 = 6;
     pub const SO_LINGER: u32 = 13;
+    pub const SO_BINDTODEVICE: u32 = 25;
+    pub const SO_ATTACH_REUSEPORT_CBPF: u32 = 51;
+    pub const SO_ZEROCOPY: u32 = 60;
+    // Traditional Linux numbers used when `long` is 64 bits (including
+    // wasm64). The time64 aliases below are used when `long` is 32 bits.
+    pub const SO_RCVTIMEO_OLD: u32 = 20;
+    pub const SO_SNDTIMEO_OLD: u32 = 21;
     // time64 values used by musl on wasm32 (where __LONG_MAX == 0x7fffffff)
     pub const SO_RCVTIMEO: u32 = 66;
     pub const SO_SNDTIMEO: u32 = 67;
+    pub const IPPROTO_IP: u32 = 0;
     pub const IPPROTO_TCP: u32 = 6;
+    pub const IPPROTO_UDP: u32 = 17;
+    pub const IPPROTO_IPV6: u32 = 41;
+    pub const IP_TOS: u32 = 1;
+    pub const IP_PKTINFO: u32 = 8;
+    pub const IP_MTU_DISCOVER: u32 = 10;
+    pub const IP_MTU: u32 = 14;
+    pub const IP_MULTICAST_IF: u32 = 32;
+    pub const IP_MULTICAST_TTL: u32 = 33;
+    pub const IP_MULTICAST_LOOP: u32 = 34;
+    pub const IP_ADD_MEMBERSHIP: u32 = 35;
+    pub const IP_DROP_MEMBERSHIP: u32 = 36;
+    pub const IP_UNBLOCK_SOURCE: u32 = 37;
+    pub const IP_BLOCK_SOURCE: u32 = 38;
+    pub const IP_ADD_SOURCE_MEMBERSHIP: u32 = 39;
+    pub const IP_DROP_SOURCE_MEMBERSHIP: u32 = 40;
+    pub const IP_MSFILTER: u32 = 41;
+    pub const MCAST_JOIN_GROUP: u32 = 42;
+    pub const MCAST_BLOCK_SOURCE: u32 = 43;
+    pub const MCAST_UNBLOCK_SOURCE: u32 = 44;
+    pub const MCAST_LEAVE_GROUP: u32 = 45;
+    pub const MCAST_JOIN_SOURCE_GROUP: u32 = 46;
+    pub const MCAST_LEAVE_SOURCE_GROUP: u32 = 47;
+    pub const MCAST_MSFILTER: u32 = 48;
+    pub const IP_MULTICAST_ALL: u32 = 49;
     pub const TCP_NODELAY: u32 = 1;
     pub const TCP_CORK: u32 = 3;
     pub const TCP_KEEPIDLE: u32 = 4;
@@ -587,9 +737,20 @@ pub mod socket {
     pub const TCP_DEFER_ACCEPT: u32 = 9;
     pub const TCP_INFO: u32 = 11;
     pub const TCP_QUICKACK: u32 = 12;
+    pub const TCP_CONGESTION: u32 = 13;
     pub const TCP_USER_TIMEOUT: u32 = 18;
+    pub const IPV6_MULTICAST_IF: u32 = 17;
+    pub const IPV6_MULTICAST_HOPS: u32 = 18;
+    pub const IPV6_MULTICAST_LOOP: u32 = 19;
+    pub const IPV6_V6ONLY: u32 = 26;
+    pub const IPV6_RECVPKTINFO: u32 = 49;
+    pub const IPV6_PKTINFO: u32 = 50;
+    pub const IPV6_DONTFRAG: u32 = 62;
+    pub const IPV6_RECVTCLASS: u32 = 66;
+    pub const IPV6_TCLASS: u32 = 67;
     pub const MSG_OOB: u32 = 1;
     pub const MSG_PEEK: u32 = 2;
+    pub const MSG_TRUNC: u32 = 0x20;
     pub const MSG_DONTWAIT: u32 = 64;
     pub const MSG_NOSIGNAL: u32 = 0x4000;
 }
@@ -788,6 +949,8 @@ pub mod signal {
     pub const SIGCONT: u32 = 18;
     pub const SIGSTOP: u32 = 19;
     pub const SIGTSTP: u32 = 20;
+    pub const SIGTTIN: u32 = 21;
+    pub const SIGTTOU: u32 = 22;
     pub const SIGXCPU: u32 = 24;
     pub const SIGXFSZ: u32 = 25;
     pub const SIGWINCH: u32 = 28;
@@ -816,8 +979,8 @@ pub mod signal {
     pub const SA_DEFAULT_TERM: u32 = 0; // Terminate
     pub const SA_DEFAULT_IGN: u32 = 1; // Ignore
     pub const SA_DEFAULT_CORE: u32 = 2; // Core dump (treated as terminate in Wasm)
-    pub const SA_DEFAULT_STOP: u32 = 3; // Stop (not supported in Wasm)
-    pub const SA_DEFAULT_CONT: u32 = 4; // Continue (not supported in Wasm)
+    pub const SA_DEFAULT_STOP: u32 = 3; // Stop until a continue transition
+    pub const SA_DEFAULT_CONT: u32 = 4; // Continue a stopped process
 }
 
 /// Resource limit constants for getrlimit/setrlimit.
@@ -840,6 +1003,110 @@ pub mod rusage {
     pub const RUSAGE_CHILDREN: i32 = -1;
 }
 
+/// Process-wait event, option, result, and host-wakeup constants.
+pub mod wait {
+    /// A child exit event is eligible for selection.
+    pub const EVENT_EXITED: u32 = 1;
+    /// A child stop event is eligible for selection.
+    pub const EVENT_STOPPED: u32 = 2;
+    /// A child continue event is eligible for selection.
+    pub const EVENT_CONTINUED: u32 = 4;
+
+    pub const WNOHANG: u32 = 1;
+    pub const WUNTRACED: u32 = 2;
+    pub const WSTOPPED: u32 = WUNTRACED;
+    pub const WEXITED: u32 = 4;
+    pub const WCONTINUED: u32 = 8;
+    pub const WNOWAIT: u32 = 0x0100_0000;
+
+    pub const CLD_EXITED: i32 = 1;
+    pub const CLD_KILLED: i32 = 2;
+    pub const CLD_STOPPED: i32 = 5;
+    pub const CLD_CONTINUED: i32 = 6;
+
+    pub const PROCESS_STATE_RUNNING: i32 = 0;
+    pub const PROCESS_STATE_STOPPED: i32 = 1;
+    pub const PROCESS_STATE_EXITED: i32 = 2;
+
+    /// Host retry wake reason: the process entered a stopped state.
+    pub const WAKE_PROCESS_STOPPED: u8 = 16;
+    /// Host retry wake reason: the process resumed from a stopped state.
+    pub const WAKE_PROCESS_CONTINUED: u8 = 32;
+}
+
+/// Fixed-width kernel/musl resource-usage wire record.
+///
+/// This is not musl's public `struct rusage`, whose size depends on the
+/// target's `long` width. Both wasm32 and wasm64 exchange the meaningful
+/// prefix as eighteen little-endian 64-bit slots.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct WasmRusageWire {
+    pub ru_utime_sec: i64,
+    pub ru_utime_usec: i64,
+    pub ru_stime_sec: i64,
+    pub ru_stime_usec: i64,
+    pub ru_maxrss: i64,
+    pub ru_ixrss: i64,
+    pub ru_idrss: i64,
+    pub ru_isrss: i64,
+    pub ru_minflt: i64,
+    pub ru_majflt: i64,
+    pub ru_nswap: i64,
+    pub ru_inblock: i64,
+    pub ru_oublock: i64,
+    pub ru_msgsnd: i64,
+    pub ru_msgrcv: i64,
+    pub ru_nsignals: i64,
+    pub ru_nvcsw: i64,
+    pub ru_nivcsw: i64,
+}
+
+/// Compatibility name used by kernel-side wait/resource-usage code.
+pub type KernelRusage = WasmRusageWire;
+
+pub const WASM_RUSAGE_WIRE_SIZE: u32 = core::mem::size_of::<WasmRusageWire>() as u32;
+
+/// Fixed result record written by `kernel_wait_child_poll`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct KernelWaitResult {
+    pub wait_status: i32,
+    pub si_code: i32,
+    pub si_status: i32,
+    pub child_uid: u32,
+    pub rusage: WasmRusageWire,
+}
+
+pub const KERNEL_WAIT_RESULT_SIZE: u32 = core::mem::size_of::<KernelWaitResult>() as u32;
+
+#[cfg(test)]
+mod wait_abi_tests {
+    use super::{KERNEL_WAIT_RESULT_SIZE, KernelWaitResult, WASM_RUSAGE_WIRE_SIZE, WasmRusageWire};
+    use core::mem::{offset_of, size_of};
+
+    #[test]
+    fn rusage_wire_layout_is_eighteen_i64_slots() {
+        assert_eq!(WASM_RUSAGE_WIRE_SIZE, 144);
+        assert_eq!(size_of::<WasmRusageWire>(), 144);
+        assert_eq!(offset_of!(WasmRusageWire, ru_utime_sec), 0);
+        assert_eq!(offset_of!(WasmRusageWire, ru_stime_sec), 16);
+        assert_eq!(offset_of!(WasmRusageWire, ru_maxrss), 32);
+        assert_eq!(offset_of!(WasmRusageWire, ru_nivcsw), 136);
+    }
+
+    #[test]
+    fn kernel_wait_result_layout_is_stable() {
+        assert_eq!(KERNEL_WAIT_RESULT_SIZE, 160);
+        assert_eq!(size_of::<KernelWaitResult>(), 160);
+        assert_eq!(offset_of!(KernelWaitResult, wait_status), 0);
+        assert_eq!(offset_of!(KernelWaitResult, si_code), 4);
+        assert_eq!(offset_of!(KernelWaitResult, si_status), 8);
+        assert_eq!(offset_of!(KernelWaitResult, child_uid), 12);
+        assert_eq!(offset_of!(KernelWaitResult, rusage), 16);
+    }
+}
+
 /// select() constants.
 pub mod select {
     pub const FD_SETSIZE: usize = 1024;
@@ -853,6 +1120,9 @@ pub mod clock {
     pub const CLOCK_MONOTONIC: u32 = 1;
     pub const CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
     pub const CLOCK_THREAD_CPUTIME_ID: u32 = 3;
+    pub const CLOCK_REALTIME_COARSE: u32 = 5;
+    pub const CLOCK_MONOTONIC_COARSE: u32 = 6;
+    pub const CLOCK_BOOTTIME: u32 = 7;
 }
 
 /// Timespec structure for the Wasm POSIX interface.
@@ -1093,13 +1363,19 @@ pub mod abi {
         "kernel_create_process",
         "kernel_create_process_with_stdio",
         "kernel_get_parent_pid",
+        "kernel_get_process_exit_signal",
+        "kernel_get_process_state",
         "kernel_handle_channel",
+        "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
         "kernel_mark_process_signaled",
+        "kernel_pipe_has_readers",
+        "kernel_posix_timer_fire",
+        "kernel_prepare_write_operation",
         "kernel_reap_exited_child",
         "kernel_remove_process",
-        "kernel_wait4_poll",
+        "kernel_wait_child_poll",
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
@@ -1164,6 +1440,7 @@ pub mod abi {
         pub const SYS_SCHED_YIELD: u32 = 229;
         pub const SYS_SCHED_GETPARAM: u32 = 230;
         pub const SYS_SCHED_RR_GET_INTERVAL: u32 = 236;
+        pub const SYS_SCHED_GETAFFINITY: u32 = 238;
         pub const SYS_EPOLL_CREATE1: u32 = 239;
         pub const SYS_EPOLL_CTL: u32 = 240;
         pub const SYS_EPOLL_PWAIT: u32 = 241;
@@ -1180,6 +1457,7 @@ pub mod abi {
         pub const SYS_SENDFILE: u32 = 294;
         pub const SYS_PREADV: u32 = 295;
         pub const SYS_PWRITEV: u32 = 296;
+        pub const SYS_LCHOWN: u32 = 299;
         pub const SYS_FALLOCATE: u32 = 308;
         pub const SYS_TIMER_CREATE: u32 = 326;
         pub const SYS_TIMER_SETTIME: u32 = 327;
@@ -1301,6 +1579,10 @@ pub mod abi {
                 number: SYS_SCHED_RR_GET_INTERVAL,
             },
             AbiSyscallNumber {
+                name: "SchedGetaffinity",
+                number: SYS_SCHED_GETAFFINITY,
+            },
+            AbiSyscallNumber {
                 name: "EpollCreate1",
                 number: SYS_EPOLL_CREATE1,
             },
@@ -1363,6 +1645,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Pwritev",
                 number: SYS_PWRITEV,
+            },
+            AbiSyscallNumber {
+                name: "Lchown",
+                number: SYS_LCHOWN,
             },
             AbiSyscallNumber {
                 name: "Fallocate",

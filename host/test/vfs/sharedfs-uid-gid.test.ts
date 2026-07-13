@@ -92,6 +92,23 @@ describe("SharedFS uid/gid", () => {
     expect(st.gid).toBe(1000);
   });
 
+  it("lchown changes a final symlink without changing its target", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const fd = fs.open("/target", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    fs.close(fd);
+    fs.chown("/target", 100, 200);
+    fs.symlink("/target", "/link");
+    fs.symlink("/missing", "/dangling");
+
+    fs.lchown("/link", 300, 400);
+    fs.lchown("/dangling", 500, 600);
+
+    expect(fs.lstat("/link")).toMatchObject({ uid: 300, gid: 400 });
+    expect(fs.stat("/link")).toMatchObject({ uid: 100, gid: 200 });
+    expect(fs.lstat("/dangling")).toMatchObject({ uid: 500, gid: 600 });
+  });
+
   it("fchown changes uid/gid via fd", () => {
     const sab = new SharedArrayBuffer(1024 * 1024);
     const fs = MemoryFileSystem.create(sab);

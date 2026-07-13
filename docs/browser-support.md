@@ -50,8 +50,13 @@ Service Worker ──MessagePort──> Kernel Worker       │
 
 ### Key Design Decisions
 
-- **Kernel in dedicated worker**: Enables `Atomics.waitAsync` without V8 microtask chain freeze bug (main-thread-only). No need for MessageChannel-based polling. Zero UI jank regardless of syscall load.
+- **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged.
 - **Kernel-owned VFS** (preferred path, `kernelOwnedFs: true` + `kernel.boot()`): the kernel worker restores a pre-built VFS image and exec()s `argv[0]` as the first process. The main thread never instantiates a `MemoryFileSystem` and is not in the FS hot path. Service-supervised demos run dinit (PID 1) inside this image; single-program demos exec the language interpreter directly.
+  Browser harnesses that must stage a transient file between process spawns use
+  `BrowserKernel`'s worker RPC methods (`readFileSnapshotFromVfs`,
+  `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
+  mutations through the mounted VFS; the main thread never receives the live
+  VFS `SharedArrayBuffer`.
 - **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). Kept in place until the kernel grows a "spawn-into-running-kernel" path that doesn't need a main-thread pid.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
@@ -81,12 +86,17 @@ Injected TCP pipes live in the kernel's global pipe table (`pid == 0` for
 connection in any nginx worker. The standalone nginx image runs with
 `master_process on` and `worker_processes 2`.
 
+AF_UNIX stream listeners use the same shared-queue ownership model. This is the
+path used by pre-fork PHP-FPM workers: a connection is queued once and whichever
+worker wins `accept()` materializes its own connected socket around the global
+pipe pair.
+
 ## Capabilities
 
 ### Multi-Process
 - `fork()` via `wasm-fork-instrument` snapshot/restore — child runs in new sub-worker with copied memory
 - `exec()` reads program binary from the shared filesystem, replaces process
-- `posix_spawn()` — fork+exec with file actions (addchdir, addfchdir, addclose, adddup2)
+- `posix_spawn()` — non-forking child creation with file actions (addchdir, addfchdir, addclose, adddup2)
 - Process groups, wait/waitpid, cross-process signals, pipes
 
 ### Threads
@@ -94,16 +104,20 @@ connection in any nginx worker. The standalone nginx image runs with
 - Used by MariaDB (5 threads), Redis (3 background threads)
 
 ### Networking
-- POSIX AF_INET TCP and UDP inside the kernel, including local loopback and virtual machine-to-machine networking
+- POSIX AF_INET TCP and UDP inside the kernel, including local loopback and virtual IPv4 machine-to-machine networking
+- Partial AF_INET6 streams and datagrams for `::`/`::1`; loopback streams have a cross-process path, while datagrams remain process-local, and neither provides external or virtual-network IPv6
+- In-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast are process-local; machine-wide datagram routing is still pending
 - `LocalVirtualNetwork` attaches multiple browser Kandelo machines to virtual IPv4 addresses in one browser session
+- Browser networking backends preserve valid decimal one-, two-, three-, and four-component IPv4 forms, reject malformed/overflowing numeric forms, enforce ASCII host-label syntax and DNS length limits, and synthesize IPv4 addresses only for acceptable hostnames; they do not provide AF_INET6 DNS/transport
 - GNU Netcat (`nc`) and `curl` run against those virtual sockets in the network lab at `/pages/network/`
 - Service worker cookie jar for session persistence (WordPress)
 - nginx serves static files and proxies to PHP-FPM via loopback TCP
 
 ### Filesystem
 - `MemoryFileSystem` — SharedArrayBuffer-based VFS shared between main thread and kernel worker
-- `OpfsFileSystem` — Origin Private File System for browser persistence
+- `OpfsFileSystem` — Origin Private File System for browser persistence. Its current stat metadata has no stable inode identity, so regular-file `MAP_SHARED` returns `ENOTSUP` instead of using unsafe pathname identity; `MAP_PRIVATE` is unaffected.
 - `DeviceFileSystem` — `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`
+- Stable-identity regular files can be shared across process memories through the host mapping cache, but updates become visible at syscall boundaries rather than immediately on direct loads/stores. Cross-process futex waits/wakes remain unsupported; see [architecture.md](architecture.md#shared-mapping-coherence).
 
 ### Terminal
 - PTY support with full line discipline
@@ -127,7 +141,7 @@ connection in any nginx worker. The standalone nginx image runs with
 ### Audio output (`/dev/dsp`)
 - The kernel exposes an OSS-style `/dev/dsp` character device. User programs `open(O_WRONLY)`, configure rate / channels / format via `SNDCTL_DSP_*` ioctls, and `write()` interleaved 16-bit-LE PCM. The kernel buffers samples in a 256 KiB ring (~1.5 s of stereo S16 @ 44.1 kHz). On overflow the *oldest* whole frame drops — same trade-off real OSS hardware makes under hardware overrun.
 - Demo pages drive a `setInterval` loop (~50 ms cadence) that calls `BrowserKernel.drainAudio(maxBytes)`. The kernel-worker drains the ring via the `kernel_drain_audio` wasm export (which respects whole-frame boundaries so stereo L/R never tear) and posts the bytes back. Main thread converts S16 → Float32, builds an `AudioBuffer`, and schedules an `AudioBufferSourceNode` on the `AudioContext` clock with a small lookahead so brief drain hiccups don't underrun.
-- Single-owner device. Owner is released on close-of-last-fd / `execve` / `exit`; the ring is flushed at the same time so a successor open starts from silence. Format must be `AFMT_S16_LE`; other formats are `EINVAL`.
+- Single-owner device. A non-CLOEXEC fd retains ownership and queued samples across `execve`; last close or process exit releases the owner and flushes the ring so a successor starts from silence. Format must be `AFMT_S16_LE`; other formats are `EINVAL`.
 - **AudioContext gesture requirement.** `new AudioContext()` starts suspended in modern browsers and only resumes after a user gesture. The DOOM demo creates the context immediately after the user's "Start" click (which is itself a gesture), so `audioCtx.resume()` succeeds without a separate prompt.
 
 ## Browser Demos
@@ -164,6 +178,23 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
 
+### Kandelo session UI
+
+The Kandelo app at `/pages/kandelo/` keeps the running machine as the primary
+browser canvas and exposes related tools through a bottom dock. Dock controls
+switch between Demo, Terminal, and Internals views, while dock panes open for
+new-machine setup, gallery browsing, system config, and sharing. These controls
+consume `KernelHost` state and actions rather than replacing the runtime path.
+
+The dock may be collapsed or moved horizontally within the browser viewport;
+that placement is UI-only presentation state and does not alter the running
+machine, boot descriptor, VFS image, or share/export data.
+
+Image-declared demo guides from `/etc/kandelo/demo.json` remain part of the
+machine presentation owned by the demo image. Guide actions may run terminal or
+web actions through `KernelHost`, but they do not replace process supervision,
+VFS state, networking, or runtime behavior.
+
 Cross-origin browser fetches are routed through `public/service-worker.js`,
 which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
 with `VITE_CORS_PROXY_URL` when testing another proxy:
@@ -175,6 +206,28 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
+
+### Blob-URL iframes (service-worker boundary)
+
+The service worker can only bridge requests from documents it **controls**. A
+`blob:` document is not service-worker-controlled (and has no base URL), so its
+subresource requests bypass the bridge and hit the static origin instead of the
+in-kernel server. This is a real browser boundary, not a Kandelo bug.
+
+It surfaces in the WordPress block/site editor, whose canvas iframe is mounted
+from `URL.createObjectURL(new Blob([html]))`: the canvas's
+`load-scripts.php`/`load-styles.php` and block-asset requests would 404 against
+the origin even though nginx serves them correctly over the bridge.
+
+`public/blob-iframe-interceptor.js` is a reusable, framework-free DOM patch that
+neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
+`HTMLIFrameElement` `src` setter/`setAttribute` so that any iframe pointed at a
+`text/html` blob URL is instead rendered from `srcdoc` (an `about:srcdoc`
+document, which the service worker *does* control). It is idempotent and a no-op
+unless a text/html blob URL is used as an iframe src. The service worker inlines
+it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
+`"__CORS_PROXY_URL__"`) into the `<head>` of every bridged HTML document, so it
+applies to all app demos, not just WordPress.
 
 ## VFS Images
 
@@ -296,6 +349,11 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
+
+The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
+`mysql` account (uid/gid 101). Their writable `/data` directories are
+therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
+root-owned `01777` sticky directory.
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
 

@@ -94,6 +94,115 @@ if [ -d "$OVERLAY_DIR/src" ]; then
     fi
 fi
 
+# musl's src/internal/syscall.h uses syscall_arg_t for the public
+# varargs syscall() path and also hard-codes it into the non-varargs
+# __syscall_cp() cancellation-point prototype. On wasm32posix those
+# two paths intentionally differ:
+#
+#   - syscall_arg_t must remain long/i32 because syscall(long, ...)
+#     reads varargs with va_arg(ap, syscall_arg_t); widening that type
+#     would read past 32-bit caller arguments.
+#   - __syscall_cp() is not variadic and must use the same widened i64
+#     slots as __syscallN so cancellation-point syscalls preserve
+#     64-bit offsets/lengths and match libc/glue/channel_syscall.c's
+#     wasm function signature.
+#
+# Let arch/syscall_arch.h opt into separate syscall-number and argument
+# types while keeping upstream musl behavior for arches that define neither.
+python3 - "$MUSL_DIR/src/internal/syscall.h" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+
+default_block = """#ifndef SYSCALL_CP_NR_T
+#define SYSCALL_CP_NR_T syscall_arg_t
+#endif
+#ifndef SYSCALL_CP_ARG_T
+#define SYSCALL_CP_ARG_T syscall_arg_t
+#endif
+
+"""
+old_default_block = """#ifndef SYSCALL_CP_ARG_T
+#define SYSCALL_CP_ARG_T syscall_arg_t
+#endif
+
+"""
+insert_after = """#endif
+
+"""
+if "SYSCALL_CP_NR_T" not in text:
+    if old_default_block in text:
+        text = text.replace(old_default_block, default_block, 1)
+    elif "SYSCALL_CP_ARG_T" in text:
+        raise SystemExit("build-musl: found an unknown partial syscall-cp type patch")
+    else:
+        marker = insert_after + "hidden long __syscall_ret"
+        if marker not in text:
+            raise SystemExit("build-musl: could not patch syscall.h: insertion marker not found")
+        text = text.replace(marker, insert_after + default_block + "hidden long __syscall_ret", 1)
+
+old_proto = """__syscall_cp(syscall_arg_t, syscall_arg_t, syscall_arg_t, syscall_arg_t,
+\t             syscall_arg_t, syscall_arg_t, syscall_arg_t)"""
+intermediate_proto = """__syscall_cp(SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T,
+\t             SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T)"""
+new_proto = """__syscall_cp(SYSCALL_CP_NR_T, SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T,
+\t             SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T, SYSCALL_CP_ARG_T)"""
+for candidate in (old_proto, intermediate_proto):
+    if candidate in text:
+        text = text.replace(candidate, new_proto, 1)
+        break
+else:
+    if new_proto not in text:
+        raise SystemExit("build-musl: could not patch syscall.h: __syscall_cp prototype not found")
+
+path.write_text(text)
+PY
+
+python3 - "$MUSL_DIR/src/thread/__syscall_cp.c" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+
+replacements = [
+    (
+        """static long sccp(syscall_arg_t nr,
+                 syscall_arg_t u, syscall_arg_t v, syscall_arg_t w,
+                 syscall_arg_t x, syscall_arg_t y, syscall_arg_t z)""",
+        """static long sccp(SYSCALL_CP_ARG_T nr,
+                 SYSCALL_CP_ARG_T u, SYSCALL_CP_ARG_T v, SYSCALL_CP_ARG_T w,
+                 SYSCALL_CP_ARG_T x, SYSCALL_CP_ARG_T y, SYSCALL_CP_ARG_T z)""",
+        """static long sccp(SYSCALL_CP_NR_T nr,
+                 SYSCALL_CP_ARG_T u, SYSCALL_CP_ARG_T v, SYSCALL_CP_ARG_T w,
+                 SYSCALL_CP_ARG_T x, SYSCALL_CP_ARG_T y, SYSCALL_CP_ARG_T z)""",
+    ),
+    (
+        """long (__syscall_cp)(syscall_arg_t nr,
+                    syscall_arg_t u, syscall_arg_t v, syscall_arg_t w,
+                    syscall_arg_t x, syscall_arg_t y, syscall_arg_t z)""",
+        """long (__syscall_cp)(SYSCALL_CP_ARG_T nr,
+                    SYSCALL_CP_ARG_T u, SYSCALL_CP_ARG_T v, SYSCALL_CP_ARG_T w,
+                    SYSCALL_CP_ARG_T x, SYSCALL_CP_ARG_T y, SYSCALL_CP_ARG_T z)""",
+        """long (__syscall_cp)(SYSCALL_CP_NR_T nr,
+                    SYSCALL_CP_ARG_T u, SYSCALL_CP_ARG_T v, SYSCALL_CP_ARG_T w,
+                    SYSCALL_CP_ARG_T x, SYSCALL_CP_ARG_T y, SYSCALL_CP_ARG_T z)""",
+    ),
+]
+for upstream, intermediate, final in replacements:
+    for candidate in (upstream, intermediate):
+        if candidate in text:
+            text = text.replace(candidate, final, 1)
+            break
+    else:
+        if final not in text:
+            raise SystemExit(f"build-musl: could not patch __syscall_cp.c pattern: {upstream.splitlines()[0]}")
+
+path.write_text(text)
+PY
+
 # Copy CRT overlay (e.g., Wasm-specific crt1.c with proper main signature)
 if [ -d "$OVERLAY_DIR/crt" ]; then
     cp -r "$OVERLAY_DIR/crt/"* "$MUSL_DIR/crt/"
@@ -110,7 +219,7 @@ prefix = $SYSROOT
 CC = $CC --target=$TARGET
 AR = $AR
 RANLIB = $RANLIB
-CFLAGS = -O2 -matomics -mbulk-memory -fno-exceptions -fno-trapping-math
+CFLAGS = -O2 -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fno-trapping-math
 CFLAGS_AUTO =
 LDFLAGS_AUTO =
 LIBCC =

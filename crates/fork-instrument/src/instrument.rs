@@ -120,11 +120,24 @@ use walrus::{
         LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return, StoreKind,
         TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
     },
-    AbstractHeapType, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId, MemoryId, Module,
-    RefType, TableId, TagId, TypeId, ValType,
+    AbstractHeapType, ExportItem, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId,
+    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
 };
 
 use crate::runtime::{self, Runtime};
+
+const HOST_PARSED_MARKER_EXPORTS: &[&str] = &[
+    "__abi_version",
+    "__wasm_posix_thread_slots",
+    "__get_channel_base_addr",
+];
+
+fn is_host_parsed_marker_function(module: &Module, id: FunctionId) -> bool {
+    module.exports.iter().any(|export| {
+        HOST_PARSED_MARKER_EXPORTS.contains(&export.name.as_str())
+            && matches!(export.item, ExportItem::Function(func) if func == id)
+    })
+}
 
 /// Instrument every function in `fork_path` that we can instrument.
 ///
@@ -149,6 +162,7 @@ pub fn instrument_functions(
         .iter()
         .copied()
         .filter(|id| !runtime_funcs.contains(id))
+        .filter(|id| !is_host_parsed_marker_function(module, *id))
         .filter(|id| matches!(module.funcs.get(*id).kind, FunctionKind::Local(_)))
         .collect();
     targets.sort();
@@ -5912,6 +5926,13 @@ fn instrument_one_function_nested_switch(
         return;
     }
 
+    // `HashMap` deliberately randomizes its iteration order. Keep one stable
+    // sequence for every pass that allocates module locals or instruction
+    // sequences from the region set; otherwise identical inputs can receive
+    // different Walrus IDs and produce byte-different instrumented modules.
+    let mut region_ids: Vec<InstrSeqId> = regions.keys().copied().collect();
+    region_ids.sort();
+
     // Compute, for each fork-bearing seq, the call_idxs of its DIRECT
     // fork-path calls (ordered by DFS, == order in `sites`). Used by
     // argument materialization, the carryover pre-pass, and the
@@ -6066,7 +6087,7 @@ fn instrument_one_function_nested_switch(
         // Snapshot needed seq+landing data first (immutable borrow),
         // then allocate locals (mutable borrow).
         let mut pending_plans: Vec<(InstrSeqId, usize, PendingCarryoverPlan)> = Vec::new();
-        for &seq_id in regions.keys() {
+        for &seq_id in &region_ids {
             let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
             // Sub-commit 2.6a: typed analyser captures per-landing
             // spill ValTypes (covering both SubRegion type-params and
@@ -6173,7 +6194,7 @@ fn instrument_one_function_nested_switch(
             _ => unreachable!(),
         };
         let mut to_allocate: Vec<(InstrSeqId, Vec<ValType>)> = Vec::new();
-        for &seq_id in regions.keys() {
+        for &seq_id in &region_ids {
             if let InstrSeqType::MultiValue(ty_id) = local_ro.block(seq_id).ty {
                 let params = module.types.get(ty_id).params();
                 if !params.is_empty() {
@@ -6272,12 +6293,20 @@ fn instrument_one_function_nested_switch(
     // Process all fork-bearing seqs except the entry (entry handled
     // specially with preamble/postamble + unwind_save). Order:
     // bottom-up (deepest first).
-    let mut non_entry_regions: Vec<InstrSeqId> =
-        regions.keys().copied().filter(|&s| s != entry_id).collect();
+    let mut non_entry_regions: Vec<InstrSeqId> = region_ids
+        .iter()
+        .copied()
+        .filter(|&s| s != entry_id)
+        .collect();
     // Sort by depth (deepest first). Walrus doesn't expose depth
     // directly, so compute via parent-seq walk.
     let depth_map = compute_seq_depths(local, entry_id);
-    non_entry_regions.sort_by_key(|s| std::cmp::Reverse(depth_map.get(s).copied().unwrap_or(0)));
+    non_entry_regions.sort_by_key(|s| {
+        (
+            std::cmp::Reverse(depth_map.get(s).copied().unwrap_or(0)),
+            *s,
+        )
+    });
 
     // Transform non-entry regions bottom-up.
     for seq_id in non_entry_regions {

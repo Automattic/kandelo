@@ -4,9 +4,12 @@
 #define WASM_POSIX_ABI_CONSTANTS_H
 
 /* Mirrors wasm_posix_shared::ABI_VERSION. */
-#define WASM_POSIX_ABI_VERSION 16u
+#define WASM_POSIX_ABI_VERSION 39u
 
 /* Default process-wasm pthread slot declaration. */
 #define WASM_POSIX_THREAD_SLOT_DECL_DEFAULT -1
+
+/* Fixed kernel/musl resource-usage wire record size. */
+#define WASM_POSIX_RUSAGE_WIRE_SIZE 144u
 
 #endif /* WASM_POSIX_ABI_CONSTANTS_H */

@@ -9,8 +9,12 @@ import type {
   HttpResponse,
 } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type {
+  HostDiagnosticMessage,
+} from "./host-diagnostic";
 
 export type { HttpRequest, HttpResponse };
+export type { HostDiagnostic } from "./host-diagnostic";
 
 // ── Main Thread → Kernel Worker ──
 
@@ -19,30 +23,14 @@ export interface InitMessage {
   kernelWasmBytes: ArrayBuffer;
   /**
    * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
-   * constructs its own memfs via MemoryFileSystem.fromImage(). When this is
-   * present, the kernel owns the FS — no SAB is shared with the main thread,
-   * and `kernel.fs` is unavailable.
+   * constructs and OWNS its own memfs via MemoryFileSystem.fromImage() — no
+   * VFS SAB is shared with the main thread. Demos that need `/etc/{passwd,
+   * group,hosts,services}` bake it into the image (see
+   * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
    */
-  vfsImage?: Uint8Array;
+  vfsImage: Uint8Array;
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
-  /**
-   * @deprecated — legacy path. Kept until all demos migrate to vfsImage.
-   * Pre-formatted SharedFS SAB shared with the main thread (so demos can
-   * pre-populate via the now-deprecated `kernel.fs` accessor).
-   */
-  fsSab?: SharedArrayBuffer;
-  /**
-   * Canonical rootfs.vfs bytes. Always sent so the worker can overlay
-   * `/etc/{passwd,group,hosts,services,...}` onto whichever VFS the demo
-   * builds — the kernel's old `synthetic_file_content` shim was removed
-   * in PR 4/5, so without this overlay programs that call `getpwnam`,
-   * `gethostbyname`, etc. would fail on legacy-SAB demos.
-   *
-   * Files that already exist in the demo's VFS (e.g. an `/etc/profile`
-   * the shell demo writes itself) are NOT overwritten.
-   */
-  rootfsImage?: Uint8Array;
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;
@@ -59,6 +47,10 @@ export interface InitMessage {
     syscallLogPtrWidth?: 4 | 8;
     /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
     dnsAliases?: Record<string, string>;
+    /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl for browser fetch
+     *  backends that need a same-origin proxy to reach external HTTP(S)
+     *  hosts. */
+    corsProxyUrl?: string;
   };
 }
 
@@ -97,6 +89,33 @@ export interface TerminateProcessMessage {
   requestId: number;
   pid: number;
   status: number;
+}
+
+export interface VfsFileSnapshot {
+  data: Uint8Array;
+  mode: number;
+}
+
+export interface ReadVfsFileMessage {
+  type: "read_vfs_file";
+  requestId: number;
+  path: string;
+  /** Return the file's permission bits with its bytes for lossless restore. */
+  includeMode?: boolean;
+}
+
+export interface WriteVfsFileMessage {
+  type: "write_vfs_file";
+  requestId: number;
+  path: string;
+  data: Uint8Array;
+  mode: number;
+}
+
+export interface UnlinkVfsFileMessage {
+  type: "unlink_vfs_file";
+  requestId: number;
+  path: string;
 }
 
 export interface AppendStdinDataMessage {
@@ -330,6 +349,9 @@ export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
   | TerminateProcessMessage
+  | ReadVfsFileMessage
+  | WriteVfsFileMessage
+  | UnlinkVfsFileMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage
@@ -463,15 +485,12 @@ export interface FbWriteMessage {
  * Posted whenever the kernel forks, execs, or spawns. The main thread
  * uses this to refresh Inspector-style views without polling. `kind ===
  * "exit"` is delivered via the existing ExitMessage instead; we don't
- * duplicate it here.
+ * duplicate it here. Spawn events always carry the authoritative parent pid;
+ * exec events preserve process identity and do not.
  */
-export interface ProcEventMessage {
-  type: "proc_event";
-  kind: "spawn" | "exec";
-  pid: number;
-  /** Parent pid for fork-style spawns. Omitted for execs. */
-  ppid?: number;
-}
+export type ProcEventMessage =
+  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
+  | { type: "proc_event"; kind: "exec"; pid: number };
 
 /**
  * Number of service-worker preview requests currently being served through
@@ -494,6 +513,7 @@ export type KernelToMainMessage =
   | ExitMessage
   | StdoutMessage
   | StderrMessage
+  | HostDiagnosticMessage
   | PtyOutputMessage
   | ListenTcpMessage
   | FbBindMessage

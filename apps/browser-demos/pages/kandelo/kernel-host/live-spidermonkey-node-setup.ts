@@ -11,6 +11,10 @@ import {
 import { stageSpiderMonkeyNpmRuntime } from "../../../../../images/vfs/lib/init/spidermonkey-npm-runtime";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
+  finalizeKernelOwnedImage,
+  settleWebKitReclaim,
+} from "../../../lib/kernel-owned-boot";
+import {
   ensureDirRecursive,
   writeVfsBinary,
 } from "../../../../../host/src/vfs/image-helpers";
@@ -30,7 +34,7 @@ import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
-import spiderMonkeyNodeWasmUrl from "@binaries/programs/wasm32/spidermonkey-node.wasm?url";
+import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const COI_RELOAD_SESSION_KEY = "kandelo:sm-node-coi-reload-attempted";
@@ -91,11 +95,6 @@ const SM_NODE_COWSAY_DEMO_COMMAND = [
   "./node_modules/.bin/cowsay Kandelo",
 ].join(" && ");
 
-function isWebKitLikeBrowser(): boolean {
-  const ua = navigator.userAgent;
-  return /AppleWebKit/i.test(ua)
-    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
-}
 
 function spiderMonkeyNodeRuntimeCommand(): string {
   return SM_NODE_WORKER_DEMO_COMMAND;
@@ -193,12 +192,6 @@ function spiderMonkeyNodeGuide(): DemoGuideConfig {
   };
 }
 
-async function settleAfterKernelDestroy(): Promise<void> {
-  if (!isWebKitLikeBrowser()) return;
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
-}
-
 type SpiderMonkeyNodeDemoId = "node" | "spidermonkey-node";
 
 class BootSuperseded extends Error {}
@@ -224,7 +217,7 @@ export async function createLiveSpiderMonkeyNodeHost(
         if (previousKernel) {
           await previousKernel.destroy().catch(() => {});
         }
-        await settleAfterKernelDestroy();
+        await settleWebKitReclaim();
         const url = new URL(window.location.href);
         url.searchParams.set("demo", desc.id);
         window.location.href = url.href;
@@ -318,21 +311,25 @@ async function boot(
       loadBytes(bashWasmUrl, "bash.wasm"),
       loadBytes(dashWasmUrl, "dash.wasm"),
       loadBytes(coreutilsWasmUrl, "coreutils.wasm"),
-      loadBytes(spiderMonkeyNodeWasmUrl, "spidermonkey-node.wasm"),
+      loadBytes(nodeWasmUrl, "node.wasm"),
     ]);
     assertCurrent();
 
     tick("instantiating kernel...");
-    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
+    // Assemble the runtime in a transient build FS, serialize it, and let the
+    // kernel worker own the live VFS (kernelOwnedFs) so the main thread never
+    // holds a VFS SharedArrayBuffer across demo switches (Safari OOM fix).
+    const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
       maxByteLength: 256 * 1024 * 1024,
     });
-    rewriteShellLazyFileUrls(memfs);
-    rewriteNodeLazyFileUrl(memfs);
-    stageRuntime(memfs, bashBytes, dashBytes, coreutilsBytes, nodeBytes);
+    rewriteShellLazyFileUrls(buildFs);
+    rewriteNodeLazyFileUrl(buildFs);
+    stageRuntime(buildFs, bashBytes, dashBytes, coreutilsBytes, nodeBytes);
+    const vfsImage = await finalizeKernelOwnedImage(buildFs);
     assertCurrent();
 
     kernel = new BrowserKernel({
-      memfs,
+      kernelOwnedFs: true,
       maxWorkers: 4,
       maxMemoryPages: SPIDERMONKEY_NODE_MEMORY_PAGES,
       onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
@@ -341,7 +338,7 @@ async function boot(
         if (isCurrent()) host.emitProcessEvent(event);
       },
     });
-    await kernel.init(kernelBytes);
+    await kernel.initFromImage({ kernelWasm: kernelBytes, vfsImage });
     assertCurrent();
 
     host.attachKernel(kernel);
@@ -374,7 +371,7 @@ function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
   const placeholder = shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC);
   fs.rewriteLazyFileUrls((url) => {
     if (url !== placeholder) return url;
-    return spiderMonkeyNodeWasmUrl;
+    return nodeWasmUrl;
   });
 }
 

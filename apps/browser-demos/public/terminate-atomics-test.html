@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>terminate vs Atomics.wait</title>
+<body><pre id="s">ready</pre>
+<script>
+// Exposed for the driver: spawn a worker that commits `mib` and either sits
+// idle or blocks in Atomics.wait, then terminate() it. Returns after terminate.
+window.spawnCommitTerminate = async (mib, block, wake) => {
+  const waitSab = new SharedArrayBuffer(64);
+  const w = new Worker("./terminate-atomics-worker.js", { type: "classic" });
+  await new Promise((resolve) => {
+    w.onmessage = (e) => { if (e.data && e.data.ready) resolve(); };
+    w.postMessage({ committedMiB: mib, block, waitSab });
+  });
+  // Worker has committed `mib` and is now idle OR blocked in Atomics.wait.
+  if (wake) {
+    // Wake the worker out of Atomics.wait so it returns to its event loop,
+    // where terminate() can actually kill it (the fix pattern).
+    const ctrl = new Int32Array(waitSab);
+    Atomics.store(ctrl, 0, 1);
+    Atomics.notify(ctrl, 0);
+    await new Promise((r) => setTimeout(r, 0)); // let it return to the event loop
+  }
+  w.terminate();
+};
+document.getElementById("s").textContent = "harness ready";
+window.__ready = true;
+</script></body>

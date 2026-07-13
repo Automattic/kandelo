@@ -40,6 +40,9 @@ export interface StatfsResult {
   flags: number;
 }
 
+/** `null` represents a successful indeterminate/unsupported-option result. */
+export type PathconfValue = number | null;
+
 export interface PlatformIO {
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
@@ -57,11 +60,33 @@ export interface PlatformIO {
   ): number;
   seek(handle: number, offset: number, whence: number): number;
   fstat(handle: number): StatResult;
+  fpathconf(handle: number, name: number): PathconfValue;
+
+  /**
+   * Qualify a filesystem-reported inode within this PlatformIO instance.
+   *
+   * The path is used only to select the owning mount/backend; callers may
+   * pass the remembered path of an unlinked or renamed open file. Equal
+   * identities must name the same underlying file object, including through
+   * hard links. Return null when the backend cannot promise stable object
+   * identity (for example, a backend that reports no inode number).
+   */
+  fileIdentity?(path: string, dev: bigint, ino: bigint): string | null;
+
+  /**
+   * Qualify an inode through an already-open file handle.
+   *
+   * Unlike `fileIdentity`, this must not resolve the remembered pathname: an
+   * open file remains a valid mmap backing after that name is unlinked or
+   * renamed. Return null when the backend cannot promise stable identity.
+   */
+  fileHandleIdentity?(handle: number, dev: bigint, ino: bigint): string | null;
 
   // Path-based operations
   stat(path: string): StatResult;
   lstat(path: string): StatResult;
   statfs(path: string): StatfsResult;
+  pathconf(path: string, name: number): PathconfValue;
   mkdir(path: string, mode: number): void;
   rmdir(path: string): void;
   unlink(path: string): void;
@@ -71,6 +96,7 @@ export interface PlatformIO {
   readlink(path: string): string;
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
+  lchown(path: string, uid: number, gid: number): void;
   access(path: string, mode: number): void;
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
 
@@ -107,8 +133,12 @@ export interface TcpConnectionPeer {
   send(data: Uint8Array, flags: number): number;
   recv(maxLen: number, flags: number): Uint8Array;
   poll?(events: number): number;
+  /** Disable one or both directions without resetting the connection. */
   shutdown(how: number): void;
+  /** Orderly close: flush/FIN the write half and orphan the receive half. */
   close(): void;
+  /** Abort immediately and make both peers observe a connection reset. */
+  abort(): void;
 }
 
 export interface TcpListenTarget {

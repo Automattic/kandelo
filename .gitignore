@@ -55,6 +55,7 @@ node_modules/
 # source; not tracked.
 *.vfs
 *.vfs.zst
+*.vfs.zst.meta.json
 
 # OS noise
 .DS_Store

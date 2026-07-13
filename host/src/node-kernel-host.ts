@@ -20,6 +20,7 @@ import { createRequire } from "node:module";
 import { Worker as NodeThreadWorker } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
 import type {
+  HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
   ResolveExecRequestMessage,
@@ -61,11 +62,14 @@ export interface NodeKernelHostOptions {
   onStdout?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes to stderr */
   onStderr?: (pid: number, data: Uint8Array) => void;
+  /** Called for host-runtime diagnostics that are not guest stderr. */
+  onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
   /** Called when a process writes PTY output */
   onPtyOutput?: (pid: number, data: Uint8Array) => void;
   /** Called when a process is spawned, execs a new program, or exits.
    *  Used by Inspector-style UIs to refresh their process table without
-   *  polling. */
+   *  polling. Kernel-internal fork and posix_spawn events carry `ppid`;
+   *  the synthetic root spawn does not. */
   onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
   /**
    * Called when the worker can't resolve an exec path locally.
@@ -88,7 +92,15 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
-  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
+  extraMounts?: Array<{
+    mountPoint: string;
+    hostPath: string;
+    readonly?: boolean;
+    /** Virtual owner for existing host-backed mount entries. Defaults to root. */
+    uid?: number;
+    /** Virtual group for existing host-backed mount entries. Defaults to root. */
+    gid?: number;
+  }>;
 }
 
 export interface SpawnOptions {
@@ -144,6 +156,20 @@ export class NodeKernelHost {
         reject(error);
       }
       this.pendingRequests.clear();
+      const diagnostic: HostDiagnostic = {
+        pid: 0,
+        source: "kernel worker",
+        message: `[NodeKernelHost] kernel worker error: ${error.message}`,
+      };
+      // A worker-level error cannot send a typed message itself. Preserve the
+      // same callback contract and a visible default without treating the
+      // failure as guest stderr.
+      console.error(diagnostic.message);
+      try {
+        this.options.onHostDiagnostic?.(diagnostic);
+      } catch (callbackError) {
+        console.error("[NodeKernelHost] onHostDiagnostic callback failed:", callbackError);
+      }
     });
 
     // Send init and wait for ready
@@ -480,6 +506,10 @@ export class NodeKernelHost {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
+      case "ready":
+        // The temporary init listener resolves readiness. The permanent
+        // listener also receives the message, so account for it explicitly.
+        break;
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);
         if (pending) {
@@ -515,7 +545,10 @@ export class NodeKernelHost {
         // Kernel-internal fork / exec / posix_spawn. The host doesn't
         // see these via NodeKernelHost.spawn (forks happen inside the
         // wasm kernel without going through the request/response loop).
-        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
+        const event = msg.kind === "spawn"
+          ? { kind: msg.kind, pid: msg.pid, ppid: msg.ppid }
+          : { kind: msg.kind, pid: msg.pid };
+        this.options.onProcessEvent?.(event);
         break;
       }
       case "stdout":
@@ -524,12 +557,32 @@ export class NodeKernelHost {
       case "stderr":
         this.options.onStderr?.(msg.pid, msg.data);
         break;
+      case "host_diagnostic": {
+        this.options.onHostDiagnostic?.({
+          pid: msg.pid,
+          source: msg.source,
+          message: msg.message,
+          ...(msg.status === undefined ? {} : { status: msg.status }),
+        });
+        break;
+      }
       case "pty_output":
         this.options.onPtyOutput?.(msg.pid, msg.data);
         break;
       case "resolve_exec":
         this.handleResolveExec(msg);
         break;
+      default: {
+        // Keep this dispatch coupled to KernelToMainMessage as the protocol
+        // grows. Runtime values still originate outside TypeScript, so make a
+        // malformed/unknown worker message visible instead of dropping it.
+        const exhaustive: never = msg;
+        void exhaustive;
+        console.error(
+          `[NodeKernelHost] unknown kernel-worker message type: ${String((msg as { type?: unknown }).type)}`,
+        );
+        break;
+      }
     }
   }
 
@@ -574,8 +627,8 @@ function resolveRootfsImage(
 ): ArrayBuffer | null {
   if (override === undefined) return null;
   if (override === "default") {
-    const path = resolveRootfsArtifact();
-    const buf = readFileSync(path);
+    const artifact = resolveRootfsArtifact();
+    const buf = readFileSync(artifact.selectedPath);
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   }
   if (override instanceof Uint8Array) {
@@ -588,12 +641,25 @@ function resolveRootfsImage(
   return override;
 }
 
-function resolveRootfsArtifact(): string {
+export interface ResolvedRootfsArtifact {
+  resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
+  selectedPath: string;
+}
+
+export function resolveRootfsArtifact(
+  resolver: (request: string) => string = resolveBinary,
+): ResolvedRootfsArtifact {
   try {
-    return resolveBinary("rootfs.vfs");
+    return {
+      resolverRequest: "rootfs.vfs",
+      selectedPath: resolver("rootfs.vfs"),
+    };
   } catch (rootfsError) {
     try {
-      return resolveBinary("programs/rootfs.vfs");
+      return {
+        resolverRequest: "programs/rootfs.vfs",
+        selectedPath: resolver("programs/rootfs.vfs"),
+      };
     } catch (programsError) {
       const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
       const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);

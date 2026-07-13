@@ -1,7 +1,14 @@
 script_path = "packages/registry/php/build-php.sh"
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 5
+inputs = [
+  "packages/registry/php/build-php.sh",
+  "packages/registry/php/intl-icu-data-loader.c",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+# Batch 3 extension landings advance this recipe once per byte-changing layer:
+# zip (11), curl (12), intl/ICU (13), truthful unshare detection (14), then
+# pdo_sqlite column metadata against sqlite revision 2 (15).
+revision    = 15
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

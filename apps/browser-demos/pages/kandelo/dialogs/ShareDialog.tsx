@@ -29,8 +29,29 @@ export interface ShareDialogProps {
   onClose: () => void;
 }
 
-export const ShareDialog: React.FC<ShareDialogProps> = ({
-  descriptor: presetDesc, presetId, onClose,
+export interface SharePanelProps extends ShareDialogProps {
+  embedded?: boolean;
+}
+
+export const ShareDialog: React.FC<ShareDialogProps> = (props) => {
+  const onBackdropClick: React.MouseEventHandler = (event) => {
+    if (event.target === event.currentTarget) props.onClose();
+  };
+
+  const onKeyDown: React.KeyboardEventHandler = (event) => {
+    if (event.key === "Escape") props.onClose();
+  };
+
+  return createPortal(
+    <div className="kshare-backdrop" onMouseDown={onBackdropClick} onKeyDown={onKeyDown}>
+      <SharePanel {...props} />
+    </div>,
+    document.body,
+  );
+};
+
+export const SharePanel: React.FC<SharePanelProps> = ({
+  descriptor: presetDesc, presetId, onClose, embedded = false,
 }) => {
   const host = useKernelHost();
   const [mode, setMode] = React.useState<ShareMode>("auto");
@@ -90,20 +111,16 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
 
   const tier = classifyTier(url.length);
   const tierPct = url.length === 0 ? 0 : Math.min(100, (url.length / (8 * 1024)) * 100);
+  const shareTargetLabel = presetDesc ? "selected preset" : "current machine";
+  const overlaySummary = includeOverlay
+    ? "Overlay-capable modes may include current descriptor edits when KernelHost can encode them."
+    : "The link is limited to the base preset/descriptor; local edits stay in this browser.";
 
   const copy = () => {
     if (!url) return;
     if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(url);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
-  };
-
-  const onBackdropClick: React.MouseEventHandler = (e) => {
-    if (e.target === e.currentTarget) onClose();
-  };
-
-  const onKeyDown: React.KeyboardEventHandler = (e) => {
-    if (e.key === "Escape") onClose();
   };
 
   const renderUrl = () => {
@@ -120,9 +137,14 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
     );
   };
 
-  return createPortal(
-    <div className="kshare-backdrop" onMouseDown={onBackdropClick} onKeyDown={onKeyDown}>
-      <div className="kshare" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+  return (
+      <div
+        className={`kshare${embedded ? " kshare-embedded" : ""}`}
+        onMouseDown={(e) => e.stopPropagation()}
+        role={embedded ? undefined : "dialog"}
+        aria-modal={embedded ? undefined : true}
+      >
+        {!embedded && (
         <div className="kshare-hd">
           <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="var(--k-accent)" strokeWidth="1.6">
             <circle cx="5.5" cy="11" r="2.4" />
@@ -133,8 +155,22 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
           <div className="kshare-title">Share this machine</div>
           <button className="kshare-x" onClick={onClose} title="Close" aria-label="Close">✕</button>
         </div>
+        )}
 
         <div className="kshare-body">
+          <div className="kshare-summary">
+            <div className="kshare-summary-card">
+              <div className="kshare-summary-k">Share target</div>
+              <div className="kshare-summary-v">{shareTargetLabel}</div>
+              <p>{overlaySummary}</p>
+            </div>
+            <div className="kshare-summary-card">
+              <div className="kshare-summary-k">Export boundary</div>
+              <div className="kshare-summary-v">No VFS archive export</div>
+              <p>Use this URL flow for descriptor sharing. Full image export is not simulated here.</p>
+            </div>
+          </div>
+
           {/* URL + tier */}
           <div>
             <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Link</div>
@@ -274,8 +310,6 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
   );
 };
 

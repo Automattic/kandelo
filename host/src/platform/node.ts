@@ -9,9 +9,33 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { PlatformIO, StatResult, StatfsResult } from "../types";
+import type { PathconfValue, PlatformIO, StatResult, StatfsResult } from "../types";
+import { filesystemPathconf } from "../pathconf";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { NativeMetadataOverlay } from "./native-metadata";
+
+const UTIME_NOW = 0x3fffffff;
+const UTIME_OMIT = 0x3ffffffe;
+
+function makeFsError(code: string, message: string): Error & { code: string } {
+  const error = new Error(`${code}: ${message}`) as Error & { code: string };
+  error.code = code;
+  return error;
+}
+
+function checkedSeekPosition(base: number, offset: number): number {
+  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(offset)) {
+    throw makeFsError("EOVERFLOW", "seek offset is not exactly representable");
+  }
+  const position = base + offset;
+  if (!Number.isSafeInteger(position)) {
+    throw makeFsError("EOVERFLOW", "seek result is not exactly representable");
+  }
+  if (position < 0) {
+    throw makeFsError("EINVAL", "negative seek offset");
+  }
+  return position;
+}
 
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
@@ -97,6 +121,7 @@ export class NodePlatformIO implements PlatformIO {
   ): number {
     const pos = offset ?? this.fdPositions.get(handle) ?? 0;
     const bytesWritten = fs.writeSync(handle, buffer, 0, length, pos);
+    if (bytesWritten > 0) this.metadata.noteNativeContentChange(fs.fstatSync(handle));
     if (offset === null) {
       this.fdPositions.set(handle, pos + bytesWritten);
     }
@@ -112,21 +137,21 @@ export class NodePlatformIO implements PlatformIO {
     let newPos: number;
     switch (whence) {
       case 0: // SEEK_SET
-        newPos = offset;
+        newPos = checkedSeekPosition(0, offset);
         break;
       case 1: { // SEEK_CUR
         const cur = this.fdPositions.get(handle) ?? 0;
-        newPos = cur + offset;
+        newPos = checkedSeekPosition(cur, offset);
         break;
       }
       case 2: {
         // SEEK_END — compute from file size
         const stat = fs.fstatSync(handle);
-        newPos = stat.size + offset;
+        newPos = checkedSeekPosition(stat.size, offset);
         break;
       }
       default:
-        throw new Error(`Invalid whence value: ${whence}`);
+        throw makeFsError("EINVAL", `invalid whence value: ${whence}`);
     }
     this.fdPositions.set(handle, newPos);
     return newPos;
@@ -142,6 +167,34 @@ export class NodePlatformIO implements PlatformIO {
     return this.metadata.toStatResult(fs.fstatSync(handle));
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    // Validate the live descriptor rather than re-resolving its original
+    // pathname. This keeps fpathconf valid after rename or unlink.
+    const stat = this.fstat(handle);
+    return filesystemPathconf(
+      stat,
+      name,
+      {
+        supportsSymlinks: true,
+        timestampResolutionNs: 1_000_000,
+      },
+    );
+  }
+
+  fileIdentity(_path: string, dev: bigint, ino: bigint): string | null {
+    // Native inode numbers are filesystem-scoped and therefore preserve
+    // aliases reached through separate hard-link paths. An absent inode is
+    // not a stable object identity; callers must reject rather than fall back
+    // to a pathname that can be renamed or reused.
+    if (ino <= 0n || dev < 0n) return null;
+    return `node:${dev}:${ino}`;
+  }
+
+  fileHandleIdentity(_handle: number, dev: bigint, ino: bigint): string | null {
+    if (ino <= 0n || dev < 0n) return null;
+    return `node:${dev}:${ino}`;
+  }
+
   stat(path: string): StatResult {
     return this.metadata.toStatResult(fs.statSync(this.rewritePath(path)));
   }
@@ -152,6 +205,19 @@ export class NodePlatformIO implements PlatformIO {
 
   statfs(path: string): StatfsResult {
     return nativeStatfs(this.rewritePath(path));
+  }
+
+  pathconf(path: string, name: number): PathconfValue {
+    const nativePath = this.rewritePath(path);
+    const stat = this.metadata.toStatResult(fs.statSync(nativePath));
+    return filesystemPathconf(
+      stat,
+      name,
+      {
+        supportsSymlinks: true,
+        timestampResolutionNs: 1_000_000,
+      },
+    );
   }
 
   mkdir(path: string, mode: number): void {
@@ -204,14 +270,33 @@ export class NodePlatformIO implements PlatformIO {
     this.metadata.chown(fs.statSync(this.rewritePath(path)), uid, gid);
   }
 
+  lchown(path: string, uid: number, gid: number): void {
+    this.metadata.chown(fs.lstatSync(this.rewritePath(path)), uid, gid);
+  }
+
   access(path: string, mode: number): void {
     this.metadata.access(fs.statSync(this.rewritePath(path)), mode);
   }
 
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
-    const atime = atimeSec + atimeNsec / 1e9;
-    const mtime = mtimeSec + mtimeNsec / 1e9;
-    fs.utimesSync(this.rewritePath(path), atime, mtime);
+    const nativePath = this.rewritePath(path);
+    if (atimeNsec === UTIME_OMIT && mtimeNsec === UTIME_OMIT) return;
+
+    const stat = fs.statSync(nativePath);
+    const current = this.metadata.toStatResult(stat);
+    const nowMs = Date.now();
+    const atimeMs = atimeNsec === UTIME_OMIT
+      ? current.atimeMs
+      : atimeNsec === UTIME_NOW
+        ? nowMs
+        : atimeSec * 1000 + Math.floor(atimeNsec / 1_000_000);
+    const mtimeMs = mtimeNsec === UTIME_OMIT
+      ? current.mtimeMs
+      : mtimeNsec === UTIME_NOW
+        ? nowMs
+        : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
+    fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
+    this.metadata.utimens(stat, atimeMs, mtimeMs, fs.statSync(nativePath));
   }
 
   opendir(path: string): number {
@@ -249,6 +334,7 @@ export class NodePlatformIO implements PlatformIO {
 
   ftruncate(handle: number, length: number): void {
     fs.ftruncateSync(handle, length);
+    this.metadata.noteNativeContentChange(fs.fstatSync(handle));
   }
 
   fsync(handle: number): void {
@@ -273,8 +359,8 @@ export class NodePlatformIO implements PlatformIO {
       const elapsed = ns - this._startNs;
       return { sec: Number(elapsed / 1000000000n), nsec: Number(elapsed % 1000000000n) };
     }
-    if (clockId === 1) {
-      // CLOCK_MONOTONIC
+    if (clockId === 1 || clockId === 7) {
+      // CLOCK_MONOTONIC / CLOCK_BOOTTIME
       return { sec: Number(ns / 1000000000n), nsec: Number(ns % 1000000000n) };
     }
     // CLOCK_REALTIME — use hrtime + epoch offset for nanosecond resolution

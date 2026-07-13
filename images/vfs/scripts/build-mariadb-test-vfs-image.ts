@@ -28,6 +28,7 @@ import {
 import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage, walkAndWrite } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
 
 const REPO_ROOT = findRepoRoot();
@@ -225,7 +226,7 @@ async function main() {
   ]) {
     ensureDir(fs, dir);
   }
-  fs.chmod("/tmp", 0o777);
+  prepareMariadbWritableDirectories(fs);
 
   // dash + coreutils for the bootstrap wrapper script (sh, sleep, kill).
   if (existsSync(DASH_PATH)) {

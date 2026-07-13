@@ -20,7 +20,10 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 **Key properties:**
 - **Single kernel instance** with a `ProcessTable` mapping PIDs to `Process` structs
 - **Process workers** communicate with the kernel via channel IPC — each process/thread has a channel region in shared memory, and the kernel services syscalls one at a time from the JS event loop
-- **Cross-process shared state** (open file descriptions, pipes, locks, IPC) is managed directly by the kernel — no extra SharedArrayBuffer structures needed per feature
+- **Cross-process shared state** uses kernel-global or host-coordinated
+  backings where implemented. Pipes, locks, IPC objects, sockets, and selected
+  stateful descriptors retain one backing across fork; ordinary regular-file
+  OFD seek positions and status flags are still copied per process.
 - **Serialized syscall execution** — the kernel handles one syscall at a time, which provides natural atomicity for operations like O_APPEND writes and PIPE_BUF-sized pipe writes
 - **Signal delivery** across processes is direct — the kernel can write to any process's pending signal mask
 
@@ -41,30 +44,30 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. Releases all fcntl advisory locks on the file (POSIX-compliant). EINTR not yet handled. |
 | `read()` | Partial | Host-delegated for files. Pipe/socket reads from kernel ring buffer with blocking when empty (EINTR on signal). Short reads permitted. O_NONBLOCK returns EAGAIN. |
 | `pread()` | Partial | Host-delegated via seek-read-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
-| `write()` | Partial | Host-delegated for files. Pipe writes to kernel ring buffer with blocking when full (EINTR on signal). EPIPE + SIGPIPE on closed read end (POSIX-compliant). O_APPEND seeks to end before write. RLIMIT_FSIZE enforced (EFBIG + SIGXFSZ). |
-| `pwrite()` | Partial | Host-delegated via seek-write-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
-| `lseek()` | Full | SEEK_SET, SEEK_CUR, SEEK_END all implemented. SEEK_END delegates to host for file size calculation. |
+| `write()` | Partial | Host-delegated for files. Pipe writes to kernel ring buffer with blocking when full (EINTR on signal). EPIPE + SIGPIPE on closed read end (POSIX-compliant). O_APPEND seeks to end before write. For regular files and memfds, RLIMIT_FSIZE is calculated once per logical operation: a crossing operation returns the prefix that fits without a signal; a later non-empty operation with no room fails with EFBIG and generates thread-directed SIGXFSZ. |
+| `pwrite()` | Partial | Host-delegated via seek-write-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. Uses the same operation-wide RLIMIT_FSIZE rule as write without changing the OFD cursor. |
+| `lseek()` | Full | SEEK_SET, SEEK_CUR, SEEK_END all implemented. SEEK_END delegates to host for file size calculation. A seek whose resulting offset would be negative fails with EINVAL without changing the open-file-description offset; arithmetic or host-number overflow fails with EOVERFLOW. |
 | `dup()` | Full | Lowest available fd. FD_CLOEXEC cleared. Shares OFD with original. |
 | `dup2()` | Full | Atomic close-and-dup. Same-fd no-op. FD_CLOEXEC cleared. |
 | `dup3()` | Full | Like dup2 but returns EINVAL if oldfd==newfd. Supports O_CLOEXEC flag. |
-| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 atomicity guaranteed by serialized syscalls in the kernel. O_NONBLOCK enforced (EAGAIN). Cross-process pipes work naturally via shared OFD table after fork. |
+| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 atomicity is guaranteed by serialized kernel syscalls. O_NONBLOCK returns EAGAIN. Forked descriptors retain the same global pipe backing even though their per-process OFD metadata is copied. |
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
-| `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
+| `writev()` | Full | Gather write. Enforces aggregate count and RLIMIT_FSIZE once across the full iovec operation, including host scratch-buffer decomposition, then stops on a short underlying write. |
 | `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Full struct stat populated. |
-| `ftruncate()` | Partial | Host-delegated for regular files with write access. Validates length >= 0. Rejects non-regular fds. |
+| `ftruncate()` | Partial | Host-delegated for regular files, with in-kernel memfd support. Requires write access, validates length >= 0, rejects non-regular fds, and enforces RLIMIT_FSIZE before changing either backing. |
 | `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
 | `fchmod()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native mode changes after creation. |
-| `fchown()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native ownership changes. |
+| `fchown()` | Partial | Regular files and directories update VFS metadata. `(uid_t)-1` and `(gid_t)-1` preserve the corresponding current ID without bypassing descriptor, authorization, or backend-error checks. Actual changes remain restricted to effective uid 0; the current owner may issue the raw `(-1, -1)` no-change request. Kernel-owned non-file descriptors still accept the call as a no-op, and Node host-backed ownership changes stay virtual. |
 | `preadv()` | Full | Scatter-gather read at offset. Iterates iovec entries calling pread for each. Stops on short read or EOF. |
-| `pwritev()` | Full | Scatter-gather write at offset. Iterates iovec entries calling pwrite for each. Stops on short write. |
+| `pwritev()` | Full | Scatter-gather write at offset. Enforces aggregate count and RLIMIT_FSIZE once across the full iovec operation, then stops on a short underlying write. |
 | `preadv2()` / `pwritev2()` | Partial | Delegates to preadv/pwritev. Extra flags parameter ignored. |
-| `sendfile()` | Full | Emulated with read+write loop (no zero-copy in Wasm). Supports offset parameter for positioned read from input fd. |
-| `fallocate()` | Stub | Returns 0 (no-op). File space managed by host. |
-| `copy_file_range()` | Full | Emulated with pread+pwrite loop. Supports optional offsets for both input and output fds. Cross-fd copy between regular files, pipes, and sockets. |
-| `splice()` | Full | Emulated with pread+pwrite loop. Supports pipe-to-file, file-to-pipe, and pipe-to-pipe transfers with optional offsets. |
+| `sendfile()` | Full | Emulated with read+write loop (no zero-copy in Wasm). Supports an optional positioned input offset. The output RLIMIT_FSIZE budget is fixed before input is consumed, so a limit-induced short transfer advances the input only by the returned count. |
+| `fallocate()` | Partial | Mode 0 extends through ftruncate when needed, including RLIMIT_FSIZE enforcement; allocation guarantees and nonzero modes are not implemented. |
+| `copy_file_range()` | Full | Emulated with pread+pwrite loop. Supports optional offsets for both input and output fds. The output RLIMIT_FSIZE budget is fixed before input is consumed. |
+| `splice()` | Full | Emulated through the copy loop with optional offsets. The output RLIMIT_FSIZE budget is fixed before input is consumed. |
 | `tee()` / `vmsplice()` | Stub | Returns ENOSYS. |
 | `readahead()` | Stub | Returns 0 (no-op advisory). |
 | `fstatat()` | Full | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW supported. Real dirfd supported via stored OFD paths. |
@@ -74,7 +77,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `renameat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
 | `faccessat()` | Full | AT_FDCWD delegates to access(). Absolute paths and real dirfd supported. |
 | `fchmodat()` | Full | AT_FDCWD delegates to chmod(). AT_SYMLINK_NOFOLLOW accepted. Real dirfd supported. |
-| `fchownat()` | Full | AT_FDCWD delegates to chown(). Real dirfd supported. |
+| `fchownat()` | Partial | AT_FDCWD and real dirfds are supported, including unchanged-ID sentinels. The final symlink is followed by default and changed directly with `AT_SYMLINK_NOFOLLOW`. Unsupported flags, including `AT_EMPTY_PATH`, return EINVAL. Actual ownership changes remain restricted to effective uid 0. |
 | `linkat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
 | `symlinkat()` | Full | Target stored as-is. Linkpath resolved via dirfd. Real dirfd supported. |
 | `readlinkat()` | Full | AT_FDCWD delegates to readlink(). Real dirfd supported. |
@@ -99,16 +102,17 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `fork()` | Full | The kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), and the host spawns a child Worker with copied Memory. Child resumes execution at the `fork()` call site with return value 0 via the `wpk_fork_*` instrumentation injected by `wasm-fork-instrument` (Phase 7; see [fork-instrumentation.md](fork-instrumentation.md)) — the call stack, local variables, and `__tls_base`/`__stack_pointer` are preserved across the boundary. Fork from pthread workers is supported by routing the child through the saved pthread entry function and the calling thread's fork buffer. Cross-process pipes, signals, and waitpid all functional. |
-| `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. **Resets** the program break (POSIX-correct); host then re-installs the new program's `__heap_base` via `kernel_set_brk_base`. |
-| `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns normal-exit status with WIFEXITED/WEXITSTATUS and signal-death status with WIFSIGNALED/WTERMSIG. |
-| `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
+| `fork()` | Partial | The kernel copies process state and the host starts a child Worker with copied Memory. Initial launch mirrors the environment into kernel-owned process state; fork copies that metadata while instrumented rewind preserves the live libc `environ` in copied Memory, and `execve()` replaces both from its supplied `envp`. `wasm-fork-instrument` resumes the child at the call site with preserved stack locals and mutable globals. Main-thread and pthread fork are supported, as is the documented direct main-to-one-side-module path; nested/opaque cross-side callbacks and fork from a pthread inside a side module remain unsupported. Pipes, sockets, PTYs, eventfd/timerfd/signalfd, memfd, procfs snapshots, and shared mappings retain their existing backings; signal and wait lifecycle state is copied/coordinated by the kernel. Ordinary regular-file OFD seek positions/status flags are still copied rather than shared. See [fork-instrumentation.md](fork-instrumentation.md) and the known OFD gap below. |
+| `exec()` | Partial | Kernel-initiated via SYS_EXECVE (syscall 211). The host preflights the module, ABI, replacement memory, caller, deferred file actions, and a 4 MiB combined argv/environment representation (strings, terminators, and pointer entries) before replacing the image in place; individual strings are limited to 64 KiB and oversize returns `E2BIG` without truncation. Preserves PID, non-CLOEXEC fds and their exact kernel-backed object state, new argv/envp (including an explicitly empty environment), CWD, the calling pthread's signal mask and directed queue, terminal queues, and `alarm()`/`ITIMER_REAL`; closes directory streams, deletes `timer_create()` timers, publishes and detaches old mappings, terminates sibling threads, and resets the program break before installing the new `__heap_base`. File mappings retain a stable writeback handle even after their original fd closes. Remaining gaps: POSIX message-queue descriptors are not process-owned and therefore cannot yet be closed on exec; epoll registrations track numeric fds rather than OFD identity, so close/dup and same-number replacement cases are incomplete; and main-thread-directed signals share the process-pending queue and therefore cannot be distinguished from process-directed signals when a worker pthread execs. |
+| `wait()` / `waitpid()` / `wait4()` / `waitid()` | Partial | Rust-owned child status covers stop, continue, normal exit, and signal death. New status replaces older unconsumed status; `waitid(WNOWAIT)` preserves the current record. `WNOHANG`, `WUNTRACED`/`WSTOPPED`, `WEXITED`, and `WCONTINUED` are supported, as are specific-PID, any-child, same-process-group, and specific-process-group selection. Stop/continue reports do not reap; consuming exit status does. `wait4()` returns the zero-filled resource-usage wire record described under `getrusage()`. Remaining gap: a blocked `pid == 0` / `P_PGID,id == 0` wait currently re-evaluates the caller's process group on each host retry instead of freezing it at call entry. |
+| `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases locks and mapping/backing ownership, and retains the low eight status bits. Normal codes 128–255 remain distinct from signal termination, which is stored separately. SIGCHLD is delivered to the parent and zombie state remains until `waitpid()` reaps it. |
 | `getpid()` | Full | Returns pid from Process struct. |
 | `getppid()` | Full | Returns ppid (0 for init process). |
 | `getuid()` / `geteuid()` | Full | Simulated; defaults to uid=0 (root). Configurable via setuid/seteuid. |
 | `getgid()` / `getegid()` | Full | Simulated; defaults to gid=0 (root). Configurable via setgid/setegid. |
 | `setuid()` / `seteuid()` | Full | POSIX semantics (no saved-set-uid tracked). As root: setuid sets both uid and euid; seteuid sets any euid. Non-root: setuid only to own uid; seteuid only to own ruid. Returns EPERM otherwise. |
 | `setgid()` / `setegid()` | Full | POSIX semantics mirroring setuid — gated on euid==0 for privileged changes. Returns EPERM for non-root trying to change to a foreign gid. |
+| `getpriority()` / `setpriority()` | Partial | Stores a per-process nice value; WebAssembly has no host CPU scheduler to apply it to. Linux-compatible `/proc/<pid>/stat` exposes scheduler priority in field 18 and nice in field 19. Procfs metadata operations reject missing or reaped PID scopes. |
 | `getpgrp()` | Full | Returns process group ID (simulated, defaults to pid). |
 | `setpgid()` | Partial | Sets process group ID. pid=0 means self. pgid=0 means use target pid. Only supports setting own pgid; other processes return ESRCH. |
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
@@ -117,11 +121,11 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `gettid()` | Partial | Returns pid for the main thread and the host-bound worker TID for pthread workers. Remaining limitation: this is Linux-compatible rather than POSIX-standard, and not all signal/thread APIs consume TID-specific state yet. |
 | `set_tid_address()` | Partial | Returns the calling TID and stores the clear-TID pointer for thread exit notification. Host thread cleanup writes 0 and futex-wakes the address for normal pthread exit and forced cleanup paths. Robust-list handling remains deferred. |
 | `set_robust_list()` | Stub | No-op. Robust futex list tracking deferred until threading is fully tested. |
-| `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. Main-process WAIT returns EAGAIN so the host retries via Atomics.waitAsync. Thread workers use direct Atomics.wait. |
-| `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
-| `execveat()` | Full | SYS_EXECVEAT (386). Resolves fd path via `kernel_get_fd_path`. Supports AT_EMPTY_PATH for `fexecve()`. Relative paths resolved against process CWD. |
-| `fork()` (syscall) | Full | Glue traps to the kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. Continuation across the fork boundary uses `wasm-fork-instrument`'s `wpk_fork_*` exports. |
-| `vfork()` | Full | Alias for fork(). |
+| `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, and FUTEX_WAKE_OP operate on one process's shared memory. Main-process WAIT uses host `Atomics.waitAsync`; pthread workers use direct `Atomics.wait`. Separate processes have separate `SharedArrayBuffer` objects, so these operations do not wake or synchronize a peer PID even when the futex word lies in a host-coordinated MAP_SHARED mapping. |
+| `execve()` | Partial | Delegates to the in-place `exec()` path and has the same remaining descriptor/signal/mapping limitations described above. |
+| `execveat()` | Partial | SYS_EXECVEAT (386). Resolves fd path via `kernel_get_fd_path`, supports AT_EMPTY_PATH for `fexecve()`, and resolves relative paths against process CWD; otherwise has the same remaining `exec()` limitations. |
+| `fork()` (syscall) | Partial | Glue traps through channel IPC; the kernel copies process state, the host starts a child Worker, and `wasm-fork-instrument` replays the supported call stack so parent/child receive the POSIX return values. The side-module and ordinary-OFD limitations in the main `fork()` row still apply. |
+| `vfork()` | Partial | Alias for `fork()` and therefore has the same continuation/OFD limitations; it does not provide distinct vfork address-space semantics. |
 | `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host parses the blob, calls `kernel_spawn_process` to allocate a child pid + build the child Process descriptor, then invokes `onSpawn` to launch a fresh Worker. No fork, no `wpk_fork_*` rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
 | `posix_spawnp()` | Full | PATH search lives in libc (`libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
 | `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. The kernel allocates the TID, and the host spawns a thread Worker sharing the parent's Memory. Normal pthread return, pthread_exit, and cancellation cleanup remain per-thread and wake join/clear-TID waiters; uncaught fatal Wasm traps in a pthread worker terminate the whole process with signal-style wait status. |
@@ -137,7 +141,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `acct()` | Stub | Returns ENOSYS. |
 | `reboot()` | Stub | Returns EPERM. |
 | `swapon()` / `swapoff()` | Stub | Returns EPERM. |
-| `syslog()` | Full | SYS_SYSLOG (kernel log) returns 0. libc syslog() works via AF_UNIX SOCK_DGRAM bit-bucket pattern — connect/write to `/dev/log` silently discards. |
+| `syslog()` | Partial | `SYS_SYSLOG` (kernel-log control) returns 0. Kandelo does not currently provide a `/dev/log` datagram receiver; AF_UNIX datagram connect therefore exposes the missing endpoint instead of silently discarding messages. |
 | `capget()` / `capset()` | Stub | Returns EPERM. No capabilities model. |
 | `vhangup()` | Stub | Returns EPERM. |
 | `sethostname()` / `setdomainname()` | Stub | Returns EPERM. |
@@ -153,32 +157,43 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 |----------|--------|-------|
 | `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. POSIX EPERM enforced: unprivileged processes cannot signal a target whose real/effective uid does not match their own. A virtual init (pid 1, uid 0) is auto-registered so `kill(1, ...)` resolves; target 4 in compromising-xfails.md. |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
-| `sigaction()` | Full | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_SIGINFO: flags passed to host so handler is called as `handler(signum, siginfo_ptr, ucontext_ptr)`. SA_NOCLDWAIT auto-reaps children and suppresses SIGCHLD. SA_NOCLDSTOP stored but not yet acted upon (no job control). SIG_IGN discards pending signals; SIG_DFL discards pending signals for signals whose default action is "ignore" (e.g., SIGCHLD). **Note:** Programs must be linked with `--table-base=3 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN, index 2 reserved for `__main_void`). |
+| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART is honored by the existing blocking read/write/recv/poll paths and by host-deferred waits. SA_SIGINFO calls `handler(signum, siginfo_ptr, ucontext_ptr)` with pointer-width-correct layout, but host-generated SIGCHLD currently lacks the exact child pid/CLD code/status metadata. SA_NOCLDWAIT auto-reaps children and suppresses SIGCHLD. SA_NOCLDSTOP suppresses stop/continue SIGCHLD notification without discarding waitable status. SIG_IGN discards pending signals; SIG_DFL discards pending signals for signals whose default action is "ignore" (e.g., SIGCHLD). **Note:** Programs must be linked with `--table-base=3 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN, index 2 reserved for `__main_void`). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
 | `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
 | `pause()` | Full | Suspends until a signal is delivered. Delegates to sigsuspend with current mask. Always returns EINTR. |
 | `raise()` | Full | Equivalent to kill(getpid(), sig). |
-| `alarm()` | Full | Sets SIGALRM timer via host setTimeout. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork, canceled by exec. |
+| `alarm()` | Full | Sets SIGALRM timer via host setTimeout. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork; preserved across exec. |
 | `setitimer()` | Full | ITIMER_REAL: sets alarm deadline + interval via host_set_alarm. ITIMER_VIRTUAL/ITIMER_PROF: no-op (no CPU time tracking). Fixes musl's alarm() which internally calls setitimer. |
 | `getitimer()` | Full | ITIMER_REAL: returns stored interval + remaining time from deadline. ITIMER_VIRTUAL/ITIMER_PROF: returns zero. |
-| `sigtimedwait()` | Full | Checks pending signals in mask, dequeues lowest. Returns si_signo, si_code (SI_USER/SI_QUEUE), and si_value in siginfo_t. Polls with 1ms sleep on timeout. Returns EAGAIN on timeout. |
+| `sigtimedwait()` | Partial | Checks the calling thread's directed and process-shared pending signals, dequeues the lowest match, and returns signal-specific `siginfo_t` metadata, including timer ID and overrun for `SI_TIMER`. Host-originated signals wake matching blocked thread channels immediately; finite retries preserve the original deadline and timeout expiry returns EAGAIN. Remaining gap: a caught signal outside the waited set does not yet interrupt the wait with `EINTR`. |
 | `sigqueue()` / `rt_sigqueueinfo()` | Full | Sends signal with si_value. RT signals (32-63) are queued with FIFO ordering; standard signals (1-31) coalesced. si_code set to SI_QUEUE (-1). |
 | `rt_sigreturn()` | Stub | Returns 0. Signal trampoline handled by host. |
-| `signalfd()` / `signalfd4()` | Full | Creates a file descriptor for accepting signals. Reads return `signalfd_siginfo` structs (128 bytes) for pending signals matching the mask. Supports poll() for readiness. |
+| `signalfd()` / `signalfd4()` | Full | Creates a descriptor whose mask is held in a refcounted kernel-global backing, shared across inherited descriptors and retained by non-CLOEXEC exec. Reads return 128-byte `signalfd_siginfo` records for matching pending signals; poll readiness is supported. |
 
 ## Memory Management
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `mmap()` | Partial | Anonymous, file-backed MAP_PRIVATE, and file-backed MAP_SHARED. Page-aligned (64KB Wasm pages). MAP_FIXED supported. Host populates file-backed regions via pread; MAP_SHARED regions are flushed on msync via pwrite. |
-| `msync()` | Full | Flushes MAP_SHARED regions back to the file via pwrite. No-op for MAP_PRIVATE (correct per POSIX). |
-| `shm_open()` / `shm_unlink()` | Full | musl maps to `/dev/shm/` paths; host rewrites to tmpdir on macOS. Works with MAP_SHARED mmap. |
-| `munmap()` | Full | Removes tracked region. Page-aligned address required. Partial munmap supported: front trim, back trim, and middle split. |
+| `mmap()` | Partial | Anonymous, regular-file `MAP_PRIVATE`, and regular-file `MAP_SHARED` mappings use 64 KiB Wasm pages. `MAP_FIXED` replaces the complete rounded page range; a usable non-fixed hint is rounded down and preferred without replacing occupied mappings. Anonymous and regular-file shared mappings inherited by fork converge at syscall boundaries through a host-owned backing, not immediately on direct loads/stores. Regular-file sharing requires stable backend device/inode identity and retains the original open host handle, so mapping remains valid after the guest fd closes or its pathname is unlinked or renamed. In-kernel memfd and identity-less backends (currently OPFS) return `ENOTSUP` for `MAP_SHARED`; `MAP_PRIVATE` still works. Bytes beyond EOF are zero-filled/dropped instead of delivering Linux `SIGBUS`, and external host writers are not detected. |
+| `msync()` | Partial | Publishes the calling process's changed bytes and writes dirty regular-file pages through the stable mapping handle; `MAP_PRIVATE` remains private. Writeback is clipped to the current file size and reports `EIO` on a coherence/writeback failure. `MS_SYNC` versus `MS_ASYNC` scheduling is not distinguished, and visibility between processes is not immediate between syscalls. |
+| `shm_open()` / `shm_unlink()` | Partial | musl maps names to `/dev/shm/` files (with the Node/macOS host rewrite). The resulting regular-file `MAP_SHARED` mappings work across fork and independent fds at syscall boundaries, subject to the file-mapping, futex, and EOF limitations in this section. |
+| `munmap()` | Full | Removes tracked regions. The address must be 64KB-page-aligned; the length is rounded up to the next Wasm page. Partial munmap supports front trim, back trim, and middle split, including matching host-side MAP_SHARED tracking. |
+| `mremap()` | Partial | Supports page-rounded shrink, in-place growth, and `MREMAP_MAYMOVE`; other flags are rejected. The host moves/resizes matching anonymous and file-shared tracking and preloads a file expansion before the destructive kernel step. Wasm cannot revoke the old bytes after a move, just as `munmap()` cannot make later direct access fault. |
 | `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break installed by host from the program's `__heap_base` export via `kernel_set_brk_base` (16MB hardcoded fallback for binaries without `__heap_base`). Growing and shrinking supported. Inherited on `fork`; **reset** on `exec` and re-installed from the new program's `__heap_base` (POSIX-correct). |
-| `mprotect()` | Partial | Returns success (no-op). Wasm linear memory has no page-level protection, so protection changes are silently accepted. |
-| `memfd_create()` | Full | In-kernel anonymous file backed by Vec. MFD_CLOEXEC and MFD_ALLOW_SEALING flags. Supports read, write, lseek, ftruncate, fstat, mmap. |
+| `mprotect()` | Partial | Wasm cannot enforce page protection on direct memory access. A successful write upgrade validates that an overlapping file-shared mapping has a lifetime-stable writable handle and marks the whole tracked interval writeback-eligible; that eligibility remains monotonic after a later downgrade. Other protection effects are not enforced. |
+| `memfd_create()` | Full | In-kernel anonymous file backed by a refcounted global object whose contents and cursor survive fork/spawn and non-CLOEXEC exec. MFD_CLOEXEC and MFD_ALLOW_SEALING flags are supported. `MAP_PRIVATE` population works; `MAP_SHARED` deliberately returns `ENOTSUP` until memfd has a coherent mapping bridge. |
 
 ## Directory Operations
+
+Pathname syscalls walk components in the kernel's global namespace before
+dispatching the resolved path to rootfs, a host-backed mount, procfs, devfs, or
+an AF_UNIX pathname. This preserves `.` and `..` until the preceding component
+has been checked, follows relative and absolute symlinks across mount
+boundaries, enforces the 40-link limit, and gives a trailing slash its required
+directory semantics. Cwd and directory OFDs still retain canonical pathnames
+rather than stable directory identities: rename/unlink followed by recreation
+can therefore make `getcwd()`, `fchdir()`, or a dirfd-relative operation refer
+to a different directory than the original OFD.
 
 | Function | Status | Notes |
 |----------|--------|-------|
@@ -190,13 +205,13 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `seekdir()` | Full | Rewinds and skips entries to reach target position. |
 | `mkdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. umask applied to mode. |
 | `rmdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
-| `chdir()` / `getcwd()` | Partial | Kernel-maintained cwd. chdir validates via host_stat that target is S_IFDIR. getcwd returns ERANGE if buffer too small. |
+| `chdir()` / `getcwd()` | Partial | `chdir()` resolves components and symlinks across mounts, verifies search permissions and a directory target, and stores the canonical physical pathname. Initial process cwd uses the same validation after child credentials are installed. `getcwd()` validates that spelling and returns ERANGE if the buffer is too small, but cwd remains pathname-backed rather than a stable directory identity after rename/unlink. |
 | `link()` / `unlink()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
 | `rename()` | Partial | Host-delegated. Both paths resolved via kernel cwd. |
-| `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. |
-| `chmod()` / `chown()` | Partial | VFS metadata updates. Node host-backed files receive native mode only at file/directory creation; later mode changes and all ownership changes stay virtual. Browser memory-backed mounts store metadata in the VFS. |
-| `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
-| `realpath()` | Full | Resolves path against cwd, normalizes `.`/`..`, resolves symlinks via iterative lstat/readlink (ELOOP after 40 resolutions), verifies existence. |
+| `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. Registered AF_UNIX pathname sockets preserve the backing VFS inode's uid, gid, permissions, timestamps, and link count while reporting `S_IFSOCK`. |
+| `chmod()` / `chown()` / `lchown()` | Partial | VFS metadata updates. `chown()` follows the final symlink; `lchown()` changes the link itself, including dangling links. Ownership calls preserve either unchanged-ID sentinel, validate the selected object and authorization before delegating even same-value requests, restrict actual changes to effective uid 0, and permit raw `(-1, -1)` only to the selected object's owner or root. Owner group changes and supplementary-group authorization remain incomplete. Node host-backed files receive native mode only at file/directory creation; later mode changes and all ownership changes stay virtual. Browser memory-backed mounts store metadata in the VFS. OPFS has neither symlinks nor ownership metadata, so its existing ownership operations are no-ops. |
+| `access()` | Partial | Resolves the pathname component-wise and checks traversal plus target permissions with real credentials. `faccessat(..., AT_EACCESS)` selects effective credentials. Supplementary-group authorization remains incomplete. |
+| `realpath()` | Full | Uses the global component walker against cwd, including mount crossings and relative or absolute symlinks; `missing/..` fails instead of being collapsed lexically, trailing slash requires a directory, and more than 40 symlinks returns ELOOP. |
 | `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |
 | `sync()` / `syncfs()` | Stub | Returns 0 (no-op). Filesystem sync managed by host. |
 | `sync_file_range()` | Stub | Returns 0 (no-op). |
@@ -227,20 +242,21 @@ shortcuts.
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `socket()` | Partial | AF_UNIX and AF_INET supported for SOCK_STREAM and SOCK_DGRAM. SOCK_NONBLOCK and SOCK_CLOEXEC flags handled. AF_INET SOCK_DGRAM is implemented as a kernel-level datagram socket for loopback/virtual routes; external raw UDP is not exposed directly to userspace. |
+| `socket()` | Partial | AF_UNIX, AF_INET, and AF_INET6 support SOCK_STREAM and SOCK_DGRAM. SOCK_NONBLOCK and SOCK_CLOEXEC flags are handled. AF_INET6 is limited to local `::`/`::1` routes; external and virtual-network IPv6 transports are not implemented. AF_INET SOCK_DGRAM uses kernel queues for loopback and a HostIO backend for routed virtual IPv4; external raw UDP is not exposed directly to userspace. |
 | `socketpair()` | Full | AF_UNIX SOCK_STREAM. Bidirectional ring buffers (64KB each). Returns pre-connected pair. |
-| `bind()` | Partial | AF_UNIX paths, AF_INET TCP host-backed bind/listen, and AF_INET UDP in-kernel bind for INADDR_ANY, loopback, and broadcast addresses. The browser local virtual-network backend supports AF_INET TCP/UDP binds between attached Kandelo machines. UDP ephemeral ports, getsockname, bind conflicts, and SO_REUSEADDR conflict cases are covered by Sortix UDP tests. |
-| `listen()` | Partial | AF_INET TCP delegates to the active HostIO networking backend, including Node `net` and the browser local virtual-network backend. Datagram listen rejects as unsupported. AF_UNIX stream listen remains EOPNOTSUPP. |
-| `accept()` / `accept4()` | Partial | AF_INET TCP delegates to the active HostIO networking backend and returns connected sockets. Datagram accept rejects as unsupported. SOCK_NONBLOCK and SOCK_CLOEXEC flags on accept4. |
-| `connect()` | Partial | AF_UNIX SOCK_DGRAM connects to a bit-bucket pattern. AF_INET TCP is host-backed and works over Node external TCP or the browser local virtual-network backend. AF_INET UDP connect stores the peer, auto-binds an ephemeral local port when needed, filters receives to the connected peer, and supports AF_UNSPEC unconnect. UDP loopback and local virtual routes are supported; external raw UDP routes return ENETUNREACH without a HostIO UDP proxy/backend. |
-| `send()` / `recv()` | Partial | Unix domain streams, AF_INET TCP, and connected AF_INET UDP. TCP send/recv works over Node external TCP and the local virtual-network backend. UDP preserves datagram boundaries and supports MSG_PEEK/MSG_DONTWAIT through recvfrom. MSG_NOSIGNAL is honored for stream/broken-pipe paths. |
-| `sendto()` / `recvfrom()` | Partial | AF_INET UDP loopback and local virtual-network send/receive, connected and unconnected sendto, source address reporting, and connected receive filtering are implemented. External raw UDP routes return ENETUNREACH and are narrowly xfailed in the Sortix UDP suite. |
-| `setsockopt()` / `getsockopt()` | Partial | SOL_SOCKET: SO_TYPE, SO_DOMAIN, SO_ERROR, SO_ACCEPTCONN, SO_RCVBUF, SO_SNDBUF readable; SO_REUSEADDR affects UDP bind conflicts; SO_KEEPALIVE, SO_LINGER, SO_RCVTIMEO, SO_SNDTIMEO, SO_BROADCAST accepted/stored. IPPROTO_TCP: TCP_NODELAY stored. |
-| `shutdown()` | Partial | SHUT_RD, SHUT_WR, SHUT_RDWR for stream sockets and UDP readiness/error behavior. UDP write shutdown returns EPIPE on datagram send; read shutdown is EOF-like for recv/poll. |
-| `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. Timeout supported via polling loop. |
+| `bind()` | Partial | AF_UNIX pathname and Linux abstract-namespace addresses, AF_INET TCP host-backed bind/listen, and AF_INET UDP in-kernel bind for INADDR_ANY, loopback, and broadcast addresses. AF_UNIX pathname bind resolves to a canonical namespace path and creates a VFS inode with mode `0777 & ~umask`; `stat`/`lstat`/`fstatat`, `chmod`, and `chown` share that inode metadata, and the socket metadata remains until unlink after the final close. Ordinary pathname rename rekeys the socket registry, including replacement of a stale destination registration; hard-link identity is not tracked. Abstract addresses create no VFS inode and become reusable after their final inherited owner closes. AF_INET6 accepts `::` and `::1`; stream and datagram binds use machine-wide conflict tables, and a non-`IPV6_V6ONLY` wildcard stream bind also reserves the IPv4 wildcard port. The browser local virtual-network backend supports AF_INET TCP/UDP binds between attached Kandelo machines, not IPv6. |
+| `listen()` | Partial | AF_INET TCP delegates to the active HostIO networking backend, including Node `net` and the browser local virtual-network backend. AF_UNIX stream listen is implemented. AF_INET, AF_INET6, and AF_UNIX listeners inherited by fork share one accept queue, so any surviving pre-fork worker can accept each connection once. AF_INET6 `::`/`::1` loopback listeners support same- and cross-process connections; external and virtual IPv6 listeners do not. Datagram listen rejects as unsupported. |
+| `accept()` / `accept4()` | Partial | AF_INET TCP delegates to the active HostIO networking backend; AF_UNIX and AF_INET6 loopback streams return connected sockets from the shared kernel queue. A dual-stack IPv6 listener reports IPv4 peers as IPv4-mapped `sockaddr_in6`. Linux-style accept does not inherit O_NONBLOCK; accept4 applies SOCK_NONBLOCK and SOCK_CLOEXEC explicitly and rejects other flags before consuming a pending connection. Datagram accept rejects as unsupported. |
+| `connect()` | Partial | AF_UNIX streams support same- and cross-process pathname or abstract-namespace listeners; pathname lookup uses the same canonical component walker as bind, including cross-process retries. AF_UNIX datagrams deliver to a registered peer only within the same process; a missing, wrong-type, or cross-process peer returns ECONNREFUSED until machine-wide datagram routing exists. AF_INET TCP is host-backed and works over Node external TCP or the browser local virtual-network backend. For an external non-blocking TCP handshake, the first pending call reports EINPROGRESS, a repeat while it remains pending reports EALREADY, and poll reports writable when completion or failure can be collected through SO_ERROR; blocking callers wait through the same host connection. AF_INET UDP connect stores the peer, auto-binds an ephemeral local port when needed, filters receives to the connected peer, and supports AF_UNSPEC unconnect. AF_INET6 streams support same- and cross-process `::1`; AF_INET6 datagrams are process-local and report `IPV6_V6ONLY=1` because dual-stack datagram routing is not implemented. Non-loopback IPv6 fails with EADDRNOTAVAIL for streams and ENETUNREACH for datagrams. External raw UDP also returns ENETUNREACH without another HostIO transport. |
+| `send()` / `recv()` | Partial | Unix domain streams and datagrams, AF_INET/AF_INET6 TCP streams, and connected AF_INET/AF_INET6 UDP preserve their socket-family addressing and datagram boundaries. TCP send/recv works over Node external TCP and the local virtual-network backend. Datagram MSG_PEEK and MSG_DONTWAIT are handled through recvfrom. Normal TCP close drains queued bytes before FIN and EOF; no transport invents a fixed post-FIN write count. A send rejected by a closed/reset stream returns EPIPE and raises SIGPIPE, while direct host/virtual handles may preserve ECONNRESET; accepted pipe-bridged resets currently surface as EOF/EPIPE. MSG_NOSIGNAL suppresses SIGPIPE without changing the errno. |
+| `sendto()` / `recvfrom()` | Partial | AF_INET, AF_INET6, and AF_UNIX datagrams support connected and unconnected send, receive queues, and connected-peer filtering. IPv4/IPv6 return sender addresses; AF_UNIX currently returns only the family. IPv4 limited-broadcast sends to `255.255.255.255` require `SO_BROADCAST` and fail with `EACCES` without it; enabling the option passes that permission gate, after which the send reaches the active routing/backend boundary. Kandelo does not itself model broadcast delivery. On AF_INET, AF_INET6, and AF_UNIX datagrams, Linux's input `MSG_TRUNC` extension returns the full datagram length while copying at most the caller's buffer; ordinary consume/`MSG_PEEK` behavior is unchanged. IPv4/IPv6 UDP receive queues hold 128 datagrams and drop a new arrival once full, preserving the accepted queue's order; `SO_RCVBUF` requests do not size that fixed queue, and `getsockopt` reports the fixed default capacity. AF_UNIX uses the same bound but preserves reliable delivery: a full queue blocks a blocking send through host retry and returns EAGAIN for `O_NONBLOCK`/`MSG_DONTWAIT`; capacity, association, shutdown, close, and pathname changes wake blocked sends and writable readiness waits to observe capacity or the new immediate error. In-kernel IPv4/IPv6 loopback, AF_UNIX datagram, and IPv4 multicast delivery currently reaches sockets in the sender's process only; machine-wide cross-process datagram routing remains unimplemented. Fork preserves kernel-local bind reservations and lookup ownership, but it does not yet share or transfer a host-backed UDP registration. The `10.88.*` LocalVirtualNetwork path can route IPv4 datagrams between attached Kandelo machines through HostIO for the process that registered the endpoint. IPv4 multicast supports interface selection, loop suppression, membership, and source filtering only; IPv6 multicast and external raw UDP are not implemented. |
+| `sendmsg()` / `recvmsg()` | Partial | Minimal first-iovec wrappers are implemented. Input `MSG_TRUNC` reaches the datagram receive behavior above, but `recvmsg()` does not yet populate output `msg_flags`, including `MSG_TRUNC`. |
+| `setsockopt()` / `getsockopt()` | Partial | SOL_SOCKET exposes SO_TYPE, SO_DOMAIN, SO_ERROR, SO_ACCEPTCONN, SO_RCVBUF, and SO_SNDBUF; SO_REUSEADDR affects UDP bind conflicts. `SO_RCVTIMEO`/`SO_SNDTIMEO` accept musl's wasm32 time64 option numbers (66/67) and wasm64 long64 numbers (20/21), canonicalizing both to the same stored timeout state; `struct timeval` is 16 bytes on both ABIs. `SO_RCVBUF`/`SO_SNDBUF` requests are accepted and stored but do not resize kernel queues or pipe buffers; `getsockopt()` reports the fixed default. `SO_BROADCAST` controls only the IPv4 limited-broadcast permission gate and does not provide broadcast delivery. SO_LINGER uses `struct linger`; its disabled form is stored, while enabling timed or reset-style linger returns EOPNOTSUPP until every transport supports the close mode. SO_BINDTODEVICE validates `lo`/`eth0`, supports empty-name unbind, and constrains bind/connect/send routing. TCP_CONGESTION uses a string layout and accepts only the modeled `cubic` policy; selecting unimplemented algorithms fails. IPv4 multicast membership/source-filter options drive process-local loopback delivery. IPV6_V6ONLY controls pre-bind stream dual-stack behavior; AF_INET6 datagrams truthfully remain V6-only. Other accepted IPv6 multicast options are stored but do not provide IPv6 multicast transport. |
+| `shutdown()` | Partial | SHUT_RD, SHUT_WR, and SHUT_RDWR transitions are idempotent within a process and release each owned pipe/host reference once. UDP write shutdown returns EPIPE on datagram send; read shutdown is EOF-like for recv/poll. Sending to a read-shut AF_UNIX datagram peer returns EPIPE (and SIGPIPE unless MSG_NOSIGNAL is used), and the transition wakes blocked sends/readiness waits. Fork-inherited sockets still clone shutdown flags per process instead of sharing one socket-wide shutdown state, and the external host ABI has no half-shutdown operation. |
+| `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. Timeout supported via a host retry loop. A caught signal interrupts a would-block retry, including the no-fd sleep path, with EINTR; ignored signals leave it parked and a concurrently ready result is preserved. |
 | `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. UDP poll reports queued datagrams, connected-peer filtering, EOF-like read shutdown, write-shutdown hangup, and pending socket errors. Timeout supported via polling loop with 1ms sleep intervals. Returns EINTR on pending signals. |
 | `ppoll()` | Full | Wraps poll() with atomic signal mask swap: save → set → poll → restore. Timespec converted to timeout_ms in glue layer. |
-| `pselect6()` | Full | Wraps select() with atomic signal mask swap. Sigmask extracted from pselect6-style {sigset_t*, size_t} struct in glue layer. |
+| `pselect6()` | Partial | Wraps select() with an atomic signal-mask swap across the host retry loop. The pselect6-style `{sigset_t *, size_t}` argument supplies the mask; timeout precision is rounded to host milliseconds. Caught signals interrupt a would-block retry with EINTR after the temporary mask is restored. |
 | `epoll_create1()` | Full | Creates epoll instance with per-process interest list. EPOLL_CLOEXEC flag supported. |
 | `epoll_ctl()` | Full | EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL. Stores interest set with events + data. |
 | `epoll_pwait()` | Full | Builds pollfd from interest set, delegates to poll, maps results back to epoll_event structs. Optional signal mask swap. |
@@ -253,7 +269,7 @@ shortcuts.
 |----------|--------|-------|
 | `time()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns seconds since epoch. |
 | `gettimeofday()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns (sec, usec) pair. |
-| `clock_gettime()` | Full | Host-delegated. CLOCK_REALTIME and CLOCK_MONOTONIC supported. Node.js uses Date.now() and process.hrtime.bigint(). |
+| `clock_gettime()` | Partial | Host-delegated. `CLOCK_REALTIME` and `CLOCK_MONOTONIC` are supported. Linux `CLOCK_REALTIME_COARSE` and `CLOCK_MONOTONIC_COARSE` requests use the corresponding host clock as an equivalent fallback because Kandelo hosts do not expose separate coarse sources. `CLOCK_BOOTTIME` is a monotonic-equivalent fallback because Kandelo hosts do not expose suspend accounting. The named process/thread CPU clocks currently report elapsed monotonic time rather than authoritative CPU usage; musl's encoded per-thread clock IDs returned by `pthread_getcpuclockid()` are not yet recognized and return `EINVAL`. Linux-style encoded process CPU clock IDs must be negative; malformed positive encodings are rejected with `EINVAL` (which musl's `clock_getcpuclockid()` maps to `ESRCH`). Node.js uses `Date.now()` and `process.hrtime.bigint()`; browsers use `Date.now()` and `performance.now()`. |
 | `nanosleep()` | Partial | Host-delegated. Node.js uses Atomics.wait with timeout. Browser support requires a worker context that can block with Atomics.wait. Validates tv_sec >= 0 and tv_nsec < 1e9. |
 | `usleep()` | Full | Converts microseconds to sec+nsec, delegates to host_nanosleep. |
 | `clock_settime()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
@@ -274,23 +290,23 @@ shortcuts.
 | `sched_get_priority_min()` | Stub | Returns 0. |
 | `sched_rr_get_interval()` | Stub | Writes 10ms timespec. |
 | `sched_setaffinity()` | Stub | Returns 0 (no-op). |
-| `sched_getaffinity()` | Stub | Sets bit 0 in cpuset (1 CPU). Returns cpuset size. |
+| `sched_getaffinity()` | Stub | Linux-specific one-CPU compatibility surface. Running or stopped workers and process leaders that have not been reaped (including zombie leaders) report a fixed four-byte CPU-0 mask; reaped leaders, dead workers, and absent tasks return `ESRCH`. The raw syscall requires a size of at least four bytes aligned to four, writes and returns exactly four bytes, and leaves a larger raw buffer's tail untouched. Musl's public wrapper zero-fills that tail and returns 0. Exact leader PIDs take precedence over Kandelo's per-process worker TID records, whose numeric IDs can still collide across processes. |
 | `sched_yield()` | Stub | Returns 0 (no-op, single-threaded). |
 
 ## Event/Notification
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `eventfd()` / `eventfd2()` | Full | Per-process u64 counter. read returns 8-byte counter value (blocks/EAGAIN if zero). write adds to counter. EFD_SEMAPHORE: read returns 1, decrements by 1. EFD_NONBLOCK, EFD_CLOEXEC supported. poll reports POLLIN when counter > 0, POLLOUT when writable. |
-| `timerfd_create()` | Full | Creates timer fd with CLOCK_REALTIME or CLOCK_MONOTONIC. TFD_NONBLOCK and TFD_CLOEXEC flags. |
-| `timerfd_settime()` / `timerfd_gettime()` | Full | Arms/disarms timer with interval and initial expiration. TFD_TIMER_ABSTIME for absolute time. read returns 8-byte expiration count. poll reports POLLIN when expired. |
+| `eventfd()` / `eventfd2()` | Full | A refcounted kernel-global u64 counter is shared by inherited descriptors across fork/spawn and survives exec unless CLOEXEC. read returns the counter (or 1 for EFD_SEMAPHORE); write adds to it. EFD_NONBLOCK/EFD_CLOEXEC and poll readiness are supported. |
+| `timerfd_create()` | Full | Creates a refcounted kernel-global timerfd backing with CLOCK_REALTIME or CLOCK_MONOTONIC. Inherited descriptors observe the same timer and expiration count; non-CLOEXEC state survives exec. TFD_NONBLOCK and TFD_CLOEXEC are supported. |
+| `timerfd_settime()` / `timerfd_gettime()` | Full | Arms/disarms the shared timerfd backing with interval and initial expiration. TFD_TIMER_ABSTIME is supported; read returns the shared expiration count and poll reports POLLIN when expired. |
 | `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
 | `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
 | `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
-| `timer_create()` | Full | CLOCK_REALTIME and CLOCK_MONOTONIC. SIGEV_SIGNAL delivery with si_value. Per-process timer table (max 32). |
-| `timer_settime()` / `timer_gettime()` | Full | Absolute (TIMER_ABSTIME) and relative time. Interval timers with automatic rearming. Host setTimeout-based delivery. |
-| `timer_getoverrun()` | Full | Tracks overrun count when signal is still pending at next interval fire. Reset on successful signal delivery. |
-| `timer_delete()` | Full | Cancels timer and removes from per-process table. |
+| `timer_create()` | Partial | Supports `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, and monotonic-equivalent `CLOCK_BOOTTIME` with `SIGEV_SIGNAL`, `SIGEV_NONE`, Linux `SIGEV_THREAD_ID`, and POSIX `SIGEV_THREAD` through musl's exact-thread helper. Expirations preserve `SI_TIMER`, `si_value`, timer ID, and overrun metadata on Node and browser hosts. The fixed kernel wire carries `sival_int`; on wasm64, direct signal notifications cannot carry a wider `sival_ptr`, while `SIGEV_THREAD` retains the native-width callback value locally in the helper. |
+| `timer_settime()` / `timer_gettime()` | Partial | Absolute (`TIMER_ABSTIME`) and relative timers and automatic interval rearming use host timers with millisecond granularity. `timer_gettime()` and `timer_settime()`'s old-value result currently report the last configured value rather than decreasing remaining time. |
+| `timer_getoverrun()` | Full | Tracks overruns per timer while its notification remains pending and reports the count associated with the most recently accepted notification. |
+| `timer_delete()` | Full | Cancels the host timer, removes its queued notification before slot reuse, and removes it from the per-process table. |
 
 ## IPC (System V & POSIX Message Queues)
 
@@ -298,7 +314,7 @@ shortcuts.
 |----------|--------|-------|
 | `msgget()` / `msgsnd()` / `msgrcv()` / `msgctl()` | Full | Host-side SysV message queues via SharedIpcTable. Key-based creation, blocking send/recv with message types, IPC_STAT/IPC_SET/IPC_RMID control. |
 | `semget()` / `semop()` / `semctl()` / `semtimedop()` | Full | Host-side SysV semaphore sets. Atomic multi-semaphore operations, SEM_UNDO support, IPC_STAT/SETVAL/GETVAL/SETALL/GETALL. |
-| `shmget()` / `shmat()` / `shmdt()` / `shmctl()` | Full | Host-side SysV shared memory segments. Attach/detach via kernel mmap, IPC_STAT/IPC_RMID control. Cross-process sharing via SharedIpcTable. |
+| `shmget()` / `shmat()` / `shmdt()` / `shmctl()` | Partial | Host-side SysV shared-memory segments support IPC_STAT/IPC_RMID, fork inheritance, and exact attach/detach accounting. Separate process memories merge changed attachment bytes and import peer changes at syscall boundaries. Direct stores are not immediately visible and cross-process futex synchronization over an attachment is unsupported. |
 | `ftok()` | Full | Standard ftok algorithm using stat inode + proj_id. |
 | `mq_open()` / `mq_close()` / `mq_unlink()` | Full | Host-side POSIX message queues via PosixMqueueTable. O_CREAT/O_EXCL/O_RDONLY/O_WRONLY/O_RDWR/O_NONBLOCK. Descriptor range 0x40000000+. |
 | `mq_timedsend()` / `mq_timedreceive()` | Full | Priority-ordered message delivery. Blocking with timeout support. O_NONBLOCK returns EAGAIN. |
@@ -339,13 +355,13 @@ shortcuts.
 | `/dev/stdin` | Full | Alias for `/dev/fd/0`. |
 | `/dev/stdout` | Full | Alias for `/dev/fd/1`. |
 | `/dev/stderr` | Full | Alias for `/dev/fd/2`. |
-| `/dev/tty` | Full | Controlling terminal. Opens the session's controlling PTY slave (ENXIO if none). |
+| `/dev/tty` | Partial | Uses the first open PTY-slave OFD as the current controlling-terminal heuristic. When none is open, it currently falls back to fd 0 rather than returning ENXIO; `pathconf()` follows that same OFD selection and therefore does not advertise terminal variables for the captured, pipe-backed case. |
 | `/dev/ptmx` | Full | PTY master multiplexer. `open()` allocates a new PTY pair, returns master fd. |
 | `/dev/pts/*` | Full | PTY slave devices. `posix_openpt()` + `grantpt()` + `unlockpt()` + `ptsname()`. Full line discipline, canonical/raw mode, OPOST/ONLCR, 16 terminal ioctls. |
-| `/dev/fb0` | Full | Linux fbdev framebuffer. Single-open (`EBUSY` for second opener). 640×400 BGRA32 packed-pixel. ioctls: `FBIOGET_VSCREENINFO`, `FBIOGET_FSCREENINFO`, `FBIOPAN_DISPLAY` (no-op success), `FBIOPUT_VSCREENINFO` (validates geometry). `mmap` returns a region in process memory and notifies the host (`bind_framebuffer` callback) so the browser canvas can mirror pixels. `munmap`/`close`/`exit`/`exec` clean up. Linux-VT keyboard ioctls (`KDGKBTYPE`/`KDGKBMODE`/`KDSKBMODE`) accepted with sensible defaults so fbDOOM-style software works unmodified. |
-| `/dev/input/mice` | Full | Linux `mousedev` PS/2 mouse stream. Single-open (`EBUSY` for second pid). 3-byte packets: byte0 button bits + sign/overflow flags, bytes 1..2 signed dx/dy with positive-up dy. Host pushes events via `kernel_inject_mouse_event(dx, dy, buttons)`; the kernel buffers up to 4096 packets (whole-packet drop on overflow). `read()` drains queued bytes; returns `EAGAIN` when empty. `poll()` reports `POLLIN` only when bytes are queued. Ownership released on `close`/`exec`/`exit`. No IMPS/2 wheel protocol, no `evdev`/`/dev/input/eventN`. |
-| `/dev/dsp` | Full (write-only) | OSS-style PCM audio sink. Single-open (`EBUSY` for second pid). `write()` accepts interleaved 16-bit-LE PCM and buffers it in a 256 KiB ring; the host drains via the `kernel_drain_audio` wasm export and feeds a Web Audio `AudioContext`. ioctls: `SNDCTL_DSP_RESET`, `SNDCTL_DSP_SYNC`, `SNDCTL_DSP_SPEED` (clamp 4000–192000 Hz), `SNDCTL_DSP_STEREO` / `SNDCTL_DSP_CHANNELS` (1 or 2), `SNDCTL_DSP_SETFMT` (only `AFMT_S16_LE`), `SNDCTL_DSP_GETFMTS`, `SNDCTL_DSP_SETFRAGMENT` (accept-and-acknowledge). On overflow drops the *oldest whole frame* — never tears L/R alignment. Ownership released on close-of-last-fd / `execve` / `exit`; the ring is flushed at the same time. `read()` returns 0 (EOF-like). `poll()` reports `POLLOUT` always, never `POLLIN`. No record path, no `mmap`-based zero-copy; DOOM's mixer is in user space. |
-| `/dev/shm/*` | Not yet | POSIX shared memory — requires cross-process SharedArrayBuffer. |
+| `/dev/fb0` | Full | Linux fbdev framebuffer. Single-open (`EBUSY` for second opener). 640×400 BGRA32 packed-pixel. ioctls: `FBIOGET_VSCREENINFO`, `FBIOGET_FSCREENINFO`, `FBIOPAN_DISPLAY` (no-op success), `FBIOPUT_VSCREENINFO` (validates geometry). `mmap` returns a region in process memory and notifies the host (`bind_framebuffer` callback) so the browser canvas can mirror pixels. `munmap`/`exit`/`exec` discard the image mapping; a surviving fd retains device ownership across exec. Ownership is released after both the final fd and any live mapping are gone, since a mapping remains valid after `close()`. Linux-VT keyboard ioctls (`KDGKBTYPE`/`KDGKBMODE`/`KDSKBMODE`) accepted with sensible defaults so fbDOOM-style software works unmodified. |
+| `/dev/input/mice` | Full | Linux `mousedev` PS/2 mouse stream. Single-open (`EBUSY` for second pid). 3-byte packets: byte0 button bits + sign/overflow flags, bytes 1..2 signed dx/dy with positive-up dy. Host pushes events via `kernel_inject_mouse_event(dx, dy, buttons)`; the kernel buffers up to 4096 packets (whole-packet drop on overflow). `read()` drains queued bytes; returns `EAGAIN` when empty. `poll()` reports `POLLIN` only when bytes are queued. Ownership and queued packets survive exec with a non-CLOEXEC fd; last close or exit releases and clears them. No IMPS/2 wheel protocol, no `evdev`/`/dev/input/eventN`. |
+| `/dev/dsp` | Full (write-only) | OSS-style PCM audio sink. Single-open (`EBUSY` for second pid). `write()` accepts interleaved 16-bit-LE PCM and buffers it in a 256 KiB ring; the host drains via the `kernel_drain_audio` wasm export and feeds a Web Audio `AudioContext`. ioctls: `SNDCTL_DSP_RESET`, `SNDCTL_DSP_SYNC`, `SNDCTL_DSP_SPEED` (clamp 4000–192000 Hz), `SNDCTL_DSP_STEREO` / `SNDCTL_DSP_CHANNELS` (1 or 2), `SNDCTL_DSP_SETFMT` (only `AFMT_S16_LE`), `SNDCTL_DSP_GETFMTS`, `SNDCTL_DSP_SETFRAGMENT` (accept-and-acknowledge). On overflow drops the *oldest whole frame* — never tears L/R alignment. Ownership and queued samples survive exec with a non-CLOEXEC fd; last close or exit releases and flushes them. `read()` returns 0 (EOF-like). `poll()` reports `POLLOUT` always, never `POLLIN`. No record path, no `mmap`-based zero-copy; DOOM's mixer is in user space. |
+| `/dev/shm/*` | Partial | POSIX shm objects are regular files used by `shm_open()`. Stable-identity backends support host-coordinated `MAP_SHARED` across processes at syscall boundaries; this is not immediate shared linear memory and does not make process-shared futexes work. |
 
 All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, deterministic inode numbers, and `st_dev=5`. Path interception in kernel before host delegation — no host filesystem changes needed. `access()` returns OK for all virtual devices.
 
@@ -365,11 +381,11 @@ All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, determinist
 | `sysconf()` | Partial | Handles _SC_CHILD_MAX, _SC_CLK_TCK=100, _SC_PAGE_SIZE=65536, _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_NPROCESSORS_CONF=1, _SC_MONOTONIC_CLOCK=1, _SC_THREAD_SAFE_FUNCTIONS=1, plus 100+ POSIX.1-2024 constants via musl overlay. Unknown names return EINVAL. |
 | `umask()` | Full | Set file creation mask, returns previous mask. Default 0o022. Applied in open() and mkdir(). Masked to 0o777. |
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. |
-| `setrlimit()` | Partial | Sets resource limits. Validates soft <= hard. RLIMIT_NOFILE enforced via FdTable max_fds sync. RLIMIT_FSIZE enforced in write()/ftruncate() (EFBIG + SIGXFSZ). |
-| `getrusage()` | Partial | Returns zeroed rusage struct (144 bytes). RUSAGE_SELF and RUSAGE_CHILDREN supported. No actual resource tracking in Wasm. |
-| `pathconf()` | Full | Returns POSIX compile-time constants: _PC_NAME_MAX=255, _PC_PATH_MAX=4096, _PC_PIPE_BUF=4096, _PC_LINK_MAX=14, etc. |
-| `fpathconf()` | Full | Same as pathconf() but validates fd exists first. Returns EBADF for invalid fd. |
-| `getsockname()` | Partial | Returns stored local address for AF_UNIX, AF_INET TCP, and AF_INET UDP. UDP ephemeral ports, loopback/INADDR_ANY binds, and accepted INADDR_ANY connect outcomes are covered by Sortix UDP tests. External-route local address selection remains unsupported without a HostIO networking backend. |
+| `setrlimit()` | Partial | Sets resource limits and validates soft <= hard. RLIMIT_NOFILE updates the fd-table ceiling. RLIMIT_FSIZE covers regular-file and memfd write/pwrite, vectored, transfer, truncate, and mode-0 fallocate paths with partial-to-limit results and thread-directed SIGXFSZ only when no byte can be written. Other resource limits remain advisory or unsupported. |
+| `getrusage()` | Partial | Returns the 144-byte kernel wire record used by musl: two timevals and 14 counters, all zero because Wasm hosts do not expose the required accounting. Musl converts that record into the target's public `struct rusage` layout. RUSAGE_SELF and RUSAGE_CHILDREN are supported. |
+| `pathconf()` | Partial | Resolves the real namespace path and queries the selected backend. The common resolver enforces byte-based `_PC_NAME_MAX=255`, `_PC_PATH_MAX=4096` for caller and symlink-substituted pathnames (including the terminating NUL), and `_PC_NO_TRUNC=1`; a relative pathname is not charged for the process's internal absolute CWD prefix. `_PC_CHOWN_RESTRICTED=1` reflects the kernel authorization gate. Regular files report thread-backed AIO support. Symlink and timestamp answers reflect the backend (HostFS/MemoryFS timestamps are millisecond-granularity; OPFS reports indeterminate). `_PC_FILESIZEBITS` is currently indeterminate because the selected backend does not yet prove a file-offset bit width. Invalid names and unsupported file-type associations return EINVAL; valid indeterminate or unsupported options return -1 without changing errno. |
+| `fpathconf()` | Partial | Uses the live OFD/backend identity rather than a remembered pathname, so renamed or unlinked open files remain queryable. Invalid fds return EBADF. Kernel pipes report `_PC_PIPE_BUF=4096`; host-backed captured stdio leaves it indeterminate because atomicity through that boundary is not yet proven. `_PC_FILESIZEBITS` remains indeterminate until the selected live backend can prove a file-offset bit width. Terminal buffers are currently unbounded, `_PC_VDISABLE=0`, and socket maximum buffering is indeterminate. |
+| `getsockname()` | Partial | Returns stored local addresses for AF_UNIX and AF_INET/AF_INET6 stream or datagram sockets. UDP ephemeral ports, loopback/INADDR_ANY binds, and accepted INADDR_ANY connect outcomes are covered by Sortix UDP tests. External-route local address selection remains unsupported without a HostIO networking backend. |
 | `getpeername()` | Full | Returns stored peer address for connected sockets. Returns ENOTCONN for unconnected. |
 
 ---
@@ -382,16 +398,16 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
-| **fork siblings have independent OFD seek positions** | fork / fd | POSIX.1-2017 §2.4.1 requires that fork children's fds refer to the **same** open file description as the parent — meaning seek pointer, status flags, and pending I/O state are SHARED. Our `OfdTable` lives inside `Process`, so fork deep-clones it; each process has independent OFD copies thereafter. A program that forks then both processes append to the same fd expecting interleaved output (cooperative log writers, parallel `make` job-server pipes, etc.) will silently produce garbled output. Tracked as a redesign item in `docs/future-improvements.md` ("Per-process OFD storage breaks POSIX fork OFD-sharing") — fix is to move OFDs to a kernel-global table with `Process` holding `FdTable<OfdRef>`. |
+| **fork siblings have independent ordinary-file OFD metadata** | fork / fd | POSIX requires the parent and child descriptors to refer to one open file description. Kandelo now retains exact global backings for pipes, sockets, PTYs, eventfd/timerfd/signalfd, memfd, and procfs snapshots, but it still deep-copies ordinary regular-file seek positions, status flags, and owners with the per-process `OfdTable`. Workloads that coordinate through one inherited regular fd can therefore observe divergent offsets or flags. The global-OFD redesign remains tracked in [future-improvements.md](future-improvements.md). |
 
 ### High — Missing features that affect common programs
 
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
 | **EINTR partially implemented** | all | read, write, recv, poll, select return EINTR when a signal is pending during a blocking wait. close() and other non-blocking syscalls do not check. Tied to signal handler invocation gap. |
-| ~~**PIPE_BUF atomicity not enforced**~~ | pipe | **Resolved.** Syscalls are serialized through the kernel, so concurrent writes ≤ PIPE_BUF cannot interleave. |
+| **PIPE_BUF guarantee at host-backed stdio boundary** | pipe / host | In-kernel pipes guarantee atomic writes through 4096 bytes and report that value from `fpathconf()`. Captured stdio uses host-backed pipe OFDs; its callback/native-write boundary has not been proven all-or-nothing through the compile-time `PIPE_BUF` value, so `fpathconf()` reports the limit as indeterminate. Do not treat the global `<limits.h>` promise as fully reconciled until that boundary is enforced or stdio is modeled differently. |
 | ~~**O_APPEND not atomic**~~ | write | **Resolved.** Syscalls are serialized through the kernel, so seek-to-end + write cannot be interrupted by another process. |
-| ~~**sigaction() missing sa_flags**~~ | signals | **Resolved.** SA_RESTART supported (auto-restart blocking syscalls). sa_flags and sa_mask stored. SA_SIGINFO handler delivery with siginfo_t. SA_NOCLDWAIT auto-reaps children. SA_NOCLDSTOP accepted but not acted upon (no job control). |
+| ~~**sigaction() missing sa_flags**~~ | signals | **Resolved.** SA_RESTART supported (auto-restart blocking syscalls). sa_flags and sa_mask stored. SA_SIGINFO handler delivery with siginfo_t. SA_NOCLDWAIT auto-reaps children. SA_NOCLDSTOP suppresses stop/continue SIGCHLD notification while preserving waitable status. |
 | ~~**No signal queuing**~~ | signals | **Resolved.** RT signals (32-63) are now queued in a VecDeque; standard signals (1-31) remain coalesced per POSIX. |
 | ~~**`*at()` functions with real dirfd**~~ | filesystem | **Resolved.** All *at() syscalls now support real dirfd via stored OFD paths. |
 | ~~**No seekdir/telldir/rewinddir**~~ | directory | **Resolved.** DirStream now tracks path and position. rewinddir/telldir/seekdir implemented. |
@@ -400,16 +416,16 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
-| **RLIMIT_FSIZE partial enforcement** | rlimits | write() and ftruncate() check FSIZE limit (EFBIG + SIGXFSZ). truncate() delegates to ftruncate so also enforced. |
+| ~~**RLIMIT_FSIZE partial enforcement**~~ | rlimits | **Resolved for implemented write and size-changing operations.** Scalar, vectored, host-chunked, transfer, regular-file, memfd, truncate, and mode-0 fallocate paths share one operation-boundary contract. Pipes, terminals, sockets, and other non-size-bearing objects remain unaffected. |
 | **setpgid() self-only** | process | Only supports setting own pgid. Setting another process's pgid returns ESRCH. |
 | ~~**realpath() no symlink resolution**~~ | filesystem | **Resolved.** Now resolves symlinks via iterative lstat/readlink with ELOOP after 40 resolutions. |
-| **Socket options partially no-op** | socket | SO_REUSEADDR affects UDP bind conflicts. SO_KEEPALIVE, SO_LINGER, SO_BROADCAST, SO_RCVTIMEO, SO_SNDTIMEO, TCP_NODELAY are accepted/stored but have limited or no effect on data transfer. |
+| **Socket options partially no-op** | socket | `SO_REUSEADDR` affects UDP bind conflicts, and `SO_BROADCAST` enforces the IPv4 limited-broadcast permission gate, but actual broadcast delivery remains unavailable. `SO_RCVBUF` and `SO_SNDBUF` are accepted/stored without resizing queues or pipe buffers; `getsockopt()` reports the fixed default. `SO_KEEPALIVE`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, and `TCP_NODELAY` remain accepted/stored with limited or no data-path effect. The timeout options recognize both wasm32 time64 numbers (66/67) and wasm64 long64 numbers (20/21); that ABI parity does not broaden their documented data-path effect. Enabled `SO_LINGER` is rejected rather than stored as a no-op. |
 | **POLLERR partial** | I/O multiplex | poll() reports UDP pending socket errors and stream shutdown/error cases. Some edge cases remain implementation-defined. |
 | **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe only when no other process shares the OFD, but races with shared OFDs across processes. |
 | ~~**brk not inherited on fork**~~ | memory | **Resolved.** Program break serialized/deserialized in fork state. (`exec` reset is intentional per POSIX; host re-installs from new program's `__heap_base`.) |
 | ~~**VMIN/VTIME not interpreted**~~ | terminal | **Partially resolved.** VMIN/VTIME values accessible via TerminalState methods. Full VMIN/VTIME read semantics for raw mode are approximated. |
 | ~~**ICANON no line buffering**~~ | terminal | **Resolved.** ICANON mode now buffers input with line editing: VERASE (backspace), VKILL (^U), VEOF (^D). ICRNL/INLCR/IGNCR input processing and ECHO/ECHOE/ECHOK/ECHONL echo handling. |
-| ~~**No job control**~~ | terminal | **Partially resolved.** tcgetpgrp()/tcsetpgrp() implemented via TIOCGPGRP/TIOCSPGRP ioctls. SIGTTIN/SIGTTOU not yet generated. |
+| ~~**No job control**~~ | terminal | **Partially resolved.** tcgetpgrp()/tcsetpgrp() are implemented via TIOCGPGRP/TIOCSPGRP. SIGSTOP, SIGTSTP, SIGTTIN, and SIGTTOU have process-wide stop semantics, and SIGCONT resumes regardless of mask or disposition. Terminal background-I/O generation of SIGTTIN/SIGTTOU is not yet implemented. |
 | ~~**readdir() "." and ".." entries**~~ | directory | **Resolved.** Kernel now synthesizes "." and ".." entries before host entries. |
 | **No ENFILE** | fd | Only per-process EMFILE limit exists. No system-wide fd limit tracking. |
 
@@ -418,8 +434,9 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | Gap | Subsystem | Reason |
 |-----|-----------|--------|
 | **mprotect() is a no-op** | memory | Returns success but does not enforce. Wasm linear memory has no page-level protection. |
-| **No cross-process MAP_SHARED** | memory | MAP_SHARED works within one process address space (file-backed, with msync writeback). Cross-process shared memory would require SharedArrayBuffer coordination. |
+| **No immediate cross-process shared-memory or futex semantics** | memory | Anonymous, SysV, and stable-identity regular-file shared mappings now merge and refresh across processes at syscall boundaries. They are not one physical linear memory: direct stores remain private until a syscall, a peer spinning only on loads sees no update, and futex WAIT/WAKE targets only the caller's process `SharedArrayBuffer`. Process-shared pthread locks and PHP opcache's normal shared-memory locking model therefore remain unsupported. The PHP package rejects its normal SHM mode and supports only explicitly configured `opcache.file_cache_only=1`; otherwise FPM workers would observe divergent cache and lock state. memfd `MAP_SHARED`, current OPFS file mappings, Linux `SIGBUS` on access beyond EOF, and detection of external host writes also remain gaps. |
 | **External raw UDP routes** | socket | AF_INET SOCK_DGRAM has POSIX-style in-kernel loopback/virtual semantics, but browsers cannot expose raw UDP and Node raw UDP is not yet wired behind HostIO. Non-loopback UDP routes currently return ENETUNREACH unless a future host backend/proxy handles them. |
+| **Stop is cooperative at a Wasm boundary** | process / signals | The kernel records stopped state immediately and the shared host withholds every exact channel completion until SIGCONT. This suspends code at syscall boundaries in both Node and browser, but a process executing CPU-bound Wasm without reaching a syscall cannot be stopped at an arbitrary instruction by current WebAssembly execution APIs. |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
 | **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
@@ -431,19 +448,18 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 - `clone()` — CLONE_VM|CLONE_THREAD: kernel allocates TID, host spawns thread Worker sharing parent's Memory. TLS initialization via `__wasm_thread_init` export.
 - `gettid()` — returns actual TID for threads, pid for main thread
 - `set_tid_address()` — stores tidptr; kernel writes 0 + futex-wakes on thread exit (CLONE_CHILD_CLEARTID)
-- `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP implemented; main-process WAIT returns EAGAIN (host retries via Atomics.waitAsync), thread workers use direct Atomics.wait
+- `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP are implemented within one process; cross-process waits/wakes remain unsupported even over a coordinated shared mapping
 - `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Normal thread return, `pthread_exit`, and cancellation cleanup are per-thread; uncaught fatal Wasm traps in a pthread worker are process-fatal and visible to parent `waitpid()` as signal termination. Cancellation remains limited; see the Wasm-inherent gaps below.
 
 **Hard / Architectural:**
-- Cross-process MAP_SHARED mmap (would need SharedArrayBuffer coordination between workers)
+- Immediate cross-process MAP_SHARED visibility and process-shared futexes (would require one addressable shared backing or an equivalent wake protocol across process workers)
 - True async poll/select (replace polling loop with host-based event notification)
-- SA_NOCLDWAIT / SA_NOCLDSTOP (stored but not acted upon; waitpid is host-delegated)
 - Full VMIN/VTIME raw mode semantics (timer-based timeout)
 
 **Shared-kernel advantages (already free):**
 - O_APPEND atomicity (serialized syscalls)
 - PIPE_BUF atomicity (serialized syscalls)
-- Cross-process eventfd/pipe/epoll sharing via shared OFD table
+- Cross-process pipe/socket/PTY and eventfd/timerfd/signalfd/memfd/procfs backing identity across inherited descriptors
 - Signal delivery across processes is direct
 
 ---
@@ -462,7 +478,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 | `fcntl()` locking | Kernel-coordinated via atomic ops | postMessage round-trip, higher latency |
 | `pipe()` blocking read | Blocks worker until data available | Not supported without a worker/blocking bridge |
 | `nanosleep()` | `Atomics.wait()` with timeout | Not supported without a worker/blocking bridge |
-| Multi-process shared memory | Direct shared linear memory | Not supported; would need serialization |
+| Multi-process shared memory | Host-coordinated merge/import at syscall boundaries; not direct shared pages or cross-process futexes | Not supported without the worker/channel SAB runtime |
 
 ### Browser vs Node.js
 
@@ -512,11 +528,11 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - host_kill Wasm import with cross-process routing in sys_kill
 - DeliverSignalMessage protocol and ProcessManager.deliverSignal()
 - KillRequestMessage: worker → host → target worker signal routing
-13e. **Phase 13e (Complete):** Exec
-- Exec state serialization: CLOEXEC fd filtering, signal handler reset, pending preservation
-- kernel_get_exec_state / kernel_init_from_exec Wasm exports
+13e. **Phase 13e (historical milestone complete; current conformance remains Partial):** Exec
+- In-place centralized exec: CLOEXEC filtering, signal disposition reset, pending-queue preservation
+- Legacy kernel_get_exec_state / kernel_init_from_exec Wasm exports (scheduled for ABI cleanup)
 - host_exec Wasm import and sys_execve syscall
-- Worker re-initialization: new kernel instance with exec state in same worker
+- Worker re-initialization against the continuing centralized kernel Process
 - ProcessManager.exec() for host-initiated exec
 14. **POSIX Compliance Batch 4 (Complete):** ~20 syscalls — tkill, sigpending, getpgid, setreuid/setregid, sysinfo, times, lchown, waitid, plus glue-only stubs
 15. **POSIX Compliance Batch 5 (Complete):** ~100+ syscalls
@@ -555,7 +571,7 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 |-----|-----------|-------------|------------|
 | ~~`connect()` for AF_INET~~ | socket | **Done.** Host-delegated TCP networking. bind/listen/accept/connect/send/recv all functional. Node.js backend uses `net` module; browser backend uses fetch for HTTP. | ~~Hard~~ |
 | ~~`getaddrinfo()` / `gethostbyname()`~~ | DNS | **Done.** Host-delegated via `host_getaddrinfo` import. Returns AF_INET sockaddr_in. `/etc/hosts` is served from the canonical `rootfs.vfs` mount at `/` for localhost resolution. | ~~Medium~~ |
-| ~~`setsockopt()` expansion~~ | socket | **Done.** SO_KEEPALIVE, TCP_NODELAY, SO_REUSEADDR, SO_LINGER, and many more stored. | ~~Easy~~ |
+| ~~`setsockopt()` expansion~~ | socket | **Done.** SO_KEEPALIVE, TCP_NODELAY, SO_REUSEADDR, disabled SO_LINGER state, and many more are represented; enabled SO_LINGER remains explicitly unsupported. | ~~Easy~~ |
 | ~~Async socket polling bridge~~ | socket | **Done.** poll/select/epoll all work with socket fds. The kernel checks readiness inline. | ~~Medium~~ |
 
 ### Phase C — Process management (enables wp-cli, Composer, PHPUnit)
@@ -599,8 +615,14 @@ These PHP needs are well-handled by the current kernel:
 - Memory: anonymous mmap, munmap, brk
 - Multi-process: fork (kernel syscall), exec (host-initiated), waitpid (kernel syscall)
 - Networking: AF_INET TCP (connect, bind, listen, accept, send, recv), getaddrinfo
-- Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink)
-- POSIX timers: timer_create, timer_settime, timer_gettime, timer_delete
+- Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink on the process
+  worker). Pthread workers cannot share the process's Wasm table/tag graph, so
+  pthread `dlopen` fails and pthread `fork` after a process dlopen returns
+  `ENOTSUP`.
+- POSIX timers: `SIGEV_SIGNAL`, `SIGEV_NONE`, and `SIGEV_THREAD` timer creation,
+  timer_settime, timer_gettime, overrun reporting, and deletion. Timer timing
+  remains host-scheduled at millisecond granularity, and direct wasm64
+  signal-notification values are limited to the fixed-width `sival_int` wire.
 - System info: uname, sysconf, umask, getrlimit/setrlimit
 
 ---
@@ -619,7 +641,10 @@ These require features fundamentally unavailable in the Wasm architecture:
 
 - **Wasm FP exceptions (110 math tests):** WebAssembly has no floating-point exception flags (`fenv.h`). All `fe*` math tests fail. `long double` variants pass because they use software fp128.
 - **No pthread_cancel:** Wasm has no async cancellation mechanism or cancel-point assembly. `pthread_create` works; `pthread_cancel` does not.
-- **No dlopen/TLS:** `tls_get_new-dtv_dso` requires loading a shared library with TLS at runtime.
+- **No musl DTV expansion for arbitrary DSOs:** `tls_get_new-dtv_dso` requires
+  native-style per-thread dynamic TLS-vector growth. Kandelo can replay the
+  fixed TLS reservation of a Wasm side module across process `fork`, but that
+  does not implement musl's general pthread DTV contract.
 
 ### Linker Requirements for Signal Handlers
 

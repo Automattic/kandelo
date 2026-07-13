@@ -1,20 +1,18 @@
 kind = "program"
 name = "php"
-version = "8.3.2"
-kernel_abi = 7
-depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8"]
-# wasm32 only. PHP previously declared wasm64 too (per
-# memory/wasm64-build-policy.md), but no demo actually consumes
-# `programs/wasm64/php/...` — only mariadb needs the 4 GB address
-# space its wasm64 build provides. build-php.sh hard-codes the
-# wasm32 SDK toolchain; if a wasm64 PHP build is reintroduced later,
-# add `--wasm64` dispatch parallel to mariadb's pattern and stage
-# opcache.so under `local-binaries/programs/wasm64/php/`.
+version = "8.3.15"
+kernel_abi = 27
+# The rebuilt executables import `__wasm_posix_vm_interrupt_after`, which is
+# supplied by the host runtime beginning with ABI 27.
+depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8", "libiconv@1.17", "libzip@1.11.4", "libcurl@8.11.1", "icu@74.2", "libcxx@21.1.7"]
+# wasm32 only: build-php.sh invokes the wasm32 SDK explicitly. If a wasm64 PHP
+# build is introduced later, make the recipe architecture-aware and validate
+# every CLI, FPM, and extension output before advertising that architecture.
 arches = ["wasm32"]
 
 [source]
-url = "https://www.php.net/distributions/php-8.3.2.tar.xz"
-sha256 = "4ffa3e44afc9c590e28dc0d2d31fc61f0139f8b335f11880a121b9f9b9f0634e"
+url = "https://www.php.net/distributions/php-8.3.15.tar.gz"
+sha256 = "67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa"
 
 [license]
 spdx = "PHP-3.01"
@@ -38,13 +36,56 @@ wasm = "php.wasm"
 name = "php-fpm"
 wasm = "php-fpm.wasm"
 
-# opcache shipped as a third output: a Zend extension side module
-# (.so) that PHP loads via dlopen at MINIT. Demos that want bytecode
-# caching point opcache.optimization_level + extension_dir at the
-# directory containing this file and pass `-d zend_extension=opcache`.
+# opcache shipped as a third output: a Zend extension side module (.so) that
+# PHP loads via dlopen at MINIT. Until Kandelo implements cross-process
+# MAP_SHARED, the extension deliberately starts only with
+# `opcache.file_cache_only=1` and a configured `opcache.file_cache` path; its
+# normal shared-memory mode would not keep FPM worker cache/lock state coherent.
 # build-php.sh links it directly with `wasm32posix-cc -shared` from
 # PIC-compiled `ext/opcache/.libs/*.o` because PHP's bundled libtool
 # refuses to emit a shared module on this cross-compile target.
 [[outputs]]
 name = "opcache"
 wasm = "opcache.so"
+
+# ext/curl is an opt-in shared PHP extension loaded through the standard
+# `extension=curl.so` path. curl.so absorbs PIC libcurl code while resolving
+# libc, zlib, and OpenSSL against php.wasm at dlopen time.
+[[outputs]]
+name = "curl"
+wasm = "curl.so"
+
+# Phar ships as a normal shared PHP extension. PHPT tests and real
+# applications can opt in with the standard `extension=phar.so` mechanism
+# instead of relying on a test-only static module or harness special case.
+[[outputs]]
+name = "phar"
+wasm = "phar.so"
+
+# zend_test is php-src's own engine-test extension. It is not loaded by
+# default, but is available to PHPTs and callers that explicitly request
+# `extension=zend_test.so`.
+[[outputs]]
+name = "zend_test"
+wasm = "zend_test.so"
+
+# ext/zip is shipped as an opt-in shared module backed by the resolver-built
+# libzip package. Consumers load it through the normal `extension=zip.so`
+# mechanism on Node.js and browser hosts.
+[[outputs]]
+name = "zip"
+wasm = "zip.so"
+
+# intl is a normal, opt-in PHP extension. It statically absorbs the ICU and
+# PIC libc++ archives. PHP copies the exact resolved ICU common-data bytes into
+# its own declared runtime closure for VFS consumers.
+[[outputs]]
+name = "intl"
+wasm = "intl.so"
+
+# Non-Wasm runtime closure for intl. The resolver/archive mirrors this at
+# programs/<arch>/php/icu.dat; VFS consumers install it at the declared guest
+# path instead of scanning a library cache or injecting a host-only override.
+[[runtime_files]]
+artifact = "icu.dat"
+guest_path = "/usr/lib/php/icu.dat"
