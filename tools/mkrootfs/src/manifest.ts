@@ -3,7 +3,9 @@
 // Grammar (one entry per non-blank, non-comment line):
 //
 //   <path>  <type>  <mode>  [<uid>]  [<gid>]  [key=value ...]
-//   archive  url=<path>  [base=/prefix] [fmode=<octal>] [dmode=<octal>] [uid=<n>] [gid=<n>]
+//   archive  url=<path>  [base=/prefix] [fmode=<octal>]
+//            [fmode_policy=fixed|preserve-executable]
+//            [dmode=<octal>] [uid=<n>] [gid=<n>]
 //
 // Where:
 //   <type>   one of d (dir), f (file), l (symlink), c (char dev), b (block dev)
@@ -20,6 +22,7 @@
 //   url=<path or URL>                  — required; archive to ingest (zip/tar)
 //   base=<absolute mount prefix>       — defaults to "/"; must be absolute
 //   fmode=<octal>                      — file mode for archive entries (default 0644)
+//   fmode_policy=<policy>              — fixed (default) or preserve-executable
 //   dmode=<octal>                      — directory mode (default 0755)
 //   uid=<n>  gid=<n>                   — owner applied to all entries (default 0:0)
 //
@@ -30,6 +33,7 @@
 // Blank lines are skipped.
 
 export type NodeType = "d" | "f" | "l" | "c" | "b";
+export type ArchiveFileModePolicy = "fixed" | "preserve-executable";
 
 export interface ManifestNode {
   kind: "node";
@@ -53,6 +57,7 @@ export interface ManifestArchive {
   url: string;
   base: string;
   fmode: number;
+  fmodePolicy: ArchiveFileModePolicy;
   dmode: number;
   uid: number;
   gid: number;
@@ -94,6 +99,7 @@ function parseArchive(
     url: "",
     base: "/",
     fmode: 0o644,
+    fmodePolicy: "fixed",
     dmode: 0o755,
     uid: 0,
     gid: 0,
@@ -119,6 +125,13 @@ function parseArchive(
         break;
       case "fmode":
         archive.fmode = parseOctal(value, lineNumber, sourcePath, "fmode");
+        break;
+      case "fmode_policy":
+        archive.fmodePolicy = parseArchiveFileModePolicy(
+          value,
+          lineNumber,
+          sourcePath,
+        );
         break;
       case "dmode":
         archive.dmode = parseOctal(value, lineNumber, sourcePath, "dmode");
@@ -150,6 +163,21 @@ function parseArchive(
     );
   }
   return archive;
+}
+
+function parseArchiveFileModePolicy(
+  value: string,
+  lineNumber: number,
+  sourcePath: string | undefined,
+): ArchiveFileModePolicy {
+  if (value === "fixed" || value === "preserve-executable") {
+    return value;
+  }
+  throw err(
+    lineNumber,
+    sourcePath,
+    `invalid fmode_policy "${value}" (expected fixed or preserve-executable)`,
+  );
 }
 
 function parseNode(tokens: string[], lineNumber: number, sourcePath: string | undefined): ManifestNode {

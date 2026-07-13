@@ -136,7 +136,7 @@ describe("mkrootfs build — happy paths", () => {
     }
   });
 
-  it("build + inspect reports an archived Homebrew tool shim as a symlink", () => {
+  it("build + inspect preserves opted-in Homebrew executables and symlinks", () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-archive-link-"));
     const image = join(tmp, "homebrew.vfs");
     const target = "../../shared/curl";
@@ -144,16 +144,26 @@ describe("mkrootfs build — happy paths", () => {
       writeFileSync(
         join(tmp, "homebrew.zip"),
         zipSync({
-          "Library/Homebrew/shims/shared/curl": new TextEncoder().encode("curl shim\n"),
+          "bin/brew": [
+            new TextEncoder().encode("#!/usr/bin/env ruby\n"),
+            { os: 3, attrs: (0o100755 << 16) >>> 0 },
+          ],
+          "Library/Homebrew/shims/shared/curl": [
+            new TextEncoder().encode("curl shim\n"),
+            { os: 3, attrs: (0o100755 << 16) >>> 0 },
+          ],
           "Library/Homebrew/shims/linux/super/curl": [
             new TextEncoder().encode(target),
             { os: 3, attrs: (0o120777 << 16) >>> 0 },
           ],
+          "Library/Homebrew/bin/non-executable": new TextEncoder().encode(
+            "configuration\n",
+          ),
         }),
       );
       writeFileSync(
         join(tmp, "MANIFEST"),
-        "archive url=homebrew.zip base=/home/linuxbrew/.linuxbrew uid=1000 gid=1000\n",
+        "archive url=homebrew.zip base=/home/linuxbrew/.linuxbrew fmode=0644 fmode_policy=preserve-executable uid=1000 gid=1000\n",
       );
 
       const build = run(
@@ -187,6 +197,28 @@ describe("mkrootfs build — happy paths", () => {
         gid: 1000,
         size: null,
         target,
+      });
+
+      expect(entries.find((entry) => entry.path ===
+        "/home/linuxbrew/.linuxbrew/bin/brew")).toMatchObject({
+        type: "f",
+        mode: "0755",
+        uid: 1000,
+        gid: 1000,
+      });
+      expect(entries.find((entry) => entry.path ===
+        "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/shared/curl")).toMatchObject({
+        type: "f",
+        mode: "0755",
+        uid: 1000,
+        gid: 1000,
+      });
+      expect(entries.find((entry) => entry.path ===
+        "/home/linuxbrew/.linuxbrew/Library/Homebrew/bin/non-executable")).toMatchObject({
+        type: "f",
+        mode: "0644",
+        uid: 1000,
+        gid: 1000,
       });
 
       const mfs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync(image)));
@@ -410,6 +442,33 @@ describe("mkrootfs build — happy paths", () => {
 });
 
 describe("mkrootfs build — error handling", () => {
+  it("rejects an invalid archive fmode policy before writing an image", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-mode-policy-"));
+    const output = join(tmp, "rootfs.vfs");
+    try {
+      writeFileSync(
+        join(tmp, "MANIFEST"),
+        "archive url=missing.zip fmode_policy=inherit-all\n",
+      );
+      const result = run(
+        "build",
+        join(tmp, "MANIFEST"),
+        tmp,
+        "-o", output,
+        "--repo-root", tmp,
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'invalid fmode_policy "inherit-all" (expected fixed or preserve-executable)',
+      );
+      expect(result.stderr).not.toContain("archive not found");
+      expect(existsSync(output)).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an invalid SOURCE_DATE_EPOCH", () => {
     const fixture = join(here, "fixtures", "basic");
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-epoch-"));

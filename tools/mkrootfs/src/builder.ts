@@ -7,9 +7,10 @@
 //   1. Directories  (sorted by depth: parents first)
 //   2. Regular files (implicit src=sourceTree/<path>, or explicit src=)
 //   3. Symlinks
-//   4. Archives (zip extraction; per-archive fmode/dmode/uid/gid override
-//      regular-file and directory values for deterministic builds, while
-//      Unix symlink entries retain their targets)
+//   4. Archives (zip extraction; per-archive fmode/dmode/uid/gid normalize
+//      regular-file and directory values for deterministic builds, with an
+//      explicit policy for trusted Unix executable bits; Unix symlink entries
+//      retain their targets)
 //
 // Validation (manifest path duplicates, missing source files, archive
 // collisions, archive-vs-explicit overlaps) runs ahead of any FS work — see
@@ -259,7 +260,13 @@ function extractArchive(
     if (skipPaths.has(member.vfsPath)) continue;
     ensureParentDirs(mfs, member.vfsPath, a);
     const content = extractZipEntry(zipBytes, member.entry);
-    mfs.createFileWithOwner(member.vfsPath, a.fmode, a.uid, a.gid, content);
+    mfs.createFileWithOwner(
+      member.vfsPath,
+      member.fileMode,
+      a.uid,
+      a.gid,
+      content,
+    );
   }
 
   for (const member of symlinks) {

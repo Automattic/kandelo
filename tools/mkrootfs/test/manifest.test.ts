@@ -249,13 +249,14 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
   describe("archive directive", () => {
     it("parses archive with all fields specified", () => {
       expect(
-        parseManifest("archive  url=./vim.zip  base=/usr  fmode=0644  dmode=0755  uid=10  gid=20\n"),
+        parseManifest("archive  url=./vim.zip  base=/usr  fmode=0644  fmode_policy=preserve-executable  dmode=0755  uid=10  gid=20\n"),
       ).toEqual([
         {
           kind: "archive",
           url: "./vim.zip",
           base: "/usr",
           fmode: 0o644,
+          fmodePolicy: "preserve-executable",
           dmode: 0o755,
           uid: 10,
           gid: 20,
@@ -271,6 +272,7 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
           url: "./system.zip",
           base: "/",
           fmode: 0o644,
+          fmodePolicy: "fixed",
           dmode: 0o755,
           uid: 0,
           gid: 0,
@@ -298,6 +300,15 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
         /invalid octal|dmode/,
       );
     });
+
+    it.each(["", "archive", "preserve", "fixed,legacy"])(
+      "rejects invalid archive fmode_policy=%j",
+      (policy) => {
+        expect(() =>
+          parseManifest(`archive  url=./x.zip  fmode_policy=${policy}\n`),
+        ).toThrow(/invalid fmode_policy.*expected fixed or preserve-executable/);
+      },
+    );
 
     it("rejects archive with non-decimal uid", () => {
       expect(() => parseManifest("archive  url=./x.zip  uid=abc\n")).toThrow(/invalid integer|uid/);

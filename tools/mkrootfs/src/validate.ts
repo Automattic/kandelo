@@ -41,6 +41,8 @@ export interface PlannedArchiveMember {
   /** Canonical absolute path where the member will be created in the VFS. */
   vfsPath: string;
   kind: ArchiveMemberKind;
+  /** Manifest-normalized mode for a regular file; unused for other kinds. */
+  fileMode: number;
 }
 
 export interface ArchiveExtractionPlan {
@@ -251,13 +253,28 @@ function planMember(
     : entry.isSymlink
       ? "symlink"
       : "file";
+  const fileMode = archiveFileMode(archive, entry);
   return {
     archive,
     entry,
     archivePath,
     vfsPath: `${base}/${archivePath}`,
     kind,
+    fileMode,
   };
+}
+
+function archiveFileMode(
+  archive: ManifestArchive,
+  entry: ZipEntry,
+): number {
+  if (archive.fmodePolicy === "fixed") return archive.fmode;
+
+  // Only a Unix central-directory entry carries authoritative POSIX mode
+  // metadata. `ZipEntry.mode` has path-based compatibility defaults for other
+  // creator OSes, which must not silently make archive members executable.
+  const executableBits = entry.creatorOS === 3 ? entry.mode & 0o111 : 0;
+  return archive.fmode | executableBits;
 }
 
 function describeMember(member: PlannedArchiveMember): string {
