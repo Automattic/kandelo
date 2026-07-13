@@ -49,6 +49,7 @@ import {
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
 import { loadShellBaseFileSystem } from "./shell-vfs-build";
 import { preinstallWordPressMariaDb } from "./wordpress-preinstall";
+import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -77,8 +78,6 @@ const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
 const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
-const MYSQL_UID = 101;
-const MYSQL_GID = 101;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const LAMP_IMAGE_MAX_BYTES = 768 * 1024 * 1024;
 const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
@@ -86,19 +85,6 @@ const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
 const MARIADB_INNODB_LOG_FILE_SIZE = 16 * 1024 * 1024;
 const MARIADB_INNODB_LOG_BUFFER_SIZE = 1024 * 1024;
 const MARIADB_INNODB_BUFFER_POOL_SIZE = 8 * 1024 * 1024;
-
-// LAMP-specific data dirs that mariadbd writes to at runtime. The image
-// starts from the full shell demo VFS, so the bootstrap script gets the same
-// /bin/sh and utility layout users see in the interactive terminal.
-function populateMariadbDataDirs(fs: MemoryFileSystem): void {
-  for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
-    ensureDirRecursive(fs, dir);
-    fs.chown(dir, MYSQL_UID, MYSQL_GID);
-    fs.chmod(dir, 0o775);
-  }
-  ensureDirRecursive(fs, "/tmp");
-  fs.chmod("/tmp", 0o1777);
-}
 
 function populateMariadb(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/usr/sbin");
@@ -430,7 +416,7 @@ async function main() {
 
   console.log("Loading shell base image...");
   const fs = loadShellBaseFileSystem(LAMP_IMAGE_MAX_BYTES);
-  populateMariadbDataDirs(fs);
+  prepareMariadbWritableDirectories(fs);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
