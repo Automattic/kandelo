@@ -6,6 +6,7 @@ const F_SETLK = 13;
 const F_SETLKW = 14;
 const F_WRLCK = 1;
 const EAGAIN = 11;
+const ENOLCK = 37;
 
 type LockCall = [number, number, number, bigint, bigint];
 
@@ -54,9 +55,9 @@ describe("WasmPosixKernel fcntl locking import", () => {
     const setLockCalls: LockCall[] = [];
     let setLockWaitCalled = false;
     const { kernel, path } = makeKernel({
-      setLock: (...args: LockCall) => {
+      setLockResult: (...args: LockCall) => {
         setLockCalls.push(args);
-        return false;
+        return "blocked";
       },
       setLockWait: () => {
         setLockWaitCalled = true;
@@ -75,9 +76,9 @@ describe("WasmPosixKernel fcntl locking import", () => {
     const setLockCalls: LockCall[] = [];
     let setLockWaitCalled = false;
     const { kernel, path } = makeKernel({
-      setLock: (...args: LockCall) => {
+      setLockResult: (...args: LockCall) => {
         setLockCalls.push(args);
-        return false;
+        return "blocked";
       },
       setLockWait: () => {
         setLockWaitCalled = true;
@@ -96,9 +97,9 @@ describe("WasmPosixKernel fcntl locking import", () => {
     const setLockCalls: LockCall[] = [];
     let setLockWaitCalled = false;
     const { kernel, path } = makeKernel({
-      setLock: (...args: LockCall) => {
+      setLockResult: (...args: LockCall) => {
         setLockCalls.push(args);
-        return true;
+        return "acquired";
       },
       setLockWait: () => {
         setLockWaitCalled = true;
@@ -112,4 +113,20 @@ describe("WasmPosixKernel fcntl locking import", () => {
     expect(setLockCalls[0].slice(1)).toEqual([2, F_WRLCK, 32n, 64n]);
     expect(setLockWaitCalled).toBe(false);
   });
+
+  it.each([F_SETLK, F_SETLKW])(
+    "returns ENOLCK when command %i exhausts the shared table",
+    (cmd) => {
+      const setLockCalls: LockCall[] = [];
+      const { kernel, path } = makeKernel({
+        setLockResult: (...args: LockCall) => {
+          setLockCalls.push(args);
+          return "no-space";
+        },
+      });
+
+      expect(hostFcntlLock(kernel, path, cmd)).toBe(-ENOLCK);
+      expect(setLockCalls).toHaveLength(1);
+    },
+  );
 });

@@ -93,8 +93,8 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `F_GETFL` | Full | Returns status flags + access mode. Use O_ACCMODE mask. |
 | `F_SETFL` | Full | Only O_APPEND, O_NONBLOCK modifiable. Access mode bits preserved. |
 | `F_GETLK` | Full | Advisory record locking. Returns blocking lock info or F_UNLCK if no conflict. Locks released on close() and exit() per POSIX. |
-| `F_SETLK` | Full | Non-blocking lock acquisition. Returns EAGAIN on conflict. Read/write access mode validated. Locks released on close() and exit() per POSIX. |
-| `F_SETLKW` | Partial | Blocking lock acquisition. Host-backed locks and in-kernel fallback locks are coordinated across processes; blocking conflicts use an internal EAGAIN retry path in the host worker until the lock is available. No deadlock detection. |
+| `F_SETLK` | Full | Non-blocking lock acquisition. Returns EAGAIN on conflict and ENOLCK when the fixed-size shared host lock table is full. Read/write access mode validated. Locks released on close() and exit() per POSIX. |
+| `F_SETLKW` | Partial | Blocking lock acquisition. Host-backed locks and in-kernel fallback locks are coordinated across processes; blocking conflicts use an internal EAGAIN retry path in the host worker until the lock is available. Shared host lock-table exhaustion returns ENOLCK instead of retrying. No deadlock detection. |
 | `F_GETOWN` | Full | Returns async I/O owner PID from OFD. Default 0. |
 | `F_SETOWN` | Full | Sets async I/O owner PID on OFD. SIGIO delivery deferred to signal delivery phase. |
 
