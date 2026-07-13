@@ -43,11 +43,11 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
   if (parsed.preprocessOnly) args.push('-E');
   if (parsed.assemblyOnly) args.push('-S');
   if (parsed.outputFile) args.push('-o', parsed.outputFile);
-  args.push(...parsed.otherArgs);
-
-  args.push(...parsed.sourceFiles);
-  args.push(...parsed.objectFiles);
-  args.push(...parsed.archiveFiles);
+  // Static link semantics depend on the caller's exact ordering of objects,
+  // archives, -l flags, and linker group controls. Parsed classifications are
+  // for SDK decisions only; forwarding must never rebuild the command in
+  // type-based buckets.
+  args.push(...parsed.forwardedArgs);
 
   // -fPIC is consumed by parseArgs (so the linker can see `parsed.pic`),
   // but it must also reach clang at compile time so the resulting object

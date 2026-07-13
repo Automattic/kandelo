@@ -131,6 +131,8 @@ export interface ParsedArgs {
   objectFiles: string[];
   archiveFiles: string[];
   otherArgs: string[];
+  /** Arguments forwarded to clang, in the exact order supplied by the caller. */
+  forwardedArgs: string[];
 }
 
 const SOURCE_EXTS = new Set(['.c', '.cc', '.cpp', '.cxx', '.m', '.mm', '.i', '.ii']);
@@ -162,6 +164,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     objectFiles: [],
     archiveFiles: [],
     otherArgs: [],
+    forwardedArgs: [],
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -199,8 +202,12 @@ export function parseArgs(args: string[]): ParsedArgs {
     } else if (FLAGS_WITH_VALUE.has(arg)) {
       // Flag that takes the next arg as its value — keep both as otherArgs
       result.otherArgs.push(arg);
+      result.forwardedArgs.push(arg);
       i++;
-      if (i < args.length) result.otherArgs.push(args[i]);
+      if (i < args.length) {
+        result.otherArgs.push(args[i]);
+        result.forwardedArgs.push(args[i]);
+      }
     } else if (!arg.startsWith('-')) {
       const ext = arg.substring(arg.lastIndexOf('.'));
       if (SOURCE_EXTS.has(ext)) {
@@ -212,8 +219,10 @@ export function parseArgs(args: string[]): ParsedArgs {
       } else {
         result.otherArgs.push(arg);
       }
+      result.forwardedArgs.push(arg);
     } else {
       result.otherArgs.push(arg);
+      result.forwardedArgs.push(arg);
     }
   }
 

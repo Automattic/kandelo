@@ -47,6 +47,19 @@ describe('buildClangArgs', () => {
     expect(args.join(' ')).toContain('channel_syscall.c');
   });
 
+  it('preserves user linker input order across argument categories', () => {
+    const userLinkArgs = [
+      'main.o',
+      '-Wl,--start-group',
+      '-lfoo',
+      'libbar.a',
+      '-Wl,--end-group',
+    ];
+    const args = buildClangArgs([...userLinkArgs, '-o', 'out.wasm'], toolchain);
+    const forwarded = args.slice(args.indexOf('main.o'), args.indexOf('-Wl,--end-group') + 1);
+    expect(forwarded).toEqual(userLinkArgs);
+  });
+
   it('preprocess-only: no link flags', () => {
     const args = buildClangArgs(['-E', 'foo.c'], toolchain);
     expect(args).not.toContain('-Wl,--entry=_start');
