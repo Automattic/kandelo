@@ -7,7 +7,7 @@ require "ripper"
 require "set"
 
 unless ARGV.length.between?(3, 4)
-  abort "usage: homebrew-formula-runtime-closure.rb <tap-root> <owner/repo> <formula> [wasm32|wasm64]"
+  abort "usage: homebrew-formula-runtime-closure.rb <tap-root> <owner/repo> <formula> [wasm32|wasm64|--direct]"
 end
 
 MAX_FORMULA_BYTES = 1_048_576
@@ -47,10 +47,12 @@ EXCLUDED_TAG_SETS = Set[
   Set[:build, :test],
 ].freeze
 
-tap_input, repository, target, output_arch = ARGV
+tap_input, repository, target, output_mode = ARGV
 abort "invalid tap repository: #{repository}" unless TAP_REPOSITORY.match?(repository)
 abort "invalid target Formula: #{target}" unless FORMULA_NAME.match?(target)
-abort "invalid output architecture: #{output_arch}" unless output_arch.nil? || %w[wasm32 wasm64].include?(output_arch)
+abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[wasm32 wasm64 --direct].include?(output_mode)
+direct_only = output_mode == "--direct"
+output_arch = direct_only ? nil : output_mode
 tap_name = repository.downcase
 tap_owner, tap_repository = tap_name.split("/", 2)
 support_require_line = %(require (Tap.fetch("#{tap_owner}", "#{tap_repository}").path/"Kandelo/formula_support/kandelo_formula_support").to_s\n)
@@ -496,6 +498,7 @@ end
 closure = Set.new
 states = {}
 stack = []
+target_direct_dependencies = nil
 visit_formula = nil
 visit_formula = lambda do |name|
   case states[name]
@@ -508,7 +511,9 @@ visit_formula = lambda do |name|
 
   states[name] = :visiting
   stack << name
-  parse_formula.call(name).each do |dependency|
+  dependencies = parse_formula.call(name)
+  target_direct_dependencies = dependencies.dup if name == target
+  dependencies.each do |dependency|
     closure.add("#{tap_name}/#{dependency}")
     abort "same-tap dependency closure exceeds #{MAX_DEPENDENCIES} entries" if closure.length > MAX_DEPENDENCIES
     visit_formula.call(dependency)
@@ -518,7 +523,9 @@ visit_formula = lambda do |name|
 end
 
 visit_formula.call(target)
-if output_arch.nil?
+if direct_only
+  puts target_direct_dependencies.map { |name| "#{tap_name}/#{name}" }.sort
+elsif output_arch.nil?
   puts closure.sort
 else
   output_tag = "#{output_arch}_kandelo"

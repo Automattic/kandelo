@@ -166,6 +166,13 @@ dependency declarations fail closed. The submitted provenance dependency set
 must exactly equal this independently derived closure, including for an empty
 root-package closure.
 
+The finalizer also independently derives the root Formula's direct same-tap
+runtime dependencies. Each provenance record's `declared_directly` value must
+match that source-derived set, and the composition handoff's `{name, version}`
+dependency array must exactly equal the direct provenance records. Missing,
+extra, duplicate, wrong-version, or forged-directness entries fail before
+sidecars are generated.
+
 For every closure member, the resolver also reads the canonical static
 `bottle do` block and derives the selected architecture's cellar, rebuild,
 digest, tag, and digest-bound URL. Fresh validation requires the submitted

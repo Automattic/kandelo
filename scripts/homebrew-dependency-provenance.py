@@ -202,6 +202,38 @@ def exact_tap_dependencies(
     return dependencies
 
 
+def exact_direct_dependencies(
+    tap_root: pathlib.Path, repository: str, formula: str
+) -> set[str]:
+    resolver = pathlib.Path(__file__).with_name("homebrew-formula-runtime-closure.rb")
+    regular_file(resolver, "static Formula dependency resolver", MAX_JSON_BYTES)
+    try:
+        result = subprocess.run(
+            ["ruby", str(resolver), str(tap_root), repository, formula, "--direct"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+        fail(f"static direct Formula dependency resolution failed: {error}")
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace")[:4_096]
+        fail(
+            "static direct Formula dependency resolution failed "
+            f"({result.returncode}): {stderr}"
+        )
+    if len(result.stdout) > MAX_DEPENDENCY_LIST_BYTES:
+        fail("static direct Formula dependency list exceeds its byte limit")
+    try:
+        contents = result.stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
+        fail(f"static direct Formula dependency list is not UTF-8: {error}")
+    return parse_expected_dependencies(
+        contents, "static direct dependency", tap_name(repository)
+    )
+
+
 def read_log_lines(path: pathlib.Path) -> list[str]:
     regular_file(path, "Homebrew install log", MAX_LOG_BYTES)
     data = path.read_bytes().decode("utf-8", errors="replace")
@@ -502,6 +534,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     prior_full_name = ""
     validation_tap_root = getattr(args, "tap_root", None)
     static_dependencies = None
+    static_direct_dependencies = None
     if validation_tap_root:
         static_dependencies = exact_tap_dependencies(
             pathlib.Path(validation_tap_root),
@@ -509,6 +542,11 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             args.formula,
             args.arch,
             args.bottle_root_url,
+        )
+        static_direct_dependencies = exact_direct_dependencies(
+            pathlib.Path(validation_tap_root),
+            args.tap_repository,
+            args.formula,
         )
     for index, dependency in enumerate(dependencies):
         dependency = exact_keys(
@@ -533,7 +571,15 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             fail("dependency provenance must be uniquely sorted by full_name")
         seen.add(full_name)
         prior_full_name = full_name
-        require_bool(dependency["declared_directly"], f"dependencies[{index}].declared_directly")
+        declared_directly = require_bool(
+            dependency["declared_directly"], f"dependencies[{index}].declared_directly"
+        )
+        if static_direct_dependencies is not None and declared_directly != (
+            full_name in static_direct_dependencies
+        ):
+            fail(
+                f"dependencies[{index}].declared_directly differs from the exact Formula"
+            )
         version = require_string(dependency["version"], f"dependencies[{index}].version", PKG_VERSION)
         formula = exact_keys(dependency["formula"], {"path", "sha256"}, f"dependencies[{index}].formula")
         if formula["path"] != f"Formula/{name}.rb":

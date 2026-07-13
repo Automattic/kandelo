@@ -268,6 +268,25 @@ if ! jq -e \
   exit 1
 fi
 
+if ! jq -e --slurpfile provenance "$BUILD_ROOT/dependency-provenance.json" '
+  .packages[0].dependencies as $actual |
+  ($provenance | length) == 1 and
+  ($actual | type) == "array" and
+  all($actual[];
+    type == "object" and
+    keys == ["name", "version"] and
+    (.name | type == "string" and test("^[a-z0-9][a-z0-9._-]*$")) and
+    (.version | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$"))) and
+  (($actual | map(.name) | length) == ($actual | map(.name) | unique | length)) and
+  (($actual | sort_by(.name, .version)) ==
+    ($provenance[0].dependencies |
+      map(select(.declared_directly) | {name, version}) |
+      sort_by(.name, .version)))
+' "$COMPOSITION_INPUT" >/dev/null; then
+  echo "homebrew-validate-publish-handoff.sh: composition dependencies do not match exact direct dependency provenance" >&2
+  exit 1
+fi
+
 VERSION="$(jq -er '.packages[0].version | select(type == "string")' "$COMPOSITION_INPUT")"
 FORMULA_REVISION="$(jq -er '.packages[0].formula_revision | select(type == "number" and . >= 0 and floor == .)' "$COMPOSITION_INPUT")"
 BOTTLE_REBUILD="$(jq -er '.packages[0].bottle_rebuild | select(type == "number" and . >= 0 and floor == .)' "$COMPOSITION_INPUT")"
