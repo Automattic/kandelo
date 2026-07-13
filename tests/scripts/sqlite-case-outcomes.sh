@@ -77,6 +77,18 @@ if ! grep -q 'requires an unavailable optional feature' "$OMITTED_RESULTS/outcom
   exit 1
 fi
 
+python3 - "$OMITTED_RESULTS/outcome-lists/case-outcomes.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+summary = json.loads(Path(sys.argv[1]).read_text())["summary"]
+assert summary["reported_executed_cases"] == 1, summary
+assert summary["selected_cases"] == 1, summary
+assert summary["counted_skipped_cases"] == 1, summary
+assert summary["detail_only_skipped_cases"] == 0, summary
+PY
+
 DB="$TMP_ROOT/testrunner.db"
 python3 - "$DB" "$STDOUT_FILE" <<'PY'
 import sqlite3

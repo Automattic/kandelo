@@ -232,6 +232,8 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
 
     reported_executed_cases = 0
     reported_case_errors = 0
+    counted_skipped_cases = 0
+    detail_only_skipped_cases = 0
 
     for job in jobs:
         parsed = parse_output(job.output) if job.output else None
@@ -277,6 +279,7 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
         reported_case_errors += nerr
 
         job_skipped: list[tuple[str, str]] = []
+        counted_skipped_names = {name for name, _reason in parsed.skipped_counted}
         for skipped in parsed.skipped_counted:
             upsert_named_pair(job_skipped, skipped)
         for skipped in parsed.skipped_detail:
@@ -286,6 +289,8 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
             upsert_named_pair(job_skipped, skipped)
         for skipped in job_skipped:
             upsert_named_pair(skipped_cases, skipped)
+        counted_skipped_cases += len(counted_skipped_names)
+        detail_only_skipped_cases += sum(1 for name, _reason in job_skipped if name not in counted_skipped_names)
 
         if len(parsed.failed) == nerr:
             failed_cases.extend(parsed.failed)
@@ -324,7 +329,10 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
             )
         passed_cases.extend(parsed.passed)
 
-    selected_cases = reported_executed_cases + len(skipped_cases)
+    # SQLite includes `... Omitted` cases in ntest, but some harness skips are
+    # only named in the detailed omission list. Add only those detail-only
+    # cases so selected_cases does not count ordinary omissions twice.
+    selected_cases = reported_executed_cases + detail_only_skipped_cases
     categories = {
         "passed_cases": {
             "count": len(passed_cases),
@@ -356,6 +364,8 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
             "passed_cases": len(passed_cases),
             "failed_cases": len(failed_cases),
             "skipped_cases": len(skipped_cases),
+            "counted_skipped_cases": counted_skipped_cases,
+            "detail_only_skipped_cases": detail_only_skipped_cases,
             "unattributed_passed_cases": sum(row[2] for row in unattributed_passed_cases),
             "jobs": {
                 "passed": len(passed_jobs),
