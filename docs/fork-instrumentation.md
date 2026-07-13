@@ -20,7 +20,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `12` (see
+ABI version: `39` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -941,6 +941,10 @@ K-04, and K-07 cover the current behavior.
 - **Ref-typed user locals.** funcref, externref, and exnref locals are
   spilled to aux tables at unwind and restored at rewind. Slot assignments
   are deterministic per module.
+- **Byte-reproducible instrumentation.** Given the same input bytes, CLI
+  options, and built tool, separate processes emit byte-identical Wasm.
+  Synthetic locals and nested regions are assigned in canonical sequence-ID
+  order rather than randomized hash-map iteration order.
 - **Mutable scalar globals.** Snapshotted in
   `wpk_fork_unwind_begin` and restored in `wpk_fork_rewind_begin`.
   Includes `__stack_pointer`, `__tls_base`, and any program-declared
