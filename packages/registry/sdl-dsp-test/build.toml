@@ -1,0 +1,13 @@
+script_path = "packages/registry/sdl-dsp-test/build-sdl-dsp-test.sh"
+inputs = [
+  "packages/registry/sdl-dsp-test/build-sdl-dsp-test.sh",
+  "packages/registry/sdl-dsp-test/src/sdl2-dsp-test.c",
+  "packages/registry/sdl-dsp-test/src/sdl3-dsp-test.c",
+  "scripts/run-wasm-fork-instrument.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
