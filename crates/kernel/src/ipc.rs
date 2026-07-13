@@ -7,6 +7,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
+use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
@@ -262,6 +263,82 @@ impl IpcTable {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1) & 0x7FFF_FFFF;
         id
+    }
+
+    /// Generate the Linux-compatible `/proc/sysvipc/msg` snapshot.
+    pub fn procfs_msg(&self) -> Vec<u8> {
+        let mut content = b"       key      msqid perms      cbytes       qnum lspid lrpid   uid   gid  cuid  cgid      stime      rtime      ctime\n".to_vec();
+        for queue in self.msg_queues.values() {
+            let row = format!(
+                "{:10} {:10}  {:4o}  {:10} {:10} {:5} {:5} {:5} {:5} {:5} {:5} {:10} {:10} {:10}\n",
+                queue.key,
+                queue.id,
+                queue.mode,
+                queue.cbytes,
+                queue.messages.len(),
+                queue.lspid,
+                queue.lrpid,
+                queue.uid,
+                queue.gid,
+                queue.cuid,
+                queue.cgid,
+                queue.stime,
+                queue.rtime,
+                queue.ctime,
+            );
+            content.extend_from_slice(row.as_bytes());
+        }
+        content
+    }
+
+    /// Generate the Linux-compatible `/proc/sysvipc/sem` snapshot.
+    pub fn procfs_sem(&self) -> Vec<u8> {
+        let mut content = b"       key      semid perms      nsems   uid   gid  cuid  cgid      otime      ctime\n".to_vec();
+        for set in self.sem_sets.values() {
+            let row = format!(
+                "{:10} {:10}  {:4o} {:10} {:5} {:5} {:5} {:5} {:10} {:10}\n",
+                set.key,
+                set.id,
+                set.mode,
+                set.nsems,
+                set.uid,
+                set.gid,
+                set.cuid,
+                set.cgid,
+                set.otime,
+                set.ctime,
+            );
+            content.extend_from_slice(row.as_bytes());
+        }
+        content
+    }
+
+    /// Generate the Linux-compatible `/proc/sysvipc/shm` snapshot.
+    pub fn procfs_shm(&self) -> Vec<u8> {
+        let mut content = b"       key      shmid perms       size  cpid  lpid nattch   uid   gid  cuid  cgid      atime      dtime      ctime        rss       swap\n".to_vec();
+        for segment in self.shm_segments.values() {
+            let row = format!(
+                "{:10} {:10}  {:4o} {:10} {:5} {:5} {:6} {:5} {:5} {:5} {:5} {:10} {:10} {:10} {:10} {:10}\n",
+                segment.key,
+                segment.id,
+                segment.mode,
+                segment.segsz,
+                segment.cpid,
+                segment.lpid,
+                segment.nattch,
+                segment.uid,
+                segment.gid,
+                segment.cuid,
+                segment.cgid,
+                segment.atime,
+                segment.dtime,
+                segment.ctime,
+                segment.data.len(),
+                0,
+            );
+            content.extend_from_slice(row.as_bytes());
+        }
+        content
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -921,6 +998,52 @@ pub unsafe fn global_ipc_table() -> &'static mut IpcTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn procfs_snapshots_report_live_ipc_objects() {
+        let mut table = IpcTable::new();
+
+        let qid = table
+            .msgget(0x1234, IPC_CREAT | 0o640, 10, 100, 200)
+            .unwrap();
+        table.msgsnd(qid, 1, b"hello", 0, 10, 100, 200).unwrap();
+        let msg_content = table.procfs_msg();
+        let msg = core::str::from_utf8(&msg_content).unwrap();
+        let msg_fields: Vec<&str> = msg.lines().nth(1).unwrap().split_whitespace().collect();
+        assert_eq!(
+            &msg_fields[..11],
+            &[
+                "4660", "0", "640", "5", "1", "10", "0", "100", "200", "100", "200"
+            ]
+        );
+
+        let semid = table
+            .semget(0x2345, 3, IPC_CREAT | 0o620, 20, 101, 201)
+            .unwrap();
+        let sem_content = table.procfs_sem();
+        let sem = core::str::from_utf8(&sem_content).unwrap();
+        let sem_fields: Vec<&str> = sem.lines().nth(1).unwrap().split_whitespace().collect();
+        assert_eq!(semid, 1);
+        assert_eq!(
+            &sem_fields[..8],
+            &["9029", "1", "620", "3", "101", "201", "101", "201"]
+        );
+
+        let shmid = table
+            .shmget(0x3456, 4096, IPC_CREAT | 0o600, 30, 102, 202)
+            .unwrap();
+        let shm_content = table.procfs_shm();
+        let shm = core::str::from_utf8(&shm_content).unwrap();
+        let shm_fields: Vec<&str> = shm.lines().nth(1).unwrap().split_whitespace().collect();
+        assert_eq!(shmid, 2);
+        assert_eq!(
+            &shm_fields[..11],
+            &[
+                "13398", "2", "600", "4096", "30", "0", "0", "102", "202", "102", "202"
+            ]
+        );
+        assert_eq!(&shm_fields[14..], &["4096", "0"]);
+    }
 
     // ── Message Queue Tests ──
 

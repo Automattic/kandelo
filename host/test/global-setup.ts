@@ -36,6 +36,7 @@ const TEST_PROGRAMS = [
   "putenv_test.c",
   "getaddrinfo_test.c",
   "sysv_ipc_test.c",
+  "sysv_ipc_procfs_test.c",
   "wasm_trap_test.c",
   "oob_trap_test.c",
   "divzero_trap_test.c",

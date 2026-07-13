@@ -44,25 +44,29 @@ fn procfs_buf_handle(idx: usize) -> i64 {
 /// A parsed procfs path entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcfsEntry {
-    Root,              // /proc
-    Mounts,            // /proc/mounts
-    SelfLink,          // /proc/self (symlink → /proc/<pid>)
-    ThreadSelfLink,    // /proc/thread-self (symlink)
-    PidDir(u32),       // /proc/<pid>
-    PidMounts(u32),    // /proc/<pid>/mounts
-    PidMountinfo(u32), // /proc/<pid>/mountinfo
-    FdDir(u32),        // /proc/<pid>/fd
-    FdLink(u32, i32),  // /proc/<pid>/fd/<N> (symlink)
-    FdInfoDir(u32),    // /proc/<pid>/fdinfo
-    FdInfo(u32, i32),  // /proc/<pid>/fdinfo/<N>
-    Stat(u32),         // /proc/<pid>/stat
-    Status(u32),       // /proc/<pid>/status
-    Cmdline(u32),      // /proc/<pid>/cmdline
-    Environ(u32),      // /proc/<pid>/environ
-    Maps(u32),         // /proc/<pid>/maps
-    Cwd(u32),          // /proc/<pid>/cwd (symlink)
-    Exe(u32),          // /proc/<pid>/exe (symlink)
-    Root_(u32),        // /proc/<pid>/root (symlink)
+    Root,                 // /proc
+    Mounts,               // /proc/mounts
+    SelfLink,             // /proc/self (symlink → /proc/<pid>)
+    ThreadSelfLink,       // /proc/thread-self (symlink)
+    PidDir(u32),          // /proc/<pid>
+    PidMounts(u32),       // /proc/<pid>/mounts
+    PidMountinfo(u32),    // /proc/<pid>/mountinfo
+    FdDir(u32),           // /proc/<pid>/fd
+    FdLink(u32, i32),     // /proc/<pid>/fd/<N> (symlink)
+    FdInfoDir(u32),       // /proc/<pid>/fdinfo
+    FdInfo(u32, i32),     // /proc/<pid>/fdinfo/<N>
+    Stat(u32),            // /proc/<pid>/stat
+    Status(u32),          // /proc/<pid>/status
+    Cmdline(u32),         // /proc/<pid>/cmdline
+    Environ(u32),         // /proc/<pid>/environ
+    Maps(u32),            // /proc/<pid>/maps
+    Cwd(u32),             // /proc/<pid>/cwd (symlink)
+    Exe(u32),             // /proc/<pid>/exe (symlink)
+    Root_(u32),           // /proc/<pid>/root (symlink)
+    SysvipcDir,           // /proc/sysvipc
+    SysvipcMsg,           // /proc/sysvipc/msg
+    SysvipcSem,           // /proc/sysvipc/sem
+    SysvipcShm,           // /proc/sysvipc/shm
     NetDir(Option<u32>),  // /proc/net or /proc/<pid>/net
     NetTcp(Option<u32>),  // /proc/net/tcp or /proc/<pid>/net/tcp
     NetUnix(Option<u32>), // /proc/net/unix or /proc/<pid>/net/unix
@@ -90,6 +94,7 @@ impl ProcfsEntry {
                 | ProcfsEntry::PidDir(_)
                 | ProcfsEntry::FdDir(_)
                 | ProcfsEntry::FdInfoDir(_)
+                | ProcfsEntry::SysvipcDir
                 | ProcfsEntry::NetDir(_)
         )
     }
@@ -130,7 +135,11 @@ pub fn entry_pid(entry: &ProcfsEntry) -> Option<u32> {
         ProcfsEntry::Root
         | ProcfsEntry::Mounts
         | ProcfsEntry::SelfLink
-        | ProcfsEntry::ThreadSelfLink => None,
+        | ProcfsEntry::ThreadSelfLink
+        | ProcfsEntry::SysvipcDir
+        | ProcfsEntry::SysvipcMsg
+        | ProcfsEntry::SysvipcSem
+        | ProcfsEntry::SysvipcShm => None,
     }
 }
 
@@ -180,6 +189,10 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
         return Some(ProcfsEntry::Mounts);
     }
 
+    if rest == b"sysvipc" || rest.starts_with(b"sysvipc/") {
+        return match_sysvipc_path(rest);
+    }
+
     // /proc/self/... → resolve to current pid
     // /proc/thread-self/... → resolve to current pid (simplified)
     let (pid, remainder) = if rest.starts_with(b"self") {
@@ -211,6 +224,17 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
 
     // Now parse remainder under /proc/<pid>/
     match_pid_subpath(pid, remainder)
+}
+
+/// Match the kernel-global SysV IPC namespace under `/proc/sysvipc`.
+fn match_sysvipc_path(rest: &[u8]) -> Option<ProcfsEntry> {
+    match rest {
+        b"sysvipc" | b"sysvipc/" => Some(ProcfsEntry::SysvipcDir),
+        b"sysvipc/msg" => Some(ProcfsEntry::SysvipcMsg),
+        b"sysvipc/sem" => Some(ProcfsEntry::SysvipcSem),
+        b"sysvipc/shm" => Some(ProcfsEntry::SysvipcShm),
+        _ => None,
+    }
 }
 
 /// Parse `/proc/<pid>[/...]` — returns (pid, remainder after pid/).
@@ -331,9 +355,7 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
     let state_str = match proc.state {
         crate::process::ProcessState::Running => "R (running)",
         crate::process::ProcessState::Stopped => "T (stopped)",
-        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => {
-            "Z (zombie)"
-        }
+        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => "Z (zombie)",
     };
 
     let content = format!(
@@ -551,6 +573,10 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::NetDir(pid) => (pid.unwrap_or(0), 19),
         ProcfsEntry::NetTcp(pid) => (pid.unwrap_or(0), 20),
         ProcfsEntry::NetUnix(pid) => (pid.unwrap_or(0), 21),
+        ProcfsEntry::SysvipcDir => (0, 22),
+        ProcfsEntry::SysvipcMsg => (0, 23),
+        ProcfsEntry::SysvipcSem => (0, 24),
+        ProcfsEntry::SysvipcShm => (0, 25),
     }
 }
 
@@ -647,8 +673,11 @@ pub fn procfs_open(
 /// Generate content for a procfs regular file entry.
 fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errno> {
     match entry {
-        ProcfsEntry::Stat(pid) | ProcfsEntry::Status(pid) | ProcfsEntry::Cmdline(pid)
-        | ProcfsEntry::Environ(pid) | ProcfsEntry::Maps(pid) => {
+        ProcfsEntry::Stat(pid)
+        | ProcfsEntry::Status(pid)
+        | ProcfsEntry::Cmdline(pid)
+        | ProcfsEntry::Environ(pid)
+        | ProcfsEntry::Maps(pid) => {
             validate_pid(proc, *pid)?;
             if *pid == proc.pid {
                 match entry {
@@ -661,9 +690,13 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 }
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-                { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
+                {
+                    crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-                { Err(Errno::ENOENT) }
+                {
+                    Err(Errno::ENOENT)
+                }
             }
         }
         ProcfsEntry::FdInfo(pid, fd) => {
@@ -672,9 +705,14 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 generate_fdinfo(proc, *fd).ok_or(Errno::ENOENT)
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-                { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
+                {
+                    crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-                { let _ = fd; Err(Errno::ENOENT) }
+                {
+                    let _ = fd;
+                    Err(Errno::ENOENT)
+                }
             }
         }
         ProcfsEntry::Mounts => Ok(MOUNTS_CONTENT.to_vec()),
@@ -697,6 +735,21 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 validate_pid(proc, *pid)?;
             }
             Ok(b"Num       RefCount Protocol Flags    Type St Inode Path\n".to_vec())
+        }
+        ProcfsEntry::SysvipcMsg => {
+            // SAFETY: procfs reads run in the kernel worker's serialized syscall dispatch.
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            Ok(ipc.procfs_msg())
+        }
+        ProcfsEntry::SysvipcSem => {
+            // SAFETY: procfs reads run in the kernel worker's serialized syscall dispatch.
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            Ok(ipc.procfs_sem())
+        }
+        ProcfsEntry::SysvipcShm => {
+            // SAFETY: procfs reads run in the kernel worker's serialized syscall dispatch.
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            Ok(ipc.procfs_shm())
         }
         _ => Err(Errno::ENOENT),
     }
@@ -854,6 +907,8 @@ pub fn procfs_getdents64(
     offset: i64,
     pids: &[u32],
 ) -> Result<(usize, i64, bool), Errno> {
+    let directory = match_procfs(ofd_path, proc.pid).ok_or(Errno::ENOENT)?;
+    let (dot_ino, dotdot_ino) = procfs_directory_inodes(&directory)?;
     let entries = dir_entries(proc, ofd_path, pids)?;
 
     // offset is 0-based entry index (after . and ..)
@@ -865,8 +920,7 @@ pub fn procfs_getdents64(
 
     // Emit . and .. if we haven't passed them
     if current == 0 {
-        let ino = procfs_ino(0, 0);
-        let written = write_dirent64(buf, pos, ino, 1, DT_DIR, b".");
+        let written = write_dirent64(buf, pos, dot_ino, 1, DT_DIR, b".");
         if written == 0 {
             if pos == 0 {
                 return Err(Errno::EINVAL);
@@ -877,8 +931,7 @@ pub fn procfs_getdents64(
         current = 1;
     }
     if current == 1 {
-        let ino = procfs_ino(0, 0);
-        let written = write_dirent64(buf, pos, ino, 2, DT_DIR, b"..");
+        let written = write_dirent64(buf, pos, dotdot_ino, 2, DT_DIR, b"..");
         if written == 0 {
             return Ok((pos, current as i64, false));
         }
@@ -901,6 +954,22 @@ pub fn procfs_getdents64(
     Ok((pos, current as i64, true))
 }
 
+/// Return the current and parent inode numbers for a procfs directory.
+fn procfs_directory_inodes(entry: &ProcfsEntry) -> Result<(u64, u64), Errno> {
+    let (pid, entry_type) = entry_ids(entry);
+    let current = procfs_ino(pid, entry_type);
+    let root = procfs_ino(0, 0);
+    let parent = match entry {
+        ProcfsEntry::Root => current,
+        ProcfsEntry::PidDir(_) | ProcfsEntry::SysvipcDir | ProcfsEntry::NetDir(None) => root,
+        ProcfsEntry::FdDir(pid) | ProcfsEntry::FdInfoDir(pid) | ProcfsEntry::NetDir(Some(pid)) => {
+            procfs_ino(*pid, 4)
+        }
+        _ => return Err(Errno::ENOTDIR),
+    };
+    Ok((current, parent))
+}
+
 /// Build the list of directory entries for a procfs directory path.
 /// Returns (name, d_type, ino) tuples.
 fn dir_entries(
@@ -919,6 +988,7 @@ fn dir_entries(
             entries.push((b"mounts".to_vec(), DT_REG, procfs_ino(0, 1)));
             entries.push((b"self".to_vec(), DT_LNK, procfs_ino(0, 2)));
             entries.push((b"thread-self".to_vec(), DT_LNK, procfs_ino(0, 3)));
+            entries.push((b"sysvipc".to_vec(), DT_DIR, procfs_ino(0, 22)));
             for &pid in pids {
                 let name = format!("{}", pid).into_bytes();
                 entries.push((name, DT_DIR, procfs_ino(pid, 4)));
@@ -967,6 +1037,11 @@ fn dir_entries(
             let ino_pid = pid.unwrap_or(0);
             entries.push((b"tcp".to_vec(), DT_REG, procfs_ino(ino_pid, 20)));
             entries.push((b"unix".to_vec(), DT_REG, procfs_ino(ino_pid, 21)));
+        }
+        ProcfsEntry::SysvipcDir => {
+            entries.push((b"msg".to_vec(), DT_REG, procfs_ino(0, 23)));
+            entries.push((b"sem".to_vec(), DT_REG, procfs_ino(0, 24)));
+            entries.push((b"shm".to_vec(), DT_REG, procfs_ino(0, 25)));
         }
         _ => return Err(Errno::ENOTDIR),
     }
@@ -1120,6 +1195,28 @@ mod tests {
             match_procfs(b"/proc/42/net/tcp", 1),
             Some(ProcfsEntry::NetTcp(Some(42)))
         );
+    }
+
+    #[test]
+    fn test_match_procfs_sysvipc() {
+        assert_eq!(
+            match_procfs(b"/proc/sysvipc", 1),
+            Some(ProcfsEntry::SysvipcDir)
+        );
+        assert_eq!(
+            match_procfs(b"/proc/sysvipc/msg", 1),
+            Some(ProcfsEntry::SysvipcMsg)
+        );
+        assert_eq!(
+            match_procfs(b"/proc/sysvipc/sem", 1),
+            Some(ProcfsEntry::SysvipcSem)
+        );
+        assert_eq!(
+            match_procfs(b"/proc/sysvipc/shm", 1),
+            Some(ProcfsEntry::SysvipcShm)
+        );
+        assert_eq!(match_procfs(b"/proc/sysvipc/unknown", 1), None);
+        assert_eq!(entry_pid(&ProcfsEntry::SysvipcMsg), None);
     }
 
     #[test]
@@ -1309,8 +1406,25 @@ mod tests {
             procfs_getdents64(&proc, b"/proc", &mut buf, 0, &pids).unwrap();
         assert!(bytes > 0);
         assert!(exhausted);
-        // Should have: . , .. , mounts, self, thread-self, 1, net = 7 entries
-        assert_eq!(offset, 7);
+        // Should have: . , .. , mounts, self, thread-self, sysvipc, 1, net = 8 entries
+        assert_eq!(offset, 8);
+    }
+
+    #[test]
+    fn test_procfs_getdents64_sysvipc_dir() {
+        let proc = Process::new(1);
+        let mut buf = [0u8; 4096];
+        let (bytes, offset, exhausted) =
+            procfs_getdents64(&proc, b"/proc/sysvipc", &mut buf, 0, &[1]).unwrap();
+        assert!(bytes > 0);
+        assert!(exhausted);
+        // . , .. , msg, sem, shm
+        assert_eq!(offset, 5);
+        let dot_ino = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+        let dot_len = u16::from_le_bytes(buf[16..18].try_into().unwrap()) as usize;
+        let dotdot_ino = u64::from_le_bytes(buf[dot_len..dot_len + 8].try_into().unwrap());
+        assert_eq!(dot_ino, procfs_ino(0, 22));
+        assert_eq!(dotdot_ino, procfs_ino(0, 0));
     }
 
     #[test]
@@ -1337,6 +1451,11 @@ mod tests {
         assert!(exhausted);
         // . , .. , 0, 1, 2 = 5
         assert_eq!(offset, 5);
+        let dot_ino = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+        let dot_len = u16::from_le_bytes(buf[16..18].try_into().unwrap()) as usize;
+        let dotdot_ino = u64::from_le_bytes(buf[dot_len..dot_len + 8].try_into().unwrap());
+        assert_eq!(dot_ino, procfs_ino(1, 7));
+        assert_eq!(dotdot_ino, procfs_ino(1, 4));
     }
 
     #[test]

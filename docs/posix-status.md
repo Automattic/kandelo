@@ -312,9 +312,9 @@ shortcuts.
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `msgget()` / `msgsnd()` / `msgrcv()` / `msgctl()` | Full | Host-side SysV message queues via SharedIpcTable. Key-based creation, blocking send/recv with message types, IPC_STAT/IPC_SET/IPC_RMID control. |
-| `semget()` / `semop()` / `semctl()` / `semtimedop()` | Full | Host-side SysV semaphore sets. Atomic multi-semaphore operations, SEM_UNDO support, IPC_STAT/SETVAL/GETVAL/SETALL/GETALL. |
-| `shmget()` / `shmat()` / `shmdt()` / `shmctl()` | Partial | Host-side SysV shared-memory segments support IPC_STAT/IPC_RMID, fork inheritance, and exact attach/detach accounting. Separate process memories merge changed attachment bytes and import peer changes at syscall boundaries. Direct stores are not immediately visible and cross-process futex synchronization over an attachment is unsupported. |
+| `msgget()` / `msgsnd()` / `msgrcv()` / `msgctl()` | Full | Kernel-owned SysV message queues use the authoritative `IpcTable`. Key-based creation, blocking send/recv with message types, IPC_STAT/IPC_SET/IPC_RMID control. Live queue metadata is available through `/proc/sysvipc/msg`. |
+| `semget()` / `semop()` / `semctl()` / `semtimedop()` | Full | Kernel-owned SysV semaphore sets use the authoritative `IpcTable`. Atomic multi-semaphore operations, SEM_UNDO support, IPC_STAT/SETVAL/GETVAL/SETALL/GETALL. Live set metadata is available through `/proc/sysvipc/sem`. |
+| `shmget()` / `shmat()` / `shmdt()` / `shmctl()` | Partial | Kernel-owned SysV shared-memory segments use the authoritative `IpcTable` and support IPC_STAT/IPC_RMID, fork inheritance, exact attach/detach accounting, and live `/proc/sysvipc/shm` metadata. Separate process memories merge changed attachment bytes and import peer changes at syscall boundaries. Direct stores are not immediately visible and cross-process futex synchronization over an attachment is unsupported. |
 | `ftok()` | Full | Standard ftok algorithm using stat inode + proj_id. |
 | `mq_open()` / `mq_close()` / `mq_unlink()` | Full | Host-side POSIX message queues via PosixMqueueTable. O_CREAT/O_EXCL/O_RDONLY/O_WRONLY/O_RDWR/O_NONBLOCK. Descriptor range 0x40000000+. |
 | `mq_timedsend()` / `mq_timedreceive()` | Full | Priority-ordered message delivery. Blocking with timeout support. O_NONBLOCK returns EAGAIN. |
