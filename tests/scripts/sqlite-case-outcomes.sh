@@ -23,13 +23,13 @@ python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
   --host browser \
   --display-name "test/misc1.test" >/dev/null
 
-if [ "$(wc -l < "$RESULTS_DIR/outcome-lists/passed-cases.txt" | tr -d ' ')" != "3" ]; then
-  echo "expected three passed case entries" >&2
+if [ "$(wc -l < "$RESULTS_DIR/outcome-lists/passed-cases.txt" | tr -d ' ')" != "2" ]; then
+  echo "expected two named passed case entries" >&2
   exit 1
 fi
 
-if ! grep -qx 'utf16.misc1::__sqlite_finalize_testing__' "$RESULTS_DIR/outcome-lists/passed-cases.txt"; then
-  echo "missing synthetic finalize_testing case" >&2
+if [ "$(tail -n +2 "$RESULTS_DIR/outcome-lists/unattributed-passed-cases.tsv" | wc -l | tr -d ' ')" != "1" ]; then
+  echo "expected one unattributed passed-case row" >&2
   exit 1
 fi
 
@@ -46,10 +46,11 @@ from pathlib import Path
 data = json.loads(Path(sys.argv[1]).read_text())
 summary = data["summary"]
 assert summary["reported_executed_cases"] == 3, summary
-assert summary["passed_cases"] == 3, summary
+assert summary["passed_cases"] == 2, summary
 assert summary["skipped_cases"] == 1, summary
-assert summary["synthetic_passed_cases"] == ["utf16.misc1::__sqlite_finalize_testing__"], summary
-assert data["unavailable"] == [], data["unavailable"]
+assert summary["unattributed_passed_cases"] == 1, summary
+assert data["categories"]["passed_cases"]["status"] == "partial", data["categories"]
+assert data["unavailable"][0]["category"] == "passed_cases", data["unavailable"]
 PY
 
 DB="$TMP_ROOT/testrunner.db"
@@ -91,6 +92,11 @@ con.execute(
     "INSERT INTO jobs(jobid, displaytype, displayname, cmd, priority, state, ntest, nerr, output) VALUES(2, 'tcl', 'test/failing.test', '', 1, 'done', 1, 1, ?)",
     ("! failing-1.1 expected: value\n1 errors out of 1 tests on OpenBSD 32-bit\n",),
 )
+invalid_output = b"invalid-\x80-1.1... Ok\n0 errors out of 1 tests on OpenBSD 32-bit\n"
+con.execute(
+    "INSERT INTO jobs(jobid, displaytype, displayname, cmd, priority, state, ntest, nerr, output) VALUES(3, 'tcl', 'test/nonutf8.test', '', 1, 'done', 1, 0, CAST(? AS TEXT))",
+    (sqlite3.Binary(invalid_output),),
+)
 con.commit()
 con.close()
 PY
@@ -101,11 +107,6 @@ python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
   --results-dir "$DB_RESULTS" \
   --host node >/dev/null
 
-if ! grep -qx 'utf16.misc1::__sqlite_finalize_testing__' "$DB_RESULTS/outcome-lists/passed-cases.txt"; then
-  echo "db mode missing synthetic finalize_testing case" >&2
-  exit 1
-fi
-
 python3 - "$DB_RESULTS/outcome-lists/case-outcomes.json" <<'PY'
 import json
 import sys
@@ -113,12 +114,16 @@ from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text())
 assert data["summary"]["jobs"] == {
-    "passed": 1,
+    "passed": 2,
     "failed": 1,
     "skipped": 0,
     "incomplete": 0,
 }, data["summary"]["jobs"]
 assert data["summary"]["failed_cases"] == 1, data["summary"]
+assert data["summary"]["unattributed_passed_cases"] == 1, data["summary"]
+assert "invalid-\ufffd-1.1" in Path(
+    data["artifacts"]["passed_cases"]
+).read_text().splitlines()
 PY
 
 echo "sqlite-case-outcomes ok"

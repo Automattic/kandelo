@@ -19,9 +19,6 @@ FAILURES_RE = re.compile(r"^!Failures on these tests:\s*(?P<names>.*)$")
 SUMMARY_RE = re.compile(r"\b(?P<errors>\d+) errors out of (?P<tests>\d+) tests\b")
 OMITTED_DETAIL_RE = re.compile(r"^\.\s+(?P<name>\S+)\s+(?P<reason>.+)$")
 
-FINALIZE_SUFFIX = "::__sqlite_finalize_testing__"
-
-
 @dataclass
 class ParsedOutput:
     passed: list[str] = field(default_factory=list)
@@ -112,14 +109,12 @@ def parse_output(text: str) -> ParsedOutput:
     return parsed
 
 
-def infer_case_prefix(displayname: str, parsed: ParsedOutput) -> str:
-    if parsed.passed:
-        return parsed.passed[0].split("-", 1)[0]
-
-    basename = displayname.rsplit("/", 1)[-1]
-    if basename.endswith(".test"):
-        basename = basename[:-5]
-    return basename or "sqlite"
+def decode_db_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if value is None:
+        return ""
+    return str(value)
 
 
 def read_jobs_from_db(db_path: Path) -> tuple[list[Job], str | None]:
@@ -127,6 +122,9 @@ def read_jobs_from_db(db_path: Path) -> tuple[list[Job], str | None]:
         return [], f"testrunner database is missing: {db_path}"
 
     con = sqlite3.connect(str(db_path))
+    # Some archived browser runs contain non-UTF-8 bytes in Tcl output. Read
+    # TEXT as bytes so one diagnostic byte cannot make the whole report fail.
+    con.text_factory = bytes
     try:
         has_jobs = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs' LIMIT 1"
@@ -148,13 +146,13 @@ def read_jobs_from_db(db_path: Path) -> tuple[list[Job], str | None]:
     jobs = [
         Job(
             jobid=row[0],
-            state=row[1] or "",
-            displaytype=row[2] or "",
-            displayname=row[3] or "",
+            state=decode_db_text(row[1]),
+            displaytype=decode_db_text(row[2]),
+            displayname=decode_db_text(row[3]),
             ntest=row[4],
             nerr=row[5],
             span=row[6],
-            output=row[7] or "",
+            output=decode_db_text(row[7]),
         )
         for row in rows
     ]
@@ -217,8 +215,8 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
     failed_jobs: list[list[Any]] = []
     skipped_jobs: list[list[Any]] = []
     incomplete_jobs: list[list[Any]] = []
+    unattributed_passed_cases: list[list[Any]] = []
     unavailable: list[dict[str, Any]] = []
-    synthetic_cases: list[str] = []
 
     if source_reason is not None:
         add_unavailable(unavailable, "all", source_reason)
@@ -287,26 +285,33 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
 
         expected_passed = ntest - nerr - len(parsed.skipped_counted)
         missing_passed = expected_passed - len(parsed.passed)
-        job_passed = list(parsed.passed)
-        if missing_passed == 1:
-            synthetic = f"{infer_case_prefix(job.displayname, parsed)}{FINALIZE_SUFFIX}"
-            job_passed.append(synthetic)
-            synthetic_cases.append(synthetic)
-        elif missing_passed != 0:
+        if missing_passed > 0:
+            unattributed_passed_cases.append([
+                "" if job.jobid is None else job.jobid,
+                job.displayname,
+                missing_passed,
+                "SQLite reported passed cases without corresponding named Ok lines",
+            ])
             add_unavailable(
                 unavailable,
                 "passed_cases",
-                f"Parsed {len(parsed.passed)} passed case names, but SQLite reported {expected_passed} passed executed cases.",
+                f"SQLite reported {expected_passed} passed cases, but only {len(parsed.passed)} names were present in output.",
                 job,
             )
-        passed_cases.extend(job_passed)
+        elif missing_passed < 0:
+            add_unavailable(
+                unavailable,
+                "passed_cases",
+                f"Parsed {len(parsed.passed)} passed case names, but SQLite reported only {expected_passed} passed cases.",
+                job,
+            )
+        passed_cases.extend(parsed.passed)
 
     selected_cases = reported_executed_cases + len(skipped_cases)
     categories = {
         "passed_cases": {
             "count": len(passed_cases),
-            "synthetic_count": len(synthetic_cases),
-            "synthetic_suffix": FINALIZE_SUFFIX,
+            "unattributed_count": sum(row[2] for row in unattributed_passed_cases),
             "status": "available"
             if not any(entry["category"] in {"passed_cases", "all_cases", "all"} for entry in unavailable)
             else "partial",
@@ -334,7 +339,7 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
             "passed_cases": len(passed_cases),
             "failed_cases": len(failed_cases),
             "skipped_cases": len(skipped_cases),
-            "synthetic_passed_cases": synthetic_cases,
+            "unattributed_passed_cases": sum(row[2] for row in unattributed_passed_cases),
             "jobs": {
                 "passed": len(passed_jobs),
                 "failed": len(failed_jobs),
@@ -348,6 +353,7 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
             "passed_cases": passed_cases,
             "failed_cases": failed_cases,
             "skipped_cases": skipped_cases,
+            "unattributed_passed_cases": unattributed_passed_cases,
             "passed_jobs": passed_jobs,
             "failed_jobs": failed_jobs,
             "skipped_jobs": skipped_jobs,
@@ -375,6 +381,11 @@ def write_outputs(results_dir: Path, outcomes: dict[str, Any], source: dict[str,
     write_lines(out_dir / "passed-cases.txt", lists["passed_cases"])
     write_lines(out_dir / "failed-cases.txt", lists["failed_cases"])
     write_tsv(out_dir / "skipped-cases.tsv", ["case", "reason"], lists["skipped_cases"])
+    write_tsv(
+        out_dir / "unattributed-passed-cases.tsv",
+        ["jobid", "displayname", "count", "reason"],
+        lists["unattributed_passed_cases"],
+    )
     job_header = ["jobid", "state", "displaytype", "displayname", "cases", "errors", "ms"]
     write_tsv(out_dir / "passed-jobs.tsv", job_header, lists["passed_jobs"])
     write_tsv(out_dir / "failed-jobs.tsv", job_header, lists["failed_jobs"])
@@ -391,6 +402,7 @@ def write_outputs(results_dir: Path, outcomes: dict[str, Any], source: dict[str,
             "passed_cases": str(out_dir / "passed-cases.txt"),
             "failed_cases": str(out_dir / "failed-cases.txt"),
             "skipped_cases": str(out_dir / "skipped-cases.tsv"),
+            "unattributed_passed_cases": str(out_dir / "unattributed-passed-cases.tsv"),
             "passed_jobs": str(out_dir / "passed-jobs.tsv"),
             "failed_jobs": str(out_dir / "failed-jobs.tsv"),
             "skipped_jobs": str(out_dir / "skipped-jobs.tsv"),
@@ -415,7 +427,7 @@ def write_outputs(results_dir: Path, outcomes: dict[str, Any], source: dict[str,
         f"Passed case list entries: {summary['passed_cases']}",
         f"Failed case list entries: {summary['failed_cases']}",
         f"Skipped case list entries: {summary['skipped_cases']}",
-        f"Synthetic finalization entries: {len(summary['synthetic_passed_cases'])}",
+        f"Passed cases without names in SQLite output: {summary['unattributed_passed_cases']}",
         "",
     ]
     if outcomes["unavailable"]:
