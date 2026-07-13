@@ -2240,7 +2240,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
-                let (_sig, si_value, si_code) = dequeue_signal_for(proc, tid, signum);
+                let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =
+                    dequeue_signal_for(proc, tid, signum);
                 // If returning from sigsuspend/ppoll/pselect, restore original
                 // mask *before* saving old_mask for the handler, so the
                 // handler's saved mask is the pre-sigsuspend mask.
@@ -2272,7 +2273,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 // Write to output buffer:
                 //   [0..4] signum, [4..8] handler_idx, [8..12] flags,
                 //   [12..16] si_value, [16..24] old_mask,
-                //   [24..28] si_code, [28..32] si_pid, [32..36] si_uid,
+                //   [24..28] si_code, [28..32] first siginfo union word,
+                //   [32..36] second siginfo union word,
                 //   [36..40] alt_sp (0 if no switch), [40..44] alt_size
                 let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 44) };
                 buf[0..4].copy_from_slice(&signum.to_le_bytes());
@@ -2281,8 +2283,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 buf[12..16].copy_from_slice(&si_value.to_le_bytes());
                 buf[16..24].copy_from_slice(&old_mask.to_le_bytes());
                 buf[24..28].copy_from_slice(&si_code.to_le_bytes());
-                buf[28..32].copy_from_slice(&proc.pid.to_le_bytes());
-                buf[32..36].copy_from_slice(&proc.uid.to_le_bytes());
+                buf[28..32].copy_from_slice(&siginfo_word_1.to_le_bytes());
+                buf[32..36].copy_from_slice(&siginfo_word_2.to_le_bytes());
                 if switch_to_alt_stack {
                     buf[36..40].copy_from_slice(&(proc.alt_stack_sp as u32).to_le_bytes());
                     buf[40..44].copy_from_slice(&(proc.alt_stack_size as u32).to_le_bytes());
@@ -2890,16 +2892,18 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 -1 // NULL timeout = wait indefinitely
             };
             let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
-                Ok((sig, si_value, si_code)) => {
+                Ok((sig, si_value, si_code, siginfo_word_1, siginfo_word_2)) => {
                     // Write siginfo_t if pointer is non-null
                     if a2 != 0 {
                         let p = a2 as usize as *mut u8;
-                        // siginfo_t layout: si_signo(0), si_errno(4), si_code(8),
-                        //   si_pid(12), si_uid(16), si_value(20)
+                        // Fixed channel siginfo transport: si_signo(0),
+                        // si_errno(4), si_code(8), first union words (12/16),
+                        // and sival_int(20). The host expands these fields to
+                        // musl's eight-byte-aligned wasm64 siginfo_t layout.
                         let sig_bytes = (sig as i32).to_le_bytes();
                         let code_bytes = si_code.to_le_bytes();
-                        let pid_bytes = proc.pid.to_le_bytes();
-                        let uid_bytes = proc.uid.to_le_bytes();
+                        let word_1_bytes = siginfo_word_1.to_le_bytes();
+                        let word_2_bytes = siginfo_word_2.to_le_bytes();
                         let val_bytes = si_value.to_le_bytes();
                         unsafe {
                             for i in 0..4 {
@@ -2909,10 +2913,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                                 *p.add(8 + i) = code_bytes[i];
                             }
                             for i in 0..4 {
-                                *p.add(12 + i) = pid_bytes[i];
+                                *p.add(12 + i) = word_1_bytes[i];
                             }
                             for i in 0..4 {
-                                *p.add(16 + i) = uid_bytes[i];
+                                *p.add(16 + i) = word_2_bytes[i];
                             }
                             for i in 0..4 {
                                 *p.add(20 + i) = val_bytes[i];
@@ -9707,6 +9711,11 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
 // POSIX timers (timer_create / timer_settime / timer_gettime / etc.)
 // ---------------------------------------------------------------------------
 
+/// Kernel-facing sigevent notification modes used by musl.
+const SIGEV_SIGNAL: u32 = 0;
+const SIGEV_NONE: u32 = 1;
+/// Linux extension used internally by musl to implement POSIX SIGEV_THREAD.
+const SIGEV_THREAD_ID: u32 = 4;
 /// TIMER_ABSTIME flag for timer_settime.
 const TIMER_ABSTIME: i32 = 1;
 
@@ -9734,6 +9743,52 @@ mod posix_timer_tests {
         assert_eq!(timer_clock_to_host_clock(CLOCK_THREAD_CPUTIME_ID), None);
         assert_eq!(timer_clock_to_host_clock(99), None);
     }
+
+    fn directed_timer(target_tid: u32) -> crate::process::PosixTimerState {
+        crate::process::PosixTimerState {
+            clock_id: CLOCK_MONOTONIC,
+            sigev_signo: 10,
+            sigev_value: 77,
+            sigev_notify: SIGEV_THREAD_ID,
+            sigev_tid: target_tid,
+            interval_sec: 0,
+            interval_nsec: 0,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: false,
+            overrun_current: 0,
+            overrun_last: 0,
+        }
+    }
+
+    #[test]
+    fn directed_timer_fire_targets_main_and_worker_queues_exactly() {
+        let mut proc = Process::new(41);
+        proc.add_thread(crate::process::ThreadInfo::new(42, 0, 0, 0));
+        proc.posix_timers.push(Some(directed_timer(41)));
+        proc.posix_timers.push(Some(directed_timer(42)));
+
+        assert_eq!(queue_posix_timer_fire(&mut proc, 0), 41);
+        assert!(proc.main_thread_signals.is_pending(10));
+        assert!(!proc.get_thread(42).unwrap().signals.is_pending(10));
+
+        assert_eq!(queue_posix_timer_fire(&mut proc, 1), 42);
+        assert!(proc.get_thread(42).unwrap().signals.is_pending(10));
+    }
+
+    #[test]
+    fn directed_timer_fire_rejects_a_target_that_died_after_create() {
+        let mut proc = Process::new(41);
+        proc.add_thread(crate::process::ThreadInfo::new(42, 0, 0, 0));
+        proc.posix_timers.push(Some(directed_timer(42)));
+        proc.remove_thread(42);
+
+        assert_eq!(queue_posix_timer_fire(&mut proc, 0), -(Errno::ESRCH as i32));
+        assert!(!proc.posix_timers[0]
+            .as_ref()
+            .unwrap()
+            .notification_pending);
+    }
 }
 
 /// timer_create(clock_id, sigevent_ptr, timerid_ptr)
@@ -9755,20 +9810,24 @@ pub extern "C" fn kernel_timer_create(
     };
 
     // Parse sigevent (default: SIGEV_SIGNAL with SIGALRM)
-    let (sigev_signo, sigev_value, sigev_notify) = if sevp_ptr.is_null() {
-        (14u32, 0i32, 0u32) // default: SIGALRM with SIGEV_SIGNAL
+    let (sigev_signo, sigev_value, sigev_notify, sigev_tid) = if sevp_ptr.is_null() {
+        (14u32, 0i32, SIGEV_SIGNAL, 0u32) // default: SIGALRM
     } else {
         let buf = unsafe { slice::from_raw_parts(sevp_ptr, 16) };
         let value = i32::from_le_bytes(buf[0..4].try_into().unwrap());
         let signo = i32::from_le_bytes(buf[4..8].try_into().unwrap()) as u32;
         let notify = i32::from_le_bytes(buf[8..12].try_into().unwrap()) as u32;
-        (signo, value, notify)
+        let tid = i32::from_le_bytes(buf[12..16].try_into().unwrap()) as u32;
+        (signo, value, notify, tid)
     };
 
     let sigev_signo = match normalize_posix_timer_signo(sigev_notify, sigev_signo) {
         Ok(signo) => signo,
         Err(errno) => return -(errno as i32),
     };
+    if sigev_notify == SIGEV_THREAD_ID && !proc.is_live_explicit_tid(sigev_tid) {
+        return -(Errno::EINVAL as i32);
+    }
 
     // Allocate timer slot
     let timer_id = {
@@ -9793,11 +9852,15 @@ pub extern "C" fn kernel_timer_create(
         clock_id: host_clock_id,
         sigev_signo,
         sigev_value,
+        sigev_notify,
+        sigev_tid,
         interval_sec: 0,
         interval_nsec: 0,
         value_sec: 0,
         value_nsec: 0,
-        overrun: 0,
+        notification_pending: false,
+        overrun_current: 0,
+        overrun_last: 0,
     });
 
     if !timerid_ptr.is_null() {
@@ -9809,6 +9872,71 @@ pub extern "C" fn kernel_timer_create(
     let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     0
+}
+
+/// Queue one POSIX timer expiration in the timer owner's signal state.
+///
+/// The host owns wall-clock scheduling, but the kernel owns notification
+/// semantics and siginfo metadata. Return values tell the host which blocked
+/// signal-wait channel to wake:
+/// - positive TID: thread-directed `SIGEV_THREAD_ID`
+/// - zero: process-wide `SIGEV_SIGNAL`
+/// - negative: no notification was queued (SIGEV_NONE, overrun, or error)
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_posix_timer_fire(pid: u32, timer_id: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(proc) => proc,
+        None => return -(Errno::ESRCH as i32),
+    };
+    queue_posix_timer_fire(proc, timer_id)
+}
+
+fn queue_posix_timer_fire(proc: &mut Process, timer_id: u32) -> i32 {
+    let (notify, target_tid, signo, value) = {
+        let timer = match proc.posix_timers.get_mut(timer_id as usize) {
+            Some(Some(timer)) => timer,
+            _ => return -(Errno::EINVAL as i32),
+        };
+        if timer.sigev_notify == SIGEV_NONE {
+            return -(Errno::EAGAIN as i32);
+        }
+        if crate::signal::should_discard_pending(
+            timer.sigev_signo,
+            &proc.signals.get_handler(timer.sigev_signo),
+        ) {
+            return -(Errno::EAGAIN as i32);
+        }
+        if timer.notification_pending {
+            timer.overrun_current = timer.overrun_current.saturating_add(1);
+            return -(Errno::EAGAIN as i32);
+        }
+        timer.notification_pending = true;
+        (
+            timer.sigev_notify,
+            timer.sigev_tid,
+            timer.sigev_signo,
+            timer.sigev_value,
+        )
+    };
+
+    match notify {
+        SIGEV_SIGNAL => {
+            proc.signals.raise_timer(signo, value, timer_id);
+            0
+        }
+        SIGEV_THREAD_ID => {
+            if proc.raise_timer_for_thread(target_tid, signo, value, timer_id) {
+                target_tid as i32
+            } else {
+                if let Some(Some(timer)) = proc.posix_timers.get_mut(timer_id as usize) {
+                    timer.notification_pending = false;
+                }
+                -(Errno::ESRCH as i32)
+            }
+        }
+        _ => -(Errno::EINVAL as i32),
+    }
 }
 
 /// timer_settime(timerid, flags, new_value_ptr, old_value_ptr)
@@ -9855,7 +9983,6 @@ pub extern "C" fn kernel_timer_settime(
     timer.interval_nsec = int_nsec;
     timer.value_sec = val_sec;
     timer.value_nsec = val_nsec;
-    timer.overrun = 0;
 
     // Convert to milliseconds for the host timer.
     // 0 = disarm, 1+ = armed.
@@ -9924,7 +10051,7 @@ pub extern "C" fn kernel_timer_getoverrun(timerid: i32) -> i32 {
 
     let tid = timerid as usize;
     let result = match proc.posix_timers.get(tid) {
-        Some(Some(t)) => t.overrun,
+        Some(Some(t)) => t.overrun_last,
         _ => return -(Errno::EINVAL as i32),
     };
 
@@ -9946,39 +10073,23 @@ pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
 
     // Disarm the host timer
     let _ = host.host_set_posix_timer(timerid, 0, 0, 0);
+    proc.remove_posix_timer_notification(timerid as u32);
     proc.posix_timers[tid] = None;
 
     deliver_pending_signals(proc, &mut host);
     0
 }
 
-/// Called by the host when a repeating POSIX timer fires to increment the overrun counter.
-/// This is used for timer_getoverrun() support.
+/// Backward-compatible interval hook for hosts predating
+/// `kernel_posix_timer_fire`. Its return contract is unchanged: zero tells the
+/// legacy host to queue a process-wide signal, while one suppresses an overrun.
 #[unsafe(no_mangle)]
-/// Called by the host when a POSIX timer's interval fires.
-/// If the timer's signal is already pending (blocked), increments overrun and
-/// returns 1 (don't send signal again). If not pending, resets overrun to 0
-/// and returns 0 (host should call sendSignalToProcess for a new delivery cycle).
 pub extern "C" fn kernel_posix_timer_interval_fire(pid: u32, timer_id: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if let Some(proc) = table.get_mut(pid) {
-        if let Some(Some(timer)) = proc.posix_timers.get_mut(timer_id as usize) {
-            let signo = timer.sigev_signo as u64;
-            if signo > 0 && signo <= 64 {
-                let mask = 1u64 << (signo - 1);
-                if proc.signals.pending & mask != 0 {
-                    // Signal already pending — this is an overrun
-                    timer.overrun += 1;
-                    return 1;
-                } else {
-                    // New delivery cycle — reset overrun
-                    timer.overrun = 0;
-                    return 0;
-                }
-            }
-        }
+    match table.get_mut(pid) {
+        Some(proc) => proc.note_legacy_posix_timer_interval_fire(timer_id) as i32,
+        None => 0,
     }
-    0
 }
 
 // ---------------------------------------------------------------------------
@@ -10024,7 +10135,7 @@ pub extern "C" fn kernel_rt_sigtimedwait(mask_lo: u32, mask_hi: u32, timeout_ms:
     let mut host = WasmHostIO;
     let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
     let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
-        Ok((sig, _si_value, _si_code)) => sig as i32,
+        Ok((sig, ..)) => sig as i32,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals(proc, &mut host);

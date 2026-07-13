@@ -493,6 +493,12 @@ pub struct PosixTimerState {
     pub clock_id: u32,
     pub sigev_signo: u32,
     pub sigev_value: i32,
+    /// Kernel-facing notification mode (`SIGEV_SIGNAL`, `SIGEV_NONE`, or
+    /// Linux's `SIGEV_THREAD_ID`). musl implements POSIX `SIGEV_THREAD` by
+    /// creating a helper pthread and asking the kernel to target that TID.
+    pub sigev_notify: u32,
+    /// Target thread for `SIGEV_THREAD_ID`; zero for process-wide modes.
+    pub sigev_tid: u32,
     /// Interval for repeating timers (0 = one-shot).
     pub interval_sec: i64,
     pub interval_nsec: i64,
@@ -500,8 +506,12 @@ pub struct PosixTimerState {
     /// 0/0 = disarmed.
     pub value_sec: i64,
     pub value_nsec: i64,
-    /// Number of overruns (expirations not yet handled).
-    pub overrun: i32,
+    /// True while this timer owns a queued notification not yet accepted.
+    pub notification_pending: bool,
+    /// Expirations accumulated while the current notification is pending.
+    pub overrun_current: i32,
+    /// Overrun count associated with the most recently accepted notification.
+    pub overrun_last: i32,
 }
 
 /// Normalize the guest sigevent notification into the signal number passed to
@@ -509,6 +519,7 @@ pub struct PosixTimerState {
 /// real signal so it cannot silently become a no-notification timer.
 const SIGEV_SIGNAL: u32 = 0;
 const SIGEV_NONE: u32 = 1;
+const SIGEV_THREAD_ID: u32 = 4;
 
 pub(crate) fn normalize_posix_timer_signo(
     sigev_notify: u32,
@@ -517,6 +528,7 @@ pub(crate) fn normalize_posix_timer_signo(
     match sigev_notify {
         SIGEV_NONE => Ok(0),
         SIGEV_SIGNAL if (1..=64).contains(&sigev_signo) => Ok(sigev_signo),
+        SIGEV_THREAD_ID if (1..=64).contains(&sigev_signo) => Ok(sigev_signo),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -529,7 +541,8 @@ fn posix_timer_notification_validates_and_normalizes_signals() {
     assert_eq!(normalize_posix_timer_signo(SIGEV_SIGNAL, 64).unwrap(), 64);
     assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 0).is_err());
     assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 65).is_err());
-    assert!(normalize_posix_timer_signo(4, 14).is_err());
+    assert_eq!(normalize_posix_timer_signo(SIGEV_THREAD_ID, 14).unwrap(), 14);
+    assert!(normalize_posix_timer_signo(SIGEV_THREAD_ID, 0).is_err());
 }
 
 /// Per-signalfd state: the set of signals to watch.
@@ -1029,6 +1042,13 @@ impl Process {
         tid == 0 || tid == self.pid
     }
 
+    /// True when a nonzero TID explicitly names the live process leader or a
+    /// retained worker. Kernel-internal TID 0 aliases the leader but is not a
+    /// valid user-supplied exact-thread target.
+    pub fn is_live_explicit_tid(&self, tid: u32) -> bool {
+        tid != 0 && (tid == self.pid || self.get_thread(tid).is_some())
+    }
+
     /// Effective blocked mask for the given TID.
     pub fn blocked_for(&self, tid: u32) -> u64 {
         if self.is_main_thread(tid) {
@@ -1210,6 +1230,33 @@ impl Process {
         }
     }
 
+    /// Queue one timer notification for an exact live thread, including the
+    /// main thread's dedicated directed queue.
+    pub fn raise_timer_for_thread(
+        &mut self,
+        tid: u32,
+        signum: u32,
+        si_value: i32,
+        timer_id: u32,
+    ) -> bool {
+        self.prepare_signal_generation(signum);
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        let handler = self.signals.get_handler(signum);
+        if crate::signal::should_discard_pending(signum, &handler) {
+            return true;
+        }
+        if self.is_main_thread(tid) {
+            self.main_thread_signals
+                .raise_timer(signum, si_value, timer_id)
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread.signals.raise_timer(signum, si_value, timer_id)
+        } else {
+            false
+        }
+    }
+
     /// Clear a directed signal from every thread. Used when a new
     /// disposition requires pending instances to be discarded.
     pub fn clear_directed_signal(&mut self, signum: u32) {
@@ -1221,12 +1268,22 @@ impl Process {
 
     /// Consume one pending instance visible to `tid`, preferring that exact
     /// thread's directed queue before the shared process queue.
-    pub fn consume_signal_for(&mut self, tid: u32, signum: u32) -> Option<(i32, i32)> {
+    pub fn consume_signal_for(
+        &mut self,
+        tid: u32,
+        signum: u32,
+    ) -> Option<crate::signal::PendingSignalInfo> {
         let directed = if self.is_main_thread(tid) {
-            self.main_thread_signals.consume_one(signum)
+            self.main_thread_signals
+                .is_pending(signum)
+                .then(|| self.main_thread_signals.consume_one_info(signum))
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread
+                .signals
+                .is_pending(signum)
+                .then(|| thread.signals.consume_one_info(signum))
         } else {
-            self.get_thread_mut(tid)
-                .and_then(|thread| thread.signals.consume_one(signum))
+            None
         };
         if directed.is_some() {
             return directed;
@@ -1235,6 +1292,82 @@ impl Process {
             return None;
         }
         Some(self.signals.consume_one(signum))
+    }
+
+    /// Mark a timer notification as accepted and snapshot its overrun count.
+    pub fn accept_posix_timer_notification(&mut self, timer_id: u32) -> Option<i32> {
+        let timer = self.posix_timers.get_mut(timer_id as usize)?.as_mut()?;
+        if !timer.notification_pending {
+            return None;
+        }
+        timer.notification_pending = false;
+        timer.overrun_last = timer.overrun_current;
+        timer.overrun_current = 0;
+        Some(timer.overrun_last)
+    }
+
+    /// Preserve the interval-fire contract used by hosts predating the
+    /// kernel-owned POSIX timer notification path. Returns true when the host
+    /// must suppress a duplicate process-wide signal.
+    pub fn note_legacy_posix_timer_interval_fire(&mut self, timer_id: u32) -> bool {
+        let signum = match self.posix_timers.get(timer_id as usize) {
+            Some(Some(timer)) => timer.sigev_signo,
+            _ => return false,
+        };
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+
+        let pending = (self.signals.pending & crate::signal::sig_bit(signum)) != 0;
+        let timer = self.posix_timers[timer_id as usize].as_mut().unwrap();
+        if pending {
+            timer.overrun_last = timer.overrun_last.saturating_add(1);
+        } else {
+            timer.overrun_last = 0;
+        }
+        pending
+    }
+
+    /// Discard every shared and directed pending instance of a signal.
+    pub fn discard_pending_signal(&mut self, signum: u32) {
+        let mut timer_ids: Vec<u32> = self.signals.pending_timer_ids(signum).collect();
+        timer_ids.extend(
+            self.main_thread_signals
+                .rt_queue
+                .iter()
+                .filter(|entry| entry.signum == signum)
+                .filter_map(|entry| entry.timer_id),
+        );
+        for thread in &self.threads {
+            timer_ids.extend(
+                thread
+                    .signals
+                    .rt_queue
+                    .iter()
+                    .filter(|entry| entry.signum == signum)
+                    .filter_map(|entry| entry.timer_id),
+            );
+        }
+        self.signals.clear_pending(signum);
+        self.main_thread_signals.clear_pending(signum);
+        for thread in &mut self.threads {
+            thread.signals.clear_pending(signum);
+        }
+        for timer_id in timer_ids {
+            self.accept_posix_timer_notification(timer_id);
+        }
+    }
+
+    /// Purge a deleted timer's queued notification before its slot is reused.
+    pub fn remove_posix_timer_notification(&mut self, timer_id: u32) -> bool {
+        let mut removed = self.signals.remove_timer_notification(timer_id);
+        removed |= self
+            .main_thread_signals
+            .remove_timer_notification(timer_id);
+        for thread in &mut self.threads {
+            removed |= thread.signals.remove_timer_notification(timer_id);
+        }
+        removed
     }
 
     /// Read the saved sigsuspend/ppoll/pselect mask for TID.
@@ -1651,6 +1784,121 @@ mod tests {
         let mut proc = Process::new(78);
         assert_eq!(proc.clear_metadata(99), Err(Errno::EINVAL));
         assert_eq!(proc.push_metadata_entry(99, b"value"), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn accepting_timer_notification_snapshots_overrun() {
+        let mut proc = Process::new(1);
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 32,
+            sigev_value: 7,
+            sigev_notify: 0,
+            sigev_tid: 0,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: true,
+            overrun_current: 3,
+            overrun_last: 1,
+        }));
+
+        assert_eq!(proc.accept_posix_timer_notification(0), Some(3));
+        let timer = proc.posix_timers[0].as_ref().unwrap();
+        assert!(!timer.notification_pending);
+        assert_eq!(timer.overrun_current, 0);
+        assert_eq!(timer.overrun_last, 3);
+        assert_eq!(proc.accept_posix_timer_notification(0), None);
+    }
+
+    #[test]
+    fn exact_thread_targets_accept_leader_and_live_worker_only() {
+        let mut proc = Process::new(41);
+        proc.add_thread(ThreadInfo::new(42, 0, 0, 0));
+
+        assert!(!proc.is_live_explicit_tid(0));
+        assert!(proc.is_live_explicit_tid(41));
+        assert!(proc.is_live_explicit_tid(42));
+        assert!(!proc.is_live_explicit_tid(43));
+        proc.remove_thread(42);
+        assert!(!proc.is_live_explicit_tid(42));
+    }
+
+    #[test]
+    fn legacy_interval_fire_preserves_host_signal_contract() {
+        let mut proc = Process::new(1);
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 7,
+            sigev_notify: 0,
+            sigev_tid: 0,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: false,
+            overrun_current: 0,
+            overrun_last: 4,
+        }));
+
+        assert!(!proc.note_legacy_posix_timer_interval_fire(0));
+        assert_eq!(proc.posix_timers[0].as_ref().unwrap().overrun_last, 0);
+
+        proc.signals.raise(10);
+        assert!(proc.note_legacy_posix_timer_interval_fire(0));
+        assert_eq!(proc.posix_timers[0].as_ref().unwrap().overrun_last, 1);
+        assert!(proc.note_legacy_posix_timer_interval_fire(0));
+        assert_eq!(proc.posix_timers[0].as_ref().unwrap().overrun_last, 2);
+    }
+
+    #[test]
+    fn deleting_timer_notification_prevents_slot_reuse_aba() {
+        let mut proc = Process::new(1);
+        proc.add_thread(ThreadInfo::new(2, 0, 0, 0));
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 7,
+            sigev_notify: 4,
+            sigev_tid: 2,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: true,
+            overrun_current: 2,
+            overrun_last: 0,
+        }));
+        proc.get_thread_mut(2).unwrap().signals.raise_timer(10, 7, 0);
+
+        assert!(proc.remove_posix_timer_notification(0));
+        proc.posix_timers[0] = Some(PosixTimerState {
+            clock_id: 1,
+            sigev_signo: 10,
+            sigev_value: 8,
+            sigev_notify: 0,
+            sigev_tid: 0,
+            interval_sec: 0,
+            interval_nsec: 1,
+            value_sec: 0,
+            value_nsec: 1,
+            notification_pending: false,
+            overrun_current: 0,
+            overrun_last: 0,
+        });
+
+        assert!(!proc.get_thread(2).unwrap().signals.is_pending(10));
+        assert_eq!(
+            proc.get_thread_mut(2)
+                .unwrap()
+                .signals
+                .consume_one_info(10)
+                .timer_id,
+            None,
+        );
+        assert_eq!(proc.accept_posix_timer_notification(0), None);
     }
 
     #[test]

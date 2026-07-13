@@ -70,7 +70,10 @@ pub mod host_abi;
 ///     same host handshake to complete or fail.
 /// 38: sched_getaffinity marshals its fixed kernel mask across process memory,
 ///     validates live task identity, and exposes the Linux raw return contract.
-pub const ABI_VERSION: u32 = 38;
+/// 39: kernel-owned POSIX timer expiration preserves exact thread targets,
+///     SI_TIMER metadata, overruns, and finite signal-wait deadlines through
+///     the required host timer-fire export.
+pub const ABI_VERSION: u32 = 39;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1368,6 +1371,7 @@ pub mod abi {
         "kernel_host_adapter_manifest_ptr",
         "kernel_mark_process_signaled",
         "kernel_pipe_has_readers",
+        "kernel_posix_timer_fire",
         "kernel_prepare_write_operation",
         "kernel_reap_exited_child",
         "kernel_remove_process",

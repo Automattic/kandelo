@@ -1,5 +1,5 @@
 {
-  "abi_version": 38,
+  "abi_version": 39,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 38,
+      "abi_version": 39,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -205,6 +205,7 @@
       "kernel_host_adapter_manifest_ptr",
       "kernel_mark_process_signaled",
       "kernel_pipe_has_readers",
+      "kernel_posix_timer_fire",
       "kernel_prepare_write_operation",
       "kernel_reap_exited_child",
       "kernel_remove_process",
@@ -1129,6 +1130,11 @@
       "kind": "func",
       "name": "kernel_poll",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_posix_timer_fire",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",

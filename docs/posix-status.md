@@ -165,7 +165,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `alarm()` | Full | Sets SIGALRM timer via host setTimeout. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork; preserved across exec. |
 | `setitimer()` | Full | ITIMER_REAL: sets alarm deadline + interval via host_set_alarm. ITIMER_VIRTUAL/ITIMER_PROF: no-op (no CPU time tracking). Fixes musl's alarm() which internally calls setitimer. |
 | `getitimer()` | Full | ITIMER_REAL: returns stored interval + remaining time from deadline. ITIMER_VIRTUAL/ITIMER_PROF: returns zero. |
-| `sigtimedwait()` | Full | Checks pending signals in mask, dequeues lowest. Returns si_signo, si_code (SI_USER/SI_QUEUE), and si_value in siginfo_t. Polls with 1ms sleep on timeout. Returns EAGAIN on timeout. |
+| `sigtimedwait()` | Partial | Checks the calling thread's directed and process-shared pending signals, dequeues the lowest match, and returns signal-specific `siginfo_t` metadata, including timer ID and overrun for `SI_TIMER`. Host-originated signals wake matching blocked thread channels immediately; finite retries preserve the original deadline and timeout expiry returns EAGAIN. Remaining gap: a caught signal outside the waited set does not yet interrupt the wait with `EINTR`. |
 | `sigqueue()` / `rt_sigqueueinfo()` | Full | Sends signal with si_value. RT signals (32-63) are queued with FIFO ordering; standard signals (1-31) coalesced. si_code set to SI_QUEUE (-1). |
 | `rt_sigreturn()` | Stub | Returns 0. Signal trampoline handled by host. |
 | `signalfd()` / `signalfd4()` | Full | Creates a descriptor whose mask is held in a refcounted kernel-global backing, shared across inherited descriptors and retained by non-CLOEXEC exec. Reads return 128-byte `signalfd_siginfo` records for matching pending signals; poll readiness is supported. |
@@ -303,10 +303,10 @@ shortcuts.
 | `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
 | `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
 | `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
-| `timer_create()` | Partial | `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, and monotonic-equivalent `CLOCK_BOOTTIME`, with `SIGEV_SIGNAL` or `SIGEV_NONE`. `SIGEV_THREAD` and Linux-specific `SIGEV_THREAD_ID` return `ENOTSUP`. The timer syscall carries a 32-bit `sival_int`; wasm64 pointer-valued `sigev_value` is not supported. |
-| `timer_settime()` / `timer_gettime()` | Partial | Absolute (TIMER_ABSTIME) and relative timers and automatic interval rearming use host timers with millisecond granularity. `timer_gettime()` and `timer_settime()`'s old-value result currently report the last configured value rather than decreasing remaining time. |
-| `timer_getoverrun()` | Full | Tracks overrun count when signal is still pending at next interval fire. Reset on successful signal delivery. |
-| `timer_delete()` | Full | Cancels timer and removes from per-process table. |
+| `timer_create()` | Partial | Supports `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, and monotonic-equivalent `CLOCK_BOOTTIME` with `SIGEV_SIGNAL`, `SIGEV_NONE`, Linux `SIGEV_THREAD_ID`, and POSIX `SIGEV_THREAD` through musl's exact-thread helper. Expirations preserve `SI_TIMER`, `si_value`, timer ID, and overrun metadata on Node and browser hosts. The fixed kernel wire carries `sival_int`; on wasm64, direct signal notifications cannot carry a wider `sival_ptr`, while `SIGEV_THREAD` retains the native-width callback value locally in the helper. |
+| `timer_settime()` / `timer_gettime()` | Partial | Absolute (`TIMER_ABSTIME`) and relative timers and automatic interval rearming use host timers with millisecond granularity. `timer_gettime()` and `timer_settime()`'s old-value result currently report the last configured value rather than decreasing remaining time. |
+| `timer_getoverrun()` | Full | Tracks overruns per timer while its notification remains pending and reports the count associated with the most recently accepted notification. |
+| `timer_delete()` | Full | Cancels the host timer, removes its queued notification before slot reuse, and removes it from the per-process table. |
 
 ## IPC (System V & POSIX Message Queues)
 
@@ -619,11 +619,10 @@ These PHP needs are well-handled by the current kernel:
   worker). Pthread workers cannot share the process's Wasm table/tag graph, so
   pthread `dlopen` fails and pthread `fork` after a process dlopen returns
   `ENOTSUP`.
-- POSIX timers: partial `SIGEV_SIGNAL`/`SIGEV_NONE` timer_create, timer_settime,
-  timer_gettime, timer_delete. The PHP package imports a cooperative Wasm host
-  hook because native `SIGEV_THREAD_ID` delivery is unavailable; that package
-  cannot instantiate until the corresponding host-runtime hook lands in the
-  same platform batch.
+- POSIX timers: `SIGEV_SIGNAL`, `SIGEV_NONE`, and `SIGEV_THREAD` timer creation,
+  timer_settime, timer_gettime, overrun reporting, and deletion. Timer timing
+  remains host-scheduled at millisecond granularity, and direct wasm64
+  signal-notification values are limited to the fixed-width `sival_int` wire.
 - System info: uname, sysconf, umask, getrlimit/setrlimit
 
 ---
