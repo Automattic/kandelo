@@ -148,6 +148,7 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 
 ```
 --target=wasm32-unknown-unknown    # Wasm target triple
+-D__unix__=1 -D__unix=1           # Kandelo Unix source-environment identity
 -matomics                          # Enable atomics (SharedArrayBuffer)
 -mbulk-memory                      # Enable bulk memory operations
 -mexception-handling               # Enable Wasm exception handling
@@ -158,6 +159,12 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
 --sysroot=<path>                   # musl sysroot
 ```
+
+The generic LLVM Wasm triple does not imply an operating system. The SDK
+defines the conventional reserved Unix macros because Kandelo supplies a Unix
+and POSIX userspace; it deliberately does not define Linux, FreeBSD, WASI, or
+Emscripten platform macros. This lets upstream source choose generic Unix
+interfaces such as OSS without misrepresenting the kernel it will run on.
 
 The musl objects in the SDK sysroot are compiled with the same Wasm exception
 handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not

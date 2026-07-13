@@ -360,10 +360,117 @@ shortcuts.
 | `/dev/pts/*` | Full | PTY slave devices. `posix_openpt()` + `grantpt()` + `unlockpt()` + `ptsname()`. Full line discipline, canonical/raw mode, OPOST/ONLCR, 16 terminal ioctls. |
 | `/dev/fb0` | Full | Linux fbdev framebuffer. Single-open (`EBUSY` for second opener). 640×400 BGRA32 packed-pixel. ioctls: `FBIOGET_VSCREENINFO`, `FBIOGET_FSCREENINFO`, `FBIOPAN_DISPLAY` (no-op success), `FBIOPUT_VSCREENINFO` (validates geometry). `mmap` returns a region in process memory and notifies the host (`bind_framebuffer` callback) so the browser canvas can mirror pixels. `munmap`/`exit`/`exec` discard the image mapping; a surviving fd retains device ownership across exec. Ownership is released after both the final fd and any live mapping are gone, since a mapping remains valid after `close()`. Linux-VT keyboard ioctls (`KDGKBTYPE`/`KDGKBMODE`/`KDSKBMODE`) accepted with sensible defaults so fbDOOM-style software works unmodified. |
 | `/dev/input/mice` | Full | Linux `mousedev` PS/2 mouse stream. Single-open (`EBUSY` for second pid). 3-byte packets: byte0 button bits + sign/overflow flags, bytes 1..2 signed dx/dy with positive-up dy. Host pushes events via `kernel_inject_mouse_event(dx, dy, buttons)`; the kernel buffers up to 4096 packets (whole-packet drop on overflow). `read()` drains queued bytes; returns `EAGAIN` when empty. `poll()` reports `POLLIN` only when bytes are queued. Ownership and queued packets survive exec with a non-CLOEXEC fd; last close or exit releases and clears them. No IMPS/2 wheel protocol, no `evdev`/`/dev/input/eventN`. |
-| `/dev/dsp` | Full (write-only) | OSS-style PCM audio sink. Single-open (`EBUSY` for second pid). `write()` accepts interleaved 16-bit-LE PCM and buffers it in a 256 KiB ring; the host drains via the `kernel_drain_audio` wasm export and feeds a Web Audio `AudioContext`. ioctls: `SNDCTL_DSP_RESET`, `SNDCTL_DSP_SYNC`, `SNDCTL_DSP_SPEED` (clamp 4000–192000 Hz), `SNDCTL_DSP_STEREO` / `SNDCTL_DSP_CHANNELS` (1 or 2), `SNDCTL_DSP_SETFMT` (only `AFMT_S16_LE`), `SNDCTL_DSP_GETFMTS`, `SNDCTL_DSP_SETFRAGMENT` (accept-and-acknowledge). On overflow drops the *oldest whole frame* — never tears L/R alignment. Ownership and queued samples survive exec with a non-CLOEXEC fd; last close or exit releases and flushes them. `read()` returns 0 (EOF-like). `poll()` reports `POLLOUT` always, never `POLLIN`. No record path, no `mmap`-based zero-copy; DOOM's mixer is in user space. |
+| `/dev/dsp` | Partial (playback only) | Source-compatible OSS PCM playback over the implementation-neutral Kandelo PCM core. U8/S16_LE/S16_BE, mono/stereo, 8–192 kHz; bounded fragment queue with blocking/nonblocking backpressure and audio-clock drain. Exclusive ownership is per OFD, not PID. See the matrix below. Capture, duplex, mmap, mixer controls, and multi-client mixing are unsupported. |
 | `/dev/shm/*` | Partial | POSIX shm objects are regular files used by `shm_open()`. Stable-identity backends support host-coordinated `MAP_SHARED` across processes at syscall boundaries; this is not immediate shared linear memory and does not make process-shared futexes work. |
 
 All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, deterministic inode numbers, and `st_dev=5`. Path interception in kernel before host delegation — no host filesystem changes needed. `access()` returns OK for all virtual devices.
+
+## OSS playback compatibility
+
+Kandelo owns a fixed wasm32 OSS source ABI in `<sys/soundcard.h>`; it does not
+import a Linux host UAPI. `audio_buf_info` is four signed 32-bit fields in the
+canonical `fragments`, `fragstotal`, `fragsize`, `bytes` order (16 bytes,
+4-byte alignment). `count_info` is three signed 32-bit fields (`bytes`,
+`blocks`, `ptr`; 12 bytes, 4-byte alignment). The C header, Rust constants,
+and ABI snapshot assert every numeric value and layout. Canonical source aliases
+are emitted by the same Rust-owned generator and carry C equality assertions.
+The command semantics follow
+the established [FreeBSD PCM/OSS frontend](https://github.com/freebsd/freebsd-src/blob/main/sys/dev/sound/pcm/dsp.c)
+and [canonical OSS definitions](https://github.com/torvalds/linux/blob/master/include/uapi/linux/soundcard.h),
+while the numeric encodings below are specifically Kandelo's wasm32 ABI.
+
+| Command | wasm32 value | Support and observable behavior |
+|---|---:|---|
+| `SNDCTL_DSP_RESET` (`SNDCTL_DSP_HALT`, `SOUND_PCM_RESET`) | `0x00005000` | Discards queued output, stops the stream, advances the reset generation, and wakes capacity/drain waiters. This is the explicit non-draining shutdown operation. |
+| `SNDCTL_DSP_SYNC` (`SOUND_PCM_SYNC`) | `0x00005001` | Pads a terminal incomplete PCM frame with format silence, then blocks until the host audio clock has consumed all queued frames. Existing signal interruption rules apply; it is not an acknowledge-only no-op. |
+| `SNDCTL_DSP_SPEED` (`SOUND_PCM_WRITE_RATE`) | `0xc0045002` | Signed 32-bit in/out rate. Zero queries the current rate; nonzero requests clamp to 8000–192000 Hz and return the actual value. Reconfiguration while running or draining returns `EBUSY`. |
+| `SOUND_PCM_READ_RATE` | `0x80045002` | Returns the current actual rate as a signed 32-bit value without changing the configuration. |
+| `SNDCTL_DSP_STEREO` | `0xc0045003` | Signed 32-bit in/out legacy mono/stereo selector (`0`/`1`), returning the actual selection. |
+| `SNDCTL_DSP_GETBLKSIZE` | `0xc0045004` | Returns the actual fragment size in bytes. |
+| `SNDCTL_DSP_SETFMT` (`SNDCTL_DSP_SAMPLESIZE`, `SOUND_PCM_SETFMT`, `SOUND_PCM_WRITE_BITS`) | `0xc0045005` | Signed 32-bit in/out format. Supports `AFMT_U8`, `AFMT_S16_LE`, and `AFMT_S16_BE`; `AFMT_QUERY` returns the current format. Reconfiguration while running or draining returns `EBUSY`. |
+| `SOUND_PCM_READ_BITS` | `0x80045005` | Returns the current actual sample width (`8` or `16`) as a signed 32-bit value without changing the configuration. |
+| `SNDCTL_DSP_CHANNELS` (`SOUND_PCM_WRITE_CHANNELS`) | `0xc0045006` | Signed 32-bit in/out channel count. Zero queries; requests negotiate to mono or stereo and return the actual count. |
+| `SOUND_PCM_READ_CHANNELS` | `0x80045006` | Returns the current actual channel count as a signed 32-bit value without changing the configuration. |
+| `SNDCTL_DSP_POST` (`SOUND_PCM_POST`) | `0x00005008` | Starts output without fabricating data. An empty stream underruns to silence. |
+| `SNDCTL_DSP_SETFRAGMENT` (`SOUND_PCM_SETFRAGMENT`) | `0xc004500a` | Signed 32-bit in/out geometry: high 16 bits request fragment count, low 16 bits request log2 fragment bytes. The exponent clamps to 4–16. A zero count selects the maximum whole-fragment count fitting 65536 bytes; a nonzero count clamps to at least two fragments when two fit, then to that maximum. Thus exponent 16 truthfully selects the only possible geometry: one 64 KiB fragment. Returns the encoded actual geometry. Reconfiguration while running or draining returns `EBUSY`. |
+| `SNDCTL_DSP_GETFMTS` (`SOUND_PCM_GETFMTS`) | `0x8004500b` | Returns exactly the supported playback format mask: U8, S16_LE, and S16_BE. |
+| `SNDCTL_DSP_GETOSPACE` (`SOUND_PCM_GETOSPACE`) | `0x8010500c` | Returns truthful `audio_buf_info`: whole immediately available fragments, total fragments, fragment bytes, and all immediately writable bytes (including a partial fragment). SDL3 uses `bytes` to pace its wait path. |
+| `SNDCTL_DSP_NONBLOCK` (`SOUND_PCM_NONBLOCK`) | `0x0000500e` | Sets `O_NONBLOCK` on the shared OFD. `fcntl()`/`FIONBIO` may subsequently manage that status flag through the normal descriptor path. |
+| `SNDCTL_DSP_GETCAPS` (`SOUND_PCM_GETCAPS`) | `0x8004500f` | Returns only `PCM_CAP_OUTPUT | PCM_CAP_VIRTUAL | PCM_CAP_DEFAULT`. It does not advertise capture, duplex, mmap, trigger, or multi-open capabilities. |
+| `SNDCTL_DSP_GETOPTR` (`SOUND_PCM_GETOPTR`) | `0x800c5012` | Returns `count_info`: low 32 bits of audio-clock-consumed bytes, fragment transitions since the previous query on this stream, and the consumer byte offset modulo active capacity. `RESET` discards do not advance it; drain padding counts when played. |
+| `SNDCTL_DSP_GETODELAY` | `0x80045017` | Returns all queued, not-yet-consumed output bytes, including terminal-frame padding once a drain begins. |
+
+The SDK header also defines the canonical FreeBSD OSS format identifiers for
+mu-law, A-law, IMA ADPCM, signed 8-bit, unsigned 16/24/32-bit, signed
+24/32-bit, MPEG, AC3, and 32-bit float formats, including native- and
+opposite-endian aliases. This is source compatibility, not an advertisement:
+`GETFMTS` contains only U8/S16_LE/S16_BE, and `SETFMT` returns `EINVAL` for the
+other identifiers.
+
+The following canonical command numbers are pinned in the SDK header so source
+and ioctl marshalling cannot drift, but the playback-only frontend rejects each
+one with `ENOTTY`; none is accepted as a no-op or advertised by `GETCAPS`.
+
+| Unsupported command | wasm32 value | Boundary |
+|---|---:|---|
+| `SNDCTL_DSP_SETBLKSIZE` | `0x40045004` | FreeBSD's distinct block-size setter is source-visible, but direct block-size setting is not implemented. It does not collide with the supported `GETBLKSIZE` request. |
+| `SOUND_PCM_WRITE_FILTER` | `0xc0045007` | Legacy PCM filter control is not implemented. |
+| `SOUND_PCM_READ_FILTER` | `0x80045007` | Legacy PCM filter query is not implemented. |
+| `SNDCTL_DSP_SUBDIVIDE` (`SOUND_PCM_SUBDIVIDE`) | `0xc0045009` | Legacy fragment subdivision is not implemented; use `SETFRAGMENT`. |
+| `SNDCTL_DSP_GETISPACE` (`SOUND_PCM_GETISPACE`) | `0x8010500d` | Capture-space query; capture is not implemented. |
+| `SNDCTL_DSP_SETTRIGGER` (`SOUND_PCM_SETTRIGGER`) | `0x40045010` | Trigger control is not implemented. The header defines canonical values `PCM_ENABLE_INPUT=1` and `PCM_ENABLE_OUTPUT=2` without advertising trigger capability. |
+| `SNDCTL_DSP_GETTRIGGER` (`SOUND_PCM_GETTRIGGER`) | `0x80045010` | Trigger control is not implemented. |
+| `SNDCTL_DSP_GETIPTR` (`SOUND_PCM_GETIPTR`) | `0x800c5011` | Capture-position accounting is not implemented. |
+| `SNDCTL_DSP_MAPINBUF` (`SOUND_PCM_MAPINBUF`) | `0x80085013` | Direct mapped capture buffers are not implemented. |
+| `SNDCTL_DSP_MAPOUTBUF` (`SOUND_PCM_MAPOUTBUF`) | `0x80085014` | Direct mapped playback buffers are not implemented. |
+| `SNDCTL_DSP_SETSYNCRO` (`SOUND_PCM_SETSYNCRO`) | `0x00005015` | Synchronized input/output start is not implemented. |
+| `SNDCTL_DSP_SETDUPLEX` | `0x00005016` | Duplex operation is not implemented. |
+
+The initial stream is 48 kHz stereo S16_LE with four 1024-byte fragments.
+Configuration calls record both requested and returned actual values. Format,
+rate, channel, and fragment changes return `EBUSY` while running or draining;
+they are accepted again after a successful `SYNC` leaves the stream stopped,
+or after `RESET`. Writes
+accept arbitrary byte lengths and form one continuous PCM byte stream; a
+partial frame remains queued across subsequent writes. `SYNC` and final OFD
+close pad a terminal partial frame with `0x80` for U8 or `0x00` for either S16
+format before draining. `POST` does not pad. A frame-aligned blocking write no
+larger than active capacity waits for the full request, including normal SDL
+period writes. If a prior unaligned write has left an incomplete frame at a
+full queue boundary, a later blocking call may return the prefix that completes
+that frame so playback can resume; callers must handle that ordinary Unix
+short-write result. Requests larger than capacity may also advance partially.
+With `O_NONBLOCK`, available bytes are accepted immediately, and no capacity
+returns `EAGAIN`. `poll(POLLOUT)` is reported only when at least one fragment
+is free. Consumer progress wakes writers and poll/drain waiters. Underruns
+output silence; queue overflow never discards older audio.
+Underruns are counted once per continuous starvation episode, and a short,
+successfully draining tail is not classified as an underrun.
+
+The one physical/default device is exclusively owned by its OFD. `dup()` and
+fork inheritance share it; a separate `open()` returns `EBUSY`, including one
+from the same PID. Explicit final `close()` drains before releasing ownership.
+Exit, `CLOEXEC`, or forced teardown leaves a queued tail draining and keeps the
+device busy until the audio clock reaches the producer. A non-`CLOEXEC`
+descriptor and its queued state survive `exec`. Caught signals interrupt a
+blocked write, `SYNC`, or final close with `EINTR`; `SA_RESTART` applies to
+write and `SYNC`, while an interrupted close keeps the descriptor open for a
+caller-directed retry.
+
+A permanent host sink failure is latched and wakes every affected waiter.
+Further writes and drains fail with `EIO`, `poll()` exposes `POLLERR`, and final
+close discards the now-unplayable tail, releases the fd/OFD and exclusive
+ownership, and returns `EIO`. If the failure arrives during an orphan drain
+after exit or `CLOEXEC`, reconciliation discards the unplayable orphan tail and
+releases exclusive ownership; there is no fd left to report `EIO` through.
+Browser user-activation suspension is recoverable backpressure and does not set
+this fatal state.
+
+Capture opens (`O_RDONLY` and `O_RDWR`) fail with `ENOTSUP`; they do not expose
+a device that returns EOF. Unsupported and unknown ioctls fail with `ENOTTY`,
+`mmap()` fails with `ENODEV`, and seek-style operations fail with `ESPIPE`. `/dev/mixer`,
+recording, duplex, trigger control, direct mapped playback, and kernel mixing
+remain explicit gaps.
 
 ## Environment
 

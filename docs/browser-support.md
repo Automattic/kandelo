@@ -139,10 +139,67 @@ pipe pair.
 - Single-owner device (one process can hold `/dev/input/mice` open at a time; second open from another pid returns `EBUSY`).
 
 ### Audio output (`/dev/dsp`)
-- The kernel exposes an OSS-style `/dev/dsp` character device. User programs `open(O_WRONLY)`, configure rate / channels / format via `SNDCTL_DSP_*` ioctls, and `write()` interleaved 16-bit-LE PCM. The kernel buffers samples in a 256 KiB ring (~1.5 s of stereo S16 @ 44.1 kHz). On overflow the *oldest* whole frame drops — same trade-off real OSS hardware makes under hardware overrun.
-- Demo pages drive a `setInterval` loop (~50 ms cadence) that calls `BrowserKernel.drainAudio(maxBytes)`. The kernel-worker drains the ring via the `kernel_drain_audio` wasm export (which respects whole-frame boundaries so stereo L/R never tear) and posts the bytes back. Main thread converts S16 → Float32, builds an `AudioBuffer`, and schedules an `AudioBufferSourceNode` on the `AudioContext` clock with a small lookahead so brief drain hiccups don't underrun.
-- Single-owner device. A non-CLOEXEC fd retains ownership and queued samples across `execve`; last close or process exit releases the owner and flushes the ring so a successor starts from silence. Format must be `AFMT_S16_LE`; other formats are `EINVAL`.
-- **AudioContext gesture requirement.** `new AudioContext()` starts suspended in modern browsers and only resumes after a user gesture. The DOOM demo creates the context immediately after the user's "Start" click (which is itself a gesture), so `audioCtx.resume()` succeeds without a separate prompt.
+
+- The kernel exposes a playback-only OSS `/dev/dsp` frontend over its generic
+  PCM stream core. Applications may write U8, signed 16-bit little-endian, or
+  signed 16-bit big-endian mono/stereo PCM at 8–192 kHz. The worklet converts
+  those PCM concepts to the browser output format; Web Audio types are not
+  exposed to guests.
+- The queue is bounded and backpressured. It defaults to four 1024-byte
+  fragments (4096 active bytes), within a fixed 65,664-byte transport
+  allocation (128-byte control header plus 65,536-byte ring).
+  The kernel never drops the oldest samples. Blocking writers sleep for
+  capacity, nonblocking writers receive partial progress or `EAGAIN`, and
+  `POLLOUT` requires at least one free fragment. Writes may end between PCM
+  frame boundaries: later writes continue the same byte stream, while a drain
+  pads only a terminal incomplete frame with format-appropriate silence.
+- An `AudioWorkletProcessor`, running on the Web Audio render clock, reads the
+  shared PCM ring directly, advances the kernel-visible consumer cursor, and
+  outputs silence on underrun. There is no main-thread audio-drain timer and no
+  second persistent PCM queue; browser-provided Float32 output buffers are
+  transient. Consumption wakes blocked writes, `poll()`, and
+  `SNDCTL_DSP_SYNC`/close drain waiters in the kernel worker.
+- The default 4096-byte queue is about 21.3 ms at 48 kHz stereo S16. A normal
+  128-frame worklet render quantum adds about 2.7 ms at 48 kHz; the browser's
+  `AudioContext.baseLatency` and `outputLatency` are device-specific and must
+  be measured separately. Machine teardown first waits for the shared PCM ring
+  to drain. If the context is running, it then suspends the context so Web
+  Audio hands already-rendered blocks to the output device and waits a bounded
+  interval covering the reported base/output latency and final render quantum
+  before closing the context. A suspended or interrupted context is never
+  resumed implicitly during teardown.
+- **A user gesture is required.** Preparing the PCM driver may leave its
+  `AudioContext` suspended. The application must call the session audio-resume
+  path from a click, keypress, or other browser-recognized activation. If the
+  context is suspended or interrupted, the consumer cursor intentionally
+  stops: the queue fills, writers apply backpressure, and drain/close stays
+  pending instead of pretending audio played. Resuming the context continues
+  from the queued position.
+- Browser policy suspension and interruption are recoverable and do not poison
+  the stream. A permanent worklet, processor, or sink failure is latched into
+  the shared transport instead: blocked calls wake, `write()` and drain return
+  `EIO`, `poll()` reports `POLLERR`, and final close releases the exclusive
+  device after discarding only the tail that can no longer be played. A fatal
+  failure during an orphan drain likewise discards the unplayable tail and
+  releases ownership instead of wedging subsequent opens.
+- The one physical device is exclusive by OFD. `dup()` and inherited
+  descriptors share it; another `open()` gets `EBUSY`. Explicit final close
+  drains. Exit or `CLOEXEC` leaves any queued tail as an orphan drain and keeps
+  the device busy until the worklet reaches it. `RESET` is the explicit way to
+  discard a tail. A caught signal can interrupt a blocked write, drain, or
+  explicit close; write and drain honor `SA_RESTART`, while interrupted close
+  leaves the fd valid for the caller to retry.
+- Capture, duplex, `mmap`, OSS mixer devices, and kernel multi-client mixing
+  are not implemented. `open(O_RDONLY)` and `open(O_RDWR)` fail with
+  `ENOTSUP`, so browser software does not discover a fake recording device.
+
+Node uses the same transport and state transitions. Its default headless sink
+advances the consumer position from elapsed wall-clock time at the configured
+sample rate and emits consumed bytes to an optional observer; it never drains
+the queue instantaneously or keeps a second PCM copy. Running ticks follow the
+negotiated fragment duration, preserve fractional-frame drift, and use 10 ms
+idle polling. Applications therefore see the same write and SDL callback
+pacing even when no physical Node audio device is attached.
 
 ## Browser Demos
 
