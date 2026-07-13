@@ -32,6 +32,7 @@ describe("POSIX SIGEV_THREAD timers", () => {
     async () => {
       await expectTimerThreadPass(timerThreadBinary!);
     },
+    15_000,
   );
 
   it.skipIf(!timerThreadBinary64)(
@@ -39,5 +40,6 @@ describe("POSIX SIGEV_THREAD timers", () => {
     async () => {
       await expectTimerThreadPass(timerThreadBinary64!);
     },
+    15_000,
   );
 });

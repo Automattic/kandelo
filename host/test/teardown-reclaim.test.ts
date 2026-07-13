@@ -20,6 +20,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { ABI_SYSCALLS } from "../src/generated/abi";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const blockForeverBinary = join(__dirname, "../../examples/block-forever.wasm");
@@ -49,17 +50,53 @@ describe.skipIf(!hasBinary)("teardown reclamation of Atomics.wait-blocked worker
     await host.init();
 
     let pid = -1;
-    // Do NOT await its exit — it parks in nanosleep (Atomics.wait on its
-    // channel) and never exits on its own.
-    void host
-      .spawn(loadWasm(blockForeverBinary), ["block-forever"], {
-        onStarted: (p) => { pid = p; },
-      })
-      .catch(() => {});
+    let resolveBlocked!: () => void;
+    let blockedTimeout!: ReturnType<typeof setTimeout>;
+    const blocked = new Promise<void>((resolve, reject) => {
+      resolveBlocked = resolve;
+      blockedTimeout = setTimeout(
+        () => reject(new Error("block-forever did not enter a sleeping syscall")),
+        5_000,
+      );
+    });
+    const sleepingPids = new Set<number>();
+    const unsubscribeSyscalls = host.subscribeSyscalls((event) => {
+      if (
+        (event.nr === ABI_SYSCALLS.Nanosleep ||
+          event.nr === ABI_SYSCALLS.ClockNanosleep)
+      ) {
+        sleepingPids.add(event.pid);
+        if (event.pid === pid) resolveBlocked();
+      }
+    });
 
-    for (let i = 0; i < 200 && pid < 0; i++) await delay(20);
-    expect(pid).toBeGreaterThan(0);
-    await delay(250); // ensure it has reached the blocking nanosleep
+    let readyForDestroy = false;
+    try {
+      // Do NOT await its exit — it parks in nanosleep (Atomics.wait on its
+      // channel) and never exits on its own.
+      void host
+        .spawn(loadWasm(blockForeverBinary), ["block-forever"], {
+          onStarted: (p) => {
+            pid = p;
+            if (sleepingPids.has(p)) resolveBlocked();
+          },
+        })
+        .catch(() => {});
+
+      for (let i = 0; i < 200 && pid < 0; i++) await delay(20);
+      expect(pid).toBeGreaterThan(0);
+
+      // Do not guess when the guest has reached Atomics.wait. Under CI load the
+      // process can be started but not yet have registered its blocking syscall;
+      // destroying it in that gap force-terminates it and does not exercise the
+      // cooperative wake path this test exists to protect.
+      await blocked;
+      readyForDestroy = true;
+    } finally {
+      clearTimeout(blockedTimeout);
+      unsubscribeSyscalls();
+      if (!readyForDestroy) await host.destroy();
+    }
 
     const t0 = Date.now();
     await host.destroy();
