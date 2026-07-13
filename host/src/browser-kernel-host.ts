@@ -35,10 +35,15 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
+import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
+import type { PcmOutputState } from "./audio/pcm-driver";
+import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
-const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
-const MAX_PENDING_PTY_OUTPUT_CHUNKS = 4_096;
+const defaultPcmWorkletUrl = new URL(
+  "./audio/pcm-audio-worklet.js",
+  import.meta.url,
+);
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -111,6 +116,8 @@ export interface BrowserKernelOptions {
    *  use this to route guest HTTP(S) and external lazy VFS downloads through
    *  a CORS-capable proxy. Same-origin lazy assets remain direct. */
   corsProxyUrl?: string;
+  /** Override the packaged PCM AudioWorklet asset URL. */
+  audioWorkletUrl?: string | URL;
 }
 
 /** Options for {@link BrowserKernel.boot}. */
@@ -239,6 +246,8 @@ export class BrowserKernel {
   private pendingPtyOutputChunks = 0;
   private pendingPtyOutputFailure: Error | undefined;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private pcmTransport: PcmTransportDescriptor | null = null;
+  private pcmDriver: BrowserPcmDriver | null = null;
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
@@ -1020,10 +1029,9 @@ export class BrowserKernel {
    * rate / channel count so the caller can build a correctly-sized
    * `AudioBuffer`. Empty `Uint8Array` if the ring is empty.
    *
-   * The audio scheduler in `apps/browser-demos/pages/doom/main.ts` calls
-   * this every ~50 ms via setInterval, decodes S16 → Float32, and
-   * schedules the result on a chained `AudioBufferSourceNode` so DOOM
-   * SFX play continuously while the game is running.
+   * @deprecated BrowserKernel now claims the shared-clock PCM transport for
+   * its machine-level AudioWorklet. This compatibility method returns an
+   * empty buffer while that transport is active.
    */
   async drainAudio(maxBytes: number): Promise<{
     bytes: Uint8Array;
@@ -1036,6 +1044,45 @@ export class BrowserKernel {
       requestId,
       maxBytes,
     }) as Promise<{ bytes: Uint8Array; sampleRate: number; channels: number }>;
+  }
+
+  /** Preload the machine-level PCM sink without attempting user activation. */
+  async prepareAudio(): Promise<void> {
+    const transport = this.pcmTransport;
+    if (!transport) throw new Error("PCM transport is not available");
+    const driver = this.pcmDriver ??= new BrowserPcmDriver({
+      workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
+    });
+    await driver.prepare(transport);
+  }
+
+  /** Resume audible PCM output. Call directly from a trusted user gesture. */
+  async resumeAudio(): Promise<void> {
+    await this.prepareAudio();
+    await this.pcmDriver!.resume();
+  }
+
+  /** Suspend the browser audio clock without discarding queued PCM. */
+  async suspendAudio(): Promise<void> {
+    await this.pcmDriver?.suspend();
+  }
+
+  getAudioState(): PcmOutputState {
+    return this.pcmDriver?.getState() ??
+      (this.pcmTransport ? "unprepared" : "unavailable");
+  }
+
+  onAudioStateChange(listener: (state: PcmOutputState) => void): () => void {
+    if (!this.pcmDriver && this.pcmTransport) {
+      this.pcmDriver = new BrowserPcmDriver({
+        workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
+      });
+    }
+    if (!this.pcmDriver) {
+      listener("unavailable");
+      return () => {};
+    }
+    return this.pcmDriver.subscribe(listener);
   }
 
   // ── PTY methods ──
@@ -1203,6 +1250,10 @@ export class BrowserKernel {
       );
     }
     this.initialized = false;
+    await this.pcmDriver?.settleOutputPipeline().catch(() => {});
+    await this.pcmDriver?.close().catch(() => {});
+    this.pcmDriver = null;
+    this.pcmTransport = null;
     // WHY: process/pthread Workers are owned beneath the kernel worker. After
     // the worker's bounded graceful attempt, terminating this outer realm is
     // the final release fence for aliases that could not be detached exactly.
@@ -1343,11 +1394,27 @@ export class BrowserKernel {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
-      case "ready":
+      case "ready": {
+        if (msg.pcmTransport) {
+          this.pcmTransport = msg.pcmTransport;
+          if (
+            typeof globalThis.AudioContext === "function" ||
+            "webkitAudioContext" in globalThis
+          ) {
+            void this.prepareAudio().catch((error) => {
+              this.options.onHostDiagnostic?.({
+                pid: 0,
+                source: "browser PCM output",
+                message: error instanceof Error ? error.message : String(error),
+              });
+            });
+          }
+        }
+        break;
+      }
       case "init_error":
         // The temporary boot listener resolves or rejects initialization. The
-        // permanent listener also receives these messages, so account for
-        // them explicitly rather than relying on an implicit fall-through.
+        // permanent listener also receives this message, so account for it.
         break;
       case "kernel_fatal": {
         const error = new Error(`Kernel worker failed: ${msg.error}`);

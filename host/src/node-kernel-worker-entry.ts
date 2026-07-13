@@ -126,6 +126,7 @@ import type {
   HttpRequestMessage,
 } from "./node-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { NodePcmDriver } from "./audio/node-pcm-driver";
 
 if (!parentPort) {
   throw new Error("node-kernel-worker-entry must run in a worker_thread");
@@ -138,6 +139,7 @@ const O_WRONLY_CREAT_TRUNC =
 // --- State ---
 
 let kernelWorker: CentralizedKernelWorker;
+let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
@@ -184,6 +186,7 @@ const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
 const EXEC_WORKER_RETIREMENT_WAIT_MS = 5_000;
+const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
 
 // Process tracking
 interface ForkReplayContext {
@@ -1085,6 +1088,18 @@ async function handleInit(msg: InitMessage) {
   });
 
   await kernelWorker.init(msg.kernelWasmBytes);
+
+  const pcmTransport = kernelWorker.claimPcmTransport(false);
+  pcmDriver = new NodePcmDriver({
+    clockUpdate: (frames) => kernelWorker.pcmClockUpdate(frames),
+    // Node does not run the browser's shared-wake observer. Force one kernel
+    // reconciliation/retry pass so blocked write, poll, drain, and close calls
+    // observe EIO immediately when the null/physical sink fails.
+    onFatal: () => {
+      kernelWorker.pcmClockUpdate(0);
+    },
+  });
+  await pcmDriver.prepare(pcmTransport);
 
   initReady = true;
   post({ type: "ready" });
@@ -2581,6 +2596,18 @@ async function performDestroy() {
   threadModuleCache.clear();
   threadWorkers.clear();
   ptyByPid.clear();
+  if (!(await kernelWorker.waitForPcmDrain(PCM_DESTROY_DRAIN_TIMEOUT_MS))) {
+    post({
+      type: "host_diagnostic",
+      pid: 0,
+      source: "Node PCM output",
+      message:
+        "Audio clock did not consume the queued close tail before machine teardown; the remaining tail was discarded.",
+    });
+  }
+  await pcmDriver?.close();
+  pcmDriver = null;
+  kernelWorker.shutdownPcmTransport();
   if (gracefulDetachComplete) {
     try {
       processMemoryAllocator.clear();

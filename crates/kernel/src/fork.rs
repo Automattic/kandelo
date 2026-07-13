@@ -40,7 +40,8 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // This header version is also shared by the cfg(test) legacy exec-state
 // fixture. v14 widens that fixture's directed-signal metadata to complete raw
 // `union sigval` bits plus sender credentials. Production fork serialization
-// still clears and omits every pending directed signal.
+// still clears and omits every pending directed signal. The earlier v12
+// addition made PCM playback an OFD-owned backing retained by fork and exec.
 const FORK_VERSION: u32 = 14;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
@@ -472,6 +473,7 @@ fn file_type_to_u32(ft: FileType) -> u32 {
         FileType::MemFd => 9,
         FileType::PtyMaster => 10,
         FileType::PtySlave => 11,
+        FileType::PcmPlayback => 12,
     }
 }
 
@@ -489,6 +491,7 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
         9 => Ok(FileType::MemFd),
         10 => Ok(FileType::PtyMaster),
         11 => Ok(FileType::PtySlave),
+        12 => Ok(FileType::PcmPlayback),
         _ => Err(Errno::EINVAL),
     }
 }

@@ -303,6 +303,26 @@ function signatures(
       parameters: [i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_pcm_claim_transport: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_pcm_clock_update: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_pcm_reconcile: {
+      parameters: [],
+      result: i32,
+    },
+    kernel_pcm_transport_len: {
+      parameters: [],
+      result: i32,
+    },
+    kernel_pcm_transport_ptr: {
+      parameters: [],
+      result: i32,
+    },
     kernel_poll: {
       parameters: [pointer, i32, i32, i32],
       result: i32,
