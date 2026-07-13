@@ -161,6 +161,19 @@ build_cpp_program() {
         -lc++ -lc++abi \
         -o "$wasm"
 
+    # Preserve the pre-instrumentation control for the Dinit SjLj regression.
+    # That fixture retains a runtime-only fork branch, so fork-instrument must
+    # transform the normal output while the control remains byte-for-byte as
+    # linked by clang. The paired runtime test proves that noexcept termination
+    # occurs in both forms and therefore is not introduced by fork replay. Keep
+    # the raw control outside `programs`: its deliberate kernel_fork import
+    # without wpk_fork_* exports is not a valid distributable program artifact.
+    if [ "$name" = "dinit_sjlj_noexcept_boundary" ]; then
+        mkdir -p "$REPO_ROOT/local-binaries/test-fixtures"
+        cp "$wasm" \
+            "$REPO_ROOT/local-binaries/test-fixtures/${name}_uninstrumented.wasm"
+    fi
+
     # Phase 7: fork support comes from wasm-fork-instrument. The tool is
     # a no-op for modules without `kernel.kernel_fork`, so it's safe to
     # run unconditionally — programs without fork stay byte-identical

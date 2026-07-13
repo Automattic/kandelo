@@ -118,6 +118,20 @@ separate `-lunwind`.
 to wasm-EH `try_table` / `catch_ref` instructions. Without it, catch
 handlers are dead-code-eliminated and `throw` hangs at runtime.
 
+The Wasm SjLj lowering represents `longjmp` with a dedicated exception tag.
+With C++ exceptions enabled, a `noexcept` function containing a
+`setjmp`/`sigsetjmp` landing pad can intercept that tag in its generated
+termination handler before the landing pad consumes the jump. C++ event loops
+that establish a landing pad and then invoke code that can jump back to it must
+leave that polling function non-`noexcept` on Wasm. This is a toolchain
+portability boundary, not a change to POSIX `longjmp` semantics.
+
+Seeing the SjLj catch in a linked module is not sufficient evidence that this
+combination is safe. Clang can emit both the local longjmp landing and a nested
+`catch_all` termination region for `noexcept`; exception dispatch selects the
+nearer termination region first. This ordering is present in clang's linked
+output before fork instrumentation and remains after instrumentation.
+
 ### Building static libraries
 
 ```bash

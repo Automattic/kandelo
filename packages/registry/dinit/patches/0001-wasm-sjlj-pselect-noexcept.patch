@@ -1,0 +1,16 @@
+--- a/dasynq/include/dasynq/pselect.h
++++ b/dasynq/include/dasynq/pselect.h
+@@ -225,7 +225,12 @@ template <class Base> class pselect_events : public signal_events<Base, false>
+     //
+     //  do_wait - if false, returns immediately if no events are
+     //            pending.
+-    void pull_events(bool do_wait) noexcept
++    //
++    // WebAssembly lowers siglongjmp to a dedicated exception tag. A C++
++    // noexcept boundary adds a nearer catch-all termination region even
++    // though the compiled function still contains its sigsetjmp landing.
++    // The pselect signal path must allow the tag to reach that landing.
++    void pull_events(bool do_wait)
+     {
+         struct timespec ts;
+         struct timespec *wait_ts = nullptr;

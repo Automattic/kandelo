@@ -110,6 +110,47 @@ fi
 
 cd "$SRC_DIR"
 
+# --- Apply target portability patches ---
+# Dasynq wakes its pselect backend by siglongjmp'ing out of an SA_SIGINFO
+# handler. Kandelo's Wasm SjLj lowering represents that jump with a dedicated
+# exception tag. When C++ Wasm EH is enabled, pull_events' upstream noexcept
+# boundary catches the tag and calls std::terminate before the local sigsetjmp
+# landing pad can run. Removing that boundary preserves the POSIX control flow;
+# the jump is still consumed by the landing pad in the same function.
+PATCH_DIR="$SCRIPT_DIR/patches"
+PATCH_SET=(
+    "0001-wasm-sjlj-pselect-noexcept.patch"
+)
+
+echo "==> Applying dinit wasm32 portability patches..."
+for patch_name in "${PATCH_SET[@]}"; do
+    patch_file="$PATCH_DIR/$patch_name"
+    if patch --reverse --dry-run -p1 < "$patch_file" >/dev/null 2>&1; then
+        echo "    $patch_name already applied"
+    elif patch --forward --dry-run -p1 < "$patch_file" >/dev/null 2>&1; then
+        patch -p1 < "$patch_file"
+    else
+        echo "ERROR: $patch_name does not apply and is not already present" >&2
+        exit 1
+    fi
+done
+
+PSELECT_HEADER="$SRC_DIR/dasynq/include/dasynq/pselect.h"
+if grep -q 'void pull_events(bool do_wait) noexcept' "$PSELECT_HEADER"; then
+    echo "ERROR: Dasynq pselect pull_events still has the incompatible noexcept boundary" >&2
+    exit 1
+fi
+if ! grep -q 'WebAssembly lowers siglongjmp' "$PSELECT_HEADER"; then
+    echo "ERROR: Dasynq pselect Wasm SjLj compatibility patch is missing" >&2
+    exit 1
+fi
+
+HOST_CXX="${CXX_FOR_BUILD:-c++}"
+if [ -n "${NIX_CC_FOR_BUILD:-}" ] \
+    && [ -x "$NIX_CC_FOR_BUILD/bin/c++" ]; then
+    HOST_CXX="$NIX_CC_FOR_BUILD/bin/c++"
+fi
+
 # --- Configure ---
 # dinit's build is driven by mconfig (a make-included config file). We
 # generate one by hand for the cross-compile rather than running
@@ -123,20 +164,24 @@ cat > mconfig <<EOF
 CXX = wasm32posix-c++
 CC = wasm32posix-cc
 
-# Host toolchain — used by build/tools/mconfig-gen and any other
-# generator binary that runs on the developer machine. The default
-# c++ resolves to clang++ on macOS or g++ on Linux.
-CXX_FOR_BUILD = c++
+# Host toolchain — used by build/tools/mconfig-gen and any other generator
+# binary that runs on the developer machine. Prefer Nix's declared build
+# compiler when the dev shell exposes one; otherwise use the caller's compiler
+# or the platform c++ default.
+CXX_FOR_BUILD = $HOST_CXX
 CXXFLAGS_FOR_BUILD = -std=c++14 -O1
 CPPFLAGS_FOR_BUILD =
 LDFLAGS_FOR_BUILD =
 
-# Target flags. dinit uses C++ exceptions in its client code (dinitctl,
-# dinit-monitor) so we cannot disable them. Add libc++ include path
-# explicitly since the wasm32posix toolchain does not auto-include it;
-# the library is picked up at link time via -lc++ -lc++abi.
+# Target flags. dinit uses C++ exceptions in both its supervisor and client
+# tools, so compile all targets with the WebAssembly exception model. Without
+# -fwasm-exceptions, clang emits Wasm throw instructions but no catch handlers,
+# and expected service-description or connection errors escape to the host as
+# WebAssembly.Exception. Add the libc++ include path explicitly since the
+# wasm32posix toolchain does not auto-include it; the library is picked up at
+# link time via -lc++ -lc++abi.
 CPPFLAGS = -D_POSIX_C_SOURCE=200809L -isystem $SYSROOT/include/c++/v1
-CXXFLAGS = -std=c++14 -O2 -Wall -Wextra
+CXXFLAGS = -std=c++14 -O2 -Wall -Wextra -fwasm-exceptions
 CFLAGS = -O2 -Wall
 
 # Link flags (target). Explicit -L because the SDK wrapper does not
