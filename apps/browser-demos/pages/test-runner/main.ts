@@ -50,6 +50,11 @@ let grepBytes: ArrayBuffer | null = null;
 let sedBytes: ArrayBuffer | null = null;
 let genCatBytes: ArrayBuffer | null = null;
 
+const corsProxyUrl = new URL(
+  `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
+  window.location.href,
+).href;
+
 const COREUTILS_NAMES = [
   "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
   "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
@@ -182,6 +187,7 @@ async function init() {
 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      corsProxyUrl,
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;
