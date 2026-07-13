@@ -7,6 +7,15 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import type { HostDiagnostic } from "@host/host-diagnostic";
+import pcmAudioWorkletUrl from "@host/audio/pcm-audio-worklet.js?url";
+import {
+  pcmControlWords,
+  readConsumerPosition,
+  readDiscardPosition,
+  readPcmConfig,
+  readProducerPosition,
+  type PcmTransportDescriptor,
+} from "@host/audio/pcm-transport";
 import {
   createBuildFsWithEtc,
   finalizeKernelOwnedImage,
@@ -24,6 +33,46 @@ interface DataFile {
 interface PtyInput {
   data: Uint8Array;
   readyMarker: string;
+}
+
+interface AudioTestSnapshot {
+  audioState: ReturnType<BrowserKernel["getAudioState"]>;
+  audioStates: ReturnType<BrowserKernel["getAudioState"]>[];
+  workletAssetUrl: string;
+  workletPrepared: boolean;
+  producerBytes: number;
+  consumerBytes: number;
+  discardBytes: number;
+  queuedBytes: number;
+  activeCapacityBytes: number;
+  settled: boolean;
+  resumeAttempts: number;
+  trustedResumeAttempts: number;
+  lastResumeError: string | null;
+  stdout: string;
+  stderr: string;
+  hostDiagnostics: string[];
+}
+
+interface AudioTestResult extends AudioTestSnapshot {
+  exitCode: number;
+  elapsedMs: number;
+}
+
+interface AudioTestSession {
+  kernel: BrowserKernel;
+  transport: PcmTransportDescriptor;
+  stdout: string;
+  stderr: string;
+  hostDiagnostics: string[];
+  audioStates: ReturnType<BrowserKernel["getAudioState"]>[];
+  workletPrepared: boolean;
+  settled: boolean;
+  resumeAttempts: number;
+  trustedResumeAttempts: number;
+  lastResumeError: string | null;
+  result?: Promise<AudioTestResult>;
+  unsubscribeAudioState?: () => void;
 }
 
 declare global {
@@ -47,16 +96,145 @@ declare global {
       hostDiagnostics: HostDiagnostic[];
     }>;
     __testCount: number;
+    /**
+     * Start one real-browser `/dev/dsp` run with the AudioContext deliberately
+     * suspended. The guest is allowed to fill the bounded PCM ring and block
+     * in close; `#resume-audio` is the only path that resumes the audio clock.
+     */
+    __prepareAudioTest: (
+      wasmBytes: ArrayBuffer,
+      argv?: string[],
+      timeoutMs?: number,
+    ) => Promise<AudioTestSnapshot>;
+    __audioTestSnapshot: () => AudioTestSnapshot;
+    __waitForAudioTest: () => Promise<AudioTestResult>;
+    __suspendAudioTest: () => Promise<AudioTestSnapshot>;
+    __finishAudioTest: () => Promise<void>;
   }
 }
 
 let kernelWasmBytes: ArrayBuffer | null = null;
 let execBinarySupport: ExecBinarySupport | null = null;
+let activeAudioTest: AudioTestSession | null = null;
 
 const corsProxyUrl = new URL(
   `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
   window.location.href,
 ).href;
+
+function audioTransportFor(kernel: BrowserKernel): PcmTransportDescriptor {
+  // The transport is intentionally not part of BrowserKernel's public app
+  // API. This test-only page inspects it to prove that the production
+  // AudioWorklet, rather than a main-thread timer or legacy pull drain,
+  // advances the consumer clock.
+  const transport = (
+    kernel as unknown as { pcmTransport: PcmTransportDescriptor | null }
+  ).pcmTransport;
+  if (!transport) {
+    throw new Error("PCM transport was not published by the kernel worker");
+  }
+  return transport;
+}
+
+function safeCursorNumber(value: bigint, label: string): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) {
+    throw new Error(`${label} PCM cursor is outside JavaScript's safe integer range`);
+  }
+  return number;
+}
+
+function snapshotAudioTest(session = activeAudioTest): AudioTestSnapshot {
+  if (!session) throw new Error("No browser audio test is active");
+  const words = pcmControlWords(session.transport);
+  const producer = readProducerPosition(words);
+  const consumer = readConsumerPosition(words);
+  const discard = readDiscardPosition(words);
+  const effectiveConsumer = consumer > discard ? consumer : discard;
+  const config = readPcmConfig(words);
+  return {
+    audioState: session.kernel.getAudioState(),
+    audioStates: session.audioStates.slice(),
+    workletAssetUrl: pcmAudioWorkletUrl,
+    workletPrepared: session.workletPrepared,
+    producerBytes: safeCursorNumber(producer, "producer"),
+    consumerBytes: safeCursorNumber(consumer, "consumer"),
+    discardBytes: safeCursorNumber(discard, "discard"),
+    queuedBytes: safeCursorNumber(
+      producer > effectiveConsumer ? producer - effectiveConsumer : 0n,
+      "queued",
+    ),
+    activeCapacityBytes: config.activeCapacityBytes,
+    settled: session.settled,
+    resumeAttempts: session.resumeAttempts,
+    trustedResumeAttempts: session.trustedResumeAttempts,
+    lastResumeError: session.lastResumeError,
+    stdout: session.stdout,
+    stderr: session.stderr,
+    hostDiagnostics: session.hostDiagnostics.slice(),
+  };
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs} ms`)),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function finishAudioTest(): Promise<void> {
+  const session = activeAudioTest;
+  activeAudioTest = null;
+  const resumeButton = document.getElementById("resume-audio") as HTMLButtonElement;
+  resumeButton.disabled = true;
+  document.getElementById("audio-status")!.textContent = "Audio test idle";
+  if (!session) return;
+  session.unsubscribeAudioState?.();
+  await session.kernel.destroy().catch(() => {});
+  await settleWebKitReclaim();
+}
+
+function installAudioResumeButton(): void {
+  const resumeButton = document.getElementById("resume-audio") as HTMLButtonElement;
+  resumeButton.addEventListener("click", (event) => {
+    const session = activeAudioTest;
+    if (!session) return;
+    session.resumeAttempts++;
+    if (event.isTrusted && navigator.userActivation?.isActive) {
+      session.trustedResumeAttempts++;
+    }
+    session.lastResumeError = null;
+    resumeButton.disabled = true;
+    document.getElementById("audio-status")!.textContent = "Resuming audio...";
+    void session.kernel.resumeAudio().then(
+      () => {
+        document.getElementById("audio-status")!.textContent = "Audio running";
+      },
+      (error) => {
+        session.lastResumeError = error instanceof Error ? error.message : String(error);
+        document.getElementById("audio-status")!.textContent =
+          `Audio resume failed: ${session.lastResumeError}`;
+        resumeButton.disabled = false;
+      },
+    );
+  });
+}
 
 async function init() {
   const minimal = new URLSearchParams(window.location.search).get("minimal") === "1";
@@ -82,6 +260,107 @@ async function init() {
   }
 
   window.__testCount = 0;
+
+  installAudioResumeButton();
+
+  window.__prepareAudioTest = async (
+    wasmBytes: ArrayBuffer,
+    argv = ["audiotest"],
+    timeoutMs = 30_000,
+  ) => {
+    await finishAudioTest();
+
+    const buildFs = await createBuildFsWithEtc();
+    const vfsImage = await finalizeKernelOwnedImage(buildFs);
+    let session: AudioTestSession | null = null;
+    const decoder = new TextDecoder();
+    const hostDiagnostics: string[] = [];
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onStdout: (data: Uint8Array) => {
+        if (session) session.stdout += decoder.decode(data);
+      },
+      onStderr: (data: Uint8Array) => {
+        if (session) session.stderr += decoder.decode(data);
+      },
+      onHostDiagnostic: (diagnostic) => {
+        hostDiagnostics.push(`${diagnostic.source}: ${diagnostic.message}`);
+      },
+    });
+
+    try {
+      await kernel.initFromImage({ kernelWasm: kernelWasmBytes!, vfsImage });
+      session = {
+        kernel,
+        transport: audioTransportFor(kernel),
+        stdout: "",
+        stderr: "",
+        hostDiagnostics,
+        audioStates: [],
+        workletPrepared: false,
+        settled: false,
+        resumeAttempts: 0,
+        trustedResumeAttempts: 0,
+        lastResumeError: null,
+      };
+      activeAudioTest = session;
+      session.unsubscribeAudioState = kernel.onAudioStateChange((state) => {
+        if (session && session.audioStates.at(-1) !== state) {
+          session.audioStates.push(state);
+        }
+      });
+
+      // Loading the default worklet URL is part of preparation. Force a
+      // suspended starting point even in browsers whose autoplay policy lets
+      // a newly-created context run, then queue guest PCM behind that clock.
+      await kernel.prepareAudio();
+      session.workletPrepared = true;
+      await kernel.suspendAudio();
+      const startedAt = performance.now();
+      session.result = withTimeout(
+        kernel.spawn(wasmBytes, argv, { env: ["SDL_AUDIODRIVER=dsp"] }),
+        timeoutMs,
+        "browser /dev/dsp guest",
+      ).then((exitCode) => {
+        if (!session) throw new Error("Browser audio session disappeared");
+        session.settled = true;
+        return {
+          ...snapshotAudioTest(session),
+          exitCode,
+          elapsedMs: performance.now() - startedAt,
+        };
+      });
+
+      const resumeButton = document.getElementById(
+        "resume-audio",
+      ) as HTMLButtonElement;
+      resumeButton.disabled = false;
+      document.getElementById("audio-status")!.textContent = "Audio suspended; PCM may queue";
+      return snapshotAudioTest(session);
+    } catch (error) {
+      if (activeAudioTest === session) activeAudioTest = null;
+      session?.unsubscribeAudioState?.();
+      await kernel.destroy().catch(() => {});
+      throw error;
+    }
+  };
+
+  window.__audioTestSnapshot = () => snapshotAudioTest();
+  window.__waitForAudioTest = async () => {
+    const result = activeAudioTest?.result;
+    if (!result) throw new Error("Browser audio test has not started");
+    return result;
+  };
+  window.__suspendAudioTest = async () => {
+    const session = activeAudioTest;
+    if (!session) throw new Error("No browser audio test is active");
+    await session.kernel.suspendAudio();
+    const resumeButton = document.getElementById("resume-audio") as HTMLButtonElement;
+    resumeButton.disabled = false;
+    document.getElementById("audio-status")!.textContent = "Audio suspended";
+    return snapshotAudioTest(session);
+  };
+  window.__finishAudioTest = finishAudioTest;
 
   window.__runTest = async (
     wasmBytes: ArrayBuffer,
