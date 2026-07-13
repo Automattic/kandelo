@@ -616,10 +616,10 @@ index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
         );
         let name = &entries[0];
         // <name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst
-        assert!(name.starts_with("z-1.0.0-rev1-abi4-wasm32-"), "got: {name}");
+        let prefix = format!("z-1.0.0-rev1-abi{}-wasm32-", shared::ABI_VERSION);
+        assert!(name.starts_with(&prefix), "got: {name}");
         assert!(name.ends_with(".tar.zst"), "got: {name}");
         // short_sha slot is exactly 8 lowercase hex chars.
-        let prefix = "z-1.0.0-rev1-abi4-wasm32-";
         let suffix = ".tar.zst";
         let short = &name[prefix.len()..name.len() - suffix.len()];
         assert_eq!(short.len(), 8, "short_sha slot must be 8 chars: {short:?}");
