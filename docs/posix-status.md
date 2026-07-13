@@ -54,7 +54,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
 | `writev()` | Full | Gather write. Enforces aggregate count and RLIMIT_FSIZE once across the full iovec operation, including host scratch-buffer decomposition, then stops on a short underlying write. |
-| `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Full struct stat populated. |
+| `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. ABI 39 does not report `st_rdev`, `st_blksize`, or `st_blocks`; libc initializes those fields to zero instead of exposing uninitialized memory. Truthful backend metadata is tracked in [issue #928](https://github.com/Automattic/kandelo/issues/928). |
 | `ftruncate()` | Partial | Host-delegated for regular files, with in-kernel memfd support. Requires write access, validates length >= 0, rejects non-regular fds, and enforces RLIMIT_FSIZE before changing either backing. |
 | `fsync()` | Partial | Host-delegated for regular files and directories. Node-backed directories use the native durability barrier; memory-backed filesystems have no queued writes. Browser OPFS flushes regular-file access handles, but its API exposes no separate directory durability barrier. Rejects pipes and sockets. |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
@@ -70,8 +70,8 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `splice()` | Full | Emulated through the copy loop with optional offsets. The output RLIMIT_FSIZE budget is fixed before input is consumed. |
 | `tee()` / `vmsplice()` | Stub | Returns ENOSYS. |
 | `readahead()` | Stub | Returns 0 (no-op advisory). |
-| `fstatat()` | Full | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW supported. Real dirfd supported via stored OFD paths. |
-| `statx()` | Full | Delegates to fstatat, fills statx struct (256 bytes) from WasmStat. STATX_BASIC_STATS mask. |
+| `fstatat()` | Partial | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW and real dirfds are supported. ABI 39 omits `st_rdev`, `st_blksize`, and `st_blocks`; libc reports zero for those fields pending [issue #928](https://github.com/Automattic/kandelo/issues/928). |
+| `statx()` | Partial | Delegates to fstatat and fills the 256-byte statx structure from WasmStat. Basic identity, mode, ownership, size, and timestamp fields are reported, but block and device metadata are incomplete pending [issue #928](https://github.com/Automattic/kandelo/issues/928). |
 | `unlinkat()` | Full | AT_FDCWD delegates to unlink/rmdir. AT_REMOVEDIR flag supported. Real dirfd supported. |
 | `mkdirat()` | Full | AT_FDCWD delegates to mkdir. umask applied. Real dirfd supported. |
 | `renameat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
