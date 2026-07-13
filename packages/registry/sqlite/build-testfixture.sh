@@ -21,6 +21,9 @@ SQLITE_FULL="$SCRIPT_DIR/sqlite-full-src"
 ZLIB_INSTALL="$SCRIPT_DIR/../zlib/zlib-install"
 BUILD_DIR="$SCRIPT_DIR/testfixture-build"
 SQLITE_VERSION="${SQLITE_VERSION:-3.49.1}"
+SQLITE_MAX_COMPOUND_SELECT="${SQLITE_MAX_COMPOUND_SELECT:-50}"
+SQLITE_MAX_EXPR_DEPTH="${SQLITE_MAX_EXPR_DEPTH:-100}"
+SQLITE_JSON_MAX_DEPTH="${SQLITE_JSON_MAX_DEPTH:-100}"
 
 sqlite_packed_version() {
     local major minor patch
@@ -64,6 +67,24 @@ if [ ! -d "$SQLITE_FULL/src" ]; then
     rm -rf "$TMP_DIR" "$TMP_ZIP"
 fi
 
+PATCH_DIR="$SCRIPT_DIR/patches"
+if [ -d "$PATCH_DIR" ]; then
+    echo "==> Applying SQLite testfixture patches..."
+    for patch_file in "$PATCH_DIR"/*.patch; do
+        [ -f "$patch_file" ] || continue
+        patch_name="$(basename "$patch_file")"
+        if (cd "$SQLITE_FULL" && git apply -p0 --check "$patch_file") >/dev/null 2>&1; then
+            echo "  Applying $patch_name..."
+            (cd "$SQLITE_FULL" && git apply -p0 "$patch_file")
+        elif (cd "$SQLITE_FULL" && git apply -p0 --reverse --check "$patch_file") >/dev/null 2>&1; then
+            echo "  $patch_name already applied"
+        else
+            echo "ERROR: $patch_name does not apply cleanly" >&2
+            exit 1
+        fi
+    done
+fi
+
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # --- Generate required headers ---
@@ -86,7 +107,8 @@ echo "/* Generated stub */" > "$BUILD_DIR/sqlite_cfg.h"
 
 cd "$BUILD_DIR"
 
-# Common CFLAGS for the testfixture build
+# Common CFLAGS for the testfixture build. Keep recursive SQL limits aligned
+# with the shipped library so the tests observe the supported configuration.
 CFLAGS=(
     -O2
     -DSQLITE_TEST=1
@@ -95,6 +117,9 @@ CFLAGS=(
     -DSQLITE_THREADSAFE=1
     -DSQLITE_NO_SYNC=1
     -DSQLITE_ENABLE_SETLK_TIMEOUT=2
+    -DSQLITE_MAX_COMPOUND_SELECT="$SQLITE_MAX_COMPOUND_SELECT"
+    -DSQLITE_MAX_EXPR_DEPTH="$SQLITE_MAX_EXPR_DEPTH"
+    -DSQLITE_JSON_MAX_DEPTH="$SQLITE_JSON_MAX_DEPTH"
     -DHAVE_PREAD=1
     -DHAVE_PWRITE=1
     -DSQLITE_OMIT_LOAD_EXTENSION
@@ -131,6 +156,12 @@ CFLAGS=(
     -I"$SQLITE_FULL/ext/recover"
     -I"$SQLITE_FULL/ext/session"
     -I"$ZLIB_INSTALL/include"
+)
+
+# SQLite's recursive test cases need more than wasm-ld's default 64 KiB shadow
+# stack. Use 1 MiB without reviving the old 2 GiB maximum-memory workaround.
+TESTFIXTURE_LDFLAGS=(
+    -Wl,-z,stack-size=1048576
 )
 
 # TESTSRC — test C files (excluding test_thread.c)
@@ -265,6 +296,7 @@ wasm32posix-cc "${CFLAGS[@]}" \
     "${OBJ_FILES[@]}" \
     -L"$TCL_INSTALL/lib" -ltcl8.6 \
     -L"$ZLIB_INSTALL/lib" -lz \
+    "${TESTFIXTURE_LDFLAGS[@]}" \
     -o testfixture
 
 if [ ! -f testfixture ]; then

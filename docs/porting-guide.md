@@ -784,6 +784,12 @@ bash packages/registry/tcl/build-tcl.sh
 bash packages/registry/sqlite/build-testfixture.sh
 ```
 
+Kandelo builds both the shipped SQLite library and the official testfixture
+with compound-select, expression, and JSON recursion limits that fit current
+browser and Node WebAssembly host stacks. The testfixture patch set reads those
+compiled limits and omits only upstream stress cases that deliberately exceed
+them; it does not turn platform failures into successful SQLite results.
+
 Then run the harness:
 
 ```bash
