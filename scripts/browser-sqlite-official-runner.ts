@@ -226,7 +226,8 @@ async function main() {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) process.stderr.write(`${result.error}\n`);
-    process.exit(result.exitCode === 0 && outcomesOk ? 0 : 1);
+    process.exitCode = result.exitCode === 0 && outcomesOk ? 0 : 1;
+    return;
   } finally {
     await browser?.close().catch(() => {});
     if (vite) {
