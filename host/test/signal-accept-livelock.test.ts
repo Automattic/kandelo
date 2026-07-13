@@ -54,6 +54,8 @@ function createWorkerHarness(): any {
     signalWaitDeadlines: new Map(),
     pendingPollRetries: new Map(),
     pendingSelectRetries: new Map(),
+    pendingPipeReaders: new Map(),
+    pendingPipeWriters: new Map(),
   });
   return worker;
 }

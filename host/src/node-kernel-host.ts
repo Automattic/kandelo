@@ -36,7 +36,9 @@ function currentModuleDir(): string {
 }
 
 const MODULE_DIR = currentModuleDir();
-const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
+// Worker teardown may spend 1.5s waking blocked guests and then give a
+// suspended/slow PCM clock 2s to finish an orphaned close tail.
+const DESTROY_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_SSL_ENV = [
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",

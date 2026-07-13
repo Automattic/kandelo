@@ -24,6 +24,7 @@ const TEST_PROGRAMS = [
   "clock_getcpuclockid_test.c",
   "syscall_cp_offset_test.c",
   "select_signal_test.c",
+  "dsp_signal_test.c",
   "lseek_invalid_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",

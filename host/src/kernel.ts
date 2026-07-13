@@ -28,6 +28,11 @@ import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
 import { STRUCT_SIZE_WASM_DIRENT, STRUCT_SIZE_WASM_STAT } from "./generated/abi";
 import { detectPtrWidth } from "./constants";
+import {
+  PCM_CONTROL_BYTES,
+  PcmTransportMode,
+  type PcmTransportDescriptor,
+} from "./audio/pcm-transport";
 
 export type KernelPointer = number | bigint;
 
@@ -519,6 +524,56 @@ export class WasmPosixKernel {
     const exports = this.instance?.exports as Record<string, unknown> | undefined;
     const fn = exports?.kernel_audio_pending as (() => number) | undefined;
     return fn ? fn() : 0;
+  }
+
+  /** Locate the versioned PCM control header and bounded ring in shared memory. */
+  pcmTransport(): PcmTransportDescriptor | null {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const ptrFn = exports?.kernel_pcm_transport_ptr as
+      | (() => number | bigint)
+      | undefined;
+    const lenFn = exports?.kernel_pcm_transport_len as
+      | (() => number)
+      | undefined;
+    if (!ptrFn || !lenFn || !this.memory) return null;
+    const controlOffset = Number(ptrFn());
+    const totalBytes = lenFn() >>> 0;
+    if (
+      controlOffset <= 0 ||
+      totalBytes <= PCM_CONTROL_BYTES ||
+      controlOffset + totalBytes > this.memory.buffer.byteLength ||
+      !(this.memory.buffer instanceof SharedArrayBuffer)
+    ) {
+      return null;
+    }
+    return {
+      buffer: this.memory.buffer,
+      controlOffset,
+      controlBytes: PCM_CONTROL_BYTES,
+      dataOffset: controlOffset + PCM_CONTROL_BYTES,
+      dataBytes: totalBytes - PCM_CONTROL_BYTES,
+    };
+  }
+
+  pcmClaimTransport(mode: PcmTransportMode): number {
+    const fn = this.instance?.exports?.kernel_pcm_claim_transport as
+      | ((mode: number) => number)
+      | undefined;
+    return fn ? fn(mode) : -38;
+  }
+
+  pcmReconcile(): number {
+    const fn = this.instance?.exports?.kernel_pcm_reconcile as
+      | (() => number)
+      | undefined;
+    return fn ? fn() : -38;
+  }
+
+  pcmClockUpdate(requestedFrames: number): number {
+    const fn = this.instance?.exports?.kernel_pcm_clock_update as
+      | ((frames: number) => number)
+      | undefined;
+    return fn ? fn(requestedFrames >>> 0) : 0;
   }
 
   registerSharedPipe(handle: number, sab: SharedArrayBuffer, end: "read" | "write"): void {

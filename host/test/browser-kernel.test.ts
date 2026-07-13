@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { HttpResponse } from "../src/networking";
+import { createPcmTransport } from "./pcm-test-helpers";
 
 // ---------------------------------------------------------------------------
 // Mock Worker
@@ -77,6 +78,64 @@ async function loadBrowserKernel() {
   // Dynamic import after globals are stubbed.
   const mod = await import("../src/browser-kernel-host");
   return mod.BrowserKernel as typeof import("../src/browser-kernel-host").BrowserKernel;
+}
+
+function browserAudioGlobals() {
+  const addModule = vi.fn(async () => {});
+  const context = {
+    state: "suspended" as AudioContextState,
+    sampleRate: 48_000,
+    baseLatency: 0.01,
+    outputLatency: 0.02,
+    renderQuantumSize: 128,
+    destination: {},
+    audioWorklet: { addModule },
+    onstatechange: null as (() => void) | null,
+    resume: vi.fn(async function (this: typeof context) {
+      this.state = "running";
+      this.onstatechange?.();
+    }),
+    suspend: vi.fn(async function (this: typeof context) {
+      this.state = "suspended";
+      this.onstatechange?.();
+    }),
+    close: vi.fn(async function (this: typeof context) {
+      this.state = "closed";
+      this.onstatechange?.();
+    }),
+  };
+  const port = {
+    onmessage: null as ((event: MessageEvent) => void) | null,
+    close: vi.fn(),
+  };
+  const node = {
+    port,
+    onprocessorerror: null as (() => void) | null,
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
+  let nodeOptions: AudioWorkletNodeOptions | undefined;
+  const AudioContextCtor = vi.fn(function () {
+    return context;
+  });
+  const AudioWorkletNodeCtor = vi.fn(function (
+    _context: AudioContext,
+    _name: string,
+    options: AudioWorkletNodeOptions,
+  ) {
+    nodeOptions = options;
+    return node;
+  });
+  vi.stubGlobal("AudioContext", AudioContextCtor);
+  vi.stubGlobal("AudioWorkletNode", AudioWorkletNodeCtor);
+  return {
+    addModule,
+    context,
+    node,
+    AudioContextCtor,
+    AudioWorkletNodeCtor,
+    get nodeOptions() { return nodeOptions; },
+  };
 }
 
 
@@ -535,5 +594,108 @@ describe("BrowserKernel", () => {
     w.simulateMessage({ type: "response", requestId: destroyMsg.requestId, result: true });
     await destroyPromise;
     expect(w.terminated).toBe(true);
+  });
+
+  it("prepares the browser PCM sink from the worker ready transport", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      audioWorkletUrl: "/assets/kandelo-pcm-output.js",
+    });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const transport = createPcmTransport();
+
+    worker.simulateMessage({ type: "ready", pcmTransport: transport });
+    await initPromise;
+    await vi.waitFor(() => {
+      expect(kernel.getAudioState()).toBe("suspended");
+    });
+
+    expect(audio.AudioContextCtor).toHaveBeenCalledOnce();
+    expect(audio.addModule).toHaveBeenCalledWith(
+      "/assets/kandelo-pcm-output.js",
+    );
+    expect(audio.AudioWorkletNodeCtor).toHaveBeenCalledWith(
+      audio.context,
+      "kandelo-pcm-output",
+      expect.any(Object),
+    );
+    expect(audio.nodeOptions?.processorOptions).toMatchObject(transport);
+    expect(audio.node.connect).toHaveBeenCalledWith(audio.context.destination);
+  });
+
+  it("settles and closes browser PCM before terminating the kernel worker", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({
+      type: "ready",
+      pcmTransport: createPcmTransport(),
+    });
+    await initPromise;
+    await vi.waitFor(() => {
+      expect(kernel.getAudioState()).toBe("suspended");
+    });
+    await kernel.resumeAudio();
+
+    const teardownOrder: string[] = [];
+    let finishPcmSettlement!: () => void;
+    audio.context.suspend.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          teardownOrder.push("pcm-pipeline-settle");
+          finishPcmSettlement = () => {
+            audio.context.state = "suspended";
+            audio.context.onstatechange?.();
+            resolve();
+          };
+        }),
+    );
+    audio.context.close.mockImplementationOnce(async () => {
+      teardownOrder.push("pcm-context-close");
+      audio.context.state = "closed";
+      audio.context.onstatechange?.();
+    });
+    vi.spyOn(worker, "terminate").mockImplementationOnce(() => {
+      teardownOrder.push("kernel-worker-terminate");
+      worker.terminated = true;
+    });
+
+    const destroyPromise = kernel.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const destroy = worker.lastMessage("destroy");
+    worker.simulateMessage({
+      type: "response",
+      requestId: destroy.requestId,
+      result: true,
+    });
+    await vi.waitFor(() => {
+      expect(teardownOrder).toEqual(["pcm-pipeline-settle"]);
+    });
+    expect(audio.context.close).not.toHaveBeenCalled();
+    expect(worker.terminated).toBe(false);
+    finishPcmSettlement();
+    await destroyPromise;
+
+    expect(teardownOrder).toEqual([
+      "pcm-pipeline-settle",
+      "pcm-context-close",
+      "kernel-worker-terminate",
+    ]);
+    expect(audio.node.disconnect).toHaveBeenCalledOnce();
+    expect(audio.node.port.close).toHaveBeenCalledOnce();
+    expect(kernel.getAudioState()).toBe("unavailable");
   });
 });
