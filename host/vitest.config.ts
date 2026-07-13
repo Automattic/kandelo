@@ -13,6 +13,11 @@ const viteUrlStub = resolve(__dirname, "test/fixtures/vite-url-stub.ts");
  * Worker stub `globalThis.Worker` directly.
  */
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@host": resolve(__dirname, "src"),
+    },
+  },
   plugins: [
     {
       name: "vitest-stub-vite-url-imports",

@@ -91,48 +91,114 @@ export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): MemoryFile
   return MemoryFileSystem.create(sab, maxByteLength);
 }
 
+const S_IFMT = 0xf000;
+const S_IFREG = 0x8000;
+const S_IFDIR = 0x4000;
+const S_IFLNK = 0xa000;
+
+function copyMissingRootfsPath(
+  source: MemoryFileSystem,
+  target: MemoryFileSystem,
+  path: string,
+): void {
+  const sourceStat = source.lstat(path);
+  const sourceKind = sourceStat.mode & S_IFMT;
+  let targetKind: number | null = null;
+  try {
+    targetKind = target.lstat(path).mode & S_IFMT;
+  } catch {
+    // Missing in the caller's image: copy it from the canonical rootfs.
+  }
+
+  // Existing caller-owned leaves always win. Existing directories merge with
+  // canonical directories so a demo can override one file without losing the
+  // rest of that subtree.
+  if (targetKind !== null && (sourceKind !== S_IFDIR || targetKind !== S_IFDIR)) {
+    return;
+  }
+
+  if (sourceKind === S_IFDIR) {
+    if (targetKind === null) {
+      target.mkdirWithOwner(
+        path,
+        sourceStat.mode & 0o7777,
+        sourceStat.uid,
+        sourceStat.gid,
+      );
+    }
+    const dh = source.opendir(path);
+    try {
+      for (;;) {
+        const entry = source.readdir(dh);
+        if (entry === null) break;
+        if (entry.name === "." || entry.name === "..") continue;
+        copyMissingRootfsPath(
+          source,
+          target,
+          path === "/" ? `/${entry.name}` : `${path}/${entry.name}`,
+        );
+      }
+    } finally {
+      source.closedir(dh);
+    }
+    return;
+  }
+
+  if (sourceKind === S_IFLNK) {
+    target.symlinkWithOwner(
+      source.readlink(path),
+      path,
+      sourceStat.uid,
+      sourceStat.gid,
+    );
+    return;
+  }
+
+  if (sourceKind !== S_IFREG) {
+    throw new Error(`Unsupported canonical /etc file type at ${path}`);
+  }
+
+  const bytes = new Uint8Array(sourceStat.size);
+  const fd = source.open(path, 0, 0);
+  let offset = 0;
+  try {
+    while (offset < bytes.length) {
+      const count = source.read(
+        fd,
+        bytes.subarray(offset),
+        null,
+        bytes.length - offset,
+      );
+      if (count <= 0) {
+        throw new Error(
+          `Short read while copying canonical rootfs path ${path}: ` +
+            `${offset}/${bytes.length} bytes`,
+        );
+      }
+      offset += count;
+    }
+  } finally {
+    source.close(fd);
+  }
+  target.createFileWithOwner(
+    path,
+    sourceStat.mode & 0o7777,
+    sourceStat.uid,
+    sourceStat.gid,
+    bytes,
+  );
+}
+
 /**
- * Copy `/etc/*` regular files from a rootfs image into `target`, without
- * overwriting files the caller already wrote. This replaces the legacy
- * worker-side `/etc` overlay that `kernel.init()` performed: demos that used to
- * start from an empty FS and depend on `/etc/{passwd,group,hosts,services}` for
- * `getpwnam`/`gethostbyname` must now bake `/etc` into their image.
+ * Recursively merge canonical `/etc` state into `target`, without overwriting
+ * files or symlinks the caller already wrote. This replaces the legacy
+ * worker-side `/etc` overlay that `kernel.init()` performed: demos that start
+ * from a small custom image still inherit rootfs-owned account, resolver, TLS,
+ * and other configuration through the normal VFS path.
  */
 export function overlayEtcFromRootfs(target: MemoryFileSystem, rootfsImage: Uint8Array): void {
   const source = MemoryFileSystem.fromImage(rootfsImage);
-  try { target.mkdir("/etc", 0o755); } catch { /* exists */ }
-
-  let dh: number;
-  try { dh = source.opendir("/etc"); }
-  catch { return; /* no /etc in image */ }
-  try {
-    for (;;) {
-      const entry = source.readdir(dh);
-      if (entry === null) break;
-      if (entry.name === "." || entry.name === "..") continue;
-      const path = `/etc/${entry.name}`;
-      let exists = false;
-      try { target.stat(path); exists = true; } catch { /* not present */ }
-      if (exists) continue;
-      const st = source.stat(path);
-      if ((st.mode & 0xf000) !== 0x8000) continue; // regular files only
-      const size = st.size;
-      const buf = new Uint8Array(size);
-      const fdR = source.open(path, 0, 0);
-      let read = 0;
-      while (read < size) {
-        const n = source.read(fdR, buf.subarray(read), null, size - read);
-        if (n <= 0) break;
-        read += n;
-      }
-      source.close(fdR);
-      const fdW = target.open(path, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, st.mode & 0o777);
-      if (read > 0) target.write(fdW, buf.subarray(0, read), null, read);
-      target.close(fdW);
-    }
-  } finally {
-    source.closedir(dh);
-  }
+  copyMissingRootfsPath(source, target, "/etc");
 }
 
 /**
