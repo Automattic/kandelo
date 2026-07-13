@@ -555,7 +555,16 @@ VFS images can also carry image-level metadata outside the guest file tree. The 
 
 `BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top. Browser networking then replaces `/etc/ssl/certs/ca-certificates.crt` with its generated per-session MITM root; the image-owned OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain unchanged.
 
-The legacy `kernel.spawn(programBytes, argv, { fsSab })` path is still supported for demos that own a single `MemoryFileSystem` SAB at `/` (used by `benchmark`, `erlang`, `shell`). To keep NSS and other static system policy available on that path, the browser kernel worker recursively merges `/etc/**` from `rootfs.vfs` into the demo SAB at boot (`overlayEtcFromRootfs` in `host/src/vfs/rootfs-overlay.ts`). Existing leaf files and symlinks remain demo-owned, while existing directories are traversed so missing canonical descendants such as `/etc/ssl/openssl.cnf` are still installed. This is a temporary bridge until those demos move to the `vfsImage` boot path.
+The browser test runner and Git test assemble small kernel-owned VFS images with
+`createBuildFsWithEtc` in `apps/browser-demos/lib/kernel-owned-boot.ts`, then
+serialize them with `finalizeKernelOwnedImage` and boot them through
+`BrowserKernel.boot`. Before serialization, the shared host helper
+`overlayEtcFromRootfs` in `host/src/vfs/rootfs-overlay.ts` recursively merges
+`/etc/**` from the canonical `rootfs.vfs`. Existing leaves and directory
+metadata remain caller-owned, while missing canonical descendants such as
+`/etc/ssl/openssl.cnf` retain their source modes and ownership. Missing
+canonical `/etc` state, short reads, and target capacity failures abort image
+assembly instead of producing an incomplete filesystem.
 
 ### Lazy Files
 
