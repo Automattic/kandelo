@@ -1,15 +1,21 @@
 /**
  * Regression test for #577: getColumnMeta() must return the column's
- * table name. Two halves have to line up:
+ * table name. Two halves have to line up, and each fails differently:
  *
  * 1. libsqlite3 must be built with -DSQLITE_ENABLE_COLUMN_METADATA so
- *    sqlite3_column_table_name() exists (otherwise the wasm linker
- *    emits an env. import the kernel worker stubs with a throwing
- *    function, killing the worker on the first getColumnMeta() call).
- * 2. PHP must be compiled with HAVE_SQLITE3_COLUMN_TABLE_NAME defined —
- *    pdo_sqlite_stmt_col_meta() #ifdef-guards the "table" key behind
- *    it, and the config.m4 link probe that sets it is unreliable under
- *    the wasm cross-compile SDK, so build-php.sh force-defines it.
+ *    sqlite3_column_table_name() actually exists. Without it, PHP still
+ *    links (the SDK passes -Wl,--allow-undefined), wasm-ld emits the
+ *    symbol as an `env.` import, and worker-main.ts fills it with a
+ *    throwing stub — the first getColumnMeta() call kills the PHP
+ *    process (host reports the trap; the kernel marks it SIGSEGV).
+ * 2. PHP must be compiled with HAVE_SQLITE3_COLUMN_TABLE_NAME defined.
+ *    pdo_sqlite_stmt_col_meta() #ifdef-guards the "table" key behind it,
+ *    so an undefined macro silently omits the key rather than crashing.
+ *
+ * The two must move together: defining the macro without the sqlite flag
+ * gives the crash in (1), and the sqlite flag without the macro gives the
+ * silent omission in (2). Hence the assertions below cover both — a table
+ * name is returned AND no unimplemented-import trap occurred.
  *
  * Skipped if the PHP CLI binary is not present.
  */
