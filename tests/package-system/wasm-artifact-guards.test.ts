@@ -22,6 +22,12 @@ describe("wasm artifact ABI guards", () => {
   let strippedWasm: string;
   let wrappedWasm: string;
   let wrappedStrippedWasm: string;
+  let foldedWrappedWasm: string;
+  let foldedWrappedStrippedWasm: string;
+  let malformedFoldedLeadingWasm: string;
+  let malformedDelegatedLeadingWasm: string;
+  let malformedDelegatedAbiWasm: string;
+  let nestedFoldedWrapperWasm: string;
   let arbitraryWrapperWasm: string;
   let failingObjdumpBin: string;
 
@@ -40,8 +46,6 @@ describe("wasm artifact ABI guards", () => {
         (func $decoy (result i32)
           i32.const 99)
         (func $__wasm_posix_user_abi_version (result i32)
-          i32.const 2
-          drop
           i32.const 17)
         (export "__abi_version" (func $__wasm_posix_user_abi_version)))\n`,
     );
@@ -71,6 +75,138 @@ describe("wasm artifact ABI guards", () => {
     ]);
     copyFileSync(wrappedWasm, wrappedStrippedWasm);
     execFileSync("wasm-strip", [wrappedStrippedWasm]);
+
+    const foldedWrappedWatPath = path.join(
+      fixtureDir,
+      "folded-wrapped-abi.wat",
+    );
+    foldedWrappedWasm = path.join(fixtureDir, "folded-wrapped-abi.wasm");
+    foldedWrappedStrippedWasm = path.join(
+      fixtureDir,
+      "folded-wrapped-abi-stripped.wasm",
+    );
+    writeFileSync(
+      foldedWrappedWatPath,
+      `(module
+        (func $__wasm_call_ctors)
+        (func $__wasm_posix_user_abi_version.command_export (result i32)
+          call $__wasm_call_ctors
+          i32.const 18)
+        (export "__abi_version" (func $__wasm_posix_user_abi_version.command_export)))\n`,
+    );
+    execFileSync("wat2wasm", [
+      "--debug-names",
+      foldedWrappedWatPath,
+      "-o",
+      foldedWrappedWasm,
+    ]);
+    copyFileSync(foldedWrappedWasm, foldedWrappedStrippedWasm);
+    execFileSync("wasm-strip", [foldedWrappedStrippedWasm]);
+
+    const malformedFoldedLeadingWatPath = path.join(
+      fixtureDir,
+      "malformed-folded-leading-abi.wat",
+    );
+    malformedFoldedLeadingWasm = path.join(
+      fixtureDir,
+      "malformed-folded-leading-abi.wasm",
+    );
+    writeFileSync(
+      malformedFoldedLeadingWatPath,
+      `(module
+        (func $unexpected_result (result i32)
+          i32.const 7)
+        (func (export "__abi_version") (result i32)
+          call $unexpected_result
+          i32.const 18))\n`,
+    );
+    execFileSync("wat2wasm", [
+      "--no-check",
+      "--debug-names",
+      malformedFoldedLeadingWatPath,
+      "-o",
+      malformedFoldedLeadingWasm,
+    ]);
+
+    const malformedDelegatedLeadingWatPath = path.join(
+      fixtureDir,
+      "malformed-delegated-leading-abi.wat",
+    );
+    malformedDelegatedLeadingWasm = path.join(
+      fixtureDir,
+      "malformed-delegated-leading-abi.wasm",
+    );
+    writeFileSync(
+      malformedDelegatedLeadingWatPath,
+      `(module
+        (func $unexpected_result (result i32)
+          i32.const 7)
+        (func $constant_abi (result i32)
+          i32.const 18)
+        (func (export "__abi_version") (result i32)
+          call $unexpected_result
+          call $constant_abi))\n`,
+    );
+    execFileSync("wat2wasm", [
+      "--no-check",
+      "--debug-names",
+      malformedDelegatedLeadingWatPath,
+      "-o",
+      malformedDelegatedLeadingWasm,
+    ]);
+
+    const malformedDelegatedAbiWatPath = path.join(
+      fixtureDir,
+      "malformed-delegated-abi-signature.wat",
+    );
+    malformedDelegatedAbiWasm = path.join(
+      fixtureDir,
+      "malformed-delegated-abi-signature.wasm",
+    );
+    writeFileSync(
+      malformedDelegatedAbiWatPath,
+      `(module
+        (func $initializer)
+        (func $wrong_result (result i64)
+          i32.const 18)
+        (func (export "__abi_version") (result i32)
+          call $initializer
+          call $wrong_result))\n`,
+    );
+    execFileSync("wat2wasm", [
+      "--no-check",
+      "--debug-names",
+      malformedDelegatedAbiWatPath,
+      "-o",
+      malformedDelegatedAbiWasm,
+    ]);
+
+    const nestedFoldedWrapperWatPath = path.join(
+      fixtureDir,
+      "nested-folded-wrapper-abi.wat",
+    );
+    nestedFoldedWrapperWasm = path.join(
+      fixtureDir,
+      "nested-folded-wrapper-abi.wasm",
+    );
+    writeFileSync(
+      nestedFoldedWrapperWatPath,
+      `(module
+        (func $__wasm_call_ctors)
+        (func $__wasm_posix_user_abi_version.folded (result i32)
+          call $__wasm_call_ctors
+          i32.const 18)
+        (func $__wasm_posix_user_abi_version.command_export (result i32)
+          call $__wasm_call_ctors
+          call $__wasm_posix_user_abi_version.folded)
+        (export "__abi_version" (func $__wasm_posix_user_abi_version.command_export)))\n`,
+    );
+    execFileSync("wat2wasm", [
+      "--debug-names",
+      nestedFoldedWrapperWatPath,
+      "-o",
+      nestedFoldedWrapperWasm,
+    ]);
 
     const arbitraryWrapperWatPath = path.join(
       fixtureDir,
@@ -143,6 +279,20 @@ describe("wasm artifact ABI guards", () => {
     return runGuardWithEnv(script, {}, ...args);
   }
 
+  function expectRejectedByPrimaryAndFallback(wasmPath: string) {
+    const primary = runGuard('wasm_extract_abi_version "$1"', wasmPath);
+    expect(primary.status, primary.stderr).not.toBe(0);
+    expect(primary.stdout).toBe("");
+
+    const fallback = runGuardWithEnv(
+      'wasm_extract_abi_version "$1"',
+      { PATH: `${failingObjdumpBin}:${process.env.PATH ?? ""}` },
+      wasmPath,
+    );
+    expect(fallback.status, fallback.stderr).not.toBe(0);
+    expect(fallback.stdout).toBe("");
+  }
+
   it("extracts ABI through an aliased export name", () => {
     const exports = execFileSync("wasm-objdump", ["-x", namedWasm], {
       encoding: "utf8",
@@ -210,6 +360,66 @@ describe("wasm artifact ABI guards", () => {
     expect(result.stdout.trim()).toBe("18");
   });
 
+  it("extracts ABI through wasm-ld's constant-folded command wrapper", () => {
+    const result = runGuard(
+      'wasm_extract_abi_version "$1"',
+      foldedWrappedWasm,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("18");
+  });
+
+  it("extracts a stripped constant-folded command wrapper", () => {
+    const result = runGuard(
+      'wasm_extract_abi_version "$1"',
+      foldedWrappedStrippedWasm,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("18");
+  });
+
+  it(
+    "falls back for a constant-folded wrapper when WABT cannot disassemble it",
+    () => {
+      const result = runGuardWithEnv(
+        'wasm_extract_abi_version "$1"',
+        { PATH: `${failingObjdumpBin}:${process.env.PATH ?? ""}` },
+        foldedWrappedWasm,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe("18");
+    },
+  );
+
+  it("rejects a non-void folded-wrapper leading callee", () => {
+    expectRejectedByPrimaryAndFallback(malformedFoldedLeadingWasm);
+  });
+
+  it("rejects a non-void delegated-wrapper leading callee", () => {
+    expectRejectedByPrimaryAndFallback(malformedDelegatedLeadingWasm);
+  });
+
+  it("rejects a delegated constant callee that is not () -> i32", () => {
+    expectRejectedByPrimaryAndFallback(malformedDelegatedAbiWasm);
+  });
+
+  it("rejects delegation through another folded wrapper", () => {
+    const primary = runGuard(
+      'wasm_extract_abi_version "$1"',
+      nestedFoldedWrapperWasm,
+    );
+    expect(primary.status).not.toBe(0);
+    expect(primary.stdout).toBe("");
+
+    const fallback = runGuardWithEnv(
+      'wasm_extract_abi_version "$1"',
+      { PATH: `${failingObjdumpBin}:${process.env.PATH ?? ""}` },
+      nestedFoldedWrapperWasm,
+    );
+    expect(fallback.status).not.toBe(0);
+    expect(fallback.stdout).toBe("");
+  });
+
   it("rejects wrappers with computation after the delegated ABI call", () => {
     const result = runGuard(
       'wasm_extract_abi_version "$1"',
@@ -225,6 +435,20 @@ describe("wasm artifact ABI guards", () => {
 
     const stale = runGuard('wasm_has_stale_abi "$1" "$2"', namedWasm, "18");
     expect(stale.status, stale.stderr).toBe(0);
+
+    const foldedMatching = runGuard(
+      'wasm_has_stale_abi "$1" "$2"',
+      foldedWrappedWasm,
+      "18",
+    );
+    expect(foldedMatching.status, foldedMatching.stderr).toBe(1);
+
+    const foldedStale = runGuard(
+      'wasm_has_stale_abi "$1" "$2"',
+      foldedWrappedWasm,
+      "19",
+    );
+    expect(foldedStale.status, foldedStale.stderr).toBe(0);
   });
 
   it("extracts only a constant ABI through the primary and fallback paths", () => {
