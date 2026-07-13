@@ -12,6 +12,7 @@
     "noEmit": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
+    "lib": ["ES2024", "ES2024.SharedMemory", "DOM"],
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]
