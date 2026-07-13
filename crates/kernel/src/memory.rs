@@ -570,14 +570,16 @@ impl MemoryManager {
     }
 
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
-    /// The caller must ensure the space is free (via `can_grow_at`).
-    pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) {
+    /// The caller must ensure the space is free (via `can_grow_at`). Returns
+    /// whether an exact mapping was found and updated.
+    pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) -> bool {
         for m in &mut self.mappings {
             if m.addr == addr && m.len == old_len {
                 m.len = new_len;
-                return;
+                return true;
             }
         }
+        false
     }
 }
 
@@ -1276,8 +1278,19 @@ mod tests {
         let rw = PROT_READ | PROT_WRITE;
         let anon = MAP_PRIVATE | MAP_ANONYMOUS;
         let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        mm.extend_mapping(addr, 0x10000, 0x20000);
+        assert!(mm.extend_mapping(addr, 0x10000, 0x20000));
         assert!(mm.is_mapped(addr + 0x10000)); // extended area is now mapped
+    }
+
+    #[test]
+    fn test_extend_mapping_reports_mismatched_metadata() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
+
+        assert!(!mm.extend_mapping(addr, 0x20000, 0x30000));
+        assert_eq!(mm.mappings()[0].len, 0x10000);
     }
 
     #[test]

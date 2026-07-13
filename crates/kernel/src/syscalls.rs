@@ -6471,9 +6471,13 @@ pub fn sys_mremap(
     let extra = aligned_new - aligned_old;
     let grow_start = old_addr + aligned_old;
     if proc.memory.can_grow_at(grow_start, extra) {
-        proc.memory
-            .extend_mapping(old_addr, aligned_old, aligned_new);
-        return Ok(old_addr);
+        if proc
+            .memory
+            .extend_mapping(old_addr, aligned_old, aligned_new)
+        {
+            return Ok(old_addr);
+        }
+        return Err(Errno::EFAULT);
     }
 
     // MREMAP_MAYMOVE: allocate a new mapping and free the old one.
@@ -27877,6 +27881,35 @@ mod tests {
         let new_addr = sys_mremap(&mut proc, addr, 0x10000, 0x20000, 0).unwrap();
         assert_eq!(new_addr, addr);
         assert!(proc.memory.is_mapped(addr + 0x10000));
+    }
+
+    #[test]
+    fn test_mremap_grow_requires_matching_mapping_metadata() {
+        let mut proc = Process::new(1);
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+        let addr = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+
+        // The claimed two-page old range does not match the one-page mapping.
+        // A free third page must not turn the missing metadata update into a
+        // successful in-place grow.
+        assert_eq!(
+            sys_mremap(&mut proc, addr, 0x20000, 0x30000, 0).unwrap_err(),
+            Errno::EFAULT
+        );
+        assert_eq!(proc.memory.mappings()[0].len, 0x10000);
+
+        let next = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(next, addr + 0x10000);
     }
 
     #[test]
