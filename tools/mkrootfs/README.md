@@ -43,3 +43,19 @@ non-empty, NUL-free, valid UTF-8 that round-trips to the original bytes. The
 target itself is preserved verbatim, so relative targets such as
 `../../shared/curl` retain their POSIX resolution semantics. Archive `uid` and
 `gid` apply to links; symlink permissions use the VFS's fixed `0777` mode.
+
+Regular archive files use the directive's `fmode` (default `0644`) for every
+member by default. This `fmode_policy=fixed` behavior deliberately ignores ZIP
+permissions and remains the safe choice for untrusted archives. A trusted ZIP
+whose executable metadata is part of its distribution contract can opt into
+`fmode_policy=preserve-executable`. That policy adds only the `0111` bits from
+Unix central-directory entries to `fmode`; non-Unix entries and non-executable
+Unix entries stay at `fmode`. Archive read/write, set-ID, and sticky bits are
+never imported, while `uid`, `gid`, `dmode`, and the remaining file mode bits
+remain manifest-controlled.
+
+For example:
+
+```text
+archive url=homebrew.zip base=/home/linuxbrew/.linuxbrew fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000
+```

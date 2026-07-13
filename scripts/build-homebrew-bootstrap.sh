@@ -122,7 +122,6 @@ mkdir -p "$BUILD_DIR" "$(dirname "$OUTPUT")"
 
 BREW_GIT_DIR="$BUILD_DIR/homebrew-brew.git"
 BREW_ARCHIVE="$BUILD_DIR/homebrew-brew.zip"
-BREW_LAUNCHER="$BUILD_DIR/brew"
 if [ ! -d "$BREW_GIT_DIR" ]; then
     git init --bare -q "$BREW_GIT_DIR"
 fi
@@ -143,8 +142,6 @@ fi
 ARCHIVE_TMP="$BUILD_DIR/homebrew-brew.zip.tmp"
 git --git-dir="$BREW_GIT_DIR" archive --format=zip -o "$ARCHIVE_TMP" "$BREW_REVISION"
 mv "$ARCHIVE_TMP" "$BREW_ARCHIVE"
-git --git-dir="$BREW_GIT_DIR" show "$BREW_REVISION:bin/brew" > "$BREW_LAUNCHER"
-chmod 0755 "$BREW_LAUNCHER"
 BREW_ARCHIVE_SHA256="$(sha256sum "$BREW_ARCHIVE" | awk '{print $1}')"
 
 XTASK=(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- build-deps --arch wasm32)
@@ -309,12 +306,9 @@ cat > "$BOOTSTRAP_MANIFEST" <<EOF
 /bin/zstd l 0777 0 0 target=/usr/bin/zstd
 /bin/bzip2 l 0777 0 0 target=/usr/bin/bzip2
 
-# This explicit file preserves bin/brew's executable mode. It intentionally
-# overrides the same member in the all-0644 upstream source archive.
-/home/linuxbrew/.linuxbrew/bin/brew f 0755 1000 1000 src=target/homebrew-bootstrap/brew
 /usr/bin/brew l 0777 0 0 target=/home/linuxbrew/.linuxbrew/bin/brew
 
-archive url=target/homebrew-bootstrap/homebrew-brew.zip base=/home/linuxbrew/.linuxbrew fmode=0644 dmode=0755 uid=1000 gid=1000
+archive url=target/homebrew-bootstrap/homebrew-brew.zip base=/home/linuxbrew/.linuxbrew fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000
 archive url=binaries/programs/wasm32/$RUBY_RUNTIME_REL base=/ fmode=0644 dmode=0755 uid=0 gid=0
 EOF
 

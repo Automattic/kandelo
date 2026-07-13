@@ -235,6 +235,10 @@ the exact upstream Homebrew commit and archive hash in
 `/etc/kandelo/homebrew-image.json`. The default 768 MiB VFS capacity leaves
 writable space for real guest Homebrew operations; use `--sab-size` and
 `--max-size` when a specific integration test needs a different capacity.
+The bootstrap manifest explicitly trusts executable bits from the pinned
+`git archive` ZIP. `mkrootfs` imports only those Unix `0111` bits; ownership,
+directory modes, non-executable file modes, and all other permission bits stay
+normalized by the manifest.
 
 `--skip-package-resolve` is only for a worktree whose `binaries/` tree has
 already been materialized. It still validates every required output and fails

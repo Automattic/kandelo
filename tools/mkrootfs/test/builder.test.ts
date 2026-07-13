@@ -32,6 +32,16 @@ function zipSymlink(
   return [target, { os: 3, attrs: (0o120777 << 16) >>> 0 }];
 }
 
+function zipUnixFile(
+  content: string,
+  mode: number,
+): [Uint8Array, { os: number; attrs: number }] {
+  return [
+    new TextEncoder().encode(content),
+    { os: 3, attrs: ((0o100000 | mode) << 16) >>> 0 },
+  ];
+}
+
 async function buildArchiveImage(
   entries: Parameters<typeof zipSync>[0],
   archiveFields = "base=/usr fmode=0644 dmode=0755 uid=0 gid=0",
@@ -304,6 +314,65 @@ describe("image builder — pass 4: archives", () => {
     const vimrc = mfs.stat("/usr/share/vim/vim91/vimrc");
     expect(vimrc.mode & 0o777).toBe(0o644);
     expect(readFromImage(mfs, "/usr/share/vim/vim91/vimrc")).toBe("set nu\n");
+  });
+
+  it("keeps fixed fmode semantics for Unix executable entries by default", async () => {
+    const image = await buildArchiveImage({
+      "bin/tool": zipUnixFile("#!/bin/sh\n", 0o755),
+    });
+    const mfs = MemoryFileSystem.fromImage(image);
+
+    expect(mfs.stat("/usr/bin/tool").mode & 0o777).toBe(0o644);
+  });
+
+  it("preserves only trusted Unix executable bits when explicitly requested", async () => {
+    const target = new TextEncoder().encode("../../shared/curl");
+    const image = await buildArchiveImage(
+      {
+        "bin/brew": zipUnixFile("#!/usr/bin/env ruby\n", 0o755),
+        "Library/Homebrew/shims/shared/curl": zipUnixFile(
+          "#!/bin/sh\nexec /usr/bin/curl \"$@\"\n",
+          0o4755,
+        ),
+        "Library/Homebrew/shims/shared/group-tool": zipUnixFile(
+          "#!/bin/sh\n",
+          0o710,
+        ),
+        "Library/Homebrew/shims/linux/super/curl": zipSymlink(target),
+        "Library/Homebrew/bin/non-executable": new TextEncoder().encode(
+          "configuration\n",
+        ),
+        "Library/Homebrew/readme.txt": zipUnixFile("read me\n", 0o600),
+      },
+      "base=/home/linuxbrew/.linuxbrew fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000",
+    );
+    const mfs = MemoryFileSystem.fromImage(image);
+    const prefix = "/home/linuxbrew/.linuxbrew";
+
+    expect(mfs.stat(`${prefix}/bin/brew`).mode & 0o7777).toBe(0o755);
+    expect(
+      mfs.stat(`${prefix}/Library/Homebrew/shims/shared/curl`).mode & 0o7777,
+    ).toBe(0o755);
+    expect(
+      mfs.stat(`${prefix}/Library/Homebrew/shims/shared/group-tool`).mode &
+        0o7777,
+    ).toBe(0o754);
+
+    // set-ID and archive read/write bits are not imported. Non-Unix entries
+    // also stay at fmode even when their path triggers ZipEntry's executable
+    // compatibility default.
+    expect(
+      mfs.stat(`${prefix}/Library/Homebrew/bin/non-executable`).mode & 0o7777,
+    ).toBe(0o644);
+    expect(
+      mfs.stat(`${prefix}/Library/Homebrew/readme.txt`).mode & 0o7777,
+    ).toBe(0o644);
+
+    const linkPath = `${prefix}/Library/Homebrew/shims/linux/super/curl`;
+    expect(mfs.readlink(linkPath)).toBe("../../shared/curl");
+    expect(readFromImage(mfs, linkPath)).toContain("exec /usr/bin/curl");
+    expect(mfs.stat(linkPath).uid).toBe(1000);
+    expect(mfs.stat(linkPath).gid).toBe(1000);
   });
 
   it("creates parent dirs on demand using dmode", async () => {
