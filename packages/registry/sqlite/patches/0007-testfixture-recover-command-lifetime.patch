@@ -1,0 +1,147 @@
+diff --git a/ext/recover/test_recover.c b/ext/recover/test_recover.c
+index 1f485a5..9c70915 100644
+--- a/ext/recover/test_recover.c
++++ b/ext/recover/test_recover.c
+@@ -22,9 +22,25 @@ typedef struct TestRecover TestRecover;
+ struct TestRecover {
+   sqlite3_recover *p;
+   Tcl_Interp *interp;
++  Tcl_Command cmd;
+   Tcl_Obj *pScript;
+ };
+ 
++/*
++** Destroy the recovery handle and the Tcl wrapper state when its generated
++** command is deleted, including by [rename CMD {}] or interpreter teardown.
++*/
++static void testRecoverDelete(void *clientData){
++  TestRecover *pTest = (TestRecover*)clientData;
++  if( pTest->p ){
++    sqlite3_recover_finish(pTest->p);
++  }
++  if( pTest->pScript ){
++    Tcl_DecrRefCount(pTest->pScript);
++  }
++  ckfree((char*)pTest);
++}
++
+ static int xSqlCallback(void *pSqlArg, const char *zSql){
+   TestRecover *p = (TestRecover*)pSqlArg;
+   Tcl_Obj *pEval = 0;
+@@ -194,7 +210,9 @@ static int testRecoverCmd(
+         Tcl_SetObjResult(interp, Tcl_NewStringObj(zErr, -1));
+       }
+       res2 = sqlite3_recover_finish(pTest->p);
++      pTest->p = 0;
+       assert( res2==res );
++      Tcl_DeleteCommandFromToken(interp, pTest->cmd);
+       if( res ) return TCL_ERROR;
+       break;
+     }
+@@ -236,6 +254,7 @@ static int test_sqlite3_recover_init(
+   if( zDb[0]=='\0' ) zDb = 0;
+ 
+   pNew = (TestRecover*)ckalloc(sizeof(TestRecover));
++  memset(pNew, 0, sizeof(TestRecover));
+   if( bSql==0 ){
+     zUri = Tcl_GetString(objv[3]);
+     pNew->p = sqlite3_recover_init(db, zDb, zUri);
+@@ -247,7 +266,9 @@ static int test_sqlite3_recover_init(
+   }
+ 
+   sprintf(zCmd, "sqlite_recover%d", iTestRecoverCmd++);
+-  Tcl_CreateObjCommand(interp, zCmd, testRecoverCmd, (void*)pNew, 0);
++  pNew->cmd = Tcl_CreateObjCommand(
++      interp, zCmd, testRecoverCmd, (void*)pNew, testRecoverDelete
++  );
+ 
+   Tcl_SetObjResult(interp, Tcl_NewStringObj(zCmd, -1));
+   return TCL_OK;
+diff --git a/ext/recover/recoverlifetime.test b/ext/recover/recoverlifetime.test
+new file mode 100644
+index 0000000..59ab834
+--- /dev/null
++++ b/ext/recover/recoverlifetime.test
+@@ -0,0 +1,82 @@
++# 2026 July 13
++#
++# The author disclaims copyright to this source code.  In place of
++# a legal notice, here is a blessing:
++#
++#    May you do good and not evil.
++#    May you find forgiveness for yourself and forgive others.
++#    May you share freely, never taking more than you give.
++#
++#***********************************************************************
++#
++# Verify the lifetime of Tcl commands created by sqlite3_recover_init()
++# and sqlite3_recover_init_sql().
++#
++
++source [file join [file dirname [info script]] recover_common.tcl]
++set testprefix recoverlifetime
++
++reset_db
++
++proc recover_lifetime_sql {tag sql} {
++  return 0
++}
++
++# Finishing a recovery destroys its generated Tcl command.
++do_test 1.1 {
++  set R [sqlite3_recover_init db main test.db2]
++  set zCmd $R
++  $R finish
++  expr {[info commands $zCmd] eq ""}
++} 1
++
++# Deleting an unfinished command releases its sqlite3_recover handle. If
++# SQLite memory accounting is disabled, both memory readings are zero and
++# only the command-lifetime assertion is available.
++do_test 1.2 {
++  set nBefore [sqlite3_memory_used]
++  set R [sqlite3_recover_init db main test.db2]
++  set nDuring [sqlite3_memory_used]
++  rename $R {}
++  set nAfter [sqlite3_memory_used]
++  list \
++      [expr {[info commands $R] eq ""}] \
++      [expr {$nDuring==0 || $nDuring>$nBefore}] \
++      [expr {$nAfter==$nBefore}]
++} {1 1 1}
++
++# The command token remains valid if the Tcl command is renamed. Finishing
++# it under the new name must still destroy the renamed command and handle.
++do_test 1.3 {
++  set nBefore [sqlite3_memory_used]
++  set R [sqlite3_recover_init_sql db main [list recover_lifetime_sql rename]]
++  rename $R recover_lifetime_renamed
++  recover_lifetime_renamed finish
++  list \
++      [expr {[info commands recover_lifetime_renamed] eq ""}] \
++      [expr {[sqlite3_memory_used]==$nBefore}]
++} {1 1}
++
++# Repeated direct-output and SQL-callback initialization must not leave Tcl
++# commands or recovery handles behind.
++do_test 1.4 {
++  set nBefore [sqlite3_memory_used]
++  set aCmd [list]
++  for {set i 0} {$i<20} {incr i} {
++    if {$i%2} {
++      set R [sqlite3_recover_init_sql \
++          db main [list recover_lifetime_sql repeat-$i]]
++    } else {
++      set R [sqlite3_recover_init db main test.db2]
++    }
++    lappend aCmd $R
++    $R finish
++  }
++  list \
++      [llength [lsort -unique $aCmd]] \
++      [llength [info commands sqlite_recover*]] \
++      [expr {[sqlite3_memory_used]==$nBefore}]
++} {20 0 1}
++
++forcedelete test.db2
++finish_test
