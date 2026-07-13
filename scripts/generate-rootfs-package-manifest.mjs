@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -11,6 +11,8 @@ function usage() {
     "",
     "Options:",
     "  --packages <path>  package mapping TOML (default: images/rootfs/PACKAGES.toml)",
+    "  --binaries-dir <path>",
+    "                     resolve outputs only from this artifact tree",
     "  --out <path>       generated mkrootfs manifest fragment (required)",
     "  --help             print this message",
     "",
@@ -19,6 +21,7 @@ function usage() {
 
 function parseArgs(argv) {
   let packages = "images/rootfs/PACKAGES.toml";
+  let binariesDir;
   let out;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -33,10 +36,15 @@ function parseArgs(argv) {
       if (!out) throw new Error("--out requires a value");
       continue;
     }
+    if (arg === "--binaries-dir") {
+      binariesDir = argv[++i];
+      if (!binariesDir) throw new Error("--binaries-dir requires a value");
+      continue;
+    }
     throw new Error(`unknown argument: ${arg}`);
   }
   if (!out) throw new Error("--out is required");
-  return { packages, out };
+  return { packages, binariesDir, out };
 }
 
 function stripComment(line) {
@@ -148,11 +156,59 @@ function requireString(obj, key, context) {
   return value;
 }
 
-function resolveBinary(binaryRel) {
-  const local = resolve(repoRoot, "local-binaries", binaryRel);
-  if (existsSync(local)) return local;
-  const fetched = resolve(repoRoot, "binaries", binaryRel);
-  if (existsSync(fetched)) return fetched;
+function requireBinaryPath(obj, context) {
+  const value = requireString(obj, "binary", context);
+  const segments = value.split("/");
+  if (
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    /[\u0000-\u001f\u007f]/.test(value) ||
+    /^[A-Za-z]:\//.test(value) ||
+    segments.some((segment) => segment === "" || segment === "." || segment === "..") ||
+    value.normalize("NFC") !== value
+  ) {
+    throw new Error(
+      `${context}: binary must be a canonical NFC relative POSIX path without control characters`,
+    );
+  }
+  try {
+    for (const segment of segments) encodeURIComponent(segment);
+  } catch {
+    throw new Error(`${context}: binary contains ill-formed Unicode`);
+  }
+  return value;
+}
+
+function resolveWithin(root, binaryRel) {
+  const candidate = resolve(root, binaryRel);
+  const fromRoot = relative(root, candidate);
+  if (
+    fromRoot === "" ||
+    fromRoot === ".." ||
+    fromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(fromRoot)
+  ) {
+    throw new Error(`binary path escapes its artifact tree: ${binaryRel}`);
+  }
+  return candidate;
+}
+
+function resolveBinary(binaryRel, binariesDir) {
+  if (binariesDir) {
+    const selectedRoot = resolve(repoRoot, binariesDir);
+    const selected = resolveWithin(selectedRoot, binaryRel);
+    if (requireRegularFileIfPresent(selected, binaryRel, "selected artifact tree")) return selected;
+    throw new Error(
+      `binary not found for rootfs package output: ${binaryRel}\n` +
+        `  checked selected artifact tree: ${selected}\n` +
+        `  Resolve the package into ${selectedRoot} before generating the manifest.`,
+    );
+  }
+
+  const local = resolveWithin(resolve(repoRoot, "local-binaries"), binaryRel);
+  if (requireRegularFileIfPresent(local, binaryRel, "local override tree")) return local;
+  const fetched = resolveWithin(resolve(repoRoot, "binaries"), binaryRel);
+  if (requireRegularFileIfPresent(fetched, binaryRel, "fetched artifact tree")) return fetched;
   throw new Error(
     `binary not found for rootfs package output: ${binaryRel}\n` +
       `  checked: ${local}\n` +
@@ -161,12 +217,46 @@ function resolveBinary(binaryRel) {
   );
 }
 
+function requireRegularFileIfPresent(path, binaryRel, treeName) {
+  let linkStat;
+  try {
+    linkStat = lstatSync(path);
+  } catch (e) {
+    if (e?.code === "ENOENT") return false;
+    throw e;
+  }
+
+  let targetStat;
+  try {
+    targetStat = statSync(path);
+  } catch (e) {
+    const detail = e?.code ? ` (${e.code})` : "";
+    throw new Error(
+      `binary in ${treeName} is not a usable regular file${detail}: ${binaryRel}\n  path: ${path}`,
+    );
+  }
+  if (!targetStat.isFile()) {
+    const kind = linkStat.isSymbolicLink() ? "symlink target" : "filesystem node";
+    throw new Error(
+      `binary in ${treeName} is not a regular file (${kind}): ${binaryRel}\n  path: ${path}`,
+    );
+  }
+  return true;
+}
+
+function encodeBinaryUrlPath(binaryRel) {
+  return binaryRel
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
 function manifestToken(value, context) {
   if (/\s/.test(value)) throw new Error(`${context} contains whitespace: ${value}`);
   return value;
 }
 
-function generateManifest(config) {
+function generateManifest(config, binariesDir) {
   const lines = [
     "# Generated by scripts/generate-rootfs-package-manifest.mjs; do not edit.",
     "",
@@ -182,16 +272,17 @@ function generateManifest(config) {
 
     lines.push(`# ${packageName}`);
     for (const output of pkg.outputs) {
-      const binaryRel = requireString(output, "binary", `package ${packageName} output`);
+      const binaryRel = requireBinaryPath(output, `package ${packageName} output`);
       const path = requireString(output, "path", `package ${packageName} output ${binaryRel}`);
       const install = output.install ?? packageInstall;
       const mode = modeString(output.mode);
       const uid = output.uid ?? 0;
       const gid = output.gid ?? 0;
-      const resolvedBinary = resolveBinary(binaryRel);
+      const resolvedBinary = resolveBinary(binaryRel, binariesDir);
 
       if (install === "lazy") {
-        const lazyUrl = output.lazy_url ?? `${config.lazy_url_prefix ?? ""}${binaryRel}`;
+        const lazyUrl =
+          output.lazy_url ?? `${config.lazy_url_prefix ?? ""}${encodeBinaryUrlPath(binaryRel)}`;
         const size = statSync(resolvedBinary).size;
         lines.push(
           `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(lazyUrl, "lazy_url")} lazy_size=${size}`,
@@ -225,7 +316,7 @@ try {
   const packagesPath = resolve(repoRoot, args.packages);
   const outPath = resolve(repoRoot, args.out);
   const config = parsePackagesToml(readFileSync(packagesPath, "utf8"));
-  const { manifest, installed } = generateManifest(config);
+  const { manifest, installed } = generateManifest(config, args.binariesDir);
 
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, manifest);
