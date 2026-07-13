@@ -2370,6 +2370,91 @@ EOF
   fi
 }
 
+assert_formula_source_closure_is_bound() {
+  local tap="$TMPDIR/formula-source-closure-tap"
+  local err="$TMPDIR/formula-source-closure.err"
+  local base
+
+  mkdir -p "$tap/Formula" "$tap/Kandelo/formula_support"
+  cat >"$tap/Formula/hello.rb" <<'EOF'
+require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class Hello < Formula
+  desc "reviewed fixture"
+  include KandeloFormulaSupport
+end
+EOF
+  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
+module KandeloFormulaSupport
+end
+EOF
+  printf 'export const reviewed = true;\n' \
+    >"$tap/Kandelo/formula_support/run-network-wasm.ts"
+  printf 'Kandelo/formula_support/runtime-cache.tmp\n' >"$tap/.gitignore"
+  git -C "$tap" init -q
+  git -C "$tap" config user.name "Kandelo Test"
+  git -C "$tap" config user.email "kandelo-test@example.invalid"
+  git -C "$tap" add .
+  git -C "$tap" commit -q -m "review Formula source closure"
+  base="$(git -C "$tap" rev-parse HEAD)"
+
+  cat >"$tap/Formula/hello.rb" <<'EOF'
+require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class Hello < Formula
+  desc "reviewed fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
+  end
+
+  include KandeloFormulaSupport
+end
+EOF
+  bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --base-ref "$base" >/dev/null
+
+  printf 'unreviewed helper payload\n' \
+    >"$tap/Kandelo/formula_support/runtime-cache.tmp"
+  git -C "$tap" check-ignore -q Kandelo/formula_support/runtime-cache.tmp ||
+    fail "ignored source-closure fixture is not ignored"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted an ignored helper file"
+  fi
+  grep -F "Formula support working tree changed after the bottle build" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain ignored helper drift"
+  rm "$tap/Kandelo/formula_support/runtime-cache.tmp"
+
+  printf 'module KandeloFormulaSupport\n  REVIEWED = false\nend\n' \
+    >"$tap/Kandelo/formula_support/kandelo_formula_support.rb"
+  git -C "$tap" add Kandelo/formula_support/kandelo_formula_support.rb
+  git -C "$tap" commit -q -m "mutate only shared Formula support"
+  if ! git -C "$tap" diff --quiet "$base" HEAD -- Formula/hello.rb; then
+    fail "helper-only drift fixture changed the reviewed Formula"
+  fi
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted helper-only drift"
+  fi
+  grep -F "Formula support source changed after the bottle build" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain helper-only drift"
+
+  grep -F "scripts/homebrew-validate-formula-source-closure.sh" \
+    "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" >/dev/null ||
+    fail "under-lock publisher does not revalidate the Formula source closure"
+}
+
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
 assert_upload_dry_run
@@ -2393,6 +2478,7 @@ assert_rollback_preserves_metadata
 assert_rollback_deletion_requires_reason
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 assert_formula_composition_is_static_and_lossless
+assert_formula_source_closure_is_bound
 assert_publisher_trust_contract
 
 echo "test-homebrew-publish-workflow.sh: ok"

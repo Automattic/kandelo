@@ -433,10 +433,13 @@ jobs:
             --out "$bottle_out" \
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
 
-      - name: Recheck reviewed Homebrew source after formula execution
+      - name: Recheck reviewed sources after Formula execution
         shell: bash
         env:
+          FORMULA: ${{ matrix.formula }}
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
           brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
@@ -446,6 +449,12 @@ jobs:
           [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
             echo "::error::formula execution modified reviewed Homebrew tracked files"; exit 2;
           }
+          cd "$GITHUB_WORKSPACE/kandelo"
+          bash scripts/dev-shell.sh bash scripts/homebrew-validate-formula-source-closure.sh \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --formula "$FORMULA" \
+            --base-ref "$TAP_SHA"
 
       - name: Create strict bottle data handoff
         shell: bash

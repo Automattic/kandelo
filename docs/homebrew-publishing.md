@@ -267,7 +267,11 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    Formula build and test without publisher credentials. Its strict handoff
    contains only `manifest.json`, Homebrew's bottle JSON, one gzip bottle
    archive, and bounded `dependency-provenance.json`. It contains no Formula
-   source, scripts, environment files, raw logs, or credentials.
+   source, scripts, environment files, raw logs, or credentials. Before the
+   handoff is created, the job rechecks the selected Formula and its required
+   local source closure against the planned tap commit. Canonical bottle-block
+   metadata may differ, but tracked, untracked, ignored, mode, symlink, or
+   special-file drift under `Kandelo/formula_support` fails the build.
 
    The handoff remains explicitly bounded while supporting complete large
    packages: Homebrew bottle JSON is capped at 16 MiB, dependency provenance at
@@ -301,14 +305,15 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    `contents: write`. On another fresh runner it validates the complete
    publication handoff as inert data against the exact base tap before checking
    out with push credentials. The publisher then acquires the tap state lock,
-   refreshes `main`, verifies that the exact archived Formula is still an
-   ancestor and that its bottle-excluded source digest has not changed,
-   statically composes the selected bottle tag, and regenerates aggregate
-   sidecars from refreshed tap metadata. A sibling-architecture tag is retained
-   only when the refreshed metadata proves the same ABI, version, formula
-   revision, and bottle rebuild. It does not load Formula Ruby or run Homebrew
-   in the credentialed role. Only the composed and fully validated Formula
-   update, sidecars, and provenance are pushed.
+   refreshes `main`, verifies that the planned tap commit is still an ancestor,
+   and rechecks both the Formula's bottle-excluded source digest and any required
+   `Kandelo/formula_support` tree against that commit. It then statically
+   composes the selected bottle tag and regenerates aggregate sidecars from
+   refreshed tap metadata. A sibling-architecture tag is retained only when the
+   refreshed metadata proves the same ABI, version, formula revision, and bottle
+   rebuild. It does not load Formula Ruby or run Homebrew in the credentialed
+   role. Only the composed and fully validated Formula update, sidecars, and
+   provenance are pushed.
 
 Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
 remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow
@@ -512,9 +517,10 @@ gallery publication requires a separate immutable asset contract.
   bottle tags from refreshed tap state while holding the tap lock. Identity
   transitions discard all old sibling tags before publishing the selected
   architecture. Formula source changes after planning, noncanonical bottle
-  blocks, Formula root/tag/digest disagreement with the tap sidecars, or
-  symlinks in refreshed `Formula/` and `Kandelo/` state must fail publication;
-  a global lock alone does not make stale aggregate sidecars safe.
+  blocks, required shared Formula-support changes, Formula root/tag/digest
+  disagreement with the tap sidecars, or symlinks in refreshed `Formula/` and
+  `Kandelo/` state must fail publication; a global lock alone does not make
+  stale aggregate sidecars safe.
 - Do not publish a new formula's tap metadata until its GHCR package passes the
   anonymous digest readback. New GHCR packages are private by default; changing
   package visibility is an explicit operator action, not a workflow side effect.
@@ -525,6 +531,6 @@ gallery publication requires a separate immutable asset contract.
 The implemented path covers a trusted bottle build, GHCR upload plus anonymous
 readback, sidecar validation, verified VFS image building, browser smoke,
 diagnostic gallery gating, and lossless under-lock tap composition with Formula
-source-drift rejection. Public visibility provisioning for new GHCR packages,
-immutable gallery release publication, broader package coverage, general guest
-`brew install`, and full operator runbooks remain separate work.
+source-closure drift rejection. Public visibility provisioning for new GHCR
+packages, immutable gallery release publication, broader package coverage,
+general guest `brew install`, and full operator runbooks remain separate work.
