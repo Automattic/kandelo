@@ -726,6 +726,13 @@ bash build.sh
 
 `host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
 
+Manifest node paths and archive mount points use canonical absolute POSIX
+paths. ZIP archives ingested by `mkrootfs` require byte-exact UTF-8 canonical
+relative member paths; unsafe aliases or type-conflicting path graphs fail
+before VFS mutation. Unix ZIP symlinks retain their validated target payload
+and archive-declared ownership, including relative targets with parent
+components.
+
 ### User Program Compilation
 
 The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
