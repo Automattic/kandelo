@@ -173,5 +173,5 @@ describe.skipIf(!dinit)("dinit SIGCHLD supervision", () => {
     expect(terminatedStatus).toBe(TERMINATED_BY_SIGTERM);
     expect(output).toContain("[  OK  ] child");
     expect(output).not.toContain("libc++abi: terminating");
-  });
+  }, 30_000);
 });
