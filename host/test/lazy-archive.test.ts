@@ -17,6 +17,7 @@ function makeFakeEntries(): ZipEntry[] {
   return [
     {
       fileName: "usr/bin/vim",
+      fileNameBytes: new TextEncoder().encode("usr/bin/vim"),
       compressedSize: 100,
       uncompressedSize: 500000,
       compressionMethod: 8,
@@ -29,6 +30,7 @@ function makeFakeEntries(): ZipEntry[] {
     },
     {
       fileName: "usr/share/vim/syntax/c.vim",
+      fileNameBytes: new TextEncoder().encode("usr/share/vim/syntax/c.vim"),
       compressedSize: 50,
       uncompressedSize: 2048,
       compressionMethod: 8,
@@ -41,6 +43,7 @@ function makeFakeEntries(): ZipEntry[] {
     },
     {
       fileName: "usr/share/vim/README",
+      fileNameBytes: new TextEncoder().encode("usr/share/vim/README"),
       compressedSize: 0,
       uncompressedSize: 0,
       compressionMethod: 0,
@@ -296,6 +299,7 @@ describe("Lazy archive group registration", () => {
     const entries: ZipEntry[] = [
       {
         fileName: "bin/tool",
+        fileNameBytes: new TextEncoder().encode("bin/tool"),
         compressedSize: 10,
         uncompressedSize: 1000,
         compressionMethod: 0,
@@ -323,6 +327,7 @@ describe("Lazy archive group registration", () => {
     const entries: ZipEntry[] = [
       {
         fileName: "usr/bin/vi",
+        fileNameBytes: new TextEncoder().encode("usr/bin/vi"),
         compressedSize: 0,
         uncompressedSize: 3,
         compressionMethod: 0,
@@ -335,6 +340,7 @@ describe("Lazy archive group registration", () => {
       },
       {
         fileName: "usr/bin/vim",
+        fileNameBytes: new TextEncoder().encode("usr/bin/vim"),
         compressedSize: 10,
         uncompressedSize: 5000,
         compressionMethod: 0,
@@ -387,6 +393,7 @@ describe("Lazy archive group registration", () => {
     const entries: ZipEntry[] = [
       {
         fileName: "usr/bin/",
+        fileNameBytes: new TextEncoder().encode("usr/bin/"),
         compressedSize: 0,
         uncompressedSize: 0,
         compressionMethod: 0,
@@ -399,6 +406,7 @@ describe("Lazy archive group registration", () => {
       },
       {
         fileName: "usr/bin/tool",
+        fileNameBytes: new TextEncoder().encode("usr/bin/tool"),
         compressedSize: 10,
         uncompressedSize: 1000,
         compressionMethod: 0,

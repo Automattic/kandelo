@@ -1,7 +1,13 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { zipSync } from "fflate";
 import { buildImage } from "../src/builder.ts";
@@ -9,6 +15,8 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures");
+const CENTRAL_DIR_SIGNATURE = 0x02014b50;
+const CENTRAL_DIR_FIXED_SIZE = 46;
 
 function readFromImage(mfs: MemoryFileSystem, path: string): string {
   const fd = mfs.open(path, 0, 0);
@@ -16,6 +24,41 @@ function readFromImage(mfs: MemoryFileSystem, path: string): string {
   const n = mfs.read(fd, buf, null, buf.byteLength);
   mfs.close(fd);
   return new TextDecoder().decode(buf.subarray(0, n));
+}
+
+function zipSymlink(
+  target: Uint8Array,
+): [Uint8Array, { os: number; attrs: number }] {
+  return [target, { os: 3, attrs: (0o120777 << 16) >>> 0 }];
+}
+
+async function buildArchiveImage(
+  entries: Parameters<typeof zipSync>[0],
+  archiveFields = "base=/usr fmode=0644 dmode=0755 uid=0 gid=0",
+): Promise<Uint8Array> {
+  const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-archive-"));
+  try {
+    writeFileSync(join(tmp, "archive.zip"), zipSync(entries));
+    const manifest = join(tmp, "MANIFEST");
+    writeFileSync(manifest, `archive url=archive.zip ${archiveFields}\n`);
+    return await buildImage({
+      sourceTree: tmp,
+      manifest,
+      repoRoot: tmp,
+    });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+function corruptFirstCentralDirectoryName(zip: Uint8Array): Uint8Array {
+  const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  for (let offset = 0; offset <= zip.byteLength - 4; offset++) {
+    if (view.getUint32(offset, true) !== CENTRAL_DIR_SIGNATURE) continue;
+    zip[offset + CENTRAL_DIR_FIXED_SIZE] = 0xff;
+    return zip;
+  }
+  throw new Error("central directory entry not found in test ZIP");
 }
 
 describe("image builder — pass 1: directories", () => {
@@ -160,6 +203,10 @@ describe("image builder — pass 4: archives", () => {
     mkdirSync(join(fixture, "opt"), { recursive: true });
     const zipBytes = zipSync({
       "bin/vim": new TextEncoder().encode("#!fake-vim\n"),
+      "bin/vi": [
+        new TextEncoder().encode("vim"),
+        { os: 3, attrs: (0o120777 << 16) >>> 0 },
+      ],
       "share/vim/vim91/vimrc": new TextEncoder().encode("set nu\n"),
     });
     writeFileSync(zipPath, zipBytes);
@@ -201,6 +248,62 @@ describe("image builder — pass 4: archives", () => {
     const usrShare = mfs.stat("/usr/share");
     expect(usrShare.mode & 0o777).toBe(0o755);
   });
+
+  it("preserves Unix symlinks from archive metadata", async () => {
+    const image = await buildImage({
+      sourceTree: join(fixture, "rootfs"),
+      manifest: join(fixture, "MANIFEST"),
+      repoRoot: fixture,
+    });
+    const mfs = MemoryFileSystem.fromImage(image);
+
+    const vi = mfs.lstat("/usr/bin/vi");
+    expect((vi.mode & 0o170000) >>> 0).toBe(0o120000);
+    expect(vi.uid).toBe(0);
+    expect(vi.gid).toBe(0);
+    expect(mfs.readlink("/usr/bin/vi")).toBe("vim");
+  });
+
+  it("preserves Homebrew-style parent-relative symlink targets byte-for-byte", async () => {
+    const targetBytes = new TextEncoder().encode("../../shared/curl");
+    const image = await buildArchiveImage(
+      {
+        "Library/Homebrew/shims/shared/curl": new TextEncoder().encode(
+          "#!/bin/sh\nexec /usr/bin/curl \"$@\"\n",
+        ),
+        "Library/Homebrew/shims/linux/super/curl": zipSymlink(targetBytes),
+      },
+      "base=/home/linuxbrew/.linuxbrew fmode=0640 dmode=0750 uid=1000 gid=1000",
+    );
+    const mfs = MemoryFileSystem.fromImage(image);
+    const linkPath =
+      "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/linux/super/curl";
+
+    const link = mfs.lstat(linkPath);
+    expect((link.mode & 0o170000) >>> 0).toBe(0o120000);
+    expect(link.mode & 0o777).toBe(0o777);
+    expect(link.uid).toBe(1000);
+    expect(link.gid).toBe(1000);
+    expect(mfs.readlink(linkPath)).toBe("../../shared/curl");
+    expect(new TextEncoder().encode(mfs.readlink(linkPath))).toEqual(
+      targetBytes,
+    );
+
+    // Following the relative target reaches the ordinary archive file.
+    expect(readFromImage(mfs, linkPath)).toContain("exec /usr/bin/curl");
+    const target = mfs.stat(
+      "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/shared/curl",
+    );
+    expect(target.mode & 0o777).toBe(0o640);
+    expect(target.uid).toBe(1000);
+    expect(target.gid).toBe(1000);
+    const parent = mfs.stat(
+      "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/linux/super",
+    );
+    expect(parent.mode & 0o777).toBe(0o750);
+    expect(parent.uid).toBe(1000);
+    expect(parent.gid).toBe(1000);
+  });
 });
 
 describe("image builder — validation", () => {
@@ -241,6 +344,118 @@ describe("image builder — validation", () => {
     });
   });
 
+  describe("canonical manifest paths", () => {
+    it.each([
+      ["repeated slash", "/usr/bin//tool"],
+      ["dot component", "/usr/./bin"],
+      ["parent component", "/usr/lib/../bin"],
+      ["leading double slash", "//usr/bin"],
+    ])("rejects a %s before creating a VFS", async (_label, path) => {
+      const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-manifest-path-"));
+      const create = vi.spyOn(MemoryFileSystem, "create");
+      try {
+        const manifest = join(tmp, "MANIFEST");
+        writeFileSync(manifest, `${path} d 0755 0 0\n`);
+
+        await expect(
+          buildImage({ sourceTree: tmp, manifest, repoRoot: tmp }),
+        ).rejects.toThrow(/is not a canonical absolute POSIX path/);
+        expect(create).not.toHaveBeenCalled();
+      } finally {
+        create.mockRestore();
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a raw-path duplicate that aliases an earlier manifest path", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-manifest-alias-"));
+      try {
+        const manifest = join(tmp, "MANIFEST");
+        writeFileSync(
+          manifest,
+          [
+            "/usr/bin/tool d 0755 0 0",
+            "/usr/bin//tool d 0755 0 0",
+            "",
+          ].join("\n"),
+        );
+
+        await expect(
+          buildImage({ sourceTree: tmp, manifest, repoRoot: tmp }),
+        ).rejects.toThrow(/manifest path "\/usr\/bin\/\/tool".*not a canonical/);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects an aliased explicit-source override before archive extraction", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-override-alias-"));
+      const create = vi.spyOn(MemoryFileSystem, "create");
+      try {
+        writeFileSync(join(tmp, "override"), "explicit\n");
+        writeFileSync(
+          join(tmp, "archive.zip"),
+          zipSync({ "bin/tool": new TextEncoder().encode("archive\n") }),
+        );
+        const manifest = join(tmp, "MANIFEST");
+        writeFileSync(
+          manifest,
+          [
+            "/usr d 0755 0 0",
+            "/usr/bin d 0755 0 0",
+            "/usr/bin//tool f 0755 0 0 src=override",
+            "archive url=archive.zip base=/usr",
+            "",
+          ].join("\n"),
+        );
+
+        await expect(
+          buildImage({ sourceTree: tmp, manifest, repoRoot: tmp }),
+        ).rejects.toThrow(/manifest path "\/usr\/bin\/\/tool".*not a canonical/);
+        expect(create).not.toHaveBeenCalled();
+      } finally {
+        create.mockRestore();
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("blocks a manifest symlink alias from redirecting an archive write", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-symlink-alias-"));
+      const create = vi.spyOn(MemoryFileSystem, "create");
+      try {
+        writeFileSync(join(tmp, "passwd"), "root:x:0:0:root:/root:/bin/sh\n");
+        writeFileSync(
+          join(tmp, "archive.zip"),
+          zipSync({ "bin/tool": new TextEncoder().encode("overwritten\n") }),
+        );
+        const manifest = join(tmp, "MANIFEST");
+        writeFileSync(
+          manifest,
+          [
+            "/etc d 0755 0 0",
+            "/etc/passwd f 0600 42 43 src=passwd",
+            "/usr d 0755 0 0",
+            "/usr/bin d 0755 0 0",
+            "/usr/bin//tool l 0777 1000 1000 target=/etc/passwd",
+            "archive url=archive.zip base=/usr fmode=0666 uid=2000 gid=2000",
+            "",
+          ].join("\n"),
+        );
+
+        await expect(
+          buildImage({ sourceTree: tmp, manifest, repoRoot: tmp }),
+        ).rejects.toThrow(/manifest path "\/usr\/bin\/\/tool".*not a canonical/);
+        expect(create).not.toHaveBeenCalled();
+        expect(readFileSync(join(tmp, "passwd"), "utf8")).toBe(
+          "root:x:0:0:root:/root:/bin/sh\n",
+        );
+      } finally {
+        create.mockRestore();
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("missing archive url=", () => {
     it("errors with manifest line number and url path", async () => {
       const fixture = join(fixtures, "missing-archive-url");
@@ -251,6 +466,114 @@ describe("image builder — validation", () => {
           repoRoot: fixture,
         }),
       ).rejects.toThrow(/line 3.*archive not found.*opt\/missing\.zip/);
+    });
+  });
+
+  describe("archive member paths", () => {
+    it.each([
+      ["absolute POSIX path", "/etc/passwd", /must be relative, not absolute/],
+      [
+        "absolute drive path",
+        "C:/Windows/system.ini",
+        /must be relative, not absolute/,
+      ],
+      ["backslash separator", "bin\\tool", /contains a backslash/],
+      [
+        "escaping parent component",
+        "../outside",
+        /not a canonical relative path/,
+      ],
+      [
+        "embedded parent component",
+        "bin/../outside",
+        /not a canonical relative path/,
+      ],
+      ["dot component", "bin/./tool", /not a canonical relative path/],
+      ["empty component", "bin//tool", /not a canonical relative path/],
+      ["NUL byte", "bin/tool\0hidden", /contains a NUL byte/],
+    ])("rejects a %s", async (_label, memberName, expected) => {
+      await expect(
+        buildArchiveImage({
+          [memberName as string]: new TextEncoder().encode("malicious\n"),
+        }),
+      ).rejects.toThrow(expected as RegExp);
+    });
+
+    it.each(["/usr/../etc", "/usr//", "//usr"])(
+      "rejects non-canonical archive base %s before mounting members",
+      async (base) => {
+        await expect(
+          buildArchiveImage(
+            { "bin/tool": new TextEncoder().encode("tool\n") },
+            `base=${base}`,
+          ),
+        ).rejects.toThrow(
+          /archive .* base .* is not a canonical absolute POSIX path/,
+        );
+      },
+    );
+
+    it("rejects invalid central-directory UTF-8 before creating a VFS", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-invalid-name-"));
+      const create = vi.spyOn(MemoryFileSystem, "create");
+      try {
+        writeFileSync(
+          join(tmp, "archive.zip"),
+          corruptFirstCentralDirectoryName(
+            zipSync({ tool: new TextEncoder().encode("content\n") }),
+          ),
+        );
+        const manifest = join(tmp, "MANIFEST");
+        writeFileSync(manifest, "archive url=archive.zip base=/usr\n");
+
+        await expect(
+          buildImage({ sourceTree: tmp, manifest, repoRoot: tmp }),
+        ).rejects.toThrow(/Invalid UTF-8 in ZIP member name/);
+        expect(create).not.toHaveBeenCalled();
+      } finally {
+        create.mockRestore();
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("archive symlink targets", () => {
+    it.each([
+      ["empty", new Uint8Array(0), /has an empty target/],
+      [
+        "NUL-containing",
+        new Uint8Array([0x2e, 0x2f, 0x00, 0x78]),
+        /contains a NUL byte/,
+      ],
+      ["invalid UTF-8", new Uint8Array([0xc3, 0x28]), /not valid UTF-8/],
+    ])("rejects a %s target", async (_label, target, expected) => {
+      await expect(
+        buildArchiveImage({
+          "bin/tool": zipSymlink(target as Uint8Array),
+        }),
+      ).rejects.toThrow(expected as RegExp);
+    });
+  });
+
+  describe("archive path types", () => {
+    it("rejects a file and directory claiming the same VFS path", async () => {
+      await expect(
+        buildArchiveImage({
+          "share/tool": new TextEncoder().encode("file\n"),
+          "share/tool/": new Uint8Array(0),
+        }),
+      ).rejects.toThrow(/archive type collision at "\/usr\/share\/tool"/);
+    });
+
+    it("rejects descendants below an archive symlink", async () => {
+      await expect(
+        buildArchiveImage({
+          "bin/tool": zipSymlink(new TextEncoder().encode("../shared/tool")),
+          "bin/tool/plugin": new TextEncoder().encode("must not escape\n"),
+        }),
+      ).rejects.toThrow(
+        /archive member "\/usr\/bin\/tool\/plugin".*descends through archive symlink "\/usr\/bin\/tool"/,
+      );
     });
   });
 
