@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+TMP_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TMP_ROOT"' EXIT
+
+STDOUT_FILE="$TMP_ROOT/direct.stdout"
+RESULTS_DIR="$TMP_ROOT/results"
+
+cat > "$STDOUT_FILE" <<'EOF'
+utf16.misc1-1.1... Ok
+utf16.misc1-1.2... Ok
+SQLite 2025-02-18 13:38:58 abcdef
+0 errors out of 3 tests on OpenBSD 32-bit
+Omitted test cases:
+.  misc1-10.1   skipped by focused test
+EOF
+
+python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
+  --stdout-file "$STDOUT_FILE" \
+  --results-dir "$RESULTS_DIR" \
+  --host browser \
+  --display-name "test/misc1.test" >/dev/null
+
+if [ "$(wc -l < "$RESULTS_DIR/outcome-lists/passed-cases.txt" | tr -d ' ')" != "3" ]; then
+  echo "expected three passed case entries" >&2
+  exit 1
+fi
+
+if ! grep -qx 'utf16.misc1::__sqlite_finalize_testing__' "$RESULTS_DIR/outcome-lists/passed-cases.txt"; then
+  echo "missing synthetic finalize_testing case" >&2
+  exit 1
+fi
+
+if [ "$(tail -n +2 "$RESULTS_DIR/outcome-lists/skipped-cases.tsv" | wc -l | tr -d ' ')" != "1" ]; then
+  echo "expected one skipped case entry" >&2
+  exit 1
+fi
+
+python3 - "$RESULTS_DIR/outcome-lists/case-outcomes.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text())
+summary = data["summary"]
+assert summary["reported_executed_cases"] == 3, summary
+assert summary["passed_cases"] == 3, summary
+assert summary["skipped_cases"] == 1, summary
+assert summary["synthetic_passed_cases"] == ["utf16.misc1::__sqlite_finalize_testing__"], summary
+assert data["unavailable"] == [], data["unavailable"]
+PY
+
+DB="$TMP_ROOT/testrunner.db"
+python3 - "$DB" "$STDOUT_FILE" <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path = Path(sys.argv[1])
+stdout = Path(sys.argv[2]).read_text()
+con = sqlite3.connect(db_path)
+con.executescript("""
+CREATE TABLE jobs(
+  jobid INTEGER PRIMARY KEY,
+  displaytype TEXT NOT NULL,
+  displayname TEXT NOT NULL,
+  build TEXT NOT NULL DEFAULT '',
+  dirname TEXT NOT NULL DEFAULT '',
+  cmd TEXT NOT NULL,
+  depid INTEGER,
+  priority INTEGER NOT NULL,
+  starttime INTEGER,
+  endtime INTEGER,
+  span INTEGER,
+  estwork INTEGER,
+  state TEXT,
+  ntest INT,
+  nerr INT,
+  svers TEXT,
+  pltfm TEXT,
+  output TEXT
+);
+""")
+con.execute(
+    "INSERT INTO jobs(jobid, displaytype, displayname, cmd, priority, state, ntest, nerr, output) VALUES(1, 'tcl', 'test/misc1.test', '', 1, 'done', 3, 0, ?)",
+    (stdout,),
+)
+con.execute(
+    "INSERT INTO jobs(jobid, displaytype, displayname, cmd, priority, state, ntest, nerr, output) VALUES(2, 'tcl', 'test/failing.test', '', 1, 'done', 1, 1, ?)",
+    ("! failing-1.1 expected: value\n1 errors out of 1 tests on OpenBSD 32-bit\n",),
+)
+con.commit()
+con.close()
+PY
+
+DB_RESULTS="$TMP_ROOT/db-results"
+python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
+  --db "$DB" \
+  --results-dir "$DB_RESULTS" \
+  --host node >/dev/null
+
+if ! grep -qx 'utf16.misc1::__sqlite_finalize_testing__' "$DB_RESULTS/outcome-lists/passed-cases.txt"; then
+  echo "db mode missing synthetic finalize_testing case" >&2
+  exit 1
+fi
+
+python3 - "$DB_RESULTS/outcome-lists/case-outcomes.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text())
+assert data["summary"]["jobs"] == {
+    "passed": 1,
+    "failed": 1,
+    "skipped": 0,
+    "incomplete": 0,
+}, data["summary"]["jobs"]
+assert data["summary"]["failed_cases"] == 1, data["summary"]
+PY
+
+echo "sqlite-case-outcomes ok"

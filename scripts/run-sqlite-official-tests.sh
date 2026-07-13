@@ -357,6 +357,12 @@ write_sqlite_report() {
          OR (state='done' AND coalesce(nerr, 0)>0)
       ORDER BY state, jobid;" > "$failures"
 
+  python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
+    --db "$db" \
+    --results-dir "$RESULTS_DIR" \
+    --host "$HOST" \
+    --permutation "$PERMUTATION" || true
+
   echo "===== SQLite official testrunner database summary ====="
   cat "$report"
 }

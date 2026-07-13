@@ -241,6 +241,12 @@ write_sqlite_report() {
       WHERE state IN ('failed', 'running', 'omit')
       ORDER BY state, jobid;" > "$failures"
 
+  python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
+    --db "$db" \
+    --results-dir "$RESULTS_DIR" \
+    --host browser \
+    --permutation "$PERMUTATION" || true
+
   echo "===== SQLite official testrunner database summary ====="
   cat "$report"
 }
