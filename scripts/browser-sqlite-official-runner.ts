@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
@@ -108,6 +108,39 @@ function writeArtifacts(resultsDir: string, artifacts: BrowserArtifact[] | undef
   }
 }
 
+function inferDisplayName(command: string[]): string {
+  const tests = command.filter((arg) => arg.endsWith(".test"));
+  if (tests.length > 0) return tests[tests.length - 1];
+  return command.join(" ");
+}
+
+function writeDirectOutcomeArtifacts(resultsDir: string, command: string[], stdout: string, stderr: string): boolean {
+  if (!resultsDir) return true;
+  mkdirSync(resultsDir, { recursive: true });
+  const stdoutPath = resolve(resultsDir, "runner.stdout");
+  const stderrPath = resolve(resultsDir, "runner.stderr");
+  const dbPath = resolve(resultsDir, "testrunner.db");
+  writeFileSync(stdoutPath, stdout);
+  writeFileSync(stderrPath, stderr);
+  const sourceArgs = existsSync(dbPath)
+    ? ["--db", dbPath]
+    : ["--stdout-file", stdoutPath, "--display-name", inferDisplayName(command)];
+  const outcome = spawnSync(
+    "python3",
+    [
+      resolve(REPO_ROOT, "scripts/sqlite-case-outcomes.py"),
+      ...sourceArgs,
+      "--results-dir", resultsDir,
+      "--host", "browser",
+    ],
+    { cwd: REPO_ROOT, stdio: "inherit" },
+  );
+  if (outcome.status !== 0) {
+    console.error(`[sqlite-outcomes] case outcome extraction failed with status ${outcome.status}`);
+  }
+  return outcome.status === 0;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   let timeoutMs = 600_000;
@@ -189,10 +222,12 @@ async function main() {
     }
     if (!result.artifacts && latestArtifacts) result.artifacts = latestArtifacts;
     writeArtifacts(resultsDir, result.artifacts);
+    const outcomesOk = writeDirectOutcomeArtifacts(resultsDir, command, result.stdout, result.stderr);
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) process.stderr.write(`${result.error}\n`);
-    process.exit(result.exitCode === 0 ? 0 : 1);
+    process.exitCode = result.exitCode === 0 && outcomesOk ? 0 : 1;
+    return;
   } finally {
     await browser?.close().catch(() => {});
     if (vite) {
