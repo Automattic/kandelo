@@ -15,7 +15,7 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5724fbd09d7c43ba63c5bfa58cb4e73d7f0c08247b029b49a3e4e940d0011bd5"
-PUBLISHER_BUILD_DIGEST = "1ee41926a238526ef4aec3699906c9dfa7fd4e0e942572028f0e281d939e6803"
+PUBLISHER_BUILD_DIGEST = "21ffce433afad2e3cfd8a310ef585f2b3d5a576fec445e84efa67115f2eb5796"
 PUBLISHER_UPLOAD_DIGEST = "60a32b6c315cfbaa5b4035c67f1cbb76d17b17a6e20c4f3e06d72aa66af456bd"
 PUBLISHER_VERIFY_DIGEST = "149a482a378ddcf24f756a6c2068cd6a450af6bfa3bf47a7b8015210cd2d524d"
 PUBLISHER_FINALIZE_DIGEST = "ff194b4abd44c058c18a1a9175b9be3f02814302a19b0f2842c3c86ad025ee04"
@@ -492,11 +492,26 @@ def check_publisher(workflow)
   javascript_step = named_step(build_steps, "Install JavaScript dependencies for formula tests")
   build_formula_step = named_step(build_steps,
                                   "Build and test Homebrew bottle without publisher credentials")
+  source_closure_step = named_step(build_steps,
+                                   "Recheck reviewed sources after Formula execution")
+  source_closure_run = source_closure_step.fetch("run")
+  [
+    "scripts/homebrew-validate-formula-source-closure.sh",
+    '--tap-root "$GITHUB_WORKSPACE/tap"', '--tap-repository "$TAP_REPOSITORY"',
+    '--formula "$FORMULA"', '--base-ref "$TAP_SHA"',
+  ].each do |fragment|
+    check(source_closure_run.include?(fragment),
+          "publisher Formula source-closure check lacks #{fragment}")
+  end
   check(build_steps.index(kernel_step) < build_steps.index(runtime_step) &&
         build_steps.index(runtime_step) < build_steps.index(javascript_step) &&
-        build_steps.index(runtime_step) < build_steps.index(build_formula_step),
+        build_steps.index(runtime_step) < build_steps.index(build_formula_step) &&
+        build_steps.index(build_formula_step) < build_steps.index(source_closure_step),
         "publisher Formula test runtime is materialized outside the unprivileged pre-test phase")
   create_handoff_run = named_step(build_steps, "Create strict bottle data handoff").fetch("run")
+  check(build_steps.index(source_closure_step) <
+        build_steps.index(named_step(build_steps, "Create strict bottle data handoff")),
+        "publisher creates the bottle handoff before revalidating Formula sources")
   [
     "scripts/homebrew-create-build-handoff.sh", '--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"',
     '--bottle "$BOTTLE_ARCHIVE"', '--bottle-json "$BOTTLE_JSON"',
@@ -912,6 +927,13 @@ def self_test(publisher, maintenance)
         step["name"] == "Build and test Homebrew bottle without publisher credentials"
       end
       steps[runtime_index], steps[formula_index] = steps[formula_index], steps[runtime_index]
+    },
+    "Formula source closure bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Recheck reviewed sources after Formula execution")
+      step["run"] = step.fetch("run").sub(
+        "scripts/homebrew-validate-formula-source-closure.sh", "true #"
+      )
     },
     "verifier token exposure" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle",

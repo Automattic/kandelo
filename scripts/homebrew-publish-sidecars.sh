@@ -315,7 +315,7 @@ compose_publication_handoff() {
   local handoff input manifest receipt bottle formula_path formula_sha
   local input_tap_commit input_kandelo_commit bottle_sha bottle_url bottle_bytes
   local bottle_root relocation_cellar rebuild tag planned_formula composed_formula
-  local planned_digest refreshed_digest host previous_metadata version formula_revision
+  local host previous_metadata version formula_revision
   local kandelo_abi sibling_policy formula_stage publish_stage kandelo_stage kandelo_previous
   local -a sidecar_args
 
@@ -396,6 +396,12 @@ compose_publication_handoff() {
     exit 1
   fi
 
+  bash "$KANDELO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$COMPOSE_ROOT" \
+    --tap-repository "Automattic/kandelo-homebrew" \
+    --formula "$FORMULA" \
+    --base-ref "$input_tap_commit" >/dev/null
+
   planned_formula="$COMPOSE_PARENT/planned-formula.rb"
   composed_formula="$COMPOSE_PARENT/composed-formula.rb"
   git -C "$COMPOSE_ROOT" show "$input_tap_commit:$formula_path" >"$planned_formula"
@@ -403,13 +409,6 @@ compose_publication_handoff() {
     echo "homebrew-publish-sidecars.sh: planned Formula bytes differ from archived bottle provenance" >&2
     exit 1
   }
-  planned_digest="$(ruby "$KANDELO_ROOT/scripts/homebrew-formula-source-digest.rb" "$planned_formula")"
-  refreshed_digest="$(ruby "$KANDELO_ROOT/scripts/homebrew-formula-source-digest.rb" "$COMPOSE_ROOT/$formula_path")"
-  [ "$planned_digest" = "$refreshed_digest" ] || {
-    echo "homebrew-publish-sidecars.sh: Formula source changed after the bottle build" >&2
-    exit 1
-  }
-
   previous_metadata="$COMPOSE_ROOT/Kandelo/metadata.json"
   sibling_policy="$(sibling_bottle_policy \
     "$previous_metadata" "$FORMULA" "$version" "$formula_revision" "$rebuild" "$kandelo_abi")"
