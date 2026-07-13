@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   rmSync,
@@ -683,6 +683,74 @@ describe("mkrootfs inspect — happy paths", () => {
       // Dir size is null (not included as a number).
       const etc = data.find((e) => e.path === "/etc");
       expect(etc!.size).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("drains JSON output larger than the process stdout buffer", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-large-"));
+    const image = join(tmp, "large.vfs");
+    try {
+      const mfs = MemoryFileSystem.create(
+        new SharedArrayBuffer(8 * 1024 * 1024),
+      );
+      for (let i = 0; i < 1_500; i++) {
+        const name = `/entry-${String(i).padStart(4, "0")}-with-a-long-name`;
+        mfs.createFileWithOwner(name, 0o644, 0, 0, new Uint8Array(0));
+      }
+      writeFileSync(image, await mfs.saveImage());
+
+      const r = run("inspect", image, "--format", "json");
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.length).toBeGreaterThan(64 * 1024);
+      const data = JSON.parse(r.stdout) as Array<{ path: string }>;
+      expect(data).toHaveLength(1_501);
+      expect(data.at(-1)?.path).toBe("/entry-1499-with-a-long-name");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits cleanly when a pipe consumer closes stdout early", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-epipe-"));
+    const image = join(tmp, "large.vfs");
+    try {
+      const mfs = MemoryFileSystem.create(
+        new SharedArrayBuffer(8 * 1024 * 1024),
+      );
+      for (let i = 0; i < 1_500; i++) {
+        const name = `/entry-${String(i).padStart(4, "0")}-with-a-long-name`;
+        mfs.createFileWithOwner(name, 0o644, 0, 0, new Uint8Array(0));
+      }
+      writeFileSync(image, await mfs.saveImage());
+
+      const child = spawn(shim, ["inspect", image, "--format", "json"], {
+        cwd: repoRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+      });
+      const result = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve, reject) => {
+          child.once("error", reject);
+          child.once("exit", (code, signal) => resolve({ code, signal }));
+        },
+      );
+
+      await new Promise<void>((resolve, reject) => {
+        child.stdout.once("data", () => {
+          child.stdout.destroy();
+          resolve();
+        });
+        child.stdout.once("error", reject);
+      });
+
+      await expect(result).resolves.toEqual({ code: 0, signal: null });
+      expect(stderr).toBe("");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
