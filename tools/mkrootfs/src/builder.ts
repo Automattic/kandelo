@@ -40,6 +40,10 @@ import {
 } from "./validate.ts";
 
 const DEFAULT_SAB_SIZE = 16 * 1024 * 1024;
+const DEFAULT_SOURCE_DATE_EPOCH_SECONDS = 0;
+const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
+  Number.MAX_SAFE_INTEGER / 1000,
+);
 const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
 const textEncoder = new TextEncoder();
@@ -63,11 +67,28 @@ export interface BuildOptions {
   maxSizeBytes?: number;
   /** Optional image-level declarations, such as the required kernel ABI. */
   metadata?: VfsImageMetadata;
+  /**
+   * Canonical inode timestamp in whole seconds since the Unix epoch. Defaults
+   * to zero so identical inputs produce byte-identical images.
+   */
+  sourceDateEpochSeconds?: number;
   /** Optional sink for non-fatal audit messages (archive overrides, etc.). */
   onWarn?: (msg: string) => void;
 }
 
 export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
+  const sourceDateEpochSeconds =
+    opts.sourceDateEpochSeconds ?? DEFAULT_SOURCE_DATE_EPOCH_SECONDS;
+  if (
+    !Number.isSafeInteger(sourceDateEpochSeconds) ||
+    sourceDateEpochSeconds < 0 ||
+    sourceDateEpochSeconds > MAX_SOURCE_DATE_EPOCH_SECONDS
+  ) {
+    throw new Error(
+      `sourceDateEpochSeconds must be an integer from 0 through ${MAX_SOURCE_DATE_EPOCH_SECONDS}`,
+    );
+  }
+
   const entries = loadManifestEntries(opts);
 
   // Phase 1: text-only validation (no FS). Catches duplicate manifest paths.
@@ -92,7 +113,10 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   buildSymlinks(mfs, entries);
   buildArchives(mfs, archiveBundles, plan);
 
-  return await mfs.saveImage({ metadata: opts.metadata });
+  return await mfs.saveImage({
+    metadata: opts.metadata,
+    normalizeTimestampsMs: sourceDateEpochSeconds * 1000,
+  });
 }
 
 function loadManifestEntries(opts: BuildOptions): ManifestEntry[] {

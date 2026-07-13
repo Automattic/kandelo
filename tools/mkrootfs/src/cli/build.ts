@@ -25,6 +25,9 @@ Options:
   --kernel-abi <n>       declare exact kernel ABI required by this VFS image
   --quiet                suppress non-fatal override warnings
   --help                 print this message
+
+Environment:
+  SOURCE_DATE_EPOCH      canonical inode timestamp in whole Unix seconds (default: 0)
 `;
 
 interface ParsedArgs {
@@ -173,6 +176,23 @@ function parseByteSize(flag: string, value: string): number {
   return parsed;
 }
 
+function readSourceDateEpoch(): number | undefined {
+  const value = process.env.SOURCE_DATE_EPOCH;
+  if (value === undefined) return undefined;
+  if (!/^\d+$/.test(value)) {
+    throw new Error(
+      `SOURCE_DATE_EPOCH must be a non-negative integer, got ${JSON.stringify(value)}`,
+    );
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(
+      `SOURCE_DATE_EPOCH must be a non-negative safe integer, got ${JSON.stringify(value)}`,
+    );
+  }
+  return parsed;
+}
+
 export async function runBuild(args: string[]): Promise<number> {
   let parsed: ParsedArgs | "help";
   try {
@@ -203,6 +223,7 @@ export async function runBuild(args: string[]): Promise<number> {
       repoRoot: parsed.repoRoot ?? process.cwd(),
       sabSize: parsed.sabSize,
       maxSizeBytes: parsed.maxSizeBytes,
+      sourceDateEpochSeconds: readSourceDateEpoch(),
       metadata: parsed.kernelAbi === undefined
         ? undefined
         : {

@@ -164,6 +164,14 @@ export interface SharedFsIdentityState {
   paths: string[];
 }
 
+export interface SharedFsSnapshotOptions {
+  /**
+   * Replace every allocated inode's atime, mtime, and ctime in the detached
+   * snapshot copy. The live filesystem is not modified.
+   */
+  normalizeTimestampsMs?: number;
+}
+
 export interface NamespaceEntryIdentity {
   ino: number;
   generation: number;
@@ -410,11 +418,11 @@ export class SharedFS {
    * state. Refuse to snapshot while descriptors are live, then clear all lock
    * words in the copy so a restored image cannot inherit a dead worker's lock.
    */
-  snapshotBytes(): Uint8Array {
-    return this.withNamespaceLock(() => this.snapshotBytesUnlocked());
+  snapshotBytes(options?: SharedFsSnapshotOptions): Uint8Array {
+    return this.withNamespaceLock(() => this.snapshotBytesUnlocked(options));
   }
 
-  snapshotState(): {
+  snapshotState(options?: SharedFsSnapshotOptions): {
     bytes: Uint8Array;
     identities: Map<string, SharedFsIdentityState>;
   } {
@@ -422,7 +430,7 @@ export class SharedFS {
       // Validate quiescence and copy first. With the namespace lock held, no
       // new descriptor can appear while the matching path identities are
       // collected for lazy metadata.
-      const bytes = this.snapshotBytesUnlocked();
+      const bytes = this.snapshotBytesUnlocked(options);
       return { bytes, identities: this.collectIdentityStateUnlocked() };
     });
   }
@@ -431,7 +439,23 @@ export class SharedFS {
     return this.withNamespaceLock(() => this.collectIdentityStateUnlocked());
   }
 
-  private snapshotBytesUnlocked(): Uint8Array {
+  private snapshotBytesUnlocked(options?: SharedFsSnapshotOptions): Uint8Array {
+    const normalizeTimestampsMs = options?.normalizeTimestampsMs;
+    if (
+      normalizeTimestampsMs !== undefined &&
+      (!Number.isSafeInteger(normalizeTimestampsMs) ||
+        normalizeTimestampsMs < 0)
+    ) {
+      throw new SFSError(
+        EINVAL,
+        "Snapshot timestamp must be a non-negative safe integer in milliseconds",
+      );
+    }
+    const normalizedTimestamp =
+      normalizeTimestampsMs === undefined
+        ? undefined
+        : BigInt(normalizeTimestampsMs);
+
     for (let fd = 0; fd < MAX_FDS; fd++) {
       const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
       if (Atomics.load(this.i32, base >> 2) !== 0) {
@@ -464,6 +488,18 @@ export class SharedFS {
       const off = this.inodeOffset(ino);
       view.setUint32(off + INO_LOCK_STATE, 0, true);
       view.setUint32(off + INO_OPEN_COUNT, 0, true);
+      if (normalizedTimestamp !== undefined) {
+        // Freed inode slots are not filesystem state, but their old timestamps
+        // remain in the table until reuse. Clear those unreachable values so a
+        // deterministic create/unlink sequence cannot leak wall-clock bytes.
+        const timestamp =
+          ino >= ROOT_INO && this.inodeIsAllocated(ino)
+            ? normalizedTimestamp
+            : 0n;
+        view.setBigUint64(off + INO_ATIME, timestamp, true);
+        view.setBigUint64(off + INO_MTIME, timestamp, true);
+        view.setBigUint64(off + INO_CTIME, timestamp, true);
+      }
     }
     return copy;
   }

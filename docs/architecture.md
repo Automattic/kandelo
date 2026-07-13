@@ -666,6 +666,12 @@ builder helper wraps it in one zstd frame for `.vfs.zst` artifacts;
 `MemoryFileSystem.fromImage()` accepts either form and auto-detects the zstd
 magic (`28 B5 2F FD`) at offset 0 before parsing.
 
+Runtime snapshots preserve the filesystem's POSIX atime, mtime, and ctime by
+default. Reproducible image builders may request a fixed timestamp in the
+detached snapshot copy without mutating the live filesystem. `mkrootfs build`
+uses this facility for every allocated inode, taking whole Unix seconds from
+`SOURCE_DATE_EPOCH` and defaulting to epoch zero when it is unset.
+
 Decompressed layout:
 
 ```

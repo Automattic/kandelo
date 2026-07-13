@@ -26,6 +26,14 @@ function run(...args: string[]) {
   return spawnSync(shim, args, { encoding: "utf8", cwd: repoRoot });
 }
 
+function runWithSourceDateEpoch(sourceDateEpoch: string, ...args: string[]) {
+  return spawnSync(shim, args, {
+    encoding: "utf8",
+    cwd: repoRoot,
+    env: { ...process.env, SOURCE_DATE_EPOCH: sourceDateEpoch },
+  });
+}
+
 describe("mkrootfs CLI — top-level", () => {
   it("prints usage on --help and exits 0", () => {
     const r = run("--help");
@@ -51,6 +59,57 @@ describe("mkrootfs CLI — top-level", () => {
 });
 
 describe("mkrootfs build — happy paths", () => {
+  it("builds byte-identical images across separate invocations", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-reproducible-"));
+    const first = join(tmp, "first.vfs");
+    const second = join(tmp, "second.vfs");
+    try {
+      for (const output of [first, second]) {
+        const result = run(
+          "build",
+          join(fixture, "MANIFEST"),
+          join(fixture, "rootfs"),
+          "-o", output,
+          "--repo-root", fixture,
+        );
+        expect(result.status).toBe(0);
+      }
+      expect(readFileSync(second).equals(readFileSync(first))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("honors SOURCE_DATE_EPOCH for directories, files, and symlinks", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-epoch-"));
+    const out = join(tmp, "rootfs.vfs");
+    try {
+      const result = runWithSourceDateEpoch(
+        "946684800",
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", out,
+        "--repo-root", fixture,
+      );
+      expect(result.status).toBe(0);
+
+      const mfs = MemoryFileSystem.fromImage(
+        new Uint8Array(readFileSync(out)),
+      );
+      for (const path of ["/", "/etc", "/etc/passwd", "/usr/bin/sh"]) {
+        const stat = mfs.lstat(path);
+        expect(stat.atimeMs, `${path} atime`).toBe(946_684_800_000);
+        expect(stat.mtimeMs, `${path} mtime`).toBe(946_684_800_000);
+        expect(stat.ctimeMs, `${path} ctime`).toBe(946_684_800_000);
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("builds an image from MANIFEST + sourceTree and writes it to -o", () => {
     const fixture = join(here, "fixtures", "basic");
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
@@ -351,6 +410,27 @@ describe("mkrootfs build — happy paths", () => {
 });
 
 describe("mkrootfs build — error handling", () => {
+  it("rejects an invalid SOURCE_DATE_EPOCH", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-epoch-"));
+    try {
+      const result = runWithSourceDateEpoch(
+        "1.5",
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", join(tmp, "rootfs.vfs"),
+        "--repo-root", fixture,
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "SOURCE_DATE_EPOCH must be a non-negative integer",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("exits non-zero when -o is missing", () => {
     const fixture = join(here, "fixtures", "basic");
     const r = run(
