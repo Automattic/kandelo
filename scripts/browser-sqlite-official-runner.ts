@@ -114,8 +114,8 @@ function inferDisplayName(command: string[]): string {
   return command.join(" ");
 }
 
-function writeDirectOutcomeArtifacts(resultsDir: string, command: string[], stdout: string, stderr: string): void {
-  if (!resultsDir) return;
+function writeDirectOutcomeArtifacts(resultsDir: string, command: string[], stdout: string, stderr: string): boolean {
+  if (!resultsDir) return true;
   mkdirSync(resultsDir, { recursive: true });
   const stdoutPath = resolve(resultsDir, "runner.stdout");
   const stderrPath = resolve(resultsDir, "runner.stderr");
@@ -138,6 +138,7 @@ function writeDirectOutcomeArtifacts(resultsDir: string, command: string[], stdo
   if (outcome.status !== 0) {
     console.error(`[sqlite-outcomes] case outcome extraction failed with status ${outcome.status}`);
   }
+  return outcome.status === 0;
 }
 
 async function main() {
@@ -221,11 +222,11 @@ async function main() {
     }
     if (!result.artifacts && latestArtifacts) result.artifacts = latestArtifacts;
     writeArtifacts(resultsDir, result.artifacts);
-    writeDirectOutcomeArtifacts(resultsDir, command, result.stdout, result.stderr);
+    const outcomesOk = writeDirectOutcomeArtifacts(resultsDir, command, result.stdout, result.stderr);
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) process.stderr.write(`${result.error}\n`);
-    process.exit(result.exitCode === 0 ? 0 : 1);
+    process.exit(result.exitCode === 0 && outcomesOk ? 0 : 1);
   } finally {
     await browser?.close().catch(() => {});
     if (vite) {

@@ -216,14 +216,14 @@ write_outcome_lists() {
             END AS reason,
             'testrunner.db' AS source
        FROM jobs
-      WHERE state IN ('running', 'ready')
+      WHERE coalesce(state, '') NOT IN ('done', 'failed', 'omit')
       ORDER BY state, jobid;" > "$out/incomplete-jobs.tsv"
 
   sqlite3 -header -separator $'\t' "$db" \
     "SELECT coalesce(sum(state='done' AND coalesce(nerr, 0)=0), 0) AS passed_jobs,
             coalesce(sum(state='failed' OR (state='done' AND coalesce(nerr, 0)>0)), 0) AS failed_jobs,
             coalesce(sum(state='omit'), 0) AS skipped_jobs,
-            coalesce(sum(state IN ('running','ready')), 0) AS incomplete_jobs,
+            coalesce(sum(coalesce(state,'') NOT IN ('done','failed','omit')), 0) AS incomplete_jobs,
             'testrunner.db' AS source
        FROM jobs;" > "$out/counts.tsv"
 }
@@ -235,7 +235,7 @@ write_sqlite_report() {
   if [ ! -f "$db" ]; then
     echo "No testrunner.db was created at $db" > "$report"
     write_unavailable_outcome_lists "No testrunner.db was created at $db."
-    return
+    return 1
   fi
 
   mkdir -p "$RESULTS_DIR"
@@ -265,7 +265,7 @@ write_sqlite_report() {
     write_unavailable_outcome_lists "No usable jobs table was found in $db."
     echo "===== SQLite official testrunner database summary ====="
     cat "$report"
-    return
+    return 1
   fi
 
   write_outcome_lists "$db"
@@ -318,13 +318,13 @@ write_sqlite_report() {
         GROUP BY config
         ORDER BY CASE WHEN config='full' THEN 0 ELSE 1 END, config;"
     echo
-    echo "Failed, running, and omitted jobs:"
+    echo "Unsuccessful, incomplete, and omitted jobs:"
     sqlite3 -header -column "$db" \
       "SELECT jobid, state, displaytype, displayname, coalesce(ntest, 0) AS cases,
               coalesce(nerr, 0) AS errors, coalesce(span, 0) AS ms
          FROM jobs
-        WHERE state IN ('failed', 'running', 'omit')
-           OR (state='done' AND coalesce(nerr, 0)>0)
+        WHERE coalesce(state, '')!='done'
+           OR coalesce(nerr, 0)>0
         ORDER BY state, jobid;"
   } > "$report"
 
@@ -332,18 +332,46 @@ write_sqlite_report() {
     "SELECT jobid, state, displaytype, displayname, coalesce(ntest, 0) AS cases,
             coalesce(nerr, 0) AS errors, coalesce(span, 0) AS ms
       FROM jobs
-      WHERE state IN ('failed', 'running', 'omit')
-         OR (state='done' AND coalesce(nerr, 0)>0)
+      WHERE coalesce(state, '')!='done'
+         OR coalesce(nerr, 0)>0
       ORDER BY state, jobid;" > "$failures"
 
-  python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
+  if ! python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
     --db "$RESULTS_DIR/testrunner.db" \
     --results-dir "$RESULTS_DIR" \
     --host "$HOST" \
-    --permutation "$PERMUTATION" || true
+    --permutation "$PERMUTATION"
+  then
+    echo "ERROR: failed to write SQLite case outcome artifacts" >&2
+    return 1
+  fi
 
   echo "===== SQLite official testrunner database summary ====="
   cat "$report"
+
+  local total_jobs unsuccessful_jobs
+  total_jobs="$(sqlite3 "$db" "SELECT count(*) FROM jobs;")"
+  if [ "$total_jobs" -eq 0 ]; then
+    echo "ERROR: SQLite testrunner selected no jobs" >&2
+    return 1
+  fi
+  if $EXPLAIN; then
+    unsuccessful_jobs="$(sqlite3 "$db" \
+      "SELECT count(*) FROM jobs
+        WHERE state NOT IN ('', 'ready')
+           OR coalesce(nerr, 0)>0;")"
+  else
+    unsuccessful_jobs="$(sqlite3 "$db" \
+      "SELECT count(*) FROM jobs
+        WHERE state!='done'
+           OR ntest IS NULL
+           OR nerr IS NULL
+           OR nerr>0;")"
+  fi
+  if [ "$unsuccessful_jobs" -ne 0 ]; then
+    echo "ERROR: SQLite testrunner recorded $unsuccessful_jobs unsuccessful or incomplete job(s)" >&2
+    return 1
+  fi
 }
 
 patch_sqlite_testrunner_platform() {
@@ -577,5 +605,12 @@ node --experimental-wasm-exnref --import tsx/esm \
 status=$?
 set -e
 
-write_sqlite_report || true
-exit "$status"
+set +e
+(set -e; write_sqlite_report)
+report_status=$?
+set -e
+
+if [ "$status" -ne 0 ]; then
+  exit "$status"
+fi
+exit "$report_status"
