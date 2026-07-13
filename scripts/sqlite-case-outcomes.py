@@ -55,6 +55,14 @@ def append_unique_pair(items: list[tuple[str, str]], value: tuple[str, str]) -> 
         items.append(value)
 
 
+def upsert_named_pair(items: list[tuple[str, str]], value: tuple[str, str]) -> None:
+    for index, (name, _) in enumerate(items):
+        if name == value[0]:
+            items[index] = value
+            return
+    items.append(value)
+
+
 def parse_output(text: str) -> ParsedOutput:
     parsed = ParsedOutput()
     in_omitted_detail = False
@@ -121,7 +129,8 @@ def read_jobs_from_db(db_path: Path) -> tuple[list[Job], str | None]:
     if not db_path.exists():
         return [], f"testrunner database is missing: {db_path}"
 
-    con = sqlite3.connect(str(db_path))
+    db_uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    con = sqlite3.connect(db_uri, uri=True)
     # Some archived browser runs contain non-UTF-8 bytes in Tcl output. Read
     # TEXT as bytes so one diagnostic byte cannot make the whole report fail.
     con.text_factory = bytes
@@ -267,8 +276,16 @@ def build_outcomes(jobs: list[Job], source_reason: str | None) -> dict[str, Any]
         reported_executed_cases += ntest
         reported_case_errors += nerr
 
-        for skipped in parsed.skipped_counted + parsed.skipped_detail:
-            append_unique_pair(skipped_cases, skipped)
+        job_skipped: list[tuple[str, str]] = []
+        for skipped in parsed.skipped_counted:
+            upsert_named_pair(job_skipped, skipped)
+        for skipped in parsed.skipped_detail:
+            # SQLite prints some omissions twice: once as `... Omitted` and
+            # again in its detailed reason list. Keep one row and prefer the
+            # specific reason.
+            upsert_named_pair(job_skipped, skipped)
+        for skipped in job_skipped:
+            upsert_named_pair(skipped_cases, skipped)
 
         if len(parsed.failed) == nerr:
             failed_cases.extend(parsed.failed)

@@ -257,10 +257,6 @@ write_sqlite_report() {
 
   mkdir -p "$RESULTS_DIR"
 
-  # SQLite's testrunner keeps its control database in WAL mode. Checkpoint
-  # before copying so timeout artifacts remain self-contained after cleanup.
-  sqlite3 "$db" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
-
   for artifact in testrunner.db testrunner.db-wal testrunner.db-shm testrunner.log testrunner_build.log; do
     if [ -f "$WORKDIR/$artifact" ]; then
       cp "$WORKDIR/$artifact" "$RESULTS_DIR/$artifact"
@@ -358,7 +354,7 @@ write_sqlite_report() {
       ORDER BY state, jobid;" > "$failures"
 
   python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
-    --db "$db" \
+    --db "$RESULTS_DIR/testrunner.db" \
     --results-dir "$RESULTS_DIR" \
     --host "$HOST" \
     --permutation "$PERMUTATION" || true

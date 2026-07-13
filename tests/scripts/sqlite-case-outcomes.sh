@@ -53,6 +53,30 @@ assert data["categories"]["passed_cases"]["status"] == "partial", data["categori
 assert data["unavailable"][0]["category"] == "passed_cases", data["unavailable"]
 PY
 
+OMITTED_STDOUT="$TMP_ROOT/omitted.stdout"
+OMITTED_RESULTS="$TMP_ROOT/omitted-results"
+cat > "$OMITTED_STDOUT" <<'EOF'
+omitted-1.1... Omitted
+0 errors out of 1 tests on OpenBSD 32-bit
+Omitted test cases:
+.  omitted-1.1   requires an unavailable optional feature
+EOF
+
+python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
+  --stdout-file "$OMITTED_STDOUT" \
+  --results-dir "$OMITTED_RESULTS" \
+  --host browser \
+  --display-name "test/omitted.test" >/dev/null
+
+if [ "$(tail -n +2 "$OMITTED_RESULTS/outcome-lists/skipped-cases.tsv" | wc -l | tr -d ' ')" != "1" ]; then
+  echo "expected duplicate omitted output to produce one skipped row" >&2
+  exit 1
+fi
+if ! grep -q 'requires an unavailable optional feature' "$OMITTED_RESULTS/outcome-lists/skipped-cases.tsv"; then
+  echo "expected the detailed omission reason" >&2
+  exit 1
+fi
+
 DB="$TMP_ROOT/testrunner.db"
 python3 - "$DB" "$STDOUT_FILE" <<'PY'
 import sqlite3
@@ -101,11 +125,22 @@ con.commit()
 con.close()
 PY
 
+# Reporting must not mutate or clean up the evidence it reads.
+: > "$DB-wal"
+: > "$DB-shm"
+SIDECAR_HASHES_BEFORE="$(shasum -a 256 "$DB" "$DB-wal" "$DB-shm")"
+
 DB_RESULTS="$TMP_ROOT/db-results"
 python3 "$REPO_ROOT/scripts/sqlite-case-outcomes.py" \
   --db "$DB" \
   --results-dir "$DB_RESULTS" \
   --host node >/dev/null
+
+SIDECAR_HASHES_AFTER="$(shasum -a 256 "$DB" "$DB-wal" "$DB-shm")"
+if [ "$SIDECAR_HASHES_BEFORE" != "$SIDECAR_HASHES_AFTER" ]; then
+  echo "outcome extraction changed its source database or sidecars" >&2
+  exit 1
+fi
 
 python3 - "$DB_RESULTS/outcome-lists/case-outcomes.json" <<'PY'
 import json
