@@ -1,5 +1,6 @@
 import { defineConfig } from "tsup";
-import { dirname } from "node:path";
+import { copyFileSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { hostBuildFingerprintBanner } from "./src/compiled-worker-entry";
@@ -27,5 +28,13 @@ export default defineConfig({
   splitting: false,
   banner: {
     js: hostBuildFingerprintBanner(hostRoot),
+  },
+  onSuccess: async () => {
+    const outputDir = resolve(hostRoot, "dist/audio");
+    mkdirSync(outputDir, { recursive: true });
+    copyFileSync(
+      resolve(hostRoot, "src/audio/pcm-audio-worklet.js"),
+      resolve(outputDir, "pcm-audio-worklet.js"),
+    );
   },
 });

@@ -18,6 +18,14 @@ cp \
     "$REPO_ROOT/packages/registry/program-packages.json" \
     "$HOST_WASM_DIR/program-packages.json"
 
+# `npm run build` copies the self-contained browser PCM worklet through the
+# tsup onSuccess hook. Keep prepack strict so a publish can never contain a
+# BrowserKernel bundle whose relative worklet URL resolves to a missing asset.
+test -f "$REPO_ROOT/host/dist/audio/pcm-audio-worklet.js" || {
+    echo "prepare-host-package: missing dist/audio/pcm-audio-worklet.js; run npm run build in host/" >&2
+    exit 1
+}
+
 copy_first_existing() {
     local dest="$1"
     shift

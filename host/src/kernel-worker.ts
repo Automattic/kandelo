@@ -273,6 +273,16 @@ import {
 } from "./process-memory";
 import { readForkContinuationAnchor } from "./fork-continuation";
 import { EXEC_RETIRE_SIGNAL_CODE } from "./worker-protocol";
+import {
+  PCM_CONTROL,
+  PCM_CONTROL_BYTES,
+  PcmTransportMode,
+  pcmControlWords,
+  readEffectiveConsumerPosition,
+  readProducerPosition,
+  validatePcmTransport,
+  type PcmTransportDescriptor,
+} from "./audio/pcm-transport";
 
 import type { KernelConfig, NetworkAddress, PlatformIO, TcpConnectionPeer, UdpDatagram } from "./types";
 
@@ -2765,6 +2775,8 @@ export class CentralizedKernelWorker {
   private execHandoffPids = new Set<number>();
   /** Capacity travels with the allocator-owned pointer. */
   #scratchRegion: KernelScratchRegion | null = null;
+  #pcmTransportDescriptor: PcmTransportDescriptor | null = null;
+  #pcmWakeObserverGeneration = 0;
   /**
    * Host-side half of the Rust reservation state machine.
    *
@@ -15297,6 +15309,42 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Retry the exact write/writev mailbox selected for a caught signal.
+   *
+   * PCM backpressure uses the generic writable-token registry, but the signal
+   * path historically retried only poll-timer entries. Leaving a PCM writer
+   * here meant its handler could not run until the audio clock happened to
+   * make the original write succeed. Re-entering the kernel lets it return
+   * EINTR before progress, or preserve a short successful write if capacity
+   * became available concurrently.
+   */
+  private retryPendingWriterForCaughtSignal(pid: number, tid: number): boolean {
+    for (const writers of this.pendingPipeWriters.values()) {
+      const writer = writers.find(({ channel }) => {
+        if (
+          channel.pid !== pid ||
+          this.guestTidForChannel(channel) !== tid
+        ) {
+          return false;
+        }
+        const syscallNr = new DataView(
+          channel.memory.buffer,
+          channel.channelOffset,
+        ).getUint32(CH_SYSCALL, true);
+        return syscallNr === SYS_WRITE || syscallNr === SYS_WRITEV;
+      });
+      if (!writer) continue;
+
+      this.removePendingPipeWriter(writer.channel);
+      if (this.isRegisteredChannel(writer.channel)) {
+        this.retrySyscall(writer.channel);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * SYS_THREAD_CANCEL — wake a thread that is blocked in a cancellation-point
    * syscall so its glue (__syscall_cp) can observe the pending cancel flag
    * and run pthread_exit(PTHREAD_CANCELED).
@@ -25147,6 +25195,10 @@ export class CentralizedKernelWorker {
 
     // Signal is deliverable — wake any blocking syscall for this process
 
+    // PCM and pipe write/writev waits live in the targeted writable registry,
+    // not the poll-timer map below. Retry only the signal-selected thread.
+    if (this.retryPendingWriterForCaughtSignal(targetPid, targetTid)) return;
+
     // 1. Pending sleep (nanosleep, usleep, clock_nanosleep)
     const pendingSleepMatch = Array.from(this.pendingSleeps.entries()).find(
       ([channel]) => channel.pid === targetPid
@@ -29240,11 +29292,9 @@ export class CentralizedKernelWorker {
    * a multiple of the active frame size (2 bytes mono / 4 bytes
    * stereo).
    *
-   * The host typically drives this from an `AudioWorkletNode` or
-   * `AudioBufferSourceNode` scheduler that pulls samples at the rate
-   * an `AudioContext` reports. The kernel ring drops oldest frames on
-   * overflow rather than blocking, so falling behind a few RAFs costs
-   * audio but never wedges DOOM.
+   * Retained only for compatibility with older hosts. The shared-clock
+   * transport is exclusive, so this pull path returns no data once an
+   * AudioWorklet or Node clock owns the sink.
    */
   drainAudio(out: Uint8Array): number {
     return this.#kernel.drainAudio(out);
@@ -29263,6 +29313,297 @@ export class CentralizedKernelWorker {
   /** Bytes buffered in the `/dev/dsp` ring waiting to be drained. */
   audioPending(): number {
     return this.#kernel.audioPending();
+  }
+
+  /**
+   * Claim the single physical PCM sink and return its versioned shared ring.
+   * Browser workers observe AudioWorklet cursor updates; Node's clock export
+   * reconciles synchronously and therefore does not need a separate observer.
+   */
+  claimPcmTransport(observeConsumerWake: boolean): PcmTransportDescriptor {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#pcmTransportDescriptor) return this.#pcmTransportDescriptor;
+    if (
+      !this.#initialized ||
+      this.#kernelInstance === null ||
+      this.#kernelMemory === null
+    ) {
+      throw new Error("kernel is not initialized for PCM transport claim");
+    }
+
+    let descriptor: PcmTransportDescriptor | null = null;
+    let claimResult: number | null = null;
+    let exportMissing = false;
+    this.#runImmediateKernelEntry("PCM transport claim", (entry) => {
+      const exports = this.#kernelInstanceForEntry(entry).exports;
+      const ptrFn = exports.kernel_pcm_transport_ptr as
+        | (() => number | bigint)
+        | undefined;
+      const lenFn = exports.kernel_pcm_transport_len as
+        | (() => number)
+        | undefined;
+      const claimFn = exports.kernel_pcm_claim_transport as
+        | ((mode: number) => number)
+        | undefined;
+      if (
+        typeof ptrFn !== "function" ||
+        typeof lenFn !== "function" ||
+        typeof claimFn !== "function"
+      ) {
+        exportMissing = true;
+        return undefined;
+      }
+
+      const controlOffset = checkedKernelExportPointer(
+        ptrFn(),
+        this.#kernelPointerWidth,
+        "PCM transport pointer",
+      );
+      const totalBytes = lenFn();
+      if (
+        !Number.isSafeInteger(totalBytes) ||
+        totalBytes <= PCM_CONTROL_BYTES
+      ) {
+        throw new KernelScratchError(
+          `kernel returned invalid PCM transport length ${totalBytes}`,
+          EIO,
+        );
+      }
+      const range = checkedMemoryRange(
+        this.#kernelMemory!,
+        controlOffset,
+        totalBytes,
+        this.#kernelPointerWidth,
+        "PCM transport",
+      );
+      const buffer = kernelEntryMemoryBuffer(this.#kernelMemory!);
+      if (!(buffer instanceof SharedArrayBuffer)) {
+        throw new KernelScratchError(
+          "PCM transport is not backed by shared kernel memory",
+          EIO,
+        );
+      }
+
+      const candidate = kernelEntryIntrinsicObjectFreeze({
+        buffer,
+        controlOffset: range.pointer,
+        controlBytes: PCM_CONTROL_BYTES,
+        dataOffset: range.pointer + PCM_CONTROL_BYTES,
+        dataBytes: range.length - PCM_CONTROL_BYTES,
+      }) as PcmTransportDescriptor;
+      validatePcmTransport(candidate);
+      descriptor = candidate;
+      claimResult = claimFn(PcmTransportMode.SharedClock);
+      return undefined;
+    });
+
+    if (exportMissing) {
+      throw new Error("kernel does not expose a shared PCM transport");
+    }
+    if (descriptor === null || claimResult === null) {
+      throw new Error("kernel did not complete the PCM transport claim");
+    }
+    if (!Number.isSafeInteger(claimResult) || claimResult > 0) {
+      throw new Error(
+        `kernel returned invalid PCM transport claim result ${claimResult}`,
+      );
+    }
+    if (claimResult < 0) {
+      throw new Error(
+        `failed to claim PCM transport: errno ${-claimResult}`,
+      );
+    }
+    this.#pcmTransportDescriptor = descriptor;
+    if (observeConsumerWake) this.startPcmWakeObserver(descriptor);
+    return descriptor;
+  }
+
+  /** Advance Node's paced null sink and wake affected write/poll/drain calls. */
+  pcmClockUpdate(requestedFrames: number): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (
+      !Number.isSafeInteger(requestedFrames) ||
+      requestedFrames < 0 ||
+      requestedFrames > 0xffff_ffff
+    ) {
+      throw new RangeError(
+        `PCM clock frame budget is invalid: ${requestedFrames}`,
+      );
+    }
+    if (this.#pcmTransportDescriptor === null) {
+      throw new Error("PCM transport has not been claimed");
+    }
+
+    let consumed: number | null = null;
+    let exportMissing = false;
+    this.#runImmediateKernelEntry("PCM clock update", (entry) => {
+      const clockUpdate = this.#kernelInstanceForEntry(entry).exports
+        .kernel_pcm_clock_update as
+        | ((frames: number) => number)
+        | undefined;
+      if (typeof clockUpdate !== "function") {
+        exportMissing = true;
+        return undefined;
+      }
+      consumed = clockUpdate(requestedFrames) >>> 0;
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      this.scheduleWakeBlockedRetries(entry);
+      return undefined;
+    });
+    if (exportMissing) {
+      throw new Error("kernel_pcm_clock_update export is unavailable");
+    }
+    if (consumed === null) {
+      throw new Error("kernel did not complete the PCM clock update");
+    }
+
+    // kernel_pcm_clock_update advances wakeSeq inside Wasm, but changing an
+    // atomic value does not by itself wake a JS Atomics.waitAsync waiter.
+    // Browser consumption calls Atomics.notify from the AudioWorklet; mirror
+    // that notification for Node so destroy-time orphan drains settle as soon
+    // as the paced null sink reaches their tail instead of sleeping until the
+    // bounded teardown timeout.
+    Atomics.notify(
+      pcmControlWords(this.#pcmTransportDescriptor),
+      PCM_CONTROL.wakeSeq,
+    );
+    return consumed;
+  }
+
+  /** Stop host-side observation before terminating a kernel worker. */
+  shutdownPcmTransport(): void {
+    this.#pcmWakeObserverGeneration++;
+    const descriptor = this.#pcmTransportDescriptor;
+    this.#pcmTransportDescriptor = null;
+    if (descriptor) {
+      const words = pcmControlWords(descriptor);
+      // Pair the notification with a sequence change so an observer racing
+      // between its lifecycle check and waitAsync cannot miss shutdown.
+      Atomics.add(words, PCM_CONTROL.wakeSeq, 1);
+      Atomics.notify(words, PCM_CONTROL.wakeSeq);
+    }
+  }
+
+  /**
+   * Give the physical audio clock a bounded chance to consume an orphaned
+   * close tail before machine teardown. A suspended browser context times out
+   * truthfully; ordinary descriptor close/SYNC remains unbounded in the guest.
+   */
+  async waitForPcmDrain(timeoutMs: number): Promise<boolean> {
+    const descriptor = this.#pcmTransportDescriptor;
+    if (!descriptor) return true;
+    const words = pcmControlWords(descriptor);
+    const deadline = performance.now() + Math.max(0, timeoutMs);
+    let observed = Atomics.load(words, PCM_CONTROL.wakeSeq);
+    while (true) {
+      // Reconcile before testing the cursor or arming a wait. In particular,
+      // the final AudioWorklet quantum may already have published its cursor
+      // and one-shot notification before this continuation gets to run.
+      this.#reconcilePcmTransport(
+        "PCM teardown-drain reconciliation",
+        descriptor,
+      );
+
+      if (
+        readProducerPosition(words) <= readEffectiveConsumerPosition(words)
+      ) {
+        return true;
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) return false;
+
+      const current = Atomics.load(words, PCM_CONTROL.wakeSeq);
+      if (current !== observed) {
+        observed = current;
+        continue;
+      }
+
+      // waitAsync compares and arms atomically. A sequence change after the
+      // load therefore either returns "not-equal" or wakes this waiter.
+      const wait = Atomics.waitAsync(
+        words,
+        PCM_CONTROL.wakeSeq,
+        observed,
+        remaining,
+      );
+      if (wait.async) await wait.value;
+      observed = Atomics.load(words, PCM_CONTROL.wakeSeq);
+    }
+  }
+
+  private startPcmWakeObserver(descriptor: PcmTransportDescriptor): void {
+    const observerGeneration = ++this.#pcmWakeObserverGeneration;
+    const words = pcmControlWords(descriptor);
+    void (async () => {
+      let observed = Atomics.load(words, PCM_CONTROL.wakeSeq);
+      while (
+        observerGeneration === this.#pcmWakeObserverGeneration &&
+        descriptor === this.#pcmTransportDescriptor
+      ) {
+        // Reconcile first: the sequence may already reflect a final quantum
+        // whose notification ran before this observer continuation.
+        this.#reconcilePcmTransport(
+          "PCM consumer-wake reconciliation",
+          descriptor,
+        );
+
+        if (
+          observerGeneration !== this.#pcmWakeObserverGeneration ||
+          descriptor !== this.#pcmTransportDescriptor
+        ) {
+          return;
+        }
+
+        const current = Atomics.load(words, PCM_CONTROL.wakeSeq);
+        if (current !== observed) {
+          observed = current;
+          continue;
+        }
+
+        const wait = Atomics.waitAsync(words, PCM_CONTROL.wakeSeq, observed);
+        if (wait.async) await wait.value;
+        observed = Atomics.load(words, PCM_CONTROL.wakeSeq);
+      }
+    })().catch((error) => {
+      console.error("[kernel-worker] PCM wake observer failed", error);
+    });
+  }
+
+  /**
+   * Reconcile a host-published consumer cursor under the same serialized entry
+   * that drains its resulting writer wakeups.
+   *
+   * WHY: browser AudioWorklet progress arrives through an async host observer.
+   * The cursor lives in shared memory, but Rust's open-file-description and
+   * wake queues remain kernel-owned. Treating reconciliation as a bare export
+   * would let it interleave with scratch transfer or fork entry and split those
+   * two authoritative views.
+   */
+  #reconcilePcmTransport(
+    label: string,
+    descriptor: PcmTransportDescriptor,
+  ): void {
+    this.#runOrDeferKernelEntry(
+      label,
+      (entry) => {
+        if (descriptor !== this.#pcmTransportDescriptor) return undefined;
+        const reconcile = this.#kernelInstanceForEntry(entry).exports
+          .kernel_pcm_reconcile as (() => number) | undefined;
+        if (typeof reconcile !== "function") {
+          throw new Error("kernel_pcm_reconcile export is unavailable");
+        }
+        const result = reconcile();
+        if (result !== 0 && result !== 1) {
+          throw new Error(
+            `kernel returned invalid PCM reconciliation result ${result}`,
+          );
+        }
+        this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+        this.scheduleWakeBlockedRetries(entry);
+        return undefined;
+      },
+      descriptor,
+    );
   }
 
   /**
