@@ -61,6 +61,38 @@ Pin to the commit the ref resolves to **today**. Pinning is not the place to tak
 an upgrade: a pin commit that also bumps a version hides a behavior change behind
 a security cleanup. Land the pin first, take the bump as its own change.
 
+Each action gets exactly one version across the whole repo. A new workflow that
+copies a `uses:` line from an older file reintroduces a version Dependabot has
+already moved past, and because Dependabot bumps what it finds rather than
+converging versions, the split then persists silently -- that is how
+`actions/checkout` ended up on both v6.0.2 and v7.0.0, and `actions/cache` on
+both v5.0.5 and v5.1.0. When adding a workflow, copy the `uses:` line from a
+current one, and check for splits:
+
+```bash
+grep -rhoE "^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*[^[:space:]./][^[:space:]]*@[0-9a-f]{40}" .github/ \
+  | sed -E "s/^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*//" | sort -u \
+  | awk -F@ '{c[$1]++} END {for (a in c) if (c[a]>1) print "split: " a}'
+```
+
+Before unifying a split, read the upstream release notes for the versions being
+crossed and check the change actually applies here. `actions/checkout` v7 blocks
+fork-PR checkout under `pull_request_target` and `workflow_run`; that was safe to
+adopt only because no workflow in this repo uses either trigger.
+
+The two Homebrew publisher workflows are the deliberate exception: they pin
+`actions/checkout` to v6.0.2 while the rest of the repo is on v7.0.0. Their
+build, plan, upload, and index steps are frozen by a content digest in
+`scripts/check-homebrew-publish-workflow-trust.rb`, so any edit to those steps
+-- including a version bump or an added `with:` key -- fails the trust check
+until the digest is regenerated in the same reviewed change. Do not converge
+`reusable-homebrew-bottle-publish.yml` or `reusable-homebrew-bottle-maintenance.yml`
+as a side effect of a repo-wide sweep, and do not add inline substituter tuning
+to them the way the other Nix entry points carry it. Version changes to those
+two files belong in a dedicated change that updates the digest and re-runs the
+trust check. The split-audit above still expects one SHA per action; this pair
+is the one documented deviation.
+
 Same-repo references are the one exception. `uses: ./.github/actions/setup-nix`
 and `uses: ./.github/workflows/reusable-*.yml` cannot carry `@sha` — GitHub
 resolves them at the commit the workflow is already running, so they are pinned
