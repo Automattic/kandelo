@@ -18,7 +18,8 @@ GLUE_DIR="$REPO_ROOT/libc/glue"
 # last-write-wins across arches.
 OUT_DIR_32="$REPO_ROOT/local-binaries/programs/wasm32"
 OUT_DIR_64="$REPO_ROOT/local-binaries/programs/wasm64"
-mkdir -p "$OUT_DIR_32" "$OUT_DIR_64"
+TEST_FIXTURE_DIR="$REPO_ROOT/local-binaries/test-fixtures"
+mkdir -p "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR"
 
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
@@ -161,6 +162,16 @@ build_cpp_program() {
         -lc++ -lc++abi \
         -o "$wasm"
 
+    # Preserve a real pre-instrumentation control for issue #918. The source
+    # contains an unreachable-at-test-time fork branch solely so the normal
+    # output is transformed below. A raw module with kernel_fork but without
+    # wpk_fork_* exports is test evidence, not a distributable program, so it
+    # lives outside the resolver's programs tree.
+    if [ "$name" = "sjlj_noexcept_boundary" ]; then
+        mkdir -p "$TEST_FIXTURE_DIR/wasm32"
+        cp "$wasm" "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
+    fi
+
     # Phase 7: fork support comes from wasm-fork-instrument. The tool is
     # a no-op for modules without `kernel.kernel_fork`, so it's safe to
     # run unconditionally — programs without fork stay byte-identical
@@ -169,21 +180,35 @@ build_cpp_program() {
     mv "$wasm.instr" "$wasm"
 }
 
+ensure_libcxx_in_sysroot() {
+    local arch="$1"
+    local sysroot="$2"
+    if [ -f "$sysroot/lib/libc++.a" ] && \
+        [ -f "$sysroot/lib/libc++abi.a" ] && \
+        [ -d "$sysroot/include/c++/v1" ]; then
+        return
+    fi
+
+    echo "==> Resolving libcxx for $arch C++ programs..."
+    local host_triple
+    local libcxx_prefix
+    host_triple="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_triple" --quiet -- \
+        build-deps --arch "$arch" resolve libcxx >/dev/null)
+    libcxx_prefix="$(cd "$REPO_ROOT" && cargo run -p xtask \
+        --target "$host_triple" --quiet -- build-deps --arch "$arch" path libcxx)"
+    ln -sf "$libcxx_prefix/lib/libc++.a" "$sysroot/lib/libc++.a"
+    ln -sf "$libcxx_prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
+    mkdir -p "$sysroot/include/c++"
+    rm -rf "$sysroot/include/c++/v1"
+    ln -sfn "$libcxx_prefix/include/c++/v1" "$sysroot/include/c++/v1"
+}
+
 # Resolve libcxx and symlink its outputs into the sysroot if there are
 # any .cpp programs to build. Skip the resolver entirely when libc++.a
 # is already present so repeat runs are fast.
 if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
-    if [ ! -f "$SYSROOT/lib/libc++.a" ]; then
-        echo "==> Resolving libcxx for C++ programs..."
-        HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
-        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libcxx >/dev/null)
-        LIBCXX_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libcxx)"
-        ln -sf "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
-        ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
-        mkdir -p "$SYSROOT/include/c++"
-        rm -rf "$SYSROOT/include/c++/v1"
-        ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
-    fi
+    ensure_libcxx_in_sysroot wasm32 "$SYSROOT"
 fi
 
 echo "Building user programs..."
@@ -300,6 +325,24 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         echo "  Compiling wait_lifecycle_test (wasm64)..."
         "$CC" "${CFLAGS64[@]}" "$wait_lifecycle_src" "${LINK_FLAGS64[@]}" \
             -o "$REPO_ROOT/examples/wait_lifecycle_test.wasm64.wasm"
+    fi
+
+    # Fork continuation instrumentation is currently a wasm32 artifact
+    # contract. Still cover the compiler's architecture-independent SjLj /
+    # noexcept ordering on wasm64 with a raw fixture that omits the dormant
+    # fork anchor. Keep it in the test-only tree for symmetry with wasm32.
+    sjlj_noexcept_src="$REPO_ROOT/programs/sjlj_noexcept_boundary.cpp"
+    if [ -f "$sjlj_noexcept_src" ]; then
+        ensure_libcxx_in_sysroot wasm64 "$SYSROOT64"
+        mkdir -p "$TEST_FIXTURE_DIR/wasm64"
+        echo "  Compiling sjlj_noexcept_boundary (raw wasm64 test fixture)..."
+        wasm64posix-c++ \
+            -O2 \
+            -fwasm-exceptions \
+            -DKANDELO_SJLJ_NO_FORK_ANCHOR \
+            "$sjlj_noexcept_src" \
+            -lc++ -lc++abi \
+            -o "$TEST_FIXTURE_DIR/wasm64/sjlj_noexcept_boundary.raw.wasm"
     fi
 fi
 
