@@ -115,7 +115,7 @@ pipe pair.
 
 ### Filesystem
 - `MemoryFileSystem` — SharedArrayBuffer-based VFS shared between main thread and kernel worker
-- `OpfsFileSystem` — Origin Private File System for browser persistence. Its current stat metadata has no stable inode identity, so regular-file `MAP_SHARED` returns `ENOTSUP` instead of using unsafe pathname identity; `MAP_PRIVATE` is unaffected.
+- `OpfsFileSystem` — Origin Private File System for browser persistence. Regular-file `fsync()` calls the browser's file-handle `flush()` operation. Directory `fsync()` succeeds after already-completed directory operations because the File System API exposes no directory flush primitive; it is not an additional crash-durability barrier. Its current stat metadata has no stable inode identity, so regular-file `MAP_SHARED` returns `ENOTSUP` instead of using unsafe pathname identity; `MAP_PRIVATE` is unaffected.
 - `DeviceFileSystem` — `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`
 - Stable-identity regular files can be shared across process memories through the host mapping cache, but updates become visible at syscall boundaries rather than immediately on direct loads/stores. Cross-process futex waits/wakes remain unsupported; see [architecture.md](architecture.md#shared-mapping-coherence).
 

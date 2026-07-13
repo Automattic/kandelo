@@ -589,13 +589,19 @@ async function handleFtruncate(): Promise<void> {
 async function handleFsync(): Promise<void> {
   const handle = channel.getArg(0);
   const entry = fileHandles.get(handle);
-  if (!entry || !entry.handle) {
+  if (!entry) {
     channel.notifyError(EBADF);
     return;
   }
 
   try {
-    entry.handle.flush();
+    if (entry.handle) {
+      entry.handle.flush();
+    }
+    // The File System API exposes flush() for file access handles but no
+    // equivalent durability barrier for directories. Directory mutations are
+    // already complete before their OPFS promises resolve, so there is no
+    // additional browser operation to issue for an O_DIRECTORY handle.
     channel.result = 0;
     channel.notifyComplete();
   } catch (err) {
