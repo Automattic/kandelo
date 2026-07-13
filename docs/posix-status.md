@@ -56,7 +56,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `writev()` | Full | Gather write. Enforces aggregate count and RLIMIT_FSIZE once across the full iovec operation, including host scratch-buffer decomposition, then stops on a short underlying write. |
 | `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Full struct stat populated. |
 | `ftruncate()` | Partial | Host-delegated for regular files, with in-kernel memfd support. Requires write access, validates length >= 0, rejects non-regular fds, and enforces RLIMIT_FSIZE before changing either backing. |
-| `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
+| `fsync()` | Partial | Host-delegated for regular files and directories. Node-backed directories use the native durability barrier; memory-backed filesystems have no queued writes. Browser OPFS flushes regular-file access handles, but its API exposes no separate directory durability barrier. Rejects pipes and sockets. |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
 | `fchmod()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native mode changes after creation. |

@@ -12709,12 +12709,10 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    // Must be a regular file
-    if ofd.file_type != FileType::Regular {
-        return Err(Errno::EINVAL);
+    match ofd.file_type {
+        FileType::Regular | FileType::Directory => host.host_fsync(ofd.host_handle),
+        _ => Err(Errno::EINVAL),
     }
-
-    host.host_fsync(ofd.host_handle)
 }
 
 /// truncate -- truncate a file to a specified length (path-based).
@@ -13820,6 +13818,7 @@ mod tests {
         symlink_targets: std::collections::HashMap<Vec<u8>, Vec<u8>>,
         lstat_paths: Vec<Vec<u8>>,
         statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
+        fsync_calls: Vec<i64>,
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_bind` call so
         /// the DRI mmap path can be asserted against.
         gbm_bo_bind_calls: Vec<(i32, u32, usize, usize)>,
@@ -13871,6 +13870,7 @@ mod tests {
                 symlink_targets: std::collections::HashMap::new(),
                 lstat_paths: Vec::new(),
                 statfs_by_path: std::collections::HashMap::new(),
+                fsync_calls: Vec::new(),
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
@@ -14215,7 +14215,8 @@ mod tests {
             Ok(())
         }
 
-        fn host_fsync(&mut self, _handle: i64) -> Result<(), Errno> {
+        fn host_fsync(&mut self, handle: i64) -> Result<(), Errno> {
+            self.fsync_calls.push(handle);
             Ok(())
         }
 
@@ -20694,6 +20695,19 @@ mod tests {
         .unwrap();
         let result = sys_fsync(&mut proc, &mut host, fd);
         assert!(result.is_ok());
+        assert_eq!(host.fsync_calls, vec![100]);
+    }
+
+    #[test]
+    fn test_fsync_directory_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+
+        let result = sys_fsync(&mut proc, &mut host, fd);
+
+        assert!(result.is_ok());
+        assert_eq!(host.fsync_calls, vec![100]);
     }
 
     #[test]
