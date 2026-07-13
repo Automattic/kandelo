@@ -357,6 +357,13 @@ All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, determinist
 | `setenv()` / `unsetenv()` | Full | Kernel-managed. setenv supports overwrite flag. Rejects empty name or name containing '='. |
 | `environ` | Partial | Stored as Vec of KEY=VALUE entries in Process. No C-style char** environ pointer yet. |
 
+## Locale
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `getlocalename_l()` | Full | Returns the real per-category name from local and global locale objects. LC_ALL returns a `setlocale()`-compatible name, including mixed-category locales. |
+| `nl_langinfo()` / `nl_langinfo_l()` | Partial | Implements musl's locale data plus POSIX.1-2024 `ALTMON_1` through `ALTMON_12` and `ABALTMON_1` through `ABALTMON_12`. Musl catalogs do not encode a distinct alternate grammatical month form, so those items fall back to the corresponding full or abbreviated month name. |
+
 ## System Information
 
 | Function | Status | Notes |
