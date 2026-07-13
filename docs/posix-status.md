@@ -616,7 +616,17 @@ These PHP needs are well-handled by the current kernel:
 - Multi-process: fork (kernel syscall), exec (host-initiated), waitpid (kernel syscall)
 - Networking: AF_INET TCP (connect, bind, listen, accept, send, recv), getaddrinfo
 - Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink on the process
-  worker). Pthread workers cannot share the process's Wasm table/tag graph, so
+  worker) for wasm32 and wasm64 on Node and Chromium. Chromium is the browser
+  engine currently covered by the direct dynamic-linking regression, and its
+  wasm64 path requires memory64 and table64 support.
+  Memory64 `__memory_base`/`GOT.mem` globals and table64
+  `__table_base`/`GOT.func` globals retain their i64 WebAssembly types while
+  the host validates and normalizes reachable offsets for JavaScript memory
+  and table access. The current C glue imports the `__wasm_dlsym` result as
+  i32, so wasm64 data addresses and function-table indices returned by
+  `dlsym()` must remain in the signed 32-bit range; the default 1 GiB process
+  limit and current table sizes stay below that boundary. Pthread workers
+  cannot share the process's Wasm table/tag graph, so
   pthread `dlopen` fails and pthread `fork` after a process dlopen returns
   `ENOTSUP`.
 - POSIX timers: `SIGEV_SIGNAL`, `SIGEV_NONE`, and `SIGEV_THREAD` timer creation,

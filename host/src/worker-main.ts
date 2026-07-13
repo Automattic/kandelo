@@ -268,6 +268,26 @@ function buildDlopenImports(
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
+  const memoryBytes = (
+    pointer: number | bigint,
+    length: number,
+    label: string,
+  ): Uint8Array => {
+    const offset = n(pointer);
+    if (
+      !Number.isSafeInteger(offset)
+      || !Number.isSafeInteger(length)
+      || offset < 0
+      || length < 0
+      || offset > memory.buffer.byteLength
+      || length > memory.buffer.byteLength - offset
+    ) {
+      throw new Error(
+        `${label}: invalid memory range pointer=${String(pointer)} length=${String(length)}`,
+      );
+    }
+    return new Uint8Array(memory.buffer, offset, length);
+  };
 
   const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
   const sideForkOffset = ptrWidth === 8
@@ -727,50 +747,52 @@ function buildDlopenImports(
   };
 
   const imports: Record<string, WebAssembly.ExportValue> = {
-    __wasm_dlopen: (bytesPtr: number, bytesLen: number,
-                    namePtr: number, nameLen: number): number => {
+    __wasm_dlopen: (bytesPtr: number | bigint, bytesLen: number,
+                    namePtr: number | bigint, nameLen: number): number => {
       if (!acquireMainDlopenLock()) return 0;
       hostDlopenError = null;
       try {
-      const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
-      // Copy bytes since memory.buffer may detach during Wasm instantiation
-      const bytesCopy = new Uint8Array(bytes);
-      // TextDecoder.decode() rejects views backed by SharedArrayBuffer
-      // in Firefox (and recent Chrome), so copy the name bytes through
-      // a non-shared Uint8Array before decoding. Same shape as
-      // bytesCopy above.
-      const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
-      const nameBytesCopy = new Uint8Array(nameBytesView);
-      const name = decoder.decode(nameBytesCopy);
-      const handle = getLinker().dlopenSync(name, bytesCopy);
-      if (handle > 0) {
-        // The linker just instantiated this — the map MUST contain it.
-        // A miss means the shared-map ref got rewired and replay would
-        // silently see an empty archive after fork; fail loudly here
-        // instead of corrupting the fork child later.
-        const loaded = loadedLibraries.get(name);
-        if (!loaded) {
-          throw new Error(`__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`);
+        const bytes = memoryBytes(bytesPtr, bytesLen, "__wasm_dlopen bytes");
+        // Copy bytes since memory.buffer may detach during Wasm instantiation
+        const bytesCopy = new Uint8Array(bytes);
+        // TextDecoder.decode() rejects views backed by SharedArrayBuffer
+        // in Firefox (and recent Chrome), so copy the name bytes through
+        // a non-shared Uint8Array before decoding. Same shape as
+        // bytesCopy above.
+        const nameBytesView = memoryBytes(namePtr, nameLen, "__wasm_dlopen name");
+        const nameBytesCopy = new Uint8Array(nameBytesView);
+        const name = decoder.decode(nameBytesCopy);
+        const handle = getLinker().dlopenSync(name, bytesCopy);
+        if (handle > 0) {
+          // The linker just instantiated this — the map MUST contain it.
+          // A miss means the shared-map ref got rewired and replay would
+          // silently see an empty archive after fork; fail loudly here
+          // instead of corrupting the fork child later.
+          const loaded = loadedLibraries.get(name);
+          if (!loaded) {
+            throw new Error(
+              `__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`,
+            );
+          }
+          persistArchiveEntry(
+            name,
+            bytesCopy,
+            loaded.memoryBase,
+            loaded.tableBase,
+            loaded.forkBufAddr ?? 0,
+            loaded.tlsBase ?? 0,
+          );
         }
-        persistArchiveEntry(
-          name,
-          bytesCopy,
-          loaded.memoryBase,
-          loaded.tableBase,
-          loaded.forkBufAddr ?? 0,
-          loaded.tlsBase ?? 0,
-        );
-      }
-      return handle;
+        return handle;
       } finally {
         releaseMainDlopenLock();
       }
     },
 
-    __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
+    __wasm_dlsym: (handle: number, namePtr: number | bigint, nameLen: number): number => {
       // See __wasm_dlopen above: copy off the shared buffer before
       // TextDecoder.decode() touches it.
-      const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const nameBytesView = memoryBytes(namePtr, nameLen, "__wasm_dlsym name");
       const nameBytesCopy = new Uint8Array(nameBytesView);
       const name = decoder.decode(nameBytesCopy);
       const result = getLinker().dlsym(handle, name);
@@ -781,13 +803,13 @@ function buildDlopenImports(
       return getLinker().dlclose(handle);
     },
 
-    __wasm_dlerror: (bufPtr: number, bufMax: number): number => {
+    __wasm_dlerror: (bufPtr: number | bigint, bufMax: number): number => {
       const err = hostDlopenError ?? getLinker().dlerror();
       hostDlopenError = null;
       if (!err) return 0;
       const encoded = encoder.encode(err);
       const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      memoryBytes(bufPtr, len, "__wasm_dlerror buffer").set(encoded.subarray(0, len));
       return len;
     },
   };

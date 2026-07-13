@@ -15,14 +15,11 @@ import { NodePlatformIO } from "../src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
-const SYSROOT = join(REPO_ROOT, "sysroot");
-
-const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
   existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
-function hasCompiler(): boolean {
+function hasCompiler(compiler: string): boolean {
   try {
-    execFileSync("wasm32posix-cc", ["--version"], { stdio: "ignore" });
+    execFileSync(compiler, ["--version"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -31,29 +28,43 @@ function hasCompiler(): boolean {
 
 const BUILD_DIR = join(tmpdir(), "wasm-dlopen-e2e");
 
+const TARGETS = [
+  { arch: "wasm32", compiler: "wasm32posix-cc", sysroot: "sysroot" },
+  { arch: "wasm64", compiler: "wasm64posix-cc", sysroot: "sysroot64" },
+] as const;
+
+type Target = typeof TARGETS[number];
+
+function hasTarget(target: Target): boolean {
+  return existsSync(join(REPO_ROOT, target.sysroot, "lib", "libc.a")) &&
+    hasCompiler(target.compiler);
+}
+
+const availableTargets = TARGETS.filter(hasTarget);
+
 /** Build a shared Wasm library (.so side module) from C source. */
-function buildSharedLib(source: string, name: string): string {
-  const srcPath = join(BUILD_DIR, `${name}.c`);
-  const soPath = join(BUILD_DIR, `${name}.so`);
+function buildSharedLib(source: string, name: string, target: Target): string {
+  const srcPath = join(BUILD_DIR, `${name}-${target.arch}.c`);
+  const soPath = join(BUILD_DIR, `${name}-${target.arch}.so`);
   writeFileSync(srcPath, source);
-  execFileSync("wasm32posix-cc",
+  execFileSync(target.compiler,
     ["-shared", "-fPIC", "-O2", srcPath, "-o", soPath],
     { stdio: "pipe" });
   return soPath;
 }
 
 /** Build a main program with dlopen support. */
-function buildMainProgram(source: string, name: string): string {
-  const srcPath = join(BUILD_DIR, `${name}.c`);
-  const wasmPath = join(BUILD_DIR, `${name}.wasm`);
+function buildMainProgram(source: string, name: string, target: Target): string {
+  const srcPath = join(BUILD_DIR, `${name}-${target.arch}.c`);
+  const wasmPath = join(BUILD_DIR, `${name}-${target.arch}.wasm`);
   writeFileSync(srcPath, source);
-  execFileSync("wasm32posix-cc",
-    ["-O2", "-ldl", srcPath, "-o", wasmPath],
+  execFileSync(target.compiler,
+    ["-O2", "-Wl,--export-all", "-ldl", srcPath, "-o", wasmPath],
     { stdio: "pipe" });
   return wasmPath;
 }
 
-describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end", () => {
+describe.skipIf(!hasKernel || availableTargets.length === 0)("dlopen end-to-end", () => {
   beforeAll(() => {
     mkdirSync(BUILD_DIR, { recursive: true });
   });
@@ -66,68 +77,86 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
   // than the VFS layer.
   const io = () => new NodePlatformIO();
 
-  it("loads a shared library and calls its functions via dlopen/dlsym", { timeout: 30_000 }, async () => {
-    // Build the shared library
-    const soPath = buildSharedLib(
-      `
-      int add(int a, int b) { return a + b; }
-      int multiply(int a, int b) { return a * b; }
-      `,
-      "libmath",
-    );
+  it.each(availableTargets)(
+    "$arch loads a shared library and calls its functions via dlopen/dlsym",
+    async (target) => {
+      const soPath = buildSharedLib(
+        `
+        extern int main_value;
+        int side_value = 17;
+        int add(int a, int b) { return a + b; }
+        int multiply(int a, int b) { return a * b; }
+        int read_main_value(void) { return main_value; }
+        `,
+        "libmath", target,
+      );
 
-    // Build the main program
-    const wasmPath = buildMainProgram(
-      `
-      #include <dlfcn.h>
-      #include <stdio.h>
+      const wasmPath = buildMainProgram(
+        `
+        #include <dlfcn.h>
+        #include <stdio.h>
 
-      int main(int argc, char *argv[]) {
-        const char *lib_path = argv[1];
+        int main_value = 41;
 
-        void *lib = dlopen(lib_path, RTLD_LAZY);
-        if (!lib) {
-          printf("dlopen failed: %s\\n", dlerror());
-          return 1;
+        int main(int argc, char *argv[]) {
+          const char *lib_path = argv[1];
+
+          void *lib = dlopen(lib_path, RTLD_LAZY);
+          if (!lib) {
+            printf("dlopen failed: %s\\n", dlerror());
+            return 1;
+          }
+
+          int (*add)(int, int) = (int (*)(int, int))dlsym(lib, "add");
+          if (!add) {
+            printf("dlsym(add) failed: %s\\n", dlerror());
+            return 1;
+          }
+
+          int (*multiply)(int, int) = (int (*)(int, int))dlsym(lib, "multiply");
+          if (!multiply) {
+            printf("dlsym(multiply) failed: %s\\n", dlerror());
+            return 1;
+          }
+
+          int (*read_main_value)(void) = (int (*)(void))dlsym(lib, "read_main_value");
+          int *side_value = (int *)dlsym(lib, "side_value");
+          if (!read_main_value || !side_value) {
+            printf("dlsym(data) failed: %s\\n", dlerror());
+            return 1;
+          }
+
+          printf("add(3, 4) = %d\\n", add(3, 4));
+          printf("multiply(5, 6) = %d\\n", multiply(5, 6));
+          printf("main_value = %d\\n", read_main_value());
+          printf("side_value = %d\\n", *side_value);
+
+          dlclose(lib);
+          printf("done\\n");
+          return 0;
         }
+        `,
+        "test-dlopen", target,
+      );
 
-        int (*add)(int, int) = (int (*)(int, int))dlsym(lib, "add");
-        if (!add) {
-          printf("dlsym(add) failed: %s\\n", dlerror());
-          return 1;
-        }
+      const result = await runCentralizedProgram({
+        programPath: wasmPath,
+        argv: ["test-dlopen", soPath],
+        timeout: 10_000,
+        io: io(),
+      });
 
-        int (*multiply)(int, int) = (int (*)(int, int))dlsym(lib, "multiply");
-        if (!multiply) {
-          printf("dlsym(multiply) failed: %s\\n", dlerror());
-          return 1;
-        }
+      expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain("add(3, 4) = 7");
+      expect(result.stdout).toContain("multiply(5, 6) = 30");
+      expect(result.stdout).toContain("main_value = 41");
+      expect(result.stdout).toContain("side_value = 17");
+      expect(result.stdout).toContain("done");
+    },
+    30_000,
+  );
 
-        printf("add(3, 4) = %d\\n", add(3, 4));
-        printf("multiply(5, 6) = %d\\n", multiply(5, 6));
-
-        dlclose(lib);
-        printf("done\\n");
-        return 0;
-      }
-      `,
-      "test-dlopen",
-    );
-
-    const result = await runCentralizedProgram({
-      programPath: wasmPath,
-      argv: ["test-dlopen", soPath],
-      timeout: 10_000,
-      io: io(),
-    });
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("add(3, 4) = 7");
-    expect(result.stdout).toContain("multiply(5, 6) = 30");
-    expect(result.stdout).toContain("done");
-  });
-
-  it("reports dlerror for missing library", async () => {
+  it.each(availableTargets)("$arch reports dlerror for missing library", async (target) => {
     const wasmPath = buildMainProgram(
       `
       #include <dlfcn.h>
@@ -142,7 +171,7 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
         return 1;
       }
       `,
-      "test-dlopen-error",
+      "test-dlopen-error", target,
     );
 
     const result = await runCentralizedProgram({
@@ -152,14 +181,14 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
       io: io(),
     });
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toContain("expected error:");
   });
 
-  it("dlsym returns null for non-existent symbol", async () => {
+  it.each(availableTargets)("$arch returns null for a non-existent symbol", async (target) => {
     const soPath = buildSharedLib(
       `int foo(void) { return 42; }`,
-      "libfoo",
+      "libfoo", target,
     );
 
     const wasmPath = buildMainProgram(
@@ -185,7 +214,7 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
         return 0;
       }
       `,
-      "test-dlsym-missing",
+      "test-dlsym-missing", target,
     );
 
     const result = await runCentralizedProgram({
@@ -195,7 +224,7 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
       io: io(),
     });
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toContain("expected: symbol not found");
   });
 });
