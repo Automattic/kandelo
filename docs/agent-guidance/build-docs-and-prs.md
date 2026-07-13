@@ -41,6 +41,49 @@ reference a relative action and duplicate those settings inline; keep the two
 in sync. Every `staging-build.yml` job also carries `timeout-minutes`, so a
 degraded substituter fails fast rather than burning a six-hour runner.
 
+## CI Action Pinning
+
+Every third-party action in `.github/` must be pinned to a full 40-character
+commit SHA, with the human-readable version in a trailing comment:
+
+```yaml
+uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+```
+
+A tag or branch ref is a promise the upstream owner can rewrite. `@v4`, `@v7.0.0`,
+and `@master` all re-resolve on every run, so the code CI executes is whatever
+that ref points at today, not what was reviewed. Anyone who can move the tag can
+change what runs in a job that holds `GITHUB_TOKEN` and repository secrets. A tag
+that looks exact is not exact: `v7.0.0` is still a mutable Git tag, not a content
+address. Pin the SHA and the workflow runs the code that was reviewed, always.
+
+Pin to the commit the ref resolves to **today**. Pinning is not the place to take
+an upgrade: a pin commit that also bumps a version hides a behavior change behind
+a security cleanup. Land the pin first, take the bump as its own change.
+
+Same-repo references are the one exception. `uses: ./.github/actions/setup-nix`
+and `uses: ./.github/workflows/reusable-*.yml` cannot carry `@sha` — GitHub
+resolves them at the commit the workflow is already running, so they are pinned
+by construction.
+
+Pins are kept current by `.github/dependabot.yml`, which watches the
+`github-actions` ecosystem at the repo root and under `/.github/actions/**` (the
+composite actions), and raises grouped update PRs. That is what keeps SHA pinning
+from decaying into permanently stale actions. Do not "fix" a stale pin by
+reverting to a tag; take the Dependabot PR, or bump the SHA deliberately.
+
+To audit, list every ref and look for any non-local one that is not a 40-hex SHA.
+Anchor `uses:` to the start of the line: an unanchored match also hits the
+`statuses: read` / `statuses: write` keys in `permissions:` blocks.
+
+```bash
+grep -rhoE "^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*[^[:space:]]+" .github/ \
+  | sed -E "s/^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*//" | sort -u \
+  | grep -v '^\./' | grep -vE '@[0-9a-f]{40}$'
+```
+
+Empty output means every third-party action is pinned.
+
 When already inside `scripts/dev-shell.sh bash`, run the build commands
 directly:
 
