@@ -17,21 +17,28 @@ TAP_REPOSITORY = /\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
 DEPENDENCY_LINE = /\A  depends_on "([^"]+)"(?: => (:[a-z]+|\[(?::[a-z]+)(?:, :[a-z]+)*\]))?\n\z/
 ALLOWED_TAGS = Set[:build, :test, :optional, :recommended].freeze
 ALLOWED_CLASS_COMMANDS = Set[
-  "depends_on", "desc", "homepage", "include", "license", "link_overwrite",
-  "mirror", "patch", "revision", "sha256", "skip_clean", "url", "version",
+  "depends_on", "desc", "homepage", "include", "keg_only", "license",
+  "link_overwrite", "mirror", "patch", "revision", "sha256", "skip_clean",
+  "url", "version",
 ].freeze
-ALLOWED_CLASS_BLOCKS = Set["bottle", "patch", "test"].freeze
-ALLOWED_CLASS_CONSTANTS = Set["CLEANUP_WRAPPERS", "GUEST_OPT_PREFIX"].freeze
-ALLOWED_INSTANCE_METHODS = Set[
-  "install", "normalize_wasm_cleanup_callbacks", "verify_archive_paths!",
+ALLOWED_CLASS_BLOCKS = Set["bottle", "on_macos", "patch", "resource", "test"].freeze
+ALLOWED_PUBLIC_INSTANCE_METHODS = Set[
+  "caveats", "install", "verify_archive_paths!",
+].freeze
+ALLOWED_PRIVATE_INSTANCE_METHODS = Set[
+  "configure_texmf_cnf!", "generate_runtime_config!", "install_engine_licenses",
+  "normalize_wasm_cleanup_callbacks", "recorded_texmf_inputs", "texlive_runtime_contract",
+  "texlive_test_document", "verify_generated_format_paths!", "verify_no_unresolved_cxx_imports!",
+  "verify_payload_contract", "verify_payload_files!", "write_generated_payload_manifest",
+  "write_modification_notice", "write_payload_manifest", "write_runtime_provenance",
   "write_wasm_wrapper_sources",
 ].freeze
 FORBIDDEN_DEPENDENCY_IDENTIFIERS = Set[
   "Dependency", "Requirement", "__send__", "class_eval", "const_get", "define_method",
-  "define_singleton_method", "dependencies", "deps", "eval", "instance_eval",
+  "define_singleton_method", "eval", "instance_eval",
   "instance_variable_get", "instance_variable_set", "method", "method_missing",
-  "module_eval", "public_method", "public_send", "requirements", "runtime_dependencies",
-  "send", "singleton_method", "uses_from_macos",
+  "module_eval", "public_method", "public_send", "send", "singleton_method",
+  "uses_from_macos",
 ].freeze
 EXCLUDED_TAG_SETS = Set[
   Set[:build],
@@ -97,7 +104,8 @@ static_expression = lambda do |node|
   end
   case kind
   when :args_add_block, :array, :assoc_new, :assoclist_from_args, :bare_assoc_hash,
-       :hash, :string_content, :string_literal, :symbol, :symbol_literal, :var_ref
+       :hash, :string_content, :string_embexpr, :string_literal, :symbol,
+       :symbol_literal, :var_ref
     node.drop(1).all? { |child| static_expression.call(child) }
   when :call
     method = node[3]
@@ -232,6 +240,26 @@ validate_static_block = lambda do |statement, path, label, allowed_commands|
   end
 end
 
+no_argument_block = lambda do |statement|
+  call = statement[1]
+  call.is_a?(Array) && call.first == :method_add_arg && call[2] == []
+end
+
+validate_resource = lambda do |statement, lines, path|
+  position = call_position.call(statement)
+  line_number = position[0] if position.is_a?(Array)
+  line = lines.fetch(line_number - 1) if line_number.is_a?(Integer)
+  unless line&.match?(/\A  resource "[A-Za-z0-9][A-Za-z0-9._+-]*" do\n\z/)
+    abort "Formula resource block must use a canonical literal name: #{path}"
+  end
+  command = statement[1]
+  arguments = command[2] if command.is_a?(Array) && command.first == :command
+  unless static_expression.call(arguments)
+    abort "Formula resource block name must be static: #{path}"
+  end
+  validate_static_block.call(statement, path, "resource", Set["mirror", "sha256", "url", "version"])
+end
+
 support_validated = false
 validate_support = lambda do
   next if support_validated
@@ -290,10 +318,22 @@ validate_support = lambda do
   module_body.each do |statement|
     next if statement.is_a?(Array) && statement.first == :void_stmt
 
-    method_token = statement[1] if statement.is_a?(Array) && statement.first == :def
-    method = method_token[1] if method_token.is_a?(Array) && method_token.first == :@ident
-    unless method&.match?(/\Akandelo_[a-z0-9_!?]+\z/) && methods.add?(method)
-      abort "Kandelo Formula support may contain only unique kandelo_ instance methods: #{support_path}"
+    case statement.first
+    when :def
+      method_token = statement[1]
+      method = method_token[1] if method_token.is_a?(Array) && method_token.first == :@ident
+      unless method&.match?(/\A(?:formula_opt|kandelo)_[a-z0-9_]*[!?]?\z/) && methods.add?(method)
+        abort "Kandelo Formula support may contain only unique approved instance methods: #{support_path}"
+      end
+    when :assign
+      left = statement[1]
+      constant = left.dig(1) if left.is_a?(Array) && left.first == :var_field
+      unless constant.is_a?(Array) && constant.first == :@const &&
+             constant[1].match?(/\AKANDELO_[A-Z0-9_]+\z/) && static_expression.call(statement[2])
+        abort "Kandelo Formula support assignment must be a static KANDELO_ constant: #{support_path}"
+      end
+    else
+      abort "Kandelo Formula support contains executable module structure: #{support_path}"
     end
   end
   support_validated = true
@@ -356,6 +396,7 @@ parse_formula = lambda do |name|
   class_body = class_bodystmt[1]
   abort "Formula class has no canonical statements: #{path}" unless class_body.is_a?(Array)
   seen_instance_methods = Set.new
+  private_visibility = false
   bottle = nil
   class_body.each do |statement|
     abort "Formula class contains a malformed statement: #{path}" unless statement.is_a?(Array)
@@ -374,27 +415,41 @@ parse_formula = lambda do |name|
     when :method_add_block
       method = call_name.call(statement)
       abort "Formula class uses unsupported DSL block #{method.inspect}: #{path}" unless ALLOWED_CLASS_BLOCKS.include?(method)
+      unless method == "resource" || no_argument_block.call(statement)
+        abort "Formula #{method} block may not have arguments: #{path}"
+      end
       if method == "bottle"
         abort "Formula class has multiple bottle blocks: #{path}" unless bottle.nil?
         bottle = parse_bottle.call(statement, lines, path)
       elsif method == "patch"
         validate_static_block.call(statement, path, "patch", Set["apply", "sha256", "type", "url"])
+      elsif method == "on_macos"
+        validate_static_block.call(statement, path, "on_macos", Set["keg_only"])
+      elsif method == "resource"
+        validate_resource.call(statement, lines, path)
       end
     when :def
       method_token = statement[1]
       method = method_token[1] if method_token.is_a?(Array) && method_token.first == :@ident
-      unless ALLOWED_INSTANCE_METHODS.include?(method) && seen_instance_methods.add?(method)
+      valid_method = if private_visibility
+        ALLOWED_PRIVATE_INSTANCE_METHODS.include?(method)
+      else
+        ALLOWED_PUBLIC_INSTANCE_METHODS.include?(method)
+      end
+      unless valid_method && seen_instance_methods.add?(method)
         abort "Formula class defines an unsupported or duplicate instance method #{method.inspect}: #{path}"
       end
     when :assign
       left = statement[1]
       constant = left.dig(1) if left.is_a?(Array) && left.first == :var_field
       unless constant.is_a?(Array) && constant.first == :@const &&
-             ALLOWED_CLASS_CONSTANTS.include?(constant[1]) && static_expression.call(statement[2])
+             constant[1].match?(/\A[A-Z][A-Z0-9_]*\z/) && static_expression.call(statement[2])
         abort "Formula class assignment must be a static constant: #{path}"
       end
     when :vcall
       abort "Formula class uses an unsupported bare call: #{path}" unless call_name.call(statement) == "private"
+      abort "Formula class repeats private visibility: #{path}" if private_visibility
+      private_visibility = true
     when :void_stmt
       # Ripper represents an otherwise empty class body with this inert node.
     else

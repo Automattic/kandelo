@@ -4,6 +4,8 @@
 set -euo pipefail
 
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-publication-limits.sh"
 TAP_ROOT=""
 SIDECAR_ROOT=""
 PUBLICATION_HANDOFF=""
@@ -220,6 +222,35 @@ sha256_file() {
   fi
 }
 
+require_max_size() {
+  local label="$1" path="$2" maximum="$3" bytes
+  if [ ! -f "$path" ] || [ -L "$path" ]; then
+    echo "homebrew-publish-sidecars.sh: $label must be a regular non-symlink file: $path" >&2
+    exit 1
+  fi
+  bytes="$(wc -c <"$path" | tr -d '[:space:]')"
+  if [ "$bytes" -gt "$maximum" ]; then
+    echo "homebrew-publish-sidecars.sh: $label exceeds $maximum bytes: $path" >&2
+    exit 1
+  fi
+}
+
+assert_sidecar_size_bounds() {
+  local root="$1" path
+  require_max_size "metadata.json" "$root/Kandelo/metadata.json" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES"
+  for directory in "$root/Formula" "$root/Kandelo/formula" "$root/Kandelo/link" "$root/Kandelo/reports"; do
+    [ -d "$directory" ] || continue
+    while IFS= read -r -d '' path; do
+      case "$path" in
+        "$root/Formula/"*) require_max_size "Formula" "$path" "$HOMEBREW_MAX_FORMULA_BYTES" ;;
+        "$root/Kandelo/formula/"*) require_max_size "formula JSON" "$path" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES" ;;
+        "$root/Kandelo/link/"*) require_max_size "link JSON" "$path" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES" ;;
+        "$root/Kandelo/reports/"*) require_max_size "report JSON" "$path" "$HOMEBREW_MAX_PROVENANCE_BYTES" ;;
+      esac
+    done < <(find "$directory" -type f -print0)
+  done
+}
+
 assert_static_tap_tree() {
   local root="$1" label="$2" path bad bad_mode
   for path in "$root/Formula" "$root/Kandelo"; do
@@ -407,6 +438,7 @@ compose_publication_handoff() {
   fi
   (cd "$KANDELO_ROOT" && "${sidecar_args[@]}")
   assert_static_tap_tree "$COMPOSE_ROOT" "composed tap"
+  assert_sidecar_size_bounds "$COMPOSE_ROOT"
   run_validator "$COMPOSE_ROOT"
 
   assert_static_tap_tree "$TAP_ROOT" "refreshed publication tap"
@@ -440,12 +472,16 @@ copy_payload() {
     echo "homebrew-publish-sidecars.sh: sidecar payload lacks Kandelo/metadata.json" >&2
     exit 2
   fi
+  assert_static_tap_tree "$SIDECAR_ROOT" "sidecar payload"
+  assert_sidecar_size_bounds "$SIDECAR_ROOT"
   mkdir -p "$TAP_ROOT/Kandelo"
   rsync -a "$SIDECAR_ROOT/Kandelo/" "$TAP_ROOT/Kandelo/"
   if [ -d "$SIDECAR_ROOT/Formula" ]; then
     mkdir -p "$TAP_ROOT/Formula"
     rsync -a "$SIDECAR_ROOT/Formula/" "$TAP_ROOT/Formula/"
   fi
+  assert_static_tap_tree "$TAP_ROOT" "merged publication tap"
+  assert_sidecar_size_bounds "$TAP_ROOT"
 }
 
 guard_non_success_payload_preserves_last_green() {

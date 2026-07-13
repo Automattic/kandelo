@@ -2,6 +2,10 @@
 # Validate the complete, credential-free output of one Homebrew bottle build.
 set -euo pipefail
 
+SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-publication-limits.sh"
+
 HANDOFF=""
 FORMULA=""
 ARCH=""
@@ -144,10 +148,10 @@ require_max_size() {
   fi
 }
 
-require_max_size "manifest.json" "$MANIFEST" 65536
-require_max_size "bottle.json" "$BOTTLE_JSON" 1048576
-require_max_size "dependency-provenance.json" "$DEPENDENCY_PROVENANCE" 1048576
-require_max_size "compressed bottle" "$BOTTLE_ARCHIVE" 536870912
+require_max_size "manifest.json" "$MANIFEST" "$HOMEBREW_MAX_MANIFEST_BYTES"
+require_max_size "bottle.json" "$BOTTLE_JSON" "$HOMEBREW_MAX_BOTTLE_JSON_BYTES"
+require_max_size "dependency-provenance.json" "$DEPENDENCY_PROVENANCE" "$HOMEBREW_MAX_DEPENDENCY_PROVENANCE_BYTES"
+require_max_size "compressed bottle" "$BOTTLE_ARCHIVE" "$HOMEBREW_MAX_BOTTLE_BYTES"
 
 manifest_error="$(mktemp)"
 trap 'rm -f "$manifest_error"' EXIT
@@ -252,7 +256,6 @@ if [ "$ACTUAL_DEPENDENCY_BYTES" != "$EXPECTED_DEPENDENCY_BYTES" ]; then
   exit 1
 fi
 
-SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 dependency_validation_args=(
   validate
   --input "$DEPENDENCY_PROVENANCE"

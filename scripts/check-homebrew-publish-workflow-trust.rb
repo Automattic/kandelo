@@ -15,9 +15,9 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5724fbd09d7c43ba63c5bfa58cb4e73d7f0c08247b029b49a3e4e940d0011bd5"
-PUBLISHER_BUILD_DIGEST = "25341a9769075f4396c57056758732da570b7778c355111215562b4814c27952"
+PUBLISHER_BUILD_DIGEST = "641c7a875c7e8c5d0c6603571c7e09886bf5ebae852146f4cdb41a79ddf3bd93"
 PUBLISHER_UPLOAD_DIGEST = "60a32b6c315cfbaa5b4035c67f1cbb76d17b17a6e20c4f3e06d72aa66af456bd"
-PUBLISHER_VERIFY_DIGEST = "7fe231b05678e40214a360c1fe5cd923e610d65ab0fb79d8cca0c902394af730"
+PUBLISHER_VERIFY_DIGEST = "149a482a378ddcf24f756a6c2068cd6a450af6bfa3bf47a7b8015210cd2d524d"
 PUBLISHER_FINALIZE_DIGEST = "ff194b4abd44c058c18a1a9175b9be3f02814302a19b0f2842c3c86ad025ee04"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
@@ -431,6 +431,7 @@ def check_publisher(workflow)
   check(build_handoff_upload["uses"] == UPLOAD_ACTION && build_handoff_upload["with"] == {
     "name" => build_handoff_name,
     "path" => "${{ runner.temp }}/homebrew-build-handoff",
+    "compression-level" => 0,
     "if-no-files-found" => "error", "retention-days" => 2,
   }, "publisher build handoff artifact contract changed")
   upload_handoff_download = named_step(upload_steps, "Download strict build handoff")
@@ -459,6 +460,7 @@ def check_publisher(workflow)
   check(publish_handoff_upload["uses"] == UPLOAD_ACTION && publish_handoff_upload["with"] == {
     "name" => publish_handoff_name,
     "path" => "${{ runner.temp }}/homebrew-publish-handoff",
+    "compression-level" => 0,
     "if-no-files-found" => "error", "retention-days" => 2,
   }, "publisher publication handoff artifact contract changed")
   publish_handoff_download = named_step(finalize_steps, "Download validated publication handoff")
