@@ -436,6 +436,15 @@ pub fn generate_fdinfo(proc: &Process, fd: i32) -> Option<Vec<u8>> {
     Some(content.into_bytes())
 }
 
+/// Return whether a process currently owns a complete descriptor/OFD pair.
+pub fn has_open_fd(proc: &Process, fd: i32) -> bool {
+    proc.fd_table
+        .get(fd)
+        .ok()
+        .and_then(|entry| proc.ofd_table.get(entry.ofd_ref.0))
+        .is_some()
+}
+
 /// Generate /proc/net/tcp content header (simplified).
 /// Content can be extended by passing socket info from the process table.
 pub fn generate_net_tcp_header() -> Vec<u8> {
@@ -720,6 +729,23 @@ fn validate_pid(proc: &Process, pid: u32) -> Result<(), Errno> {
 pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> {
     if let Some(pid) = entry_pid(entry) {
         validate_pid(proc, pid)?;
+    }
+    if let ProcfsEntry::FdLink(pid, fd) | ProcfsEntry::FdInfo(pid, fd) = entry {
+        let exists = if *pid == proc.pid {
+            has_open_fd(proc, *fd)
+        } else {
+            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+            {
+                crate::wasm_api::procfs_has_fd_for_pid(*pid, *fd)
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+            {
+                false
+            }
+        };
+        if !exists {
+            return Err(Errno::ENOENT);
+        }
     }
     Ok(())
 }

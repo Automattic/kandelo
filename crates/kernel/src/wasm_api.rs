@@ -1128,6 +1128,25 @@ pub(crate) fn procfs_readlink_for_pid(
     crate::procfs::procfs_readlink(proc, entry, buf).ok()
 }
 
+/// Return whether a foreign process owns a complete descriptor/OFD pair.
+pub(crate) fn procfs_has_fd_for_pid(pid: u32, fd: i32) -> bool {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    table
+        .get(pid)
+        .is_some_and(|proc| crate::procfs::has_open_fd(proc, fd))
+}
+
+/// Return the live OFD metadata exposed by a foreign process's procfs fd link.
+pub(crate) fn procfs_fstat_for_pid(
+    pid: u32,
+    fd: i32,
+    host: &mut dyn HostIO,
+) -> Result<WasmStat, Errno> {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = table.get(pid).ok_or(Errno::ENOENT)?;
+    syscalls::procfs_fd_target_stat(proc, host, fd)
+}
+
 /// Generate directory entries for a foreign process's procfs directory.
 pub(crate) fn procfs_getdents64_for_pid(
     pid: u32,
