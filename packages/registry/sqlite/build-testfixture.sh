@@ -74,6 +74,9 @@ if [ -d "$PATCH_DIR" ]; then
     for patch_file in "$PATCH_DIR"/*.patch; do
         [ -f "$patch_file" ] || continue
         patch_name="$(basename "$patch_file")"
+        if [ "$patch_name" = "0007-testfixture-recover-command-lifetime.patch" ]; then
+            continue
+        fi
         if (cd "$SQLITE_FULL" && git apply -p0 --check "$patch_file") >/dev/null 2>&1; then
             echo "  Applying $patch_name..."
             (cd "$SQLITE_FULL" && git apply -p0 "$patch_file")
@@ -84,6 +87,27 @@ if [ -d "$PATCH_DIR" ]; then
             exit 1
         fi
     done
+fi
+
+# The upstream TestRecover Tcl binding must own the sqlite3_recover handle for
+# exactly as long as its generated command exists. Keep this testfixture-only
+# patch out of build-sqlite.sh so it cannot affect the package's declared
+# library, header, or pkg-config outputs.
+RECOVER_LIFETIME_PATCH="$PATCH_DIR/0007-testfixture-recover-command-lifetime.patch"
+SQLITE_FULL_REL="${SQLITE_FULL#"$REPO_ROOT/"}"
+echo "==> Applying testfixture recover-command lifetime patch..."
+if git -C "$REPO_ROOT" apply --directory="$SQLITE_FULL_REL" \
+    --check "$RECOVER_LIFETIME_PATCH" >/dev/null 2>&1; then
+    git -C "$REPO_ROOT" apply --directory="$SQLITE_FULL_REL" \
+        "$RECOVER_LIFETIME_PATCH"
+elif git -C "$REPO_ROOT" apply --directory="$SQLITE_FULL_REL" \
+    --reverse --check "$RECOVER_LIFETIME_PATCH" >/dev/null 2>&1 \
+    && grep -q 'static void testRecoverDelete' "$SQLITE_FULL/ext/recover/test_recover.c" \
+    && [ -f "$SQLITE_FULL/ext/recover/recoverlifetime.test" ]; then
+    echo "    $(basename "$RECOVER_LIFETIME_PATCH") already applied"
+else
+    echo "ERROR: $(basename "$RECOVER_LIFETIME_PATCH") does not apply cleanly" >&2
+    exit 1
 fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
