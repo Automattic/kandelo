@@ -118,6 +118,23 @@ separate `-lunwind`.
 to wasm-EH `try_table` / `catch_ref` instructions. Without it, catch
 handlers are dead-code-eliminated and `throw` hangs at runtime.
 
+#### LLVM 21 SjLj and `noexcept` limitation
+
+Kandelo's pinned LLVM 21.1.7 toolchain lowers `longjmp` and `siglongjmp` to an
+internal Wasm exception. If that transfer crosses a C++ `noexcept` frame,
+Clang's generated termination handler can intercept the internal tag before
+the matching `setjmp` or `sigsetjmp` landing consumes it. The process then
+calls `std::terminate()` even when the C control transfer itself is valid.
+
+This is a known SDK/toolchain limitation tracked in
+[issue #918](https://github.com/Automattic/kandelo/issues/918), not a change to
+POSIX signal or `longjmp` semantics. It is present in raw clang-linked wasm32
+and wasm64 modules and remains present after Kandelo's wasm32 fork
+instrumentation. Until the pinned compiler is fixed, code that establishes a
+jump landing and calls work that can jump back across the current frame must
+not mark that crossed frame `noexcept`. Keep the workaround scoped to that
+boundary; do not disable C++ exceptions, signal delivery, or child reaping.
+
 ### Building static libraries
 
 ```bash
