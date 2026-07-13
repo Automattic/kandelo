@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { zstdCompressSync } from "node:zlib";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,6 +84,83 @@ function stripStandaloneLazyIdentity(image: Uint8Array): Uint8Array {
 }
 
 describe("VFS image save/restore", () => {
+  describe("snapshot timestamp policy", () => {
+    it("normalizes only the detached image while runtime timestamps remain real", async () => {
+      const runtimeNow = 1_700_000_123_456;
+      const normalizedNow = 946_684_800_000;
+      const now = vi.spyOn(Date, "now").mockReturnValue(runtimeNow);
+
+      try {
+        const mfs = createMemfs();
+        mfs.mkdir("/tree", 0o755);
+        writeFile(
+          mfs,
+          "/tree/file.txt",
+          new TextEncoder().encode("contents"),
+        );
+        mfs.symlink("tree/file.txt", "/link");
+
+        const liveFile = mfs.stat("/tree/file.txt");
+        expect(liveFile.atimeMs).toBe(runtimeNow);
+        expect(liveFile.mtimeMs).toBe(runtimeNow);
+        expect(liveFile.ctimeMs).toBe(runtimeNow);
+
+        const normalizedImage = await mfs.saveImage({
+          normalizeTimestampsMs: normalizedNow,
+        });
+
+        // Snapshot normalization must never rewrite authoritative live state.
+        expect(mfs.stat("/tree/file.txt")).toEqual(liveFile);
+
+        const restored = MemoryFileSystem.fromImage(normalizedImage);
+        for (const path of ["/", "/tree", "/tree/file.txt", "/link"]) {
+          const stat = restored.lstat(path);
+          expect(stat.atimeMs, `${path} atime`).toBe(normalizedNow);
+          expect(stat.mtimeMs, `${path} mtime`).toBe(normalizedNow);
+          expect(stat.ctimeMs, `${path} ctime`).toBe(normalizedNow);
+        }
+
+        // Ordinary runtime snapshots preserve the POSIX timestamps they saw.
+        const ordinary = MemoryFileSystem.fromImage(await mfs.saveImage());
+        expect(ordinary.stat("/tree/file.txt").atimeMs).toBe(runtimeNow);
+        expect(ordinary.stat("/tree/file.txt").mtimeMs).toBe(runtimeNow);
+        expect(ordinary.stat("/tree/file.txt").ctimeMs).toBe(runtimeNow);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it.each([-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+      "rejects invalid normalized timestamp %s",
+      async (normalizeTimestampsMs) => {
+        const mfs = createMemfs();
+        await expect(
+          mfs.saveImage({ normalizeTimestampsMs }),
+        ).rejects.toThrow(/non-negative safe integer/);
+      },
+    );
+
+    it("clears wall-clock timestamps retained by freed inode slots", async () => {
+      const build = async (runtimeNow: number): Promise<Uint8Array> => {
+        const now = vi.spyOn(Date, "now").mockReturnValue(runtimeNow);
+        try {
+          const mfs = createMemfs();
+          writeFile(mfs, "/kept", new Uint8Array([1, 2, 3]));
+          writeFile(mfs, "/discarded", new Uint8Array([4, 5, 6]));
+          mfs.unlink("/discarded");
+          return await mfs.saveImage({ normalizeTimestampsMs: 0 });
+        } finally {
+          now.mockRestore();
+        }
+      };
+
+      const first = await build(1_700_000_000_000);
+      const second = await build(1_800_000_000_000);
+      expect(second.byteLength).toBe(first.byteLength);
+      expect(Buffer.from(second).equals(Buffer.from(first))).toBe(true);
+    });
+  });
+
   describe("saveImage + fromImage round-trip", () => {
     it("preserves a single file", async () => {
       const mfs = createMemfs();

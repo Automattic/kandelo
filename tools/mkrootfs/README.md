@@ -16,6 +16,12 @@ mkrootfs add     <image> <path> <src> [--mode=0644] [--uid=0] [--gid=0]
 Run via `npx tsx tools/mkrootfs/src/index.ts ...` from the repo root, or
 install the bin shim with `npm install` and invoke `mkrootfs ...`.
 
+`mkrootfs build` produces byte-reproducible inode timestamps. It sets every
+allocated inode's atime, mtime, and ctime in the serialized image to
+`SOURCE_DATE_EPOCH` (whole Unix seconds), or to Unix epoch zero when the
+variable is unset. This normalization affects only the image snapshot; it does
+not change the live `MemoryFileSystem` clock or ordinary runtime snapshots.
+
 ## ZIP archive ingestion
 
 Every manifest node path must be a canonical absolute POSIX path. `mkrootfs`

@@ -101,6 +101,12 @@ export interface VfsImageOptions {
    * from the source image; `null` clears it.
    */
   metadata?: VfsImageMetadata | null;
+  /**
+   * Replace every allocated inode's atime, mtime, and ctime in the serialized
+   * snapshot with this millisecond value. The live filesystem is unchanged.
+   * Omit this for ordinary runtime snapshots that must preserve POSIX times.
+   */
+  normalizeTimestampsMs?: number;
 }
 
 /** Versioned, image-level declarations carried outside the guest file tree. */
@@ -1264,7 +1270,9 @@ export class MemoryFileSystem implements FileSystemBackend {
       await this.materializeAllLazyEntries();
     }
 
-    const { bytes: sabBytes, identities } = this.fs.snapshotState();
+    const { bytes: sabBytes, identities } = this.fs.snapshotState({
+      normalizeTimestampsMs: options?.normalizeTimestampsMs,
+    });
     this.reconcileLazyIdentityState(identities);
     const lazyEntries = this.serializeLazyEntries();
     const hasLazy = lazyEntries.length > 0;

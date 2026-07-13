@@ -61,6 +61,76 @@ function corruptFirstCentralDirectoryName(zip: Uint8Array): Uint8Array {
   throw new Error("central directory entry not found in test ZIP");
 }
 
+describe("image builder reproducibility", () => {
+  it("produces identical bytes from identical inputs at different wall times", async () => {
+    const fixture = join(fixtures, "basic");
+    const now = vi.spyOn(Date, "now");
+
+    try {
+      now.mockReturnValue(1_700_000_000_000);
+      const first = await buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+      });
+
+      now.mockReturnValue(1_800_000_000_000);
+      const second = await buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+      });
+
+      expect(second.byteLength).toBe(first.byteLength);
+      expect(Buffer.from(second).equals(Buffer.from(first))).toBe(true);
+      const restored = MemoryFileSystem.fromImage(first);
+      for (const path of ["/", "/etc", "/etc/passwd", "/usr/bin/sh"]) {
+        const stat = restored.lstat(path);
+        expect(stat.atimeMs, `${path} atime`).toBe(0);
+        expect(stat.mtimeMs, `${path} mtime`).toBe(0);
+        expect(stat.ctimeMs, `${path} ctime`).toBe(0);
+      }
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("uses sourceDateEpochSeconds for every inode type", async () => {
+    const fixture = join(fixtures, "basic");
+    const sourceDateEpochSeconds = 946_684_800;
+    const image = await buildImage({
+      sourceTree: join(fixture, "rootfs"),
+      manifest: join(fixture, "MANIFEST"),
+      repoRoot: fixture,
+      sourceDateEpochSeconds,
+    });
+    const restored = MemoryFileSystem.fromImage(image);
+    const expectedMs = sourceDateEpochSeconds * 1000;
+
+    for (const path of ["/", "/etc", "/etc/passwd", "/usr/bin/sh"]) {
+      const stat = restored.lstat(path);
+      expect(stat.atimeMs, `${path} atime`).toBe(expectedMs);
+      expect(stat.mtimeMs, `${path} mtime`).toBe(expectedMs);
+      expect(stat.ctimeMs, `${path} ctime`).toBe(expectedMs);
+    }
+  });
+
+  it.each([-1, 1.5, Number.NaN, 9_007_199_254_741])(
+    "rejects invalid sourceDateEpochSeconds %s",
+    async (sourceDateEpochSeconds) => {
+      const fixture = join(fixtures, "basic");
+      await expect(
+        buildImage({
+          sourceTree: join(fixture, "rootfs"),
+          manifest: join(fixture, "MANIFEST"),
+          repoRoot: fixture,
+          sourceDateEpochSeconds,
+        }),
+      ).rejects.toThrow(/sourceDateEpochSeconds must be an integer/);
+    },
+  );
+});
+
 describe("image builder — pass 1: directories", () => {
   it("creates dirs with the manifest's mode/uid/gid", async () => {
     const fixture = join(fixtures, "basic");
