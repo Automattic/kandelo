@@ -239,6 +239,8 @@ EOF
 make_build_handoff() {
   local handoff="$1"
   local extra_file_count="${BUILD_HANDOFF_EXTRA_FILE_COUNT:-0}"
+  local dependency_provenance_source="${BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE:-}"
+  local formula_source="${BUILD_HANDOFF_FORMULA_SOURCE:-}"
   local source_dir="${handoff}.source"
   local bottle="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.tar.gz"
   local bottle_json="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.json"
@@ -247,11 +249,15 @@ make_build_handoff() {
   local sha256
 
   mkdir -p "$bottle_stage/.brew" "$bottle_stage/bin"
-  cat >"$bottle_stage/.brew/hello.rb" <<'EOF'
+  if [ -n "$formula_source" ]; then
+    cp "$formula_source" "$bottle_stage/.brew/hello.rb"
+  else
+    cat >"$bottle_stage/.brew/hello.rb" <<'EOF'
 class Hello < Formula
   desc "reviewed fixture"
 end
 EOF
+  fi
   printf '{}\n' >"$bottle_stage/INSTALL_RECEIPT.json"
   printf '#!/bin/sh\necho hello\n' >"$bottle_stage/bin/hello"
   chmod +x "$bottle_stage/bin/hello"
@@ -292,16 +298,20 @@ EOF
     ' "$bottle_json" >"$expanded_json"
     mv "$expanded_json" "$bottle_json"
   fi
-  jq -nS '{
-    schema: 1,
-    formula: "hello",
-    arch: "wasm32",
-    tap_repository: "Automattic/kandelo-homebrew",
-    tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
-    bottle_tag: "wasm32_kandelo",
-    dependencies: []
-  }' >"$dependency_provenance"
+  if [ -n "$dependency_provenance_source" ]; then
+    cp "$dependency_provenance_source" "$dependency_provenance"
+  else
+    jq -nS '{
+      schema: 1,
+      formula: "hello",
+      arch: "wasm32",
+      tap_repository: "Automattic/kandelo-homebrew",
+      tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+      bottle_tag: "wasm32_kandelo",
+      dependencies: []
+    }' >"$dependency_provenance"
+  fi
 
   bash "$REPO_ROOT/scripts/homebrew-create-build-handoff.sh" \
     --formula hello \
@@ -655,21 +665,236 @@ assert_upload_receipt_is_bound_to_build_handoff() {
   fi
 }
 
+make_publish_dependency_provenance() {
+  local tap_root="$1" output="$2" directness="$3"
+  local xz_direct=false zlib_direct=true xz_formula_sha zlib_formula_sha
+  case "$directness" in
+    valid) ;;
+    direct-false) zlib_direct=false ;;
+    transitive-true) xz_direct=true ;;
+    *) fail "unknown publish dependency directness fixture: $directness" ;;
+  esac
+  xz_formula_sha="$(sha256sum "$tap_root/Formula/xz.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/xz.rb" | awk '{print $1}')"
+  zlib_formula_sha="$(sha256sum "$tap_root/Formula/zlib.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/zlib.rb" | awk '{print $1}')"
+  jq -nS \
+    --arg xz_formula_sha "$xz_formula_sha" --arg zlib_formula_sha "$zlib_formula_sha" \
+    --argjson xz_direct "$xz_direct" --argjson zlib_direct "$zlib_direct" '{
+      schema: 1,
+      formula: "hello",
+      arch: "wasm32",
+      tap_repository: "Automattic/kandelo-homebrew",
+      tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+      bottle_tag: "wasm32_kandelo",
+      dependencies: [
+        {
+          name: "xz",
+          full_name: "automattic/kandelo-homebrew/xz",
+          version: "5.6.2",
+          declared_directly: $xz_direct,
+          formula: {path: "Formula/xz.rb", sha256: $xz_formula_sha},
+          bottle: {
+            cellar: "any_skip_relocation",
+            rebuild: 0,
+            sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+            tag: "wasm32_kandelo",
+            url: "https://ghcr.io/v2/automattic/kandelo-homebrew/xz/blobs/sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          receipt: {
+            built_as_bottle: true,
+            homebrew_version: "Homebrew fixture",
+            installed_on_request: false,
+            path: "Cellar/xz/5.6.2/INSTALL_RECEIPT.json",
+            poured_from_bottle: true,
+            sha256: "3333333333333333333333333333333333333333333333333333333333333333",
+            source_tap: "automattic/kandelo-homebrew",
+            source_tap_git_head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          install_log: {
+            fetch: ["Downloading xz bottle 2222222222222222222222222222222222222222222222222222222222222222"],
+            pour: ["Pouring xz--5.6.2.wasm32_kandelo.bottle.tar.gz"],
+            source_build_absent: true
+          }
+        },
+        {
+          name: "zlib",
+          full_name: "automattic/kandelo-homebrew/zlib",
+          version: "1.3.1",
+          declared_directly: $zlib_direct,
+          formula: {path: "Formula/zlib.rb", sha256: $zlib_formula_sha},
+          bottle: {
+            cellar: "any_skip_relocation",
+            rebuild: 0,
+            sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+            tag: "wasm32_kandelo",
+            url: "https://ghcr.io/v2/automattic/kandelo-homebrew/zlib/blobs/sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          receipt: {
+            built_as_bottle: true,
+            homebrew_version: "Homebrew fixture",
+            installed_on_request: false,
+            path: "Cellar/zlib/1.3.1/INSTALL_RECEIPT.json",
+            poured_from_bottle: true,
+            sha256: "4444444444444444444444444444444444444444444444444444444444444444",
+            source_tap: "automattic/kandelo-homebrew",
+            source_tap_git_head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          install_log: {
+            fetch: ["Downloading zlib bottle 1111111111111111111111111111111111111111111111111111111111111111"],
+            pour: ["Pouring zlib--1.3.1.wasm32_kandelo.bottle.tar.gz"],
+            source_build_absent: true
+          }
+        }
+      ]
+    }' >"$output"
+}
+
+seed_publish_dependency_sidecars() {
+  local tap_root="$1" metadata="$tap_root/Kandelo/metadata.json"
+  local xz_formula_sha zlib_formula_sha
+  xz_formula_sha="$(sha256sum "$tap_root/Formula/xz.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/xz.rb" | awk '{print $1}')"
+  zlib_formula_sha="$(sha256sum "$tap_root/Formula/zlib.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/zlib.rb" | awk '{print $1}')"
+  mkdir -p "$tap_root/Kandelo/formula" "$tap_root/Kandelo/link"
+  printf '{}\n' >"$tap_root/Kandelo/link/xz-5.6.2-rebuild0-wasm32.json"
+  printf '{}\n' >"$tap_root/Kandelo/link/zlib-1.3.1-rebuild0-wasm32.json"
+  jq -nS \
+    --arg xz_formula_sha "$xz_formula_sha" --arg zlib_formula_sha "$zlib_formula_sha" '
+      def bottle($name; $sha; $formula_sha; $link): {
+        arch: "wasm32",
+        bottle_tag: "wasm32_kandelo",
+        kandelo_abi: 18,
+        cellar: "/home/linuxbrew/.linuxbrew/Cellar",
+        prefix: "/home/linuxbrew/.linuxbrew",
+        runtime_support: ["node"],
+        browser_compatible: false,
+        fork_instrumentation: "not-required",
+        status: "failed",
+        built_by: "https://example.invalid/actions/runs/1",
+        built_from: {
+          kandelo_repository: "Automattic/kandelo",
+          kandelo_commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          tap_repository: "Automattic/kandelo-homebrew",
+          tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          formula_sha256: $formula_sha
+        },
+        error: "fixture retained last green bottle",
+        last_attempt: "2026-07-12T00:00:00Z",
+        last_attempt_by: "https://example.invalid/actions/runs/2",
+        fallback_url: ("https://ghcr.io/v2/automattic/kandelo-homebrew/" + $name + "/blobs/sha256:" + $sha),
+        fallback_sha256: $sha,
+        fallback_bytes: 123,
+        fallback_cache_key_sha: $sha,
+        fallback_link_manifest: $link,
+        fallback_built_at: "2026-07-11T00:00:00Z"
+      };
+      {
+        schema: 1,
+        tap_repository: "Automattic/kandelo-homebrew",
+        tap_name: "automattic/kandelo-homebrew",
+        tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        kandelo_repository: "Automattic/kandelo",
+        kandelo_commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        kandelo_abi: 18,
+        release_tag: "bottles-abi-v18",
+        generated_at: "2026-07-12T00:00:00Z",
+        generator: "workflow dependency fixture",
+        packages: [
+          {
+            name: "xz",
+            full_name: "automattic/kandelo-homebrew/xz",
+            version: "5.6.2",
+            formula_revision: 0,
+            bottle_rebuild: 0,
+            formula_path: "Formula/xz.rb",
+            formula_metadata: "Kandelo/formula/xz.json",
+            dependencies: [],
+            bottles: [bottle("xz"; "2222222222222222222222222222222222222222222222222222222222222222"; $xz_formula_sha; "Kandelo/link/xz-5.6.2-rebuild0-wasm32.json")]
+          },
+          {
+            name: "zlib",
+            full_name: "automattic/kandelo-homebrew/zlib",
+            version: "1.3.1",
+            formula_revision: 0,
+            bottle_rebuild: 0,
+            formula_path: "Formula/zlib.rb",
+            formula_metadata: "Kandelo/formula/zlib.json",
+            dependencies: [{name: "xz", version: "5.6.2"}],
+            bottles: [bottle("zlib"; "1111111111111111111111111111111111111111111111111111111111111111"; $zlib_formula_sha; "Kandelo/link/zlib-1.3.1-rebuild0-wasm32.json")]
+          }
+        ]
+      }
+    ' >"$metadata"
+  jq -S '{
+    schema, tap_repository, tap_name, tap_commit, kandelo_abi,
+    source_metadata: "Kandelo/metadata.json"
+  } + (.packages[0] | del(.formula_metadata))' "$metadata" >"$tap_root/Kandelo/formula/xz.json"
+  jq -S '{
+    schema, tap_repository, tap_name, tap_commit, kandelo_abi,
+    source_metadata: "Kandelo/metadata.json"
+  } + (.packages[1] | del(.formula_metadata))' "$metadata" >"$tap_root/Kandelo/formula/zlib.json"
+}
+
 make_publish_handoff() {
   local handoff="$1" tap_root="$2"
   local build_stage="${handoff}.build"
   local extra_link_count="${PUBLISH_HANDOFF_EXTRA_LINK_COUNT:-0}"
+  local dependency_mode="${PUBLISH_HANDOFF_DEPENDENCY_MODE:-none}"
+  local seed_dependency_sidecars="${PUBLISH_HANDOFF_SEED_DEPENDENCY_SIDECARS:-0}"
+  local dependency_provenance_source="${handoff}.dependency-provenance.json"
+  local composition_dependencies='[]'
   local bottle_sha bottle_bytes bottle_url formula_sha
 
-  rm -rf "$handoff" "$tap_root" "$build_stage"
+  rm -rf "$handoff" "$tap_root" "$build_stage" "$dependency_provenance_source"
   mkdir -p "$tap_root/Formula" "$handoff/composition"
-  cat >"$tap_root/Formula/hello.rb" <<'EOF'
+  if [ "$dependency_mode" = "none" ]; then
+    cat >"$tap_root/Formula/hello.rb" <<'EOF'
 class Hello < Formula
   desc "reviewed fixture"
 end
 EOF
+  else
+    cat >"$tap_root/Formula/hello.rb" <<'EOF'
+class Hello < Formula
+  desc "reviewed fixture"
+  depends_on "automattic/kandelo-homebrew/zlib"
+end
+EOF
+    cat >"$tap_root/Formula/zlib.rb" <<'EOF'
+class Zlib < Formula
+  desc "direct dependency fixture"
+  depends_on "automattic/kandelo-homebrew/xz"
+
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
+  end
+end
+EOF
+    cat >"$tap_root/Formula/xz.rb" <<'EOF'
+class Xz < Formula
+  desc "transitive dependency fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
+  end
+end
+EOF
+    make_publish_dependency_provenance \
+      "$tap_root" "$dependency_provenance_source" "$dependency_mode"
+    composition_dependencies='[{"name":"zlib","version":"1.3.1"}]'
+    if [ "$seed_dependency_sidecars" = "1" ]; then
+      seed_publish_dependency_sidecars "$tap_root"
+    fi
+  fi
   formula_sha="$(sha256sum "$tap_root/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/hello.rb" | awk '{print $1}')"
-  make_build_handoff "$build_stage"
+  if [ "$dependency_mode" = "none" ]; then
+    make_build_handoff "$build_stage"
+  else
+    BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE="$dependency_provenance_source" \
+      BUILD_HANDOFF_FORMULA_SOURCE="$tap_root/Formula/hello.rb" \
+      make_build_handoff "$build_stage"
+  fi
   mv "$build_stage" "$handoff/build"
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --tap-repository Automattic/kandelo-homebrew \
@@ -687,7 +912,7 @@ EOF
   bottle_url="$(jq -r '.bottle.url' "$handoff/receipt.json")"
   jq -nS \
     --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
-    --arg formula_sha "$formula_sha" '{
+    --arg formula_sha "$formula_sha" --argjson dependencies "$composition_dependencies" '{
       schema: 1,
       tap_repository: "Automattic/kandelo-homebrew",
       tap_name: "automattic/kandelo-homebrew",
@@ -706,7 +931,7 @@ EOF
         bottle_rebuild: 0,
         formula_path: "Formula/hello.rb",
         formula_source_sha256: $formula_sha,
-        dependencies: [],
+        dependencies: $dependencies,
         bottles: [{
           arch: "wasm32",
           bottle_tag: "wasm32_kandelo",
@@ -911,6 +1136,92 @@ assert_publish_handoff_is_exact_inert_data() {
   fi
   after="$(sha256sum "$external" 2>/dev/null || shasum -a 256 "$external")"
   [ "$before" = "$after" ] || fail "sidecar publisher wrote through the tap Formula symlink"
+}
+
+assert_publish_dependencies_are_source_bound() {
+  local handoff tap_root tmp err
+
+  handoff="$TMPDIR/publish-dependencies-valid"
+  tap_root="$TMPDIR/publish-dependencies-valid-tap"
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=valid \
+    PUBLISH_HANDOFF_SEED_DEPENDENCY_SIDECARS=1 \
+    make_publish_handoff "$handoff" "$tap_root"
+  validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+
+  handoff="$TMPDIR/publish-dependencies-missing"
+  tap_root="$TMPDIR/publish-dependencies-missing-tap"
+  err="$TMPDIR/publish-dependencies-missing.err"
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=valid make_publish_handoff "$handoff" "$tap_root"
+  tmp="$TMPDIR/publish-dependencies-missing.json"
+  jq '.packages[0].dependencies = []' "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "publish handoff validator accepted an omitted direct composition dependency"
+  fi
+  grep -F "composition dependencies do not match exact direct dependency provenance" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain the omitted direct dependency"
+
+  handoff="$TMPDIR/publish-dependencies-extra"
+  tap_root="$TMPDIR/publish-dependencies-extra-tap"
+  err="$TMPDIR/publish-dependencies-extra.err"
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=valid make_publish_handoff "$handoff" "$tap_root"
+  tmp="$TMPDIR/publish-dependencies-extra.json"
+  jq '.packages[0].dependencies += [{name: "xz", version: "5.6.2"}]' \
+    "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "publish handoff validator accepted a transitive dependency as direct composition data"
+  fi
+  grep -F "composition dependencies do not match exact direct dependency provenance" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain the extra composition dependency"
+
+  handoff="$TMPDIR/publish-dependencies-version"
+  tap_root="$TMPDIR/publish-dependencies-version-tap"
+  err="$TMPDIR/publish-dependencies-version.err"
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=valid make_publish_handoff "$handoff" "$tap_root"
+  tmp="$TMPDIR/publish-dependencies-version.json"
+  jq '.packages[0].dependencies[0].version = "9.9.9"' \
+    "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "publish handoff validator accepted a dependency version not backed by provenance"
+  fi
+  grep -F "composition dependencies do not match exact direct dependency provenance" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain the dependency version mismatch"
+
+  handoff="$TMPDIR/publish-dependencies-duplicate"
+  tap_root="$TMPDIR/publish-dependencies-duplicate-tap"
+  err="$TMPDIR/publish-dependencies-duplicate.err"
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=valid make_publish_handoff "$handoff" "$tap_root"
+  tmp="$TMPDIR/publish-dependencies-duplicate.json"
+  jq '.packages[0].dependencies += [.packages[0].dependencies[0]]' \
+    "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "publish handoff validator accepted a duplicate direct dependency"
+  fi
+  grep -F "composition dependencies do not match exact direct dependency provenance" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain the duplicate dependency"
+
+  handoff="$TMPDIR/publish-dependencies-direct-false"
+  tap_root="$TMPDIR/publish-dependencies-direct-false-tap"
+  err="$TMPDIR/publish-dependencies-direct-false.err"
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=direct-false make_publish_handoff "$handoff" "$tap_root"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "publish handoff validator accepted a direct Formula dependency marked transitive"
+  fi
+  grep -F "declared_directly differs from the exact Formula" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain forged false directness"
+
+  handoff="$TMPDIR/publish-dependencies-transitive-true"
+  tap_root="$TMPDIR/publish-dependencies-transitive-true-tap"
+  err="$TMPDIR/publish-dependencies-transitive-true.err"
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=transitive-true make_publish_handoff "$handoff" "$tap_root"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "publish handoff validator accepted a transitive Formula dependency marked direct"
+  fi
+  grep -F "declared_directly differs from the exact Formula" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain forged true directness"
 }
 
 assert_bottle_build_trusts_selected_tap() {
@@ -1307,6 +1618,10 @@ RUBY
     "$tap" Automattic/kandelo-homebrew root)"
   [ "$output" = $'automattic/kandelo-homebrew/dep-a\nautomattic/kandelo-homebrew/dep-b\nautomattic/kandelo-homebrew/dep-recommended' ] ||
     fail "static Formula resolver did not produce the recursive runtime closure: $output"
+  output="$(ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" Automattic/kandelo-homebrew root --direct)"
+  [ "$output" = $'automattic/kandelo-homebrew/dep-a\nautomattic/kandelo-homebrew/dep-recommended' ] ||
+    fail "static Formula resolver did not produce only direct runtime dependencies: $output"
 
   cat >"$tap/Formula/rich-static.rb" <<'RUBY'
 class RichStatic < Formula
@@ -2068,6 +2383,7 @@ assert_build_handoff_is_minimal_and_validated
 assert_build_handoff_rejects_untrusted_content
 assert_upload_receipt_is_bound_to_build_handoff
 assert_publish_handoff_is_exact_inert_data
+assert_publish_dependencies_are_source_bound
 assert_failure_preserves_metadata
 assert_success_payload_size_bounds_are_final
 assert_failure_reports_do_not_collide_within_one_second
