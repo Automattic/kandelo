@@ -21,6 +21,8 @@ INDEX_STATE_SCRIPT="$REPO_ROOT/scripts/release-index-state.sh"
 INDEX_UPDATE_SCRIPT="$REPO_ROOT/scripts/index-update.sh"
 ARCHIVE_SOURCE_SCRIPT="$SCRIPT_DIR/select-package-archive-source.sh"
 ARCHIVE_DOWNLOAD_SCRIPT="$SCRIPT_DIR/download-verified-release-asset.sh"
+STAGING_REUSE_SCRIPT="$SCRIPT_DIR/validate-staging-release.sh"
+STAGING_COMPOSE_SCRIPT="$SCRIPT_DIR/compose-staging-release-snapshots.sh"
 
 fail() {
   echo "merge-candidate workflow contract: $*" >&2
@@ -34,6 +36,31 @@ job_block() {
     $0 == "  " job ":" { inside = 1 }
     inside && /^  [a-zA-Z0-9_-]+:/ && $0 != "  " job ":" { exit }
     inside { print }
+  ' "$workflow"
+}
+
+step_run_block() {
+  local workflow="$1"
+  local step="$2"
+  awk -v step="$step" '
+    $0 == "      - name: " step { in_step = 1; next }
+    in_step && $0 == "        run: |" { in_run = 1; next }
+    in_run && /^      - name:/ { exit }
+    in_run {
+      line = $0
+      sub(/^          /, "", line)
+      print line
+    }
+  ' "$workflow"
+}
+
+step_block() {
+  local workflow="$1"
+  local step="$2"
+  awk -v step="$step" '
+    $0 == "      - name: " step { in_step = 1 }
+    in_step && $0 ~ /^      - name:/ && $0 != "      - name: " step { exit }
+    in_step { print }
   ' "$workflow"
 }
 
@@ -301,6 +328,50 @@ grep -Fq 'bash "$RELEASE_INDEX_STATE_SCRIPT" publish' "$INDEX_UPDATE_SCRIPT" || 
   fail "ordinary canonical writers must share the crash-recoverable publisher"
 grep -Fq 'kandelo-index-transaction-v1-' "$INDEX_STATE_SCRIPT" || \
   fail "canonical publisher must persist a recovery journal before renaming"
+
+# A retry can skip matrix builds only after one complete PR-staging release is
+# validated. The post-matrix gate must then freeze fresh current bytes locally;
+# first/partial runs retain the canonical + local-overlay path.
+grep -Fq 'reuse_staging: ${{ steps.compute.outputs.reuse_staging }}' "$STAGING_WORKFLOW" || \
+  fail "staging preflight must expose its release-reuse decision"
+grep -Fq -- '--mode structural' "$STAGING_WORKFLOW" || \
+  fail "staging preflight must validate complete target-release structure"
+grep -Fq 'validated target/canonical union did not cover the computed matrix' "$STAGING_WORKFLOW" || \
+  fail "staging preflight must prove full current coverage before emptying the matrix"
+grep -Fq 'PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}' "$STAGING_WORKFLOW" || \
+  fail "test-gate must consume the preflight reuse decision"
+materialize_step=$(step_block "$STAGING_WORKFLOW" "Materialize binaries")
+grep -Fq 'GH_TOKEN: ${{ github.token }}' <<<"$materialize_step" || \
+  fail "staging materialization must authenticate release snapshot reads"
+grep -Fq "needs.preflight.outputs.reuse_staging == 'false'" "$STAGING_WORKFLOW" || \
+  fail "reused staging runs must not download absent matrix artifacts"
+grep -Fq -- '--mode current' "$STAGING_WORKFLOW" || \
+  fail "test-gate must freshly prove the staging ledger is fully current"
+grep -Fq -- '--materialize' "$STAGING_WORKFLOW" || \
+  fail "test-gate must freeze verified staging archive bytes locally"
+grep -Fq 'compose-staging-release-snapshots.sh' "$STAGING_WORKFLOW" || \
+  fail "test-gate must delegate final local snapshot placement"
+grep -Fq 'staging-reuse compose' "$STAGING_COMPOSE_SCRIPT" || \
+  fail "test-gate must compose the validated target and canonical supplement structurally"
+grep -Fq 'archive basename collision with different bytes' "$STAGING_COMPOSE_SCRIPT" || \
+  fail "staging union must reject conflicting same-name bytes"
+grep -Fq "printf 'file://%s/index.toml\\n' \"\$OUTPUT_DIR/archives\" > \"\$OUTPUT_DIR/index-url.txt\"" "$STAGING_COMPOSE_SCRIPT" || \
+  fail "target-only reuse must rewrite its file URL after final placement"
+grep -Fq 'elif [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]' "$STAGING_WORKFLOW" || \
+  fail "non-reuse test-gate must retain canonical + local matrix overlays"
+grep -Fq 'gh api --paginate --slurp' "$STAGING_REUSE_SCRIPT" || \
+  fail "staging release validation must not truncate release assets"
+grep -Fq '$TAG/index.toml bytes changed after metadata snapshot' "$STAGING_REUSE_SCRIPT" || \
+  fail "staging release validation must bind index bytes to its metadata snapshot"
+grep -Fq 'download-verified-release-asset.sh' "$STAGING_REUSE_SCRIPT" || \
+  fail "staging materialization must verify every snapshotted archive"
+grep -Fq 'cp "$TMP_ROOT/index.toml" "$TMP_ROOT/archives/index.toml"' "$STAGING_REUSE_SCRIPT" || \
+  fail "staging materialization must publish the localized index beside verified archives"
+for step in "Compute matrix" "Materialize binaries"; do
+  if ! step_run_block "$STAGING_WORKFLOW" "$step" | bash -n; then
+    fail "staging workflow step $step is not valid nested shell syntax"
+  fi
+done
 
 grep -Fq 'cleanup-merge-candidates.sh' "$CLEANUP_WORKFLOW" || \
   fail "staging cleanup must delegate candidate lifecycle to the tested helper"

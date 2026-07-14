@@ -139,6 +139,18 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/test-download-verified-release-asset.sh" \
   ".github/scripts/test-download-verified-release-asset.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/validate-staging-release.sh" \
+  ".github/scripts/validate-staging-release.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/compose-staging-release-snapshots.sh" \
+  ".github/scripts/compose-staging-release-snapshots.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-validate-staging-release.sh" \
+  ".github/scripts/test-validate-staging-release.sh"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/staging_reuse.rs" \
+  "tools/xtask/src/staging_reuse.rs"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/recover-canonical-indexes.sh" \
   ".github/scripts/recover-canonical-indexes.sh"
 assert_matches package_publish_flow_changed_files \
@@ -233,6 +245,15 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/download-verified-release-asset.sh" \
   ".github/scripts/download-verified-release-asset.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/validate-staging-release.sh" \
+  ".github/scripts/validate-staging-release.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/compose-staging-release-snapshots.sh" \
+  ".github/scripts/compose-staging-release-snapshots.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-validate-staging-release.sh" \
+  ".github/scripts/test-validate-staging-release.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/recover-canonical-indexes.sh" \
   ".github/scripts/recover-canonical-indexes.sh"

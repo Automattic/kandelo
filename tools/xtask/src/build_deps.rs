@@ -3358,7 +3358,7 @@ fn parse_compute_cache_key_sha_args(args: Vec<String>) -> Result<(PathBuf, Targe
 /// manifest, threads through the canonical `memo` / `chain` state, and
 /// hex-encodes the digest. Factored out from [`run_compute_cache_key_sha`]
 /// so unit tests can exercise the logic without capturing stdout.
-fn compute_cache_key_sha_for_package(
+pub(crate) fn compute_cache_key_sha_for_package(
     package_dir: &Path,
     registry: &Registry,
     arch: TargetArch,

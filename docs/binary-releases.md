@@ -41,13 +41,18 @@ PR's [Phase 10 workflow rewrite](plans/2026-05-13-binary-resolution-via-index-le
 preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 ```
 
-- **preflight** computes the build matrix. For each package with a
-  `[build]` block, for each declared `arches = [...]` entry, it
-  runs `xtask compute-cache-key-sha`. If the resulting
-  `<pkg>-<ver>-rev<N>-abi<N>-<arch>-<short8>.tar.zst` filename is
-  already an asset on the target release tag, the entry is dropped
-  (already published, nothing to rebuild). Otherwise it lands in
-  the matrix.
+- **preflight** asks `xtask staging-reuse expected` for the complete,
+  cache-keyed package/arch ledger. It may reuse `pr-<N>-staging` only
+  directly when the target index has the exact ABI, covers every managed entry
+  once, every indexed archive names one uploaded, nonempty release asset whose
+  GitHub `sha256:` digest matches the ledger, and every entry has the current
+  version, revision, cache key, and success status. A structurally complete
+  target with stale entries can instead participate in a zero-build union only
+  when the canonical release supplies every stale key as an exact current
+  success with the same asset guarantees. An absent, partial,
+  ambiguous, malformed, or incomplete union falls back to the canonical ABI
+  release and the normal build matrix. A single matching filename is never
+  enough to authorize release-level reuse.
 - **toolchain-cache** does a one-shot build of the wasm32 + wasm64
   musl sysroot + libc++ headers, uploads them as a workflow
   artifact, and saves the same content into actions/cache. The
@@ -74,11 +79,19 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
      this `(name, version, arch)` exists in the entry, it's
      preserved in `fallback_archive_url` — consumers can keep
      using the last-green archive while CI iterates on the rebuild.
-- **test-gate** materializes the full `binaries/` tree by running
-  `scripts/fetch-binaries.sh` — which now reads `build.toml`'s
-  `index_url`, fetches `index.toml` from the target release, and
-  resolves each `(package, arch)` from the ledger. Then the standard
-  test suite runs: `cargo test`, `vitest`, libc-test, POSIX, sortix.
+- **test-gate** handles first/partial runs through the canonical index plus
+  local `file://` overlays for matrix outputs. When preflight reused a
+  complete staging release, the gate re-downloads its index and paginated
+  asset metadata after all matrix writers finish, requires every expected
+  entry to be current, and verifies each archive's snapshotted size and
+  sha256 while downloading it. A target+canonical union snapshots and verifies
+  both sources independently, rejects conflicting same-name bytes, and overlays
+  only the exact canonical keys selected to replace stale target entries. The
+  composed index is rewritten to relative archive basenames and consumed from
+  the same local `file://` directory, so later release mutation cannot redirect
+  the tested resolver. It then runs
+  the standard `cargo test`, Vitest, browser, libc-test, POSIX, and Sortix
+  suites.
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
   ledger on the release IS the consumer-visible state, so there's

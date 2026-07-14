@@ -116,6 +116,7 @@ jobs:
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
       baseline_tag: ${{ steps.compute.outputs.baseline_tag }}
+      reuse_staging: ${{ steps.compute.outputs.reuse_staging }}
     steps:
       - uses: actions/checkout@v7.0.0
         with:
@@ -177,9 +178,10 @@ jobs:
             TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging"
             BASELINE_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
-            echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
 
             if [ "$PACKAGE_STAGING_REQUIRED" != "true" ]; then
+              echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
+              echo "reuse_staging=false" >> "$GITHUB_OUTPUT"
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "repair_index=false" >> "$GITHUB_OUTPUT"
@@ -224,6 +226,61 @@ jobs:
             # just refuses to redo the work. Remove an entry here (and
             # mirror in prepare-merge.yml) to re-enable rebuilds.
             disabled_pkgs=" cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive "
+
+            expected_ledger=$(mktemp)
+            XTASK="target/$HOST_TARGET/release/xtask"
+            "$XTASK" staging-reuse expected \
+              --registry packages/registry \
+              --expected-abi "$ABI" \
+              --exclude "${disabled_pkgs// /,}" \
+              --output "$expected_ledger"
+
+            # Reusing individual assets from a partial mutable release is not
+            # safe: an empty matrix would then make test-gate resolve entries
+            # that were never proven present. Promote the PR release to the
+            # zero-build candidate only after its complete ledger and every
+            # referenced asset have been validated as one snapshot.
+            reuse_staging=false
+            reuse_dir=$(mktemp -d)
+            rm -rf "$reuse_dir"
+            if bash .github/scripts/validate-staging-release.sh \
+                --tag "$TARGET_TAG" \
+                --expected-ledger "$expected_ledger" \
+                --mode structural \
+                --output-dir "$reuse_dir" \
+                --xtask "$XTASK"; then
+              stale_expected=$(mktemp)
+              jq --slurpfile snapshot "$reuse_dir/snapshot.json" "
+                .entries |= map(. as \$expected |
+                  select(any(\$snapshot[0].entries[];
+                    .package == \$expected.package and
+                    .arch == \$expected.arch and
+                    .current == false)))
+              " "$expected_ledger" > "$stale_expected"
+              stale_count=$(jq ".entries | length" "$stale_expected")
+              if [ "$stale_count" -eq 0 ]; then
+                reuse_staging=target
+                echo "preflight: reusing fully current, asset-verified $TARGET_TAG"
+              else
+                canonical_reuse_dir=$(mktemp -d)
+                rm -rf "$canonical_reuse_dir"
+                if bash .github/scripts/validate-staging-release.sh \
+                    --tag "$BASELINE_TAG" \
+                    --expected-ledger "$stale_expected" \
+                    --mode current \
+                    --output-dir "$canonical_reuse_dir" \
+                    --xtask "$XTASK"; then
+                  reuse_staging=union
+                  echo "preflight: target supplies current entries and $BASELINE_TAG supplies all $stale_count stale target entries"
+                else
+                  echo "preflight: canonical release cannot complete the current target ledger"
+                fi
+              fi
+            else
+              echo "preflight: $TARGET_TAG is absent, partial, ambiguous, or invalid; retaining canonical baseline"
+            fi
+            echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
+            echo "reuse_staging=$reuse_staging" >> "$GITHUB_OUTPUT"
 
             for pkg_dir in packages/registry/*/; do
               pkg=$(basename "$pkg_dir")
@@ -280,6 +337,22 @@ jobs:
                   continue
                 }
                 short=${sha:0:8}
+                if [ "$reuse_staging" != false ] &&
+                   jq -e --arg pkg "$pkg" --arg arch "$arch" "
+                     .entries[] |
+                     select(.package == \$pkg and .arch == \$arch and .current == true)
+                   " "$reuse_dir/snapshot.json" >/dev/null; then
+                  echo "preflight: skip $pkg/$arch (sha $short verified in $TARGET_TAG)"
+                  continue
+                fi
+                if [ "$reuse_staging" = union ] &&
+                   jq -e --arg pkg "$pkg" --arg arch "$arch" "
+                     .entries[] |
+                     select(.package == \$pkg and .arch == \$arch and .current == true)
+                   " "$canonical_reuse_dir/snapshot.json" >/dev/null; then
+                  echo "preflight: skip $pkg/$arch (sha $short verified in $BASELINE_TAG supplement)"
+                  continue
+                fi
                 prefix="${pkg}-"
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
                 existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
@@ -309,6 +382,11 @@ jobs:
 
             library_count=$(echo "$library_matrix" | jq length)
             program_count=$(echo "$program_matrix" | jq length)
+            if [ "$reuse_staging" != false ] &&
+               { [ "$library_count" -ne 0 ] || [ "$program_count" -ne 0 ]; }; then
+              echo "preflight: validated target/canonical union did not cover the computed matrix" >&2
+              exit 1
+            fi
             repair_index_output=false
             if [ "$repair_index" = "1" ] && [ "$library_count" -eq 0 ] && [ "$program_count" -eq 0 ]; then
               repair_index_output=true
@@ -615,6 +693,7 @@ jobs:
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
       PACKAGE_BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
+      PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@v7.0.0
@@ -656,7 +735,7 @@ jobs:
         # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
         # containing one .tar.zst. The pattern excludes the
         # toolchain-sysroots helper artifact uploaded by toolchain-cache.
-        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
+        if: ${{ needs.preflight.outputs.reuse_staging == 'false' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
         uses: ./.github/actions/download-run-artifacts
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -691,14 +770,75 @@ jobs:
 
       - name: Materialize binaries
         env:
+          GH_TOKEN: ${{ github.token }}
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
-        # Resolve against the durable ABI release plus local file://
-        # overlays for any matrix-built archives. Runtime-only PRs can
-        # still reach this overlay path when preflight detects durable
-        # index drift from an earlier package-key change.
+        # A reused staging release is fetched again after every matrix writer
+        # finishes, validated as fully current, and frozen into a local
+        # file:// snapshot. Otherwise retain the durable release + local
+        # matrix-overlay path used by first runs and partial staging releases.
         run: |
           set -euo pipefail
-          if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
+          if [ "$PACKAGE_REUSE_STAGING" != "false" ]; then
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+            EXPECTED="$RUNNER_TEMP/staging-expected.json"
+            SNAPSHOT="$RUNNER_TEMP/current-staging-snapshot"
+            bash scripts/dev-shell.sh env \
+              EXPECTED="$EXPECTED" \
+              SNAPSHOT="$SNAPSHOT" \
+              PACKAGE_TARGET_TAG="$PACKAGE_TARGET_TAG" \
+              PACKAGE_BASELINE_TAG="$PACKAGE_BASELINE_TAG" \
+              ABI="$ABI" \
+              bash -c '
+              set -euo pipefail
+              HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+              cargo build --release -p xtask --target "$HOST_TARGET"
+              XTASK="target/$HOST_TARGET/release/xtask"
+              "$XTASK" staging-reuse expected \
+                --registry packages/registry \
+                --expected-abi "$ABI" \
+                --exclude cpython,erlang,erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
+                --output "$EXPECTED"
+              TARGET_SNAPSHOT="$RUNNER_TEMP/fresh-target-snapshot"
+              bash .github/scripts/validate-staging-release.sh \
+                --tag "$PACKAGE_TARGET_TAG" \
+                --expected-ledger "$EXPECTED" \
+                --mode structural \
+                --materialize \
+                --output-dir "$TARGET_SNAPSHOT" \
+                --xtask "$XTASK"
+              STALE_EXPECTED="$RUNNER_TEMP/fresh-stale-expected.json"
+              jq --slurpfile snapshot "$TARGET_SNAPSHOT/snapshot.json" "
+                .entries |= map(. as \$expected |
+                  select(any(\$snapshot[0].entries[];
+                    .package == \$expected.package and
+                    .arch == \$expected.arch and
+                    .current == false)))
+              " "$EXPECTED" > "$STALE_EXPECTED"
+              stale_count=$(jq ".entries | length" "$STALE_EXPECTED")
+              if [ "$stale_count" -eq 0 ]; then
+                bash .github/scripts/compose-staging-release-snapshots.sh \
+                  --target-dir "$TARGET_SNAPSHOT" \
+                  --output-dir "$SNAPSHOT"
+              else
+                CANONICAL_SNAPSHOT="$RUNNER_TEMP/fresh-canonical-supplement"
+                bash .github/scripts/validate-staging-release.sh \
+                  --tag "$PACKAGE_BASELINE_TAG" \
+                  --expected-ledger "$STALE_EXPECTED" \
+                  --mode current \
+                  --materialize \
+                  --output-dir "$CANONICAL_SNAPSHOT" \
+                  --xtask "$XTASK"
+                bash .github/scripts/compose-staging-release-snapshots.sh \
+                  --target-dir "$TARGET_SNAPSHOT" \
+                  --canonical-dir "$CANONICAL_SNAPSHOT" \
+                  --overlay-expected-ledger "$STALE_EXPECTED" \
+                  --output-dir "$SNAPSHOT" \
+                  --xtask "$XTASK"
+              fi
+            '
+            export WASM_POSIX_BINARY_INDEX_URL
+            WASM_POSIX_BINARY_INDEX_URL=$(cat "$SNAPSHOT/index-url.txt")
+          elif [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
