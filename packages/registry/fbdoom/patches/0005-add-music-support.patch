@@ -1,5 +1,5 @@
---- a/fbdoom/i_kernel_sound.c
-+++ b/fbdoom/i_kernel_sound.c
+--- a/fbdoom/i_oss_sound.c
++++ b/fbdoom/i_oss_sound.c
 @@ -11,8 +11,10 @@
   *
   * No SDL / no ALSA / no resampler library — DOOM SFX sample rate
@@ -7,12 +7,12 @@
 - * step. Music (MUS / MIDI) is left to a future patch; this lands
 - * SFX only, which is what the demo most needs.
 + * step. Music (MUS/MIDI through GENMIDI -> OPL2 emulation) is mixed
-+ * into the same per-tic mixbuffer below: OPL_Kernel_FillBuffer fills a
++ * into the same per-tic mixbuffer below: OPL_Pull_FillBuffer fills a
 + * stereo S16 buffer at OUTPUT_RATE which we accumulate alongside SFX
 + * before clamping. One write() per tic carries both.
   */
  
- #include <fcntl.h>
+ #include <errno.h>
 @@ -26,6 +28,7 @@
  #include "doomtype.h"
  #include "deh_str.h"
@@ -26,11 +26,11 @@
  static boolean use_sfx_prefix;
  static int16_t mixbuffer[MIX_FRAMES * OUTPUT_CHANNELS];
 +/* Music samples produced by the OPL emulator each tic (when active).
-+ * Filled by OPL_Kernel_FillBuffer (opl/opl_kernel.c) and accumulated
++ * Filled by OPL_Pull_FillBuffer (opl/opl_pull.c) and accumulated
 + * into mixbuffer alongside SFX. When music is inactive the call
 + * returns silence so the mixer path is uniform. */
 +static int16_t musicbuffer[MIX_FRAMES * OUTPUT_CHANNELS];
-+extern void OPL_Kernel_FillBuffer(int16_t *out, unsigned int frames);
++extern void OPL_Pull_FillBuffer(int16_t *out, unsigned int frames);
  static sound_channel_t channels[NUM_CHANNELS];
  
 +/* S_UpdateSounds runs once per render frame, not once per tic. Gate on
@@ -47,7 +47,7 @@
 -/* Mix MIX_FRAMES stereo S16 frames and write them to /dev/dsp. Called
 - * once per game tic from S_UpdateSounds → I_UpdateSound. */
 +/* Mix MIX_FRAMES stereo S16 frames and write them to /dev/dsp. */
- static void I_KERNEL_UpdateSound(void)
+ static void I_OSS_UpdateSound(void)
  {
      if (dsp_fd < 0) return;
  
@@ -61,7 +61,7 @@
 +     * resampling — but it does fire MIDI register-write callbacks
 +     * scheduled by i_oplmusic as time advances inside this call,
 +     * which is how tempo / note events stay sample-precise. */
-+    OPL_Kernel_FillBuffer(musicbuffer, MIX_FRAMES);
++    OPL_Pull_FillBuffer(musicbuffer, MIX_FRAMES);
 +
      for (int frame = 0; frame < MIX_FRAMES; frame++) {
 -        int dl = 0, dr = 0;
@@ -79,7 +79,7 @@
 +
 +// OPL music (i_oplmusic.c) — synthesizes MUS/MIDI through the
 +// chocolate-doom OPL2 emulator (opl/opl3.c) into PCM that
-+// i_kernel_sound mixes into the same /dev/dsp write as SFX. We register
++// i_oss_sound mixes into the same /dev/dsp write as SFX. We register
 +// it unconditionally so the dispatcher picks it up for SNDDEVICE_SB /
 +// SNDDEVICE_ADLIB; if OPL_Init or GENMIDI-lump load fails the module's
 +// Init returns false and the dispatcher falls through to silence.
@@ -98,7 +98,7 @@
 +++ b/fbdoom/Makefile
 @@ -20,6 +20,15 @@
  OBJS+=$(OBJDIR)/i_input_tty.o
- OBJS+=$(OBJDIR)/i_kernel_sound.o
+ OBJS+=$(OBJDIR)/i_oss_sound.o
  
 +# Music: MUS->MIDI->OPL2 software synthesis, mixed into /dev/dsp.
 +OBJS+=$(OBJDIR)/i_oplmusic.o
@@ -107,7 +107,7 @@
 +OBJS+=$(OBJDIR)/opl/opl.o
 +OBJS+=$(OBJDIR)/opl/opl3.o
 +OBJS+=$(OBJDIR)/opl/opl_queue.o
-+OBJS+=$(OBJDIR)/opl/opl_kernel.o
++OBJS+=$(OBJDIR)/opl/opl_pull.o
 +
  CC=$(CROSS_COMPILE)gcc  # gcc or g++
  CFLAGS+=-ggdb3 -Os
@@ -120,12 +120,12 @@
  	@echo [Compiling $<]
  	$(VB)$(CC) $(CFLAGS) -c $< -o $@
  
---- a/fbdoom/opl/opl_kernel.c
-+++ b/fbdoom/opl/opl_kernel.c
-@@ -0,0 +1,354 @@
+--- a/fbdoom/opl/opl_pull.c
++++ b/fbdoom/opl/opl_pull.c
+@@ -0,0 +1,353 @@
 +//
 +// Copyright(C) 2005-2014 Simon Howard
-+// Copyright(C) 2026 kandelo authors
++// Copyright(C) 2026 Kandelo authors
 +//
 +// This program is free software; you can redistribute it and/or
 +// modify it under the terms of the GNU General Public License
@@ -138,16 +138,16 @@
 +// GNU General Public License for more details.
 +//
 +// DESCRIPTION:
-+//     OPL pull-model driver — kandelo /dev/dsp variant.
++//     OPL pull-model driver for the OSS mixer.
 +//
 +//     Chocolate-doom's OPL frontend (opl.c) drives an opl_driver_t
 +//     impl. The stock SDL driver (opl_sdl.c) is push-based: SDL's audio
 +//     thread invokes OPL_Mix_Callback, which advances time and calls
 +//     OPL3_GenerateStream into SDL's mix buffer. We have no audio
-+//     thread — i_kernel_sound.c sits in the game-tic loop and pulls
++//     thread — i_oss_sound.c sits in the game-tic loop and pulls
 +//     audio synchronously every ~28 ms before write()-ing to /dev/dsp.
 +//
-+//     Hence "pull": OPL_Kernel_FillBuffer is the entry point. It
++//     Hence "pull": OPL_Pull_FillBuffer is the entry point. It
 +//     advances current_time as samples are produced, fires any due
 +//     MIDI register-write callbacks queued by i_oplmusic, and writes
 +//     stereo S16 frames into the caller-provided buffer at
@@ -179,7 +179,7 @@
 +static opl_callback_queue_t *callback_queue = NULL;
 +
 +// Current time in microseconds since OPL_Init. Advanced by AdvanceTime
-+// as samples are produced (and by OPL_Kernel_Delay during OPL_Detect).
++// as samples are produced (and by OPL_Pull_Delay during OPL_Detect).
 +static uint64_t current_time;
 +
 +// If non-zero, time still advances but pause_offset accumulates so
@@ -237,9 +237,8 @@
 +// alongside, firing callbacks at sample-precise points so MIDI tempo
 +// stays exact regardless of how often the caller pulls.
 +//
-+// Caller-facing entry point. Declared in opl_kernel.h-equivalent
-+// extern in i_kernel_sound.c.
-+void OPL_Kernel_FillBuffer(int16_t *out, unsigned int frames)
++// Caller-facing entry point. Declared in i_oss_sound.c.
++void OPL_Pull_FillBuffer(int16_t *out, unsigned int frames)
 +{
 +    unsigned int filled = 0;
 +
@@ -297,7 +296,7 @@
 +    }
 +}
 +
-+static int OPL_Kernel_Init(unsigned int port_base)
++static int OPL_Pull_Init(unsigned int port_base)
 +{
 +    paused = 0;
 +    pause_offset = 0;
@@ -309,7 +308,7 @@
 +    return 1;
 +}
 +
-+static void OPL_Kernel_Shutdown(void)
++static void OPL_Pull_Shutdown(void)
 +{
 +    if (callback_queue != NULL)
 +    {
@@ -318,7 +317,7 @@
 +    }
 +}
 +
-+static unsigned int OPL_Kernel_PortRead(opl_port_t port)
++static unsigned int OPL_Pull_PortRead(opl_port_t port)
 +{
 +    unsigned int result = 0;
 +
@@ -384,7 +383,7 @@
 +
 +                if ((value & 0x20) == 0)
 +                {
-+                    timer1.enabled = (value & 0x02) != 0;
++                    timer2.enabled = (value & 0x02) != 0;
 +                    OPLTimer_CalculateEndTime(&timer2);
 +                }
 +            }
@@ -396,7 +395,7 @@
 +    }
 +}
 +
-+static void OPL_Kernel_PortWrite(opl_port_t port, unsigned int value)
++static void OPL_Pull_PortWrite(opl_port_t port, unsigned int value)
 +{
 +    if (port == OPL_REGISTER_PORT)
 +    {
@@ -412,7 +411,7 @@
 +    }
 +}
 +
-+static void OPL_Kernel_SetCallback(uint64_t us, opl_callback_t callback,
++static void OPL_Pull_SetCallback(uint64_t us, opl_callback_t callback,
 +                                   void *data)
 +{
 +    if (callback_queue != NULL)
@@ -422,7 +421,7 @@
 +    }
 +}
 +
-+static void OPL_Kernel_ClearCallbacks(void)
++static void OPL_Pull_ClearCallbacks(void)
 +{
 +    if (callback_queue != NULL)
 +    {
@@ -431,15 +430,15 @@
 +}
 +
 +// Single-threaded — no concurrent producer to lock against.
-+static void OPL_Kernel_Lock(void)   { }
-+static void OPL_Kernel_Unlock(void) { }
++static void OPL_Pull_Lock(void)   { }
++static void OPL_Pull_Unlock(void) { }
 +
-+static void OPL_Kernel_SetPaused(int p)
++static void OPL_Pull_SetPaused(int p)
 +{
 +    paused = p;
 +}
 +
-+static void OPL_Kernel_AdjustCallbacks(float factor)
++static void OPL_Pull_AdjustCallbacks(float factor)
 +{
 +    if (callback_queue != NULL)
 +    {
@@ -450,7 +449,7 @@
 +// Used only by OPL_Detect, which writes a timer value, "waits 1ms" and
 +// re-reads status to confirm the (emulated) chip is alive. We just step
 +// the clock; no audio output is needed for detection.
-+static void OPL_Kernel_Delay(uint64_t us)
++static void OPL_Pull_Delay(uint64_t us)
 +{
 +    current_time += us;
 +
@@ -462,18 +461,18 @@
 +    RunDueCallbacks();
 +}
 +
-+opl_driver_t opl_kernel_driver =
++opl_driver_t opl_pull_driver =
 +{
-+    "Kernel",
-+    OPL_Kernel_Init,
-+    OPL_Kernel_Shutdown,
-+    OPL_Kernel_PortRead,
-+    OPL_Kernel_PortWrite,
-+    OPL_Kernel_SetCallback,
-+    OPL_Kernel_ClearCallbacks,
-+    OPL_Kernel_Lock,
-+    OPL_Kernel_Unlock,
-+    OPL_Kernel_SetPaused,
-+    OPL_Kernel_AdjustCallbacks,
-+    OPL_Kernel_Delay,
++    "Pull",
++    OPL_Pull_Init,
++    OPL_Pull_Shutdown,
++    OPL_Pull_PortRead,
++    OPL_Pull_PortWrite,
++    OPL_Pull_SetCallback,
++    OPL_Pull_ClearCallbacks,
++    OPL_Pull_Lock,
++    OPL_Pull_Unlock,
++    OPL_Pull_SetPaused,
++    OPL_Pull_AdjustCallbacks,
++    OPL_Pull_Delay,
 +};

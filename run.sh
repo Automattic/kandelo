@@ -1905,6 +1905,7 @@ clean_target() {
             warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs.zst; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
         fbdoom)
             rm -rf "$REPO_ROOT/packages/registry/fbdoom/fbdoom-src" \
+                   "$REPO_ROOT/packages/registry/fbdoom/fbdoom-build" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom.wasm" \

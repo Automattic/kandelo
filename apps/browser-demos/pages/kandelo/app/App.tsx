@@ -258,7 +258,7 @@ export const App: React.FC = () => {
   }, []);
 
   return (
-    <div className={appClassName} style={appStyle}>
+    <div className={appClassName} style={appStyle} data-audio-state={audioState}>
       <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
         {isEmpty ? (
           <EmptyState

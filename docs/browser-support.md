@@ -235,6 +235,17 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
 
+For a manual OSS playback check after changing the port, first run
+`./run.sh clean fbdoom && ./run.sh build fbdoom` so an ignored local artifact
+from an older package revision cannot be reused. Then run `./run.sh browser`,
+select the fbDOOM demo, and click the framebuffer to satisfy the browser's
+audio-activation requirement. The title-screen music checks the software OPL
+path; starting a game and firing the pistol checks mixed sound effects. Quit
+through DOOM's menu to exercise the normal `/dev/dsp` drain-and-close path.
+This demo is a direct OSS consumer, not an SDL test; the `sdl-dsp-test` package
+and host audio integration suite exercise the unmodified SDL2 and SDL3 `dsp`
+backends.
+
 ### Kandelo session UI
 
 The Kandelo app at `/pages/kandelo/` keeps the running machine as the primary
