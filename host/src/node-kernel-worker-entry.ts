@@ -132,7 +132,6 @@ const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
   (pid) => processes.get(pid),
 );
 const reportedExits = new Set<number>();
-const reportedNonzeroProcessExits = new Set<number>();
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
 // handleExec / handleTerminate). The crash safety-net listener checks
@@ -214,15 +213,6 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
 function reportProcessExit(pid: number, status: number): void {
   if (reportedExits.has(pid)) return;
   reportedExits.add(pid);
-  if (status !== 0 && !reportedNonzeroProcessExits.has(pid)) {
-    reportedNonzeroProcessExits.add(pid);
-    reportHostDiagnostic({
-      pid,
-      status,
-      source: "process exit",
-      message: `[node-kernel-worker] nonzero process exit pid=${pid} status=${status}`,
-    }, "warn");
-  }
   post({ type: "exit", pid, status });
 }
 
@@ -1645,7 +1635,6 @@ async function handleDestroy(msg: { requestId: number }) {
   vmInterruptTimers.clearAll();
   processTeardowns.clear();
   reportedExits.clear();
-  reportedNonzeroProcessExits.clear();
   threadModuleCache.clear();
   threadWorkers.clear();
   ptyByPid.clear();
