@@ -1,0 +1,60 @@
+kind = "library"
+
+name = "sdl3"
+version = "3.4.10"
+kernel_abi = 40
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.10/SDL3-3.4.10.tar.gz"
+sha256 = "12b34280415ec8418c864408b93d008a20a6530687ee613d60bfbd20411f2785"
+
+[license]
+spdx = "Zlib"
+url = "https://github.com/libsdl-org/SDL/blob/release-3.4.10/LICENSE.txt"
+
+[build]
+script_path = "packages/registry/sdl3/build-sdl3.sh"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.71.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "tar.*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.0"
+probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "shasum"
+version_constraint = ">=6.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libSDL3.a"]
+headers = ["include/SDL3"]
+pkgconfig = ["lib/pkgconfig/sdl3.pc"]
+files = [
+  "lib/cmake/SDL3/SDL3headersTargets.cmake",
+  "lib/cmake/SDL3/SDL3staticTargets.cmake",
+  "lib/cmake/SDL3/SDL3staticTargets-release.cmake",
+  "lib/cmake/SDL3/SDL3Config.cmake",
+  "lib/cmake/SDL3/SDL3ConfigVersion.cmake",
+]

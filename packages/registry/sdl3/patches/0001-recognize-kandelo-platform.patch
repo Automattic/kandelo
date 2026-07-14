@@ -1,0 +1,24 @@
+diff --git a/cmake/sdlplatform.cmake b/cmake/sdlplatform.cmake
+index 3a013ab..29056a2 100644
+--- a/cmake/sdlplatform.cmake
++++ b/cmake/sdlplatform.cmake
+@@ -30,6 +30,8 @@ function(SDL_DetectCMakePlatform)
+     set(sdl_cmake_platform RISCOS)
+   elseif(VITA)
+     set(sdl_cmake_platform Vita)
++  elseif(CMAKE_SYSTEM_NAME MATCHES "Kandelo.*")
++    set(sdl_cmake_platform Kandelo)
+   elseif(CMAKE_SYSTEM_NAME MATCHES ".*Linux")
+     set(sdl_cmake_platform Linux)
+   elseif(CMAKE_SYSTEM_NAME MATCHES "kFreeBSD.*")
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e0d3bf1..64ad4cc 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -130,0 +131,6 @@
++# Kandelo is a POSIX-compatible Unix kernel. CMake does not know this custom
++# system name itself, so preserve that platform fact for SDL's Unix checks.
++if(KANDELO)
++  set(UNIX TRUE)
++endif()
++

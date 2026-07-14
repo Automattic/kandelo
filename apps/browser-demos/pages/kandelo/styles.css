@@ -1228,6 +1228,25 @@
   animation: kdownload-toast-fade-error 5s ease-out forwards;
 }
 
+.kpcm-audio-status {
+  top: auto;
+  bottom: calc(var(--kdock-height, 0px) + 14px);
+}
+
+.kpcm-audio-error {
+  border-color: color-mix(in oklch, var(--k-err) 52%, var(--k-border));
+}
+
+.kpcm-audio-enable {
+  margin-left: auto;
+  border: 1px solid color-mix(in oklch, var(--k-accent) 42%, var(--k-border));
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--k-accent) 12%, var(--k-surface));
+  color: var(--k-accent);
+  cursor: pointer;
+  padding: 3px 8px;
+}
+
 .kdownload-toast-top {
   display: flex;
   align-items: center;

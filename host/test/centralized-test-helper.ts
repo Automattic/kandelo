@@ -132,6 +132,16 @@ export interface RunProgramOptions {
   /** Callback invoked after the process starts.
    *  Use this to call appendStdinData() for interactive stdin testing. */
   onStarted?: (kernelProxy: KernelStdinProxy, pid: number) => void | Promise<void>;
+  /**
+   * Main-thread harness hook invoked after process registration but before its
+   * Worker starts. Supplying this forces main-thread mode so tests can attach
+   * host devices that need direct access to `CentralizedKernelWorker` while
+   * retaining the production-equivalent pthread/fork/exec worker wiring.
+   */
+  onKernelReady?: (
+    kernelWorker: CentralizedKernelWorker,
+    pid: number,
+  ) => void | Promise<void>;
   /** If `true`, the helper queries `kernel_get_fork_count(pid)` after the
    *  program exits and surfaces the value on `RunProgramResult.forkCount`.
    *  Used by the non-forking-spawn regression tests. Worker-thread mode
@@ -176,7 +186,7 @@ export interface RunProgramResult {
 export async function runCentralizedProgram(
   options: RunProgramOptions,
 ): Promise<RunProgramResult> {
-  if (options.io) {
+  if (options.io || options.onKernelReady) {
     return runOnMainThread(options);
   }
   return runInWorkerThread(options);
@@ -660,6 +670,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     kernelWorker.setStdinData(pid, options.stdinBytes);
   } else if (options.stdin != null) {
     kernelWorker.setStdinData(pid, new TextEncoder().encode(options.stdin));
+  }
+
+  if (options.onKernelReady) {
+    await options.onKernelReady(kernelWorker, pid);
   }
 
   const initData: CentralizedWorkerInitMessage = {

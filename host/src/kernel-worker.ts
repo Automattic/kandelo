@@ -87,6 +87,15 @@ import {
   PROCESS_MMAP_BASE,
   growMemoryToCover,
 } from "./process-memory";
+import {
+  PCM_CONTROL,
+  PcmTransportMode,
+  pcmControlWords,
+  readEffectiveConsumerPosition,
+  readProducerPosition,
+  validatePcmTransport,
+  type PcmTransportDescriptor,
+} from "./audio/pcm-transport";
 
 import type { KernelConfig, NetworkAddress, PlatformIO, TcpConnectionPeer, UdpDatagram } from "./types";
 
@@ -155,6 +164,41 @@ const ETIMEDOUT = 110;
 const EALREADY = 114;
 const EINPROGRESS = 115;
 const EINTR_ERRNO = 4;
+
+/** Decode Kandelo's pinned ioctl argument size (mirrors host_abi.rs). */
+export function ioctlArgSize(request: number): number {
+  const unsigned = request >>> 0;
+  const encoded = (unsigned >>> 16) & 0x3fff;
+  if (encoded !== 0) return encoded;
+  switch (unsigned) {
+    case 0x5421: case 0x5452: case 0x541b: case 0x8905:
+    case 0x540f: case 0x5410: case 0x5429:
+    case 0x4b44: case 0x4b45: case 0x40:
+      return 4;
+    case 0x5401: case 0x5402: case 0x5403: case 0x5404:
+      return 60;
+    case 0x5413: case 0x5414: case 0x47:
+      return 8;
+    case 0x4b33:
+      return 1;
+    case 0x4600: case 0x4601: case 0x4606:
+      return 160;
+    case 0x4602:
+      return 80;
+    case 0x42:
+      return 16;
+    case 0x44:
+      return 32;
+    case 0x49:
+      return 24;
+    default:
+      return 0;
+  }
+}
+
+export function ioctlPointerRequired(request: number): boolean {
+  return ioctlArgSize(request) > 0;
+}
 
 function cstringCopySize(
   memory: Uint8Array,
@@ -361,6 +405,7 @@ const SYS_MQ_TIMEDRECEIVE = ABI_SYSCALLS.MqTimedreceive;
 const SYS_OPEN = ABI_SYSCALLS.Open;
 const SYS_OPENAT = ABI_SYSCALLS.Openat;
 const SYS_CLOSE = ABI_SYSCALLS.Close;
+const SNDCTL_DSP_SYNC = 0x00005001;
 
 /** IPC constants (must match musl) */
 const IPC_64 = 0x100;
@@ -971,6 +1016,8 @@ export class CentralizedKernelWorker {
   private scratchOffset = 0;
   private initialized = false;
   private nextChildPid = 100;
+  private pcmTransportDescriptor: PcmTransportDescriptor | null = null;
+  private pcmWakeObserverGeneration = 0;
 
   /**
    * Allocate a fresh pid for a top-level spawn from a host. Skips any pids
@@ -3642,13 +3689,18 @@ export class CentralizedKernelWorker {
 
       for (const desc of argDescs) {
         const ptr = origArgs[desc.argIndex];
+        const decodedIoctlSize = desc.size.type === "ioctl"
+          ? ioctlArgSize(origArgs[desc.size.requestArgIndex])
+          : undefined;
         const deferSchedGetaffinityOutputError =
           syscallNr === SYS_SCHED_GETAFFINITY
           && desc.argIndex === 2
           && desc.direction === "out";
         if (ptr === 0 && !deferSchedGetaffinityOutputError) {
           const required = desc.required === true
-            || (desc.size.type === "cstring" && desc.nullable !== true);
+            || (desc.size.type === "cstring" && desc.nullable !== true)
+            || (desc.size.type === "ioctl"
+              && ioctlPointerRequired(origArgs[desc.size.requestArgIndex]));
           if (required) {
             this.completeChannel(
               channel,
@@ -3704,6 +3756,8 @@ export class CentralizedKernelWorker {
           }
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
                | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
+        } else if (desc.size.type === "ioctl") {
+          size = decodedIoctlSize!;
         } else {
           size = desc.size.size;
         }
@@ -4257,7 +4311,10 @@ export class CentralizedKernelWorker {
       // different process, which resets the kernel's ambient TID to the shared
       // signal context. Rebind only on that uncommon path; ordinary syscall
       // completion stays free of another host-to-kernel call.
-      this.dequeueSignalForDelivery(channel, routedMqNotification);
+      const deliveredSignal = this.dequeueSignalForDelivery(
+        channel,
+        routedMqNotification,
+      );
       if (routedMqNotification && this.finishSignalTermination(channel)) return;
 
       // --- Blocking syscall handling ---
@@ -4273,6 +4330,24 @@ export class CentralizedKernelWorker {
       // 1. EAGAIN: kernel returned EAGAIN for a blocking syscall.
       //    Schedule async retry — the process stays blocked on Atomics.wait.
       if (retVal === -1 && errVal === EAGAIN) {
+        // A caught signal which raced the kernel's last PCM wait check now
+        // belongs to this channel. Complete the interruptible operation with
+        // EINTR instead of parking it and risking a later retry clearing that
+        // undelivered record. Successful/short writes never enter this path.
+        if (
+          deliveredSignal > 0 &&
+          this.caughtSignalInterruptsEagain(channel, syscallNr, origArgs)
+        ) {
+          this.completeChannel(
+            channel,
+            syscallNr,
+            origArgs,
+            argDescs,
+            -1,
+            EINTR_ERRNO,
+          );
+          return;
+        }
         if (logging) {
           console.error(logEntry + " = -1 (EAGAIN, will retry)");
         }
@@ -4516,6 +4591,8 @@ export class CentralizedKernelWorker {
           (processMem[derefPtr + 1] << 8) |
           (processMem[derefPtr + 2] << 16) |
           (processMem[derefPtr + 3] << 24);
+      } else if (desc.size.type === "ioctl") {
+        size = ioctlArgSize(origArgs[desc.size.requestArgIndex]);
       } else {
         size = desc.size.size;
       }
@@ -5937,6 +6014,42 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Retry the exact write/writev mailbox selected for a caught signal.
+   *
+   * PCM backpressure uses the generic writable-token registry, but the signal
+   * path historically retried only poll-timer entries. Leaving a PCM writer
+   * here meant its handler could not run until the audio clock happened to
+   * make the original write succeed. Re-entering the kernel lets it return
+   * EINTR before progress, or preserve a short successful write if capacity
+   * became available concurrently.
+   */
+  private retryPendingWriterForCaughtSignal(pid: number, tid: number): boolean {
+    for (const writers of this.pendingPipeWriters.values()) {
+      const writer = writers.find(({ channel }) => {
+        if (
+          channel.pid !== pid ||
+          this.guestTidForChannel(channel) !== tid
+        ) {
+          return false;
+        }
+        const syscallNr = new DataView(
+          channel.memory.buffer,
+          channel.channelOffset,
+        ).getUint32(CH_SYSCALL, true);
+        return syscallNr === SYS_WRITE || syscallNr === SYS_WRITEV;
+      });
+      if (!writer) continue;
+
+      this.removePendingPipeWriter(writer.channel);
+      if (this.isRegisteredChannel(writer.channel)) {
+        this.retrySyscall(writer.channel);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * SYS_THREAD_CANCEL — wake a thread that is blocked in a cancellation-point
    * syscall so its glue (__syscall_cp) can observe the pending cancel flag
    * and run pthread_exit(PTHREAD_CANCELED).
@@ -6616,6 +6729,27 @@ export class CentralizedKernelWorker {
       pipeIndices: [],
       isWriteRetry: WRITE_LIKE_SYSCALLS.has(syscallNr),
     });
+  }
+
+  /**
+   * Blocking PCM operations use EAGAIN only as an internal host-parking
+   * sentinel. If a caught signal was already copied into the channel, these
+   * operations must publish EINTR immediately so guest libc can run the
+   * handler (and apply its narrowly-scoped SA_RESTART policy).
+   */
+  private caughtSignalInterruptsEagain(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+  ): boolean {
+    if (syscallNr === SYS_WRITE || syscallNr === SYS_WRITEV) {
+      const isFdNonblock = this.kernelInstance!.exports
+        .kernel_is_fd_nonblock as
+        ((pid: number, fd: number) => number) | undefined;
+      return isFdNonblock?.(channel.pid, origArgs[0]) === 0;
+    }
+    return syscallNr === SYS_CLOSE ||
+      (syscallNr === SYS_IOCTL && (origArgs[1] >>> 0) === SNDCTL_DSP_SYNC);
   }
 
   /**
@@ -7953,13 +8087,21 @@ export class CentralizedKernelWorker {
         this.currentHandlePid = 0;
       }
 
-      this.dequeueSignalForDelivery(channel);
+      const deliveredSignal = this.dequeueSignalForDelivery(channel);
       if (this.finishSignalTermination(channel)) return;
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       const errVal = kernelView.getUint32(CH_ERRNO, true);
 
       if (retVal === -1 && errVal === EAGAIN) {
+        if (
+          deliveredSignal > 0 &&
+          this.caughtSignalInterruptsEagain(channel, syscallNr, origArgs)
+        ) {
+          this.completeChannelRaw(channel, -1, EINTR_ERRNO);
+          this.relistenChannel(channel);
+          return;
+        }
         this.handleBlockingRetry(channel, syscallNr, origArgs);
         return;
       }
@@ -8060,8 +8202,16 @@ export class CentralizedKernelWorker {
       }
 
       if (gotEagain) {
-        this.dequeueSignalForDelivery(channel);
+        const deliveredSignal = this.dequeueSignalForDelivery(channel);
         if (this.finishSignalTermination(channel)) return;
+        if (
+          deliveredSignal > 0 &&
+          this.caughtSignalInterruptsEagain(channel, syscallNr, origArgs)
+        ) {
+          this.completeChannelRaw(channel, -1, EINTR_ERRNO);
+          this.relistenChannel(channel);
+          return;
+        }
         this.handleBlockingRetry(channel, syscallNr, origArgs);
         return;
       }
@@ -8178,8 +8328,16 @@ export class CentralizedKernelWorker {
           this.relistenChannel(channel);
           return;
         }
-        this.dequeueSignalForDelivery(channel);
+        const deliveredSignal = this.dequeueSignalForDelivery(channel);
         if (this.finishSignalTermination(channel)) return;
+        if (
+          deliveredSignal > 0 &&
+          this.caughtSignalInterruptsEagain(channel, syscallNr, origArgs)
+        ) {
+          this.completeChannelRaw(channel, -1, EINTR_ERRNO);
+          this.relistenChannel(channel);
+          return;
+        }
         this.handleBlockingRetry(channel, syscallNr, origArgs);
         return;
       }
@@ -10802,6 +10960,10 @@ export class CentralizedKernelWorker {
 
     // Signal is deliverable — wake any blocking syscall for this process
 
+    // PCM and pipe write/writev waits live in the targeted writable registry,
+    // not the poll-timer map below. Retry only the signal-selected thread.
+    if (this.retryPendingWriterForCaughtSignal(targetPid, targetTid)) return;
+
     // 1. Pending sleep (nanosleep, usleep, clock_nanosleep)
     const pendingSleepMatch = Array.from(this.pendingSleeps.entries()).find(
       ([channel]) => channel.pid === targetPid
@@ -13313,11 +13475,9 @@ export class CentralizedKernelWorker {
    * a multiple of the active frame size (2 bytes mono / 4 bytes
    * stereo).
    *
-   * The host typically drives this from an `AudioWorkletNode` or
-   * `AudioBufferSourceNode` scheduler that pulls samples at the rate
-   * an `AudioContext` reports. The kernel ring drops oldest frames on
-   * overflow rather than blocking, so falling behind a few RAFs costs
-   * audio but never wedges DOOM.
+   * Retained only for compatibility with older hosts. The shared-clock
+   * transport is exclusive, so this pull path returns no data once an
+   * AudioWorklet or Node clock owns the sink.
    */
   drainAudio(out: Uint8Array): number {
     return this.kernel.drainAudio(out);
@@ -13336,6 +13496,142 @@ export class CentralizedKernelWorker {
   /** Bytes buffered in the `/dev/dsp` ring waiting to be drained. */
   audioPending(): number {
     return this.kernel.audioPending();
+  }
+
+  /**
+   * Claim the single physical PCM sink and return its versioned shared ring.
+   * Browser workers observe AudioWorklet cursor updates; Node's clock export
+   * reconciles synchronously and therefore does not need a separate observer.
+   */
+  claimPcmTransport(observeConsumerWake: boolean): PcmTransportDescriptor {
+    if (this.pcmTransportDescriptor) return this.pcmTransportDescriptor;
+    const descriptor = this.kernel.pcmTransport();
+    if (!descriptor) {
+      throw new Error("kernel does not expose a shared PCM transport");
+    }
+    validatePcmTransport(descriptor);
+    const result = this.kernel.pcmClaimTransport(PcmTransportMode.SharedClock);
+    if (result < 0) {
+      throw new Error(`failed to claim PCM transport: errno ${-result}`);
+    }
+    this.pcmTransportDescriptor = descriptor;
+    if (observeConsumerWake) this.startPcmWakeObserver(descriptor);
+    return descriptor;
+  }
+
+  /** Advance Node's paced null sink and wake affected write/poll/drain calls. */
+  pcmClockUpdate(requestedFrames: number): number {
+    const consumed = this.kernel.pcmClockUpdate(requestedFrames);
+    // kernel_pcm_clock_update advances wakeSeq inside Wasm, but changing an
+    // atomic value does not by itself wake a JS Atomics.waitAsync waiter.
+    // Browser consumption calls Atomics.notify from the AudioWorklet; mirror
+    // that notification for Node so destroy-time orphan drains settle as soon
+    // as the paced null sink reaches their tail instead of sleeping until the
+    // bounded teardown timeout.
+    const descriptor = this.pcmTransportDescriptor;
+    if (descriptor) {
+      Atomics.notify(pcmControlWords(descriptor), PCM_CONTROL.wakeSeq);
+    }
+    this.drainAndProcessWakeupEvents();
+    this.scheduleWakeBlockedRetries();
+    return consumed;
+  }
+
+  /** Stop host-side observation before terminating a kernel worker. */
+  shutdownPcmTransport(): void {
+    this.pcmWakeObserverGeneration++;
+    const descriptor = this.pcmTransportDescriptor;
+    this.pcmTransportDescriptor = null;
+    if (descriptor) {
+      const words = pcmControlWords(descriptor);
+      // Pair the notification with a sequence change so an observer racing
+      // between its lifecycle check and waitAsync cannot miss shutdown.
+      Atomics.add(words, PCM_CONTROL.wakeSeq, 1);
+      Atomics.notify(words, PCM_CONTROL.wakeSeq);
+    }
+  }
+
+  /**
+   * Give the physical audio clock a bounded chance to consume an orphaned
+   * close tail before machine teardown. A suspended browser context times out
+   * truthfully; ordinary descriptor close/SYNC remains unbounded in the guest.
+   */
+  async waitForPcmDrain(timeoutMs: number): Promise<boolean> {
+    const descriptor = this.pcmTransportDescriptor;
+    if (!descriptor) return true;
+    const words = pcmControlWords(descriptor);
+    const deadline = performance.now() + Math.max(0, timeoutMs);
+    let observed = Atomics.load(words, PCM_CONTROL.wakeSeq);
+    while (true) {
+      // Reconcile before testing the cursor or arming a wait. In particular,
+      // the final AudioWorklet quantum may already have published its cursor
+      // and one-shot notification before this continuation gets to run.
+      this.kernel.pcmReconcile();
+      this.drainAndProcessWakeupEvents();
+      this.scheduleWakeBlockedRetries();
+
+      if (
+        readProducerPosition(words) <= readEffectiveConsumerPosition(words)
+      ) {
+        return true;
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) return false;
+
+      const current = Atomics.load(words, PCM_CONTROL.wakeSeq);
+      if (current !== observed) {
+        observed = current;
+        continue;
+      }
+
+      // waitAsync compares and arms atomically. A sequence change after the
+      // load therefore either returns "not-equal" or wakes this waiter.
+      const wait = Atomics.waitAsync(
+        words,
+        PCM_CONTROL.wakeSeq,
+        observed,
+        remaining,
+      );
+      if (wait.async) await wait.value;
+      observed = Atomics.load(words, PCM_CONTROL.wakeSeq);
+    }
+  }
+
+  private startPcmWakeObserver(descriptor: PcmTransportDescriptor): void {
+    const observerGeneration = ++this.pcmWakeObserverGeneration;
+    const words = pcmControlWords(descriptor);
+    void (async () => {
+      let observed = Atomics.load(words, PCM_CONTROL.wakeSeq);
+      while (
+        observerGeneration === this.pcmWakeObserverGeneration &&
+        descriptor === this.pcmTransportDescriptor
+      ) {
+        // Reconcile first: the sequence may already reflect a final quantum
+        // whose notification ran before this observer continuation.
+        this.kernel.pcmReconcile();
+        this.drainAndProcessWakeupEvents();
+        this.scheduleWakeBlockedRetries();
+
+        if (
+          observerGeneration !== this.pcmWakeObserverGeneration ||
+          descriptor !== this.pcmTransportDescriptor
+        ) {
+          return;
+        }
+
+        const current = Atomics.load(words, PCM_CONTROL.wakeSeq);
+        if (current !== observed) {
+          observed = current;
+          continue;
+        }
+
+        const wait = Atomics.waitAsync(words, PCM_CONTROL.wakeSeq, observed);
+        if (wait.async) await wait.value;
+        observed = Atomics.load(words, PCM_CONTROL.wakeSeq);
+      }
+    })().catch((error) => {
+      console.error("[kernel-worker] PCM wake observer failed", error);
+    });
   }
 
   /**

@@ -795,29 +795,149 @@ Single-open semantics match real Linux mousedev exclusive-grab. The host inverts
 
 ## Audio output (`/dev/dsp`)
 
-The kernel exposes an OSS-style `/dev/dsp` character device so unmodified Linux audio software (fbDOOM, etc.) can play sound through a browser `AudioContext`. Direction is reversed vs. mouse: PCM samples flow **process → kernel → host**.
+Kandelo separates the Unix compatibility API from its physical audio
+transport. OSS is the first frontend; the state below it is an
+implementation-neutral, playback-only PCM stream rather than an ALSA or Web
+Audio model.
 
+```text
+ SDL2 / SDL3 / Unix application
+       open, ioctl, write, poll
+                 |
+          OSS /dev/dsp frontend
+                 |
+        Kandelo PCM stream core
+   format + geometry + monotonic cursors
+                 |
+       shared bounded PCM transport
+          /                    \
+ Browser AudioWorklet      Node clocked sink
 ```
-   user process                       kernel-worker / kernel                browser main thread
-   ────────────                       ──────────────────────                ───────────────────────
-   open("/dev/dsp", O_WRONLY)
-   ioctl SNDCTL_DSP_SPEED          ──►  audio::set_sample_rate
-   ioctl SNDCTL_DSP_STEREO         ──►  audio::set_channels
-   ioctl SNDCTL_DSP_SETFMT          ──►  audio::set_format (must be S16_LE)
-   write(fd, pcm, len)             ──►  audio::write_pcm
-                                       push bytes to 256 KiB ring
-                                       (drop oldest whole frames on overflow)
-                                                                ◄────────────  setInterval(50ms): drainAudio(maxBytes)
-                                       kernel_drain_audio(out_ptr, out_len)
-                                       drain whole-frame bytes from ring
-                                                                ─────────────►  decode S16 → Float32
-                                                                                schedule AudioBufferSourceNode
-                                                                                on AudioContext clock
-```
 
-The kernel does **not** mix or synthesize audio. The user program (DOOM's mixer in `i_kernel_sound.c` plus the OPL2 software synth in `i_oplmusic.c` + `opl/opl3.c` for music) does that work and writes interleaved S16_LE frames; the kernel ring is just transport. fbDOOM's mixer produces 1280 stereo frames per ~28 ms game tic — slightly more than the 1260 frames the AudioContext consumes per tic — so the ring stays full enough to hide drain jitter, and the drop-oldest-on-overflow policy keeps memory bounded.
+The PCM core owns requested and actual format, sample rate and channel count;
+fragment geometry; 64-bit monotonic producer, consumer, and discard positions;
+started, stopped, and draining state; reset generation; underrun count; and
+write/drain waiters. The OSS frontend translates fixed-width `soundcard.h`
+arguments into that model. No Web Audio concept appears in the guest ABI.
+Configuration fields are published under a configuring flag and become visible
+as one generation. Finishing a drain also advances the generation, so host
+resamplers reset their phase before the next logical playback stream.
 
-Single-open semantics match the typical OSS exclusive-grab model. Ownership is released on `close` of the last `/dev/dsp` fd or on process exit; a surviving non-CLOEXEC fd retains both ownership and queued samples across exec. The ring is flushed when ownership is released so a successor open hears silence rather than the previous owner's tail. ABI version bumped 7 → 8 to register the new `kernel_drain_audio(i64, i32) -> i32` export plus the three readouts `kernel_audio_sample_rate / channels / pending`. The OSS ioctl encodings live in `crates/shared/src/lib.rs::oss`.
+There is one physical/default playback device and, initially, one exclusive
+stream. Ownership belongs to the open file description (OFD): `dup()` and
+descriptors inherited through `fork()` share the stream, while a distinct
+`open()` returns `EBUSY`. A surviving non-`CLOEXEC` descriptor keeps the same
+stream across `exec`. There is no kernel mixer, routing policy, capture stream,
+or concatenation of data from unrelated writers.
+
+The transport reserves one 64 KiB PCM ring plus a 128-byte fixed-width control
+header in the kernel's shared Wasm memory: 65,664 bytes total. The active queue is latency-sized:
+four 1024-byte fragments (4096 bytes) by default, and `SETFRAGMENT` may select
+another geometry up to the 64 KiB physical bound. At the default 48 kHz,
+stereo S16 configuration, 4096 bytes are about 21.3 ms of queued audio. The
+host receives a descriptor for this same memory; it does not allocate a second
+persistent PCM ring. Browser-engine Float32 render buffers are transient.
+
+Writes form one continuous byte stream and never discard previously queued
+audio. Bytes from an incomplete PCM frame remain queued across later writes.
+`SYNC` or final OFD close pads only a terminal incomplete frame with format
+silence (`0x80` for U8 and zero for S16_LE/S16_BE) before draining; `POST` does
+not fabricate padding. A frame-aligned blocking request no larger than the
+active capacity waits until the entire request can be accepted, which covers
+normal SDL periods. If an earlier unaligned write has left the ring ending in
+an incomplete frame, a later blocking write may return the prefix that
+completes that frame rather than deadlocking behind bytes the audio clock
+cannot yet consume. Larger requests and nonblocking requests may likewise
+report partial progress; a nonblocking write with no capacity returns
+`EAGAIN`.
+`poll(POLLOUT)` becomes ready only when at least one fragment is free. When the
+host audio clock advances the consumer position, the kernel reconciles the
+monotonic cursors and wakes writers, poll waiters, and drain waiters. Running
+out of queued frames is an underrun and produces silence; it does not move the
+producer or overwrite old frames.
+
+An explicit final `close()` drains to the audio clock before releasing the
+exclusive device. `SNDCTL_DSP_RESET` is the explicit discard operation for an
+application that does not want to drain. Exit, `CLOEXEC`, and forced teardown
+cannot keep a syscall alive, so a queued tail becomes an orphan drain: the
+device remains exclusive until the host consumes that tail, then releases
+automatically. This prevents a final buffer from being truncated or joined to
+the next opener's stream. Caught signals interrupt a blocked write, `SYNC`, or
+explicit final close through the ordinary `EINTR` path. `SA_RESTART` restarts
+write and `SYNC`; an interrupted close leaves the descriptor valid for an
+explicit caller retry.
+
+In browsers an `AudioWorkletProcessor` consumes and converts PCM in render
+quanta (normally 128 output frames), advances the shared consumer cursor, and
+emits silence on underrun. The main thread only creates/resumes the
+`AudioContext` and connects the node; it is not the audio clock and does not
+drain through a timer. At 48 kHz one render quantum is about 2.7 ms; browser
+device `baseLatency`/`outputLatency` is additional and platform-dependent.
+After machine teardown drains the shared ring, a running browser context is
+suspended to hand already-rendered blocks to the output device, then retained
+for a bounded base/output-latency-plus-quantum settlement interval before it is
+closed. Teardown never resumes a suspended or interrupted context, preserving
+the browser's user-activation boundary.
+Node uses the same cursor and wakeup contract with a wall-clock-paced null sink
+for headless execution, so callbacks cannot run at CPU speed. Its running tick
+follows the negotiated fragment duration, preserves fractional-frame drift,
+and falls back to 10 ms polling while idle.
+
+A permanent sink failure is distinct from recoverable browser suspension. The
+host latches a shared fatal flag and wakes the kernel: writes and drains fail
+with `EIO`, polling reports `POLLERR`, and final close discards the unplayable
+tail, releases ownership, and returns `EIO`. If the failure arrives after an
+implicit close has orphaned a tail, reconciliation discards that unplayable
+tail and releases ownership; no descriptor remains to receive `EIO`. A
+suspended or interrupted `AudioContext` does not set that flag; it stops the
+consumer clock and applies normal queue backpressure until resume.
+
+The AudioWorklet/shared-ring transport builds on the exploration in PR #698,
+while deliberately omitting that experiment's ALSA state machine and
+`/dev/snd` ABI. OSS command details are documented in
+[POSIX status](posix-status.md#oss-playback-compatibility).
+
+### Measured PCM footprint
+
+These measurements compare the clean starting commit
+`92d5940f7e0107514ea12ab813d395257678377e` with the ABI 40 implementation.
+Compressed sizes use `zstd -19`; JavaScript totals cover the same ten existing
+ESM entry files on both sides, with the new worklet shown separately.
+
+| Artifact | Before raw / compressed | After raw / compressed | Delta |
+|---|---:|---:|---:|
+| Kernel Wasm | 532,311 / 143,233 B | 612,569 / 147,554 B | +80,258 / +4,321 B |
+| Host ESM entries | 3,711,675 / 634,586 B | 3,771,682 / 644,709 B | +60,007 / +10,123 B |
+| PCM AudioWorklet | absent | 8,863 / 2,462 B | new |
+| `audiotest.wasm` | 30,180 / 13,092 B | 30,365 / 13,183 B | +185 / +91 B |
+| `dsp_signal_test.wasm` | absent | 32,355 / 13,890 B | new |
+
+The upstream integration artifacts measure as follows:
+
+| Artifact | Raw / compressed (`zstd -19`) |
+|---|---:|
+| SDL2 2.32.10 `libSDL2.a` | 1,192,694 / 322,705 B |
+| SDL3 3.4.10 `libSDL3.a` | 1,970,446 / 513,937 B |
+| SDL2 DSP fixture Wasm | 1,573,606 / 391,329 B |
+| SDL3 DSP fixture Wasm | 2,470,559 / 521,937 B |
+| SDL_mixer 2.8.2 `playwave` Wasm | 1,800,045 / 434,029 B |
+
+The installed regular-file totals are 3,864,113 bytes for the SDL2 package,
+5,545,678 bytes for SDL3, and approximately 4.04 MB for the combined fixture
+package. Deterministically staged package archives measured approximately
+0.66 MB, 0.95 MB, and 0.70 MB respectively after `zstd -19`; exact published
+archives vary slightly with provenance strings. The test-only `playwave`
+package contains one 1,800,045-byte regular file; its compressed size is the
+434,029-byte value above.
+
+Steady-state transport memory is the fixed 65,664-byte allocation described
+above, versus a growable old queue whose maximum occupancy was 262,144 PCM
+bytes. The default active queue is 21.333 ms. A normal 128-frame browser
+quantum adds 2.667 ms at 48 kHz, for 24 ms of configured software buffering
+before platform-specific `baseLatency` and `outputLatency`. Node advances in
+the default 256-frame (5.333 ms) fragment cadence against the same 21.333 ms
+bounded queue. These are footprint and configured-buffer measurements, not a
+throughput or performance claim.
 
 ## Signal Subsystem
 

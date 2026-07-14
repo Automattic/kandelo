@@ -5,9 +5,9 @@
  //
  
 -#include "config.h"
-+// kandelo build: no autotools config.h, no SDL. The only
-+// driver shipped is opl_kernel.c, which is a pull-model driver suitable
-+// for the single-threaded /dev/dsp mixing loop in i_kernel_sound.c.
++// fbDOOM's slim OSS build has no autotools config.h or SDL. Its only
++// driver is opl_pull.c, a pull model suitable for the single-threaded
++// /dev/dsp mixing loop in i_oss_sound.c.
  
  #include <stdio.h>
  #include <stdlib.h>
@@ -34,7 +34,7 @@
 -#ifndef DISABLE_SDL2MIXER
 -    &opl_sdl_driver,
 -#endif // DISABLE_SDL2MIXER
-+    &opl_kernel_driver,
++    &opl_pull_driver,
      NULL
  };
  
@@ -142,10 +142,10 @@
 -extern opl_driver_t opl_win32_driver;
 -#endif
 -extern opl_driver_t opl_sdl_driver;
-+// The kandelo build only ships the kernel pull driver — all
-+// SDL/Linux/Win32 hardware drivers are stripped (no SDL in the sysroot,
-+// no real OPL chip behind a wasm sandbox).
-+extern opl_driver_t opl_kernel_driver;
++// This slim OSS build ships only the pull driver. SDL and native
++// hardware drivers are omitted: neither exists in the wasm target,
++// and there is no physical OPL chip behind the sandbox.
++extern opl_driver_t opl_pull_driver;
  
  
  #endif /* #ifndef OPL_INTERNAL_H */

@@ -168,6 +168,8 @@ describe('needsLinking', () => {
 describe('COMPILE_FLAGS', () => {
   it('includes target and wasm features', () => {
     expect(COMPILE_FLAGS).toContain('--target=wasm32-unknown-unknown');
+    expect(COMPILE_FLAGS).toContain('-D__unix__=1');
+    expect(COMPILE_FLAGS).toContain('-D__unix=1');
     expect(COMPILE_FLAGS).toContain('-matomics');
     expect(COMPILE_FLAGS).toContain('-mbulk-memory');
   });

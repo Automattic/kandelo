@@ -169,12 +169,21 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_create_process
     kernel_create_process_with_stdio
     kernel_get_parent_pid
+    kernel_get_process_exit_signal
     kernel_get_process_state
     kernel_handle_channel
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
     kernel_mark_process_signaled
+    kernel_pcm_claim_transport
+    kernel_pcm_clock_update
+    kernel_pcm_reconcile
+    kernel_pcm_transport_len
+    kernel_pcm_transport_ptr
+    kernel_pipe_has_readers
+    kernel_posix_timer_fire
+    kernel_prepare_write_operation
     kernel_reap_exited_child
     kernel_remove_process
     kernel_wait_child_poll
@@ -1896,6 +1905,7 @@ clean_target() {
             warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs.zst; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
         fbdoom)
             rm -rf "$REPO_ROOT/packages/registry/fbdoom/fbdoom-src" \
+                   "$REPO_ROOT/packages/registry/fbdoom/fbdoom-build" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom.wasm" \

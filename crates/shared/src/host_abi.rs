@@ -37,6 +37,44 @@ pub enum SyscallArgSize {
     Deref { arg_index: u8 },
     /// Fixed byte length.
     Fixed { size: u32 },
+    /// Length encoded in an ioctl request argument. Requests from older Unix
+    /// ioctl families that do not encode a size use [`ioctl_arg_size`]'s
+    /// explicit compatibility table instead of a blanket scratch-buffer size.
+    Ioctl { request_arg_index: u8 },
+}
+
+/// Decode Kandelo's owned ioctl argument size. `_IOC` requests carry a
+/// 14-bit size in bits 16..29. Older terminal/fbdev/custom requests do not;
+/// keep those exact sizes here so host and direct-kernel paths agree.
+pub const fn ioctl_arg_size(request: u32) -> u32 {
+    let encoded = (request >> 16) & 0x3fff;
+    if encoded != 0 {
+        return encoded;
+    }
+    match request {
+        // Generic fd/terminal requests with legacy Linux encodings.
+        0x5421 | 0x5452 | 0x541b | 0x8905 => 4,
+        0x5401 | 0x5402 | 0x5403 | 0x5404 => 60,
+        0x540f | 0x5410 | 0x5429 => 4,
+        0x5413 | 0x5414 => 8,
+        0x4b33 => 1,
+        0x4b44 | 0x4b45 => 4,
+
+        // Linux fbdev request numbers predate `_IOC` size encoding.
+        0x4600 | 0x4601 | 0x4606 => 160,
+        0x4602 => 80,
+
+        // Kandelo GL bridge custom requests.
+        0x40 => 4,
+        0x42 => 16,
+        0x44 => 32,
+        0x47 => 8,
+        0x49 => 24,
+
+        // Commands with no argument, including OSS RESET/SYNC/POST/NONBLOCK,
+        // descriptor close-on-exec toggles, and terminal no-op controls.
+        _ => 0,
+    }
 }
 
 /// One pointer argument descriptor for host-side marshalling.
@@ -103,6 +141,14 @@ macro_rules! deref {
 macro_rules! fixed {
     ($size:expr) => {
         SyscallArgSize::Fixed { size: $size }
+    };
+}
+
+macro_rules! ioctl_size {
+    ($request_arg_index:expr) => {
+        SyscallArgSize::Ioctl {
+            request_arg_index: $request_arg_index,
+        }
     };
 }
 
@@ -279,7 +325,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(Syscall::Openat as u32, [desc!(1, In, cstring!())]),
     entry!(Syscall::Tcgetattr as u32, [desc!(1, Out, fixed!(256))]),
     entry!(Syscall::Tcsetattr as u32, [desc!(2, In, fixed!(256))]),
-    entry!(Syscall::Ioctl as u32, [desc!(2, InOut, fixed!(256))]),
+    entry!(Syscall::Ioctl as u32, [desc!(2, InOut, ioctl_size!(1), nullable)]),
     entry!(Syscall::Uname as u32, [desc!(0, Out, fixed!(390))]),
     entry!(Syscall::Pipe2 as u32, [desc!(0, Out, fixed!(8))]),
     entry!(
@@ -652,6 +698,54 @@ mod tests {
     fn nested_pointer_syscalls_stay_out_of_simple_descriptors() {
         assert!(maybe_find(Syscall::Writev as u32).is_none());
         assert!(maybe_find(Syscall::Readv as u32).is_none());
+    }
+
+    #[test]
+    fn ioctl_descriptor_and_oss_argument_sizes_are_pinned() {
+        use crate::oss::*;
+
+        let ioctl = find(Syscall::Ioctl as u32).args[0];
+        assert_eq!(ioctl.arg_index, 2);
+        assert_eq!(ioctl.direction, SyscallArgDirection::InOut);
+        assert_eq!(
+            ioctl.size,
+            SyscallArgSize::Ioctl {
+                request_arg_index: 1,
+            }
+        );
+        assert!(ioctl.nullable, "no-argument ioctls accept a null arg");
+
+        for request in [
+            SNDCTL_DSP_RESET,
+            SNDCTL_DSP_SYNC,
+            SNDCTL_DSP_POST,
+            SNDCTL_DSP_NONBLOCK,
+        ] {
+            assert_eq!(ioctl_arg_size(request), 0);
+        }
+        for request in [
+            SNDCTL_DSP_SPEED,
+            SNDCTL_DSP_STEREO,
+            SNDCTL_DSP_GETBLKSIZE,
+            SNDCTL_DSP_SETBLKSIZE,
+            SNDCTL_DSP_SETFMT,
+            SNDCTL_DSP_CHANNELS,
+            SOUND_PCM_WRITE_FILTER,
+            SNDCTL_DSP_SUBDIVIDE,
+            SNDCTL_DSP_SETFRAGMENT,
+            SNDCTL_DSP_GETFMTS,
+            SNDCTL_DSP_GETCAPS,
+            SNDCTL_DSP_GETODELAY,
+            SOUND_PCM_READ_RATE,
+            SOUND_PCM_READ_BITS,
+            SOUND_PCM_READ_CHANNELS,
+            SOUND_PCM_READ_FILTER,
+        ] {
+            assert_eq!(ioctl_arg_size(request), 4, "request {request:#x}");
+        }
+        assert_eq!(ioctl_arg_size(SNDCTL_DSP_GETOSPACE), 16);
+        assert_eq!(ioctl_arg_size(SNDCTL_DSP_GETOPTR), 12);
+        assert_eq!(ioctl_arg_size(0x540b), 0, "TCFLSH takes an immediate selector");
     }
 
     fn find(syscall_number: u32) -> &'static SyscallArgDescriptor {

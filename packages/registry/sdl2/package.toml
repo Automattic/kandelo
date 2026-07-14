@@ -1,0 +1,53 @@
+kind = "library"
+
+name = "sdl2"
+version = "2.32.10"
+kernel_abi = 40
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz"
+sha256 = "5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165"
+
+[license]
+spdx = "Zlib"
+url = "https://github.com/libsdl-org/SDL/blob/release-2.32.10/LICENSE.txt"
+
+[build]
+script_path = "packages/registry/sdl2/build-sdl2.sh"
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.71.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "tar.*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.0"
+probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "shasum"
+version_constraint = ">=6.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libSDL2.a"]
+headers = ["include/SDL2"]
+pkgconfig = ["lib/pkgconfig/sdl2.pc"]

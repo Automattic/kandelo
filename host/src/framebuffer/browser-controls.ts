@@ -1,11 +1,14 @@
 /**
- * Browser-side input/audio helpers for framebuffer demos.
+ * Browser-side input helpers for framebuffer demos.
  *
  * Rendering stays in `canvas-renderer.ts`; this module covers the two
- * browser-only device bridges used by fbDOOM:
+ * browser-only device bridge used by fbDOOM:
  *
  *   - Pointer Lock mouse deltas -> `/dev/input/mice` PS/2 packets.
- *   - `/dev/dsp` PCM ring drains -> Web Audio playback.
+ *
+ * The legacy PCM scheduler types remain exported below for source
+ * compatibility. Machine-level AudioWorklet playback supersedes that
+ * main-thread drain path.
  */
 
 export interface MouseEventSink {
@@ -80,6 +83,7 @@ export interface ScalePointerLockMouseDeltaOptions {
   clientHeight?: number;
 }
 
+/** @deprecated Use the machine-level shared PCM transport. */
 export interface AudioDrainSource {
   drainAudio(maxBytes: number): Promise<{
     bytes: Uint8Array;
@@ -88,6 +92,7 @@ export interface AudioDrainSource {
   }>;
 }
 
+/** @deprecated The main-thread PCM scheduler has been retired. */
 export interface PcmAudioSchedulerOptions {
   pollMs?: number;
   drainBytes?: number;
@@ -95,6 +100,7 @@ export interface PcmAudioSchedulerOptions {
   maxLookaheadSeconds?: number;
 }
 
+/** @deprecated Use the machine-level browser PCM driver lifecycle. */
 export interface AudioOutputHandle {
   resume(): Promise<void>;
   close(): void;
@@ -103,8 +109,6 @@ export interface AudioOutputHandle {
 
 export const DEFAULT_POINTER_LOCK_MOUSE_SENSITIVITY = 4;
 
-const AUDIO_POLL_MS = 50;
-const AUDIO_DRAIN_BYTES = 32 * 1024;
 const MIN_MOUSE_DELTA = -128;
 const MAX_MOUSE_DELTA = 127;
 
@@ -675,89 +679,28 @@ export function attachPointerLockMouse(
   };
 }
 
+/**
+ * Retained only so existing imports fail truthfully at runtime instead of
+ * silently reviving the retired timer-driven drain path.
+ *
+ * @deprecated Browser PCM playback now belongs to the machine-level
+ * AudioWorklet transport. Use `BrowserKernel.resumeAudio()` (or the matching
+ * `KernelHost` method) from a trusted user gesture.
+ */
 export function createPcmAudioScheduler(
   source: AudioDrainSource,
   opts: PcmAudioSchedulerOptions = {},
 ): AudioOutputHandle {
-  const AudioContextCtor =
-    globalThis.AudioContext ??
-    (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextCtor) {
-    return {
-      resume: async () => {},
-      close: () => {},
-      getState: () => "unavailable",
-    };
-  }
-
-  const audioCtx = new AudioContextCtor();
-  const pollMs = opts.pollMs ?? AUDIO_POLL_MS;
-  const drainBytes = opts.drainBytes ?? AUDIO_DRAIN_BYTES;
-  const lookaheadSeconds = opts.lookaheadSeconds ?? 0.04;
-  const maxLookaheadSeconds = opts.maxLookaheadSeconds ?? 0.15;
-
-  let cursor = audioCtx.currentTime;
-  let sampleRate = 44100;
-  let channels = 2;
-  let stopped = false;
-
-  const timer = globalThis.setInterval(async () => {
-    if (stopped || audioCtx.state !== "running") return;
-
-    let drain;
-    try {
-      drain = await source.drainAudio(drainBytes);
-    } catch {
-      return;
-    }
-
-    const bytes = drain.bytes;
-    if (bytes.byteLength === 0) return;
-    if (drain.sampleRate > 0) sampleRate = drain.sampleRate;
-    if (drain.channels > 0) channels = drain.channels;
-
-    const bytesPerFrame = 2 * channels;
-    const frames = Math.floor(bytes.byteLength / bytesPerFrame);
-    if (frames === 0) return;
-
-    const buffer = audioCtx.createBuffer(channels, frames, sampleRate);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    for (let ch = 0; ch < channels; ch++) {
-      const dst = buffer.getChannelData(ch);
-      for (let i = 0; i < frames; i++) {
-        const sample = view.getInt16((i * channels + ch) * 2, true);
-        dst[i] = sample / 32768;
-      }
-    }
-
-    const now = audioCtx.currentTime;
-    if (cursor < now + lookaheadSeconds) {
-      cursor = now + lookaheadSeconds;
-    } else if (cursor > now + maxLookaheadSeconds) {
-      cursor = now + lookaheadSeconds;
-      return;
-    }
-
-    const node = audioCtx.createBufferSource();
-    node.buffer = buffer;
-    node.connect(audioCtx.destination);
-    node.start(cursor);
-    cursor += frames / sampleRate;
-  }, pollMs);
-
+  void source;
+  void opts;
   return {
     resume: async () => {
-      if (audioCtx.state === "suspended") {
-        await audioCtx.resume().catch(() => {});
-      }
+      throw new Error(
+        "createPcmAudioScheduler is unavailable; use the machine-level AudioWorklet PCM driver",
+      );
     },
-    close: () => {
-      if (stopped) return;
-      stopped = true;
-      globalThis.clearInterval(timer);
-      void audioCtx.close().catch(() => {});
-    },
-    getState: () => audioCtx.state,
+    close: () => {},
+    getState: () => "unavailable",
   };
 }
 

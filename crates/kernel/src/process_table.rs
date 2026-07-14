@@ -946,7 +946,7 @@ impl ProcessTable {
             match action {
                 FileAction::Close { fd } => {
                     // POSIX: close errors are silently ignored for spawn.
-                    let _ = crate::syscalls::sys_close(child, host, *fd);
+                    let _ = crate::syscalls::sys_close_implicit(child, host, *fd);
                 }
                 FileAction::Dup2 { srcfd, fd } => {
                     if srcfd == fd {
@@ -971,7 +971,7 @@ impl ProcessTable {
                         let r = crate::syscalls::sys_dup2(child, host, opened, *fd);
                         // Always close the temporary fd, even if dup2 failed —
                         // we don't want to leak it on the error path.
-                        let _ = crate::syscalls::sys_close(child, host, opened);
+                        let _ = crate::syscalls::sys_close_implicit(child, host, opened);
                         let _ = r?;
                     }
                 }
@@ -1001,7 +1001,7 @@ impl ProcessTable {
         for fd in cloexec_fds {
             // POSIX: close errors here are silently ignored — same policy
             // as the FileAction::Close handler above.
-            let _ = crate::syscalls::sys_close(child, host, fd);
+            let _ = crate::syscalls::sys_close_implicit(child, host, fd);
         }
 
         Ok(())

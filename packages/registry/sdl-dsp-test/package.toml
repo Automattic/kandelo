@@ -1,0 +1,25 @@
+kind = "program"
+name = "sdl-dsp-test"
+version = "0.1.0"
+kernel_abi = 40
+depends_on = ["sdl2@2.32.10", "sdl3@3.4.10"]
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/sdl-dsp-test/build-sdl-dsp-test.sh"
+
+[[outputs]]
+name = "sdl2-dsp-test"
+wasm = "sdl2-dsp-test.wasm"
+
+[[outputs]]
+name = "sdl3-dsp-test"
+wasm = "sdl3-dsp-test.wasm"
