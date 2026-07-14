@@ -135,6 +135,23 @@ describe('buildClangArgs', () => {
     expect(forwarded).toEqual(userLinkArgs);
   });
 
+  it('maps SDK-owned glue and sysroot paths to stable debug identities', () => {
+    const args = build(['-ffile-prefix-map=/tmp=/caller-source', 'foo.c', '-o', 'foo.wasm']);
+
+    for (const kind of ['file', 'debug', 'macro']) {
+      expect(args).toContain(`-f${kind}-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue`);
+      expect(args).toContain(`-f${kind}-prefix-map=/tmp/sysroot=/usr/src/kandelo-sdk/sysroot`);
+    }
+    expect(args.indexOf('-ffile-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue'))
+      .toBeGreaterThan(args.indexOf('-ffile-prefix-map=/tmp=/caller-source'));
+  });
+
+  it('uses an architecture-specific stable identity for the wasm64 sysroot', () => {
+    const args = buildClangArgs(['-c', 'foo.c', '-o', 'foo.o'], toolchain, 'wasm64');
+
+    expect(args).toContain('-ffile-prefix-map=/tmp/sysroot=/usr/src/kandelo-sdk/sysroot64');
+  });
+
   it('preprocess-only: no link flags', () => {
     const args = build(['-E', 'foo.c']);
     expect(args).not.toContain('-Wl,--entry=_start');
