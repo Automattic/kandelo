@@ -122,6 +122,12 @@ backend is paced primarily by blocking `write()`; SDL3 additionally waits on
 truthful `SNDCTL_DSP_GETOSPACE` results. Capture/duplex opens fail with
 `ENOTSUP`, so do not advertise recording support in application UI.
 
+The host audio integration suite also builds SDL_mixer 2.8.2's upstream
+`playwave` example unchanged and runs it with `SDL_AUDIODRIVER=dsp`. It checks
+44.1 kHz signed-16 stereo and 22.05 kHz unsigned-8 mono WAVs byte-for-byte at
+the paced Node sink, including negotiated fragment geometry, the SDL2 OSS
+ioctl sequence, complete drain, and zero discarded data.
+
 ### Step 3: Test it
 
 ```bash

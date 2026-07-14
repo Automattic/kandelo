@@ -26,6 +26,7 @@ import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
 import sedWasmUrl from "@binaries/programs/wasm32/sed.wasm?url";
 import genCatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/gencat.wasm?url";
+import audioTestWasmUrl from "@binaries/programs/wasm32/audiotest.wasm?url";
 
 interface DataFile {
   path: string;
@@ -76,6 +77,7 @@ interface AudioTestSession {
 declare global {
   interface Window {
     __testRunnerReady: boolean;
+    __audioTestProgramUrl: string;
     __runTest: (
       wasmBytes: ArrayBuffer,
       argv?: string[],
@@ -322,6 +324,7 @@ async function init() {
   }
 
   window.__testCount = 0;
+  window.__audioTestProgramUrl = audioTestWasmUrl;
 
   installAudioResumeButton();
 

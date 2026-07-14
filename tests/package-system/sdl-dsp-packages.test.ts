@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -110,5 +110,66 @@ describe("SDL /dev/dsp integration fixture", () => {
     expect(sdl3).toContain("requested.freq = 48000");
     expect(sdl3).toContain("requested.format = SDL_AUDIO_S16LE");
     expect(sdl3).toContain("#ifndef SDL_PLATFORM_UNIX");
+  });
+});
+
+describe("SDL_mixer playwave /dev/dsp integration fixture", () => {
+  it("pins the official SDL_mixer 2.8.2 source and SDL2 dependency", () => {
+    const manifest = source(
+      "packages/registry/sdl2-mixer-playwave/package.toml",
+    );
+
+    expect(manifest).toContain('version = "2.8.2"');
+    expect(manifest).toContain(
+      'url = "https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.2/SDL2_mixer-2.8.2.tar.gz"',
+    );
+    expect(manifest).toContain(
+      'sha256 = "938dff531d00ace2296557a6599abe6f34599e2f34f0a4a08a397e2ccac8b8f7"',
+    );
+    expect(manifest).toContain('depends_on = ["sdl2@2.32.10"]');
+    expect(manifest).toContain('name = "playwave"');
+    expect(manifest).toContain('wasm = "playwave.wasm"');
+  });
+
+  it("declares every host tool used by the source build", () => {
+    const manifest = source(
+      "packages/registry/sdl2-mixer-playwave/package.toml",
+    );
+
+    for (const tool of ["make", "curl", "tar", "shasum"]) {
+      expect(manifest).toContain(`name = "${tool}"`);
+    }
+    expect(manifest).toContain('version_constraint = ">=7.71.0"');
+  });
+
+  it("builds unmodified upstream playwave with only WAVE support", () => {
+    const build = source(
+      "packages/registry/sdl2-mixer-playwave/build-sdl2-mixer-playwave.sh",
+    );
+
+    expect(
+      existsSync(join(repoRoot, "packages/registry/sdl2-mixer-playwave/patches")),
+    ).toBe(false);
+    expect(build).not.toMatch(/\bpatch\b/);
+    expect(build).toContain('source "$REPO_ROOT/sdk/activate.sh"');
+    expect(build).toContain("WASM_POSIX_DEP_OUT_DIR");
+    expect(build).toContain("WASM_POSIX_DEP_SDL2_DIR");
+    expect(build).toContain("--enable-music-wave");
+    for (const decoder of [
+      "cmd",
+      "mod",
+      "midi",
+      "gme",
+      "ogg",
+      "flac",
+      "mp3",
+      "opus",
+      "wavpack",
+    ]) {
+      expect(build).toContain(`--disable-music-${decoder}`);
+    }
+    expect(build).toContain("make -j");
+    expect(build).toContain("build/playwave");
+    expect(build).toContain("scripts/run-wasm-fork-instrument.sh");
   });
 });

@@ -920,12 +920,15 @@ The upstream integration artifacts measure as follows:
 | SDL3 3.4.10 `libSDL3.a` | 1,970,446 / 513,937 B |
 | SDL2 DSP fixture Wasm | 1,573,606 / 391,329 B |
 | SDL3 DSP fixture Wasm | 2,470,559 / 521,937 B |
+| SDL_mixer 2.8.2 `playwave` Wasm | 1,800,045 / 434,029 B |
 
 The installed regular-file totals are 3,864,113 bytes for the SDL2 package,
 5,545,678 bytes for SDL3, and approximately 4.04 MB for the combined fixture
 package. Deterministically staged package archives measured approximately
 0.66 MB, 0.95 MB, and 0.70 MB respectively after `zstd -19`; exact published
-archives vary slightly with provenance strings.
+archives vary slightly with provenance strings. The test-only `playwave`
+package contains one 1,800,045-byte regular file; its compressed size is the
+434,029-byte value above.
 
 Steady-state transport memory is the fixed 65,664-byte allocation described
 above, versus a growable old queue whose maximum occupancy was 262,144 PCM

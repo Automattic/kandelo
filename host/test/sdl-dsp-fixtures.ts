@@ -9,6 +9,12 @@ const resolveBinaryScript = join(repoRoot, "scripts/resolve-binary.sh");
 const SDL_DSP_FIXTURES = [
   "programs/sdl-dsp-test/sdl2-dsp-test.wasm",
   "programs/sdl-dsp-test/sdl3-dsp-test.wasm",
+  "programs/playwave.wasm",
+] as const;
+
+const SDL_DSP_PACKAGES = [
+  "sdl-dsp-test",
+  "sdl2-mixer-playwave",
 ] as const;
 
 function binaryResolves(relativePath: string): boolean {
@@ -44,26 +50,28 @@ export function ensureSdlDspFixtures(): void {
   // invalidation; merely accepting an old output symlink could run stale SDL
   // fixtures after package metadata, patches, or the cache key changes.
   console.log("[audio-integration] Resolving SDL2/SDL3 /dev/dsp fixtures...");
-  execFileSync(
-    "cargo",
-    [
-      "run",
-      "-p",
-      "xtask",
-      "--target",
-      hostTarget,
-      "--quiet",
-      "--",
-      "build-deps",
-      "resolve",
-      "sdl-dsp-test",
-      "--arch",
-      "wasm32",
-      "--binaries-dir",
-      join(repoRoot, "binaries"),
-    ],
-    { cwd: repoRoot, stdio: "inherit" },
-  );
+  for (const packageName of SDL_DSP_PACKAGES) {
+    execFileSync(
+      "cargo",
+      [
+        "run",
+        "-p",
+        "xtask",
+        "--target",
+        hostTarget,
+        "--quiet",
+        "--",
+        "build-deps",
+        "resolve",
+        packageName,
+        "--arch",
+        "wasm32",
+        "--binaries-dir",
+        join(repoRoot, "binaries"),
+      ],
+      { cwd: repoRoot, stdio: "inherit" },
+    );
+  }
 
   for (const fixture of SDL_DSP_FIXTURES) {
     if (!binaryResolves(fixture)) {

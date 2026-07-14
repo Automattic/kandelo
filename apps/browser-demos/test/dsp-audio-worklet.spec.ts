@@ -1,12 +1,4 @@
 import { expect, test } from "@playwright/test";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const programPath = resolve(
-  __dirname,
-  "../../../local-binaries/programs/wasm32/audiotest.wasm",
-);
 
 type AudioSnapshot = {
   audioState: string;
@@ -54,7 +46,9 @@ test("the production AudioWorklet drains /dev/dsp after a trusted resume", async
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
 
   try {
-    const programUrl = new URL(`/@fs/${programPath}`, baseURL).href;
+    const programUrl = await page.evaluate(
+      () => (window as any).__audioTestProgramUrl as string,
+    );
     const initial = await page.evaluate(async ({ programUrl }): Promise<AudioSnapshot> => {
       const response = await fetch(programUrl);
       if (!response.ok) {

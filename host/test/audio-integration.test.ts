@@ -4,12 +4,16 @@
  * shared-clock transport is claimed before the guest starts, and descriptor
  * close cannot complete until the null sink's wall clock consumes the tail.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { NodePcmDriver } from "../src/audio/node-pcm-driver";
 import {
   pcmControlWords,
   readConsumerPosition,
   readDiscardPosition,
+  readPcmConfig,
   readProducerPosition,
   type PcmTransportDescriptor,
 } from "../src/audio/pcm-transport";
@@ -20,6 +24,11 @@ import { ABI_SYSCALLS } from "../src/generated/abi";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { ensureSdlDspFixtures } from "./sdl-dsp-fixtures";
 
+const SNDCTL_DSP_SPEED = 0xc004_5002;
+const SNDCTL_DSP_SETFMT = 0xc004_5005;
+const SNDCTL_DSP_CHANNELS = 0xc004_5006;
+const SNDCTL_DSP_SETFRAGMENT = 0xc004_500a;
+const SNDCTL_DSP_GETFMTS = 0x8004_500b;
 const SNDCTL_DSP_GETOSPACE = 0x8010_500c;
 
 interface AudioProgramResult {
@@ -30,6 +39,10 @@ interface AudioProgramResult {
   consumed: Uint8Array;
   sampleRate: number;
   channels: number;
+  frameBytes: number;
+  fragmentBytes: number;
+  fragments: number;
+  activeCapacityBytes: number;
   drainedAtExit: boolean;
   cleanTail: boolean;
   producerBytes: number;
@@ -82,6 +95,7 @@ async function runAudioProgram(
     const activeTransport = transport as PcmTransportDescriptor | null;
     if (!activeTransport) throw new Error("PCM transport hook did not run");
     const words = pcmControlWords(activeTransport);
+    const config = readPcmConfig(words);
     // Snapshot before the teardown helper gets any opportunity to finish an
     // orphan drain. The fixture's explicit SDL device close must itself have
     // reached the audio clock and released the OFD before process exit.
@@ -114,6 +128,10 @@ async function runAudioProgram(
       consumed,
       sampleRate: activeKernel.audioSampleRate(),
       channels: activeKernel.audioChannels(),
+      frameBytes: config.frameBytes,
+      fragmentBytes: config.fragmentBytes,
+      fragments: config.fragments,
+      activeCapacityBytes: config.activeCapacityBytes,
       drainedAtExit,
       cleanTail,
       producerBytes,
@@ -125,6 +143,119 @@ async function runAudioProgram(
     await pcmDriver?.close().catch(() => {});
     kernel?.shutdownPcmTransport();
   }
+}
+
+interface WaveFixture {
+  bytes: Uint8Array;
+  pcm: Uint8Array;
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: 8 | 16;
+  frameBytes: number;
+  periodFrames: number;
+  periodBytes: number;
+  durationMs: number;
+  silenceByte: number;
+}
+
+function deterministicWave(
+  sampleRate: number,
+  channels: 1 | 2,
+  bitsPerSample: 8 | 16,
+  periods: number,
+): WaveFixture {
+  const periodFrames = 4096;
+  const sampleBytes = bitsPerSample / 8;
+  const frameBytes = channels * sampleBytes;
+  const frames = periodFrames * periods;
+  const pcm = new Uint8Array(frames * frameBytes);
+  const pcmView = new DataView(pcm.buffer);
+
+  for (let frame = 0; frame < frames; frame++) {
+    if (bitsPerSample === 8) {
+      // Stay away from unsigned 8-bit silence (0x80), making the exact
+      // beginning and end of playwave's sample observable in the sink.
+      for (let channel = 0; channel < channels; channel++) {
+        pcm[frame * frameBytes + channel] =
+          32 + ((frame + channel * 17) % 64);
+      }
+    } else {
+      const left = ((frame % 257) - 128) * 123;
+      const offset = frame * frameBytes;
+      pcmView.setInt16(offset, left, true);
+      if (channels === 2) pcmView.setInt16(offset + 2, -left, true);
+    }
+  }
+
+  const bytes = new Uint8Array(44 + pcm.byteLength);
+  const view = new DataView(bytes.buffer);
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) bytes[offset + i] = text.charCodeAt(i);
+  };
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + pcm.byteLength, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * frameBytes, true);
+  view.setUint16(32, frameBytes, true);
+  view.setUint16(34, bitsPerSample, true);
+  ascii(36, "data");
+  view.setUint32(40, pcm.byteLength, true);
+  bytes.set(pcm, 44);
+
+  return {
+    bytes,
+    pcm,
+    sampleRate,
+    channels,
+    bitsPerSample,
+    frameBytes,
+    periodFrames,
+    periodBytes: periodFrames * frameBytes,
+    durationMs: (frames * 1000) / sampleRate,
+    silenceByte: bitsPerSample === 8 ? 0x80 : 0,
+  };
+}
+
+function expectExactPlaywavePcm(
+  consumed: Uint8Array,
+  fixture: WaveFixture,
+): void {
+  const start = consumed.findIndex((byte) => byte !== fixture.silenceByte);
+  expect(
+    start,
+    "playwave never produced non-silent sample data",
+  ).toBeGreaterThanOrEqual(0);
+  expect(start % fixture.periodBytes).toBe(0);
+  expect(consumed.byteLength % fixture.periodBytes).toBe(0);
+  expect(
+    (consumed.byteLength - fixture.pcm.byteLength) % fixture.periodBytes,
+  ).toBe(0);
+  expect(start + fixture.pcm.byteLength).toBeLessThanOrEqual(
+    consumed.byteLength,
+  );
+
+  expect(consumed.slice(0, start)).toEqual(
+    new Uint8Array(start).fill(fixture.silenceByte),
+  );
+  expect(consumed.slice(start, start + fixture.pcm.byteLength)).toEqual(
+    fixture.pcm,
+  );
+  expect(consumed.slice(start + fixture.pcm.byteLength)).toEqual(
+    new Uint8Array(consumed.byteLength - start - fixture.pcm.byteLength).fill(
+      fixture.silenceByte,
+    ),
+  );
+
+  // SDL2 may prime its device or race one final callback while playwave polls
+  // Mix_Playing(). Bound that behavior while accepting only whole periods.
+  expect(consumed.byteLength - fixture.pcm.byteLength).toBeLessThanOrEqual(
+    fixture.periodBytes * 8,
+  );
 }
 
 describe("audio integration", () => {
@@ -274,6 +405,79 @@ describe("audio integration", () => {
         expect(result.ioctlRequests).toContain(SNDCTL_DSP_GETOSPACE);
       }
     }, 30_000);
+  }
+
+  for (const playwave of [
+    {
+      name: "default S16 stereo",
+      fixture: deterministicWave(44_100, 2, 16, 5),
+      args: [] as string[],
+      opened: "Opened audio at 44100 Hz 16 bit stereo",
+    },
+    {
+      name: "requested U8 mono",
+      fixture: deterministicWave(22_050, 1, 8, 3),
+      args: ["-8", "-m", "-r", "22050"],
+      opened: "Opened audio at 22050 Hz 8 bit mono",
+    },
+  ]) {
+    it(
+      `plays upstream SDL_mixer playwave's ${playwave.name} WAV exactly`,
+      async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), "kandelo-playwave-"));
+        const wavePath = join(tempDir, "deterministic.wav");
+        writeFileSync(wavePath, playwave.fixture.bytes);
+
+        let result: AudioProgramResult;
+        try {
+          result = await runAudioProgram(
+            "programs/playwave.wasm",
+            ["playwave", ...playwave.args, wavePath],
+            20_000,
+          );
+        } finally {
+          rmSync(tempDir, { recursive: true, force: true });
+        }
+
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(`${result.stdout}\n${result.stderr}`).toContain(playwave.opened);
+        expect(result.sampleRate).toBe(playwave.fixture.sampleRate);
+        expect(result.channels).toBe(playwave.fixture.channels);
+        expect(result.frameBytes).toBe(playwave.fixture.frameBytes);
+        expect(result.fragmentBytes).toBe(playwave.fixture.periodBytes);
+        expect(result.fragments).toBe(2);
+        expect(result.activeCapacityBytes).toBe(
+          playwave.fixture.periodBytes * 2,
+        );
+
+        // The sample itself must take approximately this much audio-clock
+        // time; startup periods and process setup may make the total longer.
+        expect(result.elapsedMs).toBeGreaterThanOrEqual(
+          playwave.fixture.durationMs * 0.75,
+        );
+        expect(result.elapsedMs).toBeLessThan(5000);
+        expect(result.producerBytes).toBeGreaterThanOrEqual(
+          playwave.fixture.pcm.byteLength,
+        );
+        expect(result.consumerBytes).toBe(result.producerBytes);
+        expect(result.consumed.byteLength).toBe(result.producerBytes);
+        expect(result.discardedBytes).toBe(0);
+        expect(result.drainedAtExit).toBe(true);
+        expect(result.cleanTail).toBe(true);
+        expectExactPlaywavePcm(result.consumed, playwave.fixture);
+
+        for (const request of [
+          SNDCTL_DSP_GETFMTS,
+          SNDCTL_DSP_SETFMT,
+          SNDCTL_DSP_CHANNELS,
+          SNDCTL_DSP_SPEED,
+          SNDCTL_DSP_SETFRAGMENT,
+        ]) {
+          expect(result.ioctlRequests).toContain(request);
+        }
+      },
+      30_000,
+    );
   }
 
   it("paces SDL through the production dedicated Node kernel worker", async () => {

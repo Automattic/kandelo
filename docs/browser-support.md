@@ -244,7 +244,10 @@ path; starting a game and firing the pistol checks mixed sound effects. Quit
 through DOOM's menu to exercise the normal `/dev/dsp` drain-and-close path.
 This demo is a direct OSS consumer, not an SDL test; the `sdl-dsp-test` package
 and host audio integration suite exercise the unmodified SDL2 and SDL3 `dsp`
-backends.
+backends. That suite also runs SDL_mixer 2.8.2's unmodified `playwave` example
+against deterministic WAVs and compares the Node sink's consumed PCM exactly.
+Browser output remains a manual audible check because the production
+AudioWorklet intentionally exposes transport cursors, not rendered samples.
 
 ### Kandelo session UI
 
