@@ -61,6 +61,7 @@ mod host_tool_probe;
 mod index_candidate;
 mod index_toml;
 mod index_update;
+mod package_archive_name;
 mod package_matrix;
 mod pkg_manifest;
 mod remote_fetch;
