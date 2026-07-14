@@ -348,6 +348,69 @@ describe('integration: compile C program', () => {
     try { unlinkSync(outFile); } catch {}
   }, 30_000);
 
+  it('keeps SDK checkout paths out of linked debug information', async () => {
+    const toolchain = await resolveToolchain();
+    mkdirSync(TMP_DIR, { recursive: true });
+
+    const srcFile = join(TMP_DIR, 'debug-paths.c');
+    const outFile = join(TMP_DIR, 'debug-paths.wasm');
+    writeFileSync(srcFile, '#include <stdio.h>\nint main(void) { return puts("debug paths"); }\n');
+
+    try {
+      const userArgs = ['-g', srcFile, '-o', outFile];
+      const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
+      const args = buildClangArgs(
+        userArgs,
+        toolchain,
+        'wasm32',
+        executableLinker ?? undefined,
+      );
+      const result = await run(toolchain.cc, args);
+      if (result.exitCode !== 0) {
+        console.error('clang stderr:', result.stderr);
+      }
+      expect(result.exitCode).toBe(0);
+
+      const artifact = readFileSync(outFile);
+      expect(artifact.includes(Buffer.from(toolchain.glueDir))).toBe(false);
+      expect(artifact.includes(Buffer.from(toolchain.sysroot))).toBe(false);
+      expect(artifact.includes(Buffer.from('/usr/src/kandelo-sdk/libc/glue'))).toBe(true);
+      expect(artifact.includes(Buffer.from('/usr/src/kandelo-sdk/sysroot'))).toBe(true);
+    } finally {
+      try { unlinkSync(srcFile); } catch {}
+      try { unlinkSync(outFile); } catch {}
+    }
+  }, 30_000);
+
+  it('maps sysroot paths in compile-only debug information', async () => {
+    const toolchain = await resolveToolchain();
+    mkdirSync(TMP_DIR, { recursive: true });
+
+    const srcFile = join(TMP_DIR, 'compile-debug-paths.c');
+    const outFile = join(TMP_DIR, 'compile-debug-paths.o');
+    const syntheticHeader = join(toolchain.sysroot, 'include', 'debug-paths.h');
+    writeFileSync(
+      srcFile,
+      `#line 1 ${JSON.stringify(syntheticHeader)}\nconst char *debug_path = __FILE__;\n`,
+    );
+
+    try {
+      const args = buildClangArgs(['-g', '-c', srcFile, '-o', outFile], toolchain);
+      const result = await run(toolchain.cc, args);
+      if (result.exitCode !== 0) {
+        console.error('clang stderr:', result.stderr);
+      }
+      expect(result.exitCode).toBe(0);
+
+      const artifact = readFileSync(outFile);
+      expect(artifact.includes(Buffer.from(toolchain.sysroot))).toBe(false);
+      expect(artifact.includes(Buffer.from('/usr/src/kandelo-sdk/sysroot/include/debug-paths.h'))).toBe(true);
+    } finally {
+      try { unlinkSync(srcFile); } catch {}
+      try { unlinkSync(outFile); } catch {}
+    }
+  }, 30_000);
+
   it('links timer_create without fictional raw setjmp imports', async () => {
     const toolchain = await resolveToolchain();
     mkdirSync(TMP_DIR, { recursive: true });

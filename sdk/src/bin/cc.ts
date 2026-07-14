@@ -23,6 +23,24 @@ import { run, runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
 import { type WasmArch, detectArch, targetTriple } from '../lib/arch.ts';
 
+const STABLE_SDK_SOURCE_ROOT = '/usr/src/kandelo-sdk';
+
+function sourcePrefixMapFlags(source: string, destination: string): string[] {
+  return [
+    `-ffile-prefix-map=${source}=${destination}`,
+    `-fdebug-prefix-map=${source}=${destination}`,
+    `-fmacro-prefix-map=${source}=${destination}`,
+  ];
+}
+
+function sdkSourcePrefixMapFlags(toolchain: Toolchain, arch: WasmArch): string[] {
+  const sysrootName = arch === 'wasm64' ? 'sysroot64' : 'sysroot';
+  return [
+    ...sourcePrefixMapFlags(toolchain.glueDir, `${STABLE_SDK_SOURCE_ROOT}/libc/glue`),
+    ...sourcePrefixMapFlags(toolchain.sysroot, `${STABLE_SDK_SOURCE_ROOT}/${sysrootName}`),
+  ];
+}
+
 export function decodeLlvmResponseFile(bytes: Uint8Array): string {
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
@@ -226,6 +244,17 @@ function buildClangArgsInternal(
   // for SDK decisions only; forwarding must never rebuild the command in
   // type-based buckets.
   args.push(...parsed.forwardedArgs);
+
+  // The SDK compiles its glue sources during each executable link. Keep those
+  // files and sysroot headers independent of the checkout used for the build.
+  // Append these after caller flags so a broader caller-owned mapping cannot
+  // retain a less-specific host path in DWARF.
+  if (
+    hasSourceFiles || parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly || linking ||
+    executableLinker?.kind === 'no-link'
+  ) {
+    args.push(...sdkSourcePrefixMapFlags(toolchain, arch));
+  }
 
   // -fPIC is consumed by parseArgs (so the linker can see `parsed.pic`),
   // but it must also reach clang at compile time so the resulting object
