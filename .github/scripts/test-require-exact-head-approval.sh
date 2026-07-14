@@ -31,7 +31,16 @@ case "${1:-}" in
     done
     case "$endpoint" in
       /repos/example/repo/pulls/1)
-        cat "$GH_STUB_DATA/pr.json"
+        count_file="$GH_STUB_DATA/pr-call-count"
+        count=0
+        [ ! -f "$count_file" ] || count=$(cat "$count_file")
+        count=$((count + 1))
+        printf '%s\n' "$count" > "$count_file"
+        if [ "$count" -gt 1 ] && [ -f "$GH_STUB_DATA/pr-final.json" ]; then
+          cat "$GH_STUB_DATA/pr-final.json"
+        else
+          cat "$GH_STUB_DATA/pr.json"
+        fi
         ;;
       /repos/example/repo/pulls/1/reviews\?per_page=100)
         cat "$GH_STUB_DATA/reviews.json"
@@ -54,15 +63,24 @@ jq -n --arg head "$HEAD" '{head: {sha: $head}, user: {login: "author"}}' \
   > "$DATA/pr.json"
 printf 'write\n' > "$DATA/permission-qualified"
 printf 'read\n' > "$DATA/permission-outsider"
+printf 'admin\n' > "$DATA/permission-author"
+printf 'maintain\n' > "$DATA/permission-maintainer"
+printf 'write\n' > "$DATA/permission-writer"
 
 run_verify() {
+  local label_actor="${1:-}"
+  local -a args=(--pr-number 1 --head-sha "$HEAD")
+  if [ -n "$label_actor" ]; then
+    args+=(--label-actor "$label_actor")
+  fi
   : > "$LOG"
+  rm -f "$DATA/pr-call-count"
   GITHUB_REPOSITORY=example/repo \
   GH_STUB_DATA="$DATA" \
   GH_STUB_LOG="$LOG" \
   APPROVAL_RETRY_DELAY_SECONDS=0 \
   PATH="$BIN:$PATH" \
-  "$VERIFY" --pr-number 1 --head-sha "$HEAD"
+  "$VERIFY" "${args[@]}"
 }
 
 review() {
@@ -115,6 +133,48 @@ run_verify > "$TMP_ROOT/accepted.out"
 grep -q "qualified reviewer qualified approved exact head $HEAD" "$TMP_ROOT/accepted.out"
 grep -Fq 'api --paginate --slurp /repos/example/repo/pulls/1/reviews?per_page=100' "$LOG"
 
+# Applying ready-to-ship is an exact-head attestation when the event sender is
+# a repository maintainer or admin. It does not require a synthetic self-review.
+printf '[[]]\n' > "$DATA/reviews.json"
+GH_STUB_DECISION=REVIEW_REQUIRED \
+  run_verify author > "$TMP_ROOT/admin-attestation.out"
+grep -q "qualified maintainer author attested exact head $HEAD" \
+  "$TMP_ROOT/admin-attestation.out"
+
+GH_STUB_DECISION=REVIEW_REQUIRED \
+  run_verify maintainer > "$TMP_ROOT/maintainer-attestation.out"
+grep -q "qualified maintainer maintainer attested exact head $HEAD" \
+  "$TMP_ROOT/maintainer-attestation.out"
+
+# Ordinary write permission can qualify a real exact-head review, but cannot
+# turn a label application into maintainer self-attestation.
+if GH_STUB_DECISION=REVIEW_REQUIRED \
+    run_verify writer >"$TMP_ROOT/writer.out" 2>"$TMP_ROOT/writer.err"
+then
+  echo "write-level label actor bypassed exact-head review" >&2
+  exit 1
+fi
+grep -q 'label actor is not a maintainer' "$TMP_ROOT/writer.err"
+
+# The verifier re-reads the PR immediately before accepting a maintainer
+# attestation, so a concurrent push invalidates the label event.
+jq -n --arg head "$OLD_HEAD" '{head: {sha: $head}, user: {login: "author"}}' \
+  > "$DATA/pr-final.json"
+if GH_STUB_DECISION=REVIEW_REQUIRED \
+    run_verify author >"$TMP_ROOT/drift.out" 2>"$TMP_ROOT/drift.err"
+then
+  echo "maintainer attestation survived a concurrent head change" >&2
+  exit 1
+fi
+grep -q 'advanced from tested head.*during maintainer attestation' "$TMP_ROOT/drift.err"
+rm -f "$DATA/pr-final.json"
+
+if run_verify 'bad actor' >"$TMP_ROOT/actor.out" 2>"$TMP_ROOT/actor.err"; then
+  echo "malformed label actor was accepted" >&2
+  exit 1
+fi
+grep -q -- '--label-actor must be a GitHub login' "$TMP_ROOT/actor.err"
+
 # An exact approval never overrides an aggregate CHANGES_REQUESTED decision.
 if GH_STUB_DECISION=CHANGES_REQUESTED \
     run_verify >"$TMP_ROOT/changes.out" 2>"$TMP_ROOT/changes.err"
@@ -122,6 +182,15 @@ then
   echo "exact-head approval bypassed CHANGES_REQUESTED" >&2
   exit 1
 fi
-grep -q 'review decision is CHANGES_REQUESTED' "$TMP_ROOT/changes.err"
+grep -q 'outstanding CHANGES_REQUESTED' "$TMP_ROOT/changes.err"
+
+# A maintainer label application also cannot override requested changes.
+if GH_STUB_DECISION=CHANGES_REQUESTED \
+    run_verify author >"$TMP_ROOT/maintainer-changes.out" 2>"$TMP_ROOT/maintainer-changes.err"
+then
+  echo "maintainer attestation bypassed CHANGES_REQUESTED" >&2
+  exit 1
+fi
+grep -q 'outstanding CHANGES_REQUESTED' "$TMP_ROOT/maintainer-changes.err"
 
 echo "exact-head approval tests passed"

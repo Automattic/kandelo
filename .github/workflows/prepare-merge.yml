@@ -274,8 +274,10 @@ jobs:
           sparse-checkout: .github/scripts/require-exact-head-approval.sh
           sparse-checkout-cone-mode: false
 
-      - name: Verify PR review state + required checks green
+      - name: Verify PR authorization state + required checks green
         id: gate
+        env:
+          READY_TO_SHIP_ACTOR: ${{ github.event.sender.login }}
         run: |
           gh_retry() {
             local attempt=1
@@ -317,10 +319,11 @@ jobs:
 
           if ! bash .github/scripts/require-exact-head-approval.sh \
               --pr-number "$PR_NUMBER" \
-              --head-sha "$PR_HEAD_SHA"
+              --head-sha "$PR_HEAD_SHA" \
+              --label-actor "$READY_TO_SHIP_ACTOR"
           then
             gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: a qualified reviewer must approve the exact tested PR head before \`ready-to-ship\`." || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: the exact tested PR head needs either a qualified approving review or a fresh \`ready-to-ship\` application by a repository maintainer/admin." || true
             exit 1
           fi
 

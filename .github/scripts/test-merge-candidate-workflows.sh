@@ -163,22 +163,25 @@ while IFS=: read -r workflow job; do
 done <<<"$actual_lock_callers"
 
 grep -Fq 'require-exact-head-approval.sh' "$PREPARE" || \
-  fail "Prepare merge must require exact-head approval"
+  fail "Prepare merge must require exact-head authorization"
 grep -Fq 'ref: ${{ needs.synthesize-merge.outputs.base_sha }}' "$PREPARE" || \
-  fail "approval verification must execute trusted prepared-base code"
+  fail "authorization verification must execute trusted prepared-base code"
+grep -Fq 'READY_TO_SHIP_ACTOR: ${{ github.event.sender.login }}' "$PREPARE" || \
+  fail "maintainer attestation must use the labeled-event sender"
+grep -Fq -- '--label-actor "$READY_TO_SHIP_ACTOR"' "$PREPARE" || \
+  fail "Prepare merge must pass the labeled-event sender to the trusted verifier"
 grep -Fq 'review_decision" != "APPROVED"' "$APPROVAL_SCRIPT" || \
   fail "approval verifier must preserve aggregate review semantics"
+grep -Fq 'maintain|admin)' "$APPROVAL_SCRIPT" || \
+  fail "maintainer attestation must require maintain or admin permission"
+grep -Fq 'require_current_head "maintainer attestation"' "$APPROVAL_SCRIPT" || \
+  fail "maintainer attestation must recheck the exact live head"
 grep -Fq '/reviews?per_page=100' "$APPROVAL_SCRIPT" || \
   fail "approval verifier must fetch exact reviews with pagination"
 grep -Fq '.commit_id == $head' "$APPROVAL_SCRIPT" || \
   fail "approval verifier must bind approval to the tested head"
 grep -Eq 'push\|write\|maintain\|admin' "$APPROVAL_SCRIPT" || \
   fail "approval verifier must require a repository-qualified reviewer"
-if grep -Fq '/collaborators/${LABELER}/permission' "$PREPARE" || \
-   grep -Fq 'bypassed by maintainer' "$PREPARE"
-then
-  fail "Prepare merge still contains a maintainer review bypass"
-fi
 if grep -Fq 'gh pr merge' "$PREPARE" || \
    grep -Fq 'dispatch-candidate-activation:' "$PREPARE" || \
    grep -Fq 'gh workflow run activate-merge-candidate.yml' "$PREPARE"

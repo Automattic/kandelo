@@ -123,10 +123,15 @@ candidate ledger. Canonical bytes take precedence over a same-name PR staging
 asset. This repairs ledger drift without rebuilding or attempting to replace an
 immutable canonical archive during activation.
 
-Prepare merge requires both GitHub's aggregate `APPROVED` decision and a
-non-dismissed approval on the exact tested head from a reviewer with write,
-maintain, or admin permission. It posts `merge-gate=success` and leaves the
-merge to a reviewer; Actions never enables auto-merge. PRs labeled
+Prepare merge accepts either a non-dismissed approval on the exact tested head
+from a reviewer with write, maintain, or admin permission, or an explicit
+maintainer attestation. Applying `ready-to-ship` counts as that attestation only
+when the label-event sender currently has maintain or admin permission, the
+live PR head still matches the event head, and no review has an outstanding
+`CHANGES_REQUESTED` decision. The label's persistent state is not authority;
+each new head needs a fresh label event or exact-head review. Prepare merge
+posts `merge-gate=success` and leaves the merge to a maintainer; Actions never
+enables auto-merge. PRs labeled
 `batched-changes` must be rebase-merged, while other PRs must be squash-merged.
 The exact merge method is part of `candidate.json` and a different method fails
 closed during activation. This is repository process policy, not tamper-proof
