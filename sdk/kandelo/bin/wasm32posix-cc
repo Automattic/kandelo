@@ -90,7 +90,11 @@ while [[ "$#" -gt 0 ]]; do
     --kandelo-thread-slots=*|--wasm-posix-thread-slots=*)
       thread_slots_decl="$(parse_thread_slots_decl "${arg#*=}")"
       ;;
-    -pthread|-lpthread|-rdynamic)
+    -pthread)
+      raw_threads_or_dynamic=1
+      filtered+=("$arg")
+      ;;
+    -lpthread|-rdynamic)
       raw_threads_or_dynamic=1
       ;;
     -fPIE|-pie|-lrt|-lresolv|-lm|-lcrypt|-lutil|-Wl,-Bsymbolic)

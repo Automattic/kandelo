@@ -71,9 +71,10 @@ describe('buildClangArgs', () => {
     expect(args).not.toContain('-Wl,--entry=_start');
   });
 
-  it('filters ignored flags', () => {
-    const args = buildClangArgs(['-c', '-pthread', '-fPIC', 'foo.c'], toolchain);
-    expect(args).not.toContain('-pthread');
+  it('preserves -pthread compiler semantics while filtering -lpthread', () => {
+    const args = buildClangArgs(['-c', '-pthread', '-lpthread', '-fPIC', 'foo.c'], toolchain);
+    expect(args).toContain('-pthread');
+    expect(args).not.toContain('-lpthread');
     expect(args).toContain('-fPIC');
   });
 
@@ -118,6 +119,17 @@ describe('buildClangArgs', () => {
 
     expect(script).toContain('WASM_LD="${TOOL_DIR}/wasm-ld"');
     expect(script).not.toContain('WASM_LD="$(find_tool wasm-ld');
+  });
+
+  it('preserves -pthread in the packaged SDK compiler path', () => {
+    const script = readFileSync(
+      join(import.meta.dirname, '../kandelo/bin/wasm32posix-cc'),
+      'utf8',
+    );
+
+    expect(script).toContain(`-pthread)
+      raw_threads_or_dynamic=1
+      filtered+=("$arg")`);
   });
 
   it('preserves stack-after-data layout with LLD 22 and newer', () => {

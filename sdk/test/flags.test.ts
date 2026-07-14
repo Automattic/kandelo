@@ -17,9 +17,9 @@ describe('filterArgs', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('silently removes ignored flags', () => {
+  it('preserves -pthread while silently removing target no-ops', () => {
     const result = filterArgs(['-O2', '-pthread', '-fPIE', '-pie', 'main.c']);
-    expect(result.filtered).toEqual(['-O2', 'main.c']);
+    expect(result.filtered).toEqual(['-O2', '-pthread', 'main.c']);
     expect(result.warnings).toEqual([]);
   });
 

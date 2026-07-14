@@ -62,7 +62,7 @@ export const SHARED_LINK_FLAGS: string[] = [
 ];
 
 const IGNORED_EXACT = new Set([
-  '-pthread', '-lpthread',
+  '-lpthread',
   '-fPIE', '-pie',
   '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
   '-rdynamic', '-Wl,-Bsymbolic',
