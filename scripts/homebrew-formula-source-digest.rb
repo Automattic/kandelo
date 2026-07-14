@@ -135,6 +135,79 @@ def equivalent_excluding_bottle?(left, right)
   end
 end
 
+def source_identity_without_bottle(parsed)
+  lines = source_without_bottle(parsed).lines
+  method_name = nil
+  method_name = lambda do |node|
+    next nil unless node.is_a?(Array)
+
+    case node.first
+    when :method_add_arg, :method_add_block
+      method_name.call(node[1])
+    when :fcall, :vcall
+      token = node[1]
+      token[1] if token.is_a?(Array) && token.first == :@ident
+    when :command
+      token = node[1]
+      token[1] if token.is_a?(Array) && token.first == :@ident
+    end
+  end
+  marker = [
+    "  bottle do\n",
+    "    root_url \"https://ghcr.io/v2/identity/fixture\"\n",
+    "    sha256 cellar: :any_skip_relocation, wasm32_kandelo: \"#{'0' * 64}\"\n",
+    "  end\n",
+  ]
+  candidates = lines.each_index.select { |index| lines[index] == "end\n" }.select do |class_end|
+    candidate = lines.dup
+    candidate.insert(class_end, *marker)
+    syntax_tree = Ripper.sexp(candidate.join)
+    next false if syntax_tree.nil?
+
+    formula_classes = []
+    bottle_nodes = []
+    visit = nil
+    visit = lambda do |node|
+      next unless node.is_a?(Array)
+
+      bottle_nodes << node if node.first == :method_add_block &&
+                              method_name.call(node[1]) == "bottle"
+      if node.first == :class
+        superclass = node[2]
+        token = superclass[1] if superclass.is_a?(Array) && superclass.first == :var_ref
+        if token.is_a?(Array) && token.first == :@const && token[1] == "Formula"
+          formula_classes << node
+        end
+      end
+      node.each { |child| visit.call(child) }
+    end
+    visit.call(syntax_tree)
+    next false unless formula_classes.length == 1 && bottle_nodes.length == 1
+
+    body = formula_classes.fetch(0)[3]
+    statements = if body.is_a?(Array) && body.first == :bodystmt && body.drop(2).all?(&:nil?)
+      body[1]
+    end
+    statements.is_a?(Array) && statements.count do |statement|
+      statement.is_a?(Array) && statement.first == :method_add_block &&
+        method_name.call(statement[1]) == "bottle"
+    end == 1
+  end
+  abort "Formula source lacks one structurally unambiguous class end: #{parsed.path}" unless candidates.length == 1
+
+  class_end = candidates.fetch(0)
+  blank_start = class_end
+  blank_start -= 1 while blank_start.positive? && lines[blank_start - 1] == "\n"
+  if parsed.bottle_range && blank_start < class_end
+    # The composer always owns one blank after its bottle block. Removing only
+    # that separator preserves every additional provenance-bearing blank.
+    lines.delete_at(class_end - 1)
+    class_end -= 1
+  end
+  lines.insert(class_end, "\n") if blank_start == class_end
+  lines.join
+end
+
 if ARGV.length == 3 && ARGV.fetch(0) == "--equivalent-excluding-bottle"
   left = parse_formula(ARGV.fetch(1))
   right = parse_formula(ARGV.fetch(2))
@@ -143,6 +216,9 @@ if ARGV.length == 3 && ARGV.fetch(0) == "--equivalent-excluding-bottle"
     exit 1
   end
   puts "equivalent"
+elsif ARGV.length == 2 && ARGV.fetch(0) == "--identity-excluding-bottle"
+  parsed = parse_formula(ARGV.fetch(1))
+  puts Digest::SHA256.hexdigest(source_identity_without_bottle(parsed))
 elsif ARGV.length == 1
   parsed = parse_formula(ARGV.fetch(0))
   # The digest deliberately retains the validated block's position and line
@@ -156,5 +232,5 @@ elsif ARGV.length == 1
   end
   puts Digest::SHA256.hexdigest(canonical_lines.join)
 else
-  abort "usage: homebrew-formula-source-digest.rb <formula.rb> | --equivalent-excluding-bottle <left.rb> <right.rb>"
+  abort "usage: homebrew-formula-source-digest.rb <formula.rb> | --identity-excluding-bottle <formula.rb> | --equivalent-excluding-bottle <left.rb> <right.rb>"
 end

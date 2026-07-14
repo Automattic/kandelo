@@ -234,6 +234,7 @@ assert_generator_validates_homebrew_commit_as_data() {
   local bottle="$TMPDIR/generator-bottle.tar.gz"
   local bottle_json="$TMPDIR/generator-bottle.json"
   local provenance="$TMPDIR/generator-dependency-provenance.json"
+  local runtime_evidence="$TMPDIR/generator-runtime-evidence.json"
   local bottle_sha bottle_bytes abi nix_bin candidate
 
   mkdir -p "$tap/Formula"
@@ -241,6 +242,7 @@ assert_generator_validates_homebrew_commit_as_data() {
   printf 'bottle\n' >"$bottle"
   printf '{}\n' >"$bottle_json"
   printf '{}\n' >"$provenance"
+  printf '{}\n' >"$runtime_evidence"
   bottle_sha="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
   bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
   abi="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
@@ -272,6 +274,7 @@ assert_generator_validates_homebrew_commit_as_data() {
     KANDELO_HOMEBREW_BOTTLE_SHA256="$bottle_sha" \
     KANDELO_HOMEBREW_BOTTLE_BYTES="$bottle_bytes" \
     KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$provenance" \
+    KANDELO_HOMEBREW_RUNTIME_EVIDENCE="$runtime_evidence" \
     KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
     bash "$REPO_ROOT/scripts/dev-shell.sh" \
       env KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
@@ -423,6 +426,72 @@ validate_build_handoff() {
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     "$@"
+}
+
+make_dry_upload_receipt() {
+  local handoff="$1" receipt="$2"
+  local mode="${3:-dry-run}"
+  local sha256 bytes url layout canonical_sha
+  sha256="$(jq -er '.bottle.sha256' "$handoff/manifest.json")"
+  bytes="$(jq -er '.bottle.bytes' "$handoff/manifest.json")"
+  url="https://ghcr.io/v2/automattic/kandelo-homebrew/hello/blobs/sha256:$sha256"
+  layout="${receipt}.layout"
+  jq -nS \
+    --arg sha256 "$sha256" \
+    --argjson bytes "$bytes" \
+    --arg url "$url" '{
+      schema: 1,
+      kind: "child",
+      formula: "hello",
+      arch: "wasm32",
+      abi: 18,
+      pkg_version: "2.12.1",
+      formula_revision: 0,
+      bottle_rebuild: 0,
+      formula_source_sha256: ("1" * 64),
+      formula_source_identity_sha256: ("2" * 64),
+      source_closure_sha256: ("3" * 64),
+      tap_repository: "Automattic/kandelo-homebrew",
+      tap_commit: ("a" * 40),
+      kandelo_commit: ("b" * 40),
+      top_ref: "2.12.1",
+      bottle: {sha256: $sha256, bytes: $bytes, url: $url},
+      oci: {
+        config: {
+          digest: ("sha256:" + ("4" * 64)),
+          mediaType: "application/vnd.oci.image.config.v1+json",
+          size: 1
+        },
+        diff_id: ("sha256:" + ("5" * 64)),
+        homebrew_ref: "2.12.1.wasm32_kandelo",
+        manifest: {digest: ("sha256:" + ("6" * 64)), size: 1},
+        platform: {architecture: "wasm", os: "kandelo", variant: "wasm32"},
+        transport_tag: ("sha256-" + ("6" * 64))
+      }
+    }' >"$layout"
+  canonical_sha="$(jq -cS . "$layout" | sha256sum | awk '{print $1}')"
+  jq -nS \
+    --slurpfile layout "$layout" \
+    --arg canonical_sha "$canonical_sha" \
+    --arg mode "$mode" '{
+      schema: 2,
+      kind: "child",
+      formula: "hello",
+      tap_repository: "Automattic/kandelo-homebrew",
+      layout: $layout[0],
+      layout_receipt_sha256: $canonical_sha,
+      publication: {
+        remote: "ghcr.io/automattic/kandelo-homebrew/hello",
+        reference: ("sha256-" + ("6" * 64)),
+        digest: ("sha256:" + ("6" * 64)),
+        previous_digest: null,
+        public_readback_digest: (
+          if $mode == "dry-run" then null else ("sha256:" + ("6" * 64)) end
+        ),
+        status: $mode
+      }
+    }' >"$receipt"
+  rm "$layout"
 }
 
 assert_build_handoff_is_minimal_and_validated() {
@@ -721,16 +790,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
   local bad_receipt="$TMPDIR/upload-receipt-bad.json"
   make_build_handoff "$handoff"
 
-  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
-    --tap-repository Automattic/kandelo-homebrew \
-    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --formula hello \
-    --arch wasm32 \
-    --release-tag bottles-abi-v18 \
-    --bottle "$handoff/bottle.tar.gz" \
-    --out-json "$receipt" \
-    --dry-run >/dev/null
+  make_dry_upload_receipt "$handoff" "$receipt"
 
   bash "$REPO_ROOT/scripts/homebrew-validate-upload-receipt.sh" \
     --receipt "$receipt" \
@@ -743,6 +803,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --allow-dry-run \
     --out-env "$out_env" \
     --out-bottle-json "$canonical_json" >/dev/null
   (
@@ -765,6 +826,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --allow-dry-run \
     --out-env "$colliding_output" \
     --out-bottle-json "$colliding_output" >/dev/null 2>&1; then
     fail "upload receipt validator accepted colliding output paths"
@@ -783,11 +845,12 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
-    --forbidden-root "$TEST_FORBIDDEN_ROOT" >/dev/null 2>&1; then
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --allow-dry-run >/dev/null 2>&1; then
     fail "upload receipt validator accepted an undeclared field"
   fi
 
-  jq '.bottle.bytes += 1' "$receipt" >"$bad_receipt"
+  jq '.layout.bottle.bytes += 1' "$receipt" >"$bad_receipt"
   if bash "$REPO_ROOT/scripts/homebrew-validate-upload-receipt.sh" \
     --receipt "$bad_receipt" \
     --handoff "$handoff" \
@@ -798,7 +861,8 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
-    --forbidden-root "$TEST_FORBIDDEN_ROOT" >/dev/null 2>&1; then
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --allow-dry-run >/dev/null 2>&1; then
     fail "upload receipt validator accepted a byte count not backed by the build handoff"
   fi
 
@@ -814,7 +878,8 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
-    --forbidden-root "$TEST_FORBIDDEN_ROOT" >/dev/null 2>&1; then
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --allow-dry-run >/dev/null 2>&1; then
     fail "upload receipt validator accepted a receipt larger than 64 KiB"
   fi
 }
@@ -1050,20 +1115,11 @@ EOF
       make_build_handoff "$build_stage"
   fi
   mv "$build_stage" "$handoff/build"
-  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
-    --tap-repository Automattic/kandelo-homebrew \
-    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --formula hello \
-    --arch wasm32 \
-    --release-tag bottles-abi-v18 \
-    --bottle "$handoff/build/bottle.tar.gz" \
-    --out-json "$handoff/receipt.json" \
-    --dry-run >/dev/null
+  make_dry_upload_receipt "$handoff/build" "$handoff/receipt.json" already-present
 
-  bottle_sha="$(jq -r '.bottle.sha256' "$handoff/receipt.json")"
-  bottle_bytes="$(jq -r '.bottle.bytes' "$handoff/receipt.json")"
-  bottle_url="$(jq -r '.bottle.url' "$handoff/receipt.json")"
+  bottle_sha="$(jq -r '.layout.bottle.sha256' "$handoff/receipt.json")"
+  bottle_bytes="$(jq -r '.layout.bottle.bytes' "$handoff/receipt.json")"
+  bottle_url="$(jq -r '.layout.bottle.url' "$handoff/receipt.json")"
   jq -nS \
     --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
     --arg formula_sha "$formula_sha" --argjson dependencies "$composition_dependencies" '{
@@ -1196,7 +1252,7 @@ assert_publish_handoff_is_exact_inert_data() {
     "$generated/Formula/hello.rb" "$tap_root/Formula/hello.rb" \
     https://ghcr.io/v2/automattic/kandelo-homebrew \
     0 wasm32_kandelo any_skip_relocation \
-    "$(jq -r '.bottle.sha256' "$handoff/receipt.json")" \
+    "$(jq -r '.layout.bottle.sha256' "$handoff/receipt.json")" \
     discard "$composed"
   mv "$composed" "$generated/Formula/hello.rb"
   host="$(rustc -vV | awk '/^host/ {print $2}')"
@@ -3232,8 +3288,7 @@ EOF
 
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
-assert_upload_dry_run
-assert_upload_push_uses_relative_layer_path
+bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_sysroot_fingerprint_is_arch_specific
 assert_bottle_build_trusts_selected_tap
 assert_bottle_build_forces_same_tap_dependencies
@@ -3257,6 +3312,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-sibling-bottle-policy.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
 assert_formula_composition_is_static_and_lossless
 assert_formula_source_closure_is_bound
 assert_publisher_trust_contract

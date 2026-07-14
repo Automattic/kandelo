@@ -15,10 +15,11 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "8f567abecae98fc5600e48055adb005f71fefd4f5a9efbd3bba3af9eac8fa3e4"
-PUBLISHER_BUILD_DIGEST = "dba0a5cb8a05344874e64e4f17f44bd9bcff9a39895d1823aeb42abc5c242c8e"
-PUBLISHER_UPLOAD_DIGEST = "199a74259a0787bef21e8993b902eda13d1cbc8e26aea930dd33e0250d956ad8"
-PUBLISHER_VERIFY_DIGEST = "581633be0237a19c3408515b34cf550e8cf896eea9f5bcc9bdc444ee927ec6ee"
+PUBLISHER_PLAN_DIGEST = "75468bd935146ca1c78e1a757a314bb6355bce63f01707c3345936d3f9ccaf07"
+PUBLISHER_BUILD_DIGEST = "0704fe37cd33364feff8738163df3203107e98bb73cb68167ab0009ede98c1cf"
+PUBLISHER_UPLOAD_DIGEST = "329ff7dfafc8f3c262ae8c817187d875db451da05d7d98a12eafda45cdbf2213"
+PUBLISHER_INDEX_DIGEST = "2c5988c9b840dcc1e845f40b58e47ed8263a9babccdae08140bea145a4199de3"
+PUBLISHER_VERIFY_DIGEST = "3f1a8f4760d1970b08d3dc9bd808e74ec0c1ba5f93b8a795385af4bd0604943b"
 PUBLISHER_FINALIZE_DIGEST = "2e7a24cdcaa63e631cee1a967bff1c41bb0f8f8e57e2039929efda5d069cf9f9"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
@@ -113,8 +114,11 @@ end
 
 def check_sidecar_sysroot_binding(source, fingerprint_source)
   [
+    'BUILD_ROOT="${KANDELO_HOMEBREW_BUILD_ROOT:-$KANDELO_ROOT}"',
     'SYSROOT_FINGERPRINT="$(bash "$KANDELO_ROOT/scripts/homebrew-sysroot-fingerprint.sh"',
-    '--kandelo-root "$KANDELO_ROOT" --arch "$KANDELO_HOMEBREW_ARCH")"',
+    '--kandelo-root "$BUILD_ROOT" --arch "$KANDELO_HOMEBREW_ARCH")"',
+    'BUILD_COMMIT="$(git -C "$BUILD_ROOT" rev-parse HEAD)"',
+    'if [ "$BUILD_COMMIT" != "$KANDELO_COMMIT" ]; then',
   ].each do |fragment|
     check(source.include?(fragment), "sidecar target-sysroot binding lacks #{fragment}")
   end
@@ -247,15 +251,10 @@ end
 
 def check_publisher(workflow)
   top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
-  check(top_keys == %w[concurrency jobs name on],
+  check(top_keys == %w[jobs name on],
         "publisher has unexpected top-level configuration")
   check(workflow["name"] == "Reusable Kandelo Homebrew bottle publish",
         "publisher name changed")
-  check(workflow["concurrency"] == {
-    "group" => "kandelo-homebrew-bottle-publish-${{ inputs.tap-repository }}-" \
-               "${{ inputs.release-tag || github.run_id }}",
-    "cancel-in-progress" => false,
-  }, "publisher concurrency contract changed")
 
   events = workflow_events(workflow)
   check(events.keys == ["workflow_call"], "publisher must only expose workflow_call")
@@ -278,11 +277,12 @@ def check_publisher(workflow)
   check_common(workflow, "reusable publisher")
 
   jobs = workflow_jobs(workflow)
-  check(jobs.keys.sort == %w[build-and-test finalize-tap plan upload-bottle verify-bottle],
+  check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index upload-bottle verify-bottle],
         "publisher has an unexpected job set")
   plan = jobs.fetch("plan")
   build = jobs.fetch("build-and-test")
   upload = jobs.fetch("upload-bottle")
+  index = jobs.fetch("publish-bottle-index")
   verify = jobs.fetch("verify-bottle")
   finalize = jobs.fetch("finalize-tap")
 
@@ -293,6 +293,8 @@ def check_publisher(workflow)
           %w[if needs permissions runs-on steps strategy timeout-minutes],
           "publisher #{job_name} job contract changed")
   end
+  check(index.keys.sort == %w[concurrency if needs permissions runs-on steps strategy timeout-minutes],
+        "publisher version-index job contract changed")
   check(plan["runs-on"] == "ubuntu-latest" &&
         exact_permissions?(plan["permissions"], { "contents" => "read" }),
         "publisher plan authority changed")
@@ -303,6 +305,13 @@ def check_publisher(workflow)
         exact_permissions?(upload["permissions"], {
           "actions" => "read", "contents" => "read", "packages" => "write",
         }), "publisher uploader authority changed")
+  check(index["runs-on"] == "ubuntu-latest" && index["timeout-minutes"] == 60 &&
+        exact_permissions?(index["permissions"], {
+          "actions" => "read", "contents" => "read", "packages" => "write",
+        }) && index["concurrency"] == {
+          "group" => "kandelo-homebrew-bottle-index-${{ inputs.tap-repository }}-${{ matrix.formula }}",
+          "cancel-in-progress" => false,
+        }, "publisher version-index authority or concurrency changed")
   check(verify["runs-on"] == "ubuntu-latest" && verify["timeout-minutes"] == 1440 &&
         exact_permissions?(verify["permissions"], { "actions" => "read", "contents" => "read" }),
         "publisher verifier authority changed")
@@ -318,6 +327,10 @@ def check_publisher(workflow)
     check(job["strategy"] == matrix_strategy,
           "publisher execution job bypasses the validated matrix")
   end
+  check(index["strategy"] == {
+    "fail-fast" => false,
+    "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.formula-matrix) }}" },
+  }, "publisher version-index job bypasses the validated Formula matrix")
   check(build["needs"] == ["plan"] &&
         build["if"] == "${{ needs.plan.outputs.matrix != '[]' }}",
         "publisher build graph changed")
@@ -325,8 +338,15 @@ def check_publisher(workflow)
         upload["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
                          "needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}",
         "publisher upload graph or dry-run isolation changed")
-  check(verify["needs"] == %w[plan build-and-test upload-bottle] &&
+  check(index["needs"] == %w[plan build-and-test upload-bottle] &&
+        index["if"] == "${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && " \
+                        "needs.build-and-test.result == 'success' && needs.upload-bottle.result == 'success' && " \
+                        "needs.plan.outputs.matrix != '[]' }}",
+        "publisher version-index graph or dry-run isolation changed")
+  check(verify["needs"] == %w[plan build-and-test upload-bottle publish-bottle-index] &&
         verify["if"] == "${{ always() && !cancelled() && needs.plan.result == 'success' && " \
+                         "needs.build-and-test.result == 'success' && (inputs.dry-run || " \
+                         "(needs.upload-bottle.result == 'success' && needs.publish-bottle-index.result == 'success')) && " \
                          "needs.plan.outputs.matrix != '[]' }}",
         "publisher verification graph changed")
   check(finalize["needs"] == %w[plan build-and-test upload-bottle verify-bottle] &&
@@ -337,6 +357,7 @@ def check_publisher(workflow)
   plan_steps = job_steps(plan, "publisher plan")
   build_steps = job_steps(build, "publisher build")
   upload_steps = job_steps(upload, "publisher upload")
+  index_steps = job_steps(index, "publisher version index")
   verify_steps = job_steps(verify, "publisher verification")
   finalize_steps = job_steps(finalize, "publisher finalization")
 
@@ -386,6 +407,7 @@ def check_publisher(workflow)
         "publisher planner permits a green empty dispatch")
   check(plan["outputs"] == {
     "matrix" => "${{ steps.matrix.outputs.matrix }}",
+    "formula-matrix" => "${{ steps.matrix.outputs.formula-matrix }}",
     "abi" => "${{ steps.release.outputs.abi }}",
     "release-tag" => "${{ steps.release.outputs.release-tag }}",
     "bottle-root-prefix" => "${{ steps.release.outputs.bottle-root-prefix }}",
@@ -394,11 +416,11 @@ def check_publisher(workflow)
   }, "publisher plan outputs changed")
 
   expected_uses = [
-    *Array.new(14, CHECKOUT_ACTION),
-    *Array.new(4, NIX_ACTION),
+    *Array.new(18, CHECKOUT_ACTION),
+    *Array.new(5, NIX_ACTION),
     *Array.new(2, MAGIC_NIX_ACTION),
-    *Array.new(5, UPLOAD_ACTION),
-    *Array.new(4, DOWNLOAD_ACTION),
+    *Array.new(7, UPLOAD_ACTION),
+    *Array.new(9, DOWNLOAD_ACTION),
   ].sort
   check(values_for_key(workflow, "uses").sort == expected_uses,
         "publisher action set or pin changed")
@@ -480,6 +502,17 @@ def check_publisher(workflow)
       },
     },
   ], "publisher uploader checkout wiring changed")
+  check(checkout_view.call(index_steps) == [
+    {
+      "name" => "Checkout exact Kandelo index publisher source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+        "path" => "kandelo", "submodules" => false,
+      },
+    },
+  ], "publisher version-index checkout wiring changed")
   check(checkout_view.call(verify_steps) == [
     {
       "name" => "Checkout exact Kandelo verifier source", "if" => nil,
@@ -496,6 +529,30 @@ def check_publisher(workflow)
         "persist-credentials" => false,
         "repository" => "${{ inputs.tap-repository }}",
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
+      },
+    },
+    {
+      "name" => "Checkout reviewed Homebrew implementation for bottle verification", "if" => nil,
+      "with" => {
+        "persist-credentials" => false, "repository" => "Homebrew/brew",
+        "ref" => BREW_COMMIT, "path" => "homebrew-prefix/Homebrew",
+      },
+    },
+    {
+      "name" => "Checkout exact post-verification Kandelo generator source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+        "path" => "kandelo-postverify", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout exact post-verification tap source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-postverify",
       },
     },
   ], "publisher verifier checkout wiring changed")
@@ -553,8 +610,23 @@ def check_publisher(workflow)
   end
   check(uploader_credential_steps.map { |step| step["name"] } ==
         ["Upload validated bottle in isolated ORAS auth state"] &&
-        uploader_credential_steps.first["env"] == { "GH_TOKEN" => "${{ github.token }}" },
+        uploader_credential_steps.first["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
+          "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+        },
         "publisher uploader credentials escape the isolated upload step")
+  index_credential_steps = index_steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(index_credential_steps.map { |step| step["name"] } ==
+        ["Publish the complete Homebrew version index in isolated ORAS auth state"] &&
+        index_credential_steps.first["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
+          "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+        },
+        "publisher version-index credentials escape the isolated transport step")
   finalizer_credential_steps = finalize_steps.select do |step|
     !(step.fetch("env", {}).keys & credential_names).empty?
   end
@@ -571,6 +643,10 @@ def check_publisher(workflow)
     "homebrew-upload-receipt-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
   publish_handoff_name =
     "homebrew-publish-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
+  child_layout_name =
+    "homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
+  index_publication_name =
+    "homebrew-index-publication-${{ matrix.formula }}-attempt-${{ github.run_attempt }}"
   build_handoff_upload = named_step(build_steps, "Upload strict bottle build handoff")
   check(build_handoff_upload["uses"] == UPLOAD_ACTION && build_handoff_upload["with"] == {
     "name" => build_handoff_name,
@@ -578,6 +654,13 @@ def check_publisher(workflow)
     "compression-level" => 0,
     "if-no-files-found" => "error", "retention-days" => 2,
   }, "publisher build handoff artifact contract changed")
+  child_layout_upload = named_step(build_steps, "Upload deterministic Homebrew OCI child")
+  check(child_layout_upload["uses"] == UPLOAD_ACTION && child_layout_upload["with"] == {
+    "name" => child_layout_name,
+    "path" => "${{ runner.temp }}/homebrew-oci-child",
+    "compression-level" => 0,
+    "if-no-files-found" => "error", "retention-days" => 2,
+  }, "publisher OCI child artifact contract changed")
   upload_handoff_download = named_step(upload_steps, "Download strict build handoff")
   verify_handoff_download = named_step(verify_steps, "Download strict build handoff")
   [upload_handoff_download, verify_handoff_download].each do |step|
@@ -586,6 +669,17 @@ def check_publisher(workflow)
             "name" => build_handoff_name,
             "path" => "${{ runner.temp }}/homebrew-build-handoff",
           }, "publisher build handoff download contract changed")
+  end
+  upload_child_download = named_step(upload_steps, "Download deterministic Homebrew OCI child")
+  verify_child_download = named_step(
+    verify_steps, "Download deterministic Homebrew OCI child for dry-run validation"
+  )
+  [upload_child_download, verify_child_download].each do |step|
+    check(step["uses"] == DOWNLOAD_ACTION && step["id"] == "oci-child" &&
+          step["continue-on-error"] == true && step["with"] == {
+            "name" => child_layout_name,
+            "path" => "${{ runner.temp }}/homebrew-oci-child",
+          }, "publisher OCI child download contract changed")
   end
   receipt_upload = named_step(upload_steps, "Upload strict upload receipt")
   check(receipt_upload["uses"] == UPLOAD_ACTION && receipt_upload["with"] == {
@@ -599,7 +693,27 @@ def check_publisher(workflow)
         receipt_download["continue-on-error"] == true && receipt_download["with"] == {
           "name" => upload_receipt_name,
           "path" => "${{ runner.temp }}/homebrew-upload-receipt",
-        }, "publisher receipt download contract changed")
+  }, "publisher receipt download contract changed")
+  index_publication_upload = named_step(index_steps, "Upload public Homebrew version-index evidence")
+  check(index_publication_upload["uses"] == UPLOAD_ACTION &&
+        index_publication_upload["with"] == {
+          "name" => index_publication_name,
+          "path" => "${{ runner.temp }}/homebrew-complete-index/layout-receipt.json\n" \
+                    "${{ runner.temp }}/homebrew-complete-index/transport-receipt.json\n",
+          "compression-level" => 0,
+          "if-no-files-found" => "error", "retention-days" => 2,
+        }, "publisher version-index publication artifact contract changed")
+  index_publication_download = named_step(
+    verify_steps, "Download public Homebrew version-index evidence"
+  )
+  check(index_publication_download["uses"] == DOWNLOAD_ACTION &&
+        index_publication_download["id"] == "index-publication" &&
+        index_publication_download["if"] == "${{ !inputs.dry-run }}" &&
+        index_publication_download["continue-on-error"] == true &&
+        index_publication_download["with"] == {
+          "name" => index_publication_name,
+          "path" => "${{ runner.temp }}/homebrew-index-publication",
+        }, "publisher version-index evidence download contract changed")
   publish_handoff_upload = named_step(verify_steps, "Upload validated publication handoff")
   check(publish_handoff_upload["uses"] == UPLOAD_ACTION && publish_handoff_upload["with"] == {
     "name" => publish_handoff_name,
@@ -695,6 +809,11 @@ def check_publisher(workflow)
     KANDELO_HOMEBREW_PKILL_BIN
   ].all? { |name| dev_shell.include?("--keep #{name}") },
         "dev shell drops the isolated Formula build identity")
+  check(%w[
+    KANDELO_HOMEBREW_BUILD_ROOT KANDELO_HOMEBREW_RUNTIME_EVIDENCE
+    KANDELO_HOMEBREW_BROWSER_EVIDENCE
+  ].all? { |name| dev_shell.include?("--keep #{name}") },
+        "dev shell drops exact Homebrew runtime evidence inputs")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
   [
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
@@ -848,6 +967,33 @@ def check_publisher(workflow)
     '--forbidden-root "$HOMEBREW_TEMP"',
     '--forbidden-root "/home/$KANDELO_HOMEBREW_BUILD_USER"',
   ])
+  compose_child = named_step(
+    build_steps, "Compose deterministic Homebrew OCI child without credentials"
+  )
+  compose_child_run = compose_child.fetch("run")
+  [
+    "credential-free OCI composer received $secret_name",
+    "scripts/homebrew-validate-build-handoff.sh",
+    "scripts/homebrew-oci-layout.py build-child",
+    '--tap-root "$GITHUB_WORKSPACE/tap-reviewed"',
+    '--kandelo-root "$GITHUB_WORKSPACE/kandelo-postbuild"',
+    '--out-layout "$artifact/layout"', '--out-receipt "$artifact/receipt.json"',
+  ].each do |fragment|
+    check(compose_child_run.include?(fragment),
+          "publisher deterministic OCI child composition lacks #{fragment}")
+  end
+  check_forbidden_root_args(compose_child_run, "publisher OCI child composition", [
+    '--forbidden-root "$GITHUB_WORKSPACE"',
+    '--forbidden-root "$(dirname "$GITHUB_WORKSPACE")"',
+    '--forbidden-root "$RUNNER_TEMP"',
+    '--forbidden-root "/home/kandelo-homebrew-build"',
+  ])
+  check(build_steps.index(source_closure_step) < build_steps.index(compose_child) &&
+        build_steps.index(named_step(build_steps, "Create strict bottle data handoff")) <
+          build_steps.index(compose_child) &&
+        build_steps.index(compose_child) <
+          build_steps.index(named_step(build_steps, "Upload deterministic Homebrew OCI child")),
+        "publisher composes or exports the OCI child outside the reviewed data phase")
 
   upload_validate = named_step(upload_steps,
                                "Validate build data before exposing upload credentials")
@@ -886,6 +1032,121 @@ def check_publisher(workflow)
   check(upload_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") } &&
         upload_steps.count { |step| step["uses"] == UPLOAD_ACTION } == 1,
         "credentialed uploader publishes diagnostics")
+
+  index_validate = named_step(
+    index_steps, "Validate child layouts and public publication evidence without credentials"
+  )
+  index_import = named_step(
+    index_steps, "Import the existing public Homebrew version index anonymously"
+  )
+  index_compose = named_step(
+    index_steps, "Compose one complete Homebrew version index without credentials"
+  )
+  index_publish = named_step(
+    index_steps, "Publish the complete Homebrew version index in isolated ORAS auth state"
+  )
+  index_validate_run = index_validate.fetch("run")
+  [
+    "credential-free index input validator received $secret_name",
+    "scripts/homebrew-oci-layout.py validate-child",
+    "validate-publication-receipt", '--kind child',
+    'printf \'%s\\0%s\\0\'',
+  ].each do |fragment|
+    check(index_validate_run.include?(fragment),
+          "publisher version-index input validation lacks #{fragment}")
+  end
+  index_import_run = index_import.fetch("run")
+  [
+    "anonymous index import received $secret_name",
+    "scripts/homebrew-oci-layout.py import-public-index",
+    '--remote "$remote"', '--reference "$top_ref"',
+    '--registry-config "$anonymous_config"', '--out-layout "$existing"',
+    '--out-result "$result"',
+    'keys == ["digest", "layout", "schema", "status"]',
+    'keys == ["schema", "status"]',
+  ].each do |fragment|
+    check(index_import_run.include?(fragment),
+          "publisher anonymous version-index import lacks #{fragment}")
+  end
+  check((credential_names & index_import_run.scan(/[A-Z][A-Z0-9_]+/)).all? do |name|
+    index_import_run.include?("-u #{name}") || index_import_run.include?("$secret_name")
+  end, "publisher anonymous version-index import references an available credential")
+  index_import_tool = File.read(File.join(REPO_ROOT, "scripts/homebrew-oci-layout.py"))
+  [
+    'commands.add_parser("import-public-index")',
+    'target=f"{remote}:{reference}"',
+    'descriptor=True',
+    'target=f"{remote}@sha256:{digest}"',
+    'MAX_BOTTLE_BYTES',
+    'run_bounded_command(',
+    '"oras", "blob", "fetch", "--descriptor"',
+    'resolve_remote_blob_descriptor(',
+    'f"{remote}@sha256:{top_digest}"',
+    '"--to-oci-layout"',
+    'digest-pinned imported layout does not match the validated top descriptor',
+  ].each do |fragment|
+    check(index_import_tool.include?(fragment),
+          "trusted anonymous version-index importer lacks #{fragment}")
+  end
+  publication_limits = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-publication-limits.sh")
+  )
+  bottle_inspector = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-inspect-bottle.py")
+  )
+  check(publication_limits.include?("readonly HOMEBREW_MAX_BOTTLE_BYTES=2147483648") &&
+        publication_limits.include?(
+          "readonly HOMEBREW_MAX_EXPANDED_BOTTLE_BYTES=17179869184"
+        ) &&
+        index_import_tool.include?('MAX_EXPANDED_BOTTLE_BYTES') &&
+        index_import_tool.include?('publication_limits()') &&
+        bottle_inspector.include?('publication_archive_limits()') &&
+        bottle_inspector.include?('"$HOMEBREW_MAX_BOTTLE_BYTES"') &&
+        bottle_inspector.include?('"$HOMEBREW_MAX_EXPANDED_BOTTLE_BYTES"') &&
+        !bottle_inspector.include?('MAX_COMPRESSED_BYTES = 2 * 1024') &&
+        !bottle_inspector.include?('MAX_ARCHIVE_BYTES = 16 * 1024'),
+        "trusted OCI tooling does not use separate shared compressed and expanded limits")
+  index_compose_run = index_compose.fetch("run")
+  [
+    "credential-free index composer received $secret_name",
+    'args+=(--child-layout "$layout" --child-receipt "$receipt")',
+    'args+=(--existing-layout "$existing")',
+    "scripts/homebrew-oci-layout.py merge-index",
+    '--out-layout "$RUNNER_TEMP/homebrew-complete-index/layout"',
+    '--out-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json"',
+  ].each do |fragment|
+    check(index_compose_run.include?(fragment),
+          "publisher complete version-index composition lacks #{fragment}")
+  end
+  index_publish_run = index_publish.fetch("run")
+  [
+    "scripts/homebrew-ghcr-upload.sh",
+    '--layout "$RUNNER_TEMP/homebrew-complete-index/layout"',
+    '--layout-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json"',
+    '--out-json "$RUNNER_TEMP/homebrew-complete-index/transport-receipt.json"',
+  ].each do |fragment|
+    check(index_publish_run.include?(fragment),
+          "publisher isolated version-index transport lacks #{fragment}")
+  end
+  check(index_steps.index(index_validate) < index_steps.index(index_import) &&
+        index_steps.index(index_import) < index_steps.index(index_compose) &&
+        index_steps.index(index_compose) < index_steps.index(index_publish) &&
+        index_steps.index(index_publish) < index_steps.index(index_publication_upload),
+        "publisher version-index validation, aggregation, transport, or evidence order changed")
+  check(index_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") } &&
+        index_steps.count { |step| step["uses"] == UPLOAD_ACTION } == 1,
+        "credentialed version-index publisher publishes diagnostics")
+
+  privileged_runs = [upload_steps, index_steps].flatten.filter_map { |step| step["run"] }.join("\n")
+  %w[
+    homebrew-bottle-build.sh homebrew-formula-source-digest.rb
+    homebrew-validate-formula-source-closure.sh
+  ].each do |forbidden|
+    check(!privileged_runs.include?(forbidden),
+          "packages:write phase can execute Formula-controlled source through #{forbidden}")
+  end
+  check(!privileged_runs.match?(/(?:^|[[:space:]])ruby(?:[[:space:]]|$)/),
+        "packages:write phase executes Ruby")
 
   canonical_build = named_step(verify_steps,
                                "Validate build handoff and reconstruct canonical bottle JSON").fetch("run")
@@ -927,6 +1188,20 @@ def check_publisher(workflow)
   end
   check((credential_names & anonymous_run.scan(/[A-Z][A-Z0-9_]+/)).empty?,
         "publisher anonymous bottle readback references a credential")
+  index_verify_run = named_step(
+    verify_steps, "Validate exact public Homebrew index traversal without credentials"
+  ).fetch("run")
+  [
+    "public Homebrew index verifier received $secret_name",
+    "validate-index-receipt", "validate-publication-receipt", "--kind index",
+    "oras cp", "--from-registry-config", "--to-oci-layout",
+    "scripts/homebrew-oci-layout.py validate-index",
+    '.manifest_digest == $child[0].oci.manifest.digest',
+    '.bottle_sha256 == $child[0].bottle.sha256',
+  ].each do |fragment|
+    check(index_verify_run.include?(fragment),
+          "publisher exact public Homebrew index verification lacks #{fragment}")
+  end
   full_fetch_run = named_step(verify_steps,
                               "Fetch the complete ABI browser runtime graph").fetch("run")
   check(full_fetch_run.include?("bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only"),
@@ -934,8 +1209,8 @@ def check_publisher(workflow)
   sidecar_run = named_step(verify_steps,
                            "Generate sidecars from the selected bottle").fetch("run")
   check(sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"') &&
-        sidecar_run.include?('KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap"') &&
-        sidecar_run.include?('KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap"') &&
+        sidecar_run.include?('KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap-postverify"') &&
+        sidecar_run.include?('KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap-postverify"') &&
         sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-verified-input/bottle.json"') &&
         sidecar_run.include?('KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"') &&
         sidecar_run.include?("scripts/homebrew-generate-sidecars-from-env.sh"),
@@ -1032,7 +1307,7 @@ def check_publisher(workflow)
       stripped if stripped.start_with?("--forbidden-root ")
     end
   end
-  check(forbidden_root_lines.length == 30,
+  check(forbidden_root_lines.length == 34,
         "publisher does not pass the exact trusted forbidden-root set at every archive boundary")
   check(forbidden_root_lines.none? { |line| line.include?("linuxbrew") || line.include?("/opt/") },
         "publisher forbids canonical Homebrew prefix or opt metadata")
@@ -1072,6 +1347,8 @@ def check_publisher(workflow)
         "publisher build step contract changed")
   check(contract_digest(upload_steps) == PUBLISHER_UPLOAD_DIGEST,
         "publisher upload step contract changed")
+  check(contract_digest(index_steps) == PUBLISHER_INDEX_DIGEST,
+        "publisher version-index step contract changed")
   check(contract_digest(verify_steps) == PUBLISHER_VERIFY_DIGEST,
         "publisher verification step contract changed")
   check(contract_digest(finalize_steps) == PUBLISHER_FINALIZE_DIGEST,
@@ -1288,6 +1565,9 @@ def self_test(publisher, maintenance)
     "uploader dependency bypass" => lambda { |w|
       w.fetch("jobs").fetch("upload-bottle")["needs"] = ["plan"]
     },
+    "version-index dependency bypass" => lambda { |w|
+      w.fetch("jobs").fetch("publish-bottle-index")["needs"] = ["plan", "upload-bottle"]
+    },
     "verifier dependency bypass" => lambda { |w|
       w.fetch("jobs").fetch("verify-bottle")["needs"] = ["plan", "upload-bottle"]
     },
@@ -1300,6 +1580,12 @@ def self_test(publisher, maintenance)
     "uploader authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("upload-bottle").fetch("permissions")["contents"] = "write"
     },
+    "version-index authority escalation" => lambda { |w|
+      w.fetch("jobs").fetch("publish-bottle-index").fetch("permissions")["contents"] = "write"
+    },
+    "version-index serialization bypass" => lambda { |w|
+      w.fetch("jobs").fetch("publish-bottle-index").delete("concurrency")
+    },
     "verifier authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("verify-bottle").fetch("permissions")["packages"] = "read"
     },
@@ -1308,6 +1594,10 @@ def self_test(publisher, maintenance)
     },
     "dry-run bottle upload" => lambda { |w|
       job = w.fetch("jobs").fetch("upload-bottle")
+      job["if"] = job.fetch("if").sub(" && !inputs.dry-run", "")
+    },
+    "dry-run version-index publication" => lambda { |w|
+      job = w.fetch("jobs").fetch("publish-bottle-index")
       job["if"] = job.fetch("if").sub(" && !inputs.dry-run", "")
     },
     "dry-run tap finalization" => lambda { |w|
@@ -1425,6 +1715,14 @@ def self_test(publisher, maintenance)
       step = mutate_named_step(w, "build-and-test", "Create strict bottle data handoff")
       step["run"] = step.fetch("run").sub("kandelo-postbuild", "kandelo")
     },
+    "OCI child composition before source revalidation" => lambda { |w|
+      steps = w.fetch("jobs").fetch("build-and-test").fetch("steps")
+      closure = steps.index { |step| step["name"] == "Recheck reviewed sources after Formula execution" }
+      compose = steps.index do |step|
+        step["name"] == "Compose deterministic Homebrew OCI child without credentials"
+      end
+      steps[closure], steps[compose] = steps[compose], steps[closure]
+    },
     "verifier token exposure" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle",
                                "Select exact anonymous bottle bytes for runtime validation")
@@ -1475,10 +1773,50 @@ def self_test(publisher, maintenance)
         "with" => { "name" => "diagnostics", "path" => "${{ runner.temp }}" },
       }
     },
+    "version-index Formula Ruby execution" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index", "Compose one complete Homebrew version index without credentials"
+      )
+      step["run"] = "ruby Formula/hello.rb\n#{step.fetch('run')}"
+    },
+    "unvalidated child publication receipt" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index",
+        "Validate child layouts and public publication evidence without credentials"
+      )
+      step["run"] = step.fetch("run").sub("validate-publication-receipt", "validate-child-receipt")
+    },
+    "unbounded existing index descriptor" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index", "Import the existing public Homebrew version index anonymously"
+      )
+      step["run"] = step.fetch("run").sub(
+        "scripts/homebrew-oci-layout.py import-public-index", "oras cp"
+      )
+    },
+    "version-index sibling preservation bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index", "Compose one complete Homebrew version index without credentials"
+      )
+      step["run"] = step.fetch("run").sub('args+=(--existing-layout "$existing")', "true")
+    },
+    "direct version-index ORAS upload bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index",
+        "Publish the complete Homebrew version index in isolated ORAS auth state"
+      )
+      step["run"] = step.fetch("run").sub("scripts/homebrew-ghcr-upload.sh", "oras push")
+    },
     "missing anonymous readback" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle",
                                "Select exact anonymous bottle bytes for runtime validation")
       step["run"] = step.fetch("run").sub("homebrew-verify-public-bottle.ts", "true")
+    },
+    "missing exact public index traversal" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Validate exact public Homebrew index traversal without credentials"
+      )
+      step["run"] = step.fetch("run").sub("validate-publication-receipt", "true")
     },
     "partial browser runtime fetch" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle", "Fetch the complete ABI browser runtime graph")
@@ -1501,7 +1839,7 @@ def self_test(publisher, maintenance)
     },
     "raw bottle metadata merge" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle",
-                               "Merge only reconstructed bottle metadata into the fresh tap")
+                               "Compose only reconstructed bottle metadata into the fresh tap")
       step["run"] = step.fetch("run").sub('--bottle-json "$BOTTLE_JSON"',
                                              '--bottle-json "$RUNNER_TEMP/homebrew-build-handoff/bottle.json"')
     },

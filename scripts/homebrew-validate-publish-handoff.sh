@@ -225,9 +225,9 @@ require_max_size() {
 }
 require_max_size "composition input" "$COMPOSITION_INPUT" "$HOMEBREW_MAX_COMPOSITION_INPUT_BYTES"
 
-BOTTLE_SHA256="$(jq -r '.bottle.sha256' "$RECEIPT")"
-BOTTLE_BYTES="$(jq -r '.bottle.bytes' "$RECEIPT")"
-BOTTLE_URL="$(jq -r '.bottle.url' "$RECEIPT")"
+BOTTLE_SHA256="$(jq -r '.layout.bottle.sha256' "$RECEIPT")"
+BOTTLE_BYTES="$(jq -r '.layout.bottle.bytes' "$RECEIPT")"
+BOTTLE_URL="$(jq -r '.layout.bottle.url' "$RECEIPT")"
 ABI_VERSION="${RELEASE_TAG#bottles-abi-v}"
 BOTTLE_TAG="${ARCH}_kandelo"
 if ! jq -e \

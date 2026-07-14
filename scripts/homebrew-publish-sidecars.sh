@@ -311,9 +311,9 @@ compose_publication_handoff() {
   rebuild="$(jq -er '.packages[0].bottle_rebuild | select(type == "number" and . >= 0 and floor == .)' "$input")"
   kandelo_abi="$(jq -er '.kandelo_abi | select(type == "number" and . >= 0 and floor == .)' "$input")"
   tag="${ARCH}_kandelo"
-  bottle_sha="$(jq -er '.bottle.sha256' "$receipt")"
-  bottle_url="$(jq -er '.bottle.url' "$receipt")"
-  bottle_bytes="$(jq -er '.bottle.bytes' "$receipt")"
+  bottle_sha="$(jq -er '.layout.bottle.sha256' "$receipt")"
+  bottle_url="$(jq -er '.layout.bottle.url' "$receipt")"
+  bottle_bytes="$(jq -er '.layout.bottle.bytes' "$receipt")"
   bottle_root="$(jq -er '.bottle_root_url' "$manifest")"
   relocation_cellar="$(jq -er '.bottle.cellar' "$manifest")"
 

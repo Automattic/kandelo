@@ -13,11 +13,12 @@ KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 OUT_ENV=""
 OUT_BOTTLE_JSON=""
+ALLOW_DRY_RUN=0
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>]
+usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>] [--allow-dry-run]
 
 Revalidates the build handoff, then checks the strict upload receipt against
 the plan identity and the handoff's recomputed bottle digest and byte count.
@@ -37,6 +38,7 @@ while [ "$#" -gt 0 ]; do
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --out-env) OUT_ENV="${2:-}"; shift 2 ;;
     --out-bottle-json) OUT_BOTTLE_JSON="${2:-}"; shift 2 ;;
+    --allow-dry-run) ALLOW_DRY_RUN=1; shift ;;
     --forbidden-root)
       [ "$#" -ge 2 ] && [ -n "$2" ] || {
         echo "homebrew-validate-upload-receipt.sh: --forbidden-root requires a value" >&2
@@ -114,34 +116,69 @@ case "$BOTTLE_ROOT_URL" in
   https://ghcr.io/v2/*) image_root="ghcr.io/${BOTTLE_ROOT_URL#https://ghcr.io/v2/}" ;;
   *) image_root="${BOTTLE_ROOT_URL#https://}" ;;
 esac
-EXPECTED_IMAGE="${image_root}/${FORMULA}:${RELEASE_TAG}-${ARCH}-${BOTTLE_SHA256:0:12}"
+EXPECTED_REMOTE="${image_root}/${FORMULA}"
+EXPECTED_ABI="${RELEASE_TAG#bottles-abi-v}"
+
+layout_receipt="$validation_tmp/layout-receipt.json"
+jq -e '.layout' "$RECEIPT" >"$layout_receipt" || {
+  echo "homebrew-validate-upload-receipt.sh: receipt lacks a child layout receipt" >&2
+  exit 1
+}
+python3 "$SCRIPT_ROOT/homebrew-oci-layout.py" validate-child-receipt \
+  --receipt "$layout_receipt"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual_layout_receipt_sha256="$(jq -cS '.layout' "$RECEIPT" | sha256sum | awk '{print $1}')"
+else
+  actual_layout_receipt_sha256="$(jq -cS '.layout' "$RECEIPT" | shasum -a 256 | awk '{print $1}')"
+fi
 
 if ! jq -e \
   --arg formula "$FORMULA" \
   --arg arch "$ARCH" \
-  --arg release_tag "$RELEASE_TAG" \
+  --arg abi "$EXPECTED_ABI" \
+  --arg tap_repository "$TAP_REPOSITORY" \
   --arg tap_commit "$TAP_COMMIT" \
   --arg kandelo_commit "$KANDELO_COMMIT" \
   --arg url "$EXPECTED_URL" \
   --arg sha256 "$BOTTLE_SHA256" \
   --arg bytes "$BOTTLE_BYTES" \
-  --arg image "$EXPECTED_IMAGE" '
+  --arg remote "$EXPECTED_REMOTE" \
+  --arg layout_receipt_sha256 "$actual_layout_receipt_sha256" \
+  --argjson allow_dry_run "$ALLOW_DRY_RUN" '
     def exact_keys($expected):
       type == "object" and keys == ($expected | sort);
     exact_keys([
-      "arch", "bottle", "formula", "kandelo_commit", "release_tag", "schema", "tap_commit"
+      "formula", "kind", "layout", "layout_receipt_sha256", "publication", "schema",
+      "tap_repository"
     ]) and
-    .schema == 1 and
+    .schema == 2 and
+    .kind == "child" and
     .formula == $formula and
-    .arch == $arch and
-    .release_tag == $release_tag and
-    .tap_commit == $tap_commit and
-    .kandelo_commit == $kandelo_commit and
-    (.bottle | exact_keys(["bytes", "image", "sha256", "url"])) and
-    .bottle.url == $url and
-    .bottle.sha256 == $sha256 and
-    .bottle.bytes == ($bytes | tonumber) and
-    .bottle.image == $image
+    (.tap_repository | ascii_downcase) == ($tap_repository | ascii_downcase) and
+    .layout_receipt_sha256 == $layout_receipt_sha256 and
+    .layout.kind == "child" and
+    .layout.formula == $formula and
+    .layout.arch == $arch and
+    .layout.abi == ($abi | tonumber) and
+    .layout.tap_commit == $tap_commit and
+    .layout.kandelo_commit == $kandelo_commit and
+    (.layout.tap_repository | ascii_downcase) == ($tap_repository | ascii_downcase) and
+    .layout.bottle.url == $url and
+    .layout.bottle.sha256 == $sha256 and
+    .layout.bottle.bytes == ($bytes | tonumber) and
+    (.publication | exact_keys([
+      "digest", "previous_digest", "public_readback_digest", "reference", "remote", "status"
+    ])) and
+    .publication.remote == $remote and
+    .publication.reference == .layout.oci.transport_tag and
+    .publication.digest == .layout.oci.manifest.digest and
+    .publication.previous_digest == null and
+    (if $allow_dry_run == 1 then
+      .publication.status == "dry-run" and .publication.public_readback_digest == null
+    else
+      (.publication.status == "uploaded" or .publication.status == "already-present") and
+      .publication.public_readback_digest == .publication.digest
+    end)
   ' "$RECEIPT" >/dev/null; then
   echo "homebrew-validate-upload-receipt.sh: receipt schema, identity, or bottle evidence does not match the validated build handoff" >&2
   exit 1
@@ -197,7 +234,7 @@ if [ -n "$OUT_ENV" ]; then
   {
     cat "$build_env"
     printf 'BOTTLE_URL=%q\n' "$EXPECTED_URL"
-    printf 'BOTTLE_IMAGE=%q\n' "$EXPECTED_IMAGE"
+    printf 'BOTTLE_IMAGE=%q\n' "$EXPECTED_REMOTE:$(jq -r '.publication.reference' "$RECEIPT")"
   } >"$out_tmp"
   mv "$out_tmp" "$out_path"
 fi

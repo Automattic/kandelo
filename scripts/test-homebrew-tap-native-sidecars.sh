@@ -6,6 +6,24 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 TEST_FORBIDDEN_ROOT="/trusted/publisher/build-root"
+MOCK_BIN="$TMPDIR/mock-bin"
+mkdir -p "$MOCK_BIN"
+cat >"$MOCK_BIN/oras" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = manifest ] && [ "${2:-}" = fetch ]; then
+  jq -nS --arg digest "${MOCK_ORAS_DIGEST:?}" '{
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    digest: $digest,
+    size: 1
+  }'
+  exit 0
+fi
+echo "unexpected ORAS command in sidecar fixture: $*" >&2
+exit 2
+EOF
+chmod +x "$MOCK_BIN/oras"
+export PATH="$MOCK_BIN:$PATH"
 
 if [ ! -f "$REPO_ROOT/sysroot/lib/libc.a" ] || [ -L "$REPO_ROOT/sysroot/lib/libc.a" ]; then
   echo "test-homebrew-tap-native-sidecars.sh: build sysroot/lib/libc.a first" >&2
@@ -145,7 +163,7 @@ write_dependency_provenance() {
 
 make_publication_handoff() {
   local formula="$1" arch="$2" archive="$3" bottle_json="$4" sidecars="$5" out="$6"
-  local tap_commit dependency_provenance
+  local tap_commit dependency_provenance oci_root
   tap_commit="$(jq -er '.tap_commit' "$sidecars/sidecars-input.json")"
   dependency_provenance="$TMPDIR/${formula}-${arch}-dependency-provenance.json"
   write_dependency_provenance "$formula" "$arch" "$tap_commit" "$dependency_provenance"
@@ -164,14 +182,41 @@ make_publication_handoff() {
     --dependency-provenance "$dependency_provenance" \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --out "$out/build" >/dev/null
-  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
-    --tap-repository Automattic/kandelo-homebrew \
-    --tap-commit "$tap_commit" \
-    --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
+  oci_root="$TMPDIR/${formula}-${arch}-oci"
+  rm -rf "$oci_root"
+  mkdir -p "$oci_root"
+  bash "$REPO_ROOT/scripts/homebrew-validate-build-handoff.sh" \
+    --handoff "$out/build" \
     --formula "$formula" \
     --arch "$arch" \
     --release-tag "bottles-abi-v${ABI_VERSION}" \
-    --bottle "$out/build/bottle.tar.gz" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --tap-commit "$tap_commit" \
+    --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --tap-root "$TAP" \
+    --out-bottle-json "$oci_root/bottle.json" >/dev/null
+  python3 "$REPO_ROOT/scripts/homebrew-oci-layout.py" build-child \
+    --formula "$formula" \
+    --arch "$arch" \
+    --abi "$ABI_VERSION" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --tap-commit "$tap_commit" \
+    --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --bottle "$archive" \
+    --bottle-json "$oci_root/bottle.json" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$TAP" \
+    --out-layout "$oci_root/layout" \
+    --out-receipt "$oci_root/receipt.json"
+  MOCK_ORAS_DIGEST="$(jq -er '.oci.manifest.digest' "$oci_root/receipt.json")" \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+    --layout "$oci_root/layout" \
+    --layout-receipt "$oci_root/receipt.json" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula "$formula" \
     --out-json "$out/receipt.json" \
     --dry-run >/dev/null
   jq -S '.packages[0].bottles[0].bottle_file = "../build/bottle.tar.gz"' \
@@ -201,7 +246,16 @@ make_dep_bottle() {
   printf '#!/bin/sh\necho sidecar-dep\n' >"$stage/bin/sidecar-dep"
   chmod +x "$stage/bin/sidecar-dep"
   cp "$TAP/Formula/sidecar-dep.rb" "$stage/.brew/sidecar-dep.rb"
-  printf '{"runtime_dependencies":[]}\n' >"$stage/INSTALL_RECEIPT.json"
+  jq -nS '{
+    homebrew_version: "Homebrew fixture",
+    changed_files: [],
+    source_modified_time: 0,
+    compiler: "clang",
+    runtime_dependencies: [],
+    source: {scm_revision: "fixture"},
+    arch: "x86_64",
+    built_on: {os: "Linux", os_version: "fixture"}
+  }' >"$stage/INSTALL_RECEIPT.json"
   tar -czf "$archive" -C "$TMPDIR/dep-stage" sidecar-dep
   local sha bytes
   sha="$(sha256_file "$archive")"
@@ -277,13 +331,20 @@ WAT
   printf 'sidecar-tool(1)\n' >"$stage/share/man/man1/sidecar-tool.1"
   printf 'generated index must not be linked\n' >"$stage/share/info/dir"
   cp "$TAP/Formula/sidecar-tool.rb" "$stage/.brew/sidecar-tool.rb"
-  jq -n '{runtime_dependencies: [
-    {
+  jq -nS '{
+    homebrew_version: "Homebrew fixture",
+    changed_files: [],
+    source_modified_time: 0,
+    compiler: "clang",
+    runtime_dependencies: [{
       full_name: "automattic/kandelo-homebrew/sidecar-dep",
       version: "1.0",
       declared_directly: true
-    }
-  ]}' >"$stage/INSTALL_RECEIPT.json"
+    }],
+    source: {scm_revision: "fixture"},
+    arch: "x86_64",
+    built_on: {os: "Linux", os_version: "fixture"}
+  }' >"$stage/INSTALL_RECEIPT.json"
   tar -czf "$archive" -C "$TMPDIR/tool-stage" sidecar-tool
   local sha bytes
   sha="$(sha256_file "$archive")"
@@ -374,7 +435,8 @@ generate_sidecars() {
   local merged_tap="${out}-merged-tap"
   local canonical_json="${out}-merge-bottle.json"
   local dependency_provenance="${out}-dependency-provenance.json"
-  local tap_commit
+  local runtime_evidence="${out}-runtime-evidence.json"
+  local tap_commit provenance_sha version
   tap_commit="$(git -C "$TAP" rev-parse HEAD)"
   rm -rf "$merged_tap" "$out"
   cp -a "$TAP" "$merged_tap"
@@ -412,6 +474,82 @@ generate_sidecars() {
     --expected-sha256 "$sha" \
     --expected-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
     --expected-cellar any_skip_relocation >/dev/null
+  provenance_sha="$(sha256_file "$dependency_provenance")"
+  version="$(jq -er --arg formula "$formula" '.[$formula].formula.pkg_version' \
+    "$canonical_json")"
+  jq -nS \
+    --arg formula "$formula" \
+    --arg arch "$arch" \
+    --argjson abi "$ABI_VERSION" \
+    --arg tap_commit "$tap_commit" \
+    --arg sha "$sha" \
+    --argjson bytes "$bytes" \
+    --arg version "$version" \
+    --arg provenance_sha "$provenance_sha" \
+    --slurpfile provenance "$dependency_provenance" '{
+      schema: 1,
+      formula: $formula,
+      arch: $arch,
+      abi: $abi,
+      tap: {
+        repository: "Automattic/kandelo-homebrew",
+        commit: $tap_commit
+      },
+      bottle: {
+        bytes: $bytes,
+        sha256: $sha,
+        tag: ($arch + "_kandelo"),
+        url: ("https://ghcr.io/v2/automattic/kandelo-homebrew/" + $formula + "/blobs/sha256:" + $sha),
+        version: $version
+      },
+      dependencies: {
+        provenance_sha256: $provenance_sha,
+        bottles: [
+          $provenance[0].dependencies[] | {
+            full_name: .full_name,
+            version: .version,
+            sha256: .bottle.sha256,
+            tag: .bottle.tag,
+            receipt_sha256: .receipt.sha256
+          }
+        ]
+      },
+      selection: {
+        schema: 1,
+        status: "success",
+        bottle: {
+          bytes: $bytes,
+          mode: "local-dry-run",
+          sha256: $sha,
+          url: ("https://ghcr.io/v2/automattic/kandelo-homebrew/" + $formula + "/blobs/sha256:" + $sha)
+        },
+        fetch: [("selected local bottle sha256:" + $sha)]
+      },
+      target: {
+        install_log: {
+          fetch: [("selected local bottle sha256:" + $sha)],
+          pour: [("==> Pouring " + $formula + "--" + $version + "." + $arch + "_kandelo.bottle.tar.gz")],
+          source_build_absent: true
+        },
+        receipt: {
+          built_as_bottle: true,
+          homebrew_version: "Homebrew fixture",
+          installed_on_request: true,
+          path: ("Cellar/" + $formula + "/" + $version + "/INSTALL_RECEIPT.json"),
+          poured_from_bottle: true,
+          sha256: "4444444444444444444444444444444444444444444444444444444444444444",
+          source_tap: "automattic/kandelo-homebrew",
+          source_tap_git_head: $tap_commit
+        }
+      },
+      node: {
+        argv: ["/tmp/sidecar-fixture.wasm"],
+        launcher: "kandelo_run_wasm",
+        receipt_sha256: "5555555555555555555555555555555555555555555555555555555555555555",
+        runtime: "node",
+        status: "success"
+      }
+    }' >"$runtime_evidence"
   KANDELO_HOMEBREW_TAP_ROOT="$merged_tap" \
   KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$TAP" \
   KANDELO_HOMEBREW_SIDECAR_ROOT="$out" \
@@ -426,6 +564,7 @@ generate_sidecars() {
   KANDELO_HOMEBREW_BOTTLE_SHA256="$sha" \
   KANDELO_HOMEBREW_BOTTLE_BYTES="$bytes" \
   KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$dependency_provenance" \
+  KANDELO_HOMEBREW_RUNTIME_EVIDENCE="$runtime_evidence" \
   KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
   HOMEBREW_BREW_COMMIT="$HOMEBREW_BREW_COMMIT" \
     bash "$REPO_ROOT/scripts/homebrew-generate-sidecars-from-env.sh"

@@ -37,10 +37,6 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  group: kandelo-homebrew-bottle-publish-${{ inputs.tap-repository }}-${{ inputs.release-tag || github.run_id }}
-  cancel-in-progress: false
-
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -48,6 +44,7 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      formula-matrix: ${{ steps.matrix.outputs.formula-matrix }}
       abi: ${{ steps.release.outputs.abi }}
       release-tag: ${{ steps.release.outputs.release-tag }}
       bottle-root-prefix: ${{ steps.release.outputs.bottle-root-prefix }}
@@ -202,7 +199,11 @@ jobs:
             --formulae "$FORMULAE" \
             --arches "$ARCHES" \
             "${expected_args[@]}")"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          formula_matrix="$(jq -c 'map({formula}) | unique_by(.formula)' <<<"$matrix")"
+          {
+            echo "matrix=$matrix"
+            echo "formula-matrix=$formula_matrix"
+          } >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq .
 
   build-and-test:
@@ -721,6 +722,74 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
+      - name: Compose deterministic Homebrew OCI child without credentials
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_ABI: ${{ needs.plan.outputs.abi }}
+          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
+          KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::credential-free OCI composer received $secret_name"; exit 2;
+            }
+          done
+          validated="$RUNNER_TEMP/homebrew-oci-validated"
+          artifact="$RUNNER_TEMP/homebrew-oci-child"
+          mkdir -p "$validated" "$artifact"
+          cd "$GITHUB_WORKSPACE/kandelo-postbuild"
+          validation_args=(
+            --handoff "$RUNNER_TEMP/homebrew-build-handoff"
+            --formula "$KANDELO_HOMEBREW_FORMULA"
+            --arch "$KANDELO_HOMEBREW_ARCH"
+            --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+            --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+            --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+            --tap-root "$GITHUB_WORKSPACE/tap-reviewed"
+            --forbidden-root "$GITHUB_WORKSPACE"
+            --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
+            --forbidden-root "$RUNNER_TEMP"
+            --forbidden-root "/home/kandelo-homebrew-build"
+            --out-env "$validated/build.env"
+            --out-bottle-json "$validated/bottle.json"
+          )
+          bash scripts/dev-shell.sh bash scripts/homebrew-validate-build-handoff.sh \
+            "${validation_args[@]}"
+          # shellcheck disable=SC1091
+          . "$validated/build.env"
+          bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py build-child \
+            --formula "$FORMULA" \
+            --arch "$ARCH" \
+            --abi "$KANDELO_HOMEBREW_ABI" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_COMMIT" \
+            --kandelo-commit "$KANDELO_COMMIT" \
+            --bottle-root-url "$BOTTLE_ROOT_URL" \
+            --bottle "$BOTTLE_ARCHIVE" \
+            --bottle-json "$validated/bottle.json" \
+            --kandelo-root "$GITHUB_WORKSPACE/kandelo-postbuild" \
+            --tap-root "$GITHUB_WORKSPACE/tap-reviewed" \
+            --out-layout "$artifact/layout" \
+            --out-receipt "$artifact/receipt.json"
+
+      - name: Upload deterministic Homebrew OCI child
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-oci-child
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Upload unprivileged build diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -785,9 +854,17 @@ jobs:
           name: homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-build-handoff
 
+      - name: Download deterministic Homebrew OCI child
+        id: oci-child
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-oci-child
+
       - name: Validate build data before exposing upload credentials
         id: validate-build
-        if: ${{ steps.build-handoff.outcome == 'success' }}
+        if: ${{ steps.build-handoff.outcome == 'success' && steps.oci-child.outcome == 'success' }}
         shell: bash
         env:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
@@ -816,6 +893,26 @@ jobs:
             --out-env "$RUNNER_TEMP/homebrew-validated-build.env"
           )
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/homebrew-validated-build.env"
+          bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py validate-child \
+            --layout "$RUNNER_TEMP/homebrew-oci-child/layout" \
+            --receipt "$RUNNER_TEMP/homebrew-oci-child/receipt.json"
+          jq -e \
+            --arg formula "$FORMULA" \
+            --arg arch "$ARCH" \
+            --arg abi "${RELEASE_TAG#bottles-abi-v}" \
+            --arg tap_repository "$TAP_REPOSITORY" \
+            --arg tap_commit "$TAP_COMMIT" \
+            --arg kandelo_commit "$KANDELO_COMMIT" \
+            --arg sha256 "$BOTTLE_SHA256" \
+            --arg bytes "$BOTTLE_BYTES" '
+              .kind == "child" and .formula == $formula and .arch == $arch and
+              .abi == ($abi | tonumber) and
+              (.tap_repository | ascii_downcase) == ($tap_repository | ascii_downcase) and
+              .tap_commit == $tap_commit and .kandelo_commit == $kandelo_commit and
+              .bottle.sha256 == $sha256 and .bottle.bytes == ($bytes | tonumber)
+            ' "$RUNNER_TEMP/homebrew-oci-child/receipt.json" >/dev/null
 
       - name: Upload validated bottle in isolated ORAS auth state
         id: upload
@@ -823,20 +920,16 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
         run: |
           set -euo pipefail
           cd kandelo
-          # This file was produced by the trusted validator after all artifact checks.
-          # shellcheck disable=SC1091
-          . "$RUNNER_TEMP/homebrew-validated-build.env"
           upload_args=(
-            --tap-repository "$TAP_REPOSITORY"
-            --tap-commit "$TAP_COMMIT"
-            --kandelo-commit "$KANDELO_COMMIT"
-            --formula "$FORMULA"
-            --arch "$ARCH"
-            --release-tag "$RELEASE_TAG"
-            --bottle "$BOTTLE_ARCHIVE"
+            --layout "$RUNNER_TEMP/homebrew-oci-child/layout"
+            --layout-receipt "$RUNNER_TEMP/homebrew-oci-child/receipt.json"
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --formula "$KANDELO_HOMEBREW_FORMULA"
             --out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"
           )
           bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh "${upload_args[@]}"
@@ -879,16 +972,206 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
-      - name: Fail when the matching build handoff is absent
-        if: ${{ always() && steps.build-handoff.outcome != 'success' }}
+      - name: Fail when the matching immutable handoff is absent
+        if: ${{ always() && (steps.build-handoff.outcome != 'success' || steps.oci-child.outcome != 'success') }}
         shell: bash
         run: |
-          echo "::error::the matching strict build handoff was not produced"
+          echo "::error::the matching build or OCI child handoff was not produced"
           exit 1
 
-  verify-bottle:
+  publish-bottle-index:
     needs: [plan, build-and-test, upload-bottle]
-    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.build-and-test.result == 'success' && needs.upload-bottle.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: kandelo-homebrew-bottle-index-${{ inputs.tap-repository }}-${{ matrix.formula }}
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.formula-matrix) }}
+    steps:
+      - name: Checkout exact Kandelo index publisher source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.kandelo-sha }}
+          path: kandelo
+          submodules: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Warm Kandelo dev shell
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh true
+
+      - name: Download immutable OCI child layouts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: homebrew-oci-child-${{ matrix.formula }}-*-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-oci-children
+
+      - name: Download public child publication receipts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: homebrew-upload-receipt-${{ matrix.formula }}-*-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-child-publications
+
+      - name: Validate child layouts and public publication evidence without credentials
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::credential-free index input validator received $secret_name"; exit 2;
+            }
+          done
+          cd kandelo
+          shopt -s nullglob
+          child_receipts=("$RUNNER_TEMP"/homebrew-oci-children/*/receipt.json)
+          [ "${#child_receipts[@]}" -gt 0 ] || {
+            echo "::error::no OCI child receipts were downloaded"; exit 1;
+          }
+          : >"$RUNNER_TEMP/homebrew-index-child-args.txt"
+          for receipt in "${child_receipts[@]}"; do
+            child_root="$(dirname "$receipt")"
+            arch="$(jq -er '.arch' "$receipt")"
+            publication="$RUNNER_TEMP/homebrew-child-publications/homebrew-upload-receipt-${KANDELO_HOMEBREW_FORMULA}-${arch}-attempt-${GITHUB_RUN_ATTEMPT}/receipt.json"
+            [ -f "$publication" ] && [ ! -L "$publication" ] || {
+              echo "::error::missing public child publication receipt for $arch"; exit 1;
+            }
+            bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py validate-child \
+              --layout "$child_root/layout" --receipt "$receipt"
+            bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py \
+              validate-publication-receipt \
+              --receipt "$publication" \
+              --layout-receipt "$receipt" \
+              --kind child \
+              --formula "$KANDELO_HOMEBREW_FORMULA" \
+              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            printf '%s\0%s\0' "$child_root/layout" "$receipt" \
+              >>"$RUNNER_TEMP/homebrew-index-child-args.txt"
+          done
+
+      - name: Import the existing public Homebrew version index anonymously
+        id: existing-index
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::anonymous index import received $secret_name"; exit 2;
+            }
+          done
+          cd kandelo
+          first_receipt="$(find "$RUNNER_TEMP/homebrew-oci-children" -mindepth 2 -maxdepth 2 \
+            -name receipt.json -type f -print -quit)"
+          [ -n "$first_receipt" ] || { echo "::error::missing first child receipt"; exit 1; }
+          top_ref="$(jq -er '.top_ref' "$first_receipt")"
+          owner_repo="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          remote="ghcr.io/${owner_repo}/${KANDELO_HOMEBREW_FORMULA}"
+          anonymous_config="$RUNNER_TEMP/homebrew-anonymous-oras.json"
+          printf '{"auths":{}}\n' >"$anonymous_config"
+          existing="$RUNNER_TEMP/homebrew-existing-index"
+          result="$RUNNER_TEMP/homebrew-existing-index-result.json"
+          bash scripts/dev-shell.sh env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN python3 \
+            scripts/homebrew-oci-layout.py import-public-index \
+            --remote "$remote" --reference "$top_ref" \
+            --registry-config "$anonymous_config" --out-layout "$existing" \
+            --out-result "$result"
+          case "$(jq -er '.status' "$result")" in
+            present)
+              jq -e --arg layout "$existing" '
+                keys == ["digest", "layout", "schema", "status"] and
+                .schema == 1 and .status == "present" and .layout == $layout and
+                (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+              ' "$result" >/dev/null
+              echo "layout=$existing" >>"$GITHUB_OUTPUT"
+              ;;
+            missing)
+              jq -e 'keys == ["schema", "status"] and .schema == 1 and .status == "missing"' \
+                "$result" >/dev/null
+              echo "layout=" >>"$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::invalid anonymous Homebrew index import result"; exit 1 ;;
+          esac
+
+      - name: Compose one complete Homebrew version index without credentials
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_EXISTING_INDEX: ${{ steps.existing-index.outputs.layout }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::credential-free index composer received $secret_name"; exit 2;
+            }
+          done
+          cd kandelo
+          args=()
+          while IFS= read -r -d '' layout && IFS= read -r -d '' receipt; do
+            args+=(--child-layout "$layout" --child-receipt "$receipt")
+          done <"$RUNNER_TEMP/homebrew-index-child-args.txt"
+          [ "${#args[@]}" -gt 0 ] || { echo "::error::no validated OCI children"; exit 1; }
+          existing="$KANDELO_HOMEBREW_EXISTING_INDEX"
+          [ -z "$existing" ] || args+=(--existing-layout "$existing")
+          bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py merge-index \
+            "${args[@]}" \
+            --out-layout "$RUNNER_TEMP/homebrew-complete-index/layout" \
+            --out-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json"
+
+      - name: Publish the complete Homebrew version index in isolated ORAS auth state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          cd kandelo
+          bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh \
+            --layout "$RUNNER_TEMP/homebrew-complete-index/layout" \
+            --layout-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json" \
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --out-json "$RUNNER_TEMP/homebrew-complete-index/transport-receipt.json"
+
+      - name: Upload public Homebrew version-index evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-index-publication-${{ matrix.formula }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/homebrew-complete-index/layout-receipt.json
+            ${{ runner.temp }}/homebrew-complete-index/transport-receipt.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
+  verify-bottle:
+    needs: [plan, build-and-test, upload-bottle, publish-bottle-index]
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.build-and-test.result == 'success' && (inputs.dry-run || (needs.upload-bottle.result == 'success' && needs.publish-bottle-index.result == 'success')) && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 1440
     permissions:
@@ -935,6 +1218,68 @@ jobs:
             echo "::error::tap verifier source differs from the plan"; exit 2;
           }
 
+      - name: Checkout reviewed Homebrew implementation for bottle verification
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: Homebrew/brew
+          ref: 34c40c18ffa2029b611b61c73273e32c003d0842
+          path: homebrew-prefix/Homebrew
+
+      - name: Activate reviewed Homebrew implementation for bottle verification
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
+          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+        run: |
+          set -euo pipefail
+          [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::invalid pinned Homebrew commit"; exit 2;
+          }
+          brew_prefix="/home/linuxbrew/.linuxbrew"
+          brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
+          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
+            echo "::error::Homebrew verifier checkout differs from the reviewed commit"; exit 2;
+          }
+          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
+            echo "::error::reviewed Homebrew verifier checkout has tracked modifications"; exit 2;
+          }
+          mkdir -p "$brew_prefix/bin"
+          rm -f "$brew_prefix/bin/brew"
+          ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
+          brew_bin="$brew_prefix/bin/brew"
+          [ "$(readlink -f "$brew_bin")" = "$brew_repository/bin/brew" ] || {
+            echo "::error::Homebrew verifier executable differs from the reviewed checkout"; exit 2;
+          }
+          homebrew_cache="$RUNNER_TEMP/homebrew-verify-cache-${FORMULA}-${ARCH}"
+          homebrew_temp="$RUNNER_TEMP/homebrew-verify-temp-${FORMULA}-${ARCH}"
+          mkdir -p "$homebrew_cache" "$homebrew_temp"
+          {
+            echo "HOMEBREW_BREW_FILE=$brew_bin"
+            echo "HOMEBREW_BREW_COMMIT=$HOMEBREW_BREW_COMMIT"
+            echo "HOMEBREW_CACHE=$homebrew_cache"
+            echo "HOMEBREW_TEMP=$homebrew_temp"
+            echo "HOMEBREW_NO_AUTO_UPDATE=1"
+            echo "HOMEBREW_NO_INSTALL_CLEANUP=1"
+            echo "HOMEBREW_NO_ANALYTICS=1"
+            echo "HOMEBREW_DEVELOPER=1"
+          } >> "$GITHUB_ENV"
+          export HOMEBREW_BREW_FILE="$brew_bin"
+          export HOMEBREW_CACHE="$homebrew_cache"
+          export HOMEBREW_TEMP="$homebrew_temp"
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          export HOMEBREW_NO_ANALYTICS=1
+          export HOMEBREW_DEVELOPER=1
+          "$brew_bin" --version
+          [ "$("$brew_bin" --prefix)" = "$brew_prefix" ] || {
+            echo "::error::Homebrew verifier prefix is not canonical"; exit 2;
+          }
+          [ "$("$brew_bin" --cellar)" = "$brew_prefix/Cellar" ] || {
+            echo "::error::Homebrew verifier cellar is not canonical"; exit 2;
+          }
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
@@ -960,6 +1305,14 @@ jobs:
           name: homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-build-handoff
 
+      - name: Download deterministic Homebrew OCI child for dry-run validation
+        id: oci-child
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-oci-child
+
       - name: Download strict upload receipt
         id: upload-receipt
         if: ${{ !inputs.dry-run }}
@@ -968,6 +1321,15 @@ jobs:
         with:
           name: homebrew-upload-receipt-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-upload-receipt
+
+      - name: Download public Homebrew version-index evidence
+        id: index-publication
+        if: ${{ !inputs.dry-run }}
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-index-publication-${{ matrix.formula }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-index-publication
 
       - name: Validate build handoff and reconstruct canonical bottle JSON
         if: ${{ steps.build-handoff.outcome == 'success' }}
@@ -1004,21 +1366,19 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
 
       - name: Create local dry-run upload receipt
-        if: ${{ inputs.dry-run && steps.build-handoff.outcome == 'success' }}
+        if: ${{ inputs.dry-run && steps.build-handoff.outcome == 'success' && steps.oci-child.outcome == 'success' }}
         shell: bash
+        env:
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
         run: |
           set -euo pipefail
           cd kandelo
-          # shellcheck disable=SC1091
-          . "$RUNNER_TEMP/homebrew-verified-input/build.env"
           upload_args=(
-            --tap-repository "$TAP_REPOSITORY"
-            --tap-commit "$TAP_COMMIT"
-            --kandelo-commit "$KANDELO_COMMIT"
-            --formula "$FORMULA"
-            --arch "$ARCH"
-            --release-tag "$RELEASE_TAG"
-            --bottle "$BOTTLE_ARCHIVE"
+            --layout "$RUNNER_TEMP/homebrew-oci-child/layout"
+            --layout-receipt "$RUNNER_TEMP/homebrew-oci-child/receipt.json"
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --formula "$KANDELO_HOMEBREW_FORMULA"
             --out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"
             --dry-run
           )
@@ -1029,6 +1389,7 @@ jobs:
         shell: bash
         env:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
+          KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
@@ -1055,10 +1416,65 @@ jobs:
             --out-env "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
             --out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"
           )
+          if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
+            receipt_args+=(--allow-dry-run)
+          fi
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
 
+      - name: Validate exact public Homebrew index traversal without credentials
+        if: ${{ !inputs.dry-run && steps.index-publication.outcome == 'success' }}
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::public Homebrew index verifier received $secret_name"; exit 2;
+            }
+          done
+          cd kandelo
+          layout_receipt="$RUNNER_TEMP/homebrew-index-publication/layout-receipt.json"
+          transport_receipt="$RUNNER_TEMP/homebrew-index-publication/transport-receipt.json"
+          bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py \
+            validate-index-receipt --receipt "$layout_receipt"
+          bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py \
+            validate-publication-receipt \
+            --receipt "$transport_receipt" \
+            --layout-receipt "$layout_receipt" \
+            --kind index \
+            --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+          owner_repo="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          remote="ghcr.io/${owner_repo}/${KANDELO_HOMEBREW_FORMULA}"
+          jq -e \
+            --slurpfile layout "$layout_receipt" \
+            --slurpfile child "$RUNNER_TEMP/homebrew-oci-child/receipt.json" \
+            --arg arch "$KANDELO_HOMEBREW_ARCH" \
+            '
+              ([$layout[0].children[] | select(.arch == $arch)] | length) == 1 and
+              ($layout[0].children[] | select(.arch == $arch) |
+                .bottle_sha256 == $child[0].bottle.sha256 and
+                .manifest_digest == $child[0].oci.manifest.digest and
+                .homebrew_ref == $child[0].oci.homebrew_ref)
+            ' "$layout_receipt" >/dev/null
+          anonymous_config="$RUNNER_TEMP/homebrew-index-anonymous-oras.json"
+          printf '{"auths":{}}\n' >"$anonymous_config"
+          top_ref="$(jq -er '.top.ref' "$layout_receipt")"
+          imported="$RUNNER_TEMP/homebrew-public-index"
+          bash scripts/dev-shell.sh env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN oras cp \
+            --from-registry-config "$anonymous_config" --to-oci-layout \
+            "$remote:$top_ref" "$imported:$top_ref"
+          bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py validate-index \
+            --layout "$imported" --receipt "$layout_receipt"
+
       - name: Fail when a required handoff is absent
-        if: ${{ always() && (steps.build-handoff.outcome != 'success' || (!inputs.dry-run && steps.upload-receipt.outcome != 'success')) }}
+        if: ${{ always() && (steps.build-handoff.outcome != 'success' || steps.oci-child.outcome != 'success' || (!inputs.dry-run && (steps.upload-receipt.outcome != 'success' || steps.index-publication.outcome != 'success'))) }}
         shell: bash
         run: |
           echo "::error::the build handoff or upload receipt for this matrix entry is absent"
@@ -1104,6 +1520,12 @@ jobs:
         run: |
           cd kandelo
           bash scripts/dev-shell.sh bash packages/registry/kernel/build-kernel.sh
+
+      - name: Build exact fork-instrument host tool for bottle tests
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
 
       - name: Install JavaScript dependencies
         shell: bash
@@ -1164,10 +1586,13 @@ jobs:
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
           bottle_cache="$RUNNER_TEMP/homebrew-bottle-cache"
-          runtime_bottle="$bottle_cache/$BOTTLE_SHA256.tar.gz"
+          runtime_bottle="$bottle_cache/$(basename "$BOTTLE_ARCHIVE")"
+          selection_receipt="$RUNNER_TEMP/homebrew-verified-input/selection-receipt.json"
           mkdir -p "$bottle_cache"
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
             cp "$BOTTLE_ARCHIVE" "$runtime_bottle"
+            selection_mode="local-dry-run"
+            fetch_record="selected local dry-run bottle sha256:$BOTTLE_SHA256"
           else
             verifier_args=(
               --url "$BOTTLE_URL"
@@ -1176,16 +1601,294 @@ jobs:
               --out "$runtime_bottle"
             )
             bash scripts/dev-shell.sh npx tsx scripts/homebrew-verify-public-bottle.ts "${verifier_args[@]}"
+            selection_mode="anonymous-public-readback"
+            fetch_record="anonymously downloaded $BOTTLE_URL with sha256:$BOTTLE_SHA256"
           fi
           actual_sha="$(sha256sum "$runtime_bottle" | awk '{print $1}')"
           actual_bytes="$(wc -c <"$runtime_bottle" | tr -d '[:space:]')"
           [ "$actual_sha" = "$BOTTLE_SHA256" ] && [ "$actual_bytes" = "$BOTTLE_BYTES" ] || {
             echo "::error::selected runtime bottle differs from the validated receipt"; exit 1;
           }
+          jq -nS \
+            --arg mode "$selection_mode" \
+            --arg url "$BOTTLE_URL" \
+            --arg sha256 "$BOTTLE_SHA256" \
+            --argjson bytes "$BOTTLE_BYTES" \
+            --arg fetch "$fetch_record" \
+            '{schema: 1, status: "success", bottle: {
+              mode: $mode, url: $url, sha256: $sha256, bytes: $bytes
+            }, fetch: [$fetch]}' >"$selection_receipt"
           {
             printf 'RUNTIME_BOTTLE=%q\n' "$runtime_bottle"
             printf 'BOTTLE_CACHE=%q\n' "$bottle_cache"
+            printf 'SELECTION_RECEIPT=%q\n' "$selection_receipt"
           } >"$RUNNER_TEMP/homebrew-verified-input/runtime.env"
+
+      - name: Create isolated bottle verification identity
+        id: verifier-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_user="kandelo-homebrew-verify"
+          build_home="/home/$build_user"
+          sudo_bin="/usr/bin/sudo"
+          systemd_run_bin="/usr/bin/systemd-run"
+          systemctl_bin="/usr/bin/systemctl"
+          getent_bin="/usr/bin/getent"
+          pgrep_bin="/usr/bin/pgrep"
+          pkill_bin="/usr/bin/pkill"
+          useradd_bin="/usr/sbin/useradd"
+          sudo_mode="$(stat -c '%a' "$sudo_bin" 2>/dev/null || true)"
+          if [ ! -f "$sudo_bin" ] || [ -L "$sudo_bin" ] || [ ! -x "$sudo_bin" ] || \
+             [ "$(stat -c '%u' "$sudo_bin" 2>/dev/null || true)" != "0" ] || \
+             ! [[ "$sudo_mode" =~ ^[0-7]{3,4}$ ]] || \
+             [ $((8#$sudo_mode & 0022)) -ne 0 ]; then
+            echo "::error::runner sudo boundary is unavailable"; exit 2
+          fi
+          for protected_bin in "$systemd_run_bin" "$systemctl_bin" "$getent_bin" "$pgrep_bin" \
+            "$useradd_bin"; do
+            protected_mode="$(stat -c '%a' "$protected_bin" 2>/dev/null || true)"
+            if [ ! -f "$protected_bin" ] || [ -L "$protected_bin" ] || \
+               [ ! -x "$protected_bin" ] || \
+               [ "$(stat -c '%u' "$protected_bin" 2>/dev/null || true)" != "0" ] || \
+               ! [[ "$protected_mode" =~ ^[0-7]{3,4}$ ]] || \
+               [ $((8#$protected_mode & 0022)) -ne 0 ]; then
+              echo "::error::protected verifier process boundary is unavailable: $protected_bin"; exit 2
+            fi
+          done
+          pkill_target="$(readlink -f -- "$pkill_bin" 2>/dev/null || true)"
+          pkill_parent="$(dirname "$pkill_bin")"
+          pkill_parent_mode="$(stat -c '%a' "$pkill_parent" 2>/dev/null || true)"
+          if [ -L "$pkill_bin" ]; then
+            if [ "$pkill_target" != "$pgrep_bin" ] || \
+               [ "$(stat -c '%u' "$pkill_bin" 2>/dev/null || true)" != "0" ] || \
+               [ "$(stat -c '%u' "$pkill_parent" 2>/dev/null || true)" != "0" ] || \
+               ! [[ "$pkill_parent_mode" =~ ^[0-7]{3,4}$ ]] || \
+               [ $((8#$pkill_parent_mode & 0022)) -ne 0 ]; then
+              echo "::error::protected verifier pkill boundary is unavailable"; exit 2
+            fi
+          else
+            pkill_mode="$(stat -c '%a' "$pkill_bin" 2>/dev/null || true)"
+            if [ ! -f "$pkill_bin" ] || [ ! -x "$pkill_bin" ] || \
+               [ "$(stat -c '%u' "$pkill_bin" 2>/dev/null || true)" != "0" ] || \
+               ! [[ "$pkill_mode" =~ ^[0-7]{3,4}$ ]] || \
+               [ $((8#$pkill_mode & 0022)) -ne 0 ]; then
+              echo "::error::protected verifier pkill boundary is unavailable"; exit 2
+            fi
+          fi
+          [ -d /run/systemd/system ] || {
+            echo "::error::runner systemd manager is unavailable"; exit 2;
+          }
+          "$sudo_bin" -n true || {
+            echo "::error::runner cannot establish the privileged verifier boundary"; exit 2;
+          }
+          "$sudo_bin" -n -- "$systemctl_bin" show --property=Version --value >/dev/null || {
+            echo "::error::runner systemd manager is unavailable"; exit 2;
+          }
+          "$systemd_run_bin" --help | grep -F -- '--expand-environment=' >/dev/null || {
+            echo "::error::runner systemd cannot preserve exact Brew arguments"; exit 2;
+          }
+          if id "$build_user" >/dev/null 2>&1; then
+            echo "::error::reserved bottle verifier user already exists"; exit 2
+          fi
+          "$sudo_bin" -n -- "$useradd_bin" --system --user-group --create-home \
+            --home-dir "$build_home" --shell /usr/sbin/nologin "$build_user"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          [ "$(id -u "$build_user")" != "$(id -u)" ] || {
+            echo "::error::bottle verifier identity is not isolated"; exit 2;
+          }
+          if "$sudo_bin" -n -u "$build_user" -- "$sudo_bin" -n true >/dev/null 2>&1; then
+            echo "::error::bottle verifier identity unexpectedly has sudo access"; exit 2
+          fi
+          shared_temp="$(mktemp -d /tmp/kandelo-homebrew-verify.XXXXXX)"
+          "$sudo_bin" chown root:root "$shared_temp"
+          "$sudo_bin" chmod 1777 "$shared_temp"
+          mkdir "$shared_temp/cache" "$shared_temp/tmp"
+          {
+            echo "KANDELO_HOMEBREW_BUILD_USER=$build_user"
+            echo "KANDELO_HOMEBREW_SHARED_TEMP=$shared_temp"
+            echo "KANDELO_HOMEBREW_SUDO_BIN=$sudo_bin"
+            echo "KANDELO_HOMEBREW_SYSTEMD_RUN_BIN=$systemd_run_bin"
+            echo "KANDELO_HOMEBREW_SYSTEMCTL_BIN=$systemctl_bin"
+            echo "KANDELO_HOMEBREW_GETENT_BIN=$getent_bin"
+            echo "KANDELO_HOMEBREW_PGREP_BIN=$pgrep_bin"
+            echo "KANDELO_HOMEBREW_PKILL_BIN=$pkill_bin"
+            echo "HOMEBREW_CACHE=$shared_temp/cache"
+            echo "HOMEBREW_TEMP=$shared_temp/tmp"
+          } >> "$GITHUB_ENV"
+
+      - name: Force-pour and test the exact selected bottle without credentials
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_RELEASE_ABI: ${{ needs.plan.outputs.abi }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::credential-free bottle verifier received $secret_name"; exit 2;
+            }
+          done
+          cd kandelo
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
+          runtime_evidence="$RUNNER_TEMP/homebrew-runtime-evidence/runtime-evidence.json"
+          workflow_command_token="$(/usr/bin/od -An -N32 -tx1 /dev/urandom | /usr/bin/tr -d ' \n')"
+          [[ "$workflow_command_token" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::could not create the verifier workflow-command boundary"; exit 2;
+          }
+          workflow_commands_stopped=0
+          resume_workflow_commands() {
+            if [ "$workflow_commands_stopped" = "1" ]; then
+              printf '::%s::\n' "$workflow_command_token"
+              workflow_commands_stopped=0
+            fi
+          }
+          restore_workflow_commands_on_exit() {
+            status="$?"
+            set +e
+            resume_workflow_commands
+            exit "$status"
+          }
+          trap restore_workflow_commands_on_exit EXIT
+          workflow_commands_stopped=1
+          printf '::stop-commands::%s\n' "$workflow_command_token"
+          bash scripts/dev-shell.sh bash scripts/homebrew-verify-poured-bottle.sh \
+            --tap-root "$RUNNER_TEMP/homebrew-merged-tap" \
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
+            --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --arch "$KANDELO_HOMEBREW_ARCH" \
+            --abi "$KANDELO_HOMEBREW_RELEASE_ABI" \
+            --bottle "$RUNTIME_BOTTLE" \
+            --bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json" \
+            --bottle-url "$BOTTLE_URL" \
+            --bottle-sha256 "$BOTTLE_SHA256" \
+            --bottle-bytes "$BOTTLE_BYTES" \
+            --bottle-root-url "$BOTTLE_ROOT_URL" \
+            --dependency-provenance "$DEPENDENCY_PROVENANCE" \
+            --selection-receipt "$SELECTION_RECEIPT" \
+            --out "$runtime_evidence"
+          resume_workflow_commands
+          trap - EXIT
+
+      - name: Retire isolated bottle verification identity
+        if: ${{ always() && steps.verifier-identity.outputs.created == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_user="kandelo-homebrew-verify"
+          build_uid="$(id -u "$build_user")"
+          sudo_bin="/usr/bin/sudo"
+          systemctl_bin="/usr/bin/systemctl"
+          pgrep_bin="/usr/bin/pgrep"
+          pkill_bin="/usr/bin/pkill"
+          userdel_bin="/usr/sbin/userdel"
+          slice="kandelo-homebrew-build-${build_uid}.slice"
+          uid_has_processes() {
+            local status
+            if "$sudo_bin" -n -- "$pgrep_bin" -u "$build_uid" >/dev/null 2>&1; then
+              return 0
+            else
+              status="$?"
+            fi
+            [ "$status" -eq 1 ] && return 1
+            echo "::error::could not inspect bottle verifier processes"
+            return 2
+          }
+          "$sudo_bin" -n -- "$systemctl_bin" stop "$slice" >/dev/null 2>&1 || true
+          "$sudo_bin" -n -- "$pkill_bin" -TERM -u "$build_uid" >/dev/null 2>&1 || true
+          for ((attempt = 0; attempt < 50; attempt++)); do
+            if uid_has_processes; then sleep 0.1; continue; else status="$?"; fi
+            [ "$status" -eq 1 ] && break
+            exit "$status"
+          done
+          if uid_has_processes; then
+            "$sudo_bin" -n -- "$pkill_bin" -KILL -u "$build_uid" >/dev/null 2>&1 || true
+            sleep 1
+          else
+            status="$?"; [ "$status" -eq 1 ] || exit "$status"
+          fi
+          if uid_has_processes; then
+            echo "::error::bottle verifier identity still owns live processes"; exit 1
+          else
+            status="$?"; [ "$status" -eq 1 ] || exit "$status"
+          fi
+          "$sudo_bin" -n -- "$userdel_bin" -r "$build_user"
+          if id "$build_user" >/dev/null 2>&1; then
+            echo "::error::bottle verifier identity still exists after retirement"; exit 1
+          fi
+
+      - name: Checkout exact post-verification Kandelo generator source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.kandelo-sha }}
+          path: kandelo-postverify
+          submodules: false
+
+      - name: Checkout exact post-verification tap source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ needs.plan.outputs.tap-sha }}
+          path: tap-postverify
+
+      - name: Reconstruct the verified Formula with fresh trusted generators
+        shell: bash
+        env:
+          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git -C kandelo-postverify rev-parse HEAD)" = "$KANDELO_SHA" ] || {
+            echo "::error::post-verification Kandelo generator differs from the plan"; exit 2;
+          }
+          [ -z "$(git -C kandelo-postverify status --short)" ] || {
+            echo "::error::post-verification Kandelo generator checkout is dirty"; exit 2;
+          }
+          [ "$(git -C tap-postverify rev-parse HEAD)" = "$TAP_SHA" ] || {
+            echo "::error::post-verification tap differs from the plan"; exit 2;
+          }
+          [ -z "$(git -C tap-postverify status --short)" ] || {
+            echo "::error::post-verification tap checkout is dirty"; exit 2;
+          }
+          brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
+          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
+            echo "::error::Homebrew moved during exact-bottle verification"; exit 2;
+          }
+          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
+            echo "::error::exact-bottle verification modified reviewed Homebrew source"; exit 2;
+          }
+          cd kandelo-postverify
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
+          merged_tap="$RUNNER_TEMP/homebrew-merged-tap-postverify"
+          rm -rf "$merged_tap"
+          cp -a "$GITHUB_WORKSPACE/tap-postverify" "$merged_tap"
+          bash scripts/dev-shell.sh bash scripts/homebrew-merge-bottle-json.sh \
+            --tap-root "$merged_tap" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --formula "$FORMULA" \
+            --arch "$ARCH" \
+            --release-tag "$RELEASE_TAG" \
+            --bottle-json "$BOTTLE_JSON" \
+            --expected-sha256 "$BOTTLE_SHA256" \
+            --expected-root-url "$BOTTLE_ROOT_URL" \
+            --expected-cellar "$BOTTLE_RELOCATION_CELLAR"
+          cmp "$merged_tap/Formula/$FORMULA.rb" \
+            "$RUNNER_TEMP/homebrew-merged-tap/Formula/$FORMULA.rb" || {
+              echo "::error::fresh generator reconstructed different Formula bytes"; exit 1;
+            }
 
       - name: Generate sidecars from the selected bottle
         shell: bash
@@ -1193,13 +1896,14 @@ jobs:
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
         run: |
           set -euo pipefail
-          cd kandelo
+          cd kandelo-postverify
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
-          export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap"
-          export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap"
+          export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap-postverify"
+          export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap-postverify"
+          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo"
           export KANDELO_HOMEBREW_SIDECAR_ROOT="$RUNNER_TEMP/homebrew-sidecars"
           export KANDELO_HOMEBREW_FORMULA="$FORMULA"
           export KANDELO_HOMEBREW_ARCH="$ARCH"
@@ -1212,6 +1916,7 @@ jobs:
           export KANDELO_HOMEBREW_BOTTLE_SHA256="$BOTTLE_SHA256"
           export KANDELO_HOMEBREW_BOTTLE_BYTES="$BOTTLE_BYTES"
           export KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"
+          export KANDELO_HOMEBREW_RUNTIME_EVIDENCE="$RUNNER_TEMP/homebrew-runtime-evidence/runtime-evidence.json"
           export KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$(jq -cn \
             --arg github_workspace "$GITHUB_WORKSPACE" \
             --arg runner_workspace "$(dirname "$GITHUB_WORKSPACE")" \
@@ -1234,8 +1939,9 @@ jobs:
           . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
-          export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap"
-          export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap"
+          export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap-postverify"
+          export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap-postverify"
+          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo"
           export KANDELO_HOMEBREW_SIDECAR_ROOT="$RUNNER_TEMP/homebrew-sidecars"
           export KANDELO_HOMEBREW_FORMULA="$FORMULA"
           export KANDELO_HOMEBREW_ARCH="$ARCH"
@@ -1248,6 +1954,7 @@ jobs:
           export KANDELO_HOMEBREW_BOTTLE_SHA256="$BOTTLE_SHA256"
           export KANDELO_HOMEBREW_BOTTLE_BYTES="$BOTTLE_BYTES"
           export KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"
+          export KANDELO_HOMEBREW_RUNTIME_EVIDENCE="$RUNNER_TEMP/homebrew-runtime-evidence/runtime-evidence.json"
           export KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$(jq -cn \
             --arg github_workspace "$GITHUB_WORKSPACE" \
             --arg runner_workspace "$(dirname "$GITHUB_WORKSPACE")" \
@@ -1305,14 +2012,24 @@ jobs:
               echo "::error::strict Homebrew browser smoke did not report exactly one pass"; exit 1;
             }
 
-            export KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS=success
+            browser_evidence="$browser_vfs_root/browser-evidence.json"
+            jq -nS \
+              --arg formula "$KANDELO_HOMEBREW_FORMULA" \
+              --arg arch "$KANDELO_HOMEBREW_ARCH" \
+              --arg bottle_sha256 "$KANDELO_HOMEBREW_BOTTLE_SHA256" \
+              --arg bottle_url "$KANDELO_HOMEBREW_BOTTLE_URL" \
+              --arg command "/home/linuxbrew/.linuxbrew/bin/hello --version" \
+              '{schema: 1, formula: $formula, arch: $arch,
+                bottle_sha256: $bottle_sha256, bottle_url: $bottle_url,
+                runtime: "browser", engine: "chromium", status: "success",
+                command: $command}' >"$browser_evidence"
+            export KANDELO_HOMEBREW_BROWSER_EVIDENCE="$browser_evidence"
             export KANDELO_HOMEBREW_VFS_IMAGE="$browser_vfs"
             export KANDELO_HOMEBREW_VFS_REPORT="$browser_report"
             export KANDELO_HOMEBREW_GALLERY_ROOT="$browser_gallery_root"
             export KANDELO_HOMEBREW_BROWSER_SMOKE_URL="$browser_url"
-            export KANDELO_HOMEBREW_BROWSER_SMOKE_COMMAND="/home/linuxbrew/.linuxbrew/bin/hello --version"
             rm -rf "$KANDELO_HOMEBREW_SIDECAR_ROOT"
-            bash scripts/homebrew-generate-sidecars-from-env.sh
+            bash "$GITHUB_WORKSPACE/kandelo-postverify/scripts/homebrew-generate-sidecars-from-env.sh"
 
             gallery_args=(
               --metadata "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/metadata.json"
@@ -1336,10 +2053,10 @@ jobs:
         run: |
           set -euo pipefail
           validation_tap="$RUNNER_TEMP/homebrew-validation-tap"
-          cp -a "$GITHUB_WORKSPACE/tap" "$validation_tap"
+          cp -a "$GITHUB_WORKSPACE/tap-postverify" "$validation_tap"
           rsync -a "$RUNNER_TEMP/homebrew-sidecars/Formula/" "$validation_tap/Formula/"
           rsync -a "$RUNNER_TEMP/homebrew-sidecars/Kandelo/" "$validation_tap/Kandelo/"
-          cd kandelo
+          cd kandelo-postverify
           host="$(bash scripts/dev-shell.sh rustc -vV | awk '/^host/ {print $2}')"
           validation_args=(
             cargo run --release -p xtask --target "$host" --quiet --
@@ -1350,6 +2067,7 @@ jobs:
       - name: Recheck trusted verifier sources after runtime execution
         shell: bash
         env:
+          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
@@ -1365,6 +2083,25 @@ jobs:
           }
           [ -z "$(git -C tap status --short --untracked-files=no)" ] || {
             echo "::error::runtime validation modified reviewed tap tracked files"; exit 1;
+          }
+          [ "$(git -C kandelo-postverify rev-parse HEAD)" = "$KANDELO_SHA" ] || {
+            echo "::error::fresh Kandelo generator source moved during runtime validation"; exit 1;
+          }
+          [ -z "$(git -C kandelo-postverify status --short --untracked-files=no)" ] || {
+            echo "::error::runtime validation modified fresh Kandelo generator files"; exit 1;
+          }
+          [ "$(git -C tap-postverify rev-parse HEAD)" = "$TAP_SHA" ] || {
+            echo "::error::fresh tap source moved during runtime validation"; exit 1;
+          }
+          [ -z "$(git -C tap-postverify status --short --untracked-files=no)" ] || {
+            echo "::error::runtime validation modified fresh tap files"; exit 1;
+          }
+          brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
+          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
+            echo "::error::reviewed Homebrew source moved during runtime validation"; exit 1;
+          }
+          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
+            echo "::error::runtime validation modified reviewed Homebrew source"; exit 1;
           }
 
       - name: Package validated data-only publication handoff
@@ -1399,10 +2136,10 @@ jobs:
             .packages[0].bottles[0].bottle_file = "../build/bottle.tar.gz"
           ' "$RUNNER_TEMP/homebrew-sidecars/sidecars-input.json" \
             >"$publish_handoff/composition/sidecars-input.json"
-          cd kandelo
+          cd kandelo-postverify
           payload_args=(
             --handoff "$publish_handoff"
-            --tap-root "$GITHUB_WORKSPACE/tap"
+            --tap-root "$GITHUB_WORKSPACE/tap-postverify"
             --formula "$KANDELO_HOMEBREW_FORMULA"
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"

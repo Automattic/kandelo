@@ -227,6 +227,27 @@ elif grep -Eq 'Tap\.fetch|require_relative|KandeloFormulaSupport' "$BASE_FORMULA
   exit 1
 fi
 
+CURRENT_CLOSURE="$WORK_DIR/current-source-closure.json"
+python3 "$SCRIPT_ROOT/homebrew-oci-layout.py" source-closure \
+  --tap-root "$TAP_ROOT" \
+  --kandelo-root "$(dirname "$SCRIPT_ROOT")" \
+  --tap-repository "$TAP_REPOSITORY" \
+  --formula "$FORMULA" \
+  --out "$CURRENT_CLOSURE"
+if [ -n "$REVIEWED_TAP_ROOT" ]; then
+  REVIEWED_CLOSURE="$WORK_DIR/reviewed-source-closure.json"
+  python3 "$SCRIPT_ROOT/homebrew-oci-layout.py" source-closure \
+    --tap-root "$REVIEWED_TAP_ROOT" \
+    --kandelo-root "$(dirname "$SCRIPT_ROOT")" \
+    --tap-repository "$TAP_REPOSITORY" \
+    --formula "$FORMULA" \
+    --out "$REVIEWED_CLOSURE"
+  if ! cmp -s "$CURRENT_CLOSURE" "$REVIEWED_CLOSURE"; then
+    echo "homebrew-validate-formula-source-closure.sh: canonical Formula source-closure digest differs from the reviewed tap" >&2
+    exit 1
+  fi
+fi
+
 ruby "$SCRIPT_ROOT/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_REPOSITORY" "$FORMULA" --declarations-json \
   >/dev/null
