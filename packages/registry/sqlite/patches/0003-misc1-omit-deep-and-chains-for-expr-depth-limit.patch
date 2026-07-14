@@ -1,0 +1,102 @@
+--- test/misc1.test
++++ test/misc1.test
+@@ -286,42 +286,71 @@
+ do_test misc1-10.0 {
+   execsql {SELECT count(*) FROM manycol}
+ } {9}
+-do_test misc1-10.1 {
+-  set ::where {WHERE x0>=0}
+-  for {set i 1} {$i<=99} {incr i} {
+-    append ::where " AND x$i<>0"
+-  }
+-  catchsql "SELECT count(*) FROM manycol $::where"
+-} {0 9}
+-do_test misc1-10.2 {
+-  catchsql "SELECT count(*) FROM manycol $::where AND rowid>0"
+-} {0 9}
+-do_test misc1-10.3 {
+-  regsub "x0>=0" $::where "x0=0" ::where
+-  catchsql "DELETE FROM manycol $::where"
+-} {0 {}}
++set misc1_expr_depth_limited [expr {
++  $SQLITE_MAX_EXPR_DEPTH>0 && $SQLITE_MAX_EXPR_DEPTH<=100
++}]
++set misc1_expr_depth_reason "requires a 100-term AND expression above the compiled SQLITE_MAX_EXPR_DEPTH=$SQLITE_MAX_EXPR_DEPTH limit"
++set ::where {WHERE x0>=0}
++for {set i 1} {$i<=99} {incr i} {
++  append ::where " AND x$i<>0"
++}
++if {$misc1_expr_depth_limited} {
++  omit_test misc1-10.1 $misc1_expr_depth_reason
++} else {
++  do_test misc1-10.1 {
++    catchsql "SELECT count(*) FROM manycol $::where"
++  } {0 9}
++}
++if {$misc1_expr_depth_limited} {
++  omit_test misc1-10.2 $misc1_expr_depth_reason
++} else {
++  do_test misc1-10.2 {
++    catchsql "SELECT count(*) FROM manycol $::where AND rowid>0"
++  } {0 9}
++}
++regsub "x0>=0" $::where "x0=0" ::where
++if {$misc1_expr_depth_limited} {
++  omit_test misc1-10.3 $misc1_expr_depth_reason
++} else {
++  do_test misc1-10.3 {
++    catchsql "DELETE FROM manycol $::where"
++  } {0 {}}
++}
+ do_test misc1-10.4 {
+   execsql {SELECT count(*) FROM manycol}
+-} {8}
+-do_test misc1-10.5 {
+-  catchsql "DELETE FROM manycol $::where AND rowid>0"
+-} {0 {}}
++} [expr {$misc1_expr_depth_limited ? 9 : 8}]
++if {$misc1_expr_depth_limited} {
++  omit_test misc1-10.5 $misc1_expr_depth_reason
++} else {
++  do_test misc1-10.5 {
++    catchsql "DELETE FROM manycol $::where AND rowid>0"
++  } {0 {}}
++}
+ do_test misc1-10.6 {
+   execsql {SELECT x1 FROM manycol WHERE x0=100}
+ } {101}
+-do_test misc1-10.7 {
+-  regsub "x0=0" $::where "x0=100" ::where
+-  catchsql "UPDATE manycol SET x1=x1+1 $::where"
+-} {0 {}}
++regsub "x0=0" $::where "x0=100" ::where
++if {$misc1_expr_depth_limited} {
++  omit_test misc1-10.7 $misc1_expr_depth_reason
++} else {
++  do_test misc1-10.7 {
++    catchsql "UPDATE manycol SET x1=x1+1 $::where"
++  } {0 {}}
++}
+ do_test misc1-10.8 {
+   execsql {SELECT x1 FROM manycol WHERE x0=100}
+-} {102}
+-do_test misc1-10.9 {
+-  catchsql "UPDATE manycol SET x1=x1+1 $::where AND rowid>0"
+-} {0 {}}
++} [expr {$misc1_expr_depth_limited ? 101 : 102}]
++if {$misc1_expr_depth_limited} {
++  omit_test misc1-10.9 $misc1_expr_depth_reason
++} else {
++  do_test misc1-10.9 {
++    catchsql "UPDATE manycol SET x1=x1+1 $::where AND rowid>0"
++  } {0 {}}
++}
+ do_test misc1-10.10 {
+   execsql {SELECT x1 FROM manycol WHERE x0=100}
+-} {103}
++} [expr {$misc1_expr_depth_limited ? 101 : 103}]
++unset misc1_expr_depth_limited misc1_expr_depth_reason
+-
++
+ # Make sure the initialization works even if a database is opened while
+ # another process has the database locked.
