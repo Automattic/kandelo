@@ -192,9 +192,9 @@ Apply the rename per the "Touched files" list above. Verify boot in `./run.sh br
 
 ### Phase 7 — Signature preset: Fractal Land homage (5–7 days)
 
-The headline demo. A from-scratch raymarched fractal landscape + matching chiptune sound shader, both authored by us, that load as the boot default. Inspired by IQ's Fractal Land (`https://www.shadertoy.com/view/XsBXWt`) without the Nyan cat sprite — pure procedural terrain + procedural music, in closed-loop dialog via `iAudio`.
+The headline demo. A from-scratch raymarched fractal landscape + matching chiptune sound shader, both authored by us, that load as the boot default. Inspired by Kali's (Pablo Roman Andrioli) Fractal Land (`https://www.shadertoy.com/view/XsBXWt`, 2013) without the Nyan cat sprite — pure procedural terrain + procedural music, in closed-loop dialog via `iAudio`.
 
-**License posture:** IQ's Shadertoy work is CC-BY-NC-SA. We **cannot** copy his code into our VFS image. We author a homage from scratch using his published techniques (Kaleidoscopic IFS folds, distance-estimated raymarching, analytical-normal trick, soft shadows) — all documented at `https://iquilezles.org/articles/`. The techniques are unprotectable; the specific code is not. Our homage ships under CC-0 in-tree like the other presets.
+**License posture:** Kali's Shadertoy work is CC-BY-NC-SA (Shadertoy's default). We **cannot** copy that code into our VFS image. We author a homage from scratch using only the unprotectable, widely-documented techniques (procedural fractal landscapes, distance-marched heightfields, analytic-normal trick, fog) — see references such as `https://iquilezles.org/articles/`. The techniques are unprotectable; the specific code is not. Our homage ships under CC-0 in-tree like the other presets.
 
 - **`presets/image/fractal_land.frag`** (2–3 days): Kaleidoscopic IFS terrain raymarcher, ~150 lines GLES 1.0. ~50–80 march steps, distance-estimated; soft fog; sun light + horizon gradient. **The fractal's fold parameters and fog density are modulated by `iAudio`** so the terrain pulses with the music's bass and the sky shimmers with the highs.
 - **`presets/sound/fractal_land.frag`** (2–3 days): chiptune music as `mainSound`. Multi-voice synthesizer: 2 square voices (lead + bass), 1 noise voice (percussion), a simple ADSR envelope, a short looped pattern. Doesn't have to match IQ's track — it's *our* music. Several-bar loop is fine; full track is the stretch.
@@ -202,14 +202,18 @@ The headline demo. A from-scratch raymarched fractal landscape + matching chiptu
 - **GLES2 viability check (built into the authoring):** ANGLE's GLES2 backend is permissive enough for this, but if instruction count bites we drop march steps or shrink the right-pane render resolution. Document the floor.
 - **Boot default:** Phase 3's VFS-load step starts loading `/usr/share/shaders/image/fractal_land.frag` and `/usr/share/shaders/sound/fractal_land.frag` instead of the placeholder plasma. First-boot user sees Fractal Land running with music; toggle to the editor and they can dissect either side.
 
-### Phase 8 — Editor polish (4 days)
+### Phase 8 — Editor polish (4 days) — DONE
 
-- Selection (Shift + arrows, mouse drag). Copy / paste via `SDL_GetClipboardText` / `SDL_SetClipboardText`.
-- Undo / redo ring (Ctrl+Z / Ctrl+Y), ~32 states.
-- GLSL ES 1.0 syntax highlighting (keyword / type / builtin / number / comment / operator → 6 distinct colors).
-- Error line marker: highlight the bad line in red and prefix the line number with `!`.
-- Preset dropdown via Ctrl+L (cycle next) and Ctrl+Shift+L (open list overlay; arrow keys to choose, Enter to load).
-- Splash text at boot, demo title in the right-pane corner.
+All items implemented (uncommitted on `explore-dri-sdl2`):
+
+- ✅ Selection (Shift + arrows, mouse drag, Ctrl+A). Copy / cut / paste via `SDL_GetClipboardText` / `SDL_SetClipboardText`, with an in-app clipboard fallback for the KMSDRM case where the SDL clipboard bridge is a no-op. Insert/delete auto-replace the active selection. (`editor.c` selection state + `main.c` `clip_*`.)
+- ✅ Undo / redo ring (Ctrl+Z / Ctrl+Y), 32 snapshots, coalesced by edit-kind; a cursor move / selection change ends a group. Preset load is one undoable step. (`editor.c` snapshot stacks.)
+- ✅ GLSL ES 1.0 syntax highlighting — Dracula palette, 6 colors (comment / keyword / type / builtin / number / operator), cross-line block-comment state. (`editor.c` `draw_highlighted_line`.)
+- ✅ Error line marker: the failing line is washed red and its gutter number prefixed with `!`. Line number parsed from the GLSL log (`ERROR: 0:<line>`) and offset back to editor coordinates by the template prefix line count. (`renderer_last_error_line` / `sound_shader_last_error_line` → `editor_set_error_line`.)
+- ✅ Preset dropdown: Ctrl+L cycles the next preset for the active mode; Ctrl+Shift+L opens a modal chooser overlay (Up/Down + Enter + Esc). Lists `*.frag` under `/usr/share/shaders/{image,sound}` via `readdir`. (`main.c` preset browser.)
+- ✅ Boot splash over the render pane (fades out) + persistent "SDL2 GLSL Playground" title in the render-pane corner. (`main.c` render section.)
+
+Headless gate `cd host && npx vitest run sdl2` stays 4/4; full vitest + cargo + ABI not yet re-run for this batch.
 
 ### Phase 9 — Verification + docs (1 day)
 

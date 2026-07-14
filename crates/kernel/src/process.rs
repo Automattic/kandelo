@@ -290,6 +290,23 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
+    /// `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`: (re)upload a CPU-tier bo's
+    /// current pixels into a `WebGLTexture` in `pid`'s GL context and
+    /// return the guest-visible texture id (> 0), or negative errno.
+    /// Idempotent per (pid, bo): rebinding refreshes the pixels and
+    /// returns the same id. The texture's lifetime is tied to the bo —
+    /// `gbm_bo_destroy` drops it.
+    #[allow(unused_variables)]
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
     #[allow(unused_variables)]
     fn kms_set_master(&mut self, pid: i32) {}
 

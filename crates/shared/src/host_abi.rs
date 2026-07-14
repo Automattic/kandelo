@@ -365,8 +365,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
             desc!(2, Out, fixed!(4)),
         ]
     ),
-    entry!(Syscall::Sendmsg as u32, [desc!(1, In, arg!(2))]),
-    entry!(Syscall::Recvmsg as u32, [desc!(1, InOut, arg!(2))]),
+    // sendmsg/recvmsg intentionally have NO generic descriptor: they are
+    // hand-marshalled by dedicated host handlers, and arg 2 is `flags`, not a
+    // length — a generic {argIndex:1, size:arg(2)} entry would make the EAGAIN
+    // retry path copy ~flags bytes of scratch over the caller's msghdr.
     entry!(
         Syscall::Wait4 as u32,
         [desc!(1, Out, fixed!(4)), desc!(3, Out, fixed!(32)),]

@@ -1,5 +1,5 @@
 {
-  "abi_version": 16,
+  "abi_version": 17,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 16,
+      "abi_version": 17,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -2100,10 +2100,10 @@
         {
           "name": "_pad",
           "offset": 84,
-          "span": 4
+          "span": 12
         }
       ],
-      "size": 88
+      "size": 96
     },
     "WasmStatfs": {
       "fields": [
@@ -2351,7 +2351,7 @@
         "argIndex": 1,
         "direction": "out",
         "size": {
-          "size": 88,
+          "size": 96,
           "type": "fixed"
         }
       }
@@ -2424,7 +2424,7 @@
         "argIndex": 1,
         "direction": "out",
         "size": {
-          "size": 88,
+          "size": 96,
           "type": "fixed"
         }
       }
@@ -2571,26 +2571,6 @@
         "size": {
           "size": 4,
           "type": "fixed"
-        }
-      }
-    ],
-    "137": [
-      {
-        "argIndex": 1,
-        "direction": "in",
-        "size": {
-          "argIndex": 2,
-          "type": "arg"
-        }
-      }
-    ],
-    "138": [
-      {
-        "argIndex": 1,
-        "direction": "inout",
-        "size": {
-          "argIndex": 2,
-          "type": "arg"
         }
       }
     ],
@@ -3423,7 +3403,7 @@
         "argIndex": 1,
         "direction": "out",
         "size": {
-          "size": 88,
+          "size": 96,
           "type": "fixed"
         }
       }
@@ -3624,7 +3604,7 @@
         "argIndex": 2,
         "direction": "out",
         "size": {
-          "size": 88,
+          "size": 96,
           "type": "fixed"
         }
       }

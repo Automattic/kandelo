@@ -175,6 +175,21 @@ build_cpp_program() {
     mv "$wasm.instr" "$wasm"
 }
 
+# libwpkdraw (PR7): in-tree CPU rasterizer + font engine. Built inline
+# (NOT via the resolver — it walks packages/registry/ only, and wpkdraw is
+# pure in-tree source with no upstream tarball). build.sh installs
+# lib/libwpkdraw.a + include/wpkdraw/ into the sysroot; consumers
+# (wpkdraw_smoke, kwldemo, wlterm, wlcompositor, wlclock, wlpaint)
+# then link libwpkdraw.a and #include
+# <wpkdraw/…> off the sysroot include path. Runs before the flat program
+# loop so the wpkdraw_smoke.c case branch below can link it. See
+# docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §3.
+WPKDRAW_DIR="$REPO_ROOT/examples/libs/wpkdraw"
+if [ -d "$WPKDRAW_DIR/src" ]; then
+    echo "==> Building libwpkdraw (CPU rasterizer)..."
+    CC="$CC" AR="$LLVM_BIN/llvm-ar" bash "$WPKDRAW_DIR/build.sh" "$SYSROOT"
+fi
+
 # Resolve libcxx and symlink its outputs into the sysroot if there are
 # any .cpp programs to build. Skip the resolver entirely when libc++.a
 # is already present so repeat runs are fast.
@@ -226,6 +241,115 @@ if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1 \
     done
 fi
 
+# Resolve libwayland (+ its deps libffi + wayland-protocols) and symlink
+# its client/server archives, the libffi shim archive, and the public
+# headers into the sysroot when there are any wl_*.c programs to build.
+# libwayland's protocol glue is generated at resolve time from the
+# vendored wayland.xml by the flake's wayland-scanner, so this step needs
+# the dev shell (scripts/dev-shell.sh) on PATH. Re-resolved every run —
+# the resolver is cached, so it's cheap when nothing changed. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md (PR3).
+if ls "$REPO_ROOT"/programs/wl_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libwayland (and deps) for Wayland programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libwayland >/dev/null)
+    LIBWL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libwayland)"
+    LIBFFI_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libffi)"
+
+    ln -sfn "$LIBWL_PREFIX/lib/libwayland-client.a" "$SYSROOT/lib/libwayland-client.a"
+    ln -sfn "$LIBWL_PREFIX/lib/libwayland-server.a" "$SYSROOT/lib/libwayland-server.a"
+    ln -sfn "$LIBFFI_PREFIX/lib/libffi.a"           "$SYSROOT/lib/libffi.a"
+
+    for h in "$LIBWL_PREFIX/include"/wayland-*.h; do
+        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+    done
+fi
+
+# Resolve libxkbcommon and symlink its archive + public headers into the
+# sysroot when there are any xkb_*.c programs to build. Same cached-resolve
+# contract as the libwayland block above. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md (PR4).
+if ls "$REPO_ROOT"/programs/xkb_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libxkbcommon for XKB programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libxkbcommon >/dev/null)
+    LIBXKB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxkbcommon)"
+
+    ln -sfn "$LIBXKB_PREFIX/lib/libxkbcommon.a" "$SYSROOT/lib/libxkbcommon.a"
+    mkdir -p "$SYSROOT/include/xkbcommon"
+    for h in "$LIBXKB_PREFIX/include/xkbcommon"/*.h; do
+        ln -sfn "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
+    done
+fi
+
+# Resolve libevdev and symlink its archive + public header into the sysroot
+# when there are any libevdev_*.c programs to build. Same cached-resolve
+# contract as the libwayland/libxkbcommon blocks above. libevdev is the
+# foundation of the real libinput port (PR5). See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5).
+if ls "$REPO_ROOT"/programs/libevdev_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libevdev for evdev programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libevdev >/dev/null)
+    LIBEVDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libevdev)"
+
+    ln -sfn "$LIBEVDEV_PREFIX/lib/libevdev.a" "$SYSROOT/lib/libevdev.a"
+    mkdir -p "$SYSROOT/include/libevdev"
+    ln -sfn "$LIBEVDEV_PREFIX/include/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
+fi
+
+# Resolve mtdev and symlink its archive + headers into the sysroot when
+# there are any mtdev_*.c programs to build. mtdev is the link-only
+# multitouch dependency of the real libinput port (PR5). Same
+# cached-resolve contract as the blocks above. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b).
+if ls "$REPO_ROOT"/programs/mtdev_*.c >/dev/null 2>&1; then
+    echo "==> Resolving mtdev for mtdev programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve mtdev >/dev/null)
+    MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
+
+    ln -sfn "$MTDEV_PREFIX/lib/libmtdev.a" "$SYSROOT/lib/libmtdev.a"
+    ln -sfn "$MTDEV_PREFIX/include/mtdev.h" "$SYSROOT/include/mtdev.h"
+    ln -sfn "$MTDEV_PREFIX/include/mtdev-plumbing.h" "$SYSROOT/include/mtdev-plumbing.h"
+fi
+
+# Resolve libudev and symlink its archive + header into the sysroot when
+# there are any libudev_*.c programs to build. libudev is the input_id
+# classification shim the real libinput port (PR5) needs to accept
+# devices. Same cached-resolve contract as the blocks above. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b).
+if ls "$REPO_ROOT"/programs/libudev_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libudev for libudev programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libudev >/dev/null)
+    LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
+
+    ln -sfn "$LIBUDEV_PREFIX/lib/libudev.a" "$SYSROOT/lib/libudev.a"
+    ln -sfn "$LIBUDEV_PREFIX/include/libudev.h" "$SYSROOT/include/libudev.h"
+fi
+
+# Resolve libinput (real 1.25.0) for the libinput smoke. Unlike the
+# libinput-lite stub SDL2 links (see the sdl2 block), this is the real
+# path-backend library the Wayland compositor will use (PR5c). The smoke is
+# built in a dedicated pass after the program loop (build_program can't add
+# the real header's -I), and links the real archive from its cache prefix by
+# full path — deliberately NOT via $SYSROOT/lib/libinput.a, which belongs to
+# the lite stub — so the two libinput consumers never collide. Its deps
+# (libevdev + libudev shim + mtdev stub) resolve transitively; we capture
+# each prefix for the smoke's link line. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5c).
+LIBINPUT_REAL_PREFIX=""
+if ls "$REPO_ROOT"/programs/libinput_smoke.c >/dev/null 2>&1; then
+    echo "==> Resolving libinput (real 1.25.0) for the libinput smoke..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libinput >/dev/null)
+    LIBINPUT_REAL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libinput)"
+    LIBINPUT_LIBEVDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libevdev)"
+    LIBINPUT_LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
+    LIBINPUT_MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -243,6 +367,17 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
             ;;
+        wpkdraw_smoke.c)
+            # PR7 Phase 1: links the in-tree CPU rasterizer built above.
+            # Headers resolve from $SYSROOT/include/wpkdraw/.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libwpkdraw.a"
+            ;;
+        kwldemo.c|wlclock.c|wlpaint.c)
+            # Link libkwl — built in a dedicated pass after the
+            # wlcompositor block (which resolves the wayland/xkb archives and
+            # generates the xdg-shell client header libkwl needs). Skip here.
+            ;;
         libinput_stub_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libinput.a"
@@ -254,6 +389,42 @@ for src in "$REPO_ROOT/programs/"*.c; do
         alsa_lib_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libasound.a"
+            ;;
+        wl_smoke.c)
+            # In-process client+server proof. Both archives share the
+            # util/connection/protocol objects; on-demand archive
+            # resolution pulls each once (server.a first), so linking
+            # both is duplicate-free. libffi (the wl_closure_invoke
+            # shim) must come AFTER so ffi_call/ffi_prep_cif resolve.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libwayland-server.a" \
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libffi.a"
+            ;;
+        xkb_smoke.c)
+            # Keymap compile + state translation against the libxkbcommon port.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libxkbcommon.a"
+            ;;
+        libevdev_smoke.c)
+            # evdev capability probe + event decode against the libevdev port.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libevdev.a"
+            ;;
+        mtdev_smoke.c)
+            # Link-only proof of the mtdev stub + not-protocol-A check.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libmtdev.a"
+            ;;
+        libudev_input_id_smoke.c)
+            # input_id classification through the libudev shim's real API.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libudev.a"
+            ;;
+        libinput_smoke.c)
+            # Real libinput 1.25.0 path backend — built in a dedicated pass
+            # after this loop (needs the real <libinput.h> include + its full
+            # dep set, kept isolated from the libinput-lite stub). Skip here.
             ;;
         sdl2_kmsdrm_smoke.c)
             # SDL2 KMSDRM backend links statically against libdrm + libgbm.
@@ -281,6 +452,198 @@ for src in "$REPO_ROOT/programs/"*.c; do
             ;;
     esac
 done
+
+# libinput smoke — real libinput 1.25.0. Dedicated compile/link (not
+# build_program): it needs the real <libinput.h> from the resolved prefix,
+# kept off the sysroot so $SYSROOT/lib/libinput.a stays the libinput-lite
+# stub SDL2 links. -I on the real prefix wins over the sysroot's stale lite
+# libinput.h. Link order: dependents before dependencies (libinput →
+# libevdev / libudev / mtdev → libc). See PR5c.
+if [ -n "$LIBINPUT_REAL_PREFIX" ] && [ -f "$REPO_ROOT/programs/libinput_smoke.c" ]; then
+    libinput_wasm="$OUT_DIR_32/libinput_smoke.wasm"
+    echo "  Compiling libinput_smoke (real libinput 1.25.0)..."
+    "$CC" "${CFLAGS[@]}" "-I$LIBINPUT_REAL_PREFIX/include" \
+        "$REPO_ROOT/programs/libinput_smoke.c" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$LIBINPUT_REAL_PREFIX/lib/libinput.a" \
+        "$LIBINPUT_LIBEVDEV_PREFIX/lib/libevdev.a" \
+        "$LIBINPUT_LIBUDEV_PREFIX/lib/libudev.a" \
+        "$LIBINPUT_MTDEV_PREFIX/lib/libmtdev.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$libinput_wasm"
+    "$FORK_INSTRUMENT" "$libinput_wasm" -o "$libinput_wasm.instr"
+    mv "$libinput_wasm.instr" "$libinput_wasm"
+fi
+
+# Wayland compositor (PR6): a standalone libwayland *server* (wlcompositor)
+# plus a raw libwayland-client test client (wlclient-test), built as two
+# binaries. Both compile in the xdg-shell protocol glue that wayland-scanner
+# (flake) generates from the vendored XML; the server also links real
+# libinput (PR5) + libxkbcommon (PR4) + libgbm/libdrm for card0 compositing.
+# Dedicated pass (not build_program): it needs the generated -I dir, the real
+# <libinput.h> from its cache prefix, and a multi-archive link line. Files
+# live under programs/wlcompositor/ so the flat programs/*.c loop doesn't
+# pick them up. See docs/plans/2026-07-08-dri-wayland-compositor-plan.md
+# §5 (PR6).
+if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
+    echo "==> Building wlcompositor (Wayland server + test client)..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    wlc_resolve() { (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve "$1" >/dev/null); }
+    wlc_path() { (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path "$1"); }
+
+    wlc_resolve libwayland
+    wlc_resolve libxkbcommon
+    wlc_resolve libinput
+    WLC_LIBWL="$(wlc_path libwayland)"
+    WLC_LIBFFI="$(wlc_path libffi)"
+    WLC_LIBXKB="$(wlc_path libxkbcommon)"
+    WLC_LIBINPUT="$(wlc_path libinput)"
+    WLC_LIBEVDEV="$(wlc_path libevdev)"
+    WLC_LIBUDEV="$(wlc_path libudev)"
+    WLC_MTDEV="$(wlc_path mtdev)"
+
+    # Public headers on the sysroot include path (idempotent — the wl_*/xkb_*
+    # blocks above symlink the same paths; the archives too).
+    for h in "$WLC_LIBWL/include"/wayland-*.h; do
+        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+    done
+    ln -sfn "$WLC_LIBFFI/lib/libffi.a"            "$SYSROOT/lib/libffi.a"
+    ln -sfn "$WLC_LIBWL/lib/libwayland-server.a"  "$SYSROOT/lib/libwayland-server.a"
+    ln -sfn "$WLC_LIBWL/lib/libwayland-client.a"  "$SYSROOT/lib/libwayland-client.a"
+    ln -sfn "$WLC_LIBXKB/lib/libxkbcommon.a"      "$SYSROOT/lib/libxkbcommon.a"
+    mkdir -p "$SYSROOT/include/xkbcommon"
+    for h in "$WLC_LIBXKB/include/xkbcommon"/*.h; do
+        ln -sfn "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
+    done
+
+    # Generate xdg-shell {server,client} headers + shared private-code from
+    # the vendored protocol XML. Kept out of programs/ so it isn't globbed.
+    WLC_GEN="$REPO_ROOT/local-binaries/wlcompositor-gen"
+    mkdir -p "$WLC_GEN"
+    XDG_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/xdg-shell.xml"
+    wayland-scanner private-code  "$XDG_XML" "$WLC_GEN/xdg-shell-protocol.c"
+    wayland-scanner server-header "$XDG_XML" "$WLC_GEN/xdg-shell-server-protocol.h"
+    wayland-scanner client-header "$XDG_XML" "$WLC_GEN/xdg-shell-client-protocol.h"
+
+    # Server. Link order: dependents (compositor + xdg glue) before
+    # dependencies; libffi last so wl_closure_invoke's ffi_call resolves.
+    # libwpkdraw renders the compositor's wallpaper (gradient + wordmark);
+    # libEGL/libGLESv2 drive the GPU compositing path (CPU fallback when
+    # the host has no WebGL2).
+    comp_wasm="$OUT_DIR_32/wlcompositor.wasm"
+    echo "  Compiling wlcompositor (server)..."
+    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
+        "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
+        "$WLC_GEN/xdg-shell-protocol.c" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$SYSROOT/lib/libwayland-server.a" \
+        "$SYSROOT/lib/libwpkdraw.a" \
+        "$SYSROOT/lib/libxkbcommon.a" \
+        "$WLC_LIBINPUT/lib/libinput.a" \
+        "$WLC_LIBEVDEV/lib/libevdev.a" \
+        "$WLC_LIBUDEV/lib/libudev.a" \
+        "$WLC_MTDEV/lib/libmtdev.a" \
+        "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+        "$SYSROOT/lib/libffi.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$comp_wasm"
+    "$FORK_INSTRUMENT" "$comp_wasm" -o "$comp_wasm.instr"
+    mv "$comp_wasm.instr" "$comp_wasm"
+
+    # Client.
+    client_wasm="$OUT_DIR_32/wlclient-test.wasm"
+    echo "  Compiling wlclient-test (client)..."
+    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+        "$REPO_ROOT/programs/wlcompositor/wlclient-test.c" \
+        "$WLC_GEN/xdg-shell-protocol.c" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$SYSROOT/lib/libwayland-client.a" \
+        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+        "$SYSROOT/lib/libffi.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$client_wasm"
+    "$FORK_INSTRUMENT" "$client_wasm" -o "$client_wasm.instr"
+    mv "$client_wasm.instr" "$client_wasm"
+fi
+
+# libkwl (PR7 Phase 2): in-tree Wayland toolkit over libwayland-client.
+# Built inline (NOT via the resolver — packages/registry/ only). Runs AFTER
+# the wlcompositor block above so the wayland-client / xkbcommon / gbm /
+# drm / ffi archives are already symlinked into the sysroot and the
+# generated xdg-shell-client-protocol.h exists under local-binaries/
+# wlcompositor-gen (libkwl includes it). build.sh installs lib/libkwl.a +
+# include/kwl.h; the kwldemo consumer then links libkwl + libwpkdraw + the
+# wayland stack. See docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §4.
+LIBKWL_DIR="$REPO_ROOT/examples/libs/libkwl"
+KWL_GEN="$REPO_ROOT/local-binaries/wlcompositor-gen"
+if [ -d "$LIBKWL_DIR/src" ]; then
+    if [ ! -f "$KWL_GEN/xdg-shell-client-protocol.h" ]; then
+        echo "Error: $KWL_GEN/xdg-shell-client-protocol.h missing — the" >&2
+        echo "wlcompositor build pass must run before libkwl." >&2
+        exit 1
+    fi
+    echo "==> Building libkwl (Wayland toolkit)..."
+    CC="$CC" AR="$LLVM_BIN/llvm-ar" XDG_SHELL_INCLUDE="$KWL_GEN" \
+        bash "$LIBKWL_DIR/build.sh" "$SYSROOT"
+
+    # libkwl clients: kwldemo (PR7 Phase 2 gate), wlclock (animated analog
+    # clock), wlpaint (palette + pointer-drag painting). Link order:
+    # dependents before deps — app + xdg glue, then libkwl (calls
+    # wpk_*/wl_*/xkb_*), then libwpkdraw, then the wayland stack, libffi
+    # last so wl_closure_invoke's ffi_call resolves.
+    for kwl_app in kwldemo wlclock wlpaint; do
+        [ -f "$REPO_ROOT/programs/$kwl_app.c" ] || continue
+        kwl_app_wasm="$OUT_DIR_32/$kwl_app.wasm"
+        echo "  Compiling $kwl_app (libkwl client)..."
+        "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+            "$REPO_ROOT/programs/$kwl_app.c" \
+            "$KWL_GEN/xdg-shell-protocol.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libkwl.a" \
+            "$SYSROOT/lib/libwpkdraw.a" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libxkbcommon.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$kwl_app_wasm"
+        "$FORK_INSTRUMENT" "$kwl_app_wasm" -o "$kwl_app_wasm.instr"
+        mv "$kwl_app_wasm.instr" "$kwl_app_wasm"
+    done
+fi
+
+# wlterm (PR7 Phase 3): a real terminal — a libkwl window + an in-tree VT100
+# core (vt100.c) + a forkpty'd shell. Dedicated pass (like wlcompositor):
+# multi-source link (wlterm.c + vt100.c + the generated xdg-shell glue) plus
+# the libkwl/wpkdraw/wayland/xkb archives, and fork-instrumentation is
+# MANDATORY because forkpty() forks (CLAUDE.md fork policy — must not
+# silently degrade). Files live under programs/wlterm/ so the flat loop skips
+# them. See docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §5.
+if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1; then
+    if [ ! -f "$SYSROOT/lib/libkwl.a" ]; then
+        echo "Error: libkwl.a missing — the libkwl pass must run before wlterm." >&2
+        exit 1
+    fi
+    echo "==> Building wlterm (libkwl terminal + VT100 + forkpty)..."
+    wlterm_wasm="$OUT_DIR_32/wlterm.wasm"
+    "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+        "$REPO_ROOT/programs/wlterm/wlterm.c" \
+        "$REPO_ROOT/programs/wlterm/vt100.c" \
+        "$KWL_GEN/xdg-shell-protocol.c" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$SYSROOT/lib/libkwl.a" \
+        "$SYSROOT/lib/libwpkdraw.a" \
+        "$SYSROOT/lib/libwayland-client.a" \
+        "$SYSROOT/lib/libxkbcommon.a" \
+        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+        "$SYSROOT/lib/libffi.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$wlterm_wasm"
+    # forkpty() forks — instrumentation is required, not optional.
+    "$FORK_INSTRUMENT" "$wlterm_wasm" -o "$wlterm_wasm.instr"
+    mv "$wlterm_wasm.instr" "$wlterm_wasm"
+fi
 
 for src in "$REPO_ROOT/programs/"*.cpp; do
     [ -f "$src" ] || continue

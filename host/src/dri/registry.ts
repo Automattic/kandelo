@@ -100,6 +100,11 @@ type InternalEntry = {
   w: number;
   h: number;
   stride: number;
+  /** The pid whose DRM_IOCTL_MODE_CREATE_DUMB minted the bo. In the
+   *  PRIME sharing pattern this is the writer: the exporting client
+   *  draws into its own mapping, importers only read. Used by
+   *  `syncImportsForPid` to pick the flush direction. */
+  creatorPid: number;
   /** Canonical pixel storage. Pre-`mmap_shared`, this is also the
    *  authoritative buffer that bind/unbind syncs each pid's wasm
    *  Memory against. Allocated on the first `create` for the bo. */
@@ -156,6 +161,7 @@ export class GbmBoRegistry {
         w: b.w,
         h: b.h,
         stride: b.stride,
+        creatorPid: b.pid,
         sab: new SharedArrayBuffer(b.size),
         pids: new Set([b.pid]),
         bindingsByPid: new Map(),
@@ -273,6 +279,28 @@ export class GbmBoRegistry {
     return new Uint8Array(e.sab);
   }
 
+  /** Pid-independent geometry lookup. The GL bridge's foreign-texture
+   *  upload path needs dims for a bo the caller holds only a kernel
+   *  handle to (PRIME import without an mmap), which `get(pid, bo_id)`
+   *  can't serve — that requires the pid in the bo's consumer set. */
+  dims(bo_id: number): { w: number; h: number; stride: number } | undefined {
+    const e = this.bos.get(bo_id);
+    if (!e) return undefined;
+    return { w: e.w, h: e.h, stride: e.stride };
+  }
+
+  /** Flush ONLY the creator's live mapping into the SAB. The foreign-
+   *  texture upload path calls this before reading the SAB so a texture
+   *  bind sees the producer's latest pixels. Unlike `syncFromMemory`,
+   *  consumers' (possibly stale) mappings are left out — flushing an
+   *  importer after the creator would clobber fresh bytes. */
+  syncCreatorToSab(bo_id: number): void {
+    const e = this.bos.get(bo_id);
+    if (!e) return;
+    const binding = e.bindingsByPid.get(e.creatorPid);
+    if (binding) this.flushMemoryToSab(e, e.creatorPid, binding);
+  }
+
   /** Flush each bound pid's Memory into the SAB (KMS scanout calls this
    *  per vblank so mid-bind paints land without an explicit munmap). */
   syncFromMemory(bo_id: number): void {
@@ -280,6 +308,47 @@ export class GbmBoRegistry {
     if (!e) return;
     for (const [pid, binding] of e.bindingsByPid) {
       this.flushMemoryToSab(e, pid, binding);
+    }
+  }
+
+  /** True when `pid` holds a live mapping of a bo it did not create
+   *  while the creator also holds one — i.e. imported pixels that go
+   *  stale whenever the creator keeps drawing (wl_shm's compositor
+   *  side). Cheap gate for the kernel-worker's post-poll coherence
+   *  hook: O(live bos), no copies. */
+  hasStaleableImports(pid: number): boolean {
+    for (const e of this.bos.values()) {
+      if (
+        e.creatorPid !== pid &&
+        e.bindingsByPid.has(pid) &&
+        e.bindingsByPid.has(e.creatorPid)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Coherence pass for `pid`'s imported bos: flush the creator's
+   *  current mapping into the SAB, then copy the SAB into `pid`'s
+   *  mapping. The kernel-worker calls this when `pid` returns from a
+   *  poll-family syscall — the moment a compositor-style importer is
+   *  about to read buffers a client just committed. Without it, an
+   *  importer only ever sees the snapshot taken by `primeBindFromSab`
+   *  at mmap time (the registry is bind-boundary-synced, not live —
+   *  see the file header), which for a long-lived wl_shm mapping means
+   *  a permanently stale first frame. */
+  syncImportsForPid(pid: number, memory: WebAssembly.Memory): void {
+    for (const e of this.bos.values()) {
+      if (e.creatorPid === pid) continue;
+      const binding = e.bindingsByPid.get(pid);
+      if (!binding) continue;
+      const creatorBinding = e.bindingsByPid.get(e.creatorPid);
+      if (creatorBinding) this.flushMemoryToSab(e, e.creatorPid, creatorBinding);
+      const copyLen = Math.min(binding.len, e.size);
+      if (binding.addr + copyLen > memory.buffer.byteLength) continue;
+      const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
+      dst.set(new Uint8Array(e.sab, 0, copyLen));
     }
   }
 

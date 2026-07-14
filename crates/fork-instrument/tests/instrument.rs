@@ -862,13 +862,18 @@ fn preamble_then_loads_frame_header_and_call_idx() {
         kinds,
         vec![
             InstrKind::GlobalGet, // buf
-            InstrKind::Other,     // Load current_pos
+            InstrKind::Other,     // Load current_pos (offset)
             InstrKind::Const,     // frame_size
-            InstrKind::Binop,     // sub
-            InstrKind::LocalSet,  // $frame_ptr
+            InstrKind::Binop,     // sub → new_off
+            InstrKind::LocalSet,  // $frame_ptr = new_off (offset)
             InstrKind::GlobalGet, // buf
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Store new current_pos
+            InstrKind::LocalGet,  // frame_ptr (new_off)
+            InstrKind::Other,     // Store new current_pos (offset)
+            // frame_ptr = _wpk_fork_buf + new_off  (offset → absolute)
+            InstrKind::LocalGet,  // frame_ptr (new_off)
+            InstrKind::GlobalGet, // buf
+            InstrKind::Binop,     // add
+            InstrKind::LocalSet,  // $frame_ptr = absolute address
             InstrKind::LocalGet,  // frame_ptr
             InstrKind::Other,     // Load call_idx from frame+4
             InstrKind::LocalSet,  // $call_idx_local
@@ -894,7 +899,9 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
 
     let expected = vec![
         InstrKind::GlobalGet, // buf
-        InstrKind::Other,     // Load current_pos
+        InstrKind::Other,     // Load current_pos (offset)
+        InstrKind::GlobalGet, // buf
+        InstrKind::Binop,     // add → frame_ptr = buf + current_pos (absolute)
         InstrKind::LocalSet,  // $frame_ptr
         InstrKind::LocalGet,
         InstrKind::Const,
@@ -908,8 +915,10 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
         InstrKind::LocalGet,
         InstrKind::LocalGet,
         InstrKind::Other, // Store exnref_slot
+        // Advance current_pos in offset space: *(buf+0) = *(buf+0) + frame_size
         InstrKind::GlobalGet,
-        InstrKind::LocalGet,
+        InstrKind::GlobalGet,
+        InstrKind::Other, // Load current_pos (offset)
         InstrKind::Const,
         InstrKind::Binop,
         InstrKind::Other, // Store new current_pos
@@ -951,15 +960,16 @@ fn postamble_serializes_user_scalar_locals() {
     let postamble = &kinds[postamble_start..];
 
     // Postamble with one user local:
-    //   1 Load (current_pos) + 6 Stores (func_index, call_index,
-    //   catch_region_id, exnref_slot, user_x, new current_pos) = 7 Others.
+    //   2 Loads (current_pos for the absolute frame_ptr, then again for the
+    //   offset-space bump) + 6 Stores (func_index, call_index,
+    //   catch_region_id, exnref_slot, user_x, new current_pos) = 8 Others.
     let other_count = postamble
         .iter()
         .filter(|k| matches!(k, InstrKind::Other))
         .count();
     assert_eq!(
-        other_count, 7,
-        "postamble should have 1 Load + 6 Stores (header 4 + user 1 + bump 1): {postamble:?}",
+        other_count, 8,
+        "postamble should have 2 Loads + 6 Stores (header 4 + user 1 + bump 1): {postamble:?}",
     );
 }
 

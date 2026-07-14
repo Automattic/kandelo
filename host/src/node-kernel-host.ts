@@ -283,9 +283,20 @@ export class NodeKernelHost {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
     this.sendToWorker({ type: "kms_attach_canvas", crtcId, canvas, stats, opts });
+  }
+
+  /**
+   * Report the CRTC canvas's current display size in device pixels.
+   * Mirrors `BrowserKernel.kmsSetDisplaySize`. Feeds the virtual
+   * connector's PREFERRED mode (so mode-picking clients see it) and, when
+   * an OffscreenCanvas polyfill provides a real canvas, the
+   * `webgl2-scanout` presenter's drawing-buffer size.
+   */
+  kmsSetDisplaySize(crtcId: number, width: number, height: number): void {
+    this.sendToWorker({ type: "kms_set_display_size", crtcId, width, height });
   }
 
   /**

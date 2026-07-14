@@ -1,0 +1,56 @@
+# Per-library manifest for libxkbcommon. See docs/package-management.md.
+#
+# Ports libxkbcommon 1.7.0 (libxkbcommon.a) to wasm32-posix-kernel: keymap
+# compilation (xkb_keymap_new_from_string, TEXT_V1) and keyboard state
+# translation (keycode + modifiers -> keysym -> UTF-8). The Wayland
+# compositor (PR6) generates a keymap and hands it to clients over the
+# wl_keyboard keymap fd; both sides link this library to interpret it.
+# See docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR4).
+#
+# 1.7.0 is the last release published as a standalone dist tarball on
+# xkbcommon.org (newer releases are GitHub-only auto-archives, whose
+# checksums are less durable). The keymap TEXT_V1 format this port needs
+# is stable across versions, so we take the version with the robust,
+# pinnable source artifact — mirroring libwayland's release-tarball pin.
+#
+# We bypass upstream's meson build (its feature probes target the build
+# host, not the wasm sysroot) and compile the core TUs directly against a
+# hand-curated config.h, the same pattern as alsa-lib and libwayland.
+
+kind = "library"
+
+name = "libxkbcommon"
+version = "1.7.0"
+kernel_abi = 16
+
+[[host_tools]]
+# bison generates src/xkbcomp/parser.c from parser.y at build time (the
+# dist tarball ships the gperf keyword table and keysym tables, but not
+# the yacc parser). Provided via flake.nix (pkgs.bison).
+name = "bison"
+version_constraint = ">=3.6"
+probe = { args = ["--version"], version_regex = "bison \\(GNU Bison\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.bison); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.bison); or apt install bison" }
+
+[source]
+# libxkbcommon 1.7.0 dist tarball (xkbcommon.org). sha256 verified against
+# the fetched artifact during PR4 development.
+url = "https://xkbcommon.org/download/libxkbcommon-1.7.0.tar.xz"
+sha256 = "65782f0a10a4b455af9c6baab7040e2f537520caa2ec2092805cdfd36863b247"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/xkbcommon/libxkbcommon/blob/xkbcommon-1.7.0/LICENSE"
+
+[build]
+script_path = "packages/registry/libxkbcommon/build-libxkbcommon.sh"
+
+[outputs]
+libs = ["lib/libxkbcommon.a"]
+headers = [
+  "include/xkbcommon/xkbcommon.h",
+  "include/xkbcommon/xkbcommon-names.h",
+  "include/xkbcommon/xkbcommon-keysyms.h",
+  "include/xkbcommon/xkbcommon-compat.h",
+  "include/xkbcommon/xkbcommon-compose.h",
+]
