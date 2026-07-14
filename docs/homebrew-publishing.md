@@ -175,6 +175,53 @@ Use `dry-run: true` for local or CI validation that must not push GHCR blobs,
 tap commits, or release assets. Dry runs still build bottles and validate the
 generated metadata shape.
 
+## GHCR Upload Layout
+
+The bottle upload step (`scripts/homebrew-ghcr-upload.sh`, step 5 above) is
+deliberately **blob-addressable for the Kandelo VFS fetcher**, not for a stock
+guest `brew install`. Read this before assuming a published bottle is `brew
+install`-resolvable, and do not let the package fan-out imply otherwise.
+
+What the upload publishes today:
+
+- An OCI artifact at `ghcr.io/<owner>/<repo>/<formula>` tagged
+  `<release-tag>-<arch>-<sha12>` (e.g. `bottles-abi-v<N>-wasm32-<sha12>`),
+  carrying one bottle layer with media type
+  `application/vnd.homebrew.bottle.layer.v1+gzip` (`homebrew-ghcr-upload.sh`,
+  `oras push`).
+- A sidecar `url` pointing at the **blob**:
+  `https://ghcr.io/v2/<owner>/<repo>/<formula>/blobs/sha256:<sha256>`.
+- A `bottle do` `root_url` of `https://ghcr.io/v2/<owner>/<repo>` (the publish
+  workflow passes this to `brew bottle --root-url`).
+
+Why the VFS fetcher is satisfied: `fetchHomebrewBottleBytes()` in
+`host/src/homebrew-vfs-fetch.ts` GETs the sidecar `url` directly and follows the
+GHCR `WWW-Authenticate` bearer challenge. It never resolves an OCI manifest, so
+the blob digest URL is all it needs.
+
+Why a stock guest `brew install` cannot resolve it: Homebrew's GitHubPackages
+download strategy resolves a bottle from the `root_url` by fetching the OCI
+index/manifest **tagged by the formula version**
+(`.../<formula>/manifests/<version>`), then selecting the layer for the running
+platform tag. Homebrew's own uploader (`brew pr-upload`) tags manifests by
+`version_rebuild` and uses layer media type
+`application/vnd.oci.image.layer.v1.tar+gzip`. Kandelo publishes **no**
+version-tagged manifest and uses a different layer media type, so a stock `brew
+install` against the same `root_url` finds no manifest to pour. **Guest `brew
+install` is therefore unsupported today**, consistent with the "not a general
+user-facing install guide" note at the top of this document and with
+"Current Gaps" below.
+
+This layout is intentional and sufficient for the only supported consumer (the
+VFS builder). Reconciling to Homebrew's native version-tagged OCI layout —
+either by switching the upload step to `brew pr-upload --upload-only` or by
+teaching `homebrew-ghcr-upload.sh` to additionally emit a version-tagged OCI
+index with the native layer media type — is **deferred until guest `brew
+install` is a committed goal**. The sidecar `url`/sha stays the stable contract
+for the VFS fetcher, so such a swap is URL-only for that consumer. Options,
+tradeoffs, and a staged implementation sequence are analyzed in
+`docs/plans/2026-07-01-homebrew-builtin-vs-custom-bottle-publishing-research.md`.
+
 ## Sidecar Metadata
 
 Generate sidecars with:
@@ -345,4 +392,6 @@ The implemented path covers trusted first bottle publication, sidecars,
 verified VFS image building, Node smoke, browser smoke, and gallery gating.
 Broader package coverage, general guest `brew install`, and full manual
 rebuild/rollback runbooks remain separate work and should stay out of
-reference docs until they land.
+reference docs until they land. Guest `brew install` is additionally blocked by
+the non-native upload layout described under "GHCR Upload Layout" above; that
+reconciliation is deferred until guest install is a committed goal.
