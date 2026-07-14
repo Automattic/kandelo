@@ -221,8 +221,8 @@ Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
 not from Formula Ruby.
 
 The guest Homebrew bootstrap image is a separate diagnostic and integration
-artifact. Build it from the pinned, unmodified upstream Homebrew source archive
-and ABI-current Kandelo package artifacts with:
+artifact. Build it from the pinned upstream Homebrew revision, Kandelo's
+reviewed bottle-tag patch, and ABI-current Kandelo package artifacts with:
 
 ```bash
 ./scripts/dev-shell.sh scripts/build-homebrew-bootstrap.sh
@@ -230,15 +230,75 @@ and ABI-current Kandelo package artifacts with:
 
 The script writes `target/homebrew-bootstrap/homebrew-bootstrap.vfs`. It derives
 the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
-set, and Homebrew bootstrap programs through `xtask build-deps`, and records
-the exact upstream Homebrew commit and archive hash in
-`/etc/kandelo/homebrew-image.json`. The default 768 MiB VFS capacity leaves
-writable space for real guest Homebrew operations; use `--sab-size` and
-`--max-size` when a specific integration test needs a different capacity.
+set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
+`scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. Source
+preparation verifies the reviewed patch SHA-256, refuses an upstream revision
+where the patch does not apply, limits the patch to its three declared Homebrew
+files, and archives the patched Git tree with a fixed timestamp and UTC
+timezone.
+
+`/etc/kandelo/homebrew-image.json` records the exact upstream Homebrew commit,
+patch SHA-256, patched-tree Git object and normalized-tree SHA-256, patched ZIP
+SHA-256, and selected bottle architecture and tag. `/etc/homebrew/brew.env`
+selects `wasm32_kandelo` for the current wasm32 bootstrap and sets
+`HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1`, so prefix and user configuration cannot
+select a bottle for a different guest architecture. Homebrew's own `bin/brew`
+reads that supported system environment file; `/usr/bin/brew` stays a direct
+symlink to `/home/linuxbrew/.linuxbrew/bin/brew`, with no Kandelo launcher or
+install fallback. The same source preparer emits `wasm64_kandelo` when a future
+bootstrap builder selects wasm64.
+
+The default 768 MiB VFS capacity leaves writable space for real guest Homebrew
+operations; use `--sab-size` and `--max-size` when a specific integration test
+needs a different capacity.
+
 The bootstrap manifest explicitly trusts executable bits from the pinned
 `git archive` ZIP. `mkrootfs` imports only those Unix `0111` bits; ownership,
 directory modes, non-executable file modes, and all other permission bits stay
 normalized by the manifest.
+
+Run the focused source and selection contract with:
+
+```bash
+./scripts/dev-shell.sh scripts/test-homebrew-bootstrap-source.sh
+```
+
+That test prepares the source under multiple builder timezones, compares
+archive and tree identities, checks wasm32 and wasm64 environment selection,
+and proves the system architecture tag overrides conflicting prefix and user
+configuration. It exercises both tag parser round-trips through archived
+Homebrew and loads a pinned real tap formula to verify that Homebrew selects its
+exact `wasm32_kandelo` bottle digest. It also proves that changed upstream patch
+context fails closed. Formula selection is not evidence that the GHCR manifest
+exists or that a bottle downloaded, poured, or ran; those remain trusted
+publisher and guest integration claims.
+
+After building the bootstrap image, verify that Homebrew's canonical archived
+`bin/brew` reads the system environment file rather than relying on a launcher
+or parent-process tag:
+
+```bash
+rm -rf host/dist
+./scripts/dev-shell.sh npx tsx homebrew/test/homebrew_bootstrap_guest_env.ts \
+  --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
+  --bash binaries/programs/wasm32/bash.wasm
+```
+
+This probe starts guest Bash with the canonical real script path and xtrace. It
+proves that Homebrew consumes `/etc/homebrew/brew.env`; it does not prove
+shebang dispatch, `/usr/bin/brew` alias execution, Ruby command dispatch, or a
+complete Homebrew operation. On the current ABI 39 runtime, the trace reaches
+the system-file export and then the Ruby dispatcher hits the known fork
+continuation boundary: 20,012 bytes are needed while 16,384 are reserved. The
+probe accepts only that exact diagnostic or a successful `brew --version` after
+recording the export. An attempted `/usr/bin/brew` alias execution also exposed
+the same reserve class earlier in Homebrew's shell launcher. With argv
+`/bin/bash -x /usr/bin/brew --version`, `$0` remained `/usr/bin/brew` and the
+launcher recognized it as a symlink. Its `target="$(readlink "$1")"` command
+substitution then needed 29,212 bytes while 16,384 were reserved. The failed
+substitution left Homebrew's repository empty and its library path as `/Library`,
+so the alias exited 127. This is not exec-time argv rewriting. The platform gap
+remains visible and must not be hidden with a wrapper.
 
 `--skip-package-resolve` is only for a worktree whose `binaries/` tree has
 already been materialized. It still validates every required output and fails
