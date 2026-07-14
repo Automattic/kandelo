@@ -12,10 +12,11 @@
  *   npx tsx examples/run-example.ts /path/to/test.wasm
  */
 
-import { closeSync, existsSync, openSync, readFileSync, statSync, writeSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync, statSync } from "fs";
 import { resolve, dirname, isAbsolute } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
+import { writeAllSync } from "./run-example-output";
 import { isWithinRealDirectory } from "./run-example-paths";
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
@@ -362,7 +363,7 @@ async function main() {
         if (guestOutputFd === null) {
             fallback.write(data);
         } else {
-            writeSync(guestOutputFd, data);
+            writeAllSync(guestOutputFd, data);
         }
     };
 
