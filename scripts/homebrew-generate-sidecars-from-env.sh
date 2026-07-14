@@ -42,6 +42,7 @@ for name in \
   KANDELO_HOMEBREW_BOTTLE_SHA256 \
   KANDELO_HOMEBREW_BOTTLE_BYTES \
   KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE \
+  KANDELO_HOMEBREW_RUNTIME_EVIDENCE \
   KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON \
   HOMEBREW_BREW_COMMIT; do
   require_env "$name"
@@ -58,6 +59,8 @@ if ! [[ "$KANDELO_HOMEBREW_FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
 fi
 
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+BUILD_ROOT="${KANDELO_HOMEBREW_BUILD_ROOT:-$KANDELO_ROOT}"
+BUILD_ROOT="$(cd "$BUILD_ROOT" && pwd -P)"
 FORMULA_SOURCE_ROOT="${KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT:-$KANDELO_HOMEBREW_TAP_ROOT}"
 FORMULA_PATH="$FORMULA_SOURCE_ROOT/Formula/$KANDELO_HOMEBREW_FORMULA.rb"
 MERGED_FORMULA_PATH="$KANDELO_HOMEBREW_TAP_ROOT/Formula/$KANDELO_HOMEBREW_FORMULA.rb"
@@ -71,6 +74,9 @@ require_bounded_regular_file \
   "bottle JSON" "$KANDELO_HOMEBREW_BOTTLE_JSON" "$HOMEBREW_MAX_BOTTLE_JSON_BYTES"
 require_bounded_regular_file \
   "dependency provenance" "$KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE" \
+  "$HOMEBREW_MAX_DEPENDENCY_PROVENANCE_BYTES"
+require_bounded_regular_file \
+  "runtime evidence" "$KANDELO_HOMEBREW_RUNTIME_EVIDENCE" \
   "$HOMEBREW_MAX_DEPENDENCY_PROVENANCE_BYTES"
 if ! [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "homebrew-generate-sidecars-from-env.sh: invalid Homebrew commit: $HOMEBREW_BREW_COMMIT" >&2
@@ -107,9 +113,14 @@ FORMULA_SHA256="$(shasum -a 256 "$FORMULA_PATH" | awk '{print $1}')"
 TAP_NAME="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 SDK_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sdk/activate.sh" | awk '{print $1}')"
 SYSROOT_FINGERPRINT="$(bash "$KANDELO_ROOT/scripts/homebrew-sysroot-fingerprint.sh" \
-  --kandelo-root "$KANDELO_ROOT" --arch "$KANDELO_HOMEBREW_ARCH")"
+  --kandelo-root "$BUILD_ROOT" --arch "$KANDELO_HOMEBREW_ARCH")"
 TAP_COMMIT="$(git -C "$FORMULA_SOURCE_ROOT" rev-parse HEAD)"
 KANDELO_COMMIT="$(git -C "$KANDELO_ROOT" rev-parse HEAD)"
+BUILD_COMMIT="$(git -C "$BUILD_ROOT" rev-parse HEAD)"
+if [ "$BUILD_COMMIT" != "$KANDELO_COMMIT" ]; then
+  echo "homebrew-generate-sidecars-from-env.sh: build evidence root differs from the fresh generator commit" >&2
+  exit 2
+fi
 for commit in "$TAP_COMMIT" "$KANDELO_COMMIT"; do
   if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
     echo "homebrew-generate-sidecars-from-env.sh: invalid source commit" >&2
@@ -124,6 +135,20 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
   --tap-commit "$TAP_COMMIT" \
   --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
   --tap-root "$FORMULA_SOURCE_ROOT"
+python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$KANDELO_HOMEBREW_RUNTIME_EVIDENCE" \
+  --formula "$KANDELO_HOMEBREW_FORMULA" \
+  --arch "$KANDELO_HOMEBREW_ARCH" \
+  --abi "$ABI_VERSION" \
+  --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+  --tap-commit "$TAP_COMMIT" \
+  --tap-root "$KANDELO_HOMEBREW_TAP_ROOT" \
+  --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
+  --bottle-json "$KANDELO_HOMEBREW_BOTTLE_JSON" \
+  --bottle-url "$KANDELO_HOMEBREW_BOTTLE_URL" \
+  --bottle-sha256 "$KANDELO_HOMEBREW_BOTTLE_SHA256" \
+  --bottle-bytes "$KANDELO_HOMEBREW_BOTTLE_BYTES" \
+  --dependency-provenance "$KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE"
 BREW_VERSION="Homebrew source commit $HOMEBREW_BREW_COMMIT"
 GENERATED_AT="$(date -u +%FT%TZ)"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local/kandelo}/actions/runs/${GITHUB_RUN_ID:-local}"
@@ -153,6 +178,7 @@ bottle_archive_path = pathlib.Path(os.environ["KANDELO_HOMEBREW_BOTTLE_ARCHIVE"]
 dependency_provenance_path = pathlib.Path(
     os.environ["KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE"]
 )
+runtime_evidence_path = pathlib.Path(os.environ["KANDELO_HOMEBREW_RUNTIME_EVIDENCE"])
 try:
     forbidden_roots = json.loads(os.environ["KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON"])
 except json.JSONDecodeError as error:
@@ -169,8 +195,12 @@ with bottle_json_path.open("r", encoding="utf-8") as f:
     bottle_json = json.load(f)
 with dependency_provenance_path.open("r", encoding="utf-8") as f:
     dependency_provenance = json.load(f)
+with runtime_evidence_path.open("r", encoding="utf-8") as f:
+    runtime_evidence = json.load(f)
 if not isinstance(dependency_provenance, dict):
     raise SystemExit("dependency provenance must be a JSON object")
+if not isinstance(runtime_evidence, dict):
+    raise SystemExit("runtime evidence must be a JSON object")
 
 if not isinstance(bottle_json, dict) or len(bottle_json) != 1:
     raise SystemExit(f"expected one formula in bottle JSON, got {len(bottle_json)}")
@@ -517,10 +547,47 @@ missing_receipts = [receipt for receipt in receipts if receipt not in all_files]
 if missing_receipts:
     raise SystemExit(f"bottle payload lacks required Homebrew receipts: {missing_receipts}")
 
-browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
-if browser_smoke_status not in {"success", "skipped"}:
-    raise SystemExit(f"invalid KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS={browser_smoke_status!r}")
-browser_compatible = browser_smoke_status == "success"
+node_runtime = runtime_evidence.get("node")
+selection_runtime = runtime_evidence.get("selection")
+target_runtime = runtime_evidence.get("target")
+if (
+    not isinstance(node_runtime, dict)
+    or node_runtime.get("runtime") != "node"
+    or node_runtime.get("status") != "success"
+    or not isinstance(selection_runtime, dict)
+    or selection_runtime.get("status") != "success"
+    or not isinstance(target_runtime, dict)
+):
+    raise SystemExit("validated runtime evidence does not prove exact-bottle Node success")
+
+browser_evidence_path = os.environ.get("KANDELO_HOMEBREW_BROWSER_EVIDENCE", "")
+browser_evidence = None
+if browser_evidence_path:
+    path = pathlib.Path(browser_evidence_path)
+    metadata = path.lstat()
+    if path.is_symlink() or not path.is_file() or metadata.st_size > 1024 * 1024:
+        raise SystemExit("browser evidence must be a bounded regular non-symlink file")
+    browser_evidence = json.loads(path.read_text(encoding="utf-8"))
+    expected_browser_keys = {
+        "arch", "bottle_sha256", "bottle_url", "command", "engine",
+        "formula", "runtime", "schema", "status",
+    }
+    if not isinstance(browser_evidence, dict) or set(browser_evidence) != expected_browser_keys:
+        raise SystemExit("browser evidence has an unexpected schema")
+    if (
+        browser_evidence.get("schema") != 1
+        or browser_evidence.get("formula") != formula
+        or browser_evidence.get("arch") != arch
+        or browser_evidence.get("bottle_sha256") != os.environ["KANDELO_HOMEBREW_BOTTLE_SHA256"]
+        or browser_evidence.get("bottle_url") != os.environ["KANDELO_HOMEBREW_BOTTLE_URL"]
+        or browser_evidence.get("runtime") != "browser"
+        or browser_evidence.get("engine") != "chromium"
+        or browser_evidence.get("status") != "success"
+        or not isinstance(browser_evidence.get("command"), str)
+        or not browser_evidence["command"]
+    ):
+        raise SystemExit("browser evidence does not match the exact selected bottle")
+browser_compatible = browser_evidence is not None
 if browser_compatible and arch != "wasm32":
     raise SystemExit("browser smoke can only mark wasm32 bottles browser-compatible")
 runtime_support = ["node", "browser"] if browser_compatible else ["node"]
@@ -538,10 +605,7 @@ if browser_compatible:
     vfs_report = os.environ.get("KANDELO_HOMEBREW_VFS_REPORT", "")
     gallery_root = os.environ.get("KANDELO_HOMEBREW_GALLERY_ROOT", "")
     browser_url = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_URL", "")
-    browser_command = os.environ.get(
-        "KANDELO_HOMEBREW_BROWSER_SMOKE_COMMAND",
-        f"/home/linuxbrew/.linuxbrew/bin/{formula} --version",
-    )
+    browser_command = browser_evidence["command"]
     missing = [
         name for name, value in [
             ("KANDELO_HOMEBREW_VFS_IMAGE", vfs_image),
@@ -655,7 +719,9 @@ manifest = {
                                 "name": "node_smoke",
                                 "status": "success",
                                 "passed": [
-                                    f"Formula test ran {formula} through the Kandelo Node runtime"
+                                    f"Homebrew force-poured {formula} from {selection_runtime['bottle']['mode']}",
+                                    f"brew test emitted Kandelo Node receipt via {node_runtime['launcher']}",
+                                    f"exact bottle sha256: {os.environ['KANDELO_HOMEBREW_BOTTLE_SHA256']}",
                                 ],
                                 "failed": [],
                                 "skipped": [],

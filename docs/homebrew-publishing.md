@@ -289,7 +289,9 @@ privileged path are pinned by commit.
 
 After a read-only planning job resolves the immutable Kandelo commit, tap
 commit, ABI namespace, derived bottle root, and formula matrix, each
-`(formula, arch)` entry crosses four separate runner roles:
+`(formula, arch)` entry crosses five separate runner roles. OCI child uploads
+remain architecture-parallel. The mutable Homebrew version index is serialized
+only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
 
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
@@ -355,11 +357,12 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
 
    The handoff remains explicitly bounded while supporting complete large
    packages: Homebrew bottle JSON is capped at 16 MiB, dependency provenance at
-   1 MiB, and the compressed bottle at 2 GiB. Generated formula and link
-   sidecars are each capped at 16 MiB. Artifact transport uses compression level
-   zero because the bottle is already a gzip stream. Validators reject the
-   first byte beyond each bound; large packages are not made publishable by
-   truncating their file inventories or installed payloads.
+   1 MiB, the compressed bottle at 2 GiB, and its expanded tar stream at 16 GiB.
+   Generated formula and link sidecars are each capped at 16 MiB. Artifact
+   transport uses compression level zero because the bottle is already a gzip
+   stream. Validators reject the first byte beyond each bound; large packages
+   are not made publishable by truncating their file inventories or installed
+   payloads.
    `scripts/homebrew-publication-limits.sh` owns these byte limits; creators,
    validators, and the final refreshed-tap publisher consume the same values.
    The archive inspector also streams every byte of every regular member and
@@ -374,22 +377,54 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    not weaken the declared archive-byte limit or buffer whole installed files.
    The canonical Homebrew prefix and `opt` paths are deliberately not forbidden,
    because bottle metadata may legitimately contain those relocation identities.
+   After source-closure validation, the same credential-free job composes a
+   deterministic Homebrew-native OCI child. The bottle is the gzip layer, its
+   uncompressed digest is the image config `diff_id`, and the manifest carries
+   Homebrew's exact bottle annotations plus the truthful
+   `wasm32/kandelo` or `wasm64/kandelo` platform. The immutable child transport
+   tag is derived from the manifest digest. Formula source identity excludes
+   only the structurally validated bottle block; the separate source-closure
+   identity still binds the Formula mode and every allowed support file,
+   directory, mode, and byte digest.
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
-   against the plan before exposing the token to an isolated ORAS upload. This
+   and deterministic OCI child against the plan before exposing the token to an
+   isolated ORAS transport. This
    includes bounded tar structure, link safety, receipt identity, local-build-root
    absence across all regular members, and every Wasm member's ABI, memory width,
-   object kind, and fork instrumentation. Its
-   only output is a strict data receipt identifying the uploaded digest URL,
-   SHA-256, byte count, and image tag.
-3. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
+   object kind, and fork instrumentation. The credentialed step cannot evaluate
+   Formula Ruby or construct OCI metadata. It copies only the validated child
+   layout to its content-derived tag, retires the isolated ORAS authentication
+   state, and requires an anonymous exact-digest readback. Its only output is a
+   strict data receipt binding the canonical layout receipt to that public
+   readback.
+3. `publish-bottle-index` receives `packages: write` once per Formula. Under a
+   formula-scoped concurrency lock it validates every requested child layout and
+   public child receipt, anonymously imports the current Homebrew top reference,
+   and preserves a compatible sibling architecture. The anonymous importer
+   validates bounded top, child, config, and layer descriptors by digest before
+   it starts the layer copy, confirms the mutable tag did not change during that
+   validation, and pins the copy to the validated top digest. It then composes
+   one complete OCI image index at Homebrew's version/rebuild reference. Only
+   the final layout copy receives registry credentials; Formula Ruby and OCI
+   composition remain credential-free. A conflicting same-reference child or a
+   stale Formula/support closure fails instead of overwriting bytes. The top
+   index receipt records the previous digest, and transport refuses a concurrent
+   change. First publication of a private GHCR package fails at the explicit
+   visibility boundary; automation never changes package visibility.
+4. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
    revalidates the build handoff and receipt, fetches the full Kandelo ABI
    runtime graph, builds the VFS image, and runs the runtime and browser gates.
    It uses the locally built bottle in dry-run mode. In write mode it discards
-   that bottle as runtime evidence and instead anonymously downloads the GHCR
-   digest URL, then rechecks SHA-256 and byte count. No post-build role loads
-   Formula Ruby or invokes Homebrew. The verifier statically composes the
-   selected bottle block from reconstructed canonical metadata. A bounded
+   that bottle as runtime evidence, anonymously imports and validates the exact
+   public top-index-to-child-to-layer graph, and rechecks the selected layer's
+   SHA-256 and byte count. It statically composes the selected bottle block from
+   reconstructed canonical metadata. In an isolated identity it then runs the
+   reviewed pinned Homebrew implementation with the Kandelo platform patch. The
+   target cache starts empty, source fallback is forbidden, and Homebrew itself
+   must fetch, force-pour, inspect, and test the exact public bottle. Formula and
+   support source are checked out fresh again before sidecar generation, which
+   does not execute Formula Ruby. A bounded
    archive inspector independently derives the keg file inventory, executable
    links, target receipt dependencies, archived Formula digest, and
    fork-instrumentation state from the selected bottle bytes. Every regular
@@ -406,7 +441,7 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    bottle bytes, and one package-scoped `composition/sidecars-input.json`.
    Downstream jobs never execute artifact-provided scripts, Formulae, or
    environment files.
-4. `finalize-tap` runs only for a write publication and receives only
+5. `finalize-tap` runs only for a write publication and receives only
    `contents: write`. On another fresh runner it validates the complete
    publication handoff as inert data against the exact base tap before checking
    out with push credentials. The publisher then acquires the tap state lock,

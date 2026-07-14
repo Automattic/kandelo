@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/homebrew-publication-limits.sh"
 
 FORMULA_SOURCE="$TMP_ROOT/tool.rb"
 WASM="$TMP_ROOT/tool.wasm"
@@ -140,6 +142,20 @@ with tarfile.open(
 PY
 
 INSPECTOR="$REPO_ROOT/scripts/homebrew-inspect-bottle.py"
+mapfile -t inspector_limits < <(python3 - "$INSPECTOR" <<'PY'
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1])
+print(module["MAX_COMPRESSED_BYTES"])
+print(module["MAX_ARCHIVE_BYTES"])
+PY
+)
+[ "${inspector_limits[*]}" = \
+  "$HOMEBREW_MAX_BOTTLE_BYTES $HOMEBREW_MAX_EXPANDED_BOTTLE_BYTES" ] || {
+  echo "test-homebrew-inspect-bottle.sh: inspector publication limits drifted" >&2
+  exit 1
+}
 make_archive() {
   local kind="$1" output="$2" wasm="${3:-$WASM}"
   python3 "$TMP_ROOT/make-archive.py" \

@@ -20,9 +20,34 @@ import tempfile
 from typing import BinaryIO, NoReturn
 
 
-MAX_COMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+CANONICAL_UINT = re.compile(r"^(0|[1-9][0-9]*)$")
+
+
+def publication_archive_limits() -> tuple[int, int]:
+    script = pathlib.Path(__file__).with_name("homebrew-publication-limits.sh")
+    command = (
+        'set -euo pipefail; source "$1"; printf "%s\\n%s\\n" '
+        '"$HOMEBREW_MAX_BOTTLE_BYTES" "$HOMEBREW_MAX_EXPANDED_BOTTLE_BYTES"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", command, "homebrew-publication-limits", str(script)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    values = result.stdout.decode("ascii", errors="strict").splitlines()
+    if result.returncode != 0 or len(values) != 2:
+        detail = result.stderr.decode("utf-8", errors="replace")[:4096]
+        raise RuntimeError(f"cannot load Homebrew publication limits: {detail}")
+    if any(CANONICAL_UINT.fullmatch(value) is None or int(value, 10) < 1 for value in values):
+        raise RuntimeError("Homebrew publication limits are not positive canonical integers")
+    return int(values[0], 10), int(values[1], 10)
+
+
+MAX_COMPRESSED_BYTES, MAX_ARCHIVE_BYTES = publication_archive_limits()
 MAX_ARCHIVE_ENTRIES = 200_000
-MAX_ARCHIVE_BYTES = 16 * 1024 * 1024 * 1024
 MAX_ARCHIVE_PATH_BYTES = 4096
 MAX_FORMULA_BYTES = 1024 * 1024
 MAX_RECEIPT_BYTES = 16 * 1024 * 1024
