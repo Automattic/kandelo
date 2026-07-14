@@ -87,6 +87,41 @@ the same shape but targets the durable `binaries-abi-v<N>` tag.
 `force-rebuild.yml` is the manual escape hatch (`workflow_dispatch`)
 for republishing selected packages.
 
+### Stacked PR baselines
+
+Same-repository stacked PRs are supported by `staging-build.yml`. A child
+PR is scoped against its immediate base branch, so an archive-neutral child
+must inherit package keys introduced by open base PRs instead of comparing
+only with the durable release. Preflight walks the open base-PR chain to the
+default branch and considers each `pr-<N>-staging` release nearest-first.
+It accepts an entry only when all of these remain true:
+
+- every chain link is an open same-repository PR at the exact base/head SHAs
+  carried by the child event, and each base is an ancestor of its child;
+- the staging release, index asset, and archive asset retain the snapshotted
+  release/asset IDs and metadata throughout resolution;
+- the index has the expected ABI, version, revision, architecture, full
+  `cache_key_sha`, canonical archive filename, and archive SHA-256;
+- `built_by` names a same-repository `staging-build.yml` pull-request run for
+  that exact base PR, at that PR head or an ancestor; and
+- the downloaded archive digest and embedded manifest satisfy the normal
+  `xtask index-update` archive validation path.
+
+`target_commitish` is not provenance for these releases: a pull-request run
+can create the release against GitHub's synthetic merge commit rather than the
+PR head. The `built_by` run plus live PR chain provide the head attestation.
+Accepted archives are uploaded immediately as a current-run workflow artifact,
+so closing a base PR and deleting its staging release cannot change later
+matrix/test jobs in that child run. Missing releases, entries, or assets leave
+their exact `(package, arch)` requirements unresolved; preflight rebuilds only
+those requirements in the child's normal package matrix. Trust or mutation
+failures stop the run instead of falling back silently.
+
+Stacked staging does not authorize durable publication. `prepare-merge.yml`
+rejects `ready-to-ship` while a PR targets a non-default branch. Land the base
+PRs, retarget and rebase the child onto the default branch, then publish the
+durable package state from that final topology.
+
 ## State-lock serialization
 
 `scripts/index-update.sh` acquires the workflow-level state-lock
@@ -111,13 +146,15 @@ crashed workflow can't leave a wedged lock indefinitely.
 binaries-abi-v<ABI_VERSION>
 ```
 
-The tag is **mutable** — new packages and arches are added as new
-assets over time. What's *immutable* is each archive: its filename
-encodes the `cache_key_sha` of the build inputs, so a published
-asset's bytes never change. Different inputs → different filename.
+The tag and its assets are **mutable** — new packages and arches are added over
+time, and the supported publisher can replace a same-named asset while repairing
+a release. Archive filenames encode the `cache_key_sha` of build inputs, but
+consumers must still verify the full index SHA-256 and downloaded bytes rather
+than treating a name or release tag as immutable provenance.
 
 PR-staging releases use `pr-<NNN>-staging` (also mutable, but
-ephemeral — closed PRs leave them as historical curios).
+ephemeral). `staging-cleanup.yml` deletes them when the corresponding PR
+closes and sweeps orphaned tags daily.
 
 Homebrew tap releases use:
 

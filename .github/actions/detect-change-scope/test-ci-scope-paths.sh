@@ -89,6 +89,18 @@ assert_matches binary_materialization_changed_files \
 assert_matches binary_materialization_changed_files \
   "tests/package-system/fetch-binaries-allow-stale.test.ts" \
   "tests/package-system/fetch-binaries-allow-stale.test.ts"
+assert_matches binary_materialization_changed_files \
+  ".github/scripts/resolve-stacked-pr-baseline.sh" \
+  ".github/scripts/resolve-stacked-pr-baseline.sh"
+assert_matches binary_materialization_changed_files \
+  ".github/scripts/stacked_pr_baseline.py" \
+  ".github/scripts/stacked_pr_baseline.py"
+assert_not_matches package_archive_changed_files \
+  ".github/scripts/resolve-stacked-pr-baseline.sh" \
+  ".github/scripts/resolve-stacked-pr-baseline.sh"
+assert_not_matches package_archive_changed_files \
+  ".github/scripts/stacked_pr_baseline.py" \
+  ".github/scripts/stacked_pr_baseline.py"
 
 assert_matches package_publish_flow_changed_files \
   "scripts/index-update.sh" \
@@ -125,5 +137,14 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/prepare-merge.yml" \
   ".github/workflows/prepare-merge.yml"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-resolve-stacked-pr-baseline.sh" \
+  ".github/scripts/test-resolve-stacked-pr-baseline.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-prepare-merge-default-base.sh" \
+  ".github/scripts/test-prepare-merge-default-base.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-stacked-baseline-workflow.sh" \
+  ".github/scripts/test-stacked-baseline-workflow.sh"
 
 echo "ci-scope path classifier tests passed"
