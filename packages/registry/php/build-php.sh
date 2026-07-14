@@ -1073,22 +1073,34 @@ fi
 # itself is unaffected). A macro undefined for a symbol the package does export
 # silently compiles the feature out — here, the "table" key of
 # PDOStatement::getColumnMeta() (#577).
-# PHP's fopencookie probe is also distorted by wasm cross-linking. Kandelo's
+# PHP's fopencookie probe is also distorted by cross-compilation. Kandelo's
 # musl sysroot provides fopencookie(3), and PHP uses it for generic stream →
 # stdio casts rather than requiring every user stream wrapper to implement its
-# own stream_cast method.
+# own stream_cast method. PHP cannot run its callback-signature probe while
+# cross-compiling and assumes every *linux* host uses glibc's off64_t callback.
+# musl's cookie_seek_function_t uses off_t instead, so keep fopencookie enabled
+# while rejecting that glibc-only fallback.
 if [ -f main/php_config.h ]; then
     sed -i.bak \
         -e 's|^/\* #undef HAVE_SQLITE3_EXPANDED_SQL \*/|#define HAVE_SQLITE3_EXPANDED_SQL 1|' \
         -e 's|^/\* #undef HAVE_SQLITE3_COLUMN_TABLE_NAME \*/|#define HAVE_SQLITE3_COLUMN_TABLE_NAME 1|' \
         -e 's|^/\* #undef SQLITE_OMIT_LOAD_EXTENSION \*/|#define SQLITE_OMIT_LOAD_EXTENSION 1|' \
         -e 's|^/\* #undef HAVE_FOPENCOOKIE \*/|#define HAVE_FOPENCOOKIE 1|' \
+        -e 's|^#define COOKIE_SEEKER_USES_OFF64_T 1|/* #undef COOKIE_SEEKER_USES_OFF64_T */|' \
         -e 's|^/\* #undef HAVE_PRCTL \*/|#define HAVE_PRCTL 1|' \
         -e 's|^#define HAVE_FORKX 1|/* #undef HAVE_FORKX */|' \
         -e 's|^#define HAVE_RFORK 1|/* #undef HAVE_RFORK */|' \
         -e 's|^#define PHP_OS .*|#define PHP_OS "Kandelo"|' \
         -e 's|^#define PHP_UNAME .*|#define PHP_UNAME "Kandelo wasm32-posix-kernel"|' \
         main/php_config.h && rm -f main/php_config.h.bak
+    grep -q '^#define HAVE_FOPENCOOKIE 1$' main/php_config.h || {
+        echo "ERROR: PHP config did not retain Kandelo musl fopencookie support" >&2
+        exit 1
+    }
+    if grep -q '^#define COOKIE_SEEKER_USES_OFF64_T 1$' main/php_config.h; then
+        echo "ERROR: PHP config retained the glibc-only fopencookie callback type" >&2
+        exit 1
+    fi
     # PHP's generated object dependencies do not reliably notice the
     # php_config.h feature override above after an incremental rebuild. Force
     # the stream-casting unit to be rebuilt so generic stream→FILE* casts use
