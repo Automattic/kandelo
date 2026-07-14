@@ -310,7 +310,8 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         if [ "$local_name" = "posix-timer-thread" ]; then
             extra_flags=(-DWASM_POSIX_THREAD_SLOT_DECL=8)
         fi
-        "$CC" "${CFLAGS64[@]}" "${extra_flags[@]}" "$src" "${LINK_FLAGS64[@]}" \
+        # Keep empty optional flags safe under Bash 3.2 with `set -u`.
+        "$CC" "${CFLAGS64[@]}" ${extra_flags[@]+"${extra_flags[@]}"} "$src" "${LINK_FLAGS64[@]}" \
             -o "$OUT_DIR_64/${local_name}.wasm"
     done
 
