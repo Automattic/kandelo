@@ -405,6 +405,15 @@ sha for that manifest. Two archives with the same `(name, version,
 revision, arch)` but different transitive deps get distinct shas
 and thus distinct names.
 
+The filename is a transport label, not a parseable identity record:
+package names and versions may both contain `-`, so the boundary between
+them is ambiguous in the string alone. Index composition reads `name`,
+`version`, `revision`, architecture, ABI compatibility, and cache key from
+the archive's validated `manifest.toml`, then requires the filename to equal
+the canonical string reconstructed from those fields. Archive creation and
+index recovery call the same renderer so the producer and validator cannot
+drift to different filename grammars.
+
 ### Archive interior layout
 
 Each `.tar.zst` carries exactly two top-level entries:
@@ -650,10 +659,16 @@ checklist.
 When migrating a release from the legacy schema (or recovering after
 a corrupted index), `scripts/compose-initial-index.sh
 <target-tag> <abi>` downloads every `.tar.zst` from the release,
-extracts each archive's internal `manifest.toml` to recover
-`cache_key_sha` + `build_timestamp`, and uploads a freshly composed
-`index.toml`. The script acquires the same state-lock as the
-matrix-build path, so it serializes against any active CI rebuilds.
+extracts each archive's internal `manifest.toml` as the authoritative
+package identity and compatibility record, verifies that the archive's
+filename is the canonical rendering of those fields, and uploads a freshly
+composed `index.toml`. The script acquires the same state-lock as the
+matrix-build path, so it serializes against any active CI rebuilds. It does
+not infer the package name or version by splitting the archive filename. If
+the downloaded inventory contains more than one archive for the same package
+name and target architecture, composition fails and reports both filenames,
+cache keys, and archive hashes. Recovery must select one explicit immutable
+archive rather than depend on directory traversal order.
 
 Day-to-day publishes don't use this script — they go through
 `scripts/index-update.sh` per-matrix-entry. compose-initial-index is

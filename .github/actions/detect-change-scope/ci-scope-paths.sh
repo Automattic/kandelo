@@ -14,7 +14,7 @@ package_archive_changed_files() {
     -e '^sdk/(activate\.sh|config\.site|package(-lock)?\.json|tsconfig\.json)$' \
     -e '^sdk/(bin|kandelo|src)/' \
     -e '^tools/xtask/Cargo\.toml$' \
-    -e '^tools/xtask/src/(archive_stage|archive_stage_cli|build_deps|host_tool_probe|main|pkg_manifest|source_extract|util)\.rs$' \
+    -e '^tools/xtask/src/(archive_stage|archive_stage_cli|build_deps|host_tool_probe|main|package_archive_name|pkg_manifest|source_extract|util)\.rs$' \
     -e '^tools/mkrootfs/(bin|src)/' \
     -e '^tools/mkrootfs/(package(-lock)?\.json|tsconfig\.json)$' \
     -e '^crates/fork-instrument/(Cargo\.toml|src/)' \
@@ -49,7 +49,7 @@ package_publish_flow_changed_files() {
     -e '^\.github/actions/detect-change-scope/(ci-scope-paths|test-ci-scope-paths)\.sh$' \
     -e '^\.github/workflows/(staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish)\.yml$' \
     -e '^\.github/scripts/(activate-merge-candidate|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|download-verified-release-asset|fetch-canonical-index|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|select-package-archive-source|state-lock|test-activate-merge-candidate|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-download-verified-release-asset|test-fetch-canonical-index|test-init-merge-candidate|test-latest-merge-gate-status|test-merge-candidate-workflows|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-select-package-archive-source|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate)\.sh$' \
-    -e '^tools/xtask/src/(build_index|bundle_program|index_candidate|index_toml|index_update|staging_reuse|update_pkg_manifest)\.rs$' \
+    -e '^tools/xtask/src/(build_index|bundle_program|index_candidate|index_toml|index_update|package_archive_name|staging_reuse|update_pkg_manifest)\.rs$' \
     -e '^scripts/(compose-initial-index|index-has-current-entry|index-update|prepare-sdk-package|publish-package-source|release-index-state|sync-package-source)\.sh$' \
     -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
     || true

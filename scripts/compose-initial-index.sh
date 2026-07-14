@@ -9,9 +9,10 @@
 #
 #   1. Downloads every *.tar.zst archive from the release.
 #   2. Runs `xtask build-index` against the downloaded set, which
-#      decompresses each archive, parses its internal manifest.toml's
-#      [compatibility] block, and emits a Success entry per
-#      (package, arch).
+#      decompresses each archive, uses its internal manifest.toml as
+#      the package identity, verifies the canonical transport filename,
+#      rejects ambiguous duplicate (package, arch) archives, and emits a
+#      Success entry per unique identity.
 #   3. Publishes the composed index through the crash-recoverable canonical
 #      release-index transaction.
 #
