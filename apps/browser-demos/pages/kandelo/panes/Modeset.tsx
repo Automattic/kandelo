@@ -79,12 +79,11 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     // Match the wasm program's framebuffer dims BEFORE
     // `transferControlToOffscreen()`. The placeholder HTMLCanvas keeps
     // these as its `.width`/`.height` attribute values after transfer;
-    // the OffscreenCanvas inherits them too. Both matter:
-    //   - The pointer scaler reads `canvas.width / rect.width` to map
-    //     CSS deltas to framebuffer pixels. Default 300/150 would mean
-    //     the cursor crawls at ~1/6 speed and Pavel's splats clump.
-    //   - The OffscreenCanvas drawing buffer must be 1920×1080 so
-    //     `glViewport(0, 0, 1920, 1080)` covers the full surface.
+    // the OffscreenCanvas inherits them too. The drawing buffer must be
+    // 1920×1080 so `glViewport(0, 0, 1920, 1080)` covers the full
+    // surface. (The pointer scaler does NOT read `canvas.width` — it
+    // maps through the live scanout dims in stats slots 2/3, `fbDims`
+    // below.)
     if (canvas.width !== MODESET_FB_W) canvas.width = MODESET_FB_W;
     if (canvas.height !== MODESET_FB_H) canvas.height = MODESET_FB_H;
 

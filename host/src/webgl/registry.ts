@@ -157,7 +157,15 @@ export class GlContextRegistry {
 
   unbind(pid: number): void {
     this.pendingForwards.delete(pid);
-    if (!this.bindings.delete(pid)) return;
+    const b = this.bindings.get(pid);
+    if (!b) return;
+    // The GL context can outlive the binding (a KMS canvas context is
+    // shared with the vblank pump), so free the binding's foreign
+    // textures deterministically instead of leaving them to context GC.
+    for (const entry of b.foreignTextures.values()) {
+      b.gl?.deleteTexture(entry.tex);
+    }
+    this.bindings.delete(pid);
     for (const l of this.listeners) l(pid, "unbind");
   }
 

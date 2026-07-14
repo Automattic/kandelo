@@ -147,7 +147,12 @@ async function readDesktopDims(page: Page): Promise<void> {
  *      far larger than a blank frame (v1's gate passed on an all-black
  *      ~3.2 KB canvas; a real desktop run measures ~21.5 KB). The Modeset
  *      chip must also report the `webgl2` renderer (stats slot 7) so a
- *      silent fallback to the legacy 2D blit fails the gate.
+ *      silent fallback to the legacy 2D blit fails the gate. In between,
+ *      gate 1d asserts the compositor composites on the GPU (WLC_RENDERER
+ *      gpu from the boot-time GLES probe) and gate 1e asserts the GPU
+ *      path's one-shot readback proof (COMPOSITE_SAMPLE via glReadPixels,
+ *      non-black) — the node smokes only ever exercise the CPU path, so
+ *      this is the sole gate on that readback.
  *   2. Typing changes wlterm's window region — a keystroke routes
  *      compositor → wl_keyboard → focused wlterm → tty echo → grid redraw →
  *      re-composite. The clip excludes the animated clock, so only a
@@ -213,6 +218,22 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // means the probe or the WPK dmabuf-texture path regressed. Checked
   // while the Internals surface (syslog pane) is still mounted.
   expect(await syslogStream(page)).toMatch(/WLC_RENDERER gpu/);
+
+  // Gate 1e: the GPU path's one-shot proof that client pixels crossed the
+  // process boundary — repaint_gl() samples the composited GL framebuffer
+  // back through glReadPixels (the sync-query path) at (top->x+10,
+  // top->y+10), inside the topmost window's titlebar, so a black pixel
+  // means the readback or the dmabuf-texture import silently failed. The
+  // node smokes only ever see the CPU path; this is the sole gate on the
+  // GL readback.
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/COMPOSITE_SAMPLE x=\d+ y=\d+ px=0x[0-9a-f]{8}/);
+  const gpuSample = (await syslogStream(page)).match(
+    /COMPOSITE_SAMPLE x=\d+ y=\d+ px=0x([0-9a-f]{8})/,
+  )!;
+  expect(parseInt(gpuSample[1], 16) & 0xffffff, "GL readback sampled black")
+    .not.toBe(0);
 
   // The KMS/Modeset pane bridges card0 to an OffscreenCanvas.
   await openSurface(page, "Demo");

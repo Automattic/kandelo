@@ -621,10 +621,13 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
       await settleAfterKernelDestroy();
     }
     h.detachKernel();
-    // The wayland compositor renders CPU-side (dumb-bo memcpy + PAGE_FLIP,
-    // no EGL), so the Modeset pane's canvas is presented by the vblank
-    // pump — via the WebGL2 scanout presenter (texture upload, shader-side
-    // swizzle, GPU scaling at display resolution). GL demos (modeset.c,
+    // Wayland demo: present the Modeset pane's canvas through the vblank
+    // pump's WebGL2 scanout presenter (texture upload, shader-side
+    // swizzle, GPU scaling at display resolution). In the browser the
+    // compositor's GLES probe normally succeeds and its GL context then
+    // claims the canvas for GPU compositing as the steady state — the
+    // presenter covers boot (before the claim) and the permanent CPU
+    // fallback if the probe or a GL frame fails. GL demos (modeset.c,
     // sdl2) keep the webgl2 default — the GL bridge claims their canvas on
     // eglCreateContext, and the pump never touches it.
     h.setKmsDisplayMode(profile.waylandDemo ? "webgl2-scanout" : null);

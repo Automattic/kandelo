@@ -115,21 +115,8 @@ void wpk_line_aa(struct wpk_surface *s, float x0, float y0,
 
 void wpk_disc_aa(struct wpk_surface *s, float cx, float cy, float r,
                  wpk_color color) {
-    if (!s || !s->pixels || r <= 0.0f) return;
-    float pad = r + 1.0f;
-    int ix0 = (int)(cx - pad), iy0 = (int)(cy - pad);
-    int ix1 = (int)(cx + pad) + 1, iy1 = (int)(cy + pad) + 1;
-    if (ix0 < 0) ix0 = 0;
-    if (iy0 < 0) iy0 = 0;
-    if (ix1 > s->w) ix1 = s->w;
-    if (iy1 > s->h) iy1 = s->h;
-
-    for (int py = iy0; py < iy1; py++) {
-        for (int px = ix0; px < ix1; px++) {
-            float dx = (float)px + 0.5f - cx, dy = (float)py + 0.5f - cy;
-            float dist = __builtin_sqrtf(dx * dx + dy * dy);
-            blend_coverage(s, px, py, color, r + 0.5f - dist);
-        }
-    }
+    /* A zero-length capsule of width 2r IS this disc — same bbox,
+     * clamps and coverage as wpk_line_aa's degenerate case. */
+    wpk_line_aa(s, cx, cy, cx, cy, 2.0f * r, color);
 }
 

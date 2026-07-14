@@ -362,6 +362,105 @@ describe("LiveKernelHost: surface availability", () => {
   });
 });
 
+describe("LiveKernelHost: KMS display size lifecycle", () => {
+  // attachKmsDisplay's ResizeObserver feeds kmsDisplaySizes, which the
+  // wayland boot flow reads (getKmsDisplaySize) to decide whether it
+  // still needs to measure the pane and push a video mode to the NEW
+  // kernel. A stale entry from the previous session makes the sizing
+  // wait-loop skip that push → 1920×1080 letterbox on every reboot.
+  class FakeResizeObserver {
+    static instances: FakeResizeObserver[] = [];
+    disconnected = false;
+    constructor(public cb: (entries: unknown[]) => void) {
+      FakeResizeObserver.instances.push(this);
+    }
+    observe(): void {}
+    disconnect(): void {
+      this.disconnected = true;
+    }
+  }
+
+  const fireResize = (ro: FakeResizeObserver, w: number, h: number) =>
+    ro.cb([{ devicePixelContentBoxSize: [{ inlineSize: w, blockSize: h }] }]);
+
+  const makeKmsKernel = () => ({
+    kmsAttachCanvas: vi.fn(),
+    kmsSetDisplaySize: vi.fn(),
+  });
+
+  const makeCanvas = () =>
+    ({ transferControlToOffscreen: () => ({}) }) as unknown as HTMLCanvasElement;
+
+  const withFakeResizeObserver = (fn: () => void) => {
+    const real = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeResizeObserver;
+    FakeResizeObserver.instances = [];
+    try {
+      fn();
+    } finally {
+      (globalThis as { ResizeObserver?: unknown }).ResizeObserver = real;
+    }
+  };
+
+  it("detachKernel clears the reported sizes and the stale observer stops feeding them", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernelA = makeKmsKernel();
+      host.attachKernel(kernelA as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      expect(host.attachKmsDisplay(makeCanvas())).not.toBeNull();
+      const ro = FakeResizeObserver.instances[0];
+      expect(ro).toBeDefined();
+
+      fireResize(ro, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 800, height: 600 });
+      expect(kernelA.kmsSetDisplaySize).toHaveBeenCalledWith(1, 800, 600);
+
+      host.detachKernel();
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+
+      // A late delivery from the dead pane must not repopulate the map
+      // (or poke the dead kernel) — the observer disconnects instead.
+      kernelA.kmsSetDisplaySize.mockClear();
+      fireResize(ro, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+      expect(kernelA.kmsSetDisplaySize).not.toHaveBeenCalled();
+      expect(ro.disconnected).toBe(true);
+    });
+  });
+
+  it("an old session's observer never feeds the next session's kernel", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernelA = makeKmsKernel();
+      host.attachKernel(kernelA as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      const roA = FakeResizeObserver.instances[0];
+      fireResize(roA, 800, 600);
+
+      // Second boot: detach, attach a fresh kernel + remounted pane.
+      host.detachKernel();
+      const kernelB = makeKmsKernel();
+      host.attachKernel(kernelB as any);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+
+      kernelA.kmsSetDisplaySize.mockClear();
+      fireResize(roA, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+      expect(kernelA.kmsSetDisplaySize).not.toHaveBeenCalled();
+      expect(kernelB.kmsSetDisplaySize).not.toHaveBeenCalled();
+
+      // The remounted pane's own observer serves the new session.
+      host.attachKmsDisplay(makeCanvas());
+      const roB = FakeResizeObserver.instances[1];
+      fireResize(roB, 1024, 768);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1024, height: 768 });
+      expect(kernelB.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1024, 768);
+    });
+  });
+});
+
 describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
   it("returns a Snapshot whose descriptor matches the host's", async () => {
     const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR });

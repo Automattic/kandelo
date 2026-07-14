@@ -807,19 +807,22 @@ export class LiveKernelHost implements KernelHost {
   private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
   /**
    * Default paint mode for `attachKmsDisplay` when the caller passes no
-   * explicit `opts.mode`. Boot flows that know the demo renders CPU-side
-   * (dumb-bo memcpy + PAGE_FLIP, e.g. the wayland compositor) set this to
-   * `"webgl2-scanout"` so the kernel worker's vblank pump presents the
-   * scanout BO through a WebGL2 texture (`"2d"` is the legacy CPU blit);
-   * GL-driven demos keep the `"webgl2"` default and let the GL bridge
-   * claim the canvas.
+   * explicit `opts.mode`. The wayland boot flow sets `"webgl2-scanout"`
+   * so the kernel worker's vblank pump presents the scanout BO through a
+   * WebGL2 texture whenever the compositor is compositing CPU-side —
+   * at boot, and permanently if its GLES probe or a GL frame fails. In
+   * the browser the compositor's own GL context normally claims the
+   * canvas for GPU compositing as the steady state, standing the
+   * presenter down (`"2d"` is the legacy CPU blit). GL-driven demos keep
+   * the `"webgl2"` default and let the GL bridge claim the canvas.
    */
   private kmsDisplayModeDefault: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null = null;
   /**
    * Last display size (device pixels) reported per CRTC by the
    * attachKmsDisplay ResizeObserver. Boot flows read it via
    * {@link getKmsDisplaySize} to derive the advertised video mode
-   * before spawning a mode-picking client (wlcompositor).
+   * before spawning a mode-picking client (wlcompositor). Scoped to the
+   * current kernel: detachKernel clears it.
    */
   private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
 
@@ -865,6 +868,11 @@ export class LiveKernelHost implements KernelHost {
     this.ptySessions.clear();
     this.ptyCommandQueues.clear();
     this.shellPids.clear();
+    // The sizes describe the DETACHED kernel's panes. Left in place, the
+    // next boot's sizing wait-loop would read the previous session's size
+    // via getKmsDisplaySize, skip measuring, and never push the real size
+    // to the new kernel — the desktop falls back to a 1920×1080 letterbox.
+    this.kmsDisplaySizes.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
@@ -1623,6 +1631,16 @@ export class LiveKernelHost implements KernelHost {
       typeof ResizeObserver !== "undefined"
     ) {
       const resizeObserver = new ResizeObserver((entries) => {
+        // Bound to the kernel that attached this canvas. Once that kernel
+        // is detached (reboot), stop for good — otherwise this closure
+        // would keep re-populating kmsDisplaySizes (which detachKernel
+        // just cleared) with the dead session's size and pushing sizes
+        // into the dead kernel. The next boot's pane remount attaches a
+        // fresh canvas with its own observer.
+        if (this.kernel !== kernel) {
+          resizeObserver.disconnect();
+          return;
+        }
         const entry = entries[entries.length - 1];
         const dp = entry.devicePixelContentBoxSize?.[0];
         const width = dp

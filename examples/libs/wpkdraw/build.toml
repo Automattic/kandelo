@@ -1,4 +1,4 @@
 script_path = "examples/libs/wpkdraw/build.sh"
 # No repo_url / commit — in-tree source, built inline by
 # scripts/build-programs.sh (not resolved via cargo xtask build-deps).
-revision = 2
+revision = 1

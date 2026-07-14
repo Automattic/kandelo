@@ -16,20 +16,20 @@
  * Markers on stdout for the smoke gates:
  *   WLPAINT_READY            — window mapped + first frame committed
  *   WLPAINT_STROKE x=… y=…   — first stamp of each stroke (press)
+ *   WLPAINT_STROKE_END       — the stroke's release arrived (drag over;
+ *                              gates the pointer-grab/release routing)
+ *   WLPAINT_COLOR i=…        — palette swatch selected
+ *   WLPAINT_CLEAR            — clear button pressed
  *   WLPAINT_EXIT             — clean shutdown (close box)
  */
 #include <stdio.h>
 #include <string.h>
 
+#include <linux/input-event-codes.h>
+
 #include <kwl.h>
 #include <wpkdraw/wpkdraw.h>
 #include <wpkdraw/wpkfont.h>
-
-/* linux/input-event-codes.h value; the sysroot header is a minimal subset,
- * so define the one code we need. */
-#ifndef BTN_LEFT
-#define BTN_LEFT 0x110
-#endif
 
 #define WIN_W 640
 #define WIN_H 420
@@ -144,11 +144,15 @@ int main(void) {
                             if (ev.x >= x && ev.x < x + SWATCH_SZ) {
                                 cur_color = i;
                                 dirty = 1;
+                                printf("WLPAINT_COLOR i=%d\n", i);
+                                fflush(stdout);
                             }
                         }
                         if (ev.x >= CLEAR_X && ev.x < CLEAR_X + CLEAR_W) {
                             canvas_clear();
                             dirty = 1;
+                            printf("WLPAINT_CLEAR\n");
+                            fflush(stdout);
                         }
                     } else {
                         drawing = 1;
@@ -160,6 +164,10 @@ int main(void) {
                         fflush(stdout);
                     }
                 } else if (ev.button == BTN_LEFT && ev.state == 0) {
+                    if (drawing) {
+                        printf("WLPAINT_STROKE_END\n");
+                        fflush(stdout);
+                    }
                     drawing = 0;
                 }
                 break;

@@ -661,7 +661,9 @@ interface KmsGlPresenter {
    *  software GL (headless Chromium's SwiftShader) takes tens of ms
    *  for the mipmap chain + trilinear fullscreen draw, which would
    *  starve the kernel worker. Degraded presenters use plain bilinear
-   *  and skip generateMipmap; hardware GL never trips this. */
+   *  and skip generateMipmap. Hardware GL presents in well under a
+   *  millisecond; a stall landing mid-present (GC pause) can still
+   *  trip this, costing filtering quality, not correctness. */
   degraded: boolean;
 }
 
@@ -681,8 +683,10 @@ void main() {
 // DRM XRGB8888 little-endian bytes are [B,G,R,X]; uploaded as RGBA they
 // read back as (r=B, g=G, b=R). Swizzle in the sampler and force alpha
 // opaque — this replaces the 2d path's per-pixel CPU swizzle loop.
+// highp: mediump can be fp16, which loses texel addressing precision
+// above ~2048 px — connector modes go to 3840 wide.
 const KMS_SCANOUT_FS = `#version 300 es
-precision mediump float;
+precision highp float;
 uniform sampler2D u_scanout;
 in vec2 v_uv;
 out vec4 o_color;
@@ -696,6 +700,20 @@ void main() {
  *  error) so the pump can degrade to stats-only. The program stays
  *  bound for the context's lifetime — the pump is its sole user. */
 function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null {
+  // The context may be inherited from a torn-down program GL session
+  // (markKmsCanvasGlReleased): getContext returns the canvas's existing
+  // context with whatever state the dying compositor left behind, and
+  // nothing replays it back to defaults. Reset everything the
+  // fullscreen-triangle draw depends on; on a fresh context these are
+  // all defaults already.
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.bindVertexArray(null);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.disable(gl.BLEND);
+  gl.disable(gl.CULL_FACE);
+  gl.disable(gl.RASTERIZER_DISCARD);
+  gl.colorMask(true, true, true, true);
   const compile = (type: number, src: string): WebGLShader | null => {
     const sh = gl.createShader(type);
     if (!sh) return null;
@@ -995,7 +1013,9 @@ export class CentralizedKernelWorker {
   >();
   /** KMS stats SAB per CRTC. Slots [0..4] populated by the pump (frame
    *  count, timestamp, width, height, blit µs); slots [5,6] populated
-   *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`. */
+   *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`;
+   *  slot 7 = active presenter (1 = 2d, 2 = pump webgl2-scanout,
+   *  3 = program-owned WebGL2, 0 = none). */
   private kmsStatsViews = new Map<number, Int32Array>();
   /** Cached per-CRTC scratch for both presenters (putImageData /
    *  texImage2D) so the pump doesn't allocate 8 MB/frame at 1080p.
@@ -1041,8 +1061,10 @@ export class CentralizedKernelWorker {
         // context actually exists). If the pump's webgl2-scanout
         // presenter was active on this CRTC, it holds state on the SAME
         // WebGL2 context the program just inherited — stand it down and
-        // free its scanout texture; the muxer's shadow replay sanitizes
-        // the rest of the context state on the program's first submit.
+        // free its scanout texture (deletion also unbinds it from unit
+        // 0); anything else the presenter set (program binding, viewport,
+        // clear color) is state the claiming session sets itself before
+        // drawing.
         const presenter = this.kmsGlPresenters.get(crtcId);
         if (presenter) presenter.gl.deleteTexture(presenter.tex);
         this.kmsGlPresenters.delete(crtcId);
@@ -2697,29 +2719,6 @@ export class CentralizedKernelWorker {
       this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
     }
 
-    // --- Imported-bo coherence on poll return ---
-    // The GbmBoRegistry is bind-boundary-synced (see host/src/dri/
-    // registry.ts): an importer's long-lived mmap of another process's
-    // bo only gets the snapshot taken at mmap time. A wl_shm compositor
-    // keeps that mapping for the buffer's lifetime and re-reads it on
-    // every commit, so without a refresh it composites the client's
-    // first frame forever. A poll-family return is exactly the moment
-    // such an importer is about to process a commit and read the
-    // buffer, so refresh its imported mappings here. `hasStaleableImports`
-    // is a cheap metadata check; processes without cross-process bo
-    // imports (everything except a compositor) skip in O(live bos).
-    if (
-      (syscallNr === SYS_POLL ||
-        syscallNr === SYS_PPOLL ||
-        syscallNr === SYS_EPOLL_WAIT ||
-        syscallNr === SYS_EPOLL_PWAIT ||
-        syscallNr === SYS_SELECT ||
-        syscallNr === SYS_PSELECT6) &&
-      this.kernel.bos.hasStaleableImports(channel.pid)
-    ) {
-      this.kernel.bos.syncImportsForPid(channel.pid, channel.memory);
-    }
-
     // --- Signal-death check ---
     // If deliver_pending_signals marked this process as Exited (e.g., abort()
     // raises SIGABRT with default action Terminate), don't complete the channel.
@@ -2792,6 +2791,24 @@ export class CentralizedKernelWorker {
       this.reapKilledProcessesAfterSyscall();
     }
 
+    // --- Imported-bo coherence on poll readiness ---
+    // The GbmBoRegistry is bind-boundary-synced (see host/src/dri/
+    // registry.ts): an importer's long-lived mmap of another process's
+    // bo only gets the snapshot taken at mmap time. A wl_shm compositor
+    // keeps that mapping for the buffer's lifetime and re-reads it on
+    // every commit, so refresh imported mappings when a wait reports
+    // readiness — the moment the importer wakes to process a commit.
+    // Only poll/ppoll reach this tail (epoll and select/pselect are
+    // intercepted before it; the epoll interception carries its own
+    // mirror of this sync). Below the EAGAIN branch so a still-blocked
+    // poller doesn't pay the copy on every retry.
+    if (
+      (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) &&
+      retVal > 0 &&
+      this.kernel.bos.hasStaleableImports(channel.pid)
+    ) {
+      this.kernel.bos.syncImportsForPid(channel.pid, channel.memory);
+    }
 
     // --- Normal completion ---
     if (logging) {
@@ -3693,7 +3710,7 @@ export class CentralizedKernelWorker {
 
     // 3) Select/pselect retry timer.
     const selEntry = this.pendingSelectRetries.get(this.retryKey(target));
-    if (selEntry && selEntry.channel === target) {
+    if (selEntry) {
       clearTimeout(selEntry.timer);
       clearImmediate(selEntry.timer);
       this.pendingSelectRetries.delete(this.retryKey(target));
@@ -8977,6 +8994,14 @@ export class CentralizedKernelWorker {
     statsSab?: SharedArrayBuffer,
     opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
+    // A remounted pane attaches a NEW OffscreenCanvas for the same CRTC;
+    // a presenter cached against the old canvas would keep painting the
+    // orphaned bitmap (getContext on the new canvas is never called).
+    // Cached `null` failures are dropped too — the new canvas may accept
+    // a context the old one refused.
+    if (this.kmsCanvases.get(crtc_id) !== canvas) {
+      this.kmsGlPresenters.delete(crtc_id);
+    }
     this.kmsCanvases.set(crtc_id, canvas);
     if (statsSab) this.kmsStatsViews.set(crtc_id, new Int32Array(statsSab));
     const mode = opts?.mode ?? "auto";
@@ -9238,8 +9263,9 @@ export class CentralizedKernelWorker {
     // SwiftShader) where the mip chain + trilinear fullscreen draw cost
     // tens of ms and would starve the kernel worker between presents.
     // Fall back to plain bilinear once, permanently. Hardware GL
-    // presents in well under a millisecond and never trips this. The
-    // first present is exempt — it pays one-off allocation costs.
+    // presents in well under a millisecond; a false trip (a GC pause
+    // landing mid-present) costs filtering quality only. The first
+    // present is exempt — it pays one-off allocation costs.
     if (!presenter.degraded && presenter.presentCount > 0 &&
         performance.now() - presentStart > 16) {
       presenter.degraded = true;

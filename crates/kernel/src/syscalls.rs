@@ -2602,22 +2602,7 @@ pub fn sys_read(
                 return Err(Errno::EINVAL);
             }
             let tfd_idx = (-(host_handle + 1)) as usize;
-            // Compute expirations lazily, against the timer's OWN clock.
-            // TFD_TIMER_ABSTIME targets live in the domain of tfd.clock_id
-            // (libinput arms CLOCK_MONOTONIC absolutes); comparing them
-            // against CLOCK_REALTIME makes every monotonic timer look
-            // already-expired on hosts where the two epochs differ.
-            if let Some(clock_id) = proc
-                .timerfds
-                .get(tfd_idx)
-                .and_then(|s| s.as_ref())
-                .map(|t| t.clock_id)
-            {
-                let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
-                if let Some(Some(tfd)) = proc.timerfds.get_mut(tfd_idx) {
-                    timerfd_compute_expirations(tfd, now_sec, now_nsec);
-                }
-            }
+            timerfd_refresh(proc, host, tfd_idx)?;
             let tfd = proc
                 .timerfds
                 .get_mut(tfd_idx)
@@ -6313,6 +6298,12 @@ pub fn sys_munmap(
     if addr & 0xFFFF != 0 {
         return Err(Errno::EINVAL);
     }
+    // Linux unmaps every page containing part of the range, so round len up
+    // to the page before anything else: the fb0/DRI coverage sweeps below
+    // must see the same extent MemoryManager::munmap frees, or a
+    // map(page-aligned)/unmap(raw bo size) pair — both accepted by the DRI
+    // mmap path — would free the pages while the host keeps mirroring them.
+    let len = len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
     // POSIX: addresses in [addr, addr+len) must be within the valid address space.
     // Reject if the range overflows or extends beyond Wasm linear memory limits.
     if addr.checked_add(len).is_none() {
@@ -8193,23 +8184,9 @@ fn poll_check_depth(
             }
             FileType::TimerFd => {
                 let tfd_idx = (-(ofd.host_handle + 1)) as usize;
-                // Expirations are computed lazily, and poll is a consumer
-                // too: evaluate against the current time of the timer's
-                // OWN clock (see FileType::TimerFd in sys_read) so a
-                // parked poller sees a timer that expired while it slept
-                // instead of waiting forever on the cached counter.
-                let clock_id = proc
-                    .timerfds
-                    .get(tfd_idx)
-                    .and_then(|s| s.as_ref())
-                    .map(|t| t.clock_id);
-                if let Some(clock_id) = clock_id {
-                    if let (Ok((now_sec, now_nsec)), Some(Some(tfd))) =
-                        (host.host_clock_gettime(clock_id), proc.timerfds.get_mut(tfd_idx))
-                    {
-                        timerfd_compute_expirations(tfd, now_sec, now_nsec);
-                    }
-                }
+                // A clock failure can't be reported through poll's readiness
+                // count; the fd just stays not-ready this pass.
+                let _ = timerfd_refresh(proc, host, tfd_idx);
                 if let Some(Some(tfd)) = proc.timerfds.get(tfd_idx) {
                     if pollfd.events & POLLIN != 0 && tfd.expirations > 0 {
                         revents |= POLLIN;
@@ -10266,6 +10243,31 @@ pub fn sys_timerfd_gettime(
         remain_nsec = 0;
     }
     Ok((tfd.interval_sec, tfd.interval_nsec, remain_sec, remain_nsec))
+}
+
+/// Recompute a timerfd's pending expirations against the current time of
+/// the timer's OWN clock. TFD_TIMER_ABSTIME targets live in the domain of
+/// `tfd.clock_id` (libinput arms CLOCK_MONOTONIC absolutes); comparing
+/// them against CLOCK_REALTIME makes every monotonic timer look
+/// already-expired on hosts where the two epochs differ. Every consumer
+/// of `expirations` (read and poll alike) must refresh through here first.
+fn timerfd_refresh(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    tfd_idx: usize,
+) -> Result<(), Errno> {
+    if let Some(clock_id) = proc
+        .timerfds
+        .get(tfd_idx)
+        .and_then(|s| s.as_ref())
+        .map(|t| t.clock_id)
+    {
+        let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
+        if let Some(Some(tfd)) = proc.timerfds.get_mut(tfd_idx) {
+            timerfd_compute_expirations(tfd, now_sec, now_nsec);
+        }
+    }
+    Ok(())
 }
 
 /// Helper: compute timerfd expirations lazily.
@@ -19238,6 +19240,48 @@ mod tests {
     }
 
     #[test]
+    fn test_timerfd_expiry_surfaces_through_epoll() {
+        // libinput waits on its timerfd through epoll (not bare poll), which
+        // reaches the lazy refresh via the epoll→poll_check_depth recursion
+        // arm — cover that shape, not just direct sys_poll.
+        use wasm_posix_shared::clock::CLOCK_MONOTONIC;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.clock_time = (1_700_000_000, 0);
+        host.monotonic_time = Some((100, 0));
+
+        let fd = sys_timerfd_create(&mut proc, CLOCK_MONOTONIC, 0).unwrap();
+        const TFD_TIMER_ABSTIME: u32 = 1;
+        sys_timerfd_settime(
+            &mut proc,
+            &mut host,
+            fd,
+            TFD_TIMER_ABSTIME,
+            0,
+            0,
+            100,
+            25_000_000,
+        )
+        .unwrap();
+
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let epollin: u32 = 0x001;
+        sys_epoll_ctl(&mut proc, epfd, 1, fd, epollin, 0x5555_6666).unwrap();
+
+        // Not yet expired → epoll reports nothing.
+        let (count, _) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 0);
+
+        // Expiry with no intervening read/settime → epoll alone must
+        // surface the readiness, carrying the registered data.
+        host.monotonic_time = Some((100, 30_000_000));
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 1);
+        assert_ne!(events[0].0 & epollin, 0);
+        assert_eq!(events[0].1, 0x5555_6666);
+    }
+
+    #[test]
     fn test_timerfd_settime_disarm() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -23095,6 +23139,46 @@ mod tests {
         assert_eq!(proc.dri_bindings.len(), 1);
 
         sys_munmap(&mut proc, &mut host, addr, aligned_len).unwrap();
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, addr, aligned_len)]
+        );
+    }
+
+    #[test]
+    fn munmap_dri_raw_len_unbinds_page_aligned_binding() {
+        // sys_mmap accepts either the raw bo size or the page-aligned size,
+        // and MemoryManager::munmap rounds len up to the page — so an
+        // unmap with the raw size must still cover (and host-unbind) a
+        // binding recorded with the aligned size, or the host would keep
+        // mirroring pages the allocator has already recycled.
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let aligned_len = (size as usize + 0xFFFF) & !0xFFFF;
+        assert_ne!(size as usize, aligned_len);
+
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap();
+        let bo_id = (offset >> 12) as u32;
+
+        sys_munmap(&mut proc, &mut host, addr, size as usize).unwrap();
         assert!(proc.dri_bindings.is_empty());
         assert_eq!(
             host.gbm_bo_unbind_calls,

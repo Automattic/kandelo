@@ -179,7 +179,8 @@ build_cpp_program() {
 # (NOT via the resolver — it walks packages/registry/ only, and wpkdraw is
 # pure in-tree source with no upstream tarball). build.sh installs
 # lib/libwpkdraw.a + include/wpkdraw/ into the sysroot; consumers
-# (wpkdraw_smoke, kwldemo, wlterm) then link libwpkdraw.a and #include
+# (wpkdraw_smoke, kwldemo, wlterm, wlcompositor, wlclock, wlpaint)
+# then link libwpkdraw.a and #include
 # <wpkdraw/…> off the sysroot include path. Runs before the flat program
 # loop so the wpkdraw_smoke.c case branch below can link it. See
 # docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §3.
@@ -586,35 +587,15 @@ if [ -d "$LIBKWL_DIR/src" ]; then
     CC="$CC" AR="$LLVM_BIN/llvm-ar" XDG_SHELL_INCLUDE="$KWL_GEN" \
         bash "$LIBKWL_DIR/build.sh" "$SYSROOT"
 
-    # kwldemo (PR7 Phase 2 gate): a libkwl button+label window driven against
-    # wlcompositor. Link order: dependents before deps — kwldemo + xdg glue,
-    # then libkwl (calls wpk_*/wl_*/xkb_*), then libwpkdraw, then the wayland
-    # stack, libffi last so wl_closure_invoke's ffi_call resolves.
-    if [ -f "$REPO_ROOT/programs/kwldemo.c" ]; then
-        kwldemo_wasm="$OUT_DIR_32/kwldemo.wasm"
-        echo "  Compiling kwldemo (libkwl gate)..."
-        "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
-            "$REPO_ROOT/programs/kwldemo.c" \
-            "$KWL_GEN/xdg-shell-protocol.c" \
-            "${LINK_PRE_LIBS[@]}" \
-            "$SYSROOT/lib/libkwl.a" \
-            "$SYSROOT/lib/libwpkdraw.a" \
-            "$SYSROOT/lib/libwayland-client.a" \
-            "$SYSROOT/lib/libxkbcommon.a" \
-            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
-            "$SYSROOT/lib/libffi.a" \
-            "${LINK_POST_LIBS[@]}" \
-            -o "$kwldemo_wasm"
-        "$FORK_INSTRUMENT" "$kwldemo_wasm" -o "$kwldemo_wasm.instr"
-        mv "$kwldemo_wasm.instr" "$kwldemo_wasm"
-    fi
-
-    # Wayland desktop demo clients: wlclock (animated analog clock) and
-    # wlpaint (palette + pointer-drag painting). Same link line as kwldemo.
-    for kwl_app in wlclock wlpaint; do
+    # libkwl clients: kwldemo (PR7 Phase 2 gate), wlclock (animated analog
+    # clock), wlpaint (palette + pointer-drag painting). Link order:
+    # dependents before deps — app + xdg glue, then libkwl (calls
+    # wpk_*/wl_*/xkb_*), then libwpkdraw, then the wayland stack, libffi
+    # last so wl_closure_invoke's ffi_call resolves.
+    for kwl_app in kwldemo wlclock wlpaint; do
         [ -f "$REPO_ROOT/programs/$kwl_app.c" ] || continue
         kwl_app_wasm="$OUT_DIR_32/$kwl_app.wasm"
-        echo "  Compiling $kwl_app (libkwl desktop client)..."
+        echo "  Compiling $kwl_app (libkwl client)..."
         "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
             "$REPO_ROOT/programs/$kwl_app.c" \
             "$KWL_GEN/xdg-shell-protocol.c" \

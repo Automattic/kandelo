@@ -29,6 +29,7 @@ function makeFakeGl() {
     mipmaps: number;
     texParams: number[][];
     deletedTextures: number;
+    contextResets: number;
   } = {
     texImage2D: 0,
     texSubImage2D: 0,
@@ -37,13 +38,20 @@ function makeFakeGl() {
     mipmaps: 0,
     texParams: [],
     deletedTextures: 0,
+    contextResets: 0,
   };
   const gl = {
     VERTEX_SHADER: 1, FRAGMENT_SHADER: 2, COMPILE_STATUS: 3, LINK_STATUS: 4,
     TEXTURE_2D: 5, TEXTURE_MIN_FILTER: 6, LINEAR_MIPMAP_LINEAR: 7,
     TEXTURE_MAG_FILTER: 8, LINEAR: 9, TEXTURE_WRAP_S: 10, CLAMP_TO_EDGE: 11,
     TEXTURE_WRAP_T: 12, RGBA8: 13, RGBA: 14, UNSIGNED_BYTE: 15,
-    COLOR_BUFFER_BIT: 16, TRIANGLES: 17,
+    COLOR_BUFFER_BIT: 16, TRIANGLES: 17, FRAMEBUFFER: 18, SCISSOR_TEST: 19,
+    BLEND: 20, CULL_FACE: 21, RASTERIZER_DISCARD: 22, TEXTURE0: 23,
+    bindFramebuffer: () => { calls.contextResets++; },
+    bindVertexArray: () => {},
+    activeTexture: () => {},
+    disable: () => {},
+    colorMask: () => {},
     createShader: () => ({}),
     shaderSource: () => {},
     compileShader: () => {},
@@ -357,6 +365,40 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     tick();
     expect(Atomics.load(view, 0)).toBe(frames + 1);
     expect(Atomics.load(view, 7)).toBe(2);
+    // The rebuild runs on the context the dead compositor was driving:
+    // the presenter must reset inherited state (FBO binding et al.), not
+    // assume fresh-context defaults.
+    expect(calls.contextResets).toBe(2);
+  });
+
+  it("attachKmsCanvas rebuilds the presenter when a remounted pane brings a new canvas", () => {
+    const kernel = makeKernel();
+    stubScanout(kernel, 32, 24);
+    let commits = 0;
+    (kernel as unknown as { kernelInstance: unknown }).kernelInstance = {
+      exports: {
+        kernel_kms_commit_count: (_crtc: number) => BigInt(commits),
+        kernel_kms_last_frame_us: (_crtc: number) => 0n,
+      },
+    };
+    const tick = () => (kernel as unknown as { tickVblank: () => void }).tickVblank();
+
+    const a = makeFakeGl();
+    const canvasA = makeFakeGlCanvas(a.gl);
+    kernel.attachKmsCanvas(1, canvasA, new SharedArrayBuffer(8 * 4), { mode: "webgl2-scanout" });
+    tick();
+    expect(a.calls.draws).toBe(1);
+
+    // Same CRTC, new OffscreenCanvas: a presenter cached against canvas A
+    // would keep painting the orphaned bitmap while canvas B stays black.
+    const b = makeFakeGl();
+    const canvasB = makeFakeGlCanvas(b.gl);
+    kernel.attachKmsCanvas(1, canvasB, new SharedArrayBuffer(8 * 4), { mode: "webgl2-scanout" });
+    commits++;
+    tick();
+    expect(canvasB.getContextCalls).toBe(1);
+    expect(b.calls.draws).toBe(1);
+    expect(a.calls.draws).toBe(1);
   });
 
   it("webgl2-scanout degrades to bilinear when a steady-state present overruns the frame budget", () => {

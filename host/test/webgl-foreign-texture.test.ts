@@ -19,6 +19,7 @@ function makeFakeGl() {
   const state = {
     activeTexture: 0x84c2, // "unit 2 was active"
     binding2d: { name: "prev-tex" },
+    unpackRowLength: 0,
   };
   const calls = {
     texImage2D: 0,
@@ -44,7 +45,11 @@ function makeFakeGl() {
     createTexture: () => ({ id: ++texN }),
     deleteTexture: (t: unknown) => { calls.deletedTextures.push(t); },
     getParameter: (p: number) =>
-      p === 0x84e0 ? state.activeTexture : state.binding2d,
+      p === 0x84e0
+        ? state.activeTexture
+        : p === GL_UNPACK_ROW_LENGTH
+          ? state.unpackRowLength
+          : state.binding2d,
     activeTexture: (u: number) => { calls.activeTexture.push(u); },
     pixelStorei: (p: number, v: number) => { calls.pixelStorei.push([p, v]); },
     bindTexture: (_target: number, tex: unknown) => { calls.bindTexture.push(tex); },
@@ -115,6 +120,33 @@ describe("bindForeignTexture — BIND_FOREIGN_TEXTURE upload path", () => {
     expect(bindForeignTexture(b, 1, bytes, { w: 4, h: 2, stride: 12 })).toBe(-22);
     const { b: noGl } = makeBinding(null);
     expect(bindForeignTexture(noGl, 1, bytes, { w: 4, h: 2, stride: 16 })).toBe(-5);
+  });
+
+  it("restores a caller-set UNPACK_ROW_LENGTH instead of resetting it to 0", () => {
+    // Row length isn't muxer-shadow-tracked, so a guest that set it via
+    // pixelStorei would be silently clobbered by an interleaved foreign
+    // upload unless the live value is queried and restored.
+    const { gl, calls, state } = makeFakeGl();
+    const { b } = makeBinding(gl);
+    state.unpackRowLength = 5;
+    bindForeignTexture(b, 55, new Uint8Array(64), { w: 4, h: 2, stride: 32 });
+    expect(calls.pixelStorei.at(-2)).toEqual([GL_UNPACK_ROW_LENGTH, 5]);
+  });
+
+  it("unbind deletes the binding's foreign textures from the surviving context", () => {
+    // The KMS canvas context outlives a dead compositor's binding (the
+    // pump keeps using it), so unbind must free textures deterministically
+    // rather than leave them to GC.
+    const { gl, calls } = makeFakeGl();
+    const { reg, b } = makeBinding(gl);
+    const bytes = new Uint8Array(64);
+    bindForeignTexture(b, 1, bytes, { w: 2, h: 2, stride: 8 });
+    bindForeignTexture(b, 2, bytes, { w: 2, h: 2, stride: 8 });
+    const texes = [b.foreignTextures.get(1)!.tex, b.foreignTextures.get(2)!.tex];
+
+    reg.unbind(7);
+    expect(calls.deletedTextures).toEqual(texes);
+    expect(reg.get(7)).toBeUndefined();
   });
 
   it("dropForeignTexturesForBo deletes the texture and both mirror entries", () => {
