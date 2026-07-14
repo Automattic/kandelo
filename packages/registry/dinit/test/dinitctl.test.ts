@@ -15,11 +15,6 @@ describe.skipIf(!dinitctlBinary)("dinitctl", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(`connecting to socket: ${socketPath}`);
-    expect(result.hostDiagnostics).toEqual([
-      expect.objectContaining({ source: "process exit", status: 1 }),
-    ]);
-    expect(
-      result.hostDiagnostics.map(({ message }) => message).join("\n"),
-    ).not.toContain("WebAssembly.Exception");
+    expect(result.hostDiagnostics).toEqual([]);
   });
 });

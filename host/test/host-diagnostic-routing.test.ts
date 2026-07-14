@@ -9,6 +9,10 @@ const entries = [
   ["Node", join(repoRoot, "host/src/node-kernel-worker-entry.ts")],
   ["browser", join(repoRoot, "host/src/browser-kernel-worker-entry.ts")],
 ] as const;
+const processWorkerSource = readFileSync(
+  join(repoRoot, "host/src/worker-main.ts"),
+  "utf8",
+);
 
 describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   const source = readFileSync(path, "utf8");
@@ -31,4 +35,14 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
     }
     expect(source).toContain("reportHostDiagnostic({");
   });
+
+  it("does not classify an ordinary nonzero process exit as a host failure", () => {
+    expect(source).not.toContain("nonzero process exit");
+    expect(source).not.toContain("reportedNonzeroProcessExits");
+    expect(source).not.toContain("-> forcing exit");
+  });
+});
+
+it("does not log an ordinary process exit from the process worker", () => {
+  expect(processWorkerSource).not.toContain("_start() returned, exitCode=");
 });

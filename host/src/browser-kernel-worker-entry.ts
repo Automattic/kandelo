@@ -249,7 +249,6 @@ interface ThreadWorkerInfo {
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
-const reportedNonzeroProcessExits = new Set<number>();
 
 function handleVmInterruptTimer(msg: {
   pid: number;
@@ -280,28 +279,6 @@ function processWorkerTerminationSettleMs(argv: readonly string[] | undefined): 
     : 0;
 }
 
-function reportNonzeroProcessExitDiagnostic(
-  pid: number,
-  status: number,
-  source: string,
-): void {
-  if (status === 0 || reportedNonzeroProcessExits.has(pid)) return;
-  reportedNonzeroProcessExits.add(pid);
-  const info = processes.get(pid);
-  const syscalls = kernelWorker.dumpLastSyscalls(pid) || "<none>";
-  const serviceLog = readServiceLogForProcess(info?.argv);
-  const diagnostic =
-    `[kernel-worker] nonzero process exit pid=${pid} status=${status} source=${source} argv=${JSON.stringify(info?.argv ?? [])}` +
-    (serviceLog ? `\n${serviceLog}` : "") +
-    `\n${syscalls}`;
-  reportHostDiagnostic({
-    pid,
-    status,
-    source,
-    message: diagnostic,
-  }, "warn");
-}
-
 function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {
   const name = basename(argv?.[0] ?? "");
   const logPath = name === "nginx" ? "/var/log/nginx.log" : null;
@@ -310,6 +287,17 @@ function readServiceLogForProcess(argv: readonly string[] | undefined): string |
   if (!bytes || bytes.byteLength === 0) return `${logPath}: <empty>`;
   const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trimEnd();
   return `${logPath}:\n${text || "<empty>"}`;
+}
+
+function formatProcessFailureContext(pid: number): string {
+  const info = processes.get(pid);
+  const serviceLog = readServiceLogForProcess(info?.argv);
+  const syscalls = kernelWorker.dumpLastSyscalls(pid) || "<none>";
+  return [
+    `argv=${JSON.stringify(info?.argv ?? [])}`,
+    serviceLog,
+    `last syscalls:\n${syscalls}`,
+  ].filter((line): line is string => line !== null).join("\n");
 }
 
 async function waitForProcessTeardowns(): Promise<void> {
@@ -969,17 +957,27 @@ function installProcessWorkerListeners(
   pid: number,
 ): void {
   let exited = false;
-  const finalize = (status: number, source: string, crashSignum?: number) => {
+  const finalize = (
+    status: number,
+    crashSignum?: number,
+    failure?: Pick<HostDiagnostic, "source" | "message">,
+  ) => {
     if (exited) return;
     if (intentionallyTerminated.has(worker as object)) return;
     if (processes.get(pid)?.worker !== worker) return; // already replaced (e.g. by exec)
     exited = true;
-    const message = `[kernel-worker] pid=${pid} ${source} -> forcing exit ${status}`;
-    if (status === 0 && source === "worker-main exit message") {
-      console.debug(message);
+    try {
+      if (failure !== undefined) {
+        reportHostDiagnostic({
+          pid,
+          status,
+          source: failure.source,
+          message: `${failure.message}\n${formatProcessFailureContext(pid)}`,
+        });
+      }
+    } finally {
+      handleExit(pid, status, crashSignum, worker);
     }
-    reportNonzeroProcessExitDiagnostic(pid, status, source);
-    handleExit(pid, status, crashSignum, worker);
   };
 
   // Status conventions match the Node host:
@@ -992,13 +990,14 @@ function installProcessWorkerListeners(
     if (intentionallyTerminated.has(worker as object)) return;
     const signum = classifiedSignalOrFallback(err);
     const status = signalExitStatus(signum);
-    reportHostDiagnostic({
-      pid,
+    finalize(
       status,
-      source: "worker.onerror",
-      message: `[kernel-worker] worker error pid=${pid}: ${err.message}`,
-    });
-    finalize(status, "worker.onerror", signum);
+      signum,
+      {
+        source: "worker.onerror",
+        message: `[kernel-worker] worker error pid=${pid}: ${err.message}`,
+      },
+    );
   });
   worker.on("exit", (code: number) => {
     // BrowserWorkerHandle synthesizes an "exit" event when the underlying
@@ -1012,7 +1011,18 @@ function installProcessWorkerListeners(
     // finalized via the "error" handler above, so this is a no-op there.
     // If "exit" fires without a prior "error" (worker died via some path
     // we don't yet model), still treat it as a crash.
-    finalize(signalExitStatus(SIGSEGV), "worker exit event", SIGSEGV);
+    if (exited) return;
+    const status = signalExitStatus(SIGSEGV);
+    finalize(
+      status,
+      SIGSEGV,
+      {
+        source: "worker exit event",
+        message:
+          `[process-worker] pid=${pid} crashed ` +
+          `(worker exit code=${code}, no exit message from wasm)`,
+      },
+    );
   });
   worker.on("message", (msg: unknown) => {
     if (intentionallyTerminated.has(worker as object)) return;
@@ -1022,15 +1032,16 @@ function installProcessWorkerListeners(
     if (m.type === "error") {
       const signum = classifiedSignalOrFallback(m.message);
       const status = classifiedTrapExitStatus(m.message) ?? -1;
-      reportHostDiagnostic({
-        pid,
+      finalize(
         status,
-        source: "worker-main error message",
-        message: `[process-worker] ${m.message ?? "unknown error"}`,
-      });
-      finalize(status, "worker-main error message", signum);
+        signum,
+        {
+          source: "worker-main error message",
+          message: `[process-worker] ${m.message ?? "unknown error"}`,
+        },
+      );
     } else if (m.type === "exit") {
-      finalize(m.status ?? 0, "worker-main exit message");
+      finalize(m.status ?? 0);
     } else if (m.type === "vm_interrupt_timer") {
       handleVmInterruptTimer(m, pid, process);
     }
@@ -1688,7 +1699,6 @@ async function finishProcessExit(
   if (processTeardowns.has(expectedWorker)) return;
   vmInterruptTimers.clear(pid);
 
-  reportNonzeroProcessExitDiagnostic(pid, exitStatus, "kernel process exit");
   const threadedSettleMs = threadedProcessPids.has(pid)
     ? THREADED_WORKER_TERMINATION_SETTLE_MS
     : 0;

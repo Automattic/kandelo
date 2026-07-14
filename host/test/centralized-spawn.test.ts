@@ -108,6 +108,7 @@ describe("non-forking posix_spawn", () => {
       expect(result.stderr).toContain("Exec format error");
       expect(result.stderr).not.toContain("Centralized worker failed");
       expect(result.stderr).not.toContain("WebAssembly.compile()");
+      expect(result.hostDiagnostics).toEqual([]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -140,6 +141,7 @@ describe("non-forking posix_spawn", () => {
       expect(result.stderr).toContain("Exec format error");
       expect(result.stderr).not.toContain("Centralized worker failed");
       expect(result.stderr).not.toContain("WebAssembly.compile()");
+      expect(result.hostDiagnostics).toEqual([]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
