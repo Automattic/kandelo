@@ -172,4 +172,83 @@ describe('integration: compile C program', () => {
     try { unlinkSync(srcFile); } catch {}
     try { unlinkSync(objFile); } catch {}
   }, 30_000);
+
+  it('keeps direct helper objects ahead of dependent static libraries', async () => {
+    const toolchain = await resolveToolchain();
+    mkdirSync(TMP_DIR, { recursive: true });
+
+    const mainSource = join(TMP_DIR, 'link-order-main.c');
+    const mainObject = join(TMP_DIR, 'link-order-main.o');
+    const directHelperSource = join(TMP_DIR, 'link-order-direct-helper.c');
+    const directHelperObject = join(TMP_DIR, 'link-order-direct-helper.o');
+    const apiSource = join(TMP_DIR, 'link-order-api.c');
+    const apiObject = join(TMP_DIR, 'link-order-api.o');
+    const archiveHelperSource = join(TMP_DIR, 'link-order-archive-helper.c');
+    const archiveHelperObject = join(TMP_DIR, 'link-order-archive-helper.o');
+    const providerArchive = join(TMP_DIR, 'liblink-order-provider.a');
+    const output = join(TMP_DIR, 'link-order.wasm');
+    const paths = [
+      mainSource,
+      mainObject,
+      directHelperSource,
+      directHelperObject,
+      apiSource,
+      apiObject,
+      archiveHelperSource,
+      archiveHelperObject,
+      providerArchive,
+      output,
+    ];
+
+    writeFileSync(mainSource, `
+      extern int link_order_api(void);
+      int main(void) { return link_order_api(); }
+    `);
+    writeFileSync(directHelperSource, `
+      int link_order_helper(void) { return 42; }
+    `);
+    writeFileSync(apiSource, `
+      extern int link_order_helper(void);
+      int link_order_api(void) { return link_order_helper() == 42 ? 0 : 1; }
+    `);
+    writeFileSync(archiveHelperSource, `
+      int link_order_helper(void) { return 7; }
+    `);
+
+    try {
+      for (const [source, object] of [
+        [mainSource, mainObject],
+        [directHelperSource, directHelperObject],
+        [apiSource, apiObject],
+        [archiveHelperSource, archiveHelperObject],
+      ]) {
+        const compile = await run(toolchain.cc, buildClangArgs(['-c', source, '-o', object], toolchain));
+        expect(compile.exitCode, compile.stderr).toBe(0);
+      }
+      const archive = await run(toolchain.ar, ['rcs', providerArchive, apiObject, archiveHelperObject]);
+      expect(archive.exitCode, archive.stderr).toBe(0);
+
+      const linkArgs = [
+        mainObject,
+        directHelperObject,
+        '-L',
+        TMP_DIR,
+        '-llink-order-provider',
+        '-o',
+        output,
+      ];
+      await prepareExecutableLinker(linkArgs, toolchain);
+      const link = await run(toolchain.cc, buildClangArgs(linkArgs, toolchain));
+      expect(link.exitCode, link.stderr).toBe(0);
+
+      const module = new WebAssembly.Module(readFileSync(output));
+      const imports = WebAssembly.Module.imports(module).map((entry) => entry.name);
+      expect(imports).not.toContain('link_order_api');
+      expect(imports).not.toContain('link_order_helper');
+    } finally {
+      for (const path of paths) {
+        try { unlinkSync(path); } catch {}
+      }
+    }
+  }, 30_000);
 });

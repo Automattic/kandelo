@@ -106,6 +106,25 @@ describe('parseArgs', () => {
     expect(parsed.archiveFiles).toEqual(['libbar.a']);
   });
 
+  it('retains the original order of forwarded linker inputs and controls', () => {
+    const parsed = parseArgs([
+      'main.o',
+      '-Wl,--start-group',
+      '-lfoo',
+      'libbar.a',
+      '-Wl,--end-group',
+      '-o',
+      'out.wasm',
+    ]);
+    expect(parsed.forwardedArgs).toEqual([
+      'main.o',
+      '-Wl,--start-group',
+      '-lfoo',
+      'libbar.a',
+      '-Wl,--end-group',
+    ]);
+  });
+
   it('handles -ofilename (no space) syntax', () => {
     const parsed = parseArgs(['-c', 'foo.c', '-ofoo.o']);
     expect(parsed.outputFile).toBe('foo.o');

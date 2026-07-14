@@ -127,6 +127,11 @@ wasm32posix-ar rcs libfoo.a lib_a.o lib_b.o
 wasm32posix-cc main.c -L. -lfoo -o program.wasm
 ```
 
+The compiler wrapper preserves the caller's linker-input order. Objects,
+explicit archives, `-l` libraries, and linker group controls reach Clang in
+the same relative sequence supplied by the build system, as required by
+normal static archive resolution.
+
 ### With dynamic loading (dlopen)
 
 ```bash
