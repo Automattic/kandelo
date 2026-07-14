@@ -28,6 +28,11 @@ if ! command -v wasm32posix-cc &>/dev/null; then
     exit 1
 fi
 
+if ! command -v automake &>/dev/null; then
+    echo "ERROR: automake not found in the Kandelo dev shell." >&2
+    exit 1
+fi
+
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "ERROR: sysroot not found. Run: bash scripts/build-musl.sh" >&2
     exit 1
@@ -59,6 +64,19 @@ if [ ! -d "$SRC_DIR" ]; then
 fi
 
 cd "$SRC_DIR"
+
+# GNU Netcat 0.7.1 predates Wasm and musl target tuples. Use the canonical
+# helpers from the declared Automake build input so configure can validate the
+# SDK's truthful wasm*-unknown-linux-musl host identity on every POSIX builder.
+AUTOMAKE_AUX_DIR="$(automake --print-libdir)"
+for auxiliary in config.sub config.guess; do
+    source_auxiliary="$AUTOMAKE_AUX_DIR/$auxiliary"
+    if [ ! -f "$source_auxiliary" ] || [ -L "$source_auxiliary" ]; then
+        echo "ERROR: Automake support file is unavailable: $source_auxiliary" >&2
+        exit 1
+    fi
+    install -m 0755 "$source_auxiliary" "$SRC_DIR/$auxiliary"
+done
 
 PATCH_MARKER="$SRC_DIR/.kandelo-patches-applied"
 PATCH_SET=(
@@ -121,7 +139,6 @@ if [ ! -f Makefile ]; then
     export gl_cv_func_gettimeofday_clobber=no
 
     wasm32posix-configure \
-        --build=arm-apple-darwin \
         --disable-nls \
         --without-included-gettext \
         2>&1 | tail -40

@@ -1,7 +1,7 @@
 script_path = "packages/registry/netcat/build-netcat.sh"
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "2e6293a50ccf996b1a434aa701057b862a46c587"
-revision    = 2
+revision    = 3
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
