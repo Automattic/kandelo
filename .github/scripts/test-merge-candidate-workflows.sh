@@ -170,8 +170,14 @@ grep -Fq 'select-package-archive-source.sh' "$PREPARE" || \
   fail "Prepare merge must prefer an existing canonical cache-key asset"
 grep -Fq 'download-verified-release-asset.sh' "$PREPARE" || \
   fail "Prepare merge must verify snapshotted source asset bytes before promotion"
-grep -Fq -- '--tag "${{ matrix.source_tag }}"' "$PREPARE" || \
+grep -Fq 'ARCHIVE_NAME: ${{ matrix.archive_name }}' "$PREPARE" || \
+  fail "Prepare merge must pass the selected archive name through the environment"
+grep -Fq 'SOURCE_TAG: ${{ matrix.source_tag }}' "$PREPARE" || \
+  fail "Prepare merge must pass the selected source release through the environment"
+grep -Fq -- '--tag "$SOURCE_TAG"' "$PREPARE" || \
   fail "Prepare merge promotion must download from the selected source release"
+grep -Fq -- '--asset "$ARCHIVE_NAME"' "$PREPARE" || \
+  fail "Prepare merge promotion must download the selected archive without shell interpolation"
 grep -Fq 'if select_match "$CANONICAL_ASSETS" canonical' "$ARCHIVE_SOURCE_SCRIPT" || \
   fail "canonical cache-key bytes must take precedence over PR staging bytes"
 grep -Fq 'actual_sha256' "$ARCHIVE_DOWNLOAD_SCRIPT" || \
