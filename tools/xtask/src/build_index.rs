@@ -15,13 +15,13 @@
 //! `xtask index-update` (per-package atomic updates under the
 //! state-lock), not this command.
 //!
-//! Filename convention (must match what `archive-stage` writes):
-//! `<name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst`.
-//!
-//! The seed flow extracts each archive's internal `manifest.toml`
-//! to recover `cache_key_sha` + `build_timestamp` (from the
-//! `[compatibility]` block) and stamps them into the per-entry
-//! fields the resolver requires.
+//! The seed flow extracts each archive's internal `manifest.toml` as
+//! the authoritative package identity and compatibility record. It
+//! verifies that the transport filename exactly matches the canonical
+//! name `archive-stage` would produce from those structured fields,
+//! then stamps the manifest data into the per-entry fields the resolver
+//! requires. Package names and versions can both contain `-`, so they
+//! must never be inferred by splitting the filename.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::index_toml::IndexToml;
-use crate::pkg_manifest::TargetArch;
+use crate::pkg_manifest::{DepsManifest, TargetArch};
 use crate::util::hex;
 
 /// Parsed CLI args.
@@ -46,33 +46,11 @@ struct Args {
     generated_at: Option<String>,
 }
 
-/// Components extracted from an archive filename.
-#[derive(Clone, Debug)]
-struct ParsedArchive {
-    /// Package name (`mariadb`).
-    name: String,
-    /// Upstream version (`10.5.27`).
-    version: String,
-    /// Recipe revision (`1`). Same package + version + revision in two
-    /// arches must agree on `version`/`name`/`revision`; we don't carry
-    /// `revision` into `index.toml` because the consumer keys on
-    /// (name, arch, sha) — but we validate consistency below as a
-    /// defense against accidentally publishing two archives that claim
-    /// the same `(name, arch)` from different recipe revisions.
-    revision: u32,
-    /// ABI generation embedded in the filename. Cross-checked against
-    /// `--abi` so a mistakenly-mixed batch (e.g. abi5 + abi6 archives
-    /// in the same dir) fails loud rather than silently producing an
-    /// incoherent manifest.
-    abi: u32,
-    arch: TargetArch,
-    /// 8-char hex slot from the filename (cache_key_sha prefix). Not
-    /// emitted into index.toml — included here so error messages can
-    /// reference the specific archive that failed validation.
-    // Keep this modeled so filename parsing validates the full archive
-    // naming schema, even though production code does not read it yet.
-    #[allow(dead_code)]
-    short_sha: String,
+/// One archive whose structured identity has been recovered from its
+/// internal `manifest.toml` and checked against its transport filename.
+struct CollectedArchive {
+    manifest: DepsManifest,
+    archive_sha256: String,
     /// Bare filename (relative archive_url). Mirror-friendly per the
     /// design doc's URL semantics: a self-contained source directory
     /// (manifest + archives) is bit-identically mirrorable to any
@@ -84,8 +62,8 @@ struct ParsedArchive {
 ///
 /// Required flags (order-independent, both `--flag value` and
 /// `--flag=value` accepted):
-///   --abi          <u32>     Cross-checked against each archive's
-///                            `abi<N>` filename slot; mismatch → error.
+///   --abi          <u32>     Cross-checked against each archived
+///                            manifest and canonical filename.
 ///   --generator    <string>  Free-form provenance line, e.g.
 ///                            `"kandelo CI @ <sha>"`.
 ///   --archives-dir <dir>     Directory holding the `.tar.zst` archives.
@@ -111,39 +89,47 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut pkg_revision: BTreeMap<String, u32> = BTreeMap::new();
     let mut pkg_version: BTreeMap<String, String> = BTreeMap::new();
 
-    for (parsed_archive, archive_sha_hex, meta) in entries {
-        if let Some(prev) = pkg_version.get(&parsed_archive.name) {
-            if prev != &parsed_archive.version {
+    for archive in entries {
+        let manifest = &archive.manifest;
+        let compatibility = manifest
+            .compatibility
+            .as_ref()
+            .expect("collect_archives only returns archived manifests");
+        if let Some(prev) = pkg_version.get(&manifest.name) {
+            if prev != &manifest.version {
                 return Err(format!(
                     "package {:?}: archive {:?} declares version {:?}, but a sibling \
                      arch already declared {:?} — every arch of a package must agree on version",
-                    parsed_archive.name, parsed_archive.filename, parsed_archive.version, prev,
+                    manifest.name, archive.filename, manifest.version, prev,
                 ));
             }
         } else {
-            pkg_version.insert(parsed_archive.name.clone(), parsed_archive.version.clone());
+            pkg_version.insert(manifest.name.clone(), manifest.version.clone());
         }
-        if let Some(prev) = pkg_revision.get(&parsed_archive.name) {
-            if prev != &parsed_archive.revision {
+        if let Some(prev) = pkg_revision.get(&manifest.name) {
+            if prev != &manifest.revision {
                 return Err(format!(
                     "package {:?}: archive {:?} declares revision {}, but a sibling \
                      arch already declared revision {} — every arch must agree on revision",
-                    parsed_archive.name, parsed_archive.filename, parsed_archive.revision, prev,
+                    manifest.name, archive.filename, manifest.revision, prev,
                 ));
             }
         } else {
-            pkg_revision.insert(parsed_archive.name.clone(), parsed_archive.revision);
+            pkg_revision.insert(manifest.name.clone(), manifest.revision);
         }
 
         idx.update_entry_success(
-            &parsed_archive.name,
-            &parsed_archive.version,
-            parsed_archive.revision,
-            parsed_archive.arch,
-            parsed_archive.filename.clone(),
-            archive_sha_hex,
-            meta.cache_key_sha,
-            meta.build_timestamp.unwrap_or_else(|| generated_at.clone()),
+            &manifest.name,
+            &manifest.version,
+            manifest.revision,
+            compatibility.target_arch,
+            archive.filename,
+            archive.archive_sha256,
+            compatibility.cache_key_sha.clone(),
+            compatibility
+                .build_timestamp
+                .clone()
+                .unwrap_or_else(|| generated_at.clone()),
             parsed.generator.clone(),
         );
     }
@@ -156,25 +142,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// Metadata extracted from a `.tar.zst`'s internal `manifest.toml`'s
-/// `[compatibility]` block. The fields are recipe-stable (the same
-/// archive produces the same metadata across decompressions), so
-/// re-running `build-index` over the same archives produces a
-/// byte-identical `index.toml`.
-struct ArchiveMetadata {
-    cache_key_sha: String,
-    /// `compatibility.build_timestamp` if the archive recorded one
-    /// (Phase A-bis onward). Older archives may have None; the
-    /// caller falls back to `generated_at` so the entry still has
-    /// a `built_at` value.
-    build_timestamp: Option<String>,
-}
-
 /// Decompress + un-tar an archive in memory, find the
 /// `manifest.toml` entry, parse it through
-/// `DepsManifest::parse_archived`, and return the
-/// `[compatibility]` fields the ledger needs.
-fn read_archive_metadata(bytes: &[u8]) -> Result<ArchiveMetadata, String> {
+/// `DepsManifest::parse_archived`, and return the validated structured
+/// manifest that owns the archive's package identity.
+fn read_archive_manifest(bytes: &[u8]) -> Result<DepsManifest, String> {
     let decoder =
         zstd::stream::read::Decoder::new(bytes).map_err(|e| format!("zstd decode: {e}"))?;
     let mut tar = tar::Archive::new(decoder);
@@ -191,38 +163,27 @@ fn read_archive_metadata(bytes: &[u8]) -> Result<ArchiveMetadata, String> {
             entry
                 .read_to_string(&mut text)
                 .map_err(|e| format!("read manifest.toml: {e}"))?;
-            let archived = crate::pkg_manifest::DepsManifest::parse_archived(
-                &text,
-                std::path::PathBuf::from("/dev/null"),
-            )?;
-            let compat = archived
-                .compatibility
-                .as_ref()
-                .ok_or_else(|| "archived manifest missing [compatibility]".to_string())?;
-            return Ok(ArchiveMetadata {
-                cache_key_sha: compat.cache_key_sha.clone(),
-                build_timestamp: compat.build_timestamp.clone(),
-            });
+            return DepsManifest::parse_archived(&text, PathBuf::from("/dev/null"));
         }
     }
     Err("archive missing manifest.toml at the root".into())
 }
 
-/// Walk `archives_dir` for `*.tar.zst` files, parse each filename, and
-/// compute its sha256. Returns the parsed entries paired with their
-/// computed `archive_sha256`. Sorted by (name, arch) for deterministic
+/// Walk `archives_dir` for `*.tar.zst` files, recover each identity from
+/// its internal manifest, validate its canonical filename, and compute
+/// its sha256. Sorted by (manifest name, target arch) for deterministic
 /// output downstream.
 fn collect_archives(
     archives_dir: &Path,
     expected_abi: u32,
-) -> Result<Vec<(ParsedArchive, String, ArchiveMetadata)>, String> {
+) -> Result<Vec<CollectedArchive>, String> {
     if !archives_dir.is_dir() {
         return Err(format!(
             "archives-dir {} is not a directory or does not exist",
             archives_dir.display()
         ));
     }
-    let mut out: Vec<(ParsedArchive, String, ArchiveMetadata)> = Vec::new();
+    let mut out: Vec<CollectedArchive> = Vec::new();
     for dirent in fs::read_dir(archives_dir)
         .map_err(|e| format!("read_dir {}: {e}", archives_dir.display()))?
     {
@@ -238,117 +199,112 @@ fn collect_archives(
         if !name.ends_with(".tar.zst") {
             continue;
         }
-        let parsed = parse_archive_filename(&name)?;
-        if parsed.abi != expected_abi {
-            return Err(format!(
-                "archive {name}: filename declares abi{} but --abi is {}",
-                parsed.abi, expected_abi
-            ));
-        }
         let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let sha = hex(&Into::<[u8; 32]>::into(hasher.finalize()));
-        let meta = read_archive_metadata(&bytes).map_err(|e| {
+        let manifest = read_archive_manifest(&bytes).map_err(|e| {
             format!(
                 "archive {name}: {e}. The seed flow needs each .tar.zst's internal \
-                 manifest.toml to recover cache_key_sha + build_timestamp."
+                 manifest.toml to recover its package identity and compatibility."
             )
         })?;
-        out.push((parsed, sha, meta));
+        let compatibility = manifest
+            .compatibility
+            .as_ref()
+            .expect("parse_archived requires compatibility");
+        if !compatibility.abi_versions.contains(&expected_abi) {
+            return Err(format!(
+                "archive {name}: manifest abi_versions {:?} does not include --abi {}",
+                compatibility.abi_versions, expected_abi
+            ));
+        }
+        let expected_name = canonical_archive_filename(&manifest, expected_abi);
+        if name != expected_name {
+            return Err(format!(
+                "archive {name:?}: filename does not match manifest identity \
+                 {}@{} revision {} for {} at ABI {}; expected {expected_name:?}",
+                manifest.name,
+                manifest.version,
+                manifest.revision,
+                compatibility.target_arch.as_str(),
+                expected_abi,
+            ));
+        }
+        out.push(CollectedArchive {
+            manifest,
+            archive_sha256: sha,
+            filename: name,
+        });
     }
-    // Deterministic enumeration order: by (name, arch). Same set of
-    // archives → same index.toml regardless of dirent traversal order.
+    // Deterministic enumeration order: by (name, arch, filename). Same set
+    // of archives → same result regardless of dirent traversal order, including
+    // the order in which a duplicate-identity error names the two archives.
     out.sort_by(|a, b| {
-        a.0.name
-            .cmp(&b.0.name)
-            .then_with(|| a.0.arch.as_str().cmp(b.0.arch.as_str()))
+        a.manifest.name.cmp(&b.manifest.name).then_with(|| {
+            archive_target_arch(a)
+                .cmp(&archive_target_arch(b))
+                .then_with(|| a.filename.cmp(&b.filename))
+        })
     });
+    for archives in out.windows(2) {
+        let first = &archives[0];
+        let second = &archives[1];
+        if first.manifest.name == second.manifest.name
+            && archive_target_arch(first) == archive_target_arch(second)
+        {
+            return Err(format!(
+                "duplicate archives for package {:?} target {}: {:?} \
+                 (cache_key_sha {}, archive_sha256 {}) and {:?} \
+                 (cache_key_sha {}, archive_sha256 {}); index recovery \
+                 cannot choose between immutable archives",
+                first.manifest.name,
+                archive_target_arch(first).as_str(),
+                first.filename,
+                archive_cache_key(first),
+                first.archive_sha256,
+                second.filename,
+                archive_cache_key(second),
+                second.archive_sha256,
+            ));
+        }
+    }
     Ok(out)
 }
 
-/// Parse `<name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst`.
-/// Lenient on `<name>` and `<version>` (each can contain `-`); rigorous
-/// on the trailing 4 segments which have a fixed shape.
-fn parse_archive_filename(name: &str) -> Result<ParsedArchive, String> {
-    let stem = name
-        .strip_suffix(".tar.zst")
-        .ok_or_else(|| format!("filename {name:?} does not have .tar.zst suffix"))?;
-    let parts: Vec<&str> = stem.split('-').collect();
-    // Need at least: name, version, rev<N>, abi<N>, arch, short → 6 parts.
-    if parts.len() < 6 {
-        return Err(format!(
-            "filename {name:?} has too few `-`-separated segments (need at least \
-             6: <name>-<version>-rev<N>-abi<N>-<arch>-<short8>)"
-        ));
-    }
-    let short = *parts.last().unwrap();
-    if !is_short_sha(short) {
-        return Err(format!(
-            "filename {name:?}: trailing segment {short:?} must be 8 lowercase hex chars"
-        ));
-    }
-    let arch_seg = parts[parts.len() - 2];
-    let arch = match arch_seg {
-        "wasm32" => TargetArch::Wasm32,
-        "wasm64" => TargetArch::Wasm64,
-        other => {
-            return Err(format!(
-                "filename {name:?}: arch segment {other:?} must be wasm32 or wasm64"
-            ));
-        }
-    };
-    let abi_seg = parts[parts.len() - 3];
-    let abi: u32 = abi_seg
-        .strip_prefix("abi")
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| {
-            format!("filename {name:?}: 3rd-from-last segment {abi_seg:?} must be `abi<N>`")
-        })?;
-    let rev_seg = parts[parts.len() - 4];
-    let revision: u32 = rev_seg
-        .strip_prefix("rev")
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| {
-            format!("filename {name:?}: 4th-from-last segment {rev_seg:?} must be `rev<N>`")
-        })?;
-    // Everything before rev<N> is `<name>-<version>`. Find the boundary:
-    // version starts at the segment immediately after the package name's
-    // last segment. We can't tell where `<name>` ends and `<version>`
-    // begins by looking at the string alone (both can contain `-`); we
-    // adopt the convention that the LAST `-` before `rev<N>` separates
-    // them. That matches every package in the registry today
-    // (mariadb-10.5.27, php-8.4.5, ncurses-6.5, ...).
-    let pre_rev = &parts[..parts.len() - 4];
-    if pre_rev.len() < 2 {
-        return Err(format!(
-            "filename {name:?}: need at least one segment each for <name> and <version> \
-             before rev{revision}"
-        ));
-    }
-    let version = pre_rev[pre_rev.len() - 1].to_string();
-    let pkg_name = pre_rev[..pre_rev.len() - 1].join("-");
-    if pkg_name.is_empty() {
-        return Err(format!("filename {name:?}: empty package name"));
-    }
-    if version.is_empty() {
-        return Err(format!("filename {name:?}: empty version"));
-    }
-    Ok(ParsedArchive {
-        name: pkg_name,
-        version,
-        revision,
-        abi,
-        arch,
-        short_sha: short.to_string(),
-        filename: name.to_string(),
-    })
+fn archive_target_arch(archive: &CollectedArchive) -> TargetArch {
+    archive
+        .manifest
+        .compatibility
+        .as_ref()
+        .expect("parse_archived requires compatibility")
+        .target_arch
 }
 
-fn is_short_sha(s: &str) -> bool {
-    s.len() == 8
-        && s.bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+fn archive_cache_key(archive: &CollectedArchive) -> &str {
+    &archive
+        .manifest
+        .compatibility
+        .as_ref()
+        .expect("parse_archived requires compatibility")
+        .cache_key_sha
+}
+
+/// Reconstruct the transport filename from the archive's validated
+/// structured identity. This must match `archive_stage_cli`'s producer
+/// format, but is intentionally one-way: no identity field is recovered
+/// by splitting this ambiguous string.
+fn canonical_archive_filename(manifest: &DepsManifest, abi: u32) -> String {
+    let compatibility = manifest
+        .compatibility
+        .as_ref()
+        .expect("parse_archived requires compatibility");
+    crate::package_archive_name::render(
+        manifest,
+        compatibility.target_arch,
+        abi,
+        &compatibility.cache_key_sha,
+    )
 }
 
 /// Hand-rolled CLI parser. Mirrors the shape of `archive_stage_cli`'s
@@ -505,7 +461,7 @@ mod tests {
     /// Build a real .tar.zst archive matching `name@version-rev@abi-arch`
     /// with a manifest.toml carrying [compatibility]. Returns the
     /// path. The internal manifest content is shaped to satisfy
-    /// `read_archive_metadata` (DepsManifest::parse_archived).
+    /// `read_archive_manifest` (DepsManifest::parse_archived).
     fn write_real_archive(
         dir: &Path,
         name: &str,
@@ -513,7 +469,6 @@ mod tests {
         rev: u32,
         abi: u32,
         arch: &str,
-        short: &str,
         cache_key_sha: &str,
     ) -> PathBuf {
         let manifest_text = format!(
@@ -543,7 +498,19 @@ build_timestamp = "2026-05-05T12:34:56Z"
         );
         let bytes =
             crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"PAYLOAD")]);
-        let fname = format!("{name}-{version}-rev{rev}-abi{abi}-{arch}-{short}.tar.zst");
+        let manifest = DepsManifest::parse_archived(&manifest_text, PathBuf::from("/dev/null"))
+            .expect("test archive manifest must parse");
+        let target_arch = manifest
+            .compatibility
+            .as_ref()
+            .expect("test archive manifest must have compatibility")
+            .target_arch;
+        let fname = crate::package_archive_name::render(
+            &manifest,
+            target_arch,
+            abi,
+            cache_key_sha,
+        );
         let path = dir.join(&fname);
         fs::write(&path, &bytes).unwrap();
         path
@@ -551,6 +518,12 @@ build_timestamp = "2026-05-05T12:34:56Z"
 
     fn read_index(out_path: &Path) -> String {
         fs::read_to_string(out_path).unwrap()
+    }
+
+    fn file_sha256(path: &Path) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(fs::read(path).unwrap());
+        hex(&Into::<[u8; 32]>::into(hasher.finalize()))
     }
 
     /// Smoke: 2 packages × 2 arches → all 4 entries with status=success,
@@ -569,7 +542,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm32",
-            "11111111",
             &"a".repeat(64),
         );
         write_real_archive(
@@ -579,7 +551,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm64",
-            "22222222",
             &"b".repeat(64),
         );
         write_real_archive(
@@ -589,7 +560,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm32",
-            "33333333",
             &"c".repeat(64),
         );
         write_real_archive(
@@ -599,7 +569,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm64",
-            "44444444",
             &"d".repeat(64),
         );
 
@@ -641,7 +610,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
         // status + relative archive_url + cache_key_sha + built_*.
         assert_eq!(text.matches("status = \"success\"").count(), 4);
         assert!(
-            text.contains("archive_url = \"alpha-1.0.0-rev1-abi6-wasm32-11111111.tar.zst\""),
+            text.contains("archive_url = \"alpha-1.0.0-rev1-abi6-wasm32-aaaaaaaa.tar.zst\""),
             "got:\n{text}"
         );
         assert!(
@@ -709,7 +678,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm32",
-            "aaaaaaaa",
             &"e".repeat(64),
         );
 
@@ -755,7 +723,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm32",
-            "11111111",
             &"a".repeat(64),
         );
         write_real_archive(
@@ -765,7 +732,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm64",
-            "22222222",
             &"b".repeat(64),
         );
         write_real_archive(
@@ -775,7 +741,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             7,
             6,
             "wasm32",
-            "33333333",
             &"c".repeat(64),
         );
 
@@ -809,18 +774,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
         );
     }
 
-    /// Duplicate (name, arch) → error. Catches a mistake where two
-    /// archives with the same package + arch but different shas land in
-    /// the same dir.
-    ///
-    /// IndexToml::update_entry_success is idempotent on a single
-    /// (name, version, arch) key (the second call overwrites the first),
-    /// so an earlier `[binary]`-block writer was the one rejecting
-    /// duplicates. We don't reject anymore — the build pipeline ensures
-    /// uniqueness via the cache_key_sha-suffixed filename — but we DO
-    /// reject when two archives have the same (name, arch) AND
-    /// different revisions or versions, because that's a real bug.
-    /// Test the divergent-version + divergent-revision paths.
+    /// A package's architecture slices must agree on version and revision.
     #[test]
     fn divergent_version_across_arches_is_rejected() {
         let dir = tempdir("divergent-ver");
@@ -835,7 +789,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm32",
-            "11111111",
             &"a".repeat(64),
         );
         write_real_archive(
@@ -845,7 +798,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             6,
             "wasm64",
-            "22222222",
             &"b".repeat(64),
         );
 
@@ -863,19 +815,14 @@ build_timestamp = "2026-05-05T12:34:56Z"
         assert!(err.contains("version"), "got: {err}");
     }
 
-    /// `--abi` mismatch with the filename's `abi<N>` slot → error.
-    /// The filename-vs-CLI check fires before archive bytes are
-    /// touched, so a stub archive's contents are sufficient here.
+    /// `--abi` mismatch with the structured compatibility record → error.
     #[test]
-    fn abi_mismatch_in_filename_is_rejected() {
+    fn abi_mismatch_in_manifest_is_rejected() {
         let dir = tempdir("abi-mismatch");
         let archives = dir.join("archives");
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        // Real archive so collect_archives gets past the read step
-        // and into the abi-check (which happens before metadata
-        // extraction).
         write_real_archive(
             &archives,
             "x",
@@ -883,7 +830,6 @@ build_timestamp = "2026-05-05T12:34:56Z"
             1,
             5,
             "wasm32",
-            "11111111",
             &"a".repeat(64),
         );
 
@@ -899,48 +845,151 @@ build_timestamp = "2026-05-05T12:34:56Z"
         ])
         .expect_err("abi mismatch must error");
         assert!(
-            err.contains("abi5") && err.contains("--abi is 6"),
+            err.contains("manifest abi_versions [5]") && err.contains("--abi 6"),
             "got: {err}"
         );
     }
 
-    /// Filename parser: rejects bad shapes with messages that name the
-    /// failing segment.
     #[test]
-    fn filename_parser_rejects_malformed_inputs() {
-        // Missing .tar.zst suffix.
-        let err = parse_archive_filename("foo.tar.gz").unwrap_err();
-        assert!(err.contains(".tar.zst"), "got: {err}");
+    fn manifest_identity_handles_hyphens_in_package_name_and_version() {
+        let dir = tempdir("hyphenated-identity");
+        let archives = dir.join("archives");
+        fs::create_dir_all(&archives).unwrap();
+        let out = dir.join("index.toml");
 
-        // Too few segments.
-        let err = parse_archive_filename("a-b-c.tar.zst").unwrap_err();
-        assert!(err.contains("too few"), "got: {err}");
+        let cache_key_sha = "a".repeat(64);
+        let archive = write_real_archive(
+            &archives,
+            "spidermonkey-node",
+            "140.11.0esr-node.1",
+            4,
+            39,
+            "wasm32",
+            &cache_key_sha,
+        );
 
-        // Bad short_sha (uppercase).
-        let err = parse_archive_filename("x-1.0.0-rev1-abi6-wasm32-AAAAAAAA.tar.zst").unwrap_err();
-        assert!(err.contains("8 lowercase hex"), "got: {err}");
+        super::run(vec![
+            "--abi".into(),
+            "39".into(),
+            "--generator".into(),
+            "test".into(),
+            "--archives-dir".into(),
+            archives.display().to_string(),
+            "--out".into(),
+            out.display().to_string(),
+            "--generated-at".into(),
+            "2026-07-14T00:00:00Z".into(),
+        ])
+        .unwrap();
 
-        // Bad arch.
-        let err = parse_archive_filename("x-1.0.0-rev1-abi6-armv7-aaaaaaaa.tar.zst").unwrap_err();
-        assert!(err.contains("wasm32 or wasm64"), "got: {err}");
-
-        // Bad abi prefix.
-        let err = parse_archive_filename("x-1.0.0-rev1-foo6-wasm32-aaaaaaaa.tar.zst").unwrap_err();
-        assert!(err.contains("abi<N>"), "got: {err}");
+        let index = crate::index_toml::IndexToml::parse(&read_index(&out)).unwrap();
+        assert_eq!(index.packages.len(), 1);
+        assert_eq!(index.packages[0].name, "spidermonkey-node");
+        assert_eq!(index.packages[0].version, "140.11.0esr-node.1");
+        assert_eq!(index.packages[0].revision, 4);
+        assert_eq!(
+            index.packages[0].binary[&TargetArch::Wasm32]
+                .archive_url
+                .as_deref(),
+            archive.file_name().and_then(|name| name.to_str())
+        );
     }
 
-    /// Multi-segment package name (e.g. `mariadb-test-10.5.27`) must
-    /// parse correctly: the LAST `-` before `rev<N>` is the
-    /// name/version boundary.
     #[test]
-    fn filename_parser_handles_multi_segment_names() {
-        let p = parse_archive_filename("mariadb-test-10.5.27-rev3-abi6-wasm32-abc12345.tar.zst")
-            .unwrap();
-        assert_eq!(p.name, "mariadb-test");
-        assert_eq!(p.version, "10.5.27");
-        assert_eq!(p.revision, 3);
-        assert_eq!(p.abi, 6);
-        assert_eq!(p.arch, TargetArch::Wasm32);
-        assert_eq!(p.short_sha, "abc12345");
+    fn duplicate_manifest_identity_is_rejected_with_both_archive_identities() {
+        let dir = tempdir("duplicate-manifest-identity");
+        let archives = dir.join("archives");
+        fs::create_dir_all(&archives).unwrap();
+        let out = dir.join("index.toml");
+
+        let first_key =
+            "0f5290453e6ea7f68e5ee1e50bd6dbf23221368e7aeb7a54c34953cef453920d";
+        let second_key =
+            "a88651d0cd72a9100a67c90fa4b5600659258b10890c852ff10ab125cf770212";
+        let first = write_real_archive(
+            &archives,
+            "spidermonkey-node",
+            "140.11.0esr-node.1",
+            4,
+            39,
+            "wasm32",
+            first_key,
+        );
+        let second = write_real_archive(
+            &archives,
+            "spidermonkey-node",
+            "140.11.0esr-node.1",
+            4,
+            39,
+            "wasm32",
+            second_key,
+        );
+        let first_sha = file_sha256(&first);
+        let second_sha = file_sha256(&second);
+
+        let err = super::run(vec![
+            "--abi".into(),
+            "39".into(),
+            "--generator".into(),
+            "test".into(),
+            "--archives-dir".into(),
+            archives.display().to_string(),
+            "--out".into(),
+            out.display().to_string(),
+        ])
+        .expect_err("duplicate package/arch archives must not overwrite one another");
+
+        assert!(err.contains("duplicate archives"), "got: {err}");
+        assert!(err.contains("spidermonkey-node"), "got: {err}");
+        assert!(err.contains("wasm32"), "got: {err}");
+        for value in [
+            first.file_name().unwrap().to_str().unwrap(),
+            first_key,
+            first_sha.as_str(),
+            second.file_name().unwrap().to_str().unwrap(),
+            second_key,
+            second_sha.as_str(),
+        ] {
+            assert!(err.contains(value), "missing {value:?} from: {err}");
+        }
+        assert!(!out.exists(), "a rejected inventory must not write an index");
+    }
+
+    #[test]
+    fn filename_cannot_override_manifest_identity() {
+        let dir = tempdir("filename-identity-override");
+        let archives = dir.join("archives");
+        fs::create_dir_all(&archives).unwrap();
+        let out = dir.join("index.toml");
+
+        let cache_key_sha = "b".repeat(64);
+        let archive = write_real_archive(
+            &archives,
+            "trusted-package",
+            "1.0-beta-1",
+            2,
+            39,
+            "wasm32",
+            &cache_key_sha,
+        );
+        let misleading_name =
+            "attacker-trusted-package-1.0-beta-1-rev2-abi39-wasm32-bbbbbbbb.tar.zst";
+        fs::rename(&archive, archives.join(misleading_name)).unwrap();
+
+        let err = super::run(vec![
+            "--abi".into(),
+            "39".into(),
+            "--generator".into(),
+            "test".into(),
+            "--archives-dir".into(),
+            archives.display().to_string(),
+            "--out".into(),
+            out.display().to_string(),
+        ])
+        .expect_err("the embedded manifest must own package identity");
+
+        assert!(err.contains("manifest identity"), "got: {err}");
+        assert!(err.contains(misleading_name), "got: {err}");
+        assert!(err.contains("trusted-package-1.0-beta-1"), "got: {err}");
     }
 }

@@ -40,6 +40,9 @@ assert_not_matches() {
 assert_matches package_archive_changed_files \
   "tools/xtask/src/build_deps.rs" \
   "tools/xtask/src/build_deps.rs"
+assert_matches package_archive_changed_files \
+  "tools/xtask/src/package_archive_name.rs" \
+  "tools/xtask/src/package_archive_name.rs"
 assert_not_matches package_archive_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
@@ -105,6 +108,9 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   "tools/xtask/src/index_candidate.rs" \
   "tools/xtask/src/index_candidate.rs"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/package_archive_name.rs" \
+  "tools/xtask/src/package_archive_name.rs"
 assert_matches package_publish_flow_changed_files \
   "tests/scripts/index-update.sh" \
   "tests/scripts/index-update.sh"
