@@ -978,20 +978,24 @@ jobs:
       - name: Download verified source archive
         id: archive
         env:
+          ARCHIVE_NAME: ${{ matrix.archive_name }}
+          ARCHIVE_SHA256: ${{ matrix.archive_sha256 }}
+          ARCHIVE_SIZE: ${{ matrix.archive_size }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          SOURCE_TAG: ${{ matrix.source_tag }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/promote"
-          archive_path="$RUNNER_TEMP/promote/${{ matrix.archive_name }}"
+          archive_path="$RUNNER_TEMP/promote/$ARCHIVE_NAME"
           bash .github/scripts/download-verified-release-asset.sh \
-            --tag "${{ matrix.source_tag }}" \
-            --asset "${{ matrix.archive_name }}" \
-            --sha256 "${{ matrix.archive_sha256 }}" \
-            --size "${{ matrix.archive_size }}" \
+            --tag "$SOURCE_TAG" \
+            --asset "$ARCHIVE_NAME" \
+            --sha256 "$ARCHIVE_SHA256" \
+            --size "$ARCHIVE_SIZE" \
             --output "$archive_path"
           echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=${{ matrix.archive_name }}" >> "$GITHUB_OUTPUT"
+          echo "archive-name=$ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Promote archive + index entry
         env:
