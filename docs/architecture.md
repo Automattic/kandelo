@@ -154,13 +154,16 @@ the guest/host ABI. A package that starts importing it must raise its kernel
 ABI floor in the same ABI reconciliation that versions and snapshots the new
 surface.
 
-Host-runtime lifecycle diagnostics are kept separate from guest file
-descriptor 2. Both kernel-worker entries send typed `host_diagnostic` messages;
-`NodeKernelHost` and `BrowserKernel` expose them through `onHostDiagnostic`.
-Node also records them on the embedding process's console, while the browser
-live-demo consumer records them in dmesg. Neither path appends host diagnostics
-to the program's stderr byte stream, so test harnesses and applications observe
-only bytes the guest actually wrote.
+Host-runtime failure diagnostics are kept separate from guest file descriptor
+2. Worker traps, protocol failures, and failed process or thread transitions
+produce typed `host_diagnostic` messages; `NodeKernelHost` and `BrowserKernel`
+expose them through `onHostDiagnostic`. An ordinary process exit, including a
+nonzero exit used as POSIX control flow, is reported only through its exit
+status and is not a host warning. Node records actual host diagnostics on the
+embedding process's console, while the browser live-demo consumer records them
+in dmesg. Neither path appends host diagnostics to the program's stderr byte
+stream, so test harnesses and applications observe only bytes the guest
+actually wrote.
 
 ### 3. Glue Layer (C)
 

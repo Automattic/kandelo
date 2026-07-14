@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { resolveBinary } from "../../../host/src/binary-resolver";
+import type { HostDiagnostic } from "../../../host/src/host-diagnostic";
 
 const dashPath = resolveBinary("programs/dash.wasm");
 
@@ -9,6 +10,7 @@ type TestResult = {
   stdout: string;
   stderr: string;
   combined: string;
+  hostDiagnostics: HostDiagnostic[];
 };
 
 type TestRunnerWindow = Window & {
@@ -57,5 +59,6 @@ test("normal nonzero exits do not write host diagnostics to stderr", async ({
     stdout: "",
     stderr: "",
     combined: "",
+    hostDiagnostics: [],
   });
 });

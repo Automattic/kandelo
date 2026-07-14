@@ -213,17 +213,17 @@ describe("BrowserKernel", () => {
     worker.simulateMessage({
       type: "host_diagnostic",
       pid: 100,
-      status: 7,
-      source: "kernel process exit",
-      message: "[kernel-worker] nonzero process exit pid=100 status=7",
+      status: 132,
+      source: "worker-main error message",
+      message: "[process-worker] RuntimeError: unreachable",
     });
 
     expect(onHostDiagnostic).toHaveBeenCalledOnce();
     expect(onHostDiagnostic).toHaveBeenCalledWith({
       pid: 100,
-      status: 7,
-      source: "kernel process exit",
-      message: "[kernel-worker] nonzero process exit pid=100 status=7",
+      status: 132,
+      source: "worker-main error message",
+      message: "[process-worker] RuntimeError: unreachable",
     });
     expect(onStderr).not.toHaveBeenCalled();
   });

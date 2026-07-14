@@ -1657,11 +1657,6 @@ export async function centralizedWorkerMain(
         exitCode = kernelExitStatus ?? exitCode;
       }
 
-      if (exitCode === 0) {
-        console.debug(`[worker] pid=${pid} _start() returned, exitCode=0`);
-      } else {
-        console.error(`[worker] pid=${pid} _start() returned, exitCode=${exitCode}`);
-      }
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {
