@@ -145,9 +145,9 @@ prepare-merge.yml:matrix-build
 prepare-merge.yml:merge-gate-post
 prepare-merge.yml:preflight
 prepare-merge.yml:promote-staging
-reusable-homebrew-bottle-maintenance.yml:rebuild-or-repair
+reusable-homebrew-bottle-maintenance.yml:rebuild
 reusable-homebrew-bottle-maintenance.yml:rollback
-reusable-homebrew-bottle-publish.yml:build-and-publish
+reusable-homebrew-bottle-publish.yml:finalize-tap
 reusable-package-source-publish.yml:publish
 staging-build.yml:lib-matrix-build
 staging-build.yml:matrix-build
