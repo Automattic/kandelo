@@ -256,6 +256,21 @@ This sets:
 - `--host=wasm32-unknown-none`
 - `--build` (auto-detected from host system)
 
+The wrapper also loads `sdk/config.site`. That file is authoritative for
+shared target facts that cross-compilation cannot discover reliably, including
+functions present in the Kandelo musl sysroot and extension functions that are
+absent from it. Keep package-specific runtime or semantic probe results in the
+package recipe, but add reusable sysroot availability facts to `config.site`
+instead of duplicating them across packages. An explicitly exported
+`CONFIG_SITE` overrides the SDK default.
+
+Dynamic loading is an important exception to link-only detection. Musl carries
+weak `dlopen`/`dlsym` stubs that link but only report that dynamic loading is
+unsupported. `config.site` therefore directs `AC_SEARCH_LIBS` checks for the
+dlfcn API to `-ldl`; the SDK compiler wrapper interprets that library request
+by linking Kandelo's functional Wasm dynamic-loading glue. A configure result
+of `none required` for those searches would select the nonfunctional stubs.
+
 ### Example: building dash
 
 ```bash
