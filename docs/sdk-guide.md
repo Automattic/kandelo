@@ -152,7 +152,18 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 # (removed in commit 9 of the fork-instrument mega-PR, 2026-05-14).
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
 --sysroot=<path>                   # musl sysroot
+-ffile-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
+-fdebug-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
+-fmacro-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
+# The same three maps use /usr/src/kandelo-sdk/sysroot for the wasm32
+# <sysroot>, or /usr/src/kandelo-sdk/sysroot64 for the wasm64 <sysroot>.
 ```
+
+The file, debug, and macro prefix maps cover paths owned and injected by the
+SDK. Linked Wasm debug information and `__FILE__` strings therefore do not
+depend on the checkout containing `libc/glue` or the target sysroot. Build
+systems remain responsible for mapping their own source trees and explicit
+dependency prefixes when those paths must also be reproducible.
 
 The musl objects in the SDK sysroot are compiled with the same Wasm exception
 handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not
