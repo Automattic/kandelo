@@ -1035,6 +1035,20 @@ export class CentralizedKernelWorker {
    *  the canvas tracks the framebuffer size. */
   private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
   private vblankTimer: ReturnType<typeof setInterval> | null = null;
+  /** kernel_kms_commit_count(1) at the previous vblank tick — the pump
+   *  broad-wakes blocked pollers only when this changes (a PAGE_FLIP was
+   *  queued since the last tick, so the drain just wrote a FLIP_COMPLETE
+   *  event someone may be polling for). Without the gate the pump would
+   *  broad-wake every blocked poll/select in the machine 60×/s forever,
+   *  and each re-dispatch used to re-arm the full timeout — starving
+   *  select-based sleeps (mariadbd bootstrap hung this way). */
+  private lastVblankCommits = 0n;
+  /** One-tick wake carry: a flip queued after this tick's drain but
+   *  before the commit-count read bumps the count now, while its
+   *  FLIP_COMPLETE event is only written by the NEXT tick's drain.
+   *  Waking one extra tick past the last count change covers that
+   *  window without reverting to unconditional wakes. */
+  private vblankWakeCarry = false;
 
   constructor(
     private config: KernelConfig,
@@ -3520,7 +3534,9 @@ export class CentralizedKernelWorker {
       clearTimeout(entry.timer);
       clearImmediate(entry.timer);
       // Re-dispatch to the right handler — SYS_SELECT and SYS_PSELECT6 have
-      // different time-struct shapes (timeval vs timespec).
+      // different time-struct shapes (timeval vs timespec). The original
+      // deadline is preserved in blockingWaitDeadlines so re-reading the
+      // guest time-struct can't re-arm the full timeout on every wake.
       if (entry.syscallNr === SYS_SELECT) {
         this.handleSelect(entry.channel, entry.origArgs);
       } else {
@@ -4370,7 +4386,19 @@ export class CentralizedKernelWorker {
    * own code is `select(0, NULL, NULL, NULL, &tv)` (mysys/my_sleep.c) — the
    * pure-sleep case, fast-path'd to a setTimeout.
    */
-  private handleSelect(channel: ChannelInfo, origArgs: number[]): void {
+  /**
+   * The finite timeout is measured from the original call: the absolute
+   * deadline is persisted in blockingWaitDeadlines across re-dispatches
+   * (broad wakes, per-pid signal wakes, and this handler's own retry
+   * timer). Without it every re-dispatch would re-read the guest timeval
+   * — which the kernel never decrements — and re-arm the FULL timeout, so
+   * any recurring broad-wake source (e.g. the vblank pump while a DRM
+   * client is flipping) would starve select-based sleeps forever.
+   */
+  private handleSelect(
+    channel: ChannelInfo,
+    origArgs: number[],
+  ): void {
     const FD_SET_SIZE = 128;
     const nfds = origArgs[0];
     const readPtr = origArgs[1];
@@ -4407,7 +4435,9 @@ export class CentralizedKernelWorker {
       }
       const finite = timeoutMs > 0;
       // Persist the deadline across retry re-entries (see
-      // blockingWaitDeadlines).
+      // blockingWaitDeadlines) so a recurring broad-wake source (e.g. the
+      // vblank pump while a DRM client is flipping) can't re-arm the full
+      // timeout and starve a select-based sleep.
       const deadline = finite
         ? this.blockingWaitDeadlines.get(this.retryKey(channel)) ??
           Date.now() + timeoutMs
@@ -4533,7 +4563,7 @@ export class CentralizedKernelWorker {
         }
         this.handleSelect(channel, origArgs);
       };
-      const finite = timeoutMs > 0;
+      const finite = deadline > 0;
       const remainingMs = finite ? Math.max(deadline - Date.now(), 1) : 50;
       const timer = setTimeout(retryFn, Math.min(remainingMs, 50));
       this.pendingSelectRetries.set(this.retryKey(channel), {
@@ -4546,7 +4576,11 @@ export class CentralizedKernelWorker {
     this.completeChannel(channel, SYS_SELECT, origArgs, undefined, retVal, errVal);
   }
 
-  private handlePselect6(channel: ChannelInfo, origArgs: number[]): void {
+  /** See handleSelect for the persisted-deadline re-dispatch contract. */
+  private handlePselect6(
+    channel: ChannelInfo,
+    origArgs: number[],
+  ): void {
     const FD_SET_SIZE = 128;
     const processMem = new Uint8Array(channel.memory.buffer);
     const kernelMem = this.getKernelMem();
@@ -4691,7 +4725,7 @@ export class CentralizedKernelWorker {
       // With finite timeout: sleep for that duration.
       // With infinite timeout: block until signal (wakeAllBlockedRetries).
       if (nfds === 0) {
-        if (timeoutMs > 0) {
+        if (deadline > 0) {
           const timer = setTimeout(() => {
             this.pendingSelectRetries.delete(this.retryKey(channel));
             if (this.processes.has(channel.pid)) {
@@ -9070,7 +9104,22 @@ export class CentralizedKernelWorker {
     // visibly unless something else (mouse input, etc.) triggers a
     // wake. Same broad-wake mechanism as `injectMouseEvent`; coalesced
     // and no-op when no retries are pending.
-    this.scheduleWakeBlockedRetries();
+    //
+    // Gate the wake on actual page-flip activity (see lastVblankCommits/
+    // vblankWakeCarry): the pump runs unconditionally in every kernel
+    // worker, and an unconditional 60 Hz broad wake re-dispatches every
+    // blocked poll/select in the machine forever — even in workloads
+    // with no DRM client at all. crtc 1 is the only crtc the KMS
+    // surface supports today (see crates/kernel/src/dri/mod.rs).
+    const commitsFn = this.kernelInstance?.exports.kernel_kms_commit_count as
+      ((crtcId: number) => bigint) | undefined;
+    const commits = commitsFn?.(1) ?? 0n;
+    const flipped = commits !== this.lastVblankCommits;
+    this.lastVblankCommits = commits;
+    if (flipped || this.vblankWakeCarry) {
+      this.scheduleWakeBlockedRetries();
+    }
+    this.vblankWakeCarry = flipped;
     // Presenter paths. Run only for CRTCs the embedder explicitly opted
     // into `mode: "2d"` (legacy CPU blit) or `mode: "webgl2-scanout"`
     // (GPU texture upload). The pump never touches the canvas in "auto"
