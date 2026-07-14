@@ -439,6 +439,7 @@ jobs:
     if: needs.preflight.outputs.library_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
+      actions: read      # verify a previous state-lock owner is terminal
       contents: write    # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml

@@ -46,9 +46,12 @@ package_declared_build_input_changed_files() {
 
 package_publish_flow_changed_files() {
   grep -E \
-    -e '^tools/xtask/src/(build_index|bundle_program|index_toml|index_update|update_pkg_manifest)\.rs$' \
-    -e '^scripts/(compose-initial-index|index-has-current-entry|index-update|prepare-sdk-package|publish-package-source|sync-package-source)\.sh$' \
-    -e '^tests/scripts/index-update\.sh$' \
+    -e '^\.github/actions/detect-change-scope/(ci-scope-paths|test-ci-scope-paths)\.sh$' \
+    -e '^\.github/workflows/(staging-build|prepare-merge|activate-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish)\.yml$' \
+    -e '^\.github/scripts/(activate-merge-candidate|cleanup-merge-candidates|download-verified-release-asset|fetch-canonical-index|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|select-package-archive-source|state-lock|test-activate-merge-candidate|test-cleanup-merge-candidates|test-download-verified-release-asset|test-fetch-canonical-index|test-init-merge-candidate|test-latest-merge-gate-status|test-merge-candidate-workflows|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-select-package-archive-source|test-state-lock|test-verify-merge-candidate|verify-merge-candidate)\.sh$' \
+    -e '^tools/xtask/src/(build_index|bundle_program|index_candidate|index_toml|index_update|update_pkg_manifest)\.rs$' \
+    -e '^scripts/(compose-initial-index|index-has-current-entry|index-update|prepare-sdk-package|publish-package-source|release-index-state|sync-package-source)\.sh$' \
+    -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
     || true
 }
 
@@ -71,7 +74,10 @@ kernel_runtime_changed_files() {
 
 ci_control_changed_files() {
   grep -E \
-    -e '^\.github/workflows/(staging-build|prepare-merge)\.yml$' \
+    -e '^\.github/workflows/(staging-build|prepare-merge|activate-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish)\.yml$' \
+    -e '^\.github/scripts/(activate-merge-candidate|cleanup-merge-candidates|download-verified-release-asset|fetch-canonical-index|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|select-package-archive-source|state-lock|test-activate-merge-candidate|test-cleanup-merge-candidates|test-download-verified-release-asset|test-fetch-canonical-index|test-init-merge-candidate|test-latest-merge-gate-status|test-merge-candidate-workflows|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-select-package-archive-source|test-state-lock|test-verify-merge-candidate|verify-merge-candidate)\.sh$' \
+    -e '^scripts/(compose-initial-index|index-update|release-index-state)\.sh$' \
+    -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
     -e '^\.github/actions/detect-change-scope/' \
     || true
 }

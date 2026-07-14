@@ -8,7 +8,7 @@ description: |
 
     docs_only — every changed file is in the docs/meta allowlist
       (docs/, top-level *.md, LICENSE, COPYING*, .gitignore et al, the
-      docs + staging-cleanup workflow files, benchmarks/results/).
+      docs workflow files, benchmarks/results/).
       When true, every test step skips.
 
     package_archive_changed — at least one changed file can alter
@@ -183,7 +183,7 @@ runs:
           -e '^[^/]+\.md$' \
           -e '^(LICENSE|COPYING|COPYING\.runtime)$' \
           -e '^\.(gitignore|gitattributes|editorconfig)$' \
-          -e '^\.github/workflows/(docs|staging-cleanup)\.yml$' \
+          -e '^\.github/workflows/docs\.yml$' \
           -e '^benchmarks/results/' \
           || true)
 

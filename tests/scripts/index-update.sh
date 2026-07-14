@@ -35,6 +35,8 @@ case "$cmd" in
         printf '1\t%s\tsha256:%s\n' "$size" "$sha"
       elif [ "$asset_name" = "index.toml" ] && [ "${GH_STUB_HAS_INDEX:-0}" = "1" ]; then
         printf '1\t123\tsha256:stub\n'
+      elif [ "$asset_name" = "ready.json" ] && [ "${GH_STUB_HAS_READY:-0}" = "1" ]; then
+        printf '2\t123\tsha256:stub\n'
       fi
     fi
     ;;
@@ -151,11 +153,46 @@ exit 0
 EOF
 chmod +x "$STATE_LOCK_STUB"
 
+INDEX_STATE_STUB="$TMP_ROOT/release-index-state.sh"
+cat > "$INDEX_STATE_STUB" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+command_name="${1:-}"
+shift || true
+case "$command_name" in
+  sentinel) printf '<!-- kandelo-index-state-v1:empty -->\n'; exit 0 ;;
+  read)
+    output=""; head_file=""; abi=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --output) output="$2"; shift 2 ;;
+        --head-file) head_file="$2"; shift 2 ;;
+        --expected-abi) abi="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ "${GH_STUB_HAS_INDEX:-0}" = 1 ]; then cp "$GH_STUB_INDEX_SOURCE" "$output"
+    else printf 'abi_version = %s\n' "$abi" > "$output"; fi
+    printf 'test-head\n' > "$head_file"
+    ;;
+  publish)
+    index=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --index-path) index="$2"; shift 2 ;; *) shift ;; esac
+    done
+    cp "$index" "$GH_STUB_UPLOAD_DIR/index.toml"
+    ;;
+  *) exit 99 ;;
+esac
+EOF
+chmod +x "$INDEX_STATE_STUB"
+
 run_index_update() {
   local target_tag="$1"
   local archive_abi="$2"
   local has_index="$3"
   local seed_index="${4:-}"
+  local has_ready="${5:-0}"
 
   local case_dir archive_path upload_dir
   case_dir="$(mktemp -d "$TMP_ROOT/case.XXXXXX")"
@@ -167,10 +204,12 @@ run_index_update() {
   if ! GH_STUB_HAS_INDEX="$has_index" \
        GH_STUB_INDEX_SOURCE="$seed_index" \
        GH_STUB_UPLOAD_DIR="$upload_dir" \
+       GH_STUB_HAS_READY="$has_ready" \
        GITHUB_REPOSITORY="example/repo" \
        GITHUB_SHA="0123456789abcdef0123456789abcdef01234567" \
        GITHUB_RUN_ID="123" \
        STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
+       RELEASE_INDEX_STATE_SCRIPT="$INDEX_STATE_STUB" \
        PATH="$STUB_BIN:$PATH" \
        bash "$REPO_ROOT/scripts/index-update.sh" \
          --target-tag "$target_tag" \
@@ -210,6 +249,7 @@ run_index_repair() {
        GITHUB_SHA="0123456789abcdef0123456789abcdef01234567" \
        GITHUB_RUN_ID="123" \
        STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
+       RELEASE_INDEX_STATE_SCRIPT="$INDEX_STATE_STUB" \
        PATH="$STUB_BIN:$PATH" \
        bash "$REPO_ROOT/scripts/index-update.sh" \
          --target-tag "$target_tag" \
@@ -252,6 +292,21 @@ assert_index_abi "$repair_index" "$CURRENT_ABI"
 
 durable_index="$(run_index_update "binaries-abi-v42" 42 0)"
 assert_index_abi "$durable_index" 42
+
+candidate_index="$(run_index_update "merge-candidate-abi-v${CURRENT_ABI}-pr-595-run-123-attempt-1" "$CURRENT_ABI" 0)"
+assert_index_abi "$candidate_index" "$CURRENT_ABI"
+
+if run_index_update \
+    "merge-candidate-abi-v${CURRENT_ABI}-pr-595-run-123-attempt-1" \
+    "$CURRENT_ABI" \
+    0 \
+    "" \
+    1 \
+    >/dev/null 2>&1
+then
+  echo "expected a ready merge candidate to reject further index updates" >&2
+  exit 1
+fi
 
 mismatch_out="$TMP_ROOT/index-update-mismatch.out"
 mismatch_err="$TMP_ROOT/index-update-mismatch.err"

@@ -13,8 +13,6 @@
 set -euo pipefail
 
 LOCK_POLL_SECONDS="${STATE_LOCK_POLL_SECONDS:-${DURABLE_RELEASE_LOCK_POLL_SECONDS:-30}}"
-LOCK_STALE_SECONDS="${STATE_LOCK_STALE_SECONDS:-${DURABLE_RELEASE_LOCK_STALE_SECONDS:-21600}}"
-LOCK_SAME_RUN_STALE_SECONDS="${STATE_LOCK_SAME_RUN_STALE_SECONDS:-1800}"
 STATE_LOCK_OWNER_TOKEN="${STATE_LOCK_OWNER_TOKEN:-}"
 STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-}"
 
@@ -152,42 +150,6 @@ owner_field() {
   sed -n "s/^${field}=//p" | head -n 1
 }
 
-same_run_owner_is_inactive() {
-  local repo="$1"
-  local owner_run_id="$2"
-  local owner_detail="$3"
-  local owner_detail_alt=""
-  local jobs
-  local found=0
-  local active=0
-  local job_name job_status
-
-  if [ -z "$owner_detail" ]; then
-    return 1
-  fi
-
-  if [[ "$owner_detail" =~ ^([^,]+),[[:space:]]*(wasm32|wasm64)$ ]]; then
-    owner_detail_alt="${BASH_REMATCH[2]}, ${BASH_REMATCH[1]}"
-  fi
-
-  jobs="$(gh api "/repos/${repo}/actions/runs/${owner_run_id}/jobs" \
-    --paginate \
-    --jq '.jobs[] | [.name, .status] | @tsv' 2>/dev/null || true)"
-
-  while IFS=$'\t' read -r job_name job_status; do
-    if [[ "$job_name" == *"$owner_detail"* ]] ||
-       { [ -n "$owner_detail_alt" ] && [[ "$job_name" == *"$owner_detail_alt"* ]]; }
-    then
-      found=1
-      if [ "$job_status" != "completed" ]; then
-        active=1
-      fi
-    fi
-  done <<<"$jobs"
-
-  [ "$found" = "1" ] && [ "$active" = "0" ]
-}
-
 create_lock_commit() {
   local now
   local tree
@@ -277,12 +239,11 @@ acquire() {
     unresolved_push_first_epoch=0
     unresolved_push_delay=2
 
-    local message owner_run_id owner_token owner_detail owner_epoch status stale_reason now age
+    local message owner_run_id owner_token owner_detail status stale_reason
     message="$(lock_message_for "$held_sha" 2>/dev/null || true)"
     owner_run_id="$(printf '%s\n' "$message" | owner_field run_id)"
     owner_token="$(printf '%s\n' "$message" | owner_field owner_token)"
     owner_detail="$(printf '%s\n' "$message" | owner_field owner_detail)"
-    owner_epoch="$(printf '%s\n' "$message" | owner_field created_epoch)"
     stale_reason=""
 
     if [ -n "$owner_run_id" ]; then
@@ -291,28 +252,11 @@ acquire() {
            && [ "$owner_token" = "$STATE_LOCK_OWNER_TOKEN" ]
       then
         stale_reason="left by this lock owner"
-      elif [ "$owner_run_id" = "$run_id" ] \
-             && same_run_owner_is_inactive "$repo" "$owner_run_id" "$owner_detail"
-      then
-        stale_reason="same-run owner job is no longer active (${owner_detail})"
       else
         status="$(gh api "/repos/${repo}/actions/runs/${owner_run_id}" -q .status 2>/dev/null || true)"
         if [ "$status" = "completed" ]; then
           stale_reason="owner run ${owner_run_id} is completed"
         fi
-      fi
-    fi
-
-    if [ -z "$stale_reason" ] && [ -n "$owner_epoch" ]; then
-      now="$(date -u +%s)"
-      age=$((now - owner_epoch))
-      if [ -n "$owner_run_id" ] \
-           && [ "$owner_run_id" = "$run_id" ] \
-           && [ "$age" -gt "$LOCK_SAME_RUN_STALE_SECONDS" ]
-      then
-        stale_reason="same-run lock is older than ${LOCK_SAME_RUN_STALE_SECONDS}s"
-      elif [ "$age" -gt "$LOCK_STALE_SECONDS" ]; then
-        stale_reason="lock is older than ${LOCK_STALE_SECONDS}s"
       fi
     fi
 
@@ -330,7 +274,8 @@ acquire() {
         echo "State lock for subject=$SUBJECT is held by workflow run ${owner_run_id}; waiting ${LOCK_POLL_SECONDS}s."
       fi
     else
-      echo "State lock for subject=$SUBJECT is held by ${held_sha}; waiting ${LOCK_POLL_SECONDS}s."
+      echo "State lock for subject=$SUBJECT is held by ${held_sha} with no verifiable workflow owner; waiting ${LOCK_POLL_SECONDS}s."
+      echo "An operator must verify the owner is inactive before deleting this exact ref with force-with-lease."
     fi
     sleep "$LOCK_POLL_SECONDS"
   done
@@ -357,7 +302,7 @@ release() {
     if [ "$held_sha" != "$owned_sha" ]; then
       echo "State lock is no longer owned by this job; leaving ${LOCK_REF} unchanged."
     else
-      echo "::warning::Could not release state lock ${LOCK_REF}; a later run will clear it if stale."
+      echo "::warning::Could not release state lock ${LOCK_REF}; a later run will clear it after GitHub reports this owner terminal."
     fi
   fi
 }

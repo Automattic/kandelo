@@ -1,11 +1,10 @@
 name: Staging cleanup
 
-# Deletes pr-<NNN>-staging pre-releases when the corresponding PR
-# closes (merged or abandoned), and deletes same-repo branches for
-# merged `ready-to-ship` PRs. A daily cron + manual dispatch sweep up
-# orphans (webhook misses, workflow failures during the close event,
-# and PRs merged by GITHUB_TOKEN actions whose follow-on events are
-# intentionally suppressed by GitHub Actions).
+# Deletes pr-<NNN>-staging pre-releases when the corresponding PR closes
+# and deletes same-repo branches for merged `ready-to-ship` PRs. The daily
+# sweep classifies every merge-candidate release from current GitHub state.
+# Only authoritative ready candidates and recent terminal-rejection evidence
+# survive after merge; API uncertainty always retains evidence.
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.3.
 
@@ -87,14 +86,29 @@ jobs:
           fi
 
   sweep:
-    if: github.event_name != 'pull_request'
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
       pull-requests: read
+      statuses: read
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: |
+            .github/scripts/cleanup-merge-candidates.sh
+            .github/scripts/github-api-get.sh
+            .github/scripts/latest-merge-gate-status.sh
+            .github/scripts/state-lock.sh
+          sparse-checkout-cone-mode: false
+
       - name: Sweep orphan pr-*-staging tags
         run: |
           # Up to 200 most recent pre-releases; pr-<N>-staging is the
@@ -118,6 +132,15 @@ jobs:
                   echo "Keeping $TAG (PR is OPEN)"
                 fi
               done
+
+      - name: Sweep completed merge-candidate releases
+        run: |
+          bash .github/scripts/cleanup-merge-candidates.sh \
+            --max-pages 50 \
+            --per-page 100 \
+            --max-asset-pages 50 \
+            --asset-per-page 100 \
+            --rejected-retention-days 14
 
       - name: Sweep merged ready-to-ship PR branches
         env:

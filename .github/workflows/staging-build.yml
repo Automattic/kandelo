@@ -336,13 +336,9 @@ jobs:
         # context with state=success on the lockfile-bump commit.
         #
         # Skip the post if `merge-gate` is already `success` on this
-        # SHA. That happens after prepare-merge force-pushes the
-        # lockfile-bump commit (PR HEAD advances, synchronize event
-        # triggers a fresh staging-build on the new SHA, but
-        # prepare-merge has already posted success there before
-        # enabling auto-merge). Without this guard, this step would
-        # overwrite the success with pending and block the auto-merge
-        # prepare-merge just enabled.
+        # SHA. A staging-build rerun may overlap or follow a completed
+        # Prepare merge run. Without this guard, it would overwrite the
+        # tested success with pending and block the reviewer's merge.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -350,7 +346,7 @@ jobs:
             "/repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}/status" \
             --jq '[.statuses[] | select(.context == "merge-gate")] | .[0].state // ""')
           if [ "$existing" = "success" ]; then
-            echo "merge-gate already success on ${{ github.event.pull_request.head.sha }} (likely the prepare-merge lockfile-bump commit); skipping pending post."
+            echo "merge-gate already success on ${{ github.event.pull_request.head.sha }}; skipping pending post."
             exit 0
           fi
           gh api -X POST \
@@ -557,6 +553,7 @@ jobs:
     if: ${{ needs.preflight.result == 'success' && needs.preflight.outputs.repair_index == 'true' }}
     runs-on: ubuntu-latest
     permissions:
+      actions: read      # verify a previous state-lock owner is terminal
       contents: write    # state-lock git push + gh release create/upload
     env:
       GH_TOKEN: ${{ github.token }}
@@ -685,7 +682,7 @@ jobs:
       - name: Test package publish flow
         if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
         run: |
-          bash tests/scripts/index-update.sh
+          bash scripts/dev-shell.sh bash tests/scripts/package-publish-flow.sh
 
       - name: Test binary materialization flow
         if: env.BINARY_MATERIALIZATION_CHANGED == 'true'

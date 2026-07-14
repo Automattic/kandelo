@@ -20,6 +20,7 @@ on:
         default: packages.txt
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:

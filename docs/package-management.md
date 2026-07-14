@@ -748,10 +748,12 @@ manifest in-tree; instead, every release tag carries a single
 `index.toml` ledger that records every published archive's URL +
 sha + cache-key. Each `packages/registry/<pkg>/build.toml` points its
 `[binary]` entry at that ledger (typically via `index_url` with a
-`{abi}` placeholder). The matrix flow uploads one `.tar.zst` per
-`(package, arch)` entry AND atomically updates that package's
-entry in `index.toml` under a state-lock, so consumers see a
-consistent ledger after every per-package publish.
+`{abi}` placeholder). Matrix jobs upload one `.tar.zst` per
+`(package, arch)` entry and update the target release's package entry under a
+state-lock. PR staging and Prepare-merge candidates are isolated releases.
+Canonical ledgers use a marker, immutable generation, and transaction journal
+so an interrupted replacement can be recovered without interpreting a missing
+stable asset as an empty index.
 
 See [docs/binary-releases.md](binary-releases.md) for the
 release-side perspective and
@@ -791,11 +793,13 @@ bash scripts/index-update.sh \
 
 The wrapper acquires the workflow-level state-lock for the target
 tag, downloads the current `index.toml`, mutates this package's
-entry via `xtask index-update`, uploads the archive + new
-`index.toml` with `--clobber`, and releases the lock. Different
-tags (durable `binaries-abi-v<N>` vs `pr-<N>-staging`) use
-different lock subjects, so independent rebuilds don't block each
-other.
+entry via `xtask index-update`, uploads the content-addressed archive,
+and publishes the new ledger before releasing the lock. Isolated PR
+staging/candidate tags retain their mutable ledger. A canonical
+`binaries-abi-v<N>` target delegates ledger publication to
+`scripts/release-index-state.sh`; it never uses an unjournaled
+`--clobber`. Different tags use different lock subjects, so
+independent rebuilds do not block each other.
 
 **Consumer — `cargo xtask build-deps resolve <pkg>`** (called once
 per package by `scripts/fetch-binaries.sh`):
@@ -915,8 +919,9 @@ atomically. To consume those artifacts locally, run
 `https://github.com/<owner>/<repo>/releases/download/pr-<NNN>-staging/index.toml`,
 and leaves a manually set `WASM_POSIX_BINARY_INDEX_URL` unchanged.
 That works for any `package.toml` or `build.toml` change pushed to a
-PR with CI write access, and is the path code-review and merge both
-use.
+PR with CI write access. Prepare merge uses a separate run-specific
+candidate initialized from canonical state; it never promotes the PR staging
+ledger directly into the canonical release.
 
 For pre-push iteration on packages whose source build is fast,
 just rely on the resolver's fall-through: edit `package.toml`,
@@ -995,8 +1000,9 @@ built_at       = "2026-05-13T..."
 built_by       = "https://github.com/.../actions/runs/<id>"
 ```
 
-`build.toml` is **NOT** rewritten — no bot-PR amend. The
-ledger on the release IS the consumer-visible state.
+`build.toml` is not rewritten after publication. Its ABI-templated
+`index_url` remains stable; the ledger on the release is the
+consumer-visible state.
 
 On the consumer side, `xtask build-deps resolve zlib` reads
 `package.toml` + `build.toml`, substitutes `{abi}` in the
@@ -1025,11 +1031,14 @@ block (kernel, userspace, source-only, and metadata-only entries)
 are skipped silently — those are local-build-only and the resolver's
 fall-through to source build covers them on demand.
 
-The matrix flow's CI workflows (staging-build, prepare-merge,
-force-rebuild) all use the same per-package shape: one matrix
-entry produces one `archive-stage` archive and atomically uploads
-that archive plus the mutated release `index.toml`. There is no
-bot rewrite of `package.toml` or `build.toml`.
+The package workflows retain the same per-entry build shape but publish to
+different lifecycle states. `staging-build.yml` writes a per-PR staging tag;
+`prepare-merge.yml` writes and tests a run-specific isolated candidate; and
+`force-rebuild.yml` is the manual canonical rebuild path. Post-merge
+`activate-merge-candidate.yml` verifies the exact merged tree, copies all
+required archives, then publishes one complete canonical ledger through the
+journaled release-index state machine. There is no bot rewrite of
+`package.toml` or `build.toml`.
 
 ## Atomic cache install
 
@@ -1258,11 +1267,3 @@ contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
 - **Semver ranges**: exact-pinning only. Adding a resolver that picks
   one version per lib across the overall graph is real work; we punt
   until two consumers actually conflict.
-- **CI-driven dep builds**: the matrix flow in
-  `.github/workflows/staging-build.yml` builds every changed
-  `(package, arch)` entry on PR push and uploads each archive
-  per-package. Merging via the `ready-to-ship` label runs the same
-  matrix against the durable `binaries-abi-v<N>` tag and amends
-  every `[binary.<arch>]` block in-tree on a bot PR. See
-  [docs/binary-releases.md](binary-releases.md) for the producer-
-  side flow.

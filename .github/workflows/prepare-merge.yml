@@ -4,25 +4,27 @@ name: Prepare merge
 # approved PR. Captures the current base branch SHA once, synthesizes a
 # PR-head-into-that-base merge commit, and drives the per-package matrix
 # flow against that exact synthetic merge (preflight + toolchain-cache +
-# matrix-build + test-gate; Phase B-1's pattern, targeting the durable
-# `binaries-abi-v<N>` tag). It then posts `merge-gate=success` on the
-# original PR head and enables auto-merge. PRs labeled `batched-changes`
-# use rebase auto-merge so their granular commits land on main; all other
-# PRs keep the default squash auto-merge behavior.
+# matrix-build + test-gate; Phase B-1's pattern, targeting an isolated,
+# run-specific merge-candidate release). It then posts `merge-gate=success`
+# on the original PR head. A reviewer merges the PR with the selected method;
+# Prepare merge never enables auto-merge. Only after GitHub confirms that exact
+# tested tree merged does `activate-merge-candidate.yml` copy its
+# content-addressed archives and replace the canonical ABI index once. PRs
+# labeled `batched-changes` must be rebase-merged so their granular commits land
+# on main; all other PRs must use the default squash merge behavior.
 #
 # Flow (see docs/plans/2026-05-05-decoupled-package-builds-design.md
 # §5.5 + docs/plans/2026-04-29-pr-package-builds-design.md §4.2):
-#   * targets the undated `binaries-abi-v<N>` tag (per-archive uploads),
+#   * snapshots `binaries-abi-v<N>/index.toml` into an isolated candidate,
 #   * preflight runs against the synthetic merge commit and narrows the
 #     matrix to `(package, arch)` pairs whose cache_key_sha differs from
 #     what's already published in the durable release,
 #   * builds each remaining pair in parallel via `xtask archive-stage`,
-#     publishing each archive and index entry atomically, and
-#   * gates the merge on the test-suite resolving from the durable
-#     release state.
+#     publishing each archive and index entry to that candidate, and
+#   * gates the merge on the test-suite resolving from the candidate ledger.
 #
 # `merge-gate=success` is posted on the original PR HEAD SHA after the
-# durable-release test gate passes against the synthetic merge commit.
+# candidate-backed test gate passes against the synthetic merge commit.
 # Branch protection on `main` requires this status.
 #
 # See:
@@ -35,7 +37,6 @@ on:
 
 env:
   PREPARE_MERGE_METHOD: ${{ contains(github.event.pull_request.labels.*.name, 'batched-changes') && 'rebase' || 'squash' }}
-  PREPARE_MERGE_FLAG: ${{ contains(github.event.pull_request.labels.*.name, 'batched-changes') && '--rebase' || '--squash' }}
   GIT_FETCH_RETRY_FUNC: |
     git_fetch_retry() {
       local attempt=1
@@ -62,9 +63,9 @@ env:
 
 # Do not use workflow-level concurrency. GitHub Actions keeps at most
 # one pending run per concurrency group, so a third ready PR cancels/
-# replaces the second instead of forming a real queue. The
-# durable-release-lock (acquired by `merge-gate-finalize`) serializes
-# durable-release publishing while preserving every workflow run.
+# replaces the second instead of forming a real queue. Run-specific
+# candidate locks preserve every workflow run; post-merge canonical
+# activations serialize on the ABI release lock.
 
 jobs:
   # ---------------------------------------------------------------------
@@ -89,6 +90,7 @@ jobs:
       base_sha: ${{ steps.synthesize.outputs.base_sha }}
       head_sha: ${{ steps.synthesize.outputs.head_sha }}
       merge_sha: ${{ steps.synthesize.outputs.merge_sha }}
+      tree_sha: ${{ steps.synthesize.outputs.tree_sha }}
       bundle_artifact: ${{ steps.synthesize.outputs.bundle_artifact }}
     env:
       BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -156,10 +158,13 @@ jobs:
           git bundle create "$bundle_dir/synthesized-merge.bundle" \
             refs/heads/synthesized-merge "^$BASE_SHA" "^$PR_HEAD_SHA"
 
-          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
-          echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
-          echo "bundle_artifact=synthetic-pr-merge" >> "$GITHUB_OUTPUT"
+          {
+            echo "base_sha=$BASE_SHA"
+            echo "head_sha=$PR_HEAD_SHA"
+            echo "merge_sha=$MERGE_SHA"
+            echo "tree_sha=$TREE_SHA"
+            echo "bundle_artifact=synthetic-pr-merge"
+          } >> "$GITHUB_OUTPUT"
           echo "Synthetic merge $MERGE_SHA uses base $BASE_SHA and head $PR_HEAD_SHA."
 
       - name: Upload synthetic merge bundle
@@ -244,7 +249,7 @@ jobs:
           fetch-base: 'false'
 
   gate:
-    needs: [change-scope]
+    needs: [synthesize-merge, change-scope]
     if: |
       github.event.label.name == 'ready-to-ship' &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -260,6 +265,15 @@ jobs:
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      # Approval verification executes trusted base-branch code, never helper
+      # code supplied by the pull request receiving the write-capable token.
+      - name: Checkout approval verifier
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          sparse-checkout: .github/scripts/require-exact-head-approval.sh
+          sparse-checkout-cone-mode: false
+
       - name: Verify PR review state + required checks green
         id: gate
         run: |
@@ -301,47 +315,20 @@ jobs:
             done
           }
 
-          # reviewDecision values:
-          #   APPROVED          — at least one approving review, branch
-          #                       protection requires reviews
-          #   REVIEW_REQUIRED   — branch protection requires reviews,
-          #                       none yet
-          #   CHANGES_REQUESTED — at least one CHANGES_REQUESTED review
-          #   ""/null           — no review policy on the branch (solo
-          #                       maintainer flows, internal repos)
-          #
-          # Default policy: block REVIEW_REQUIRED and CHANGES_REQUESTED.
-          # Maintainer override: a user with admin/maintain permission
-          # who applies `ready-to-ship` can bypass the review gate (the
-          # ask was: let maintainers ship without an approving review).
-          # Required-check failures are NEVER bypassable here — those
-          # gate on objective signals.
-          LABELER="${{ github.event.sender.login }}"
-          PERM=$(gh_retry gh api "/repos/${{ github.repository }}/collaborators/${LABELER}/permission" -q .permission)
-          MAINTAINER=0
-          case "$PERM" in
-            admin|maintain) MAINTAINER=1 ;;
-          esac
-          echo "labeler=$LABELER permission=$PERM maintainer=$MAINTAINER"
-
-          REVIEW=$(gh_retry gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
-          case "$REVIEW" in
-            REVIEW_REQUIRED|CHANGES_REQUESTED)
-              if [ "$MAINTAINER" = "1" ]; then
-                echo "::notice::review state $REVIEW; bypassed by maintainer ${LABELER}"
-              else
-                gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-                gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}. (A maintainer — admin/maintain permission — can re-apply \`ready-to-ship\` to override.)" || true
-                exit 1
-              fi
-              ;;
-          esac
+          if ! bash .github/scripts/require-exact-head-approval.sh \
+              --pr-number "$PR_NUMBER" \
+              --head-sha "$PR_HEAD_SHA"
+          then
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: a qualified reviewer must approve the exact tested PR head before \`ready-to-ship\`." || true
+            exit 1
+          fi
 
           # Count failing required checks. Other non-skipping checks
           # currently in flight are tolerated. Required-check failure is
-          # NOT bypassable, even by maintainers — the workflow's own
-          # post-publish tests gate the merge-gate status, and bypassing
-          # pre-existing failed checks here would defeat that intent.
+          # NOT bypassable — the workflow's own post-publish tests gate the
+          # merge-gate status, and bypassing pre-existing failed checks here
+          # would defeat that intent.
           REQUIRED_CHECKS_ERR="$RUNNER_TEMP/required-checks.err"
           if ! FAILING=$(gh_retry gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --required --json bucket -q '[.[] | select(.bucket == "fail")] | length' 2>"$REQUIRED_CHECKS_ERR"); then
             if grep -qi "no required checks reported" "$REQUIRED_CHECKS_ERR"; then
@@ -377,7 +364,7 @@ jobs:
         # respect it: wait while it is running and block if it failed.
         # If the only run is the intentionally skipped label-event run
         # produced by ready-to-ship, fall through. prepare-merge's own
-        # synthetic-merge durable preflight/matrix/test-gate below will
+        # synthetic-merge candidate preflight/matrix/test-gate below will
         # build or promote exact cache-key matches and validate the
         # merge candidate before posting merge-gate=success.
         run: |
@@ -544,11 +531,10 @@ jobs:
   # Per-package matrix flow.
   #
   # Mirrors `staging-build.yml`'s preflight + toolchain-cache +
-  # matrix-build + test-gate + publish + generate-index, with one
-  # adjustment: target_tag is always `binaries-abi-v<N>` (durable),
-  # never `pr-<NNN>-staging`. The rest of the flow is structurally
-  # identical, including the deterministic-archive guarantees the
-  # matrix relies on.
+  # matrix-build + test-gate flow, but every writer targets one exact
+  # run-specific merge-candidate prerelease. The candidate begins as an
+  # immutable snapshot of the canonical ledger with unchanged archive URLs
+  # made absolute. Canonical state is activated only after merge.
   #
   # A future cleanup PR can extract this shape into a reusable
   # `workflow_call` workflow shared between staging-build and
@@ -564,13 +550,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read            # download synthesized merge artifact
-      contents: read           # gh release view (target tag probe)
+      contents: write          # candidate release init + canonical read
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
       promote_matrix: ${{ steps.compute.outputs.promote_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
+      canonical_tag: ${{ steps.compute.outputs.canonical_tag }}
       staging_tag: ${{ steps.compute.outputs.staging_tag }}
       merge_base_sha: ${{ steps.compute.outputs.merge_base_sha }}
     steps:
@@ -681,11 +668,9 @@ jobs:
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
-            # prepare-merge always targets the durable, undated tag.
-            # Distinct from staging-build, which uses pr-<NNN>-staging
-            # for PR runs. The two flows can run in parallel without
-            # conflict because their target tags differ.
-            TARGET_TAG="binaries-abi-v${ABI}"
+            CANONICAL_TAG="binaries-abi-v${ABI}"
+            echo "canonical_tag=$CANONICAL_TAG" >> "$GITHUB_OUTPUT"
+            TARGET_TAG="merge-candidate-abi-v${ABI}-pr-${{ github.event.pull_request.number }}-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             STAGING_TAG="pr-${{ github.event.pull_request.number }}-staging"
             echo "staging_tag=$STAGING_TAG" >> "$GITHUB_OUTPUT"
@@ -698,21 +683,60 @@ jobs:
               exit 0
             fi
 
-            existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
+            existing_index_dir=$(mktemp -d)
+            existing_index="$existing_index_dir/index.toml"
+            canonical_state_file="$existing_index_dir/state"
+            existing_assets_file="$existing_index_dir/assets.json"
+            existing_asset_metadata_file="$existing_index_dir/asset-metadata.json"
+            bash .github/scripts/fetch-canonical-index.sh \
+              --target-tag "$CANONICAL_TAG" \
+              --abi "$ABI" \
+              --output "$existing_index" \
+              --state-file "$canonical_state_file" \
+              --asset-names-file "$existing_assets_file" \
+              --asset-metadata-file "$existing_asset_metadata_file"
+            canonical_state=$(cat "$canonical_state_file")
+            existing_assets=$(cat "$existing_assets_file")
             echo "existing-assets:"
             echo "$existing_assets" | jq -r ".[0:20][]"
             echo "..."
-            existing_index_dir=$(mktemp -d)
-            existing_index="$existing_index_dir/index.toml"
-            if gh release download "$TARGET_TAG" --repo "${{ github.repository }}" --pattern index.toml --dir "$existing_index_dir" --clobber >/dev/null 2>&1; then
-              echo "existing-index: downloaded $TARGET_TAG/index.toml"
-            else
-              echo "existing-index: none"
-              : > "$existing_index"
+            echo "existing-index: state=$canonical_state"
+
+            SYNTHETIC_TREE_SHA=$(git rev-parse "$SYNTHETIC_MERGE_SHA^{tree}")
+            if [ "$SYNTHETIC_TREE_SHA" != "${{ needs.synthesize-merge.outputs.tree_sha }}" ]; then
+              echo "::error::synthetic tree output drifted: $SYNTHETIC_TREE_SHA != ${{ needs.synthesize-merge.outputs.tree_sha }}"
+              exit 1
             fi
-            staging_assets=$(gh release view "$STAGING_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
+            PR_COMMIT_COUNT=$(git rev-list --count "$MERGE_BASE_SHA..$MERGE_HEAD_SHA")
+            if [ "$PR_COMMIT_COUNT" -le 0 ]; then
+              echo "::error::synthetic candidate has no PR commits after prepared base"
+              exit 1
+            fi
+            bash .github/scripts/init-merge-candidate.sh \
+              --canonical-index "$existing_index" \
+              --candidate-tag "$TARGET_TAG" \
+              --canonical-tag "$CANONICAL_TAG" \
+              --canonical-state "$canonical_state" \
+              --abi "$ABI" \
+              --pr-number "${{ github.event.pull_request.number }}" \
+              --base-ref "${{ github.event.pull_request.base.ref }}" \
+              --base-sha "$MERGE_BASE_SHA" \
+              --head-sha "$MERGE_HEAD_SHA" \
+              --synthetic-merge-sha "$SYNTHETIC_MERGE_SHA" \
+              --synthetic-tree-sha "$SYNTHETIC_TREE_SHA" \
+              --merge-method "${{ env.PREPARE_MERGE_METHOD }}" \
+              --pr-commit-count "$PR_COMMIT_COUNT" \
+              --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT"
+            staging_assets_file=$(mktemp)
+            gh release view "$STAGING_TAG" \
+              --repo "${{ github.repository }}" \
+              --json assets \
+              --jq "[.assets[] | {name, size, digest}]" \
+              > "$staging_assets_file" 2>/dev/null || printf "[]\n" > "$staging_assets_file"
+            staging_assets=$(cat "$staging_assets_file")
             echo "staging-assets:"
-            echo "$staging_assets" | jq -r ".[0:20][]"
+            echo "$staging_assets" | jq -r ".[0:20][].name"
             echo "..."
             staging_index_dir=$(mktemp -d)
             staging_index="$staging_index_dir/index.toml"
@@ -783,12 +807,31 @@ jobs:
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
                                 --arg ver "$version" --argjson rev "$revision" \
                   "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
-                staging_archive=$(echo "$staging_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
-                    "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
-                if [ -n "$staging_archive" ]; then
-                  promote_entry=$(echo "$entry" | jq -c --arg archive "$staging_archive" ". + {archive_name: \$archive}")
+                source=$(bash .github/scripts/select-package-archive-source.sh \
+                  --canonical-assets "$existing_asset_metadata_file" \
+                  --staging-assets "$staging_assets_file" \
+                  --canonical-tag "$CANONICAL_TAG" \
+                  --staging-tag "$STAGING_TAG" \
+                  --prefix "$prefix" \
+                  --suffix "$suffix")
+                source_kind=$(jq -r .source <<<"$source")
+                if [ "$source_kind" = canonical ] || [ "$source_kind" = staging ]; then
+                  promote_entry=$(jq -nc \
+                    --argjson entry "$entry" \
+                    --argjson source "$source" \
+                    "\$entry + {
+                      archive_name: \$source.archive_name,
+                      archive_sha256: \$source.archive_sha256,
+                      archive_size: \$source.archive_size,
+                      source_tag: \$source.source_tag,
+                      source: \$source.source
+                    }")
                   promote_matrix=$(echo "$promote_matrix" | jq -c --argjson e "$promote_entry" ". + [\$e]")
-                  echo "preflight: promote $pkg/$arch (sha $short from $STAGING_TAG)"
+                  if [ "$source_kind" = canonical ]; then
+                    echo "preflight: repair $pkg/$arch index (sha $short from existing $CANONICAL_TAG asset)"
+                  else
+                    echo "preflight: promote $pkg/$arch (sha $short from $STAGING_TAG)"
+                  fi
                   continue
                 fi
                 if [ "$kind" = "library" ]; then
@@ -861,17 +904,18 @@ jobs:
       - name: Prepare package toolchain
         uses: ./.github/actions/package-toolchain
 
-  # Fast path for prepare-merge: if staging already built the exact
-  # cache-keyed archive for the merged tree, copy that asset into the
-  # durable release and update binaries-abi-v<N>/index.toml under the
-  # same state-lock used by regular matrix publishes. Fall back to
-  # lib/program matrix builds for entries absent from both durable and
-  # PR staging releases.
+  # Fast path for prepare-merge: copy exact cache-keyed bytes from the
+  # canonical or PR staging release into the isolated candidate and update
+  # only its index. Canonical assets take precedence so a stale ledger is
+  # repaired without replacing immutable same-name bytes. Fall back to
+  # matrix builds for entries absent from both releases.
   promote-staging:
+    name: Promote existing archive (${{ matrix.package }}, ${{ matrix.arch }}, ${{ matrix.source }})
     needs: [synthesize-merge, preflight]
     if: needs.preflight.outputs.promote_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
+      actions: read      # verify a previous state-lock owner is terminal
       contents: write    # gh release download/upload + state-lock git push
     strategy:
       fail-fast: false
@@ -919,7 +963,7 @@ jobs:
           HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
           cargo build --release -p xtask --target "$HOST_TARGET"
 
-      - name: Download staged archive
+      - name: Download verified source archive
         id: archive
         env:
           GH_TOKEN: ${{ github.token }}
@@ -927,16 +971,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/promote"
-          gh release download "${{ needs.preflight.outputs.staging_tag }}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "${{ matrix.archive_name }}" \
-            --dir "$RUNNER_TEMP/promote" \
-            --clobber
           archive_path="$RUNNER_TEMP/promote/${{ matrix.archive_name }}"
-          if [ ! -f "$archive_path" ]; then
-            echo "::error::staged archive not downloaded: $archive_path"
-            exit 1
-          fi
+          bash .github/scripts/download-verified-release-asset.sh \
+            --tag "${{ matrix.source_tag }}" \
+            --asset "${{ matrix.archive_name }}" \
+            --sha256 "${{ matrix.archive_sha256 }}" \
+            --size "${{ matrix.archive_size }}" \
+            --output "$archive_path"
           echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
           echo "archive-name=${{ matrix.archive_name }}" >> "$GITHUB_OUTPUT"
 
@@ -1020,9 +1061,9 @@ jobs:
 
       # Atomic per-matrix-entry publish: archive upload + index.toml
       # mutation under the state-lock acquired for the target tag.
-      # Different release tags use different lock subjects (durable
-      # binaries-abi-v<N> vs pr-<N>-staging), so concurrent rebuilds
-      # to independent tags don't block each other.
+      # Different release tags use different lock subjects (run-specific
+      # candidate vs pr-<N>-staging), so concurrent builds to independent
+      # tags don't block each other.
       #
       # On failure: a separate step records status=failed in the
       # index so consumers see the rebuild attempt; if a prior
@@ -1298,7 +1339,7 @@ jobs:
       - name: Test package publish flow
         if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
         run: |
-          bash tests/scripts/index-update.sh
+          bash scripts/dev-shell.sh bash tests/scripts/package-publish-flow.sh
 
       - name: Test binary materialization flow
         if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
@@ -1308,16 +1349,17 @@ jobs:
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
-        # Resolve against the durable release plus local file://
-        # overlays for newly built archives. Runtime-only PRs can still
-        # reach this overlay path when preflight detects durable index
-        # drift from an earlier package-key change.
+        # Package-changing PRs resolve the isolated candidate index. Its
+        # unchanged entries carry absolute canonical URLs; changed entries
+        # resolve from candidate assets or local build overlays.
         run: |
           set -euo pipefail
-          if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
+          if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
-            STAGE="$RUNNER_TEMP/staged-overlay"
-            bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
+            if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
+              STAGE="$RUNNER_TEMP/staged-overlay"
+              bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
+            fi
           else
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
@@ -1576,7 +1618,7 @@ jobs:
   # Browser/docs/workflow-only PRs do not need PR staging archives and
   # must not trigger durable package builds on label. After the regular
   # review/check/mergeability gate succeeds, post the same merge-gate
-  # success context and enable auto-merge without touching releases.
+  # success context without touching releases. A reviewer performs the merge.
   # ---------------------------------------------------------------------
   merge-gate-post-noop:
     needs: [synthesize-merge, gate, change-scope]
@@ -1587,8 +1629,8 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'false'
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
-      pull-requests: write     # auto-merge + comment
+      contents: read           # verify the prepared base
+      pull-requests: write     # remove label + comment
       statuses: write          # post merge-gate=success
     env:
       GH_TOKEN: ${{ github.token }}
@@ -1628,42 +1670,10 @@ jobs:
             -f context=merge-gate \
             -f description="No package or runtime-affecting changes; package staging skipped."
 
-      - name: Enable selected auto-merge on original PR
-        id: automerge
-        run: |
-          echo "Enabling ${PREPARE_MERGE_METHOD} auto-merge for PR #${PR_NUMBER}."
-
-          set +e
-          output=$(gh pr merge "$PR_NUMBER" \
-            --repo ${{ github.repository }} \
-            --auto "$PREPARE_MERGE_FLAG" 2>&1)
-          status=$?
-          set -e
-
-          if [ "$status" -eq 0 ]; then
-            printf '%s\n' "$output"
-            echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          printf '%s\n' "$output" >&2
-          if printf '%s\n' "$output" | grep -q 'without `workflows` permission'; then
-            echo "manual_merge_required=true" >> "$GITHUB_OUTPUT"
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge passed and posted \`merge-gate=success\`, but GitHub Actions cannot enable ${PREPARE_MERGE_METHOD} auto-merge because this PR changes workflow files. A user with workflow permission must merge this PR manually."
-            exit 0
-          fi
-
-          echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
-          exit "$status"
-
       - name: Comment on original PR
         continue-on-error: true
         run: |
-          if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
-            BODY="prepare-merge: no package or runtime-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
-          else
-            BODY="prepare-merge: no package or runtime-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
-          fi
+          BODY="prepare-merge: no package or runtime-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. This PR is ready for a reviewer to ${PREPARE_MERGE_METHOD} merge."
           set +e
           for attempt in 1 2 3; do
             if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then
@@ -1687,8 +1697,8 @@ jobs:
   # Non-archive runtime/materialization PRs should validate the synthetic
   # merge commit without building or publishing package archives. Once
   # test-gate passes against durable binaries plus the freshly built
-  # kernel/test workspace, post the normal merge-gate context and enable
-  # auto-merge.
+  # kernel/test workspace, post the normal merge-gate context. A reviewer
+  # performs the merge.
   # ---------------------------------------------------------------------
   merge-gate-post-runtime-only:
     needs: [gate, change-scope, test-gate]
@@ -1700,8 +1710,8 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
-      pull-requests: write     # auto-merge + comment
+      contents: read           # verify the prepared base
+      pull-requests: write     # remove label + comment
       statuses: write          # post merge-gate=success
     env:
       GH_TOKEN: ${{ github.token }}
@@ -1741,42 +1751,10 @@ jobs:
             -f context=merge-gate \
             -f description="Runtime test-gate passed; package staging and publishing skipped."
 
-      - name: Enable selected auto-merge on original PR
-        id: automerge
-        run: |
-          echo "Enabling ${PREPARE_MERGE_METHOD} auto-merge for PR #${PR_NUMBER}."
-
-          set +e
-          output=$(gh pr merge "$PR_NUMBER" \
-            --repo ${{ github.repository }} \
-            --auto "$PREPARE_MERGE_FLAG" 2>&1)
-          status=$?
-          set -e
-
-          if [ "$status" -eq 0 ]; then
-            printf '%s\n' "$output"
-            echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          printf '%s\n' "$output" >&2
-          if printf '%s\n' "$output" | grep -q 'without `workflows` permission'; then
-            echo "manual_merge_required=true" >> "$GITHUB_OUTPUT"
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge passed and posted \`merge-gate=success\`, but GitHub Actions cannot enable ${PREPARE_MERGE_METHOD} auto-merge because this PR changes workflow files. A user with workflow permission must merge this PR manually."
-            exit 0
-          fi
-
-          echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
-          exit "$status"
-
       - name: Comment on original PR
         continue-on-error: true
         run: |
-          if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
-            BODY="prepare-merge: runtime/materialization tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
-          else
-            BODY="prepare-merge: runtime/materialization tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
-          fi
+          BODY="prepare-merge: runtime/materialization tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. This PR is ready for a reviewer to ${PREPARE_MERGE_METHOD} merge."
           set +e
           for attempt in 1 2 3; do
             if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then
@@ -1794,22 +1772,17 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the runtime-only merge-gate-post step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
 
   # ---------------------------------------------------------------------
-  # merge-gate-post — single merge-gate poster + auto-merge enabler.
+  # merge-gate-post — single merge-gate poster.
   #
-  # Post binary-resolution-via-index-ledger: there's no bot PR (no
-  # in-tree URLs to amend), and per-matrix-entry atomic
-  # archive+index publish happens inline. This job posts
-  # merge-gate=success on the ORIGINAL PR's HEAD SHA and enables
-  # auto-merge there.
+  # This job seals the exact candidate index exercised by test-gate,
+  # posts merge-gate=success on the ORIGINAL PR head, and leaves the merge
+  # to a reviewer. It does not write the canonical ABI release.
   #
-  # Fires when test-gate succeeds against the durable release state.
-  # Prepare may have built missing archives, promoted exact archives
-  # from pr-<N>-staging, or found every cache_key_sha already on the
-  # durable tag; in all cases test-gate validates the synthetic PR merge
-  # against what consumers will fetch from binaries-abi-v<N>.
+  # Default-branch post-merge reconciliation verifies that the exact candidate
+  # tree landed before one complete canonical-index update.
   # ---------------------------------------------------------------------
   merge-gate-post:
-    needs: [gate, change-scope, preflight, test-gate]
+    needs: [synthesize-merge, gate, change-scope, preflight, test-gate]
     if: |
       !cancelled() &&
       needs.change-scope.outputs.package_staging_required == 'true' &&
@@ -1817,13 +1790,15 @@ jobs:
       needs.test-gate.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
-      pull-requests: write     # auto-merge + comment
+      actions: read           # verify a previous state-lock owner is terminal
+      contents: write          # seal the candidate release
+      pull-requests: write     # remove label + comment
       statuses: write          # post merge-gate=success
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      CANDIDATE_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
       - name: Verify prepared base is still current
         run: |
@@ -1848,60 +1823,30 @@ jobs:
             exit 1
           fi
 
-      - name: Post merge-gate=success on original PR HEAD
+      - name: Checkout candidate lifecycle helpers
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.synthesize-merge.outputs.head_sha }}
+          sparse-checkout: |
+            .github/scripts
+
+      - name: Seal candidate and publish merge authority
         run: |
-          DESC="test-gate passed on the synthetic PR merge against durable archives on ${{ needs.preflight.outputs.target_tag }}."
-          gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/statuses/$PR_HEAD_SHA" \
-            -f state=success \
-            -f context=merge-gate \
-            -f description="$DESC"
-
-      - name: Enable selected auto-merge on original PR
-        id: automerge
-        run: |
-          echo "Enabling ${PREPARE_MERGE_METHOD} auto-merge for PR #${PR_NUMBER}."
-
-          set +e
-          output=$(gh pr merge "$PR_NUMBER" \
-            --repo ${{ github.repository }} \
-            --auto "$PREPARE_MERGE_FLAG" 2>&1)
-          status=$?
-          set -e
-
-          if [ "$status" -eq 0 ]; then
-            printf '%s\n' "$output"
-            echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          printf '%s\n' "$output" >&2
-          if printf '%s\n' "$output" | grep -q 'without `workflows` permission'; then
-            echo "manual_merge_required=true" >> "$GITHUB_OUTPUT"
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge passed and posted \`merge-gate=success\`, but GitHub Actions cannot enable ${PREPARE_MERGE_METHOD} auto-merge because this PR changes workflow files. A user with workflow permission must merge this PR manually."
-            exit 0
-          fi
-
-          echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
-          exit "$status"
+          bash .github/scripts/mark-merge-candidate-ready.sh \
+            --candidate-tag "$CANDIDATE_TAG" \
+            --base-sha "${{ needs.synthesize-merge.outputs.base_sha }}" \
+            --head-sha "${{ needs.synthesize-merge.outputs.head_sha }}" \
+            --synthetic-tree-sha "${{ needs.synthesize-merge.outputs.tree_sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"
 
       - name: Comment on original PR
-        # Purely informational — the merge already succeeded by this
-        # point. A transient `gh pr comment` failure (e.g. GitHub API
-        # 504) must NOT trigger the `if: failure()` handler below,
-        # which would post a misleading "merge-gate failed; re-apply
-        # ready-to-ship" message and remove the label from an
-        # already-merged PR. continue-on-error: true contains the
-        # blast radius; the inner retry recovers most transients.
+        # Purely informational — the merge gate already succeeded. A transient
+        # `gh pr comment` failure must not remove the label or report a false
+        # merge-gate failure.
         continue-on-error: true
         run: |
-          if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
-            BODY="prepare-merge: test-gate passed against the synthetic PR merge and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
-          else
-            BODY="prepare-merge: test-gate passed against the synthetic PR merge and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
-          fi
+          BODY="prepare-merge: test-gate passed against the synthetic PR merge and sealed [\`${CANDIDATE_TAG}\`](https://github.com/${{ github.repository }}/releases/tag/${CANDIDATE_TAG}). The canonical ABI index is unchanged. \`merge-gate=success\` was posted on PR HEAD. This PR is ready for a reviewer to ${PREPARE_MERGE_METHOD} merge; default-branch reconciliation will verify the exact merged tree before activation."
           set +e
           for attempt in 1 2 3; do
             if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then
@@ -1910,7 +1855,7 @@ jobs:
             echo "::warning::gh pr comment failed (attempt $attempt/3); retrying in 10s"
             sleep 10
           done
-          echo "::warning::gh pr comment failed after 3 attempts; PR is already merged but the explanatory comment was not posted"
+          echo "::warning::gh pr comment failed after 3 attempts; merge preparation succeeded but the explanatory comment was not posted"
 
       - name: Drop label + comment on failure
         if: failure()

@@ -10,13 +10,13 @@
 #      writing to the SAME release's index.toml; updates to a DIFFERENT
 #      target tag don't contend.
 #   2. Ensure the release exists.
-#   3. Download the current index.toml from the release (or bootstrap an
-#      empty one if the release has none yet).
+#   3. Recover and read canonical index state, or read the isolated mutable
+#      index for staging/candidate releases.
 #   4. Run `xtask index-update` to apply the success-or-failed mutation
 #      in-place on the downloaded copy.
-#   5. Upload the staged archive + the mutated index.toml back to the
-#      release. Archive assets are content-addressed by their cache key,
-#      so byte-identical existing assets are reused instead of clobbered.
+#   5. Upload the staged archive and publish the ledger. Canonical releases
+#      use the journaled release-index protocol; isolated releases retain the
+#      simpler replace-under-lock path.
 #   6. Release the state-lock (also on failure via EXIT trap).
 #
 # Usage:
@@ -99,6 +99,10 @@ expected_abi_for_target_tag() {
       ;;
     pr-*-staging)
       abi="$(current_abi_version)"
+      ;;
+    merge-candidate-abi-v*-pr-*-run-*-attempt-*)
+      abi="${TARGET_TAG#merge-candidate-abi-v}"
+      abi="${abi%%-pr-*}"
       ;;
     *)
       echo "index-update.sh: can't infer ABI for target-tag $TARGET_TAG; \
@@ -224,7 +228,7 @@ release_asset_sha_matches() {
 }
 
 ensure_release_exists() {
-  local err_file
+  local err_file empty_sentinel
   err_file="$(mktemp)"
 
   if gh release view "$TARGET_TAG" --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}" >/dev/null 2>"$err_file"; then
@@ -272,9 +276,15 @@ ensure_release_exists() {
       PR_NUMBER="${PR_NUMBER%-staging}"
       release_args+=(--prerelease --notes "PR #${PR_NUMBER} staging build")
       ;;
+    merge-candidate-abi-v*-pr-*-run-*-attempt-*)
+      release_args+=(--prerelease --notes "Isolated prepare-merge package candidate")
+      ;;
     binaries-abi-v*)
       ABI="${TARGET_TAG#binaries-abi-v}"
-      release_args+=(--notes "Binaries for ABI v${ABI}")
+      empty_sentinel=$(bash "${RELEASE_INDEX_STATE_SCRIPT:-scripts/release-index-state.sh}" sentinel)
+      release_args+=(--notes "${empty_sentinel}
+
+Binaries for ABI v${ABI}")
       ;;
     *)
       release_args+=(--notes "Package binary index for ${TARGET_TAG}")
@@ -345,8 +355,8 @@ upload_archive_asset() {
       echo "index-update.sh: archive upload reported success, but $ARCHIVE_NAME does not match staged bytes; retrying." >&2
       info="$(release_asset_info "$ARCHIVE_NAME")"
       if [ -n "$info" ]; then
-        local retry_asset_id retry_asset_size retry_asset_digest
-        read -r retry_asset_id retry_asset_size retry_asset_digest <<< "$info"
+        local retry_asset_id
+        read -r retry_asset_id _ _ <<< "$info"
         gh_retry gh api \
           -X DELETE \
           "/repos/${GITHUB_REPOSITORY}/releases/assets/${retry_asset_id}" \
@@ -382,9 +392,8 @@ else
   require status        "$STATUS"
 fi
 
-# Lets state-lock.sh distinguish a live same-run matrix owner from a
-# completed same-run job that failed to release the lock after an upload
-# or token error.
+# Include the matrix entry in lock diagnostics. Liveness comes only from the
+# owner token or GitHub's status for the exact owning workflow run.
 if [ "$STATUS" = "repair" ]; then
   export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-index repair}"
 else
@@ -413,6 +422,9 @@ case "$STATUS" in
 esac
 
 EXPECTED_ABI="$(expected_abi_for_target_tag)"
+RELEASE_INDEX_STATE_SCRIPT="${RELEASE_INDEX_STATE_SCRIPT:-scripts/release-index-state.sh}"
+IS_CANONICAL=0
+case "$TARGET_TAG" in binaries-abi-v*) IS_CANONICAL=1 ;; esac
 if [ -n "$ARCHIVE_NAME" ]; then
   ARCHIVE_ABI="$(archive_name_abi "$ARCHIVE_NAME")"
   if [ -n "$ARCHIVE_ABI" ] && [ "$ARCHIVE_ABI" != "$EXPECTED_ABI" ]; then
@@ -433,23 +445,44 @@ trap 'bash "$STATE_LOCK_SCRIPT" release || true' EXIT
 # 2. Ensure the release exists.
 ensure_release_exists
 
+# A ready marker seals the exact candidate index exercised by the test gate.
+# Post-test mutation would make activation unverifiable, so candidate writers
+# fail closed once that marker exists.
+case "$TARGET_TAG" in
+  merge-candidate-abi-v*-pr-*-run-*-attempt-*)
+    if [ -n "$(release_asset_info ready.json)" ]; then
+      echo "index-update.sh: candidate $TARGET_TAG is sealed by ready.json; refusing post-test mutation" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 # 3. Download the current index.toml (if any).
 INDEX_DIR="$(mktemp -d)"
 INDEX_PATH="$INDEX_DIR/index.toml"
+INDEX_HEAD_FILE="$INDEX_DIR/head"
 
-index_info="$(release_asset_info 'index.toml')"
-if [ -n "$index_info" ]; then
-  gh_retry gh release download "$TARGET_TAG" \
-    --repo "$GITHUB_REPOSITORY" \
-    --pattern index.toml \
-    --dir "$INDEX_DIR" \
-    --clobber
+if [ "$IS_CANONICAL" = 1 ]; then
+  bash "$RELEASE_INDEX_STATE_SCRIPT" read \
+    --target-tag "$TARGET_TAG" \
+    --expected-abi "$EXPECTED_ABI" \
+    --output "$INDEX_PATH" \
+    --head-file "$INDEX_HEAD_FILE"
 else
-  cat > "$INDEX_PATH" <<EOF
+  index_info="$(release_asset_info 'index.toml')"
+  if [ -n "$index_info" ]; then
+    gh_retry gh release download "$TARGET_TAG" \
+      --repo "$GITHUB_REPOSITORY" \
+      --pattern index.toml \
+      --dir "$INDEX_DIR" \
+      --clobber
+  else
+    cat > "$INDEX_PATH" <<EOF
 abi_version = $EXPECTED_ABI
 generated_at = "$(date -u +%FT%TZ)"
 generator = "index-update.sh bootstrap"
 EOF
+  fi
 fi
 
 # 4. Mutate via xtask. cargo run --quiet keeps the workflow log
@@ -478,10 +511,18 @@ cargo run --release -p xtask --target "$HOST_TRIPLE" --quiet -- \
 if [ "$STATUS" = "success" ]; then
   upload_archive_asset
 fi
-gh_retry gh release upload "$TARGET_TAG" \
-  --repo "$GITHUB_REPOSITORY" \
-  --clobber \
-  "$INDEX_PATH"
+if [ "$IS_CANONICAL" = 1 ]; then
+  bash "$RELEASE_INDEX_STATE_SCRIPT" publish \
+    --target-tag "$TARGET_TAG" \
+    --expected-abi "$EXPECTED_ABI" \
+    --index-path "$INDEX_PATH" \
+    --expected-head "$(cat "$INDEX_HEAD_FILE")"
+else
+  gh_retry gh release upload "$TARGET_TAG" \
+    --repo "$GITHUB_REPOSITORY" \
+    --clobber \
+    "$INDEX_PATH"
+fi
 
 if [ "$STATUS" = "repair" ]; then
   echo "index-update.sh: repaired $TARGET_TAG/index.toml for ABI $EXPECTED_ABI"

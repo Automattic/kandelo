@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ACTION_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=ci-scope-paths.sh
+# shellcheck source=.github/actions/detect-change-scope/ci-scope-paths.sh
 . "$ACTION_DIR/ci-scope-paths.sh"
 
 filter_with() {
@@ -97,8 +97,86 @@ assert_matches package_publish_flow_changed_files \
   "tools/xtask/src/index_update.rs" \
   "tools/xtask/src/index_update.rs"
 assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/index_candidate.rs" \
+  "tools/xtask/src/index_candidate.rs"
+assert_matches package_publish_flow_changed_files \
   "tests/scripts/index-update.sh" \
   "tests/scripts/index-update.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/activate-merge-candidate.sh" \
+  ".github/scripts/activate-merge-candidate.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-activate-merge-candidate.sh" \
+  ".github/scripts/test-activate-merge-candidate.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/reconcile-merge-candidates.sh" \
+  ".github/scripts/reconcile-merge-candidates.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-reconcile-merge-candidates.sh" \
+  ".github/scripts/test-reconcile-merge-candidates.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/cleanup-merge-candidates.sh" \
+  ".github/scripts/cleanup-merge-candidates.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/require-exact-head-approval.sh" \
+  ".github/scripts/require-exact-head-approval.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/latest-merge-gate-status.sh" \
+  ".github/scripts/latest-merge-gate-status.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/fetch-canonical-index.sh" \
+  ".github/scripts/fetch-canonical-index.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/select-package-archive-source.sh" \
+  ".github/scripts/select-package-archive-source.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/download-verified-release-asset.sh" \
+  ".github/scripts/download-verified-release-asset.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-select-package-archive-source.sh" \
+  ".github/scripts/test-select-package-archive-source.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-download-verified-release-asset.sh" \
+  ".github/scripts/test-download-verified-release-asset.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/recover-canonical-indexes.sh" \
+  ".github/scripts/recover-canonical-indexes.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-recover-canonical-indexes.sh" \
+  ".github/scripts/test-recover-canonical-indexes.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/state-lock.sh" \
+  ".github/scripts/state-lock.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-state-lock.sh" \
+  ".github/scripts/test-state-lock.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/actions/detect-change-scope/ci-scope-paths.sh" \
+  ".github/actions/detect-change-scope/ci-scope-paths.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/actions/detect-change-scope/test-ci-scope-paths.sh" \
+  ".github/actions/detect-change-scope/test-ci-scope-paths.sh"
+assert_matches package_publish_flow_changed_files \
+  "scripts/release-index-state.sh" \
+  "scripts/release-index-state.sh"
+assert_matches package_publish_flow_changed_files \
+  "tests/scripts/release-index-state.sh" \
+  "tests/scripts/release-index-state.sh"
+assert_matches package_publish_flow_changed_files \
+  "tests/scripts/package-publish-flow.sh" \
+  "tests/scripts/package-publish-flow.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/workflows/prepare-merge.yml" \
+  ".github/workflows/prepare-merge.yml"
+assert_matches package_publish_flow_changed_files \
+  ".github/workflows/staging-cleanup.yml" \
+  ".github/workflows/staging-cleanup.yml"
+assert_matches package_publish_flow_changed_files \
+  ".github/workflows/force-rebuild.yml" \
+  ".github/workflows/force-rebuild.yml"
+assert_matches package_publish_flow_changed_files \
+  ".github/workflows/reusable-package-source-publish.yml" \
+  ".github/workflows/reusable-package-source-publish.yml"
 assert_not_matches package_publish_flow_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
@@ -125,5 +203,59 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/prepare-merge.yml" \
   ".github/workflows/prepare-merge.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/activate-merge-candidate.yml" \
+  ".github/workflows/activate-merge-candidate.yml"
+assert_matches ci_control_changed_files \
+  ".github/scripts/activate-merge-candidate.sh" \
+  ".github/scripts/activate-merge-candidate.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/reconcile-merge-candidates.sh" \
+  ".github/scripts/reconcile-merge-candidates.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-reconcile-merge-candidates.sh" \
+  ".github/scripts/test-reconcile-merge-candidates.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/cleanup-merge-candidates.sh" \
+  ".github/scripts/cleanup-merge-candidates.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/require-exact-head-approval.sh" \
+  ".github/scripts/require-exact-head-approval.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/latest-merge-gate-status.sh" \
+  ".github/scripts/latest-merge-gate-status.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/fetch-canonical-index.sh" \
+  ".github/scripts/fetch-canonical-index.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/select-package-archive-source.sh" \
+  ".github/scripts/select-package-archive-source.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/download-verified-release-asset.sh" \
+  ".github/scripts/download-verified-release-asset.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/recover-canonical-indexes.sh" \
+  ".github/scripts/recover-canonical-indexes.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-recover-canonical-indexes.sh" \
+  ".github/scripts/test-recover-canonical-indexes.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/state-lock.sh" \
+  ".github/scripts/state-lock.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-state-lock.sh" \
+  ".github/scripts/test-state-lock.sh"
+assert_matches ci_control_changed_files \
+  "scripts/release-index-state.sh" \
+  "scripts/release-index-state.sh"
+assert_matches ci_control_changed_files \
+  ".github/workflows/staging-cleanup.yml" \
+  ".github/workflows/staging-cleanup.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/force-rebuild.yml" \
+  ".github/workflows/force-rebuild.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/reusable-package-source-publish.yml" \
+  ".github/workflows/reusable-package-source-publish.yml"
 
 echo "ci-scope path classifier tests passed"

@@ -1,0 +1,151 @@
+name: Activate merge candidates
+
+# Canonical package state moves only after GitHub reports that the exact
+# synthetic-tree candidate prepared by Prepare merge landed on its target
+# branch. pull_request:closed is a fast path. The scheduled default-branch
+# sweep is the durable source of truth when an event or API call is missed;
+# workflow_dispatch supports either a full sweep or one exact recovery target.
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional pull request to reconcile
+        required: false
+        type: string
+      candidate_tag:
+        description: Optional exact merge-candidate release tag
+        required: false
+        type: string
+      canonical_tag:
+        description: Optional exact canonical release tag to recover
+        required: false
+        type: string
+
+jobs:
+  activate:
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref_name == github.event.repository.default_branch) ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.labels.*.name, 'ready-to-ship'))
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+      statuses: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
+      INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+      INPUT_CANONICAL_TAG: ${{ inputs.canonical_tag }}
+      GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      # Always run the current default-branch protocol. A candidate may have
+      # been prepared by a PR that changed these scripts; pre-merge code must
+      # never activate canonical state.
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Recover canonical index transactions
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          args=(
+            --max-pages 50
+            --per-page 100
+            --max-asset-pages 50
+            --asset-per-page 100
+            --max-targets 50
+          )
+          if [ -n "$INPUT_CANONICAL_TAG" ]; then
+            args+=(--target-tag "$INPUT_CANONICAL_TAG")
+          fi
+          bash .github/scripts/recover-canonical-indexes.sh "${args[@]}"
+
+      - name: Discover merged ready candidates
+        id: reconcile
+        run: |
+          set -euo pipefail
+          candidate_plan="$RUNNER_TEMP/merge-candidate-plan.tsv"
+          args=(
+            --plan-file "$candidate_plan"
+            --max-pages 50
+            --per-page 100
+            --max-asset-pages 50
+            --asset-per-page 100
+            --max-candidates 20
+            --target-ref HEAD
+            --target-branch "$GITHUB_DEFAULT_BRANCH"
+          )
+          if [ -n "$INPUT_PR_NUMBER" ]; then
+            args+=(--pr-number "$INPUT_PR_NUMBER")
+          fi
+          if [ -n "$INPUT_CANDIDATE_TAG" ]; then
+            args+=(--candidate-tag "$INPUT_CANDIDATE_TAG")
+          fi
+          bash .github/scripts/reconcile-merge-candidates.sh "${args[@]}"
+          echo "plan=$candidate_plan" >> "$GITHUB_OUTPUT"
+          if [ -s "$candidate_plan" ]; then
+            echo "has_candidates=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_candidates=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Nix
+        if: steps.reconcile.outputs.has_candidates == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        if: steps.reconcile.outputs.has_candidates == 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Activate exact merged candidates
+        if: steps.reconcile.outputs.has_candidates == 'true'
+        env:
+          CANDIDATE_PLAN: ${{ steps.reconcile.outputs.plan }}
+        run: |
+          set -uo pipefail
+          failed=0
+          while IFS=$'\t' read -r merged_at pr_number candidate_tag; do
+            echo "Reconciling $candidate_tag for PR #$pr_number (merged $merged_at)"
+            if bash scripts/dev-shell.sh bash .github/scripts/activate-merge-candidate.sh \
+                --candidate-tag "$candidate_tag" \
+                --pr-number "$pr_number"
+            then
+              continue
+            fi
+
+            failed=1
+            marker="<!-- merge-candidate-activation-failed:$candidate_tag -->"
+            comments="$RUNNER_TEMP/activation-comments-$pr_number"
+            if gh api \
+                "/repos/${{ github.repository }}/issues/$pr_number/comments?per_page=100" \
+                --paginate \
+                --jq '.[].body' \
+                > "$comments"
+            then
+              if ! grep -Fq -- "$marker" "$comments"; then
+                gh pr comment "$pr_number" \
+                  --repo "${{ github.repository }}" \
+                  --body "Canonical package activation failed closed for \`$candidate_tag\`. The tested candidate remains isolated and \`binaries-abi-v<N>/index.toml\` was not partially overlaid. Inspect ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Scheduled reconciliation will retry transient failures; an exact-tree or same-package drift rejection requires a fresh build from the merged target. $marker" \
+                  || true
+              fi
+            else
+              echo "::warning::Could not check existing activation-failure comments for PR #$pr_number; skipping a potentially duplicate comment."
+            fi
+          done < "$CANDIDATE_PLAN"
+          exit "$failed"

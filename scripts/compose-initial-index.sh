@@ -12,8 +12,8 @@
 #      decompresses each archive, parses its internal manifest.toml's
 #      [compatibility] block, and emits a Success entry per
 #      (package, arch).
-#   3. Uploads the composed index.toml back to the release with
-#      --clobber.
+#   3. Publishes the composed index through the crash-recoverable canonical
+#      release-index transaction.
 #
 # Day-to-day publishes during CI matrix builds go through
 # scripts/index-update.sh, not this script.
@@ -43,7 +43,17 @@ trap 'bash .github/scripts/state-lock.sh release || true' EXIT
 TMP="$(mktemp -d)"
 ARCHIVES_DIR="$TMP/archives"
 INDEX_PATH="$TMP/index.toml"
+CURRENT_INDEX="$TMP/current-index.toml"
+INDEX_HEAD="$TMP/index-head"
 mkdir -p "$ARCHIVES_DIR"
+
+# Recover any interrupted writer before composing a replacement. The current
+# bytes are not an input to build-index, but its committed head fences publish.
+bash scripts/release-index-state.sh read \
+  --target-tag "$TARGET_TAG" \
+  --expected-abi "$ABI" \
+  --output "$CURRENT_INDEX" \
+  --head-file "$INDEX_HEAD"
 
 echo "compose-initial-index: downloading *.tar.zst from $TARGET_TAG..."
 gh release download "$TARGET_TAG" \
@@ -69,11 +79,12 @@ cargo run --release -p xtask --target "$HOST_TRIPLE" --quiet -- \
 package_count="$(grep -c '^\[\[packages\]\]' "$INDEX_PATH" || true)"
 echo "compose-initial-index: composed index lists $package_count package(s)"
 
-echo "compose-initial-index: uploading index.toml to $TARGET_TAG..."
-gh release upload "$TARGET_TAG" \
-  --repo "$GITHUB_REPOSITORY" \
-  --clobber \
-  "$INDEX_PATH"
+echo "compose-initial-index: publishing index.toml to $TARGET_TAG..."
+bash scripts/release-index-state.sh publish \
+  --target-tag "$TARGET_TAG" \
+  --expected-abi "$ABI" \
+  --index-path "$INDEX_PATH" \
+  --expected-head "$(cat "$INDEX_HEAD")"
 
 echo "compose-initial-index: done. Verify with:"
 echo "  curl -L https://github.com/$GITHUB_REPOSITORY/releases/download/$TARGET_TAG/index.toml | head -20"

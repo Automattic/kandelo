@@ -64,8 +64,10 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
      The script acquires the state-lock for `<tag>`, downloads the
      current `index.toml` (or bootstraps an empty one for a fresh
      tag), runs `xtask index-update` to mutate this package's entry,
-     uploads the archive + new `index.toml` with `--clobber`, and
-     releases the lock.
+     uploads the archive and publishes the new `index.toml` through the
+     journaled release-index state machine described below, then releases the
+     lock. Candidate and legacy staging tags use their isolated mutable index;
+     canonical tags never replace `index.toml` with an unjournaled clobber.
   4. On failure: a separate `if: failure()` step runs
      `scripts/index-update.sh --status failed --error <msg>` so the
      ledger reflects the failure. If a prior successful build for
@@ -82,10 +84,138 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   ledger on the release IS the consumer-visible state, so there's
   nothing in-tree to amend.
 
-`prepare-merge.yml` (triggered by the `ready-to-ship` label) reuses
-the same shape but targets the durable `binaries-abi-v<N>` tag.
+`prepare-merge.yml` (triggered by the `ready-to-ship` label) reuses the
+same build shape against an isolated merge-candidate prerelease. It does not
+write `binaries-abi-v<N>/index.toml` before merge. See "Merge candidates and
+canonical activation" below.
 `force-rebuild.yml` is the manual escape hatch (`workflow_dispatch`)
 for republishing selected packages.
+
+## Merge candidates and canonical activation
+
+Each package-changing Prepare merge run owns one release tag:
+
+```text
+merge-candidate-abi-v<N>-pr-<PR>-run-<RUN>-attempt-<ATTEMPT>
+```
+
+Preflight stores three candidate assets before package writers start:
+
+- `candidate.json` binds the repository, PR, target branch and base SHA, PR
+  head SHA, synthetic merge and tree SHAs, merge method, ABI, workflow run, and
+  whether the canonical release was present or confirmed absent at snapshot.
+- `base-index.toml` is the immutable canonical ledger snapshot used as the
+  activation compare point.
+- `index.toml` begins as that snapshot, except relative archive names become
+  absolute URLs into the canonical release. Existing packages therefore remain
+  fetchable while candidate-only entries use the candidate release.
+
+Staging promotion and matrix builds use the ordinary `index-update.sh` path,
+but their target is the candidate tag. The test gate resolves that candidate
+index. After all tests and the final base-drift check pass, `ready.json` records
+the sha256 of the exact tested candidate index. A ready candidate is sealed;
+supported index writers refuse further mutation.
+
+When the canonical release already contains the exact cache-keyed archive but
+its ledger entry is stale, Prepare merge snapshots that asset's release digest,
+copies and verifies those exact bytes into the candidate, and updates the
+candidate ledger. Canonical bytes take precedence over a same-name PR staging
+asset. This repairs ledger drift without rebuilding or attempting to replace an
+immutable canonical archive during activation.
+
+Prepare merge requires both GitHub's aggregate `APPROVED` decision and a
+non-dismissed approval on the exact tested head from a reviewer with write,
+maintain, or admin permission. It posts `merge-gate=success` and leaves the
+merge to a reviewer; Actions never enables auto-merge. PRs labeled
+`batched-changes` must be rebase-merged, while other PRs must be squash-merged.
+The exact merge method is part of `candidate.json` and a different method fails
+closed during activation. This is repository process policy, not tamper-proof
+two-person authorization: same-repository writers are trusted to change the
+workflow and helper code through the normal review process.
+
+`activate-merge-candidate.yml` checks out the current default branch and runs
+after a merged PR emits `pull_request:closed`. That event is only a fast path:
+the workflow also scans for recoverable candidates every 30 minutes and can be
+run manually as a full sweep or for one PR/candidate. The release scan is
+explicitly paginated and bounded; reaching its bound fails visibly rather than
+silently omitting old candidates, which remain available to a targeted manual
+run. Each run also caps its activation batch; later schedules drain successful
+batches from any remaining backlog. Reconciliation ignores candidates without
+`ready.json`, candidates with `activated.json` or `rejected.json`, open PRs, and
+PRs closed without merging. It selects only the candidate named by the latest
+successful `merge-gate` status on the merged PR head. Status and release scans
+are explicitly paginated and bounded. Candidate order comes from each merge
+commit's position on the checked-out default branch's first-parent history;
+timestamps and PR numbers are not used as branch order. Discovery is advisory:
+activation rechecks the exact latest authority while holding its PR lock.
+Exhausted API retries fail the run so a later schedule can retry.
+
+Before candidate discovery, every scheduled or manual run performs a separate
+bounded sweep of managed `binaries-abi-v<N>` releases. It skips stable
+marker/live/generation triples, but takes each actionable canonical tag lock
+and invokes the journal recovery state machine for a journal, missing live
+asset, orphan transaction asset, or incomplete state. A runner death is
+therefore repaired even when no merge candidate remains. Manual dispatch can
+restrict and force verification of one exact canonical tag. Repeated release
+and asset inventories detect pagination drift; API uncertainty fails closed
+before the sweep mutates any release.
+
+Activation queries GitHub and fails closed unless the PR is merged with the
+prepared head into the prepared target branch, the merge commit is on that
+branch, and its tree exactly matches the tested synthetic tree. Squash
+activation additionally requires the prepared base as the merge commit's only
+parent. Rebase activation requires the prepared base and exact prepared PR
+commit count. Running the protocol from the current default branch lets a
+merged workflow/script change reconcile candidates it prepared without using
+pre-merge activation code.
+
+Candidate sealing/status publication, activation, and destructive cleanup use
+the lock order PR authority, candidate, then canonical tag. Activation
+compares immutable base, candidate, and current canonical ledgers as one
+multi-package transaction. Unrelated canonical additions are preserved;
+same-package drift is a conflict. Every archive and fallback referenced by a
+pending changed package is verified at its final canonical destination before
+visibility: candidate-owned assets are copied and verified, while retained
+canonical assets are verified in place.
+
+Every canonical index writer uses the same journaled release-asset protocol.
+The stable `index.toml` is paired with a marker whose label names the committed
+sha256 and an immutable generation containing those exact bytes. A replacement
+uploads and verifies its generation, pending asset, and transaction journal
+before renaming the old live asset aside and promoting the pending asset.
+Changing the marker label is the logical commit. Recovery either finishes a
+journaled transaction or restores the marker's immutable generation; a missing
+live asset is never interpreted as an empty ledger. A newly empty store is
+valid only when release creation recorded the v1 empty-store sentinel.
+
+Prepare-merge takes a read-only canonical snapshot. A legacy release with a
+stable `index.toml` remains readable without being migrated. Once managed
+state exists, the snapshot requires the marker, committed generation, and live
+asset to agree, and requires an empty marker to have no live asset. Harmless
+transaction and cleanup leftovers do not invalidate an otherwise complete
+committed view. Missing assets and mismatched bytes fail visibly; only
+scheduled or manual post-merge reconciliation may recover or migrate that
+canonical release.
+
+GitHub Release assets do not provide an atomic rename swap. The stable URL can
+briefly return 404 between the two renames, and a runner death can extend that
+interval until recovery. The journal preserves both complete generations, so
+recovery never publishes an empty or partial ledger. `activated.json` is
+written only after the committed marker and stable bytes agree.
+
+An exact-tree mismatch is terminal for that candidate: it was not tested on
+the tree that merged and must never be activated. Exact identity mismatches and
+same-package canonical drift write a `rejected.json` disposition, so scheduled
+reconciliation does not repeatedly retry them. Rebuild the affected packages
+from the merged target with `force-rebuild.yml`. Transient release/API failures
+may retry the unchanged candidate.
+
+The daily staging cleanup retains all candidates for open PRs and retains state
+whenever a PR, asset, or status lookup is uncertain. It deletes candidates for
+closed-unmerged PRs. After merge it deletes activated, unready, and superseded
+attempts, retaining only the ready candidate selected by the latest successful
+merge gate. Terminal rejection evidence is retained for 14 days before cleanup
+deletes it.
 
 ## State-lock serialization
 
@@ -97,13 +227,27 @@ refs/heads/github-actions/state-lock/<subject>
 ```
 
 Where `<subject>` is the target release tag (`binaries-abi-v11`,
-`pr-447-staging`, etc.). Different tags → different subjects →
-independent locks, so concurrent rebuilds for the durable release
-don't block per-PR staging publishes and vice versa.
+`pr-447-staging`, a run-specific merge-candidate tag, etc.). Different tags
+use different subjects and independent locks, so concurrent rebuilds for the
+durable release don't block per-PR staging publishes and vice versa.
 
-The lock uses the existing stale-detection mechanism inherited from
-`durable-release-lock.sh` (run-ID-based + 6h time fallback), so a
-crashed workflow can't leave a wedged lock indefinitely.
+The lock is recovered automatically only by the same owner token or after
+GitHub reports the exact owning run completed. Lock age alone never permits
+takeover: a paused owner can resume, so stealing an active but old lock would
+let two unfenced writers mutate the same release assets. The lock does not infer
+job identity from display names or free-form owner details.
+
+If a lock commit has corrupt or missing owner metadata, recovery is an explicit
+operator action. First prove that no workflow owns the ref, then delete that
+exact observed SHA with a leased push:
+
+```sh
+git push --force-with-lease=refs/heads/github-actions/state-lock/<subject>:<sha> \
+  origin :refs/heads/github-actions/state-lock/<subject>
+```
+
+If GitHub's run API is unavailable, contenders wait rather than infer that the
+owner is dead.
 
 ## Release tag convention
 
@@ -116,8 +260,13 @@ assets over time. What's *immutable* is each archive: its filename
 encodes the `cache_key_sha` of the build inputs, so a published
 asset's bytes never change. Different inputs → different filename.
 
-PR-staging releases use `pr-<NNN>-staging` (also mutable, but
-ephemeral — closed PRs leave them as historical curios).
+PR-staging releases use `pr-<NNN>-staging` (also mutable, but ephemeral;
+staging cleanup deletes them immediately when the PR closes).
+
+Prepare-merge candidates use the run-specific
+`merge-candidate-abi-v<N>-pr-<PR>-run-<RUN>-attempt-<ATTEMPT>` shape. They are
+mutable only until `ready.json` seals the tested index and are never configured
+as the normal resolver endpoint.
 
 Homebrew tap releases use:
 

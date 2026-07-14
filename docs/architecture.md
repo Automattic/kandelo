@@ -1029,11 +1029,38 @@ Binary resolution does not look at either of those files for archive URLs. Inste
    - Anything else → fall through to source build.
 5. Every installed archive's internal `manifest.toml`'s `[compatibility]` block is verified against the request (target_arch, abi_versions, cache_key_sha). Any mismatch falls through to source build.
 
-**Per-package updates land atomically.** CI's per-matrix-build job runs `scripts/index-update.sh` after producing each archive: it acquires a workflow-level state-lock (`.github/scripts/state-lock.sh`), downloads the current `index.toml`, mutates this package's entry via `xtask index-update`, and uploads the archive + new `index.toml` together. Different release tags (e.g. `binaries-abi-v11` vs `pr-<N>-staging`) use different state-lock subjects, so independent rebuilds don't block each other.
+**Per-package updates are serialized by release.** CI's per-matrix-build job
+runs `scripts/index-update.sh` after producing each archive: it acquires the
+target tag's workflow-level state-lock (`.github/scripts/state-lock.sh`),
+downloads the current `index.toml`, mutates this package's entry via `xtask
+index-update`, uploads the content-addressed archive, and publishes the updated
+ledger. PR staging and Prepare-merge candidate tags are isolated from
+consumers. Canonical `binaries-abi-v<N>` writers publish through
+`scripts/release-index-state.sh`, whose marker, immutable generation, and
+transaction journal make the logical ledger commit crash-recoverable; they do
+not replace the canonical ledger with an unjournaled `--clobber`. Different
+tags use different state-lock subjects, so independent rebuilds do not block
+each other.
+
+Prepare-merge snapshots canonical state through the same script's nonmutating
+validation path. It reads a legacy stable index as-is, but managed releases must
+have an agreeing marker, immutable generation, and live asset. Transaction
+cleanup leftovers do not hide that committed view; incomplete or mismatched
+state is left unchanged for scheduled post-merge recovery.
 
 **Last-green fallback.** When a per-package rebuild for `(name, version, arch)` fails, its prior successful `archive_url` is preserved in the entry's `fallback_archive_url` field — consumers keep fetching the last working archive while CI iterates on the rebuild. A subsequent success clears the fallback.
 
-**CI flow.** Per-package matrix builds are driven by `.github/workflows/staging-build.yml` (per-PR staging tags), `prepare-merge.yml` (on `ready-to-ship` label, ships to the durable `binaries-abi-v<N>` release), and `force-rebuild.yml` (manual escape hatch). All three drive the same per-package matrix; each matrix entry independently invokes `scripts/index-update.sh` to publish its archive + index entry atomically.
+**CI flow.** `.github/workflows/staging-build.yml` builds changed packages into
+per-PR staging tags. On `ready-to-ship`, `prepare-merge.yml` snapshots the
+canonical ledger into a run-specific merge-candidate release, builds or
+promotes packages there, tests that exact synthetic merge, and seals the tested
+candidate without changing canonical state. After a reviewer merges the exact
+prepared tree, `activate-merge-candidate.yml` verifies the merge identity,
+copies and verifies candidate archives, and commits one complete canonical
+ledger through the journaled publisher. Its scheduled/manual path also
+recovers interrupted canonical transactions even when there is no candidate to
+activate. `force-rebuild.yml` remains the manual canonical rebuild escape
+hatch.
 
 The legacy `[binary]` block in `package.toml` was removed during the binary-resolution-via-index-ledger migration (see commit log around 2026-05-13). Archived `manifest.toml` bytes inside historical `.tar.zst` files still carry the legacy shape; `xtask`'s `parse_archived` keeps accepting it. `validate_source` rejects it on the source path so stale source files surface immediately.
 
