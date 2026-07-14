@@ -247,13 +247,18 @@ The count is a resource limit, not a static memory slab reservation. The host dy
 ### Flags silently ignored
 
 These flags are common in build systems but irrelevant for Wasm:
-- `-pthread`, `-lpthread` (threads are host-managed)
+- `-lpthread` (pthread symbols are provided by musl's `libc.a`)
 - `-fPIE`, `-pie` (no position-independent executables in Wasm)
 - `-lrt`, `-lresolv`, `-lm`, `-lcrypt`, `-lutil` (all in musl libc.a)
 - `-rdynamic`, `-Wl,-Bsymbolic`
 - `-Wl,-rpath,*`, `-Wl,-soname,*`, `-Wl,--version-script*`
 
 ## Autoconf Projects
+
+The compiler drivers preserve `-pthread` so Clang supplies its standard
+thread-aware compilation semantics, including defining `_REENTRANT`. The
+separate `-lpthread` link flag remains an accepted no-op because Kandelo's musl
+provides pthread symbols through `libc.a`.
 
 Use `wasm32posix-configure` to run `./configure` with the correct cross-compilation settings:
 
@@ -405,7 +410,9 @@ See the [Porting Guide](porting-guide.md) for preparing browser-facing package i
 
 ## Tips
 
-- **Don't add `-pthread`**: Thread creation is host-managed via `clone()`. The SDK silently ignores `-pthread`.
+- **Use `-pthread` when the build requires it**: The SDK forwards it to Clang
+  for standard compiler semantics such as `_REENTRANT`; pthread symbols still
+  come from musl's `libc.a`.
 - **Use `-O2` or `-Os`**: Unoptimized Wasm is significantly slower and larger.
 - **Check build script examples**: `packages/registry/` contains complete build scripts for 12 real-world libraries including autoconf, CMake, and plain Makefile projects.
 - **For fork support**: Run `scripts/run-wasm-fork-instrument.sh` as the final

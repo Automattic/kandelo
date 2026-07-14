@@ -251,4 +251,51 @@ describe('integration: compile C program', () => {
       }
     }
   }, 30_000);
+
+  it('preserves Autoconf pthread compiler semantics', async () => {
+    const toolchain = await resolveToolchain();
+    mkdirSync(TMP_DIR, { recursive: true });
+
+    const srcFile = join(TMP_DIR, 'autoconf-pthread.c');
+    const outFile = join(TMP_DIR, 'autoconf-pthread.wasm');
+    writeFileSync(srcFile, `
+      #include <pthread.h>
+
+      #ifndef _REENTRANT
+      #error "-pthread must define _REENTRANT"
+      #endif
+
+      static void *start(void *arg) {
+        return arg;
+      }
+
+      int main(void) {
+        pthread_attr_t attr;
+        pthread_t thread;
+        void *result = 0;
+
+        if (pthread_attr_init(&attr) != 0) return 1;
+        if (pthread_create(&thread, &attr, start, 0) != 0) return 2;
+        if (pthread_join(thread, &result) != 0) return 3;
+        return pthread_attr_destroy(&attr);
+      }
+    `);
+
+    try {
+      const userArgs = ['-pthread', srcFile, '-lpthread', '-o', outFile];
+      await prepareExecutableLinker(userArgs, toolchain);
+      const args = buildClangArgs(userArgs, toolchain);
+      const result = await run(toolchain.cc, args);
+      if (result.exitCode !== 0) {
+        console.error('clang stderr:', result.stderr);
+      }
+      expect(args).toContain('-pthread');
+      expect(args).not.toContain('-lpthread');
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(outFile)).toBe(true);
+    } finally {
+      try { unlinkSync(srcFile); } catch {}
+      try { unlinkSync(outFile); } catch {}
+    }
+  }, 30_000);
 });
