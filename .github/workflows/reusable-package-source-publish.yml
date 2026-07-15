@@ -68,7 +68,7 @@ jobs:
           git -C kandelo submodule update --init --depth 1 musl
 
       - name: Cache Cargo and Kandelo sysroots
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
