@@ -185,9 +185,8 @@ TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 
 if [ -n "$BUILD_USER" ]; then
   rm -rf "$KANDELO_ROOT/host/dist"
-  homebrew_patched_launcher_isolate "$BUILD_USER" "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT"
-  homebrew_assert_tree_not_writable_by_user "$BUILD_USER" "$OUT_PARENT"
-  homebrew_assert_tree_not_replaceable_by_user "$BUILD_USER" "$OUT_PARENT"
+  homebrew_patched_launcher_isolate "$BUILD_USER" \
+    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_PARENT"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-verify-poured-bottle.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2

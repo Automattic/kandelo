@@ -186,9 +186,8 @@ if [ -n "$BUILD_USER" ]; then
   # loading TypeScript sources. Do that while the workflow identity still owns
   # the checkout; the isolated build identity receives no source write access.
   rm -rf "$KANDELO_ROOT/host/dist"
-  homebrew_patched_launcher_isolate "$BUILD_USER" "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT"
-  homebrew_assert_tree_not_writable_by_user "$BUILD_USER" "$OUT_DIR"
-  homebrew_assert_tree_not_replaceable_by_user "$BUILD_USER" "$OUT_DIR"
+  homebrew_patched_launcher_isolate "$BUILD_USER" \
+    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-bottle-build.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2

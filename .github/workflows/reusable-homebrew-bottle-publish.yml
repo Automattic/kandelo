@@ -432,6 +432,7 @@ jobs:
           systemd_run_bin="/usr/bin/systemd-run"
           systemctl_bin="/usr/bin/systemctl"
           getent_bin="/usr/bin/getent"
+          findmnt_bin="/usr/bin/findmnt"
           pgrep_bin="/usr/bin/pgrep"
           pkill_bin="/usr/bin/pkill"
           useradd_bin="/usr/sbin/useradd"
@@ -443,7 +444,7 @@ jobs:
              [ $((8#$sudo_mode & 0022)) -ne 0 ]; then
             echo "::error::runner sudo boundary is unavailable"; exit 2
           fi
-          for protected_bin in "$systemd_run_bin" "$systemctl_bin" "$getent_bin" "$pgrep_bin" \
+          for protected_bin in "$systemd_run_bin" "$systemctl_bin" "$getent_bin" "$findmnt_bin" "$pgrep_bin" \
             "$useradd_bin" "$userdel_bin"; do
             protected_mode="$(stat -c '%a' "$protected_bin" 2>/dev/null || true)"
             if [ ! -f "$protected_bin" ] || [ -L "$protected_bin" ] || \
@@ -1662,6 +1663,7 @@ jobs:
           systemd_run_bin="/usr/bin/systemd-run"
           systemctl_bin="/usr/bin/systemctl"
           getent_bin="/usr/bin/getent"
+          findmnt_bin="/usr/bin/findmnt"
           pgrep_bin="/usr/bin/pgrep"
           pkill_bin="/usr/bin/pkill"
           useradd_bin="/usr/sbin/useradd"
@@ -1672,7 +1674,7 @@ jobs:
              [ $((8#$sudo_mode & 0022)) -ne 0 ]; then
             echo "::error::runner sudo boundary is unavailable"; exit 2
           fi
-          for protected_bin in "$systemd_run_bin" "$systemctl_bin" "$getent_bin" "$pgrep_bin" \
+          for protected_bin in "$systemd_run_bin" "$systemctl_bin" "$getent_bin" "$findmnt_bin" "$pgrep_bin" \
             "$useradd_bin"; do
             protected_mode="$(stat -c '%a' "$protected_bin" 2>/dev/null || true)"
             if [ ! -f "$protected_bin" ] || [ -L "$protected_bin" ] || \
