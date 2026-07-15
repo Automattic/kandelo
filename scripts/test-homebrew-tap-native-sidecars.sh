@@ -895,6 +895,13 @@ jq -e '
 
 cp "${dep_bottle[0]}" "$BOTTLE_CACHE/${dep_bottle[2]}.tar.gz"
 cp "${tool_bottle[0]}" "$BOTTLE_CACHE/${tool_bottle[2]}.tar.gz"
+BREWFILE="$TMPDIR/Brewfile"
+cat > "$BREWFILE" <<'EOF'
+tap "automattic/kandelo-homebrew"
+brew "automattic/kandelo-homebrew/sidecar-tool"
+EOF
+BREWFILE_SHA256="$(sha256_file "$BREWFILE")"
+BREWFILE_BYTES="$(wc -c < "$BREWFILE" | tr -d ' ')"
 BASE_ROOT="$TMPDIR/base-root"
 BASE_MANIFEST="$TMPDIR/base.MANIFEST"
 BASE_IMAGE="$TMPDIR/base.vfs"
@@ -1035,6 +1042,32 @@ if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
 fi
 grep -F "but bottle metadata requires ABI $ABI_VERSION" \
   "$TMPDIR/bad-base.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --brewfile "$BREWFILE" \
+  --package sidecar-tool \
+  --out "$TMPDIR/mixed-selection.vfs.zst" \
+  --report "$TMPDIR/mixed-selection-report.json" \
+  > /dev/null 2>"$TMPDIR/mixed-selection.err"; then
+  echo "Homebrew VFS builder accepted mixed package selection modes" >&2
+  exit 1
+fi
+grep -F -- "--brewfile cannot be combined with --package" \
+  "$TMPDIR/mixed-selection.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --brewfile "$BREWFILE" \
+  --brewfile "$BREWFILE" \
+  --out "$TMPDIR/repeated-brewfile.vfs.zst" \
+  --report "$TMPDIR/repeated-brewfile-report.json" \
+  > /dev/null 2>"$TMPDIR/repeated-brewfile.err"; then
+  echo "Homebrew VFS builder accepted more than one --brewfile" >&2
+  exit 1
+fi
+grep -F -- "--brewfile may be provided only once" \
+  "$TMPDIR/repeated-brewfile.err" >/dev/null
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$TAP/Kandelo/metadata.json" \
   --tap-root "$TAP" \
@@ -1075,7 +1108,7 @@ grep -F "already contains a Homebrew composition" \
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$TAP/Kandelo/metadata.json" \
   --tap-root "$TAP" \
-  --package sidecar-tool \
+  --brewfile "$BREWFILE" \
   --arch wasm32 \
   --runtime node \
   --bottle-cache "$BOTTLE_CACHE" \
@@ -1086,6 +1119,14 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
 
 jq -e '
   [.packages[].name] == ["sidecar-dep", "sidecar-tool"] and
+  .selection.kind == "brewfile" and
+  .selection.requested_packages == ["sidecar-tool"] and
+  (.selection.requested_packages_sha256 | test("^[0-9a-f]{64}$")) and
+  .selection.brewfile == {
+    "parser":"kandelo-static-brewfile-v1",
+    "sha256":$brewfile_sha,
+    "bytes":$brewfile_bytes
+  } and
   (.packages[] | select(.name == "sidecar-tool") | .links) == [
     "bin/sidecar-tool",
     "bin/sidecar-tool-helper",
@@ -1103,6 +1144,8 @@ jq -e '
     "subject":"base-only"
   }
 ' --arg base_sha "$BASE_IMAGE_SHA256" --argjson base_bytes "$BASE_IMAGE_BYTES" \
+  --arg brewfile_sha "$BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$BREWFILE_BYTES" \
   --argjson abi "$ABI_VERSION" \
   "$TMPDIR/sidecar-tool-report.json" >/dev/null
 npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
@@ -1115,6 +1158,14 @@ npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
   "$TMPDIR/sidecar-tool.vfs.zst" "$TMPDIR/sidecar-tool-root" >/dev/null
 grep -Fx 'base-image-marker' \
   "$TMPDIR/sidecar-tool-root/etc/base-image-marker" >/dev/null
+jq -e '
+  .selection.kind == "brewfile" and
+  .selection.requested_packages == ["sidecar-tool"] and
+  .selection.brewfile.sha256 == $brewfile_sha and
+  .selection.brewfile.bytes == $brewfile_bytes
+' --arg brewfile_sha "$BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$BREWFILE_BYTES" \
+  "$TMPDIR/sidecar-tool-root/etc/kandelo/homebrew-vfs.json" >/dev/null
 npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
   "$TMPDIR/sidecar-tool.vfs.zst" --format json --metadata \
   > "$TMPDIR/sidecar-tool-inspect.json"
@@ -1126,6 +1177,17 @@ jq -e '
   } and
   .metadata.homebrew.tapRepository == "Automattic/kandelo-homebrew" and
   .metadata.homebrew.tapName == "automattic/kandelo-homebrew" and
+  .metadata.homebrew.selection == {
+    "kind":"brewfile",
+    "requestedPackageCount":1,
+    "requestedPackagesSha256":$requested_sha,
+    "brewfile":{
+      "parser":"kandelo-static-brewfile-v1",
+      "sha256":$brewfile_sha,
+      "bytes":$brewfile_bytes
+    }
+  } and
+  ($requested_sha | test("^[0-9a-f]{64}$")) and
   (.metadata.baseImage | has("metadata") | not) and
   (.metadata | has("platformBase") | not) and
   (.metadata | has("signature") | not) and
@@ -1133,6 +1195,10 @@ jq -e '
   .metadata.kernelAbi == $abi and
   .metadata.createdBy == "images/vfs/scripts/build-homebrew-vfs-image.ts"
 ' --arg base_sha "$BASE_IMAGE_SHA256" \
+  --arg requested_sha "$(jq -r '.selection.requested_packages_sha256' \
+    "$TMPDIR/sidecar-tool-report.json")" \
+  --arg brewfile_sha "$BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$BREWFILE_BYTES" \
   --argjson base_bytes "$BASE_IMAGE_BYTES" \
   --argjson abi "$ABI_VERSION" "$TMPDIR/sidecar-tool-inspect.json" >/dev/null
 npx tsx -e "
@@ -1192,10 +1258,33 @@ jq '
   (.packages[].full_name |= sub("^automattic/kandelo-homebrew/"; "example/kandelo-tools/")) |
   (.packages[].bottles[].built_from.tap_repository? = "Example/homebrew-kandelo-tools")
 ' "$TAP/Kandelo/metadata.json" > "$THIRD_PARTY_TAP/Kandelo/metadata.json"
+THIRD_PARTY_BREWFILE="$TMPDIR/third-party.Brewfile"
+cat > "$THIRD_PARTY_BREWFILE" <<'EOF'
+tap "example/kandelo-tools"
+brew "sidecar-tool"
+EOF
+THIRD_PARTY_BREWFILE_SHA256="$(sha256_file "$THIRD_PARTY_BREWFILE")"
+THIRD_PARTY_BREWFILE_BYTES="$(wc -c < "$THIRD_PARTY_BREWFILE" | tr -d ' ')"
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$THIRD_PARTY_TAP/Kandelo/metadata.json" \
+  --tap-root "$THIRD_PARTY_TAP" \
+  --brewfile "$BREWFILE" \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --out "$TMPDIR/wrong-tap.vfs.zst" \
+  --report "$TMPDIR/wrong-tap-report.json" \
+  > /dev/null 2>"$TMPDIR/wrong-tap.err"; then
+  echo "Homebrew VFS builder accepted a Brewfile for a different tap" >&2
+  exit 1
+fi
+grep -F 'metadata tap "example/kandelo-tools" does not match requested tap "automattic/kandelo-homebrew"' \
+  "$TMPDIR/wrong-tap.err" >/dev/null
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$THIRD_PARTY_TAP/Kandelo/metadata.json" \
   --tap-root "$THIRD_PARTY_TAP" \
-  --package sidecar-tool \
+  --brewfile "$THIRD_PARTY_BREWFILE" \
   --arch wasm32 \
   --runtime node \
   --bottle-cache "$BOTTLE_CACHE" \
@@ -1207,11 +1296,22 @@ npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
   > "$TMPDIR/third-party-inspect.json"
 jq -e '
   .metadata.homebrew.tapRepository == "Example/homebrew-kandelo-tools" and
-  .metadata.homebrew.tapName == "example/kandelo-tools"
-' "$TMPDIR/third-party-inspect.json" >/dev/null
+  .metadata.homebrew.tapName == "example/kandelo-tools" and
+  .metadata.homebrew.selection.kind == "brewfile" and
+  .metadata.homebrew.selection.brewfile.sha256 == $brewfile_sha and
+  .metadata.homebrew.selection.brewfile.bytes == $brewfile_bytes
+' --arg brewfile_sha "$THIRD_PARTY_BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$THIRD_PARTY_BREWFILE_BYTES" \
+  "$TMPDIR/third-party-inspect.json" >/dev/null
 jq -e '
   .metadata.tap_repository == "Example/homebrew-kandelo-tools" and
-  .metadata.tap_name == "example/kandelo-tools"
-' "$TMPDIR/third-party-report.json" >/dev/null
+  .metadata.tap_name == "example/kandelo-tools" and
+  .selection.kind == "brewfile" and
+  .selection.requested_packages == ["sidecar-tool"] and
+  .selection.brewfile.sha256 == $brewfile_sha and
+  .selection.brewfile.bytes == $brewfile_bytes
+' --arg brewfile_sha "$THIRD_PARTY_BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$THIRD_PARTY_BREWFILE_BYTES" \
+  "$TMPDIR/third-party-report.json" >/dev/null
 
 echo "test-homebrew-tap-native-sidecars.sh: ok"

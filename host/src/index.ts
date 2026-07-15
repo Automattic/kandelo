@@ -79,6 +79,8 @@ export type {
   HomebrewVfsBuildReport,
   HomebrewVfsBuildResult,
   HomebrewVfsPackageReport,
+  HomebrewVfsSelectionReport,
+  HomebrewVfsSelectionSource,
 } from "./homebrew-vfs-builder";
 export {
   HomebrewBottleFetchError,
