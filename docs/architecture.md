@@ -19,6 +19,7 @@ Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A sing
                     │  └─ pid N         │
                     │                   │
                     │  Fd tables        │
+                    │  Advisory locks   │
                     │  Pipe buffers     │
                     │  Signal queues    │
                     │  Socket state     │
@@ -60,7 +61,7 @@ Key source files:
 | `fork.rs` | Fork/exec state serialization and deserialization |
 | `memory.rs` | Memory management (mmap regions, brk tracking) |
 | `terminal.rs` | Termios state and ioctl handling |
-| `lock.rs` | Advisory file locking (fcntl F_SETLK/F_GETLK) |
+| `lock.rs` | Machine-wide advisory file-lock manager and POSIX range semantics |
 | `wasm_api.rs` | Wasm export/import boundary (`#[no_mangle] extern "C"`) |
 
 Key kernel exports (called by the host):
@@ -94,6 +95,7 @@ host_write(fd, buf, len) → bytes_written
 host_open(path, flags, mode) → handle
 host_close(handle) → 0
 host_stat(path, buf) → 0
+host_fstat(handle, buf) → 0
 host_getrandom(buf, len) → bytes
 host_connect(addr, port) → handle
 host_send(handle, buf, len) → bytes_sent
@@ -126,10 +128,65 @@ Key host components:
 | NetworkIO backends | `networking/*.ts` | Host-side external TCP/HTTP bridges and local virtual UDP/TCP networking |
 | Default mount spec | `vfs/default-mounts.ts` (+ `default-mounts-node.ts`) | Canonical mount layout + per-host resolvers |
 | SharedPipeBuffer | `shared-pipe-buffer.ts` | Cross-worker pipe ring buffers via SharedArrayBuffer |
-| SharedLockTable | `shared-lock-table.ts` | Cross-process advisory file locks |
 | SharedIpcTable | `shared-ipc-table.ts` | SysV IPC (msg queues, semaphores, shm) |
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
+
+### Advisory file locks
+
+Advisory lock state and semantics live entirely in the Rust kernel. The
+machine-wide `ProcessTable` owns one `AdvisoryLockManager`; neither a process
+nor the TypeScript host owns a second lock table. The manager starts empty and
+retains one high-water `Vec<LockRecord>` sorted by file identity and range.
+Binary search selects the contiguous records for a file before range scanning,
+so lookup is `O(log n + k)` for `k` records on that file rather than a scan of
+unrelated files. The vector grows geometrically, never shrinks, and is bounded
+at 4096 normalized records to keep allocation bounded under the Wasm kernel's
+non-reclaiming allocator.
+
+Each host-backed regular file is identified by the exact `(st_dev, st_ino)`
+returned by `host_fstat` on its live open handle. The open file description
+caches that identity; remembered pathnames and pathname hashes are never lock
+identity. `VirtualPlatformIO` qualifies device IDs by backend object and
+backend-local device, so mounting the same backend object twice preserves
+aliases while different backend objects cannot collide. Node obtains device
+and inode values from bigint-native stat calls. In-kernel memfds, procfs
+regular objects, and read-only synthetic regular files use explicit tagged
+kernel-object identities; none derive identity from a pathname hash.
+
+Process locks use the PID owner required by POSIX. OFD locks and `flock()` use
+a kernel-global, monotonically allocated open-file-description ID: independent
+opens differ, while `dup`, `fork`, and `exec` preserve the ID. `flock()` keeps
+Linux-observable OFD-style lifetime in its own namespace, independent of POSIX
+and OFD byte-range records. Process locks are not inherited by `fork`; they
+survive `exec` under the same PID, except that closing a `FD_CLOEXEC`
+descriptor applies the normal close rule. A close removes all process locks
+held by that PID on the file; an OFD lock remains until the last machine-wide
+reference to its open file description closes. Range
+normalization, replacement, splitting, coalescing, conflict selection, and
+capacity checks all happen in Rust. Conflicts are reported as `EAGAIN` before
+capacity is considered; a mutation that would exceed the record limit or
+cannot reserve its final capacity returns `ENOLCK` without partial state.
+
+An `SCM_RIGHTS` queue entry retains the source description's `OfdId`, `FileId`,
+and real backing reference. It therefore participates in final-reference
+checks even after the sender closes its descriptor. Successful receipt
+transfers that retained reference into the receiver without changing lock
+ownership; a discarded message or failed receiver fd allocation releases it
+and removes OFD/`flock()` records only if it was the true final reference.
+Destructors enqueue fixed cleanup metadata into pre-reserved, high-water
+storage, and cleanup runs after pipe-table borrows end. The host schedules the
+syscall but never stores or examines lock state. Ordinary regular-file offsets
+and status flags still live in per-process OFD records, so their sharing across
+fork and `SCM_RIGHTS` remains the separate global-OFD gap documented in
+[future-improvements.md](future-improvements.md).
+
+ABI 40 removes the required `host_fcntl_lock` import and the public
+`SharedLockTable` host-package export. This is an intentional host API break:
+embedders must not register or manipulate lock storage. The unchanged guest
+`fcntl`, OFD-lock, and `flock` syscall surfaces now reach the Rust manager
+directly, which also lets a native Wasm host use the same implementation
+without a lock-specific JavaScript binding.
 
 ### Cooperative process-runtime interrupts
 
@@ -242,6 +299,15 @@ Some syscalls (read from empty pipe, accept on socket, poll with timeout) cannot
 5. Host re-calls `kernel_handle_channel` — if still EAGAIN, continue waiting; if result ready, write RESULT_READY and notify
 
 This mechanism is critical: the process worker blocks on `Atomics.wait` while the host manages async retry via `Atomics.waitAsync`.
+
+`F_SETLKW` uses the same parking mechanism with a narrower wake contract. A
+conflict returns the internal retry result, and the host parks only that lock
+request. Unlock, conversion, close, exit, and other Rust-side changes that may
+unblock a waiter publish an advisory-lock event through the kernel wake stream;
+the host only reschedules parked `F_SETLKW` channels and never reads lock state.
+A short retry timer remains a scheduling safety net. `ENOLCK` is a completed
+guest-visible failure, not a retry result. Native runtimes can consume the same
+generic wake event without implementing advisory-lock storage.
 
 ## Multi-Process Model
 
@@ -466,6 +532,11 @@ revalidated through that live handle, never by reopening its remembered path.
 Node uses native device/inode identity; VFS backends scope device/inode identity
 to the handle's backend object, so hard links and the same backend mounted at
 more than one path alias correctly without colliding with a different backend.
+OPFS assigns session-scoped inode tokens in its worker and uses
+`FileSystemHandle.isSameEntry()` to unify simultaneous opens. The token remains
+attached to a live file object across rename and unlink, while unlink followed
+by recreation receives a different token. OPFS stat transport carries device
+and inode as integer `u64` values rather than JavaScript `number`/float64.
 Dirty mapped data is published before
 direct file reads or writes and before a private mapping takes its snapshot;
 successful direct writes, truncation, allocation, splice, and copy operations
@@ -478,8 +549,8 @@ only performs direct loads/stores does not publish or import peer changes until
 it crosses into the kernel. Futex waits and wakes also target the caller's own
 process `SharedArrayBuffer`, so process-shared pthread mutexes/futexes remain
 unsupported across PIDs. Shared mappings of in-kernel memfds return `ENOTSUP`,
-as do file mappings on a backend that cannot provide stable identity (currently
-OPFS reports zero inode identity); `MAP_PRIVATE` is unaffected. File bytes past
+as do file mappings on any backend that cannot provide stable identity;
+`MAP_PRIVATE` is unaffected. File bytes past
 the current EOF are zero-filled or discarded on refresh/writeback rather than
 raising Linux's `SIGBUS`, and writes made outside Kandelo's file syscall paths
 are not detected. The boundary scans are on the syscall hot path; no performance
@@ -517,6 +588,11 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 - **`MemoryFileSystem`** (`vfs/memory-fs.ts`) — SAB-backed in-memory FS. Used for the rootfs image mount and for browser scratch mounts. Honours uid/gid/mode stored on each inode.
 - **`HostFileSystem`** (`vfs/host-fs.ts`) — proxies a Node host directory. Used for Node scratch mounts. Normalises stat uid/gid to `0/0` so the user's macOS/Linux uid does not leak into the kernel. Native creation receives the requested file/directory mode, but later guest `chmod`/`chown` updates are held in VFS metadata only; the Node host never applies native ownership changes.
+- **`OpfsFileSystem`** (`vfs/opfs.ts`) — browser-persistent Origin Private File
+  System storage. Its dedicated worker assigns exact session-scoped regular-file
+  inode tokens and preserves open-file identity through supported moves and
+  unlink. Browsers without `FileSystemHandle.isSameEntry()` cannot prove this
+  identity and report the unsupported boundary instead of substituting a path.
 
 ### Default mount layout
 

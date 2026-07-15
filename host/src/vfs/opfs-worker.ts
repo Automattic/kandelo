@@ -1,6 +1,8 @@
 /// <reference path="./opfs-types.d.ts" />
 
 import { joinSafeI64, splitSafeI64 } from "./i64";
+import type { StatResult } from "../types";
+import { writeOpfsStatResult } from "./opfs-stat";
 
 /**
  * OPFS Proxy Worker — dedicated Web Worker that executes async OPFS
@@ -84,6 +86,9 @@ const DT_DIR = 4;
 const OPFS_SUPER_MAGIC = 0x4f504653; // "OPFS"
 const STATFS_BLOCK_SIZE = 4096;
 const STATFS_NAME_MAX = 255;
+const OPFS_DEVICE_ID = 0n;
+const MAX_U64 = (1n << 64n) - 1n;
+const OPFS_ORPHAN_DIRECTORY = ".kandelo-opfs-unlinked-v1";
 
 // --- Channel accessor helpers (offsets matching opfs-channel.ts) ---
 
@@ -156,22 +161,8 @@ class WorkerChannel {
     return bytes.length;
   }
 
-  writeStatResult(stat: {
-    dev: number; ino: number; mode: number; nlink: number;
-    uid: number; gid: number; size: number;
-    atimeMs: number; mtimeMs: number; ctimeMs: number;
-  }): void {
-    const f64 = new Float64Array(this.buffer, DATA_OFFSET, 10);
-    f64[0] = stat.dev;
-    f64[1] = stat.ino;
-    f64[2] = stat.mode;
-    f64[3] = stat.nlink;
-    f64[4] = stat.uid;
-    f64[5] = stat.gid;
-    f64[6] = stat.size;
-    f64[7] = stat.atimeMs;
-    f64[8] = stat.mtimeMs;
-    f64[9] = stat.ctimeMs;
+  writeStatResult(stat: StatResult): void {
+    writeOpfsStatResult(this.buffer, DATA_OFFSET, stat);
   }
 
   writeStatfsResult(statfs: {
@@ -206,8 +197,17 @@ class WorkerChannel {
 
 // --- OPFS handle management ---
 
+interface OpfsInodeIdentity {
+  ino: bigint;
+  representative: FileSystemFileHandle;
+  publicPath: string | null;
+  orphanName: string | null;
+  openReferences: number;
+  accessHandle: FileSystemSyncAccessHandle | null;
+}
+
 interface OpfsFileEntry {
-  handle: FileSystemSyncAccessHandle;
+  identity: OpfsInodeIdentity | null;
   position: number;
   appendMode: boolean;
 }
@@ -219,21 +219,237 @@ interface DirIterator {
 
 let channel: WorkerChannel;
 let opfsRoot: FileSystemDirectoryHandle;
+let orphanDirectory: FileSystemDirectoryHandle;
 let nextFileHandle = 1;
 let nextDirHandle = 1;
+let nextInode = 1n;
+let nextOrphan = 1;
+const orphanSessionId = crypto.randomUUID();
 const fileHandles = new Map<number, OpfsFileEntry>();
 const dirHandles = new Map<number, DirIterator>();
+const identitiesByPath = new Map<string, OpfsInodeIdentity>();
+
+class OpfsBoundaryError extends Error {
+  constructor(readonly errno: number, message: string) {
+    super(message);
+  }
+}
+
+function removeIdentity(identity: OpfsInodeIdentity): void {
+  if (
+    identity.publicPath !== null &&
+    identitiesByPath.get(identity.publicPath) === identity
+  ) {
+    identitiesByPath.delete(identity.publicPath);
+  }
+}
+
+async function isSameEntry(
+  handle: FileSystemFileHandle,
+  other: FileSystemFileHandle,
+): Promise<boolean> {
+  if (typeof handle.isSameEntry !== "function") {
+    throw new OpfsBoundaryError(
+      ENOTSUP,
+      "OPFS cannot provide stable file identity without isSameEntry()",
+    );
+  }
+  return handle.isSameEntry(other);
+}
+
+async function identityFor(
+  handle: FileSystemFileHandle,
+  publicPath: string,
+): Promise<OpfsInodeIdentity> {
+  const existing = identitiesByPath.get(publicPath);
+  if (existing !== undefined) {
+    // isSameEntry() unifies separate handle objects for simultaneous opens.
+    // The path map supplies the object generation that isSameEntry() itself
+    // lacks after unlink/recreate.
+    if (await isSameEntry(handle, existing.representative)) return existing;
+    if (existing.openReferences > 0) {
+      throw new OpfsBoundaryError(
+        ENOTSUP,
+        "OPFS file identity changed outside the active proxy session",
+      );
+    }
+    removeIdentity(existing);
+  }
+  if (nextInode > MAX_U64) {
+    throw new OpfsBoundaryError(EOVERFLOW, "OPFS inode identity exhausted");
+  }
+  const identity: OpfsInodeIdentity = {
+    ino: nextInode++,
+    representative: handle,
+    publicPath,
+    orphanName: null,
+    openReferences: 0,
+    accessHandle: null,
+  };
+  identitiesByPath.set(publicPath, identity);
+  return identity;
+}
+
+function closeIdentityAccess(identity: OpfsInodeIdentity): void {
+  if (identity.accessHandle === null) return;
+  const accessHandle = identity.accessHandle;
+  try {
+    accessHandle.flush();
+  } finally {
+    try {
+      accessHandle.close();
+    } finally {
+      identity.accessHandle = null;
+    }
+  }
+}
+
+async function reopenIdentityAccess(
+  identity: OpfsInodeIdentity,
+): Promise<void> {
+  if (identity.openReferences > 0) {
+    identity.accessHandle =
+      await identity.representative.createSyncAccessHandle();
+  }
+}
+
+async function moveIdentityToOrphan(
+  identity: OpfsInodeIdentity,
+): Promise<void> {
+  const publicPath = identity.publicPath;
+  if (publicPath === null) return;
+  if (typeof identity.representative.move !== "function") {
+    throw new OpfsBoundaryError(
+      ENOTSUP,
+      "OPFS cannot preserve an open unlinked file without move()",
+    );
+  }
+
+  const hadAccessHandle = identity.accessHandle !== null;
+  if (hadAccessHandle) closeIdentityAccess(identity);
+  const orphanName = `${orphanSessionId}-${identity.ino}-${nextOrphan++}`;
+  try {
+    await identity.representative.move(orphanDirectory, orphanName);
+  } catch (error) {
+    if (hadAccessHandle) {
+      try {
+        await reopenIdentityAccess(identity);
+      } catch {
+        throw new OpfsBoundaryError(
+          ENOTSUP,
+          "OPFS could not restore an open file after failed unlink",
+        );
+      }
+    }
+    throw error;
+  }
+
+  if (identitiesByPath.get(publicPath) === identity) {
+    identitiesByPath.delete(publicPath);
+  }
+  identity.publicPath = null;
+  identity.orphanName = orphanName;
+  await reopenIdentityAccess(identity);
+}
+
+async function moveIdentityToPublicPath(
+  identity: OpfsInodeIdentity,
+  destination: FileSystemDirectoryHandle,
+  name: string,
+  publicPath: string,
+): Promise<void> {
+  if (typeof identity.representative.move !== "function") {
+    throw new OpfsBoundaryError(
+      ENOTSUP,
+      "OPFS cannot preserve file identity without move()",
+    );
+  }
+
+  const previousPublicPath = identity.publicPath;
+  const hadAccessHandle = identity.accessHandle !== null;
+  if (hadAccessHandle) closeIdentityAccess(identity);
+  try {
+    await identity.representative.move(destination, name);
+  } catch (error) {
+    if (hadAccessHandle) {
+      try {
+        await reopenIdentityAccess(identity);
+      } catch {
+        throw new OpfsBoundaryError(
+          ENOTSUP,
+          "OPFS could not restore an open file after failed rename",
+        );
+      }
+    }
+    throw error;
+  }
+
+  if (
+    previousPublicPath !== null &&
+    identitiesByPath.get(previousPublicPath) === identity
+  ) {
+    identitiesByPath.delete(previousPublicPath);
+  }
+  identity.publicPath = publicPath;
+  identity.orphanName = null;
+  identitiesByPath.set(publicPath, identity);
+
+  const movedHandle = await destination.getFileHandle(name);
+  if (!(await isSameEntry(identity.representative, movedHandle))) {
+    throw new OpfsBoundaryError(
+      ENOTSUP,
+      "OPFS move did not preserve file identity",
+    );
+  }
+  await reopenIdentityAccess(identity);
+}
+
+async function removeOrphan(identity: OpfsInodeIdentity): Promise<void> {
+  const orphanName = identity.orphanName;
+  if (orphanName !== null) {
+    await orphanDirectory.removeEntry(orphanName);
+    identity.orphanName = null;
+  }
+  removeIdentity(identity);
+}
+
+/**
+ * A proxy owns OPFS namespace mutation for its session. If the preceding
+ * proxy was terminated while an unlinked file was open, no live handle can
+ * ever refer to its private orphan again; clear those unreachable objects
+ * before accepting requests for the new session.
+ */
+async function removeStaleOrphans(): Promise<void> {
+  for await (const [name] of (orphanDirectory as any).entries()) {
+    await orphanDirectory.removeEntry(name, { recursive: true });
+  }
+}
+
+function accessHandleFor(entry: OpfsFileEntry): FileSystemSyncAccessHandle | null {
+  return entry.identity?.accessHandle ?? null;
+}
 
 // --- Path resolution ---
 
-/** Split a path into directory components and final name. */
-function splitPath(path: string): { dirParts: string[]; name: string } {
-  // Normalize: strip leading/trailing slashes, collapse double slashes
+function normalizePublicPath(path: string): string {
   const normalized = path.replace(/^\/+|\/+$/g, "").replace(/\/+/g, "/");
-  if (!normalized) return { dirParts: [], name: "" };
+  if (normalized.split("/")[0] === OPFS_ORPHAN_DIRECTORY) {
+    throw new OpfsBoundaryError(ENOENT, "OPFS internal path is not visible");
+  }
+  return normalized;
+}
+
+/** Split a path into directory components and final name. */
+function splitPath(path: string): {
+  dirParts: string[];
+  name: string;
+  normalized: string;
+} {
+  const normalized = normalizePublicPath(path);
+  if (!normalized) return { dirParts: [], name: "", normalized };
   const parts = normalized.split("/");
   const name = parts.pop()!;
-  return { dirParts: parts, name };
+  return { dirParts: parts, name, normalized };
 }
 
 /** Walk directory handles from OPFS root to reach the parent directory. */
@@ -250,15 +466,19 @@ async function resolveParentDir(
 /** Resolve a full path to its parent directory handle and final name. */
 async function resolvePath(
   path: string,
-): Promise<{ dir: FileSystemDirectoryHandle; name: string }> {
-  const { dirParts, name } = splitPath(path);
+): Promise<{
+  dir: FileSystemDirectoryHandle;
+  name: string;
+  normalized: string;
+}> {
+  const { dirParts, name, normalized } = splitPath(path);
   const dir = await resolveParentDir(dirParts);
-  return { dir, name };
+  return { dir, name, normalized };
 }
 
 /** Resolve a path to a directory handle (the path itself is a directory). */
 async function resolveDir(path: string): Promise<FileSystemDirectoryHandle> {
-  const normalized = path.replace(/^\/+|\/+$/g, "").replace(/\/+/g, "/");
+  const normalized = normalizePublicPath(path);
   if (!normalized) return opfsRoot;
   const parts = normalized.split("/");
   let dir = opfsRoot;
@@ -269,7 +489,7 @@ async function resolveDir(path: string): Promise<FileSystemDirectoryHandle> {
 }
 
 async function ensurePathExists(path: string): Promise<void> {
-  const normalized = path.replace(/^\/+|\/+$/g, "").replace(/\/+/g, "/");
+  const normalized = normalizePublicPath(path);
   if (!normalized) return;
 
   const { dir, name } = await resolvePath(path);
@@ -284,6 +504,7 @@ async function ensurePathExists(path: string): Promise<void> {
 // --- DOMException → errno mapping ---
 
 function mapError(err: unknown): number {
+  if (err instanceof OpfsBoundaryError) return err.errno;
   if (err instanceof DOMException) {
     switch (err.name) {
       case "NotFoundError":
@@ -295,6 +516,8 @@ function mapError(err: unknown): number {
         return ENOTEMPTY;
       case "QuotaExceededError":
         return ENOSPC;
+      case "NoModificationAllowedError":
+        return ENOTSUP;
       case "NotAllowedError":
         return ENOENT; // OPFS: usually means file doesn't exist in this context
       default:
@@ -315,6 +538,8 @@ async function handleOpen(): Promise<void> {
   const pathLen = channel.getArg(2);
   const path = channel.readString(pathLen);
 
+  let identity: OpfsInodeIdentity | null = null;
+  let openedAccess = false;
   try {
     if (flags & O_DIRECTORY) {
       // Opening a directory — just verify it exists
@@ -322,7 +547,7 @@ async function handleOpen(): Promise<void> {
       const handle = nextFileHandle++;
       // Store a sentinel for directory handles opened via open()
       fileHandles.set(handle, {
-        handle: null as unknown as FileSystemSyncAccessHandle,
+        identity: null,
         position: 0,
         appendMode: false,
       });
@@ -331,10 +556,17 @@ async function handleOpen(): Promise<void> {
       return;
     }
 
-    const { dir, name } = await resolvePath(path);
+    const { dir, name, normalized } = await resolvePath(path);
     const create = !!(flags & O_CREAT);
     const fileHandle = await dir.getFileHandle(name, { create });
-    const syncHandle = await fileHandle.createSyncAccessHandle();
+    identity = await identityFor(fileHandle, normalized);
+    let syncHandle = identity.accessHandle;
+    if (syncHandle === null) {
+      syncHandle = await fileHandle.createSyncAccessHandle();
+      identity.accessHandle = syncHandle;
+      identity.representative = fileHandle;
+      openedAccess = true;
+    }
 
     if (flags & O_TRUNC) {
       syncHandle.truncate(0);
@@ -346,13 +578,22 @@ async function handleOpen(): Promise<void> {
       position = syncHandle.getSize();
     }
     fileHandles.set(id, {
-      handle: syncHandle,
+      identity,
       position,
       appendMode: !!(flags & O_APPEND),
     });
+    identity.openReferences++;
     channel.result = id;
     channel.notifyComplete();
   } catch (err) {
+    if (openedAccess && identity?.openReferences === 0) {
+      try {
+        identity.accessHandle?.close();
+      } catch {
+        // Preserve the original open failure.
+      }
+      identity.accessHandle = null;
+    }
     channel.notifyError(mapError(err));
   }
 }
@@ -364,11 +605,16 @@ async function handleClose(): Promise<void> {
     channel.notifyError(EBADF);
     return;
   }
+  fileHandles.delete(handle);
   try {
-    if (entry.handle) {
-      entry.handle.close();
+    const identity = entry.identity;
+    if (identity !== null) {
+      identity.openReferences--;
+      if (identity.openReferences === 0) {
+        closeIdentityAccess(identity);
+        if (identity.publicPath === null) await removeOrphan(identity);
+      }
     }
-    fileHandles.delete(handle);
     channel.result = 0;
     channel.notifyComplete();
   } catch (err) {
@@ -384,7 +630,8 @@ async function handleRead(): Promise<void> {
   const hasOffset = channel.getArg(4);
 
   const entry = fileHandles.get(handle);
-  if (!entry || !entry.handle) {
+  const accessHandle = entry && accessHandleFor(entry);
+  if (!entry || !accessHandle) {
     channel.notifyError(EBADF);
     return;
   }
@@ -407,7 +654,7 @@ async function handleRead(): Promise<void> {
 
     const data = channel.dataBuffer;
     const target = data.subarray(0, length);
-    const bytesRead = entry.handle.read(target, { at: readAt });
+    const bytesRead = accessHandle.read(target, { at: readAt });
 
     if (!hasOffset) {
       entry.position += bytesRead;
@@ -428,7 +675,8 @@ async function handleWrite(): Promise<void> {
   const hasOffset = channel.getArg(4);
 
   const entry = fileHandles.get(handle);
-  if (!entry || !entry.handle) {
+  const accessHandle = entry && accessHandleFor(entry);
+  if (!entry || !accessHandle) {
     channel.notifyError(EBADF);
     return;
   }
@@ -446,17 +694,17 @@ async function handleWrite(): Promise<void> {
         throw error;
       }
     } else if (entry.appendMode) {
-      writeAt = entry.handle.getSize();
+      writeAt = accessHandle.getSize();
     } else {
       writeAt = entry.position;
     }
 
     const data = channel.dataBuffer.slice(0, length);
-    const bytesWritten = entry.handle.write(data, { at: writeAt });
+    const bytesWritten = accessHandle.write(data, { at: writeAt });
 
     if (!hasOffset) {
       if (entry.appendMode) {
-        entry.position = entry.handle.getSize();
+        entry.position = accessHandle.getSize();
       } else {
         entry.position += bytesWritten;
       }
@@ -476,7 +724,8 @@ async function handleSeek(): Promise<void> {
   const whence = channel.getArg(3);
 
   const entry = fileHandles.get(handle);
-  if (!entry || !entry.handle) {
+  const accessHandle = entry && accessHandleFor(entry);
+  if (!entry || !accessHandle) {
     channel.notifyError(EBADF);
     return;
   }
@@ -502,7 +751,7 @@ async function handleSeek(): Promise<void> {
         newPos = entry.position + offset;
         break;
       case SEEK_END:
-        newPos = entry.handle.getSize() + offset;
+        newPos = accessHandle.getSize() + offset;
         break;
       default:
         channel.notifyError(EINVAL);
@@ -535,22 +784,30 @@ async function handleFstat(): Promise<void> {
   }
 
   try {
-    if (!entry.handle) {
+    const identity = entry.identity;
+    const accessHandle = identity?.accessHandle ?? null;
+    if (identity === null) {
       // Directory opened via open(O_DIRECTORY)
       const now = Date.now();
       channel.writeStatResult({
-        dev: 0, ino: 0, mode: S_IFDIR | 0o755, nlink: 1,
+        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o755, nlink: 1,
         uid: 0, gid: 0, size: 0,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
       });
-    } else {
-      const size = entry.handle.getSize();
+    } else if (accessHandle !== null) {
+      const size = accessHandle.getSize();
       const now = Date.now();
       channel.writeStatResult({
-        dev: 0, ino: 0, mode: S_IFREG | 0o644, nlink: 1,
+        dev: OPFS_DEVICE_ID,
+        ino: identity.ino,
+        mode: S_IFREG | 0o644,
+        nlink: identity.publicPath === null ? 0 : 1,
         uid: 0, gid: 0, size,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
       });
+    } else {
+      channel.notifyError(EBADF);
+      return;
     }
     channel.result = 0;
     channel.notifyComplete();
@@ -562,7 +819,8 @@ async function handleFstat(): Promise<void> {
 async function handleFtruncate(): Promise<void> {
   const handle = channel.getArg(0);
   const entry = fileHandles.get(handle);
-  if (!entry || !entry.handle) {
+  const accessHandle = entry && accessHandleFor(entry);
+  if (!entry || !accessHandle) {
     channel.notifyError(EBADF);
     return;
   }
@@ -578,7 +836,7 @@ async function handleFtruncate(): Promise<void> {
       }
       throw error;
     }
-    entry.handle.truncate(length);
+    accessHandle.truncate(length);
     channel.result = 0;
     channel.notifyComplete();
   } catch (err) {
@@ -589,13 +847,14 @@ async function handleFtruncate(): Promise<void> {
 async function handleFsync(): Promise<void> {
   const handle = channel.getArg(0);
   const entry = fileHandles.get(handle);
-  if (!entry || !entry.handle) {
+  const accessHandle = entry && accessHandleFor(entry);
+  if (!entry || !accessHandle) {
     channel.notifyError(EBADF);
     return;
   }
 
   try {
-    entry.handle.flush();
+    accessHandle.flush();
     channel.result = 0;
     channel.notifyComplete();
   } catch (err) {
@@ -608,13 +867,13 @@ async function handleStat(isLstat: boolean): Promise<void> {
   const path = channel.readString(pathLen);
 
   try {
-    const normalized = path.replace(/^\/+|\/+$/g, "").replace(/\/+/g, "/");
+    const normalized = normalizePublicPath(path);
 
     if (!normalized) {
       // Root directory
       const now = Date.now();
       channel.writeStatResult({
-        dev: 0, ino: 0, mode: S_IFDIR | 0o755, nlink: 1,
+        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o755, nlink: 1,
         uid: 0, gid: 0, size: 0,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
       });
@@ -631,7 +890,7 @@ async function handleStat(isLstat: boolean): Promise<void> {
       await dir.getDirectoryHandle(name);
       const now = Date.now();
       channel.writeStatResult({
-        dev: 0, ino: 0, mode: S_IFDIR | 0o755, nlink: 1,
+        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o755, nlink: 1,
         uid: 0, gid: 0, size: 0,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
       });
@@ -644,6 +903,7 @@ async function handleStat(isLstat: boolean): Promise<void> {
 
     // Try file
     const fileHandle = await dir.getFileHandle(name);
+    const identity = await identityFor(fileHandle, normalized);
     // A file may already have a live synchronous access handle. OPFS permits
     // only one such handle per file, so stat must use the snapshot API rather
     // than attempting to acquire a second handle just to read the size.
@@ -652,7 +912,10 @@ async function handleStat(isLstat: boolean): Promise<void> {
 
     const now = Date.now();
     channel.writeStatResult({
-      dev: 0, ino: 0, mode: S_IFREG | 0o644, nlink: 1,
+      dev: OPFS_DEVICE_ID,
+      ino: identity.ino,
+      mode: S_IFREG | 0o644,
+      nlink: 1,
       uid: 0, gid: 0, size,
       atimeMs: now, mtimeMs: now, ctimeMs: now,
     });
@@ -740,8 +1003,18 @@ async function handleUnlink(): Promise<void> {
   const path = channel.readString(pathLen);
 
   try {
-    const { dir, name } = await resolvePath(path);
-    await dir.removeEntry(name);
+    const { dir, name, normalized } = await resolvePath(path);
+    const fileHandle = await dir.getFileHandle(name);
+    const identity = await identityFor(fileHandle, normalized);
+    if (identity.openReferences > 0) {
+      // Chromium will not remove a file while its synchronous access handle
+      // is open. A native move to a private namespace preserves the object
+      // for live descriptors while detaching the public pathname.
+      await moveIdentityToOrphan(identity);
+    } else {
+      await dir.removeEntry(name);
+      removeIdentity(identity);
+    }
     channel.result = 0;
     channel.notifyComplete();
   } catch (err) {
@@ -756,38 +1029,85 @@ async function handleRename(): Promise<void> {
   try {
     const oldResolved = await resolvePath(oldPath);
     const newResolved = await resolvePath(newPath);
-
-    // Check if source is a file
-    let isFile = true;
-    try {
-      await oldResolved.dir.getFileHandle(oldResolved.name);
-    } catch {
-      isFile = false;
+    if (oldResolved.normalized === newResolved.normalized) {
+      channel.result = 0;
+      channel.notifyComplete();
+      return;
     }
 
-    if (isFile) {
-      // Copy file contents to new location, then remove old
-      const srcFileHandle = await oldResolved.dir.getFileHandle(oldResolved.name);
-      const srcSync = await srcFileHandle.createSyncAccessHandle();
-      const size = srcSync.getSize();
-      const buf = new Uint8Array(size);
-      srcSync.read(buf, { at: 0 });
-      srcSync.close();
+    let sourceHandle: FileSystemFileHandle;
+    try {
+      sourceHandle = await oldResolved.dir.getFileHandle(oldResolved.name);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "TypeMismatchError") {
+        throw new OpfsBoundaryError(
+          ENOTSUP,
+          "OPFS directory rename is not supported",
+        );
+      }
+      throw error;
+    }
 
-      const dstFileHandle = await newResolved.dir.getFileHandle(newResolved.name, { create: true });
-      const dstSync = await dstFileHandle.createSyncAccessHandle();
-      dstSync.truncate(0);
-      dstSync.write(buf, { at: 0 });
-      dstSync.flush();
-      dstSync.close();
+    const sourceIdentity = await identityFor(
+      sourceHandle,
+      oldResolved.normalized,
+    );
+    let destinationIdentity: OpfsInodeIdentity | null = null;
+    try {
+      const destinationHandle = await newResolved.dir.getFileHandle(
+        newResolved.name,
+      );
+      if (await isSameEntry(sourceHandle, destinationHandle)) {
+        channel.result = 0;
+        channel.notifyComplete();
+        return;
+      }
+      destinationIdentity = await identityFor(
+        destinationHandle,
+        newResolved.normalized,
+      );
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) {
+        throw error;
+      }
+    }
 
-      await oldResolved.dir.removeEntry(oldResolved.name);
-    } else {
-      // For directories, OPFS doesn't support native rename across parents.
-      // Only support same-parent rename by creating new dir and failing for non-empty.
-      // This is a limitation of OPFS.
-      channel.notifyError(ENOTSUP);
-      return;
+    // Native move cannot replace a destination that has a live synchronous
+    // access handle. Preserve that old object for its descriptors first.
+    const preservedDestination =
+      destinationIdentity !== null && destinationIdentity.openReferences > 0;
+    if (preservedDestination && destinationIdentity !== null) {
+      await moveIdentityToOrphan(destinationIdentity);
+    }
+
+    try {
+      await moveIdentityToPublicPath(
+        sourceIdentity,
+        newResolved.dir,
+        newResolved.name,
+        newResolved.normalized,
+      );
+    } catch (error) {
+      if (preservedDestination && destinationIdentity !== null) {
+        try {
+          await moveIdentityToPublicPath(
+            destinationIdentity,
+            newResolved.dir,
+            newResolved.name,
+            newResolved.normalized,
+          );
+        } catch {
+          throw new OpfsBoundaryError(
+            ENOTSUP,
+            "OPFS could not restore the destination after failed rename",
+          );
+        }
+      }
+      throw error;
+    }
+
+    if (destinationIdentity !== null && !preservedDestination) {
+      removeIdentity(destinationIdentity);
     }
 
     channel.result = 0;
@@ -803,7 +1123,7 @@ async function handleAccess(): Promise<void> {
   const path = channel.readString(pathLen);
 
   try {
-    const normalized = path.replace(/^\/+|\/+$/g, "").replace(/\/+/g, "/");
+    const normalized = normalizePublicPath(path);
     if (!normalized) {
       // Root always exists
       channel.result = 0;
@@ -832,11 +1152,13 @@ async function handleOpendir(): Promise<void> {
   const path = channel.readString(pathLen);
 
   try {
+    const normalized = normalizePublicPath(path);
     const dirHandle = await resolveDir(path);
 
     // Collect all entries
     const entries: { name: string; kind: "file" | "directory" }[] = [];
     for await (const [name, handle] of (dirHandle as any).entries()) {
+      if (!normalized && name === OPFS_ORPHAN_DIRECTORY) continue;
       entries.push({ name, kind: handle.kind });
     }
 
@@ -948,6 +1270,10 @@ self.onmessage = async (event: MessageEvent) => {
 
   channel = new WorkerChannel(buffer);
   opfsRoot = await navigator.storage.getDirectory();
+  orphanDirectory = await opfsRoot.getDirectoryHandle(OPFS_ORPHAN_DIRECTORY, {
+    create: true,
+  });
+  await removeStaleOrphans();
 
   // Signal ready
   self.postMessage({ type: "ready" });

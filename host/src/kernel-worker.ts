@@ -22,7 +22,6 @@
  */
 
 import { negErrno, WasmPosixKernel, type KernelPointer } from "./kernel";
-import { SharedLockTable } from "./shared-lock-table";
 import {
   buildRawHttpRequest,
   parseRawHttpResponse,
@@ -361,6 +360,7 @@ const SYS_MQ_TIMEDRECEIVE = ABI_SYSCALLS.MqTimedreceive;
 const SYS_OPEN = ABI_SYSCALLS.Open;
 const SYS_OPENAT = ABI_SYSCALLS.Openat;
 const SYS_CLOSE = ABI_SYSCALLS.Close;
+const SYS_FLOCK = ABI_SYSCALLS.Flock;
 
 /** IPC constants (must match musl) */
 const IPC_64 = 0x100;
@@ -375,6 +375,7 @@ const F_SETLKW64 = 14;
 const F_OFD_GETLK = 36;
 const F_OFD_SETLK = 37;
 const F_OFD_SETLKW = 38;
+const LOCK_NB = 4;
 
 /** Retry interval for EAGAIN polling (ms) */
 const EAGAIN_RETRY_MS = 1;
@@ -1143,6 +1144,15 @@ export class CentralizedKernelWorker {
     /** Generic write-like fallback that has no targetable pipe token. */
     isWriteRetry?: boolean;
   }>();
+  /**
+   * Blocking advisory-lock requests waiting for a Rust-owned lock-state
+   * change. The host owns only channel parking and the short retry safety
+   * timer; it never inspects advisory-lock state.
+   */
+  private pendingAdvisoryLockRetries = new Map<ChannelInfo, {
+    timer: ReturnType<typeof setTimeout>;
+    channel: ChannelInfo;
+  }>();
   /** Pending pselect6/select retries keyed by exact channel generation. */
   private pendingSelectRetries = new Map<ChannelInfo, {
     timer: any;  // setTimeout or setImmediate handle
@@ -1234,7 +1244,6 @@ export class CentralizedKernelWorker {
    *  to convert epoll_pwait to poll without calling kernel_handle_channel
    *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
-  private lockTable: SharedLockTable | null = null;
   /** Per-process SysV shared-memory attachments. */
   private shmMappings = new Map<number, Map<number, SysvShmMapping>>();
   /** Authoritative segment version, incremented after each merged publication. */
@@ -1487,11 +1496,6 @@ export class CentralizedKernelWorker {
     if (this.tcpScratchOffset === 0) {
       throw new Error("Failed to allocate TCP scratch buffer");
     }
-
-    // Register a SharedLockTable so host_fcntl_lock can handle advisory locks
-    // (including OFD locks) within the kernel.
-    this.lockTable = SharedLockTable.create();
-    this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
 
     this.initialized = true;
   }
@@ -2119,8 +2123,6 @@ export class CentralizedKernelWorker {
       }
     }
 
-    this.releaseAdvisoryLocksForPid(pid);
-
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
 
@@ -2165,16 +2167,7 @@ export class CentralizedKernelWorker {
       ((pid: number) => number) | undefined;
     if (!removeProcess) return;
     removeProcess(pid);
-  }
-
-  private releaseAdvisoryLocksForPid(pid: number): void {
-    if (!this.lockTable) return;
-
-    // Force-reset the spinlock first: a terminated worker may have been
-    // holding it, and Atomics.wait is not allowed on the browser main thread.
-    const lockBuf = this.lockTable.getBuffer();
-    Atomics.store(new Int32Array(lockBuf), 0, 0);
-    this.lockTable.removeLocksByPid(pid);
+    this.drainAndProcessWakeupEvents();
   }
 
   private cancelPendingSleepsForProcess(pid: number): void {
@@ -2197,7 +2190,6 @@ export class CentralizedKernelWorker {
     this.execHandoffPids?.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
-    this.releaseAdvisoryLocksForPid(pid);
     // Cancel any pending alarm timer for this process
     const alarmTimer = this.alarmTimers.get(pid);
     if (alarmTimer) {
@@ -2243,6 +2235,9 @@ export class CentralizedKernelWorker {
       return prepare(pid, callerTid);
     } finally {
       this.currentHandlePid = previousPid;
+      // Deferred spawn actions can close descriptors and publish a Rust
+      // advisory-lock wake even when a later action makes prepare fail.
+      this.drainAndProcessWakeupEvents();
     }
   }
 
@@ -2272,6 +2267,9 @@ export class CentralizedKernelWorker {
       return result;
     } finally {
       this.currentHandlePid = previousPid;
+      // CLOEXEC closure is an advisory-lock state transition. Consume the
+      // kernel event before the discarded image's host mirrors disappear.
+      this.drainAndProcessWakeupEvents();
     }
   }
 
@@ -2636,6 +2634,11 @@ export class CentralizedKernelWorker {
     this.cleanupPendingSignalWaits(pid);
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
+    for (const [channel, entry] of this.pendingAdvisoryLockRetries ?? []) {
+      if (channel.pid !== pid) continue;
+      clearTimeout(entry.timer);
+      this.pendingAdvisoryLockRetries.delete(channel);
+    }
 
     // Deferred wait/sleep/futex completions retain the discarded Memory and
     // would otherwise be able to run after the same pid is re-registered.
@@ -2714,6 +2717,10 @@ export class CentralizedKernelWorker {
   removeFromKernelProcessTable(pid: number): void {
     const removeProcess = this.kernelInstance!.exports.kernel_remove_process as (pid: number) => number;
     removeProcess(pid);
+    // Forced removal releases process and final-OFD locks in Rust. Retry peer
+    // waiters from the emitted event before registration teardown can make
+    // this safety-net timer the primary wake path.
+    this.drainAndProcessWakeupEvents();
   }
 
   /**
@@ -2848,6 +2855,9 @@ export class CentralizedKernelWorker {
       clearImmediate(poll.timer);
     }
     this.pendingPollRetries?.delete(channel);
+    const advisoryLock = this.pendingAdvisoryLockRetries?.get(channel);
+    if (advisoryLock) clearTimeout(advisoryLock.timer);
+    this.pendingAdvisoryLockRetries?.delete(channel);
     const select = this.pendingSelectRetries?.get(channel);
     if (select?.timer !== null && select?.timer !== undefined) {
       clearTimeout(select.timer);
@@ -2883,6 +2893,9 @@ export class CentralizedKernelWorker {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingPollRetries?.keys() ?? []) {
+      if (channel.pid === pid) channels.add(channel);
+    }
+    for (const channel of this.pendingAdvisoryLockRetries?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingSelectRetries?.keys() ?? []) {
@@ -4257,7 +4270,10 @@ export class CentralizedKernelWorker {
       // different process, which resets the kernel's ambient TID to the shared
       // signal context. Rebind only on that uncommon path; ordinary syscall
       // completion stays free of another host-to-kernel call.
-      this.dequeueSignalForDelivery(channel, routedMqNotification);
+      const deliveredSignal = this.dequeueSignalForDelivery(
+        channel,
+        routedMqNotification,
+      );
       if (routedMqNotification && this.finishSignalTermination(channel)) return;
 
       // --- Blocking syscall handling ---
@@ -4267,6 +4283,22 @@ export class CentralizedKernelWorker {
       // The sockaddr-family guard deliberately excludes AF_UNIX from this
       // transport-specific retry rule.
       if (this.handlePendingInetConnect(channel, syscallNr, origArgs, retVal, errVal)) {
+        return;
+      }
+
+      // flock shares Rust's advisory-lock wake contract but not fcntl's
+      // struct-flock marshalling path.  LOCK_NB is a public EAGAIN result;
+      // only the blocking form may be parked for a lock-state wake.
+      if (
+        this.handleFlockConflict(
+          channel,
+          syscallNr,
+          origArgs,
+          retVal,
+          errVal,
+          deliveredSignal,
+        )
+      ) {
         return;
       }
 
@@ -4912,6 +4944,7 @@ export class CentralizedKernelWorker {
 
     let blocked =
       this.pendingPollRetries.has(channel) ||
+      (this.pendingAdvisoryLockRetries?.has(channel) ?? false) ||
       this.pendingSelectRetries.has(channel);
     for (const readers of this.pendingPipeReaders.values()) {
       if (readers.some((reader) => reader.channel === channel)) {
@@ -5035,12 +5068,16 @@ export class CentralizedKernelWorker {
     // epoll_pwait(), a socket read, or a futex may not appear in any of these
     // maps, but it is always sitting at CH_PENDING on its channel.
     for (const e of this.pendingPollRetries.values()) if (e.timer) clearTimeout(e.timer);
+    for (const e of this.pendingAdvisoryLockRetries?.values() ?? []) {
+      clearTimeout(e.timer);
+    }
     for (const e of this.pendingSelectRetries.values()) if (e.timer) clearTimeout(e.timer);
     for (const e of this.pendingSleeps.values()) clearTimeout(e.timer);
     for (const e of this.pendingSignalWaits.values()) clearTimeout(e.timer);
     this.pendingPipeReaders.clear();
     this.pendingPipeWriters.clear();
     this.pendingPollRetries.clear();
+    this.pendingAdvisoryLockRetries?.clear();
     this.pendingSelectRetries.clear();
     this.pendingSleeps.clear();
     this.pendingSignalWaits.clear();
@@ -5492,10 +5529,11 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Drain kernel wakeup events and process pipe/listener/datagram wakeups.
+   * Drain kernel wakeup events and process readiness/lifecycle wakeups.
    * Called after each syscall completion. The kernel pushes events from
    * PipeBuffer operations, listener backlog changes, and datagram send-state
-   * changes such as capacity, association, shutdown, close, or unlink.
+   * changes such as capacity, association, shutdown, close, or unlink, plus
+   * advisory-lock changes that may unblock a parked F_SETLKW request.
    */
   private drainAndProcessWakeupEvents(): void {
     const drainFn = this.kernelInstance!.exports.kernel_drain_wakeup_events as
@@ -5539,8 +5577,10 @@ export class CentralizedKernelWorker {
     const WAKE_WRITABLE = 2;
     const WAKE_ACCEPT = 4;
     const WAKE_DATAGRAM_WRITABLE = 8;
+    const WAKE_ADVISORY_LOCK = 64;
     let needBroadWake = false;
     let needDatagramWriterWake = false;
+    let needAdvisoryLockWake = false;
 
     for (const { wakeIdx, wakeType } of events) {
       const lifecycleEvent =
@@ -5606,6 +5646,10 @@ export class CentralizedKernelWorker {
         needDatagramWriterWake = true;
       }
 
+      if (wakeType & WAKE_ADVISORY_LOCK) {
+        needAdvisoryLockWake = true;
+      }
+
       if (
         wakeType &
         (WAKE_READABLE | WAKE_WRITABLE | WAKE_ACCEPT | WAKE_DATAGRAM_WRITABLE)
@@ -5641,11 +5685,32 @@ export class CentralizedKernelWorker {
     if (needDatagramWriterWake) {
       this.wakeBlockedFallbackWriters();
     }
+    if (needAdvisoryLockWake) {
+      this.wakeBlockedAdvisoryLockRetries();
+    }
     if (needBroadWake) {
       if (this.anyPendingRetryNeedsSignalSafeWake()) {
         this.scheduleWakeBlockedRetriesDeferred();
       } else {
         this.scheduleWakeBlockedRetries();
+      }
+    }
+  }
+
+  /** Retry only blocking advisory-lock waiters after a Rust lock-state change. */
+  private wakeBlockedAdvisoryLockRetries(): void {
+    const pending = this.pendingAdvisoryLockRetries;
+    if (!pending || pending.size === 0) return;
+
+    // Retrying can synchronously re-park the same channel, so iterate a
+    // snapshot and skip entries that another wake already replaced.
+    const entries = Array.from(pending.entries());
+    for (const [key, entry] of entries) {
+      if (pending.get(key) !== entry) continue;
+      clearTimeout(entry.timer);
+      pending.delete(key);
+      if (this.isRegisteredChannel(entry.channel)) {
+        this.retrySyscall(entry.channel);
       }
     }
   }
@@ -5895,6 +5960,12 @@ export class CentralizedKernelWorker {
       this.pendingPollRetries.delete(channel);
     }
 
+    const advisoryLockEntry = this.pendingAdvisoryLockRetries?.get(channel);
+    if (advisoryLockEntry) {
+      clearTimeout(advisoryLockEntry.timer);
+      this.pendingAdvisoryLockRetries.delete(channel);
+    }
+
     const selectEntry = this.pendingSelectRetries.get(channel);
     if (selectEntry) {
       if (selectEntry.timer !== null) {
@@ -5956,8 +6027,8 @@ export class CentralizedKernelWorker {
    *     its predicate.
    *   - pipe read/write blocked on pendingPipeReaders/Writers: remove the
    *     registration and complete the channel with -EINTR.
-   *   - poll/select scheduled with a retry timer: clear the timer and
-   *     complete with -EINTR.
+   *   - poll/select/advisory-lock waits scheduled with a retry timer: clear
+   *     the timer and complete with -EINTR.
    *   - otherwise (not blocked, or already completed): no-op. The target
    *     will observe self->cancel on its next cancel-point entry.
    *
@@ -6022,7 +6093,17 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // 3) Select/pselect retry timer.
+    // 3) Advisory-lock retry timer.
+    const advisoryLockEntry = this.pendingAdvisoryLockRetries?.get(target);
+    if (advisoryLockEntry) {
+      clearTimeout(advisoryLockEntry.timer);
+      this.pendingAdvisoryLockRetries.delete(target);
+      this.completeChannelRaw(target, -EINTR_ERRNO, EINTR_ERRNO);
+      this.relistenChannel(target);
+      return;
+    }
+
+    // 4) Select/pselect retry timer.
     const selEntry = this.pendingSelectRetries.get(target);
     if (selEntry) {
       clearTimeout(selEntry.timer);
@@ -6033,7 +6114,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // 4) Pipe/socket reader/writer registration — unregister and wake.
+    // 5) Pipe/socket reader/writer registration — unregister and wake.
     let wokePipe = false;
     for (const [pipeIdx, readers] of this.pendingPipeReaders) {
       const filtered = readers.filter(r => r.channel !== target);
@@ -6058,7 +6139,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // 5) wait()/waitpid()/wait4()/waitid() are cancellation points in musl.
+    // 6) wait()/waitpid()/wait4()/waitid() are cancellation points in musl.
     // Remove the exact host-owned waiter before waking its channel so a later
     // child transition cannot complete a canceled thread's reused mailbox.
     const waitIndex = this.waitingForChild.findIndex(
@@ -6071,7 +6152,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // 6) No tracked blocking state — the target either hasn't reached the
+    // 7) No tracked blocking state — the target either hasn't reached the
     //    blocking entry yet, or its handler is synchronous and will pick
     //    up pendingCancels the next time it enters a blocking operation.
     //    Do NOT write the channel here: the in-flight handleSyscall owns
@@ -6195,6 +6276,74 @@ export class CentralizedKernelWorker {
       );
     } else {
       this.handleBlockingRetry(channel, syscallNr, origArgs);
+    }
+    return true;
+  }
+
+  /**
+   * Park a blocking advisory-lock request without retaining any lock state in
+   * the host. Rust wake events provide the normal retry path; the timer is a
+   * short safety net for a lost event or an older compatible kernel.
+   */
+  private parkAdvisoryLockRetry(
+    channel: ChannelInfo,
+    syscallNr: number = SYS_FCNTL,
+  ): void {
+    if (!this.isRegisteredChannel(channel)) return;
+
+    const pending = this.pendingAdvisoryLockRetries ??= new Map();
+    const previous = pending.get(channel);
+    if (previous) clearTimeout(previous.timer);
+
+    const retry = () => {
+      const entry = pending.get(channel);
+      if (!entry || entry.timer !== timer) return;
+      pending.delete(channel);
+      if (this.isAsyncChannelProcessActive(channel)) {
+        this.retrySyscall(channel);
+      }
+    };
+    const timer = setTimeout(retry, 10);
+    pending.set(channel, { timer, channel });
+
+    if (PROFILING) {
+      const entry = this.profileData!.get(syscallNr);
+      if (entry) entry.retries++;
+    }
+  }
+
+  /** Apply flock's LOCK_NB/blocking distinction before generic EAGAIN retry. */
+  private handleFlockConflict(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    retVal: number,
+    errVal: number,
+    deliveredSignal: number,
+  ): boolean {
+    if (syscallNr !== SYS_FLOCK || retVal !== -1 || errVal !== EAGAIN) {
+      return false;
+    }
+    if ((origArgs[1] & LOCK_NB) !== 0) {
+      this.completeChannel(
+        channel,
+        syscallNr,
+        origArgs,
+        undefined,
+        retVal,
+        errVal,
+      );
+    } else if (deliveredSignal > 0) {
+      this.completeChannel(
+        channel,
+        syscallNr,
+        origArgs,
+        undefined,
+        -1,
+        EINTR_ERRNO,
+      );
+    } else {
+      this.parkAdvisoryLockRetry(channel, syscallNr);
     }
     return true;
   }
@@ -6737,20 +6886,33 @@ export class CentralizedKernelWorker {
     const flockPtr = origArgs[2];
 
     const processMem = new Uint8Array(channel.memory.buffer);
+    if (
+      !Number.isSafeInteger(flockPtr) ||
+      flockPtr <= 0 ||
+      flockPtr > processMem.byteLength - FLOCK_SIZE
+    ) {
+      this.completeChannel(
+        channel,
+        SYS_FCNTL,
+        origArgs,
+        undefined,
+        -1,
+        EFAULT,
+      );
+      return;
+    }
     const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
     // Copy flock struct from process → kernel scratch
-    if (flockPtr !== 0) {
-      kernelMem.set(processMem.subarray(flockPtr, flockPtr + FLOCK_SIZE), dataStart);
-    }
+    kernelMem.set(processMem.subarray(flockPtr, flockPtr + FLOCK_SIZE), dataStart);
 
     // Write syscall header to kernel scratch
     kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
     kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(origArgs[0]), true); // fd
     kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(origArgs[1]), true); // cmd
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flockPtr !== 0 ? dataStart : 0), true); // flock_ptr in kernel memory
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(dataStart), true); // flock_ptr in kernel memory
     for (let i = 3; i < CH_ARGS_COUNT; i++) {
       kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(origArgs[i]), true);
     }
@@ -6769,9 +6931,15 @@ export class CentralizedKernelWorker {
 
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
+    // This marshalling path bypasses the generic syscall completion path,
+    // so it must also dequeue a caught signal itself. A conflicting blocking
+    // request is interruptible: once a handler signal is prepared for this
+    // exact channel, publish EINTR instead of re-parking it on EAGAIN.
+    const deliveredSignal = this.dequeueSignalForDelivery(channel);
+    if (this.finishSignalTermination(channel)) return;
 
     // Copy flock struct back from kernel → process (F_GETLK writes to it)
-    if (flockPtr !== 0 && retVal >= 0) {
+    if (retVal >= 0) {
       const freshProcessMem = new Uint8Array(channel.memory.buffer);
       freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FLOCK_SIZE), flockPtr);
     }
@@ -6782,7 +6950,18 @@ export class CentralizedKernelWorker {
       errVal === EAGAIN &&
       (cmd === F_SETLKW || cmd === F_SETLKW64 || cmd === F_OFD_SETLKW)
     ) {
-      this.handleBlockingRetry(channel, SYS_FCNTL, origArgs);
+      if (deliveredSignal > 0) {
+        this.completeChannel(
+          channel,
+          SYS_FCNTL,
+          origArgs,
+          undefined,
+          -1,
+          EINTR_ERRNO,
+        );
+        return;
+      }
+      this.parkAdvisoryLockRetry(channel);
       return;
     }
 
@@ -8925,14 +9104,12 @@ export class CentralizedKernelWorker {
     // parent's last listener and close the shared backend during onFork's
     // async worker setup. pickListenerTarget still ignores the child until
     // onFork registers its process memory.
-    const removeProcess = this.kernelInstance!.exports.kernel_remove_process as
-      (pid: number) => number;
     const rollbackFork = (err?: unknown) => {
       if (err !== undefined) {
         console.error(`[kernel-worker] fork worker launch failed: ${String(err)}`);
       }
       try { this.rollbackChildHostRegistration(childPid); } catch { /* best-effort */ }
-      try { removeProcess(childPid); } catch { /* best-effort */ }
+      try { this.removeFromKernelProcessTable(childPid); } catch { /* best-effort */ }
       if (this.isAsyncChannelProcessActive(channel)) {
         this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, 12);
       }
@@ -9117,14 +9294,12 @@ export class CentralizedKernelWorker {
     // parent can't collide with the kernel's allocation.
     if (childPid >= this.nextChildPid) this.nextChildPid = childPid + 1;
 
-    const removeProcess = this.kernelInstance!.exports.kernel_remove_process as
-      (pid: number) => number;
     const rollbackSpawn = (errno: number, err?: unknown) => {
       if (err !== undefined) {
         console.error(`[kernel] spawn error for parent ${parentPid}:`, err);
       }
       try { this.rollbackChildHostRegistration(childPid); } catch { /* best-effort */ }
-      try { removeProcess(childPid); } catch { /* best-effort */ }
+      try { this.removeFromKernelProcessTable(childPid); } catch { /* best-effort */ }
       if (this.isAsyncChannelProcessActive(channel)) {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, errno);
       }
@@ -9622,6 +9797,11 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Closing descriptors during exit can release process, OFD, and flock
+    // records. Rust publishes the generic advisory-lock wake while doing so;
+    // consume it before parent notification and host-worker teardown.
+    this.drainAndProcessWakeupEvents();
+
     // Main thread exit or exit_group: record exit status for waitpid,
     // queue SIGCHLD to parent, then notify the host callback.
     const exitingPid = channel.pid;
@@ -9678,6 +9858,10 @@ export class CentralizedKernelWorker {
     const signal = this.getProcessExitSignal(exitingPid);
     this.hostReaped.add(exitingPid);
     this.releaseAllSharedMemoryForProcess(exitingPid);
+    // Default signal delivery has already transitioned the Rust Process to
+    // Exited and released its process/OFD/flock records. Consume that generic
+    // kernel wake before a parent waiter or host exit callback can run.
+    this.drainAndProcessWakeupEvents();
     this.notifyParentOfExitedProcess(exitingPid);
 
     // Do NOT complete the channel — the worker is blocked on Atomics.wait
@@ -9749,6 +9933,10 @@ export class CentralizedKernelWorker {
     if (markSignaled && markSignaled(pid, signum) < 0) return;
     this.hostReaped.add(pid);
     this.releaseAllSharedMemoryForProcess(pid);
+    // Signal termination closes Rust-owned advisory locks. Consume that wake
+    // even for a root/no-parent process, where SIGCHLD routing cannot provide
+    // an incidental kernel event drain.
+    this.drainAndProcessWakeupEvents();
     this.notifyParentOfExitedProcess(pid);
   }
 
@@ -10840,7 +11028,24 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // 3. Pending select/pselect6 retries (same snapshot rationale).
+    // 3. Pending F_SETLKW retries (same snapshot rationale). Lock state stays
+    //    in Rust; this wake only lets the kernel observe the pending signal.
+    const advisoryRetries = this.pendingAdvisoryLockRetries;
+    const advisoryMatches = advisoryRetries
+      ? Array.from(advisoryRetries.entries()).filter(
+          ([, entry]) => entry.channel.pid === targetPid,
+        )
+      : [];
+    for (const [key, entry] of advisoryMatches) {
+      if (advisoryRetries.get(key) !== entry) continue;
+      clearTimeout(entry.timer);
+      advisoryRetries.delete(key);
+      if (this.isRegisteredChannel(entry.channel)) {
+        this.retrySyscall(entry.channel);
+      }
+    }
+
+    // 4. Pending select/pselect6 retries (same snapshot rationale).
     const selectMatches = Array.from(this.pendingSelectRetries.entries()).filter(
       ([, e]) => e.channel.pid === targetPid,
     );

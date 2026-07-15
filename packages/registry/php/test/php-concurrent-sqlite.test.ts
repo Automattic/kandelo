@@ -1,6 +1,6 @@
 /**
  * php-concurrent-sqlite.test.ts — Tests concurrent SQLite access from
- * multiple PHP-Wasm processes sharing a SharedLockTable.
+ * multiple PHP-Wasm processes sharing the Rust kernel lock manager.
  *
  * Requires the PHP wasm binary at ../php-src/sapi/cli/php,
  * recompiled with channel_syscall.c for centralized mode.

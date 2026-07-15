@@ -16,8 +16,12 @@ procfs snapshots/cursors. Those fixes preserve the underlying object state but
 do not make the ordinary OFD record itself global.
 
 Regular-file seek positions, status flags, and owners are therefore still
-deep-copied at fork/spawn. A program that forks and coordinates writes through
-one inherited regular fd can observe divergent positions or flag changes.
+deep-copied at fork/spawn and when `SCM_RIGHTS` installs a transferred regular
+file in another process. The ancillary queue already preserves the stable
+`OfdId`, `FileId`, backing lifetime, and OFD/`flock()` ownership; the remaining
+gap is the mutable ordinary-file OFD metadata itself. A program that forks or
+passes a regular fd and coordinates writes through it can observe divergent
+positions or flag changes.
 
 The cleanest redesign is still to move OFDs to a kernel-global `OfdTable` and
 have `Process` hold `FdTable<OfdRef>`, where `OfdRef` is a stable index. Fork's
@@ -70,22 +74,23 @@ application benchmarks on both hosts.
 ### Close the remaining regular-file `MAP_SHARED` gaps
 
 The mapping cache deliberately rejects objects it cannot identify or keep
-alive safely. Current OPFS stats use inode zero, so OPFS `MAP_SHARED` returns
-`ENOTSUP`; in-kernel memfds also return `ENOTSUP` because they do not expose the
-host handle used by the file page cache. An initial mapping also needs to reopen
-the descriptor's current pathname, so mapping an already renamed/unlinked fd
-can fail even though an established mapping survives later close, rename, or
-unlink through its stable handle.
+alive safely. Node, mounted VFS backends, and supported OPFS browsers now
+provide exact live-handle identity; OPFS uses session-scoped inode tokens and
+preserves an open object across rename and unlink. Initial mappings retain the
+descriptor's live handle rather than reopening its remembered pathname.
+In-kernel memfds still return `ENOTSUP` because they do not expose the host
+handle used by the file page cache, and any backend unable to prove exact,
+stable identity remains an explicit unsupported boundary.
 
 Further gaps are observable VM semantics rather than cache bookkeeping. Stores
 beyond the current file size are zero-filled or discarded on refresh/writeback
 instead of raising Linux `SIGBUS`, and writers outside Kandelo's direct file
-syscall paths do not invalidate cached pages. Complete support needs stable
-OPFS identity, a kernel-owned memfd mapping bridge, external invalidation (or a
-documented ownership boundary), and a Wasm mechanism or instrumentation for
-faulting beyond EOF.
+syscall paths do not invalidate cached pages. Complete support needs a
+kernel-owned memfd mapping bridge, external invalidation (or a documented
+ownership boundary), and a Wasm mechanism or instrumentation for faulting
+beyond EOF.
 
-**Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs.ts`,
+**Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
 `host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
 
 ## Browser

@@ -17,6 +17,15 @@ interface FileSystemFileHandle {
   createSyncAccessHandle(): Promise<FileSystemSyncAccessHandle>;
 }
 
+interface FileSystemHandle {
+  isSameEntry(other: FileSystemHandle): Promise<boolean>;
+  move(newName: string): Promise<void>;
+  move(
+    destination: FileSystemDirectoryHandle,
+    newName?: string,
+  ): Promise<void>;
+}
+
 interface AtomicsWaitAsyncResult {
   async: false;
   value: "not-equal" | "timed-out";

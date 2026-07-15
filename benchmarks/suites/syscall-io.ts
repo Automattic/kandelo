@@ -8,6 +8,8 @@
  *   file_write_mbps  — Write 1MB to a file
  *   file_read_mbps   — Read 1MB from a file
  *   syscall_latency_us — Average getpid round-trip over 1000 calls
+ *   lock_many_files_*_us_per_op — Lock operations across many sparse files
+ *   lock_dense_file_*_us_per_op — Lock operations across many ranges on one file
  */
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";

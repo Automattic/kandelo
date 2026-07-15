@@ -4,7 +4,88 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU64, Ordering};
+use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::{O_APPEND, O_NONBLOCK};
+
+use crate::lock::{FileId, OfdId};
+
+// OFD table slots are process-local and reusable, so they cannot identify an
+// open file description across fork or over its lifetime. Keep a separate
+// machine-wide, monotonically increasing identity. Zero is reserved as an
+// invalid/uninitialized value in serialized process state.
+static LAST_OFD_ID: AtomicU64 = AtomicU64::new(0);
+
+/// References held by descriptors queued in SCM_RIGHTS ancillary data.
+///
+/// Advisory-lock records remain solely in `ProcessTable`; this table is only
+/// descriptor-lifetime state.  A high-water `Vec` avoids allocator churn in
+/// the Wasm kernel while the sorted OfdId key keeps lookups bounded by the
+/// number of simultaneously in-flight descriptions.
+struct InFlightOfdRefs(UnsafeCell<Option<Vec<(OfdId, u32)>>>);
+unsafe impl Sync for InFlightOfdRefs {}
+
+static IN_FLIGHT_OFD_REFS: InFlightOfdRefs = InFlightOfdRefs(UnsafeCell::new(None));
+
+fn in_flight_ofd_refs() -> &'static mut Vec<(OfdId, u32)> {
+    let slot = unsafe { &mut *IN_FLIGHT_OFD_REFS.0.get() };
+    slot.get_or_insert_with(Vec::new)
+}
+
+fn allocate_ofd_id() -> OfdId {
+    let previous = LAST_OFD_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+            last.checked_add(1)
+        })
+        .expect("OFD identity space exhausted");
+    OfdId(previous + 1)
+}
+
+fn observe_ofd_id(id: OfdId) {
+    assert_ne!(id.0, 0, "OFD identity zero is reserved");
+    LAST_OFD_ID.fetch_max(id.0, Ordering::Relaxed);
+}
+
+/// Add one SCM_RIGHTS queue reference for an existing open description.
+pub(crate) fn retain_in_flight_ofd(id: OfdId) -> Result<(), Errno> {
+    if id.0 == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let refs = in_flight_ofd_refs();
+    match refs.binary_search_by_key(&id, |(candidate, _)| *candidate) {
+        Ok(index) => {
+            refs[index].1 = refs[index].1.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        }
+        Err(index) => {
+            refs.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            refs.insert(index, (id, 1));
+        }
+    }
+    Ok(())
+}
+
+/// Drop one SCM_RIGHTS queue reference. Returns true when no queued reference
+/// for this identity remains.
+pub(crate) fn release_in_flight_ofd(id: OfdId) -> bool {
+    let refs = in_flight_ofd_refs();
+    let Ok(index) = refs.binary_search_by_key(&id, |(candidate, _)| *candidate) else {
+        debug_assert!(false, "released an OfdId without an in-flight reference");
+        return false;
+    };
+    if refs[index].1 > 1 {
+        refs[index].1 -= 1;
+        false
+    } else {
+        refs.remove(index);
+        true
+    }
+}
+
+pub(crate) fn has_in_flight_ofd(id: OfdId) -> bool {
+    in_flight_ofd_refs()
+        .binary_search_by_key(&id, |(candidate, _)| *candidate)
+        .is_ok()
+}
 
 // ── Global host handle refcount table ──
 //
@@ -191,6 +272,13 @@ pub enum DriOfdState {
 
 #[derive(Clone)]
 pub struct OpenFileDesc {
+    /// Machine-wide identity of this open file description. Independent
+    /// opens receive distinct IDs; dup, fork, and exec preserve an ID.
+    pub ofd_id: OfdId,
+    /// Stable file-object identity used by advisory locks. Host-backed files
+    /// populate this from `host_fstat` on the live handle; kernel objects use
+    /// their tagged object identity.
+    pub file_id: Option<FileId>,
     pub file_type: FileType,
     pub status_flags: u32,
     pub host_handle: i64,
@@ -283,6 +371,8 @@ impl OfdTable {
         path: Vec<u8>,
     ) -> usize {
         let ofd = OpenFileDesc {
+            ofd_id: allocate_ofd_id(),
+            file_id: None,
             file_type,
             status_flags,
             host_handle,
@@ -296,6 +386,41 @@ impl OfdTable {
             dri_state: None,
         };
 
+        self.insert(ofd)
+    }
+
+    /// Install an open description transferred through SCM_RIGHTS. The queued
+    /// descriptor already owns one machine-wide backing reference, so this
+    /// preserves its identity instead of allocating a new one.
+    pub(crate) fn create_transferred(
+        &mut self,
+        ofd_id: OfdId,
+        file_id: Option<FileId>,
+        file_type: FileType,
+        status_flags: u32,
+        host_handle: i64,
+        offset: i64,
+        path: Vec<u8>,
+    ) -> usize {
+        observe_ofd_id(ofd_id);
+        self.insert(OpenFileDesc {
+            ofd_id,
+            file_id,
+            file_type,
+            status_flags,
+            host_handle,
+            offset,
+            ref_count: 1,
+            owner_pid: 0,
+            path,
+            dir_host_handle: -1,
+            dir_synth_state: 0,
+            dir_entry_offset: 0,
+            dri_state: None,
+        })
+    }
+
+    fn insert(&mut self, ofd: OpenFileDesc) -> usize {
         // Search for a free (None) slot to reuse.
         for i in 0..self.entries.len() {
             if self.entries[i].is_none() {
@@ -365,6 +490,9 @@ impl OfdTable {
 
     /// Reconstruct an OfdTable from raw entries. Used by fork deserialization.
     pub fn from_raw(entries: Vec<Option<OpenFileDesc>>) -> Self {
+        for ofd in entries.iter().flatten() {
+            observe_ofd_id(ofd.ofd_id);
+        }
         OfdTable { entries }
     }
 
@@ -398,6 +526,8 @@ mod tests {
         assert_eq!(ofd.file_type, FileType::Regular);
         assert_eq!(ofd.status_flags, O_RDWR | O_APPEND);
         assert_eq!(ofd.host_handle, 42);
+        assert_ne!(ofd.ofd_id.0, 0);
+        assert_eq!(ofd.file_id, None);
         assert_eq!(ofd.offset, 0);
         assert_eq!(ofd.ref_count, 1);
         assert_eq!(ofd.path, b"/test");
@@ -457,6 +587,7 @@ mod tests {
         let mut table = OfdTable::new();
         let idx0 = table.create(FileType::Regular, O_RDONLY, 1, Vec::new());
         assert_eq!(idx0, 0);
+        let first_id = table.get(idx0).unwrap().ofd_id;
 
         // Free slot 0
         let freed = table.dec_ref(idx0);
@@ -468,6 +599,7 @@ mod tests {
         let ofd = table.get(idx_reused).unwrap();
         assert_eq!(ofd.file_type, FileType::Pipe);
         assert_eq!(ofd.host_handle, 2);
+        assert_ne!(ofd.ofd_id, first_id);
     }
 
     #[test]
@@ -523,6 +655,8 @@ mod tests {
         let mut raw: Vec<Option<OpenFileDesc>> = (0..=max_idx).map(|_| None).collect();
         for (i, ofd) in table.iter() {
             raw[i] = Some(OpenFileDesc {
+                ofd_id: ofd.ofd_id,
+                file_id: ofd.file_id,
                 file_type: ofd.file_type,
                 status_flags: ofd.status_flags,
                 host_handle: ofd.host_handle,
@@ -540,6 +674,22 @@ mod tests {
         let rebuilt = OfdTable::from_raw(raw);
         assert_eq!(rebuilt.get(0).unwrap().host_handle, 10);
         assert_eq!(rebuilt.get(1).unwrap().host_handle, 30);
+    }
+
+    #[test]
+    fn from_raw_advances_ofd_identity_high_water() {
+        let mut original = OfdTable::new();
+        let idx = original.create(FileType::Regular, O_RDONLY, 10, b"/a".to_vec());
+        let mut restored_ofd = original.get(idx).unwrap().clone();
+        let observed = OfdId(restored_ofd.ofd_id.0.checked_add(10_000).unwrap());
+        restored_ofd.ofd_id = observed;
+
+        let restored = OfdTable::from_raw(alloc::vec![Some(restored_ofd)]);
+        assert_eq!(restored.get(0).unwrap().ofd_id, observed);
+
+        let mut later = OfdTable::new();
+        let later_idx = later.create(FileType::Regular, O_RDONLY, 11, b"/b".to_vec());
+        assert!(later.get(later_idx).unwrap().ofd_id > observed);
     }
 
     #[test]

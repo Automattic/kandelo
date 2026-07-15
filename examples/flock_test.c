@@ -8,7 +8,7 @@
  * Repeats <iterations> times.
  *
  * When run concurrently by multiple processes sharing the same
- * SharedLockTable, the final counter should equal
+ * Rust kernel advisory-lock manager, the final counter should equal
  * (iterations * number_of_processes) with no lost updates.
  */
 

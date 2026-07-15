@@ -25,6 +25,10 @@ pub const WAKE_ACCEPT: u8 = 4;
 /// associations, shutdown, close, or pathname state changes.
 pub const WAKE_DATAGRAM_WRITABLE: u8 = 8;
 
+/// Advisory-lock state changed in a way that may unblock F_SETLKW waiters.
+/// The host only reschedules parked channels; lock state remains in Rust.
+pub const WAKE_ADVISORY_LOCK: u8 = 64;
+
 /// A readiness change event.
 #[derive(Debug, Clone, Copy)]
 pub struct WakeupEvent {
@@ -92,6 +96,11 @@ pub fn push_datagram_writable() {
     push(0, WAKE_DATAGRAM_WRITABLE);
 }
 
+/// Notify runtimes that parked advisory-lock requests should be retried.
+pub fn push_advisory_lock() {
+    push(0, WAKE_ADVISORY_LOCK);
+}
+
 /// Drain all pending wakeup events, writing them to the output buffer.
 /// Returns the number of events written.
 ///
@@ -152,10 +161,11 @@ mod tests {
         push(10, WAKE_WRITABLE);
         push_accept(12);
         push_datagram_writable();
+        push_advisory_lock();
 
         let mut buf = [0u8; 25];
         let count = drain(&mut buf, 10);
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
 
         // Event 0: pipe_idx=5, WAKE_READABLE
         assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 5);
@@ -172,6 +182,10 @@ mod tests {
         // Event 3: broad datagram-writable readiness change.
         assert_eq!(u32::from_le_bytes([buf[15], buf[16], buf[17], buf[18]]), 0);
         assert_eq!(buf[19], WAKE_DATAGRAM_WRITABLE);
+
+        // Event 4: machine-wide advisory lock state changed.
+        assert_eq!(u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]), 0);
+        assert_eq!(buf[24], WAKE_ADVISORY_LOCK);
 
         // Buffer should be empty now
         let count2 = drain(&mut buf, 10);

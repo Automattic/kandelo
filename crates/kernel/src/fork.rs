@@ -2,7 +2,8 @@
 //!
 //! The binary format is little-endian and consists of:
 //! - Header (12 bytes): magic, version, total_size
-//! - Scalars (32 bytes): ppid, uid, gid, euid, egid, pgid, sid, umask
+//! - Scalars (40 bytes): identity, credentials, process group/session, umask,
+//!   nice value, and session-leader state
 //! - Signal state (variable): blocked mask + non-default handlers
 //! - FD table (variable): max_fds, then each open fd entry
 //! - OFD table (variable): each open file description
@@ -23,7 +24,7 @@ use wasm_posix_shared::Errno;
 use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
 
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
-use crate::lock::LockTable;
+use crate::lock::{FileId, KernelFileKind, OfdId};
 use crate::memory::{MappedRegion, MemoryLayoutMetadata, MemoryManager};
 use crate::ofd::{FileType, OfdTable, OpenFileDesc};
 use crate::process::{Process, ProcessState};
@@ -33,10 +34,9 @@ use crate::terminal::{NCCS, TerminalState, WinSize};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-// v11 keeps the main thread's directed pending queue distinct from the shared
-// process queue across legacy exec. Fork children still start with no pending
-// signals, so the fork payload itself needs no new directed-signal section.
-const FORK_VERSION: u32 = 11;
+// v12 gives every serialized OFD a machine-wide identity and carries its
+// optional stable file-object identity across fork and legacy exec.
+const FORK_VERSION: u32 = 12;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -479,6 +479,71 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
     }
 }
 
+// ── Advisory-lock identity encoding ───────────────────────────────────────
+
+// Keep the optional FileId representation compact and explicit. These tags
+// are part of FORK_VERSION 12 and must not be reinterpreted in place.
+const FILE_ID_NONE: u8 = 0;
+const FILE_ID_HOST: u8 = 1;
+const FILE_ID_KERNEL_MEMFD: u8 = 2;
+const FILE_ID_KERNEL_SYNTHETIC_REGULAR: u8 = 3;
+const FILE_ID_KERNEL_PROCFS_REGULAR: u8 = 4;
+
+fn write_file_id(w: &mut Writer<'_>, file_id: Option<FileId>) -> Result<(), Errno> {
+    match file_id {
+        None => w.write_u8(FILE_ID_NONE),
+        Some(FileId::Host { dev, ino }) => {
+            w.write_u8(FILE_ID_HOST)?;
+            w.write_u64(dev)?;
+            w.write_u64(ino)
+        }
+        Some(FileId::Kernel {
+            kind: KernelFileKind::MemFd,
+            object_id,
+        }) => {
+            w.write_u8(FILE_ID_KERNEL_MEMFD)?;
+            w.write_u64(object_id)
+        }
+        Some(FileId::Kernel {
+            kind: KernelFileKind::SyntheticRegular,
+            object_id,
+        }) => {
+            w.write_u8(FILE_ID_KERNEL_SYNTHETIC_REGULAR)?;
+            w.write_u64(object_id)
+        }
+        Some(FileId::Kernel {
+            kind: KernelFileKind::ProcFsRegular,
+            object_id,
+        }) => {
+            w.write_u8(FILE_ID_KERNEL_PROCFS_REGULAR)?;
+            w.write_u64(object_id)
+        }
+    }
+}
+
+fn read_file_id(r: &mut Reader<'_>) -> Result<Option<FileId>, Errno> {
+    match r.read_u8()? {
+        FILE_ID_NONE => Ok(None),
+        FILE_ID_HOST => Ok(Some(FileId::Host {
+            dev: r.read_u64()?,
+            ino: r.read_u64()?,
+        })),
+        FILE_ID_KERNEL_MEMFD => Ok(Some(FileId::Kernel {
+            kind: KernelFileKind::MemFd,
+            object_id: r.read_u64()?,
+        })),
+        FILE_ID_KERNEL_SYNTHETIC_REGULAR => Ok(Some(FileId::Kernel {
+            kind: KernelFileKind::SyntheticRegular,
+            object_id: r.read_u64()?,
+        })),
+        FILE_ID_KERNEL_PROCFS_REGULAR => Ok(Some(FileId::Kernel {
+            kind: KernelFileKind::ProcFsRegular,
+            object_id: r.read_u64()?,
+        })),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 // ── DRI sidecar encoding ────────────────────────────────────────────────────
 //
 // Each OFD carries a one-byte variant tag (`DRI_TAG_*`) plus the bytes
@@ -708,7 +773,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     let total_size_offset = w.pos;
     w.write_u32(0)?; // placeholder for total_size
 
-    // ── Scalars (32 bytes) ──
+    // ── Scalars (40 bytes) ──
     // Write the parent's pid as the child's ppid (child's parent is this process)
     w.write_u32(proc.pid)?;
     w.write_u32(proc.uid)?;
@@ -771,6 +836,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u32(ofd_entries.len() as u32)?;
     for (index, ofd) in &ofd_entries {
         w.write_u32(*index as u32)?;
+        w.write_u64(ofd.ofd_id.0)?;
+        write_file_id(&mut w, ofd.file_id)?;
         w.write_u32(file_type_to_u32(ofd.file_type))?;
         w.write_u32(ofd.status_flags)?;
         w.write_i64(ofd.host_handle)?;
@@ -1078,6 +1145,11 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     let mut ofd_entries: Vec<Option<OpenFileDesc>> = Vec::new();
     for _ in 0..ofd_count {
         let index = r.read_u32()? as usize;
+        let ofd_id = OfdId(r.read_u64()?);
+        if ofd_id.0 == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let file_id = read_file_id(&mut r)?;
         let file_type = u32_to_file_type(r.read_u32()?)?;
         let status_flags = r.read_u32()?;
         let host_handle = r.read_i64()?;
@@ -1090,6 +1162,8 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         }
         let dri_state = read_dri_state(&mut r)?;
         ofd_entries[index] = Some(OpenFileDesc {
+            ofd_id,
+            file_id,
             file_type,
             status_flags,
             host_handle,
@@ -1421,7 +1495,6 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         wait_event: None,
         fd_table,
         ofd_table,
-        lock_table: LockTable::new(),
         pipes: Vec::new(),
         sockets,
         cwd,
@@ -1490,7 +1563,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     let total_size_offset = w.pos;
     w.write_u32(0)?; // placeholder for total_size
 
-    // ── Scalars (32 bytes) ──
+    // ── Scalars (40 bytes) ──
     // Preserve the process's own ppid (exec replaces the image, not the process)
     w.write_u32(proc.ppid)?;
     w.write_u32(proc.uid)?;
@@ -1558,6 +1631,8 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u32(ofd_entries.len() as u32)?;
     for (index, ofd) in &ofd_entries {
         w.write_u32(*index as u32)?;
+        w.write_u64(ofd.ofd_id.0)?;
+        write_file_id(&mut w, ofd.file_id)?;
         w.write_u32(file_type_to_u32(ofd.file_type))?;
         w.write_u32(ofd.status_flags)?;
         w.write_i64(ofd.host_handle)?;
@@ -1727,6 +1802,11 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let mut ofd_entries: Vec<Option<OpenFileDesc>> = Vec::new();
     for _ in 0..ofd_count {
         let index = r.read_u32()? as usize;
+        let ofd_id = OfdId(r.read_u64()?);
+        if ofd_id.0 == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let file_id = read_file_id(&mut r)?;
         let file_type = u32_to_file_type(r.read_u32()?)?;
         let status_flags = r.read_u32()?;
         let host_handle = r.read_i64()?;
@@ -1739,6 +1819,8 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         }
         let dri_state = read_dri_state(&mut r)?;
         ofd_entries[index] = Some(OpenFileDesc {
+            ofd_id,
+            file_id,
             file_type,
             status_flags,
             host_handle,
@@ -1856,7 +1938,6 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         wait_event: None,
         fd_table,
         ofd_table,
-        lock_table: LockTable::new(),
         pipes: Vec::new(),
         sockets: SocketTable::new(),
         cwd,
@@ -1957,6 +2038,69 @@ mod tests {
         assert!(child.fd_table.get(1).is_ok());
         assert!(child.fd_table.get(2).is_ok());
         assert!(child.fd_table.get(3).is_err());
+    }
+
+    #[test]
+    fn fork_and_exec_preserve_ofd_and_file_identities() {
+        let mut proc = Process::new(1);
+        let host_idx = proc
+            .ofd_table
+            .create(FileType::Regular, 0, 100, b"/host-backed".to_vec());
+        let host_ofd_id = proc.ofd_table.get(host_idx).unwrap().ofd_id;
+        let host_file_id = FileId::Host {
+            dev: 0x1234_5678_9abc_def0,
+            ino: 0xfedc_ba98_7654_3210,
+        };
+        proc.ofd_table.get_mut(host_idx).unwrap().file_id = Some(host_file_id);
+        proc.fd_table.alloc(OpenFileDescRef(host_idx), 0).unwrap();
+
+        let kernel_idx =
+            proc.ofd_table
+                .create(FileType::MemFd, 0, -100, b"memfd:identity".to_vec());
+        let kernel_ofd_id = proc.ofd_table.get(kernel_idx).unwrap().ofd_id;
+        let kernel_file_id = FileId::Kernel {
+            kind: KernelFileKind::MemFd,
+            object_id: 0x1020_3040_5060_7080,
+        };
+        proc.ofd_table.get_mut(kernel_idx).unwrap().file_id = Some(kernel_file_id);
+        proc.fd_table.alloc(OpenFileDescRef(kernel_idx), 0).unwrap();
+
+        let mut fork_buf = vec![0u8; 64 * 1024];
+        let fork_written = serialize_fork_state(&proc, &mut fork_buf).unwrap();
+        let child = deserialize_fork_state(&fork_buf[..fork_written], 42).unwrap();
+        assert_eq!(child.ofd_table.get(host_idx).unwrap().ofd_id, host_ofd_id);
+        assert_eq!(
+            child.ofd_table.get(host_idx).unwrap().file_id,
+            Some(host_file_id)
+        );
+        assert_eq!(
+            child.ofd_table.get(kernel_idx).unwrap().ofd_id,
+            kernel_ofd_id
+        );
+        assert_eq!(
+            child.ofd_table.get(kernel_idx).unwrap().file_id,
+            Some(kernel_file_id)
+        );
+
+        let mut exec_buf = vec![0u8; 64 * 1024];
+        let exec_written = serialize_exec_state(&proc, &mut exec_buf).unwrap();
+        let replacement = deserialize_exec_state(&exec_buf[..exec_written], proc.pid).unwrap();
+        assert_eq!(
+            replacement.ofd_table.get(host_idx).unwrap().ofd_id,
+            host_ofd_id
+        );
+        assert_eq!(
+            replacement.ofd_table.get(host_idx).unwrap().file_id,
+            Some(host_file_id)
+        );
+        assert_eq!(
+            replacement.ofd_table.get(kernel_idx).unwrap().ofd_id,
+            kernel_ofd_id
+        );
+        assert_eq!(
+            replacement.ofd_table.get(kernel_idx).unwrap().file_id,
+            Some(kernel_file_id)
+        );
     }
 
     #[test]
@@ -2642,8 +2786,9 @@ mod tests {
         w.write_u32(FORK_MAGIC).unwrap();
         w.write_u32(FORK_VERSION).unwrap();
         w.write_u32(0).unwrap(); // total_size (ignored on read)
-        // Scalars: ppid, uid, gid, euid, egid, pgid, sid, umask, nice
-        for _ in 0..9 {
+        // Scalars: ppid, uid, gid, euid, egid, pgid, sid, umask, nice,
+        // is_session_leader.
+        for _ in 0..10 {
             w.write_u32(0).unwrap();
         }
         // Signal: blocked + handler_count=0
@@ -2668,7 +2813,7 @@ mod tests {
         w.write_u32(FORK_MAGIC).unwrap();
         w.write_u32(FORK_VERSION).unwrap();
         w.write_u32(0).unwrap();
-        for _ in 0..9 {
+        for _ in 0..10 {
             w.write_u32(0).unwrap();
         }
         w.write_u64(0).unwrap();
@@ -2678,6 +2823,8 @@ mod tests {
         // OFD table: 1 entry with huge path
         w.write_u32(1).unwrap(); // ofd_count
         w.write_u32(0).unwrap(); // index
+        w.write_u64(1).unwrap(); // ofd_id (zero is reserved)
+        w.write_u8(FILE_ID_NONE).unwrap(); // no cached FileId
         w.write_u32(0).unwrap(); // file_type = Regular
         w.write_u32(0).unwrap(); // status_flags
         w.write_i64(0).unwrap(); // host_handle

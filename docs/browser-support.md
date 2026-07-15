@@ -62,6 +62,33 @@ Service Worker ──MessagePort──> Kernel Worker       │
 - **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.
+- **Rust-owned advisory locks**: the browser host does not hold advisory-lock
+  records in a `SharedArrayBuffer` or inspect their ranges. The machine-wide
+  Rust `ProcessTable` manager is authoritative. When a blocking `F_SETLKW`
+  conflicts, the browser worker parks that syscall channel; a Rust advisory-lock
+  wake event reschedules parked lock requests after unlock, conversion, close,
+  or process teardown. `ENOLCK` completes immediately, and the short retry
+  timer is only a scheduling safety net. Descriptors queued through
+  `SCM_RIGHTS` retain their Rust `OfdId`, `FileId`, and backing reference, so
+  sender close, successful receipt, discard, and receiver-allocation failure
+  all use the same final-reference rule without host-side lock inspection.
+
+### ABI 40 host-package migration
+
+ABI 40 removes the kernel's `host_fcntl_lock` import and removes the public
+`wasm-posix-host` exports `SharedLockTable` and `LockInfo`, along with
+`WasmPosixKernel.registerSharedLockTable()`. This is an intentional breaking
+host-package API change, not a deprecation shim. Embedders must stop importing,
+constructing, registering, or crash-resetting a shared lock table. The guest
+`fcntl`, OFD-lock, and `flock` APIs remain available; all lock state, ownership,
+range operations, and the 4096-normalized-record policy now live in the kernel
+Wasm.
+
+The host `StatResult.dev` and `StatResult.ino` fields now accept
+`number | bigint`, and Node-backed adapters return `bigint` so device and inode
+identities cannot lose precision. Embedders that serialize these values or use
+number-only arithmetic must handle `bigint` explicitly. The kernel marshalling
+contract remains exact unsigned 64-bit values.
 
 ### Syscall Flow
 
@@ -115,9 +142,27 @@ pipe pair.
 
 ### Filesystem
 - `MemoryFileSystem` — SharedArrayBuffer-based VFS shared between main thread and kernel worker
-- `OpfsFileSystem` — Origin Private File System for browser persistence. Its current stat metadata has no stable inode identity, so regular-file `MAP_SHARED` returns `ENOTSUP` instead of using unsafe pathname identity; `MAP_PRIVATE` is unaffected.
+- `OpfsFileSystem` — Origin Private File System for browser persistence. Its
+  worker assigns session-scoped inode tokens to regular files and uses
+  `FileSystemHandle.isSameEntry()` to unify simultaneous opens. Tokens remain
+  stable for live handles across supported rename and unlink; unlink followed
+  by recreation is a different identity. Device and inode cross the OPFS
+  channel as exact unsigned 64-bit integers. A browser that lacks the required
+  identity or move primitive reports the unsupported boundary rather than
+  substituting a pathname identity. The OPFS proxy owns namespace mutation for
+  its origin during a session and sweeps its hidden unlink-while-open orphan
+  directory at startup; running multiple independent proxy workers against the
+  same origin concurrently is not a supported coherence model.
 - `DeviceFileSystem` — `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`
-- Stable-identity regular files can be shared across process memories through the host mapping cache, but updates become visible at syscall boundaries rather than immediately on direct loads/stores. Cross-process futex waits/wakes remain unsupported; see [architecture.md](architecture.md#shared-mapping-coherence).
+- Stable-identity regular files, including OPFS regular files on supported
+  browsers, can be shared across process memories through the host mapping
+  cache, but updates become visible at syscall boundaries rather than
+  immediately on direct loads/stores. Cross-process futex waits/wakes remain
+  unsupported; see [architecture.md](architecture.md#shared-mapping-coherence).
+- Advisory locking uses `host_fstat` on the live open handle and the same
+  backend-qualified identity. If a filesystem backend cannot provide a stable,
+  exact identity, locking fails truthfully with `ENOLCK`; it never falls back
+  to hashing the remembered path.
 
 ### Terminal
 - PTY support with full line discipline

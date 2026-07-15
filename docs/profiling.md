@@ -58,7 +58,7 @@ Columns:
 | **Count** | Total number of times this syscall was invoked. |
 | **Time(ms)** | Cumulative wall-clock time spent handling this syscall, including kernel Wasm execution and host I/O. |
 | **Avg(ms)** | Average time per call (`Time / Count`). |
-| **Retries** | Number of times a blocking syscall (read/write on pipes/sockets, accept) returned EAGAIN and was re-queued for retry. High retry counts indicate contention or slow producers/consumers. |
+| **Retries** | Number of times a blocking syscall (read/write on pipes/sockets, accept, or conflicting F_SETLKW) returned EAGAIN and was re-queued for retry. ENOLCK is a completed failure and is not counted as a retry. High retry counts indicate contention or slow producers/consumers. |
 
 Results are sorted by total time (highest first), so the most expensive syscalls appear at the top.
 
@@ -143,7 +143,16 @@ required, selected input is missing.
 
 #### syscall-io
 
-Measures raw I/O throughput and syscall round-trip overhead.
+Measures raw I/O throughput, syscall round-trip overhead, and advisory-lock
+manager operations. The lock workload uses OFD locks so an independently opened
+descriptor can perform a real conflicting lookup without including a fork in
+the timed region. One shape holds one to three separated records on each of 64
+files (127 total records); the other holds 256 separated ranges on one file.
+The 64-file shape retains 128 OFDs, below the browser SharedFS backend's
+160-handle ceiling while still exercising file-index selection at scale.
+These counts fit both sides of a before/after comparison with the former fixed
+table. They are performance workloads, not substitutes for the 4096-record
+capacity tests.
 
 | Metric | Unit | What it measures |
 |--------|------|------------------|
@@ -151,6 +160,28 @@ Measures raw I/O throughput and syscall round-trip overhead.
 | `file_write_mbps` | MB/s | Write 1 MB to a file |
 | `file_read_mbps` | MB/s | Read 1 MB from a file |
 | `syscall_latency_us` | microseconds | Average `getpid()` round-trip over 1000 calls |
+| `lock_many_files_acquire_us_per_op` | microseconds/operation | Acquire separated write locks across 64 files with one to three records each |
+| `lock_many_files_conflict_us_per_op` | microseconds/operation | Find each many-file lock from an independently opened OFD |
+| `lock_many_files_replace_us_per_op` | microseconds/operation | Replace each many-file write lock with a read lock under the same OFD owner |
+| `lock_many_files_unlock_us_per_op` | microseconds/operation | Unlock each many-file record |
+| `lock_dense_file_acquire_us_per_op` | microseconds/operation | Acquire 256 separated write ranges on one file |
+| `lock_dense_file_conflict_us_per_op` | microseconds/operation | Find each dense-file lock from an independently opened OFD |
+| `lock_dense_file_replace_us_per_op` | microseconds/operation | Replace each dense-file write range with a read range under the same OFD owner |
+| `lock_dense_file_unlock_us_per_op` | microseconds/operation | Unlock each dense-file range |
+
+For a focused advisory-lock comparison, run the same benchmark source and
+round count before and after the change on both hosts. Rebuild the guest
+artifact for each side's ABI epoch; an ABI 39 benchmark must not be reused with
+an ABI 40 kernel, or vice versa:
+
+```bash
+npx tsx benchmarks/run.ts --suite=syscall-io --rounds=3
+npx tsx benchmarks/run.ts --host=browser --suite=syscall-io --rounds=3
+```
+
+The complete Node and browser suite is still required before making a broad
+performance or no-regression claim. Adding these cases does not itself establish
+that the lock-manager migration is faster, slower, or neutral.
 
 #### process-lifecycle
 
@@ -271,7 +302,10 @@ bash packages/registry/mariadb/build-mariadb.sh --wasm64 # wasm64 (optional, for
 
 ### Running the Complete Suite for Performance Work
 
-When measuring the performance impact of kernel changes, **run all 5 suites on both hosts**. Application-level suites (erlang-ring, wordpress, mariadb) exercise different syscall patterns and threading models that micro-benchmarks miss.
+When measuring the performance impact of kernel changes, **run every enabled
+suite on both hosts**. Application-level suites (WordPress and the MariaDB
+variants) exercise different syscall patterns and threading models that
+micro-benchmarks miss.
 
 ```bash
 # Full comparison workflow:

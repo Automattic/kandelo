@@ -73,7 +73,10 @@ pub mod host_abi;
 /// 39: kernel-owned POSIX timer expiration preserves exact thread targets,
 ///     SI_TIMER metadata, overruns, and finite signal-wait deadlines through
 ///     the required host timer-fire export.
-pub const ABI_VERSION: u32 = 39;
+/// 40: advisory locks are kernel-owned, use stable file/OFD identities and
+///     bounded dynamic storage, report ENOLCK distinctly, and no longer
+///     require the host_fcntl_lock import; fork/exec OFD state is versioned.
+pub const ABI_VERSION: u32 = 40;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -489,6 +492,7 @@ pub enum Errno {
     ERANGE = 34,
     EDEADLK = 35,
     ENAMETOOLONG = 36,
+    ENOLCK = 37,
     ENOSYS = 38,
     ENOTEMPTY = 39,
     ELOOP = 40,
@@ -554,6 +558,7 @@ impl Errno {
             34 => Some(Errno::ERANGE),
             35 => Some(Errno::EDEADLK),
             36 => Some(Errno::ENAMETOOLONG),
+            37 => Some(Errno::ENOLCK),
             38 => Some(Errno::ENOSYS),
             39 => Some(Errno::ENOTEMPTY),
             40 => Some(Errno::ELOOP),

@@ -4,6 +4,12 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
+use wasm_posix_shared::Errno;
+use wasm_posix_shared::flags::{O_ACCMODE, O_RDONLY};
+
+use crate::lock::{FileId, OfdId};
+use crate::ofd::FileType;
+
 /// POSIX default pipe capacity.
 pub const DEFAULT_PIPE_CAPACITY: usize = 65536;
 
@@ -15,16 +21,128 @@ pub const PIPE_BUF: usize = 4096;
 ///
 /// Stores enough information to reconstruct the file descriptor
 /// in the receiving process without needing access to the sender.
-#[derive(Clone)]
 pub struct InFlightFd {
-    /// FileType discriminant (Pipe=0, Socket=1, Regular=2, etc.)
-    pub file_type: u8,
+    pub ofd_id: OfdId,
+    pub file_id: Option<FileId>,
+    pub file_type: FileType,
     pub status_flags: u32,
     pub host_handle: i64,
     pub offset: i64,
     pub path: Vec<u8>,
     /// For socket FDs: serialized socket state.
     pub socket: Option<InFlightSocket>,
+    /// True after this queued payload has acquired its one machine-wide
+    /// backing and OfdId reference. Ownership transfers to the receiver or is
+    /// released through the deferred queue on drop.
+    owns_reference: bool,
+}
+
+impl InFlightFd {
+    pub(crate) fn new(
+        ofd_id: OfdId,
+        file_id: Option<FileId>,
+        file_type: FileType,
+        status_flags: u32,
+        host_handle: i64,
+        offset: i64,
+        path: Vec<u8>,
+    ) -> Self {
+        Self {
+            ofd_id,
+            file_id,
+            file_type,
+            status_flags,
+            host_handle,
+            offset,
+            path,
+            socket: None,
+            owns_reference: false,
+        }
+    }
+
+    fn release_metadata(&self) -> DeferredInFlightFdRelease {
+        DeferredInFlightFdRelease {
+            ofd_id: self.ofd_id,
+            file_type: self.file_type,
+            status_flags: self.status_flags,
+            host_handle: self.host_handle,
+            socket_send_idx: self.socket.as_ref().and_then(|socket| socket.send_buf_idx),
+            socket_recv_idx: self.socket.as_ref().and_then(|socket| socket.recv_buf_idx),
+            socket_global_pipes: self
+                .socket
+                .as_ref()
+                .is_some_and(|socket| socket.global_pipes),
+        }
+    }
+
+    /// Acquire the real resource and OfdId references represented by one
+    /// queued SCM_RIGHTS entry.
+    pub(crate) fn retain_reference(&mut self) -> Result<(), Errno> {
+        if self.owns_reference {
+            return Ok(());
+        }
+        reserve_deferred_in_flight_release()?;
+        if let Err(err) = crate::ofd::retain_in_flight_ofd(self.ofd_id) {
+            cancel_deferred_in_flight_release();
+            return Err(err);
+        }
+        if let Err(err) = retain_in_flight_resource(self.release_metadata()) {
+            crate::ofd::release_in_flight_ofd(self.ofd_id);
+            cancel_deferred_in_flight_release();
+            return Err(err);
+        }
+        self.owns_reference = true;
+        Ok(())
+    }
+
+    /// Transfer the queued reference to a receiver-side OpenFileDesc without a
+    /// decrement/re-increment window in the underlying resource ownership.
+    pub(crate) fn transfer_reference(&mut self) {
+        debug_assert!(self.owns_reference);
+        if self.owns_reference {
+            self.owns_reference = false;
+            crate::ofd::release_in_flight_ofd(self.ofd_id);
+            cancel_deferred_in_flight_release();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owns_reference(&self) -> bool {
+        self.owns_reference
+    }
+}
+
+impl Clone for InFlightFd {
+    fn clone(&self) -> Self {
+        let mut cloned = Self {
+            ofd_id: self.ofd_id,
+            file_id: self.file_id,
+            file_type: self.file_type,
+            status_flags: self.status_flags,
+            host_handle: self.host_handle,
+            offset: self.offset,
+            path: self.path.clone(),
+            socket: self.socket.clone(),
+            owns_reference: false,
+        };
+        if self.owns_reference {
+            cloned
+                .retain_reference()
+                .expect("failed to retain cloned in-flight OFD reference");
+        }
+        cloned
+    }
+}
+
+impl Drop for InFlightFd {
+    fn drop(&mut self) {
+        if !self.owns_reference {
+            return;
+        }
+        self.owns_reference = false;
+        crate::ofd::release_in_flight_ofd(self.ofd_id);
+        enqueue_deferred_in_flight_release(self.release_metadata());
+    }
 }
 
 /// Serialized socket state for SCM_RIGHTS FD passing.
@@ -43,6 +161,220 @@ pub struct InFlightSocket {
     pub bind_port: u16,
     pub peer_addr: [u8; 4],
     pub peer_port: u16,
+}
+
+/// Fixed cleanup metadata queued by `InFlightFd::drop`. Drop never re-enters
+/// the pipe, PTY, or descriptor-backing globals because it may itself be
+/// running while one of those tables is mutably borrowed.
+#[derive(Clone, Copy)]
+pub(crate) struct DeferredInFlightFdRelease {
+    pub ofd_id: OfdId,
+    file_type: FileType,
+    status_flags: u32,
+    host_handle: i64,
+    socket_send_idx: Option<usize>,
+    socket_recv_idx: Option<usize>,
+    socket_global_pipes: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReleasedInFlightFd {
+    pub ofd_id: OfdId,
+    pub final_ofd_reference: bool,
+    pub host_close: Option<i64>,
+}
+
+struct DeferredInFlightReleaseQueue {
+    records: Vec<DeferredInFlightFdRelease>,
+    /// Capacity promised to live `InFlightFd` values whose destructor may
+    /// enqueue one record. Reserving before ownership is acquired keeps Drop
+    /// allocation-free even with the kernel's non-reclaiming allocator.
+    reserved: usize,
+}
+
+struct DeferredInFlightReleases(UnsafeCell<Option<DeferredInFlightReleaseQueue>>);
+unsafe impl Sync for DeferredInFlightReleases {}
+
+static DEFERRED_IN_FLIGHT_RELEASES: DeferredInFlightReleases =
+    DeferredInFlightReleases(UnsafeCell::new(None));
+
+fn deferred_in_flight_releases() -> &'static mut DeferredInFlightReleaseQueue {
+    let slot = unsafe { &mut *DEFERRED_IN_FLIGHT_RELEASES.0.get() };
+    slot.get_or_insert_with(|| DeferredInFlightReleaseQueue {
+        records: Vec::new(),
+        reserved: 0,
+    })
+}
+
+fn reserve_deferred_in_flight_release() -> Result<(), Errno> {
+    let queue = deferred_in_flight_releases();
+    if queue.records.capacity() - queue.records.len() <= queue.reserved {
+        queue
+            .records
+            .try_reserve(queue.reserved.checked_add(1).ok_or(Errno::EOVERFLOW)?)
+            .map_err(|_| Errno::ENOMEM)?;
+    }
+    queue.reserved += 1;
+    Ok(())
+}
+
+fn cancel_deferred_in_flight_release() {
+    let queue = deferred_in_flight_releases();
+    debug_assert!(queue.reserved > 0);
+    queue.reserved = queue.reserved.saturating_sub(1);
+}
+
+fn enqueue_deferred_in_flight_release(release: DeferredInFlightFdRelease) {
+    let queue = deferred_in_flight_releases();
+    debug_assert!(queue.reserved > 0);
+    debug_assert!(queue.records.len() < queue.records.capacity());
+    queue.reserved = queue.reserved.saturating_sub(1);
+    queue.records.push(release);
+}
+
+pub(crate) fn pop_deferred_in_flight_release() -> Option<DeferredInFlightFdRelease> {
+    deferred_in_flight_releases().records.pop()
+}
+
+#[cfg(test)]
+pub(crate) fn deferred_in_flight_release_state() -> (usize, usize, usize) {
+    let queue = deferred_in_flight_releases();
+    (queue.records.len(), queue.reserved, queue.records.capacity())
+}
+
+fn retain_in_flight_resource(release: DeferredInFlightFdRelease) -> Result<(), Errno> {
+    if crate::descriptor_backing::add_ref_for_ofd(release.file_type, release.host_handle)? {
+        return Ok(());
+    }
+
+    match release.file_type {
+        FileType::Regular | FileType::Directory | FileType::CharDevice
+            if release.host_handle >= 0 =>
+        {
+            crate::ofd::host_handle_fork_ref(release.host_handle);
+        }
+        FileType::Pipe if release.host_handle >= 0 => {
+            crate::ofd::host_handle_fork_ref(release.host_handle);
+        }
+        FileType::Pipe => {
+            let pipe_idx = (-(release.host_handle + 1)) as usize;
+            let pipe = unsafe { global_pipe_table() }
+                .get_mut(pipe_idx)
+                .ok_or(Errno::EBADF)?;
+            if release.status_flags & O_ACCMODE == O_RDONLY {
+                pipe.add_reader();
+            } else {
+                pipe.add_writer();
+            }
+        }
+        FileType::Socket if release.socket_global_pipes => {
+            let pipes = unsafe { global_pipe_table() };
+            if release
+                .socket_send_idx
+                .is_some_and(|idx| pipes.get(idx).is_none())
+                || release
+                    .socket_recv_idx
+                    .is_some_and(|idx| pipes.get(idx).is_none())
+            {
+                return Err(Errno::EBADF);
+            }
+            if let Some(idx) = release.socket_send_idx {
+                pipes.get_mut(idx).unwrap().add_writer();
+            }
+            if let Some(idx) = release.socket_recv_idx {
+                pipes.get_mut(idx).unwrap().add_reader();
+            }
+        }
+        FileType::PtyMaster | FileType::PtySlave => {
+            let pty = crate::pty::get_pty(release.host_handle as usize).ok_or(Errno::EBADF)?;
+            if release.file_type == FileType::PtyMaster {
+                pty.master_refs = pty.master_refs.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            } else {
+                pty.slave_refs = pty.slave_refs.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            }
+        }
+        FileType::Epoll => return Err(Errno::EINVAL),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Release one deferred queued reference after the table borrow that dropped
+/// it has ended. Any nested ancillary payload discarded by closing a pipe is
+/// queued for a later iteration by the caller.
+pub(crate) fn release_deferred_in_flight_resource(
+    release: DeferredInFlightFdRelease,
+) -> ReleasedInFlightFd {
+    let mut final_ofd_reference = false;
+    let mut host_close = None;
+
+    if crate::descriptor_backing::manages_ofd(release.file_type, release.host_handle) {
+        final_ofd_reference =
+            crate::descriptor_backing::release_for_ofd(release.file_type, release.host_handle);
+    } else {
+        match release.file_type {
+            FileType::Regular | FileType::Directory | FileType::CharDevice
+                if release.host_handle >= 0 =>
+            {
+                if crate::ofd::host_handle_close_ref(release.host_handle) {
+                    final_ofd_reference = true;
+                    host_close = Some(release.host_handle);
+                }
+            }
+            FileType::Pipe if release.host_handle >= 0 => {
+                if crate::ofd::host_handle_close_ref(release.host_handle) {
+                    host_close = Some(release.host_handle);
+                }
+            }
+            FileType::Pipe => {
+                let pipe_idx = (-(release.host_handle + 1)) as usize;
+                let pipes = unsafe { global_pipe_table() };
+                if let Some(pipe) = pipes.get_mut(pipe_idx) {
+                    if release.status_flags & O_ACCMODE == O_RDONLY {
+                        pipe.close_read_end();
+                    } else {
+                        pipe.close_write_end();
+                    }
+                }
+                pipes.free_if_closed(pipe_idx);
+            }
+            FileType::Socket if release.socket_global_pipes => {
+                let pipes = unsafe { global_pipe_table() };
+                if let Some(idx) = release.socket_send_idx {
+                    if let Some(pipe) = pipes.get_mut(idx) {
+                        pipe.close_write_end();
+                    }
+                    pipes.free_if_closed(idx);
+                }
+                if let Some(idx) = release.socket_recv_idx {
+                    if let Some(pipe) = pipes.get_mut(idx) {
+                        pipe.close_read_end();
+                    }
+                    pipes.free_if_closed(idx);
+                }
+            }
+            FileType::PtyMaster | FileType::PtySlave => {
+                let pty_idx = release.host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    if release.file_type == FileType::PtyMaster {
+                        pty.master_refs = pty.master_refs.saturating_sub(1);
+                    } else {
+                        pty.slave_refs = pty.slave_refs.saturating_sub(1);
+                    }
+                    if !pty.is_alive() {
+                        crate::pty::free_pty(pty_idx);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    ReleasedInFlightFd {
+        ofd_id: release.ofd_id,
+        final_ofd_reference,
+        host_close,
+    }
 }
 
 /// A ring buffer backing a pipe.
@@ -192,6 +524,10 @@ impl PipeBuffer {
             self.head = 0;
             self.tail = 0;
             self.len = 0;
+            // No process can receive these queued descriptors now. Dropping
+            // them only enqueues fixed cleanup metadata; resource tables are
+            // drained after this PipeBuffer borrow ends.
+            self.ancillary_fds.clear();
         }
         // Read end closed → pipe became writable (writers get EPIPE/SIGPIPE)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
@@ -210,6 +546,7 @@ impl PipeBuffer {
             self.tail = 0;
             self.len = 0;
             self.orphaned_read = self.write_count > 0;
+            self.ancillary_fds.clear();
         }
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
