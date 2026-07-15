@@ -48,6 +48,13 @@ The protected dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`; publish and dry-run
 requests must include nonempty Formula and architecture selections.
 
+The publisher keeps GitHub repository identity separate from canonical
+Homebrew tap identity. Conventional third-party repository
+`<owner>/homebrew-<name>` must pass tap name `<owner>/<name>` and must call from
+that same repository's reviewed `main` workflow. This first-party repository is
+an explicit naming exception: both values are
+`Automattic/kandelo-homebrew`.
+
 The caller grants the maximum permission ceiling. Four fresh runner roles then
 downgrade it: a read-only build/test job, a `packages: write` uploader without
 tap write access, a read-only anonymous/runtime verifier, and a

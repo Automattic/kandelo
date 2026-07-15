@@ -6,13 +6,14 @@ SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 
 TAP_ROOT=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 FORMULA=""
 BASE_REF=""
 REVIEWED_TAP_ROOT=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-formula-source-closure.sh --tap-root <dir> --tap-repository <owner/repo> --formula <name> --base-ref <commit> [--reviewed-tap-root <dir>]
+usage: scripts/homebrew-validate-formula-source-closure.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --base-ref <commit> [--reviewed-tap-root <dir>]
 
 Compares the working tap against the reviewed Formula source at base-ref.
 Canonical bottle metadata may differ. Formula code and every file in the
@@ -26,6 +27,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --base-ref) BASE_REF="${2:-}"; shift 2 ;;
     --reviewed-tap-root) REVIEWED_TAP_ROOT="${2:-}"; shift 2 ;;
@@ -55,6 +57,9 @@ if ! [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "homebrew-validate-formula-source-closure.sh: invalid tap repository: $TAP_REPOSITORY" >&2
   exit 2
 fi
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 if ! [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
   echo "homebrew-validate-formula-source-closure.sh: invalid formula: $FORMULA" >&2
   exit 2
@@ -131,8 +136,8 @@ if ! ruby "$SCRIPT_ROOT/homebrew-formula-source-digest.rb" \
   exit 1
 fi
 
-owner="$(printf '%s' "${TAP_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
-repository="$(printf '%s' "${TAP_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+owner="${TAP_NAME%%/*}"
+repository="${TAP_NAME#*/}"
 support_require="require (Tap.fetch(\"$owner\", \"$repository\").path/\"Kandelo/formula_support/kandelo_formula_support\").to_s"
 support_marker="Kandelo/formula_support/kandelo_formula_support"
 
@@ -232,6 +237,7 @@ python3 "$SCRIPT_ROOT/homebrew-oci-layout.py" source-closure \
   --tap-root "$TAP_ROOT" \
   --kandelo-root "$(dirname "$SCRIPT_ROOT")" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --formula "$FORMULA" \
   --out "$CURRENT_CLOSURE"
 if [ -n "$REVIEWED_TAP_ROOT" ]; then
@@ -240,6 +246,7 @@ if [ -n "$REVIEWED_TAP_ROOT" ]; then
     --tap-root "$REVIEWED_TAP_ROOT" \
     --kandelo-root "$(dirname "$SCRIPT_ROOT")" \
     --tap-repository "$TAP_REPOSITORY" \
+    --tap-name "$TAP_NAME" \
     --formula "$FORMULA" \
     --out "$REVIEWED_CLOSURE"
   if ! cmp -s "$CURRENT_CLOSURE" "$REVIEWED_CLOSURE"; then
@@ -249,7 +256,7 @@ if [ -n "$REVIEWED_TAP_ROOT" ]; then
 fi
 
 ruby "$SCRIPT_ROOT/homebrew-formula-runtime-closure.rb" \
-  "$TAP_ROOT" "$TAP_REPOSITORY" "$FORMULA" --declarations-json \
+  "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --declarations-json \
   >/dev/null
 
 echo "homebrew-validate-formula-source-closure.sh: validated $FORMULA at $BASE_COMMIT"

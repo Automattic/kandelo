@@ -9,6 +9,8 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-sibling-bottle-policy.sh"
 TAP_ROOT=""
+TAP_REPOSITORY="Automattic/kandelo-homebrew"
+TAP_NAME_INPUT=""
 SIDECAR_ROOT=""
 PUBLICATION_HANDOFF=""
 FORMULA=""
@@ -31,7 +33,7 @@ COMPOSE_ROOT=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--publication-handoff <dir>] [--sidecar-root <dir>] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
+usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--publication-handoff <dir>] [--sidecar-root <dir>] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
 
 Success either composes a validated package-scoped --publication-handoff
 against refreshed tap state or publishes a generated --sidecar-root payload,
@@ -47,6 +49,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --kandelo-root) KANDELO_ROOT="${2:-}"; shift 2 ;;
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
+    --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --sidecar-root) SIDECAR_ROOT="${2:-}"; shift 2 ;;
     --publication-handoff) PUBLICATION_HANDOFF="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
@@ -81,6 +85,10 @@ require formula "$FORMULA"
 require arch "$ARCH"
 require release-tag "$RELEASE_TAG"
 require status "$STATUS"
+
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 
 if ! [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
   echo "homebrew-publish-sidecars.sh: invalid formula name: $FORMULA" >&2
@@ -320,10 +328,11 @@ compose_publication_handoff() {
   jq -e \
     --arg formula "$FORMULA" --arg arch "$ARCH" --arg tag "$tag" \
     --arg release_tag "$RELEASE_TAG" --arg tap_commit "$TAP_COMMIT" \
+    --arg tap_repository "$TAP_REPOSITORY" --arg tap_name "$TAP_NAME" \
     --arg kandelo_commit "$KANDELO_COMMIT" --arg sha "$bottle_sha" \
     --arg url "$bottle_url" '
       .schema == 1 and .release_tag == $release_tag and
-      .tap_repository == "Automattic/kandelo-homebrew" and
+      .tap_repository == $tap_repository and .tap_name == $tap_name and
       .tap_commit == $tap_commit and .kandelo_commit == $kandelo_commit and
       (.packages | length) == 1 and
       .packages[0].name == $formula and
@@ -365,7 +374,8 @@ compose_publication_handoff() {
 
   bash "$KANDELO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
     --tap-root "$COMPOSE_ROOT" \
-    --tap-repository "Automattic/kandelo-homebrew" \
+    --tap-repository "$TAP_REPOSITORY" \
+    --tap-name "$TAP_NAME" \
     --formula "$FORMULA" \
     --base-ref "$input_tap_commit" >/dev/null
 
@@ -376,7 +386,8 @@ compose_publication_handoff() {
     --input "$handoff/build/dependency-provenance.json" \
     --formula "$FORMULA" \
     --arch "$ARCH" \
-    --tap-repository "Automattic/kandelo-homebrew" \
+    --tap-repository "$TAP_REPOSITORY" \
+    --tap-name "$TAP_NAME" \
     --tap-commit "$input_tap_commit" \
     --bottle-root-url "$bottle_root" \
     --tap-root "$COMPOSE_ROOT"

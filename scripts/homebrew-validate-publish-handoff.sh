@@ -7,6 +7,7 @@ FORMULA=""
 ARCH=""
 RELEASE_TAG=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 TAP_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
@@ -15,7 +16,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...]
+usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...]
 
 Checks the exact build/receipt/composition artifact grammar and cross-validates
 all publication data without loading Formula Ruby or executing package code.
@@ -29,6 +30,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
@@ -177,6 +179,9 @@ done < <(find "$HANDOFF" -mindepth 1 -print0)
 
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
+# shellcheck source=/dev/null
 . "$SCRIPT_ROOT/homebrew-sibling-bottle-policy.sh"
 # shellcheck source=/dev/null
 . "$SCRIPT_ROOT/homebrew-publication-limits.sh"
@@ -191,6 +196,7 @@ bash "$SCRIPT_ROOT/homebrew-validate-upload-receipt.sh" \
   --arch "$ARCH" \
   --release-tag "$RELEASE_TAG" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --kandelo-commit "$KANDELO_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
@@ -201,6 +207,7 @@ python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
   --formula "$FORMULA" \
   --arch "$ARCH" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
   --tap-root "$TAP_ROOT"
@@ -233,11 +240,13 @@ BOTTLE_TAG="${ARCH}_kandelo"
 if ! jq -e \
   --arg formula "$FORMULA" --arg arch "$ARCH" --arg tag "$BOTTLE_TAG" \
   --arg release_tag "$RELEASE_TAG" --arg tap_repository "$TAP_REPOSITORY" \
+  --arg tap_name "$TAP_NAME" \
   --arg tap_commit "$TAP_COMMIT" --arg kandelo_commit "$KANDELO_COMMIT" \
   --arg abi "$ABI_VERSION" --arg url "$BOTTLE_URL" --arg sha "$BOTTLE_SHA256" '
     keys == ["generated_at", "generator", "kandelo_abi", "kandelo_commit", "kandelo_repository", "packages", "release_tag", "schema", "tap_commit", "tap_name", "tap_repository"] and
     .schema == 1 and .release_tag == $release_tag and
-    .tap_repository == $tap_repository and .tap_commit == $tap_commit and
+    .tap_repository == $tap_repository and .tap_name == $tap_name and
+    .tap_commit == $tap_commit and
     .kandelo_commit == $kandelo_commit and .kandelo_abi == ($abi | tonumber) and
     (.packages | length) == 1 and .packages[0].name == $formula and
     .packages[0].formula_path == ("Formula/" + $formula + ".rb") and
@@ -393,9 +402,6 @@ require_max_size "formula JSON" "$FORMULA_JSON" "$HOMEBREW_MAX_SIDECAR_JSON_BYTE
 require_max_size "link JSON" "$LINK_JSON" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES"
 require_max_size "provenance JSON" "$PROVENANCE_JSON" "$HOMEBREW_MAX_PROVENANCE_BYTES"
 
-OWNER_LOWER="$(printf '%s' "${TAP_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
-REPO_LOWER="$(printf '%s' "${TAP_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
-TAP_NAME="${OWNER_LOWER}/${REPO_LOWER}"
 FULL_NAME="${TAP_NAME}/${FORMULA}"
 BOTTLE_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
 BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$BUILD_ROOT/manifest.json")"

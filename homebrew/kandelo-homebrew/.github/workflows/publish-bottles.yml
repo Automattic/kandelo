@@ -15,6 +15,7 @@ jobs:
       kandelo-repository: Automattic/kandelo
       kandelo-ref: main
       tap-repository: Automattic/kandelo-homebrew
+      tap-name: Automattic/kandelo-homebrew
       tap-ref: main
       formulae: ${{ github.event.client_payload.formulae }}
       arches: ${{ github.event.client_payload.arches || 'wasm32' }}

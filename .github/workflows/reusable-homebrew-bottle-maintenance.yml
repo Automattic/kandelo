@@ -82,6 +82,7 @@ jobs:
       kandelo-repository: Automattic/kandelo
       kandelo-ref: main
       tap-repository: Automattic/kandelo-homebrew
+      tap-name: Automattic/kandelo-homebrew
       tap-ref: main
       formulae: ${{ inputs.formulae }}
       arches: ${{ inputs.arches }}

@@ -224,6 +224,7 @@ def validate_arguments(args: argparse.Namespace) -> None:
         fail(f"unsupported architecture: {args.arch}")
     require_int(args.abi, "ABI", 1)
     require_string(args.tap_repository, "tap repository", TAP_REPOSITORY)
+    selected_tap_name(args)
     require_string(args.tap_commit, "tap commit", COMMIT)
     require_string(args.kandelo_commit, "Kandelo commit", COMMIT)
     expected_root = f"https://ghcr.io/v2/{args.tap_repository.lower()}"
@@ -231,8 +232,37 @@ def validate_arguments(args: argparse.Namespace) -> None:
         fail(f"bottle root URL must be {expected_root}")
 
 
-def normalized_tap(repository: str) -> str:
-    return repository.lower()
+def normalized_identity(value: str) -> str:
+    return value.lower()
+
+
+def tap_name_for_repository(repository_value: str) -> str:
+    repository = normalized_identity(repository_value)
+    require_string(repository, "tap repository", TAP_REPOSITORY)
+    owner, repository_name = repository.split("/", 1)
+    if repository == "automattic/kandelo-homebrew":
+        return repository
+    if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
+        fail("third-party tap repositories must use owner/homebrew-name")
+    tap_name = f"{owner}/{repository_name.removeprefix('homebrew-')}"
+    if tap_name == "automattic/kandelo-homebrew":
+        fail("the protected first-party tap name cannot be derived from another repository")
+    return tap_name
+
+
+def selected_tap_name(args: argparse.Namespace) -> str:
+    repository = normalized_identity(args.tap_repository)
+    expected = tap_name_for_repository(repository)
+    requested = getattr(args, "tap_name", None)
+    if requested is None:
+        if repository != "automattic/kandelo-homebrew":
+            fail("tap name is required when repository and Homebrew identities may differ")
+        requested = args.tap_repository
+    require_string(requested, "tap name", TAP_REPOSITORY)
+    selected = normalized_identity(requested)
+    if selected != expected:
+        fail("tap name does not match the tap repository")
+    return selected
 
 
 def formula_revision(pkg_version: str) -> int:
@@ -329,14 +359,14 @@ def source_closure(
     *,
     tap_root: pathlib.Path,
     kandelo_root: pathlib.Path,
-    tap_repository: str,
+    tap_name: str,
     formula: str,
     expected_formula_identity: str | None = None,
     expected_formula_mode: str | None = None,
 ) -> dict[str, str]:
     tap_root = real_directory(tap_root, "tap source root")
     kandelo_root = real_directory(kandelo_root, "Kandelo source root")
-    require_string(tap_repository, "tap repository", TAP_REPOSITORY)
+    require_string(tap_name, "tap name", TAP_REPOSITORY)
     require_string(formula, "formula", FORMULA_NAME)
     formula_path = tap_root / "Formula" / f"{formula}.rb"
     tap_identity = formula_identity_for_path(formula_path, kandelo_root)
@@ -346,7 +376,7 @@ def source_closure(
         formula_source = formula_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         fail(f"tap Formula source is not UTF-8: {error}")
-    owner, repository = normalized_tap(tap_repository).split("/", 1)
+    owner, repository = normalized_identity(tap_name).split("/", 1)
     require_line = (
         f'require (Tap.fetch("{owner}", "{repository}").path/'
         '"Kandelo/formula_support/kandelo_formula_support").to_s'
@@ -720,7 +750,7 @@ def semantic_annotations(args: argparse.Namespace, bottle: dict[str, Any], metad
         ],
         "dev.kandelo.homebrew.source_closure_sha256": metadata["source_closure_sha256"],
         "dev.kandelo.homebrew.pkg_version": bottle["pkg_version"],
-        "dev.kandelo.homebrew.tap_repository": normalized_tap(args.tap_repository),
+        "dev.kandelo.homebrew.tap_repository": normalized_identity(args.tap_repository),
     }
 
 
@@ -756,9 +786,9 @@ def formula_annotations(
                 bottle["pkg_version"], bottle["rebuild"]
             ),
             "org.opencontainers.image.source": (
-                f"https://github.com/{normalized_tap(args.tap_repository)}"
+                f"https://github.com/{normalized_identity(args.tap_repository)}"
             ),
-            "org.opencontainers.image.title": f"{normalized_tap(args.tap_repository)}/{args.formula}",
+            "org.opencontainers.image.title": f"{selected_tap_name(args)}/{args.formula}",
             "org.opencontainers.image.version": bottle["pkg_version"],
         }
     )
@@ -812,7 +842,7 @@ def build_child(args: argparse.Namespace) -> None:
     closure = source_closure(
         tap_root=pathlib.Path(args.tap_root),
         kandelo_root=pathlib.Path(args.kandelo_root),
-        tap_repository=args.tap_repository,
+        tap_name=selected_tap_name(args),
         formula=args.formula,
         expected_formula_identity=metadata["formula_source_identity_sha256"],
         expected_formula_mode=metadata["formula_source_mode"],
@@ -898,8 +928,9 @@ def build_child(args: argparse.Namespace) -> None:
             "transport_tag": transport_tag,
         },
         "pkg_version": bottle["pkg_version"],
-        "schema": 1,
+        "schema": 2,
         "tap_commit": args.tap_commit,
+        "tap_name": selected_tap_name(args),
         "tap_repository": args.tap_repository,
         "top_ref": top_reference(bottle["pkg_version"], bottle["rebuild"]),
     }
@@ -1008,11 +1039,11 @@ def load_receipt(path: pathlib.Path) -> dict[str, Any]:
             "abi", "arch", "bottle", "bottle_rebuild", "formula", "formula_revision",
             "formula_source_identity_sha256", "formula_source_sha256", "kandelo_commit",
             "kind", "oci", "pkg_version", "schema", "source_closure_sha256", "tap_commit",
-            "tap_repository", "top_ref",
+            "tap_name", "tap_repository", "top_ref",
         },
         "OCI child receipt",
     )
-    if root["schema"] != 1 or root["kind"] != "child":
+    if root["schema"] != 2 or root["kind"] != "child":
         fail("OCI child receipt has an invalid schema")
     require_string(root["formula"], "receipt formula", FORMULA_NAME)
     if root["arch"] not in ("wasm32", "wasm64"):
@@ -1028,7 +1059,12 @@ def load_receipt(path: pathlib.Path) -> dict[str, Any]:
         root["formula_source_identity_sha256"], "receipt Formula identity sha256", SHA256
     )
     require_string(root["source_closure_sha256"], "receipt source closure sha256", SHA256)
-    require_string(root["tap_repository"], "receipt tap repository", TAP_REPOSITORY)
+    receipt_repository = require_string(
+        root["tap_repository"], "receipt tap repository", TAP_REPOSITORY
+    )
+    receipt_tap_name = require_string(root["tap_name"], "receipt tap name", TAP_REPOSITORY)
+    if normalized_identity(receipt_tap_name) != tap_name_for_repository(receipt_repository):
+        fail("OCI child receipt tap name does not match its repository")
     require_string(root["tap_commit"], "receipt tap commit", COMMIT)
     require_string(root["kandelo_commit"], "receipt Kandelo commit", COMMIT)
     bottle = exact_keys(root["bottle"], {"bytes", "sha256", "url"}, "receipt bottle")
@@ -1098,7 +1134,7 @@ def expected_semantics(receipt: dict[str, Any]) -> dict[str, str]:
         ],
         "dev.kandelo.homebrew.source_closure_sha256": receipt["source_closure_sha256"],
         "dev.kandelo.homebrew.pkg_version": receipt["pkg_version"],
-        "dev.kandelo.homebrew.tap_repository": normalized_tap(receipt["tap_repository"]),
+        "dev.kandelo.homebrew.tap_repository": normalized_identity(receipt["tap_repository"]),
     }
 
 
@@ -1111,7 +1147,7 @@ def expected_top_annotations(semantics: dict[str, str], top_ref: str) -> dict[st
             f"https://github.com/{semantics['dev.kandelo.homebrew.tap_repository']}"
         ),
         "org.opencontainers.image.title": (
-            f"{semantics['dev.kandelo.homebrew.tap_repository']}/"
+            f"{tap_name_for_repository(semantics['dev.kandelo.homebrew.tap_repository'])}/"
             f"{semantics['dev.kandelo.homebrew.formula']}"
         ),
         "org.opencontainers.image.version": semantics["dev.kandelo.homebrew.pkg_version"],
@@ -1215,7 +1251,7 @@ def validate_manifest_descriptor(
             f"{semantics['dev.kandelo.homebrew.tap_repository']}"
         ),
         "org.opencontainers.image.title": (
-            f"{semantics['dev.kandelo.homebrew.tap_repository']}/"
+            f"{tap_name_for_repository(semantics['dev.kandelo.homebrew.tap_repository'])}/"
             f"{semantics['dev.kandelo.homebrew.formula']}"
         ),
         "org.opencontainers.image.version": semantics["dev.kandelo.homebrew.pkg_version"],
@@ -1448,7 +1484,8 @@ def merge_index(args: argparse.Namespace) -> None:
         "kind": "index",
         "pkg_version": first["pkg_version"],
         "bottle_rebuild": first["bottle_rebuild"],
-        "schema": 1,
+        "schema": 2,
+        "tap_name": first["tap_name"],
         "tap_repository": first["tap_repository"],
         "top": {
             "digest": top_descriptor["digest"],
@@ -1467,11 +1504,11 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
         {
             "abi", "bottle_rebuild", "children", "formula", "formula_revision",
             "formula_source_identity_sha256", "kind", "pkg_version", "schema",
-            "source_closure_sha256", "tap_repository", "top",
+            "source_closure_sha256", "tap_name", "tap_repository", "top",
         },
         "OCI index receipt",
     )
-    if root["schema"] != 1 or root["kind"] != "index":
+    if root["schema"] != 2 or root["kind"] != "index":
         fail("OCI index receipt has an invalid schema")
     require_int(root["abi"], "OCI index receipt ABI", 1)
     formula = require_string(root["formula"], "OCI index receipt formula", FORMULA_NAME)
@@ -1487,7 +1524,14 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
     require_string(
         root["source_closure_sha256"], "OCI index receipt source closure sha256", SHA256
     )
-    require_string(root["tap_repository"], "OCI index receipt tap repository", TAP_REPOSITORY)
+    receipt_repository = require_string(
+        root["tap_repository"], "OCI index receipt tap repository", TAP_REPOSITORY
+    )
+    receipt_tap_name = require_string(
+        root["tap_name"], "OCI index receipt tap name", TAP_REPOSITORY
+    )
+    if normalized_identity(receipt_tap_name) != tap_name_for_repository(receipt_repository):
+        fail("OCI index receipt tap name does not match its repository")
     children = root["children"]
     if not isinstance(children, list) or not 1 <= len(children) <= 2:
         fail("OCI index receipt must contain one or two children")
@@ -1558,7 +1602,7 @@ def validate_index_layout(layout: pathlib.Path, receipt: dict[str, Any]) -> None
         ],
         "dev.kandelo.homebrew.source_closure_sha256": receipt["source_closure_sha256"],
         "dev.kandelo.homebrew.pkg_version": receipt["pkg_version"],
-        "dev.kandelo.homebrew.tap_repository": normalized_tap(receipt["tap_repository"]),
+        "dev.kandelo.homebrew.tap_repository": normalized_identity(receipt["tap_repository"]),
     }
     if top["annotations"] != expected_top_annotations(semantics, receipt["top"]["ref"]):
         fail("Homebrew top index semantic identity does not match receipt")
@@ -1590,7 +1634,7 @@ def source_closure_command(args: argparse.Namespace) -> None:
     closure = source_closure(
         tap_root=pathlib.Path(args.tap_root),
         kandelo_root=pathlib.Path(args.kandelo_root),
-        tap_repository=args.tap_repository,
+        tap_name=selected_tap_name(args),
         formula=args.formula,
     )
     write_json(
@@ -1598,8 +1642,9 @@ def source_closure_command(args: argparse.Namespace) -> None:
         {
             "formula": args.formula,
             **closure,
-            "schema": 1,
-            "tap_repository": normalized_tap(args.tap_repository),
+            "schema": 2,
+            "tap_name": selected_tap_name(args),
+            "tap_repository": normalized_identity(args.tap_repository),
         },
     )
 
@@ -2052,6 +2097,7 @@ def validate_publication_receipt_command(args: argparse.Namespace) -> None:
     tap_repository = require_string(
         args.tap_repository, "publication tap repository", TAP_REPOSITORY
     )
+    tap_name = selected_tap_name(args)
     layout_path = pathlib.Path(args.layout_receipt)
     if args.kind == "child":
         layout = load_receipt(layout_path)
@@ -2067,7 +2113,8 @@ def validate_publication_receipt_command(args: argparse.Namespace) -> None:
         expected_previous = layout["top"]["previous_digest"]
     if (
         layout["formula"] != formula
-        or normalized_tap(layout["tap_repository"]) != normalized_tap(tap_repository)
+        or normalized_identity(layout["tap_repository"]) != normalized_identity(tap_repository)
+        or normalized_identity(layout["tap_name"]) != tap_name
     ):
         fail("publication layout identity does not match the requested Formula and tap")
 
@@ -2075,11 +2122,11 @@ def validate_publication_receipt_command(args: argparse.Namespace) -> None:
         load_json(pathlib.Path(args.receipt), "OCI publication receipt", MAX_RECEIPT_BYTES),
         {
             "formula", "kind", "layout", "layout_receipt_sha256", "publication",
-            "schema", "tap_repository",
+            "schema", "tap_name", "tap_repository",
         },
         "OCI publication receipt",
     )
-    if receipt["schema"] != 2 or receipt["kind"] != args.kind:
+    if receipt["schema"] != 3 or receipt["kind"] != args.kind:
         fail("OCI publication receipt has an invalid schema or kind")
     receipt_formula = require_string(
         receipt["formula"], "OCI publication receipt Formula", FORMULA_NAME
@@ -2087,7 +2134,14 @@ def validate_publication_receipt_command(args: argparse.Namespace) -> None:
     receipt_tap = require_string(
         receipt["tap_repository"], "OCI publication receipt tap repository", TAP_REPOSITORY
     )
-    if receipt_formula != formula or normalized_tap(receipt_tap) != normalized_tap(tap_repository):
+    receipt_tap_name = require_string(
+        receipt["tap_name"], "OCI publication receipt tap name", TAP_REPOSITORY
+    )
+    if (
+        receipt_formula != formula
+        or normalized_identity(receipt_tap) != normalized_identity(tap_repository)
+        or normalized_identity(receipt_tap_name) != tap_name
+    ):
         fail("OCI publication receipt identity does not match the requested Formula and tap")
     if receipt["layout"] != layout:
         fail("OCI publication receipt does not embed the exact layout receipt")
@@ -2104,7 +2158,7 @@ def validate_publication_receipt_command(args: argparse.Namespace) -> None:
         },
         "OCI publication result",
     )
-    expected_remote = f"ghcr.io/{normalized_tap(tap_repository)}/{formula}"
+    expected_remote = f"ghcr.io/{normalized_identity(tap_repository)}/{formula}"
     if publication["remote"] != expected_remote:
         fail("OCI publication receipt remote is invalid")
     if publication["reference"] != expected_reference:
@@ -2135,6 +2189,7 @@ def parser() -> argparse.ArgumentParser:
         "out-layout", "out-receipt",
     ):
         child.add_argument(f"--{flag}", required=True)
+    child.add_argument("--tap-name")
     child.add_argument("--abi", type=int, required=True)
     child.set_defaults(handler=build_child)
     merge = commands.add_parser("merge-index")
@@ -2154,6 +2209,7 @@ def parser() -> argparse.ArgumentParser:
     closure = commands.add_parser("source-closure")
     for flag in ("tap-root", "kandelo-root", "tap-repository", "formula", "out"):
         closure.add_argument(f"--{flag}", required=True)
+    closure.add_argument("--tap-name")
     closure.set_defaults(handler=source_closure_command)
     validate_index = commands.add_parser("validate-index")
     validate_index.add_argument("--layout", required=True)
@@ -2174,6 +2230,7 @@ def parser() -> argparse.ArgumentParser:
     validate_publication_receipt.add_argument("--kind", choices=("child", "index"), required=True)
     validate_publication_receipt.add_argument("--formula", required=True)
     validate_publication_receipt.add_argument("--tap-repository", required=True)
+    validate_publication_receipt.add_argument("--tap-name")
     validate_publication_receipt.add_argument("--allow-dry-run", action="store_true")
     validate_publication_receipt.set_defaults(handler=validate_publication_receipt_command)
     return root

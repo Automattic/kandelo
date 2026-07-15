@@ -150,10 +150,11 @@ write_dependency_provenance() {
   jq -nS \
     --arg formula "$formula" --arg arch "$arch" --arg tap_commit "$tap_commit" \
     --arg bottle_tag "${arch}_kandelo" --argjson dependencies "$dependencies" '{
-      schema: 1,
+      schema: 2,
       formula: $formula,
       arch: $arch,
       tap_repository: "Automattic/kandelo-homebrew",
+      tap_name: "automattic/kandelo-homebrew",
       tap_commit: $tap_commit,
       bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
       bottle_tag: $bottle_tag,
@@ -487,12 +488,13 @@ generate_sidecars() {
     --arg version "$version" \
     --arg provenance_sha "$provenance_sha" \
     --slurpfile provenance "$dependency_provenance" '{
-      schema: 1,
+      schema: 2,
       formula: $formula,
       arch: $arch,
       abi: $abi,
       tap: {
         repository: "Automattic/kandelo-homebrew",
+        name: "automattic/kandelo-homebrew",
         commit: $tap_commit
       },
       bottle: {
@@ -557,6 +559,7 @@ generate_sidecars() {
   KANDELO_HOMEBREW_ARCH="$arch" \
   KANDELO_HOMEBREW_RELEASE_TAG="bottles-abi-v${ABI_VERSION}" \
   KANDELO_HOMEBREW_TAP_REPOSITORY=Automattic/kandelo-homebrew \
+  KANDELO_HOMEBREW_TAP_NAME=automattic/kandelo-homebrew \
   KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$archive" \
   KANDELO_HOMEBREW_BOTTLE_JSON="$canonical_json" \
   KANDELO_HOMEBREW_BOTTLE_ROOT_URL=https://ghcr.io/v2/automattic/kandelo-homebrew \
