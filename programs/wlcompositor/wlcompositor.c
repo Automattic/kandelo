@@ -69,6 +69,9 @@
  */
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,6 +115,10 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
  * root-owned 0755 scratch mount, so under this kernel the only dir writable
  * by any uid is /tmp (mode 1777) — it plays the XDG_RUNTIME_DIR role here. */
 #define WL_SOCKET_PATH "/tmp/wayland-0"
+/* The hyprctl analog: a control + event socket alongside the wayland one.
+ * kwlctl (programs/wlcompositor/kwlctl.c) and the Tier-1 bar speak to it. */
+#define KWLCTL_SOCKET_PATH "/tmp/kwlctl-0"
+#define MAX_KWLCTL_CONNS 16
 #define WL_KEYMAP_PATH "/tmp/wlcompositor-keymap.xkb"
 #define MAX_INPUT_RES  16     /* keyboard/pointer resources we track */
 #define MAX_FRAME_CB   32     /* pending frame callbacks per surface */
@@ -180,6 +187,8 @@ struct shm_buffer {
 
 /* ---- compositor singleton ---------------------------------------------- */
 
+struct kwlctl_conn;   /* one control-socket connection (defined with the IPC) */
+
 struct compositor {
     struct wl_display *display;
     struct wl_event_loop *loop;
@@ -231,6 +240,10 @@ struct compositor {
      * stay mapped but are excluded from compositing, input, and tiling. */
     int active_ws;
 
+    /* kwlctl control clients that issued --listen; they receive the
+     * `event>>data` stream (Hyprland socket2 format). NULL = free slot. */
+    struct kwlctl_conn *listeners[MAX_KWLCTL_CONNS];
+
     /* Bound seat resources (across all clients; routed per-client). */
     struct wl_resource *keyboards[MAX_INPUT_RES];
     struct wl_resource *pointers[MAX_INPUT_RES];
@@ -278,6 +291,7 @@ static void slot_remove(struct wl_resource **slots, struct wl_resource *r) {
 static void schedule_repaint(void);
 static void kbd_set_focus(struct surface *s);
 static void ptr_refresh_focus(void);
+static void kwlctl_emit(const char *fmt, ...);
 
 /* A surface participates in compositing, input, and tiling only when it is
  * mapped AND on the active workspace. */
@@ -1289,6 +1303,7 @@ static void kbd_set_focus(struct surface *s) {
     }
     wl_array_release(&keys);
     schedule_repaint();   /* focus border moved */
+    kwlctl_emit("activewindow>>%s", s->app_id);
 }
 
 /* Pointer focus follows the surface under the cursor. */
@@ -1330,6 +1345,7 @@ static void switch_workspace(int ws) {
     schedule_repaint();
     printf("WORKSPACE active=%d\n", ws);
     fflush(stdout);
+    kwlctl_emit("workspace>>%d", ws);
 }
 
 /* Send the focused window to workspace `ws`; it vanishes from the current
@@ -2426,6 +2442,222 @@ static int setup_input(void) {
  * libwayland. We manage the socket ourselves (rather than
  * wl_display_add_socket, which derives the path from XDG_RUNTIME_DIR) so
  * the path is deterministic for the client. */
+/* ====================================================================== */
+/* kwlctl control + event IPC (the hyprctl analog)                        */
+/* ====================================================================== */
+
+/* One control-socket connection. A plain request/reply connection is closed
+ * after its reply; a --listen connection stays open and joins g.listeners to
+ * receive the event stream. */
+struct kwlctl_conn {
+    int fd;
+    struct wl_event_source *src;
+    int listening;
+};
+
+static void kwlctl_send(int fd, const char *buf, int len) {
+    for (int off = 0; off < len; ) {
+        ssize_t w = write(fd, buf + off, (size_t)(len - off));
+        if (w <= 0) break;   /* dead peer: reaped on its next readable/EOF */
+        off += (int)w;
+    }
+}
+
+/* Push one `event>>data` line (Hyprland socket2 format) to every listener. */
+static void kwlctl_emit(const char *fmt, ...) {
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+    buf[n++] = '\n';
+    for (int i = 0; i < MAX_KWLCTL_CONNS; i++)
+        if (g.listeners[i]) kwlctl_send(g.listeners[i]->fd, buf, n);
+}
+
+/* JSON describing one surface, Hyprland `clients -j`-shaped subset. */
+static int kwlctl_window_json(char *buf, size_t cap, struct surface *s) {
+    return snprintf(buf, cap,
+        "{\"address\":\"%p\",\"class\":\"%s\",\"workspace\":{\"id\":%d},"
+        "\"at\":[%d,%d],\"size\":[%d,%d],\"focused\":%s}",
+        (void *)s, s->app_id, s->workspace, s->x, s->y, s->w, s->h,
+        g.kbd_focus == s ? "true" : "false");
+}
+
+static int kwlctl_clients_json(char *buf, size_t cap) {
+    int n = snprintf(buf, cap, "[");
+    int first = 1;
+    for (int i = 0; i < g.n_surfaces && n < (int)cap; i++) {
+        struct surface *s = g.zorder[i];
+        if (!s->mapped) continue;
+        if (!first) n += snprintf(buf + n, cap - n, ",");
+        n += kwlctl_window_json(buf + n, cap - n, s);
+        first = 0;
+    }
+    n += snprintf(buf + n, cap - n, "]\n");
+    return n;
+}
+
+static int kwlctl_workspaces_json(char *buf, size_t cap) {
+    int counts[N_WORKSPACES + 1] = {0};
+    for (int i = 0; i < g.n_surfaces; i++)
+        if (g.zorder[i]->mapped) counts[g.zorder[i]->workspace]++;
+    int n = snprintf(buf, cap, "[");
+    int first = 1;
+    for (int ws = 1; ws <= N_WORKSPACES && n < (int)cap; ws++) {
+        if (!counts[ws] && ws != g.active_ws) continue;
+        n += snprintf(buf + n, cap - n,
+                      "%s{\"id\":%d,\"windows\":%d,\"active\":%s}",
+                      first ? "" : ",", ws, counts[ws],
+                      ws == g.active_ws ? "true" : "false");
+        first = 0;
+    }
+    n += snprintf(buf + n, cap - n, "]\n");
+    return n;
+}
+
+static int kwlctl_activewindow_json(char *buf, size_t cap) {
+    if (!g.kbd_focus) return snprintf(buf, cap, "{}\n");
+    int n = kwlctl_window_json(buf, cap, g.kbd_focus);
+    n += snprintf(buf + n, cap - n, "\n");
+    return n;
+}
+
+/* dispatch exec: launch a client with the NON-forking posix_spawnp
+ * (SYS_SPAWN, see docs/plans/2026-05-04-non-forking-posix-spawn-design.md).
+ * fork() from inside a wl_event_loop callback would wedge the server; the
+ * direct spawn syscall sidesteps it entirely and needs no fork instrumentation.
+ * posix_spawnp walks PATH in libc and passes the kernel one resolved path. */
+static void kwlctl_exec(char *args) {
+    char *argv[16];
+    int argc = 0;
+    for (char *tok = strtok(args, " "); tok && argc < 15;
+         tok = strtok(NULL, " "))
+        argv[argc++] = tok;
+    argv[argc] = NULL;
+    if (argc == 0) return;
+    extern char **environ;
+    pid_t pid = 0;
+    int rc = posix_spawnp(&pid, argv[0], NULL, NULL, argv, environ);
+    if (rc != 0) {
+        fprintf(stderr, "posix_spawnp %s: %s\n", argv[0], strerror(rc));
+        return;
+    }
+    printf("KWLCTL_EXEC \"%s\" pid=%d\n", argv[0], (int)pid);
+    fflush(stdout);
+}
+
+static void kwlctl_conn_close(struct kwlctl_conn *c) {
+    if (c->listening)
+        for (int i = 0; i < MAX_KWLCTL_CONNS; i++)
+            if (g.listeners[i] == c) { g.listeners[i] = NULL; break; }
+    if (c->src) wl_event_source_remove(c->src);
+    close(c->fd);
+    free(c);
+}
+
+/* Execute one command line. Returns 1 to keep the connection open (--listen),
+ * 0 to close after the reply. */
+static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
+    char buf[4096];
+    if (strcmp(line, "clients") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_clients_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strcmp(line, "workspaces") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_workspaces_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strcmp(line, "activewindow") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_activewindow_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strncmp(line, "dispatch ", 9) == 0) {
+        char *op = line + 9;
+        if (strncmp(op, "workspace ", 10) == 0)
+            switch_workspace(atoi(op + 10));
+        else if (strncmp(op, "movetoworkspace ", 16) == 0)
+            move_focus_to_workspace(atoi(op + 16));
+        else if (strcmp(op, "close") == 0) {
+            if (g.kbd_focus && g.kbd_focus->xdg_toplevel)
+                xdg_toplevel_send_close(g.kbd_focus->xdg_toplevel);
+        } else if (strncmp(op, "exec ", 5) == 0)
+            kwlctl_exec(op + 5);
+        else {
+            kwlctl_send(c->fd, "err unknown dispatch\n", 21);
+            return 0;
+        }
+        kwlctl_send(c->fd, "ok\n", 3);
+        return 0;
+    }
+    if (strncmp(line, "keyword layout ", 15) == 0) {
+        g.layout = strcmp(line + 15, "dwindle") == 0 ? LAYOUT_DWINDLE
+                                                     : LAYOUT_FLOATING;
+        retile();
+        kwlctl_send(c->fd, "ok\n", 3);
+        return 0;
+    }
+    if (strcmp(line, "--listen") == 0) {
+        for (int i = 0; i < MAX_KWLCTL_CONNS; i++)
+            if (!g.listeners[i]) {
+                g.listeners[i] = c;
+                c->listening = 1;
+                kwlctl_send(c->fd, "listening\n", 10);
+                return 1;
+            }
+        kwlctl_send(c->fd, "err too many listeners\n", 23);
+        return 0;
+    }
+    kwlctl_send(c->fd, "err unknown command\n", 20);
+    return 0;
+}
+
+static int kwlctl_conn_readable(int fd, uint32_t mask, void *data) {
+    (void)mask;
+    struct kwlctl_conn *c = data;
+    char line[1024];
+    ssize_t r = read(fd, line, sizeof(line) - 1);
+    if (r <= 0) { kwlctl_conn_close(c); return 0; }
+    while (r > 0 && (line[r - 1] == '\n' || line[r - 1] == '\r')) r--;
+    line[r] = '\0';
+    if (!kwlctl_handle(c, line)) kwlctl_conn_close(c);
+    return 0;
+}
+
+static int kwlctl_listen_readable(int fd, uint32_t mask, void *data) {
+    (void)mask; (void)data;
+    int cfd = accept(fd, NULL, NULL);
+    if (cfd < 0) return 0;
+    /* Don't leak this control fd into `dispatch exec` children: an inherited
+     * copy keeps the socket half-open so the kwlctl client never sees EOF. */
+    fcntl(cfd, F_SETFD, FD_CLOEXEC);
+    struct kwlctl_conn *c = calloc(1, sizeof(*c));
+    if (!c) { close(cfd); return 0; }
+    c->fd = cfd;
+    c->src = wl_event_loop_add_fd(g.loop, cfd, WL_EVENT_READABLE,
+                                  kwlctl_conn_readable, c);
+    return 0;
+}
+
+static int setup_kwlctl(void) {
+    unlink(KWLCTL_SOCKET_PATH);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) { perror("socket kwlctl"); return -1; }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, KWLCTL_SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind kwlctl"); close(fd); return -1;
+    }
+    if (listen(fd, 8) < 0) { perror("listen kwlctl"); close(fd); return -1; }
+    wl_event_loop_add_fd(g.loop, fd, WL_EVENT_READABLE, kwlctl_listen_readable,
+                         NULL);
+    return 0;
+}
+
 static int setup_socket(void) {
     unlink(WL_SOCKET_PATH);              /* clear a stale socket */
 
@@ -2498,6 +2730,10 @@ int main(void) {
     wl_display_add_client_created_listener(g.display, &new_client);
 
     if (setup_socket() != 0) return 1;
+
+    /* Auto-reap `dispatch exec` children so they don't linger as zombies. */
+    signal(SIGCHLD, SIG_IGN);
+    if (setup_kwlctl() != 0) return 1;
 
     printf("COMPOSITOR_UP w=%u h=%u\n", g.width, g.height);
     fflush(stdout);

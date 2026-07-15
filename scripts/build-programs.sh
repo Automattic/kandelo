@@ -603,6 +603,20 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     "$FORK_INSTRUMENT" "$client_wasm" -o "$client_wasm.instr"
     mv "$client_wasm.instr" "$client_wasm"
 
+    # kwlctl (PR14c): the hyprctl-analog CLI over the compositor's
+    # /tmp/kwlctl-0 control socket. Plain libc + sockets, no wayland libs.
+    if [ -f "$REPO_ROOT/programs/wlcompositor/kwlctl.c" ]; then
+        kwlctl_wasm="$OUT_DIR_32/kwlctl.wasm"
+        echo "  Compiling kwlctl (control CLI)..."
+        "$CC" "${CFLAGS[@]}" \
+            "$REPO_ROOT/programs/wlcompositor/kwlctl.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$kwlctl_wasm"
+        "$FORK_INSTRUMENT" "$kwlctl_wasm" -o "$kwlctl_wasm.instr"
+        mv "$kwlctl_wasm.instr" "$kwlctl_wasm"
+    fi
+
     # dmabuf client (PR11): drives the zwp_linux_dmabuf_v1 buffer path so
     # host/test/wlcompositor-dmabuf-smoke.test.ts can assert the compositor
     # composites a dmabuf-imported buffer. Links the dmabuf client glue.
