@@ -154,6 +154,36 @@ wasm32posix-ar rcs "$INSTALL_DIR/lib/libwayland-client.a" \
 wasm32posix-ar rcs "$INSTALL_DIR/lib/libwayland-server.a" \
     "${SHARED_OBJS[@]}" "$SERVER_MAIN_OBJ" "$SHM_OBJ" "$LOOP_OBJ"
 
+# --- libwayland-cursor.a (step 12b) -------------------------------------
+# SDL2's upstream Wayland backend (SDL_waylandmouse.c) links the five
+# wl_cursor_* symbols from libwayland-cursor. The cursor lib is
+# self-contained: wayland-cursor.c parses XCursor theme files from disk
+# via xcursor.c, and falls back to the built-in cursor-data.h theme when
+# no on-disk theme is found (so it works on wasm32 with no /usr/share/icons).
+# os-compatibility.c provides os_create_anonymous_file (memfd/mkostemp,
+# per config.h HAVE_MEMFD_CREATE) for the shm pool the cursor buffers live
+# in. It references wl_shm_* from the client protocol, resolved when a
+# client links libwayland-client alongside.
+echo "==> Compiling + archiving libwayland-cursor.a..."
+CURSOR_SRC="$SRC_DIR/cursor"
+CURSOR_CFLAGS=(
+    -O2 -fPIC -fvisibility=hidden -std=gnu11
+    -DHAVE_CONFIG_H
+    "-I$SRC_DIR"          # config.h at source root
+    "-I$WLSRC"            # wayland-client.h + generated wayland-client-protocol.h
+    "-I$CURSOR_SRC"       # xcursor.h, os-compatibility.h, wayland-cursor.h, cursor-data.h
+    "-I$LIBFFI_PREFIX/include"
+    -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable
+)
+CURSOR_OBJS=()
+for tu in wayland-cursor.c os-compatibility.c xcursor.c; do
+    echo "    cursor/$tu" >&2
+    obj="$BUILD_DIR/cursor-$(basename "$tu" .c).o"
+    wasm32posix-cc -c "${CURSOR_CFLAGS[@]}" "$CURSOR_SRC/$tu" -o "$obj"
+    CURSOR_OBJS+=("$obj")
+done
+wasm32posix-ar rcs "$INSTALL_DIR/lib/libwayland-cursor.a" "${CURSOR_OBJS[@]}"
+
 # --- Install public headers --------------------------------------------
 echo "==> Installing headers..."
 for h in \
@@ -165,6 +195,80 @@ do
     cp "$WLSRC/$h" "$INSTALL_DIR/include/$h"
 done
 
+# Client-side EGL + cursor headers (step 12b): SDL2's Wayland backend
+# includes <wayland-egl.h> and "wayland-cursor.h". The wayland-egl headers
+# are the platform-neutral EGLNativeWindowType contract (our shim
+# libwayland-egl.a — built in scripts/build-programs.sh — implements the
+# wl_egl_window_* symbols); wayland-cursor.h matches libwayland-cursor.a
+# above. All vendored verbatim from this same wayland 1.24.0 source tree.
+for h in wayland-egl.h wayland-egl-core.h wayland-egl-backend.h; do
+    cp "$SRC_DIR/egl/$h" "$INSTALL_DIR/include/$h"
+done
+cp "$CURSOR_SRC/wayland-cursor.h" "$INSTALL_DIR/include/wayland-cursor.h"
+
+# --- pkg-config .pc files (step 12b) -----------------------------------
+# SDL2's configure gates the Wayland backend on
+#   $PKG_CONFIG --exists 'wayland-client >= 1.18' wayland-scanner \
+#               wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0'
+# (configure.ac CheckWayland ~line 1742). We ship the wayland-* modules
+# here; xkbcommon.pc comes from libxkbcommon and egl.pc from the sdl2
+# build (our libEGL stub). The wasm32posix-pkg-config wrapper reads these
+# via PKG_CONFIG_PATH (kandelo cache paths are kept; host .pc filtered).
+# wayland_scanner is a bare name so SDL's generated Makefile resolves it
+# off PATH in the dev shell (matching the host wayland-scanner we used).
+echo "==> Writing pkg-config .pc files..."
+PC_DIR="$INSTALL_DIR/lib/pkgconfig"
+mkdir -p "$PC_DIR"
+
+cat > "$PC_DIR/wayland-client.pc" <<EOF
+prefix=$INSTALL_DIR
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: Wayland Client
+Description: Wayland client side library
+Version: $WL_VERSION
+Libs: -L\${libdir} -lwayland-client
+Cflags: -I\${includedir}
+EOF
+
+cat > "$PC_DIR/wayland-egl.pc" <<EOF
+prefix=$INSTALL_DIR
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: wayland-egl
+Description: Wayland EGL backend (wl_egl_window) — kandelo shim
+Version: 18.1.0
+Libs: -L\${libdir} -lwayland-egl
+Cflags: -I\${includedir}
+EOF
+
+cat > "$PC_DIR/wayland-cursor.pc" <<EOF
+prefix=$INSTALL_DIR
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: Wayland Cursor
+Description: Wayland cursor helper library
+Version: $WL_VERSION
+Libs: -L\${libdir} -lwayland-cursor
+Cflags: -I\${includedir}
+EOF
+
+cat > "$PC_DIR/wayland-scanner.pc" <<EOF
+prefix=$INSTALL_DIR
+datarootdir=\${prefix}/share
+pkgdatadir=\${prefix}/share/wayland
+bindir=\${prefix}/bin
+wayland_scanner=wayland-scanner
+
+Name: Wayland Scanner
+Description: Wayland scanner
+Version: $WL_VERSION
+EOF
+
 echo "==> libwayland $WL_VERSION installed at $INSTALL_DIR"
 echo "    lib/libwayland-client.a ($(wc -c < "$INSTALL_DIR/lib/libwayland-client.a") bytes)"
 echo "    lib/libwayland-server.a ($(wc -c < "$INSTALL_DIR/lib/libwayland-server.a") bytes)"
+echo "    lib/libwayland-cursor.a ($(wc -c < "$INSTALL_DIR/lib/libwayland-cursor.a") bytes)"

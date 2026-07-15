@@ -993,6 +993,10 @@ export class WasmPosixKernel {
             const shared = this.sharedGlContext();
             if (shared) {
               b.gl = shared;
+              // The window surface may have been created before this
+              // context (SDL2 order); apply any pending GPU-bo render
+              // target now that `b.gl` exists.
+              this.gl.applyRenderTarget(b);
               return;
             }
           }
@@ -1114,14 +1118,16 @@ export class WasmPosixKernel {
             // this session's shared context, redirect the client's default
             // framebuffer to that FBO and size its viewport to the bo. A 0
             // id (the common canvas/scanout case) leaves the target unset.
+            // Capture the target and apply the redirect. SDL2's
+            // Wayland+GLES backend creates the window surface (here,
+            // during SDL_CreateWindow) BEFORE the GL context (during
+            // SDL_GL_CreateContext), so `b.gl` may still be null at this
+            // point — `applyRenderTarget` is a no-op then and the pending
+            // id is re-checked when the context is created.
             const targetBoId = dv.getUint32(16, true);
             if (targetBoId !== 0) {
-              const gpu = this.gl.gpuBo(targetBoId);
-              if (gpu && b.gl === gpu.gl) {
-                b.renderTargetFbo = gpu.fbo;
-                b.shadow.fbo = gpu.fbo;
-                b.shadow.viewport = [0, 0, gpu.w, gpu.h];
-              }
+              b.pendingRenderTargetBoId = targetBoId;
+              this.gl.applyRenderTarget(b);
             }
           }
         },
@@ -1133,6 +1139,9 @@ export class WasmPosixKernel {
           // owned by the GPU bo (freed via destroyGpuBo on bo destroy),
           // so never delete it here. Reset shadow.fbo so a subsequent
           // surface on this binding starts at the default framebuffer.
+          // Also clear the pending target so a re-created context does not
+          // re-apply a stale redirect.
+          b.pendingRenderTargetBoId = 0;
           if (b.renderTargetFbo) {
             b.renderTargetFbo = null;
             b.shadow.fbo = null;

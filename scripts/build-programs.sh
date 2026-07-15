@@ -502,6 +502,13 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     WLC_LIBUDEV="$(wlc_path libudev)"
     WLC_MTDEV="$(wlc_path mtdev)"
 
+    # SDL2 (step 12c): its upstream Wayland+GLES backend is the first
+    # third-party GL client of wlcompositor. Resolve it here (the earlier
+    # sdl2_*.c block only fires for programs/sdl2*), so sdl2gl-test can link
+    # libSDL2.a + the wayland client stack below.
+    wlc_resolve sdl2 || true
+    WLC_SDL2="$(wlc_path sdl2 2>/dev/null || true)"
+
     # Public headers on the sysroot include path (idempotent — the wl_*/xkb_*
     # blocks above symlink the same paths; the archives too).
     for h in "$WLC_LIBWL/include"/wayland-*.h; do
@@ -510,6 +517,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     ln -sfn "$WLC_LIBFFI/lib/libffi.a"            "$SYSROOT/lib/libffi.a"
     ln -sfn "$WLC_LIBWL/lib/libwayland-server.a"  "$SYSROOT/lib/libwayland-server.a"
     ln -sfn "$WLC_LIBWL/lib/libwayland-client.a"  "$SYSROOT/lib/libwayland-client.a"
+    ln -sfn "$WLC_LIBWL/lib/libwayland-cursor.a"  "$SYSROOT/lib/libwayland-cursor.a"
     ln -sfn "$WLC_LIBXKB/lib/libxkbcommon.a"      "$SYSROOT/lib/libxkbcommon.a"
     mkdir -p "$SYSROOT/include/xkbcommon"
     for h in "$WLC_LIBXKB/include/xkbcommon"/*.h; do
@@ -532,6 +540,26 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner private-code  "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-protocol.c"
     wayland-scanner server-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-server-protocol.h"
     wayland-scanner client-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-client-protocol.h"
+
+    # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
+    # Wayland+GLES backend uses as its EGLNativeWindowType. It allocates the
+    # GPU-tier bo the window renders into and wraps it as a zwp_linux_dmabuf_v1
+    # wl_buffer; libEGL targets that bo's FBO and attach+commits it on swap
+    # (see libc/glue/libwayland-egl.c). Self-contained: bundles the dmabuf
+    # client glue since neither SDL2 nor libwayland ships it, so a GL client
+    # only links libwayland-egl.a + libEGL.a. Public headers are vendored
+    # verbatim from wayland 1.24.0 under libc/glue/wayland-egl-include/.
+    echo "  Building libwayland-egl.a (wl_egl_window shim)..."
+    for h in wayland-egl.h wayland-egl-core.h wayland-egl-backend.h; do
+        ln -sfn "$GLUE_DIR/wayland-egl-include/$h" "$SYSROOT/include/$h"
+    done
+    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$GLUE_DIR" \
+        "-I$GLUE_DIR/wayland-egl-include" -c \
+        "$GLUE_DIR/libwayland-egl.c" -o "$WLC_GEN/libwayland-egl.o"
+    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" -c \
+        "$WLC_GEN/linux-dmabuf-v1-protocol.c" -o "$WLC_GEN/linux-dmabuf-v1-protocol.o"
+    "$LLVM_BIN/llvm-ar" rcs "$SYSROOT/lib/libwayland-egl.a" \
+        "$WLC_GEN/libwayland-egl.o" "$WLC_GEN/linux-dmabuf-v1-protocol.o"
 
     # Server. Link order: dependents (compositor + xdg glue) before
     # dependencies; libffi last so wl_closure_invoke's ffi_call resolves.
@@ -593,6 +621,37 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             -o "$dmabuf_wasm"
         "$FORK_INSTRUMENT" "$dmabuf_wasm" -o "$dmabuf_wasm.instr"
         mv "$dmabuf_wasm.instr" "$dmabuf_wasm"
+    fi
+
+    # SDL2 GLES2 client (step 12c): drives SDL2's upstream Wayland+GLES
+    # backend against the compositor — the first third-party toolkit to
+    # exercise the wl_egl_window shim + libEGL bo-FBO targeting + dmabuf
+    # present chain (steps 10/11/12). Links libSDL2.a with the full
+    # wayland client stack: libwayland-egl.a FIRST (it defines
+    # wl_egl_window_* and bundles the dmabuf client glue), then
+    # libwayland-client/cursor + libxkbcommon (SDL's static wayland
+    # symbols) + libEGL/libGLESv2 + libgbm/libdrm (the GL/bo backend) +
+    # libffi (wl_closure_invoke). Runtime-proven only in the browser
+    # (WebGL2) via apps/browser-demos/test/kandelo-sdl2gl.spec.ts.
+    if [ -n "$WLC_SDL2" ] \
+            && [ -f "$REPO_ROOT/programs/wlcompositor/sdl2gl-test.c" ]; then
+        sdl2gl_wasm="$OUT_DIR_32/sdl2gl-test.wasm"
+        echo "  Compiling sdl2gl-test (SDL2 GLES2 wayland client)..."
+        "$CC" "${CFLAGS[@]}" "-I$WLC_SDL2/include" \
+            "$REPO_ROOT/programs/wlcompositor/sdl2gl-test.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$WLC_SDL2/lib/libSDL2.a" \
+            "$SYSROOT/lib/libwayland-egl.a" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libwayland-cursor.a" \
+            "$SYSROOT/lib/libxkbcommon.a" \
+            "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$sdl2gl_wasm"
+        "$FORK_INSTRUMENT" "$sdl2gl_wasm" -o "$sdl2gl_wasm.instr"
+        mv "$sdl2gl_wasm.instr" "$sdl2gl_wasm"
     fi
 fi
 

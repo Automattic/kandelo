@@ -150,4 +150,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 612,
   },
+  {
+    id: "sdl2gl",
+    title: "SDL2 on Wayland (GL)",
+    summary: "Upstream SDL2's Wayland+GLES2 backend rendering a spinning triangle through wlcompositor: SDL's wl_egl_window becomes a GPU dmabuf buffer, libEGL targets its FBO, and eglSwapBuffers attach+commits it zero-copy to the compositor on /dev/dri/card0. The first third-party GL toolkit driven end to end over the Wayland DRI path.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#7b3aa0",
+    glyph: "G",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
 ];

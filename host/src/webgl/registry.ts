@@ -113,6 +113,15 @@ export type GlBinding = GlBindingInput & {
    *  destroy). Null for canvas-backed (master) and CPU-tier sessions. */
   renderTargetFbo: WebGLFramebuffer | null;
 
+  /** Target GPU bo_id captured at `GLIO_CREATE_SURFACE` but not yet
+   *  applied, because the client created its window surface BEFORE its
+   *  GL context (SDL2's Wayland+GLES backend creates the wl_egl_window
+   *  surface during `SDL_CreateWindow`, then the context during
+   *  `SDL_GL_CreateContext`). The redirect needs both `b.gl` (set at
+   *  context creation) and the resolved bo, so whichever of the two
+   *  runs last applies it. 0 = no pending target. */
+  pendingRenderTargetBoId: number;
+
   shadow: GlShadowState;
 
   forward: GlForwardChannel | null;
@@ -183,6 +192,7 @@ export class GlContextRegistry {
       claimedKmsCrtc: null,
       currentProgram: null,
       renderTargetFbo: null,
+      pendingRenderTargetBoId: 0,
       shadow: defaultShadow(),
       forward,
     });
@@ -348,6 +358,30 @@ export class GlContextRegistry {
    *  zero-copy texture-id return. */
   gpuBo(bo_id: number): GpuBo | undefined {
     return this.gpuBos.get(bo_id);
+  }
+
+  /** Apply the GPU-tier producer render-target redirect for `b` if both
+   *  halves are now known: `b.gl` (set at context creation) and a pending
+   *  target GPU bo (captured at surface creation). Redirects the client's
+   *  default framebuffer (name 0) into the bo's FBO and seeds the viewport
+   *  to the bo dims, so its GL output lands in the bo the compositor
+   *  samples zero-copy. Idempotent; a no-op until both halves exist and
+   *  the bo lives on the SAME context as `b.gl` (WebGL FBOs aren't
+   *  shareable). Called from BOTH `gl_create_surface` and
+   *  `gl_create_context` because SDL2's Wayland+GLES backend creates the
+   *  window surface (during `SDL_CreateWindow`) BEFORE the context (during
+   *  `SDL_GL_CreateContext`) — whichever runs last wins. Returns true when
+   *  the redirect was applied. */
+  applyRenderTarget(b: GlBinding): boolean {
+    if (b.renderTargetFbo || !b.gl || b.pendingRenderTargetBoId === 0) {
+      return false;
+    }
+    const gpu = this.gpuBos.get(b.pendingRenderTargetBoId);
+    if (!gpu || b.gl !== gpu.gl) return false;
+    b.renderTargetFbo = gpu.fbo;
+    b.shadow.fbo = gpu.fbo;
+    b.shadow.viewport = [0, 0, gpu.w, gpu.h];
+    return true;
   }
 
   /** Release a GPU-tier bo's FBO + texture from its shared context.
