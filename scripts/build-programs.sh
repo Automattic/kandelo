@@ -525,6 +525,14 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner server-header "$XDG_XML" "$WLC_GEN/xdg-shell-server-protocol.h"
     wayland-scanner client-header "$XDG_XML" "$WLC_GEN/xdg-shell-client-protocol.h"
 
+    # Same for zwp_linux_dmabuf_v1 (PR11): the compositor's GPU-tier client
+    # buffer path. Server side is compiled into wlcompositor; the client
+    # header + private-code drive wldmabuf-test.
+    DMABUF_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/linux-dmabuf-v1.xml"
+    wayland-scanner private-code  "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-protocol.c"
+    wayland-scanner server-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-server-protocol.h"
+    wayland-scanner client-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-client-protocol.h"
+
     # Server. Link order: dependents (compositor + xdg glue) before
     # dependencies; libffi last so wl_closure_invoke's ffi_call resolves.
     # libwpkdraw renders the compositor's wallpaper (gradient + wordmark);
@@ -535,6 +543,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
         "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
         "$WLC_GEN/xdg-shell-protocol.c" \
+        "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-server.a" \
         "$SYSROOT/lib/libwpkdraw.a" \
@@ -565,6 +574,26 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         -o "$client_wasm"
     "$FORK_INSTRUMENT" "$client_wasm" -o "$client_wasm.instr"
     mv "$client_wasm.instr" "$client_wasm"
+
+    # dmabuf client (PR11): drives the zwp_linux_dmabuf_v1 buffer path so
+    # host/test/wlcompositor-dmabuf-smoke.test.ts can assert the compositor
+    # composites a dmabuf-imported buffer. Links the dmabuf client glue.
+    if [ -f "$REPO_ROOT/programs/wlcompositor/wldmabuf-test.c" ]; then
+        dmabuf_wasm="$OUT_DIR_32/wldmabuf-test.wasm"
+        echo "  Compiling wldmabuf-test (dmabuf client)..."
+        "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+            "$REPO_ROOT/programs/wlcompositor/wldmabuf-test.c" \
+            "$WLC_GEN/xdg-shell-protocol.c" \
+            "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$dmabuf_wasm"
+        "$FORK_INSTRUMENT" "$dmabuf_wasm" -o "$dmabuf_wasm.instr"
+        mv "$dmabuf_wasm.instr" "$dmabuf_wasm"
+    fi
 fi
 
 # libkwl (PR7 Phase 2): in-tree Wayland toolkit over libwayland-client.
