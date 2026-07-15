@@ -1,0 +1,76 @@
+name: Finalize integration batch
+
+# This maintainer-triggered workflow is intentionally separate from the batch
+# merge. It defaults to a read-only plan and mutates source PRs only after the
+# merged rebase sequence and its merge-gate authority have been reverified.
+on:
+  workflow_dispatch:
+    inputs:
+      batch_pr:
+        description: Merged integration batch pull request number
+        required: true
+        type: string
+      mode:
+        description: Dry-run plans actions; apply closes absorbed PRs and deletes exact recorded branches
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - apply
+
+concurrency:
+  group: integration-batch-finalize-${{ inputs.batch_pr }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      BATCH_PR: ${{ inputs.batch_pr }}
+      APPLY_MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Reverify and finalize absorbed source PRs
+        run: |
+          set -euo pipefail
+          [[ "$BATCH_PR" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::batch_pr must be a positive integer"
+            exit 1
+          }
+          args=(
+            --manifest ".github/integration-batches/batch-${BATCH_PR}.json"
+            --batch-pr "$BATCH_PR"
+            --mode finalize
+          )
+          if [ "$APPLY_MODE" = apply ]; then
+            args+=(--apply)
+          elif [ "$APPLY_MODE" != dry-run ]; then
+            echo "::error::unknown finalization mode: $APPLY_MODE"
+            exit 1
+          fi
+          bash scripts/dev-shell.sh env \
+            GITHUB_DEFAULT_BRANCH="$GITHUB_DEFAULT_BRANCH" \
+            bash .github/scripts/finalize-integration-batch.sh "${args[@]}"

@@ -115,6 +115,15 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/test-activate-merge-candidate.sh" \
   ".github/scripts/test-activate-merge-candidate.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/finalize-integration-batch.sh" \
+  ".github/scripts/finalize-integration-batch.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-finalize-integration-batch.sh" \
+  ".github/scripts/test-finalize-integration-batch.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/integration-batches/batch-1001.json" \
+  ".github/integration-batches/batch-1001.json"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/clone-rejected-merge-candidate.sh" \
   ".github/scripts/clone-rejected-merge-candidate.sh"
 assert_matches package_publish_flow_changed_files \
@@ -201,6 +210,12 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   ".github/workflows/reusable-package-source-publish.yml" \
   ".github/workflows/reusable-package-source-publish.yml"
+assert_matches package_publish_flow_changed_files \
+  ".github/workflows/verify-integration-batch.yml" \
+  ".github/workflows/verify-integration-batch.yml"
+assert_matches package_publish_flow_changed_files \
+  ".github/workflows/finalize-integration-batch.yml" \
+  ".github/workflows/finalize-integration-batch.yml"
 assert_not_matches package_publish_flow_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
@@ -233,6 +248,18 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/recover-rejected-merge-candidate.yml" \
   ".github/workflows/recover-rejected-merge-candidate.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/verify-integration-batch.yml" \
+  ".github/workflows/verify-integration-batch.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/finalize-integration-batch.yml" \
+  ".github/workflows/finalize-integration-batch.yml"
+assert_matches ci_control_changed_files \
+  ".github/scripts/finalize-integration-batch.sh" \
+  ".github/scripts/finalize-integration-batch.sh"
+assert_matches ci_control_changed_files \
+  ".github/integration-batches/batch-1001.json" \
+  ".github/integration-batches/batch-1001.json"
 assert_matches ci_control_changed_files \
   ".github/scripts/activate-merge-candidate.sh" \
   ".github/scripts/activate-merge-candidate.sh"

@@ -1,0 +1,95 @@
+name: Verify integration batch
+
+# A batch may combine unrelated fixes. Its coherence is the validation
+# treatment recorded in the manifest, not a shared product theme. This check
+# proves that every still-open source PR is represented exactly once in the
+# batch before the broad Prepare merge gate is run.
+on:
+  # The workflow definition must come from the default branch. A batch cannot
+  # be allowed to weaken the check that certifies its own manifest.
+  pull_request_target:
+    paths:
+      - '.github/integration-batches/**'
+      - '.github/scripts/finalize-integration-batch.sh'
+      - '.github/scripts/test-finalize-integration-batch.sh'
+      - '.github/workflows/verify-integration-batch.yml'
+      - '.github/workflows/finalize-integration-batch.yml'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      BATCH_PR: ${{ github.event.pull_request.number }}
+      BATCH_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Reject forked batch candidates
+        env:
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          [ "$HEAD_REPOSITORY" = "$BASE_REPOSITORY" ] || {
+            echo "::error::Integration batches must use a branch in $BASE_REPOSITORY."
+            exit 1
+          }
+
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Verify source-to-batch equivalence
+        run: |
+          set -euo pipefail
+          manifest=".github/integration-batches/batch-${BATCH_PR}.json"
+          git fetch --quiet --no-tags origin \
+            "+refs/heads/${GITHUB_DEFAULT_BRANCH}:refs/remotes/origin/${GITHUB_DEFAULT_BRANCH}"
+          trusted_base=$(git rev-parse "refs/remotes/origin/${GITHUB_DEFAULT_BRANCH}")
+          receipt_changes="$RUNNER_TEMP/integration-batch-receipt-changes"
+          git diff --name-status "$trusted_base" "$BATCH_HEAD" -- .github/integration-batches \
+            > "$receipt_changes"
+          if [ ! -f "$manifest" ]; then
+            if awk '$2 ~ /^\.github\/integration-batches\/batch-[1-9][0-9]*\.json$/ { found = 1 } END { exit !found }' \
+                "$receipt_changes"
+            then
+              echo "::error::Integration batch receipts are append-only; this PR changes a receipt without adding $manifest."
+              cat "$receipt_changes"
+              exit 1
+            fi
+            echo "No integration batch manifest for PR #${BATCH_PR}; script-only change."
+            exit 0
+          fi
+          [ "$(git rev-parse HEAD)" = "$BATCH_HEAD" ] || {
+            echo "::error::checkout is not the exact batch PR head"
+            exit 1
+          }
+          trusted_worktree="$RUNNER_TEMP/integration-batch-authority"
+          git worktree add --quiet --detach "$trusted_worktree" "$trusted_base"
+          (
+            cd "$trusted_worktree"
+            bash scripts/dev-shell.sh env \
+              GITHUB_DEFAULT_BRANCH="$GITHUB_DEFAULT_BRANCH" \
+              GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+              bash -c 'cd "$1"; exec bash "$2" --manifest "$3" --batch-pr "$4" --mode proposed' \
+              integration-batch-verifier \
+              "$GITHUB_WORKSPACE" \
+              "$trusted_worktree/.github/scripts/finalize-integration-batch.sh" \
+              "$manifest" \
+              "$BATCH_PR"
+          )

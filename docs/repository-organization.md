@@ -76,3 +76,10 @@ The layout is designed so later CI path filters can make conservative, explainab
 | `images/**`, `tools/mkrootfs/**` | Rootfs/VFS image checks and consumers of those images |
 
 These are intended categories, not a CI implementation. The current PR only keeps the paths clean enough for a future CI-filter PR to use them.
+
+## Integration Batches
+
+Reviewable fixes may be combined into a broad integration batch so their union
+of required suites runs once before a rebase merge. The machine-checked
+manifest, patch-identity rules, ABI classification, and safe post-merge source
+PR cleanup are documented in [Integration Batches](integration-batches.md).

@@ -24,5 +24,6 @@ bash "$REPO_ROOT/.github/scripts/test-reconcile-merge-candidates.sh"
 bash "$REPO_ROOT/.github/scripts/test-cleanup-merge-candidates.sh"
 bash "$REPO_ROOT/.github/scripts/test-verify-merge-candidate.sh"
 bash "$REPO_ROOT/.github/scripts/test-activate-merge-candidate.sh"
+bash "$REPO_ROOT/.github/scripts/test-finalize-integration-batch.sh"
 
 echo "package publish flow tests passed"
