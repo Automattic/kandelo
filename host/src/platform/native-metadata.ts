@@ -7,6 +7,48 @@ const X_OK = 0o1;
 const W_OK = 0o2;
 const R_OK = 0o4;
 
+const S_IFMT = 0o170000;
+const S_IFDIR = 0o040000;
+const S_IFLNK = 0o120000;
+
+/**
+ * Windows has no POSIX permission model: `fs.statSync` reports every entry as
+ * `0o666` (writable) or `0o444` (read-only), with no owner/group/other split
+ * and no execute/search bit on directories, and `chmod` cannot set an execute
+ * bit on a directory or otherwise express POSIX bits. Two things break for a
+ * guest process that drops privileges (e.g. a php-fpm worker running as a
+ * non-root uid):
+ *
+ *   - Directory lookup enforces `X_OK` on every path component, so with no
+ *     search bit the worker can't traverse any host-backed directory.
+ *   - The worker often has to *write* into the mount (WordPress writes its
+ *     SQLite database, uploads, and cache under the mounted tree). Hosts grant
+ *     this by `chmod`-ing those directories world-writable — a no-op on Windows
+ *     that also never reaches this overlay, so the intent is invisible here.
+ *
+ * This is a host-platform boundary, not a POSIX gap in the kernel: Windows ACLs
+ * don't map to POSIX bits, so the kernel can't enforce them anyway. Represent
+ * host-backed entries as world-accessible — `0o777` directories, `0o666` files
+ * — so a privilege-dropped guest can both traverse and write the sandbox it was
+ * given, while still honoring the one attribute Windows does expose by mapping
+ * read-only entries to `0o555`/`0o444`. Type bits come from the native mode, and
+ * a genuine host-level read-only file still fails its write at the native fs
+ * layer. Guest `chmod`/`chown` continue to override through the overlay.
+ */
+const SYNTHESIZE_POSIX_MODE = process.platform === "win32";
+
+export function synthesizePosixMode(nativeMode: number): number {
+  const type = nativeMode & S_IFMT;
+  // Node sets the owner-write bit (0o200) only when the entry is not
+  // read-only; use it to carry the read-only attribute across.
+  const writable = (nativeMode & 0o200) !== 0;
+  let perms: number;
+  if (type === S_IFDIR) perms = writable ? 0o777 : 0o555;
+  else if (type === S_IFLNK) perms = 0o777;
+  else perms = writable ? 0o666 : 0o444;
+  return type | perms;
+}
+
 interface VirtualMetadata {
   mode?: number;
   uid?: number;
@@ -37,12 +79,17 @@ export class NativeMetadataOverlay {
   toStatResult(s: Stats): StatResult {
     const metadata = this.entries.get(this.key(s));
     if (metadata !== undefined) this.reconcileNativeTimes(metadata, s);
+    // On hosts that don't expose POSIX permission bits (Windows), replace the
+    // native permission bits with synthesized ones so a privilege-dropped guest
+    // can traverse and write host-backed mounts. Type bits are untouched, and a
+    // guest chmod (metadata.mode) still wins.
+    const baseMode = SYNTHESIZE_POSIX_MODE ? synthesizePosixMode(s.mode) : s.mode;
     return {
       dev: s.dev,
       ino: s.ino,
       mode: metadata?.mode === undefined
-        ? s.mode
-        : (s.mode & ~MODE_CHANGE_MASK) | (metadata.mode & MODE_CHANGE_MASK),
+        ? baseMode
+        : (baseMode & ~MODE_CHANGE_MASK) | (metadata.mode & MODE_CHANGE_MASK),
       nlink: s.nlink,
       uid: metadata?.uid ?? this.defaultUid,
       gid: metadata?.gid ?? this.defaultGid,
