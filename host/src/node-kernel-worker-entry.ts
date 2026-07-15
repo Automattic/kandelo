@@ -171,12 +171,6 @@ function installCrashSafetyNet(
   });
 }
 
-// Spawn PID counter. Starts at 100 so user programs never occupy pid 1 —
-// POSIX tests (e.g. libc-test regression/daemon-failure) treat `getppid() == 1`
-// as the signal that a daemon has reparented to init, so a test binary running
-// at pid 1 would make its forked children misdiagnose themselves as orphaned.
-let nextSpawnPid = 100;
-
 // Per-PID thread module cache: lazily compiled on first clone()
 const threadModuleCache = new Map<number, WebAssembly.Module>();
 
@@ -731,11 +725,9 @@ async function handleInit(msg: InitMessage) {
 function handleSpawn(msg: SpawnMessage) {
   let registeredPid: number | undefined;
   try {
-    // Allocate PID internally — skip any PIDs already occupied by fork children
-    while (processes.has(nextSpawnPid)) {
-      nextSpawnPid++;
-    }
-    const pid = nextSpawnPid++;
+    // Shared source of truth with fork(); a worker-local counter would let a
+    // spawn reuse a kernel-owned pid and fail kernel_create with EEXIST.
+    const pid = kernelWorker.allocatePid();
 
     if (!isWasmModuleBytes(msg.programBytes)) {
       respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
