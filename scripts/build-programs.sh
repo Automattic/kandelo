@@ -653,6 +653,30 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$FORK_INSTRUMENT" "$sdl2gl_wasm" -o "$sdl2gl_wasm.instr"
         mv "$sdl2gl_wasm.instr" "$sdl2gl_wasm"
     fi
+
+    # wlcube (step 13): a raw libwayland-egl GLES2 client (no toolkit) driving
+    # the same GL path as sdl2gl-test. libwayland-egl.a must link FIRST — it
+    # defines wl_egl_window_* and bundles the dmabuf client glue — ahead of
+    # libwayland-client, the xdg-shell glue, and the GL/gbm/drm/ffi stack.
+    # Fork-instrumented for parity with the other wl_display_connect clients
+    # (wlcube itself does not fork).
+    if [ -f "$REPO_ROOT/programs/wlcompositor/wlcube.c" ]; then
+        wlcube_wasm="$OUT_DIR_32/wlcube.wasm"
+        echo "  Compiling wlcube (raw libwayland-egl GLES2 client)..."
+        "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+            "$REPO_ROOT/programs/wlcompositor/wlcube.c" \
+            "$WLC_GEN/xdg-shell-protocol.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libwayland-egl.a" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$wlcube_wasm"
+        "$FORK_INSTRUMENT" "$wlcube_wasm" -o "$wlcube_wasm.instr"
+        mv "$wlcube_wasm.instr" "$wlcube_wasm"
+    fi
 fi
 
 # libkwl (PR7 Phase 2): in-tree Wayland toolkit over libwayland-client.

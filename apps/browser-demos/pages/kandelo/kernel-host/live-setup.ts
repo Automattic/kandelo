@@ -136,6 +136,12 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/sdl2gl-test.wasm", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlcube.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlcube.wasm", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(relPaths: string[], label: string): Promise<string> {
@@ -292,6 +298,7 @@ const LIVE_DEMO_IDS = [
   "sdl2",
   "wayland",
   "sdl2gl",
+  "wlcube",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -391,6 +398,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  wlcube: {
+    image: "shell",
+    features: ["kms"],
+  },
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
@@ -470,6 +481,13 @@ interface LiveProfile {
    * Browser-only (WebGL2). Runs until the client exits.
    */
   sdl2glDemo: boolean;
+  /**
+   * Stage `wlcompositor` plus `wlcube` — a raw libwayland-egl GLES2 client
+   * (no toolkit) driving the same GL path as sdl2glDemo directly against the
+   * standard wl_egl_window / libEGL entry points a mesa client would use.
+   * Boots like sdl2glDemo. Browser-only (WebGL2). Runs until the client exits.
+   */
+  wlcubeDemo: boolean;
 }
 
 interface WebReadinessState {
@@ -652,7 +670,9 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     // sdl2) keep the webgl2 default — the GL bridge claims their canvas on
     // eglCreateContext, and the pump never touches it.
     h.setKmsDisplayMode(
-      profile.waylandDemo || profile.sdl2glDemo ? "webgl2-scanout" : null,
+      profile.waylandDemo || profile.sdl2glDemo || profile.wlcubeDemo
+        ? "webgl2-scanout"
+        : null,
     );
     const bootStartedAt = performance.now();
 
@@ -780,6 +800,7 @@ function customVfsProfile(
     sdl2Demo: false,
     waylandDemo: false,
     sdl2glDemo: false,
+    wlcubeDemo: false,
   };
 }
 
@@ -803,6 +824,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       sdl2Demo: false,
       waylandDemo: false,
       sdl2glDemo: false,
+      wlcubeDemo: false,
     };
   }
 
@@ -838,6 +860,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     sdl2Demo: normalized === "sdl2",
     waylandDemo: normalized === "wayland",
     sdl2glDemo: normalized === "sdl2gl",
+    wlcubeDemo: normalized === "wlcube",
   };
 }
 
@@ -1752,6 +1775,112 @@ async function bootProfile(
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           tick(`sdl2gl failed: ${msg}`);
+        }
+      })();
+    } else if (profile.wlcubeDemo) {
+      // wlcompositor (KMS master) + one raw libwayland-egl client (wlcube);
+      // same boot shape as the sdl2gl demo with no toolkit in between.
+      const kernelForWlcube = kernel;
+      void (async () => {
+        try {
+          const compositorUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlcompositor.wasm",
+            "../../../../../binaries/programs/wasm32/wlcompositor.wasm",
+          ], "wlcompositor.wasm");
+          const wlcubeUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlcube.wasm",
+            "../../../../../binaries/programs/wasm32/wlcube.wasm",
+          ], "wlcube.wasm");
+          tick("staging wlcube binaries...");
+          const [compBytes, wlcubeBytes] = await Promise.all([
+            fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wlcubeUrl).then(failOn("wlcube.wasm")).then((r) => r.arrayBuffer()),
+          ]);
+          ensureDirRecursive(kernelForWlcube.fs, "/usr/local/bin");
+          writeVfsBinary(
+            kernelForWlcube.fs,
+            "/usr/local/bin/wlcompositor",
+            new Uint8Array(compBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForWlcube.fs,
+            "/usr/local/bin/wlcube",
+            new Uint8Array(wlcubeBytes),
+            0o755,
+          );
+
+          // wlcube ignores input; attach a source anyway so the compositor's
+          // libinput event0/event1 open cleanly (same as the sdl2gl demo).
+          tick("attaching input source...");
+          kernelForWlcube.attachInputSource(
+            new BrowserInputSource(window, { pointer: false, wheel: false }),
+            { width: 1920, height: 1080 },
+          );
+
+          // Size the KMS display from the pane canvas so the compositor's
+          // preferred mode fills the pane; on timeout the default letterboxes.
+          tick("sizing display mode...");
+          const sizeDeadline = performance.now() + 1500;
+          let displaySize = host.getKmsDisplaySize(1);
+          while (!displaySize && performance.now() < sizeDeadline) {
+            const paneCanvas = document.querySelector<HTMLCanvasElement>(
+              ".kmachine-primary-slot:not(.is-hidden) canvas",
+            );
+            const rect = paneCanvas?.getBoundingClientRect();
+            if (rect && rect.width >= 1 && rect.height >= 1) {
+              const dpr = window.devicePixelRatio || 1;
+              kernelForWlcube.kmsSetDisplaySize(
+                1,
+                rect.width * dpr,
+                rect.height * dpr,
+              );
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            displaySize = host.getKmsDisplaySize(1);
+          }
+
+          // Compositor in the background (binds /tmp/wayland-0). wlcube's raw
+          // connect retries while the compositor binds, but we still barrier
+          // on the socket below so the client doesn't spin its whole retry
+          // budget racing a slow compositor bring-up.
+          tick("running wlcompositor...");
+          void kernelForWlcube.spawn(compBytes, ["wlcompositor"], {
+            env: SHELL_ENV,
+            cwd: DEMO_HOME,
+            uid: DEMO_UID,
+            gid: DEMO_GID,
+          }).then(
+            () => tick("wlcompositor exited"),
+            (err: unknown) =>
+              tick(`wlcompositor failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
+
+          tick("waiting for compositor socket...");
+          const sockDeadline = performance.now() + 5000;
+          while (
+            !vfsPathExists(kernelForWlcube.fs, "/tmp/wayland-0") &&
+            performance.now() < sockDeadline
+          ) {
+            await delay(50);
+          }
+
+          // Spawn the client in the background (NOT via the PTY): its stdout
+          // markers (WLCUBE_UP/WLCUBE_FRAME) must reach onStdout → syslog,
+          // which is where the smoke gates read. runShellCommand would route
+          // them to the terminal pane instead, where the spec can't see them.
+          tick("running wlcube...");
+          await kernelForWlcube.spawn(wlcubeBytes, ["wlcube"], {
+            env: SHELL_ENV,
+            cwd: DEMO_HOME,
+            uid: DEMO_UID,
+            gid: DEMO_GID,
+          });
+          tick("wlcube exited");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          tick(`wlcube failed: ${msg}`);
         }
       })();
     } else if (presentation?.autoCommand) {

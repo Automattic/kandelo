@@ -161,4 +161,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 612,
   },
+  {
+    id: "wlcube",
+    title: "Wayland cube (raw EGL)",
+    summary: "A raw libwayland-egl GLES2 client — no toolkit — rendering a spinning, back-face-culled cube through wlcompositor. Drives the standard wl_egl_window / libEGL entry points a mesa client would use: the window becomes a GPU dmabuf buffer, libEGL targets its FBO, and eglSwapBuffers attach+commits it zero-copy to the compositor on /dev/dri/card0. Proves the Wayland DRI GL path works standalone, not just under SDL2.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#3a6ea0",
+    glyph: "C",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
 ];
