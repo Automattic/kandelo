@@ -167,6 +167,7 @@ interface SelectedBottle {
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const FIRST_PARTY_TAP = "automattic/kandelo-homebrew";
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SAFE_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
@@ -235,6 +236,7 @@ function parseTapMetadata(value: unknown): HomebrewTapMetadata {
   if (!TAP_NAME_RE.test(tapName)) {
     fail(`metadata.tap_name ${quote(tapName)} is not a canonical lowercase owner/tap name`);
   }
+  validateTapIdentity(tapRepository, tapName);
   if (!GIT_SHA_RE.test(tapCommit)) fail("metadata.tap_commit must be a lowercase 40-char git sha");
   if (!REPOSITORY_RE.test(kandeloRepository)) {
     fail(`metadata.kandelo_repository ${quote(kandeloRepository)} is not a valid owner/repository`);
@@ -435,6 +437,34 @@ function validateExpectedTapName(
   if (metadata.tap_name !== expectedTapName) {
     fail(
       `metadata tap ${quote(metadata.tap_name)} does not match requested tap ${quote(expectedTapName)}`,
+    );
+  }
+}
+
+function validateTapIdentity(tapRepository: string, tapName: string): void {
+  const normalizedRepository = tapRepository.toLowerCase();
+  let expectedTapName: string;
+  if (normalizedRepository === FIRST_PARTY_TAP) {
+    expectedTapName = FIRST_PARTY_TAP;
+  } else {
+    const [owner, repositoryName] = normalizedRepository.split("/", 2);
+    const prefix = "homebrew-";
+    if (!repositoryName.startsWith(prefix) || repositoryName.length === prefix.length) {
+      fail(
+        `metadata tap repository ${quote(tapRepository)} must use the conventional owner/homebrew-name form`,
+      );
+    }
+    expectedTapName = `${owner}/${repositoryName.slice(prefix.length)}`;
+    if (expectedTapName === FIRST_PARTY_TAP) {
+      fail(
+        `metadata tap repository ${quote(tapRepository)} cannot claim protected first-party tap ${quote(FIRST_PARTY_TAP)}`,
+      );
+    }
+  }
+  if (tapName !== expectedTapName) {
+    fail(
+      `metadata tap ${quote(tapName)} does not match repository ${quote(tapRepository)}; ` +
+      `expected ${quote(expectedTapName)}`,
     );
   }
 }
