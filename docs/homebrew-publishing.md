@@ -575,8 +575,10 @@ those claims require the trusted publish and bottle validation paths below.
 The shared planner is `planHomebrewVfs()` in
 `host/src/homebrew-vfs-planner.ts`. It consumes `Kandelo/metadata.json` plus a
 caller-provided link-manifest loader and rejects bad ABI, unsupported arch,
-cache-key drift, missing packages, dependency cycles, unsafe paths, and
-link-manifest bottle drift before any bottle bytes are extracted.
+tap-identity drift, duplicate roots or metadata, cache-key drift, missing
+packages, dependency cycles, unsafe paths, and link-manifest bottle drift
+before any bottle bytes are extracted. It resolves the requested roots and
+their single-tap dependency closure in deterministic dependency-first order.
 
 The Node-side builder is `buildHomebrewVfs()` in
 `host/src/homebrew-vfs-builder.ts`. It verifies bottle byte count and sha256,
@@ -607,19 +609,56 @@ filesystem maximum and does not rebuild existing inodes. Supplying a different
 allocation and `statfs` agree with the requested capacity. Explicit maxima
 must be multiples of the 4096-byte SharedFS block size.
 
+For reproducible image composition, use the builder's static Brewfile subset.
+For example:
+
+```ruby
+tap "automattic/kandelo-homebrew"
+brew "sqlite"
+brew "automattic/kandelo-homebrew/xz"
+```
+
+The subset accepts blank lines, comments, exactly one literal canonical
+lowercase `tap "owner/tap"`, and between 1 and 128 literal `brew` entries.
+Entries may use a bare formula name or a fully qualified name from that exact
+tap. Bare and qualified forms normalize to the same root, so duplicates fail.
+The selected tap must exactly match `metadata.json`, and the complete resolved
+closure is limited to 128 packages.
+
+The parser uses Ripper to inspect the syntax tree and never evaluates the file.
+Options, interpolation, conditionals, variables, nested Ruby, `cask`, `mas`,
+`service`, and every other Homebrew Bundle entry are rejected. Full Bundle DSL
+belongs to real Homebrew running inside a Kandelo guest; it is not a safe or
+deterministic host-side image specification. This builder intentionally accepts
+only one tap, so a root or required dependency from another tap must fail until
+multi-tap composition has an explicit metadata and provenance contract.
+
+This path does not read `Brewfile.lock.json`; Homebrew Bundle does not define a
+lock-file contract. Reproducibility instead comes from the exact Brewfile
+SHA-256 and byte count, ordered normalized roots, tap commit, base-image digest,
+and verified bottle digests recorded in the report and image manifest. The
+root digest is SHA-256 over the UTF-8 JSON array of normalized roots in declared
+order. The bounded top-level VFS metadata records only root count and digest
+rather than embedding arbitrary source text.
+
 Build a precomposed image with:
 
 ```bash
 scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
   --tap-root /path/to/kandelo-homebrew \
-  --package hello \
+  --brewfile /path/to/Brewfile \
   --arch wasm32 \
   --runtime node \
   --base-image target/platform-base.vfs.zst \
   --out target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json
 ```
+
+Repeatable `--package <name>` remains available for lower-level tooling and
+focused tests. It preserves the provided root order and uses the same planner,
+limits, and provenance report. `--package` and `--brewfile` are mutually
+exclusive.
 
 The bottle fetcher follows GHCR `WWW-Authenticate` bearer challenges. Public
 bottle materializers do not need a GitHub token merely to read public GHCR

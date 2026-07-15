@@ -103,9 +103,9 @@ Host VFS tooling plans a Homebrew-prefix image with
 shared by Node and browser callers. It consumes parsed `Kandelo/metadata.json`
 and a caller-provided link-manifest loader, resolves requested packages plus
 their dependency closure in dependency-first order, and rejects bad ABI,
-unsupported arch, cache-key drift, missing packages, dependency cycles, unsafe
-paths, and link-manifest bottle URL/sha/byte/cache-key drift before any bottle
-bytes are extracted.
+unsupported arch, tap-identity drift, duplicate roots or metadata, cache-key
+drift, missing packages, dependency cycles, unsafe paths, and link-manifest
+bottle URL/sha/byte/cache-key drift before any bottle bytes are extracted.
 
 For `failed`, `pending`, or `building` bottle entries, the planner uses the
 complete last-green fallback fields when available. Without a complete fallback,
@@ -113,20 +113,44 @@ the package is not plannable for a VFS image.
 
 ## VFS Image Building
 
-Build a precomposed Homebrew-prefix image from generated sidecars and verified
-bottle bytes with:
+Write a static Brewfile that names one tap and the formula roots for the image:
+
+```ruby
+tap "automattic/kandelo-homebrew"
+brew "sqlite"
+brew "automattic/kandelo-homebrew/xz"
+```
+
+Then build a precomposed Homebrew-prefix image from generated sidecars and
+verified bottle bytes with:
 
 ```bash
 scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
   --tap-root /path/to/kandelo-homebrew \
-  --package hello \
+  --brewfile /path/to/Brewfile \
   --arch wasm32 \
   --runtime node \
   --base-image target/platform-base.vfs.zst \
   --out target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json
 ```
+
+This is a deliberately small, non-executing Brewfile subset: blank lines,
+comments, exactly one literal lowercase `tap "owner/tap"`, and 1 to 128 literal
+`brew` entries. A formula may be bare or fully qualified under that exact tap;
+duplicates after normalization are rejected. Ripper validates the syntax tree,
+and the builder never evaluates the file. Options, interpolation, conditionals,
+variables, nested Ruby, other entry types, and multi-tap selection are rejected.
+Use real Homebrew inside a running Kandelo guest when full Homebrew Bundle DSL
+behavior is required.
+
+Homebrew Bundle does not define a `Brewfile.lock.json` contract. The report and
+image manifest instead bind the Brewfile SHA-256 and byte count, ordered roots,
+tap commit, base image, and exact bottle digests. The root digest is SHA-256 over
+the UTF-8 JSON array of normalized roots in declared order. Repeatable
+`--package <name>` is still available to lower-level callers, but it cannot be
+combined with `--brewfile`.
 
 The builder consumes only `metadata.json`, link manifests, and bottle tarballs.
 It does not evaluate Formula Ruby. It verifies the selected bottle byte count
