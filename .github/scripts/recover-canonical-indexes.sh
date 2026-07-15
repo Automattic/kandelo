@@ -138,7 +138,7 @@ asset_identity() {
 }
 
 inventory_releases() {
-  local output="$1" release_json rc page releases count reached_end=false
+  local output="$1" release_json rc page releases count release page_releases reached_end=false
   : > "$output"
   if [ -n "$TARGET_TAG" ]; then
     release_json="$(mktemp "$TMP_ROOT/exact-release.XXXXXX")"
@@ -151,7 +151,17 @@ inventory_releases() {
       return 1
     fi
     [ "$rc" -eq 0 ] || return 1
-    jq -c . "$release_json" >> "$output"
+    if ! release=$(jq -e -c --arg target_tag "$TARGET_TAG" -s '
+        select(length == 1 and
+          (.[0] | type == "object") and
+          .[0].tag_name == $target_tag) |
+        .[0]
+      ' "$release_json")
+    then
+      echo "recover-canonical-indexes: exact target $TARGET_TAG returned malformed or mismatched release identity" >&2
+      return 1
+    fi
+    printf '%s\n' "$release" >> "$output"
   else
     for ((page = 1; page <= MAX_PAGES; page++)); do
       releases=$(gh_retry gh api "/repos/${REPOSITORY}/releases?per_page=${PER_PAGE}&page=${page}")
@@ -166,8 +176,16 @@ inventory_releases() {
         return 1
       fi
       count=$(jq 'length' <<<"$releases")
-      jq -c '.[] | select(.tag_name | startswith("binaries-abi-v"))' \
-        <<<"$releases" >> "$output"
+      page_releases="$TMP_ROOT/canonical-releases-page-${page}.jsonl"
+      if ! jq -c '.[] | select(.tag_name | test("^binaries-abi-v[1-9][0-9]{0,9}$"))' \
+        <<<"$releases" > "$page_releases"
+      then
+        echo "recover-canonical-indexes: failed to filter release page $page" >&2
+        return 1
+      fi
+      while IFS= read -r release; do
+        printf '%s\n' "$release" >> "$output"
+      done < "$page_releases"
       if [ "$count" -lt "$PER_PAGE" ]; then reached_end=true; break; fi
     done
     if [ "$reached_end" != true ]; then

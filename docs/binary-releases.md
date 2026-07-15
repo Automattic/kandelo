@@ -199,14 +199,16 @@ activation rechecks the exact latest authority while holding its PR lock.
 Exhausted API retries fail the run so a later schedule can retry.
 
 Before candidate discovery, every scheduled or manual run performs a separate
-bounded sweep of managed `binaries-abi-v<N>` releases. It skips stable
-marker/live/generation triples, but takes each actionable canonical tag lock
-and invokes the journal recovery state machine for a journal, missing live
-asset, orphan transaction asset, or incomplete state. A runner death is
-therefore repaired even when no merge candidate remains. Manual dispatch can
-restrict and force verification of one exact canonical tag. Repeated release
-and asset inventories detect pagination drift; API uncertainty fails closed
-before the sweep mutates any release.
+bounded sweep of managed releases whose tags exactly match
+`binaries-abi-v<N>`. Historical dated releases such as
+`binaries-abi-v7-2026-05-09` are excluded before their assets are queried. The
+sweep skips stable marker/live/generation triples, but takes each actionable
+canonical tag lock and invokes the journal recovery state machine for a
+journal, missing live asset, orphan transaction asset, or incomplete state. A
+runner death is therefore repaired even when no merge candidate remains.
+Manual dispatch can restrict and force verification of one exact canonical
+tag. Repeated release and asset inventories detect pagination drift; API
+uncertainty fails closed before the sweep mutates any release.
 
 Activation queries GitHub and fails closed unless the PR is merged with the
 prepared head into the prepared target branch, the merge commit is on that
