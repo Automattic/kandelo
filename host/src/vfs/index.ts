@@ -7,6 +7,7 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  VfsImageCapacity,
   VfsImageMetadata,
   VfsImageOptions,
 } from "./memory-fs";

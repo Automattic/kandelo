@@ -157,6 +157,13 @@ export interface SharedFsStats {
   maxName: number;
 }
 
+export interface SharedFsImageCapacity {
+  /** Serialized SharedArrayBuffer length carried by the image. */
+  byteLength: number;
+  /** Filesystem growth ceiling recorded in the serialized superblock. */
+  maxByteLength: number;
+}
+
 export interface SharedFsIdentityState {
   ino: number;
   generation: number;
@@ -394,6 +401,39 @@ export class SharedFS {
     Atomics.store(fs.i32, SB_GENERATION >> 2, 1);
 
     return fs;
+  }
+
+  /**
+   * Inspect the capacity contract stored in a serialized SharedFS buffer.
+   * Unlike statfs(), this is independent of the runtime buffer used to restore
+   * the image, so callers can recreate its original growth ceiling.
+   */
+  static inspectImageCapacity(buffer: Uint8Array): SharedFsImageCapacity {
+    if (buffer.byteLength < SB_MAX_SIZE_BLOCKS + 4) {
+      throw new SFSError(EINVAL, "SharedFS image is too small");
+    }
+    const view = new DataView(
+      buffer.buffer,
+      buffer.byteOffset,
+      buffer.byteLength,
+    );
+    if (view.getUint32(SB_MAGIC, true) !== MAGIC) {
+      throw new SFSError(EINVAL, "Bad magic");
+    }
+    if (view.getUint32(SB_VERSION, true) !== VERSION) {
+      throw new SFSError(EINVAL, "Bad version");
+    }
+    const blockSize = view.getUint32(SB_BLOCK_SIZE, true);
+    if (blockSize !== BLOCK_SIZE) {
+      throw new SFSError(EINVAL, "Bad block size");
+    }
+
+    const configuredMaxBytes =
+      view.getUint32(SB_MAX_SIZE_BLOCKS, true) * blockSize;
+    return {
+      byteLength: buffer.byteLength,
+      maxByteLength: Math.max(buffer.byteLength, configuredMaxBytes),
+    };
   }
 
   static mount(

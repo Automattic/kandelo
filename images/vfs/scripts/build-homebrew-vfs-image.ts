@@ -8,9 +8,11 @@
  *     --package hello \
  *     --arch wasm32 \
  *     --runtime node \
+ *     --base-image target/platform-base.vfs.zst \
  *     --out target/homebrew-hello.vfs.zst \
  *     --report target/homebrew-hello.vfs-report.json
  */
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -27,7 +29,10 @@ import {
   type HomebrewRuntime,
   type HomebrewVfsPackagePlan,
 } from "../../../host/src/homebrew-vfs-planner";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  type VfsImageMetadata,
+} from "../../../host/src/vfs/memory-fs";
 import { saveImage } from "./vfs-image-helpers";
 
 interface CliOptions {
@@ -41,11 +46,25 @@ interface CliOptions {
   expectedCacheKeys: Record<string, string>;
   allowFallback: boolean;
   bottleCache?: string;
-  maxBytes: number;
+  baseImage?: string;
+  maxBytes?: number;
   writeProfile: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
+const SHARED_FS_BLOCK_BYTES = 4096;
+const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
+
+interface BaseImageBinding {
+  sha256: string;
+  bytes: number;
+  kernelAbi: number;
+}
+
+interface LoadedBaseImage {
+  binding: BaseImageBinding;
+  metadata: VfsImageMetadata;
+}
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
@@ -60,7 +79,11 @@ async function main(): Promise<void> {
     loadLinkManifest: (relPath) => readJsonFile(join(options.tapRoot, relPath)),
   });
 
-  const fs = createFs(options.maxBytes);
+  const { fs, baseImage } = createFs(
+    options.baseImage,
+    options.maxBytes,
+    plan.kandeloAbi,
+  );
   const result = await buildHomebrewVfs(plan, {
     fs,
     writeProfile: options.writeProfile,
@@ -73,8 +96,10 @@ async function main(): Promise<void> {
       version: 1,
       kernelAbi: plan.kandeloAbi,
       createdBy: "images/vfs/scripts/build-homebrew-vfs-image.ts",
+      ...(baseImage ? { baseImage: baseImage.binding } : {}),
       homebrew: {
         tapRepository: plan.tapRepository,
+        tapName: plan.tapName,
         tapCommit: plan.tapCommit,
         releaseTag: plan.releaseTag,
         packages: plan.packages.map((pkg) => ({
@@ -88,7 +113,16 @@ async function main(): Promise<void> {
     },
   });
 
-  const report = { ...result.report, image: options.out };
+  const report = {
+    ...result.report,
+    ...(baseImage ? {
+      base_image: {
+        ...baseImage.binding,
+        metadata: baseImage.metadata,
+      },
+    } : {}),
+    image: options.out,
+  };
   mkdirSync(dirname(options.report), { recursive: true });
   writeFileSync(options.report, `${JSON.stringify(report, null, 2)}\n`);
   console.log(`Homebrew VFS report: ${options.report}`);
@@ -103,7 +137,6 @@ function parseArgs(args: string[]): CliOptions {
     expectedCacheKeys: {},
     arch: "wasm32",
     allowFallback: true,
-    maxBytes: DEFAULT_MAX_BYTES,
     writeProfile: false,
   };
 
@@ -143,6 +176,9 @@ function parseArgs(args: string[]): CliOptions {
       case "--bottle-cache":
         options.bottleCache = requireValue(args, ++i, arg);
         break;
+      case "--base-image":
+        options.baseImage = parseBaseImagePath(requireValue(args, ++i, arg));
+        break;
       case "--max-bytes":
         options.maxBytes = parseByteSize(requireValue(args, ++i, arg));
         break;
@@ -162,6 +198,9 @@ function parseArgs(args: string[]): CliOptions {
     if (!options[required]) usage(`missing --${required.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
   }
   if (options.packages.length === 0) usage("at least one --package is required");
+  if (options.baseImage && !existsSync(options.baseImage)) {
+    usage(`base image does not exist: ${options.baseImage}`);
+  }
 
   return options as CliOptions;
 }
@@ -195,16 +234,112 @@ function parseByteSize(value: string): number {
   if (!Number.isSafeInteger(bytes) || bytes <= 0) {
     usage(`--max-bytes is too large: ${value}`);
   }
+  if (bytes % SHARED_FS_BLOCK_BYTES !== 0) {
+    usage(`--max-bytes must be a multiple of ${SHARED_FS_BLOCK_BYTES} bytes`);
+  }
   return bytes;
 }
 
-function createFs(maxBytes: number): MemoryFileSystem {
+function parseBaseImagePath(value: string): string {
+  if (!value.endsWith(".vfs") && !value.endsWith(".vfs.zst")) {
+    usage(`--base-image must end in .vfs or .vfs.zst, got ${value}`);
+  }
+  return value;
+}
+
+function createFs(
+  baseImage: string | undefined,
+  maxBytes: number | undefined,
+  expectedAbi: number,
+): { fs: MemoryFileSystem; baseImage?: LoadedBaseImage } {
+  if (baseImage) {
+    const image = new Uint8Array(readFileSync(baseImage));
+    const restored = MemoryFileSystem.fromImagePreservingCapacity(image);
+    const metadata = restored.getImageMetadata();
+    if (metadata?.kernelAbi === undefined) {
+      throw new Error(
+        `base image ${baseImage} does not declare its required kernel ABI`,
+      );
+    }
+    if (metadata.kernelAbi !== expectedAbi) {
+      throw new Error(
+        `base image ${baseImage} declares kernel ABI ${metadata.kernelAbi}, ` +
+        `but bottle metadata requires ABI ${expectedAbi}`,
+      );
+    }
+    if (
+      metadata.homebrew !== undefined ||
+      vfsPathExists(restored, HOMEBREW_COMPOSITION_PATH)
+    ) {
+      throw new Error(
+        `base image ${baseImage} already contains a Homebrew composition; ` +
+        "use a platform-only base image",
+      );
+    }
+
+    const loadedBase: LoadedBaseImage = {
+      binding: {
+        sha256: createHash("sha256").update(image).digest("hex"),
+        bytes: image.byteLength,
+        kernelAbi: metadata.kernelAbi,
+      },
+      metadata,
+    };
+    const recordedMaxBytes =
+      MemoryFileSystem.readImageCapacity(image).maxByteLength;
+    if (!Number.isSafeInteger(recordedMaxBytes) || recordedMaxBytes <= 0) {
+      throw new Error(
+        `base image ${baseImage} declares an invalid filesystem capacity`,
+      );
+    }
+
+    const targetMaxBytes = maxBytes ?? recordedMaxBytes;
+    if (targetMaxBytes !== recordedMaxBytes) {
+      console.log(
+        `Rebasing base VFS capacity from ${formatMib(recordedMaxBytes)} ` +
+        `to ${formatMib(targetMaxBytes)}...`,
+      );
+      return {
+        fs: restored.rebaseToNewFileSystem(targetMaxBytes),
+        baseImage: loadedBase,
+      };
+    }
+    return {
+      fs: restored,
+      baseImage: loadedBase,
+    };
+  }
+
+  const initialBytes = maxBytes ?? DEFAULT_MAX_BYTES;
   const SharedArrayBufferCtor = SharedArrayBuffer as new (
     byteLength: number,
     options?: { maxByteLength?: number },
   ) => SharedArrayBuffer;
-  const sab = new SharedArrayBufferCtor(maxBytes, { maxByteLength: maxBytes });
-  return MemoryFileSystem.create(sab, maxBytes);
+  const sab = new SharedArrayBufferCtor(initialBytes, {
+    maxByteLength: initialBytes,
+  });
+  return { fs: MemoryFileSystem.create(sab, initialBytes) };
+}
+
+function formatMib(bytes: number): string {
+  return `${Math.round(bytes / 1024 / 1024)} MiB`;
+}
+
+function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
+  try {
+    fs.lstat(path);
+    return true;
+  } catch (err) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      err.code === -2
+    ) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 function readJsonFile(path: string): unknown {
@@ -250,7 +385,8 @@ function usage(message?: string, code = 2): never {
   --out <image.vfs.zst> \\
   --report <report.json> \\
   [--expected-cache-key <name>=<sha256>] [--no-fallback] \\
-  [--bottle-cache <dir>] [--max-bytes <bytes|MiB>] [--write-profile]`);
+  [--bottle-cache <dir>] [--base-image <base.vfs[.zst]>] \\
+  [--max-bytes <bytes|MiB>] [--write-profile]`);
   process.exit(code);
 }
 

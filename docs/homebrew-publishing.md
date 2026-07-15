@@ -605,6 +605,29 @@ extracts supported tar entries, stages kegs under the declared prefix,
 validates receipts, applies link manifests, writes
 `/etc/kandelo/homebrew-vfs.json`, and emits a build report.
 
+The CLI starts with an empty VFS by default. Pass `--base-image` to overlay the
+same verified bottle plan onto an explicit platform-only `.vfs` or `.vfs.zst`
+base image. The base must declare the same kernel ABI as the bottle metadata
+and must not already carry Homebrew composition metadata or
+`/etc/kandelo/homebrew-vfs.json`; merging independently composed Homebrew
+prefixes would lose package provenance, so it fails closed. Existing files
+remain unchanged except for requested bottle/link paths and the builder-owned
+Homebrew manifest (plus the optional profile fragment); path collisions fail
+through the normal staging checks.
+
+The output image metadata binds the exact base input with a bounded object:
+SHA-256, byte count, and declared kernel ABI. It also records the selected tap
+repository and canonical tap name. The JSON report carries the same binding
+plus the base's full source metadata for auditing. Base signatures,
+attestations, and other metadata are not copied onto the mutated output, and
+large source metadata is not nested into each new image.
+
+When `--max-bytes` is omitted, the builder restores the base with its recorded
+filesystem maximum and does not rebuild existing inodes. Supplying a different
+`--max-bytes` explicitly rebases the filesystem to that exact maximum, so
+allocation and `statfs` agree with the requested capacity. Explicit maxima
+must be multiples of the 4096-byte SharedFS block size.
+
 Build a precomposed image with:
 
 ```bash
@@ -614,6 +637,7 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --package hello \
   --arch wasm32 \
   --runtime node \
+  --base-image target/platform-base.vfs.zst \
   --out target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json
 ```

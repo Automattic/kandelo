@@ -895,6 +895,146 @@ jq -e '
 
 cp "${dep_bottle[0]}" "$BOTTLE_CACHE/${dep_bottle[2]}.tar.gz"
 cp "${tool_bottle[0]}" "$BOTTLE_CACHE/${tool_bottle[2]}.tar.gz"
+BASE_ROOT="$TMPDIR/base-root"
+BASE_MANIFEST="$TMPDIR/base.MANIFEST"
+BASE_IMAGE="$TMPDIR/base.vfs"
+BAD_BASE_IMAGE="$TMPDIR/bad-base.vfs"
+UNLABELED_BASE_IMAGE="$TMPDIR/unlabeled-base.vfs"
+COMPOSED_MARKER_BASE_IMAGE="$TMPDIR/composed-marker-base.vfs"
+BASE_RECORDED_MAX_BYTES=33554432
+BASE_REQUESTED_MAX_BYTES=134217728
+mkdir -p "$BASE_ROOT/etc"
+printf '%s\n' 'base-image-marker' > "$BASE_ROOT/etc/base-image-marker"
+cat > "$BASE_MANIFEST" <<'EOF'
+/etc d 0755 0 0
+/etc/base-image-marker f 0644 0 0
+EOF
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" build \
+  "$BASE_MANIFEST" "$BASE_ROOT" \
+  --sab-size 16777216 \
+  --max-size "$BASE_RECORDED_MAX_BYTES" \
+  --kernel-abi "$ABI_VERSION" \
+  -o "$BASE_IMAGE" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" build \
+  "$BASE_MANIFEST" "$BASE_ROOT" \
+  --sab-size 16777216 \
+  --max-size 134217728 \
+  --kernel-abi "$((ABI_VERSION + 1))" \
+  -o "$BAD_BASE_IMAGE" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" build \
+  "$BASE_MANIFEST" "$BASE_ROOT" \
+  --sab-size 16777216 \
+  --max-size 134217728 \
+  -o "$UNLABELED_BASE_IMAGE" >/dev/null
+npx tsx -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+import { MemoryFileSystem } from '$REPO_ROOT/host/src/vfs/memory-fs.ts';
+(async () => {
+  const fs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync('$BASE_IMAGE')));
+  const metadata = fs.getImageMetadata();
+  if (!metadata) throw new Error('expected base metadata');
+  const image = await fs.saveImage({
+    metadata: {
+      ...metadata,
+      platformBase: { source: 'sidecar-test' },
+      signature: 's'.repeat(55_000),
+      provenance: { issuer: 'fixture-builder', subject: 'base-only' },
+    },
+  });
+  writeFileSync('$BASE_IMAGE', image);
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+" >/dev/null
+BASE_IMAGE_SHA256="$(sha256_file "$BASE_IMAGE")"
+BASE_IMAGE_BYTES="$(wc -c < "$BASE_IMAGE" | tr -d ' ')"
+cp "$BASE_IMAGE" "$TMPDIR/base-image.bin"
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --base-image "$TMPDIR/base-image.bin" \
+  --out "$TMPDIR/bad-extension.vfs.zst" \
+  --report "$TMPDIR/bad-extension-report.json" \
+  > /dev/null 2>"$TMPDIR/bad-extension.err"; then
+  echo "Homebrew VFS builder accepted an ambiguous base-image extension" >&2
+  exit 1
+fi
+grep -F -- "--base-image must end in .vfs or .vfs.zst" \
+  "$TMPDIR/bad-extension.err" >/dev/null
+cp "$BASE_IMAGE" "$COMPOSED_MARKER_BASE_IMAGE"
+printf '%s\n' '{"schema":1}' > "$TMPDIR/homebrew-vfs.json"
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" add \
+  "$COMPOSED_MARKER_BASE_IMAGE" /etc/kandelo --dir >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" add \
+  "$COMPOSED_MARKER_BASE_IMAGE" /etc/kandelo/homebrew-vfs.json \
+  --file "$TMPDIR/homebrew-vfs.json" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$UNLABELED_BASE_IMAGE" \
+  --out "$TMPDIR/unlabeled-base-output.vfs.zst" \
+  --report "$TMPDIR/unlabeled-base-report.json" \
+  > /dev/null 2>"$TMPDIR/unlabeled-base.err"; then
+  echo "Homebrew VFS builder accepted an unlabeled base image" >&2
+  exit 1
+fi
+grep -F "does not declare its required kernel ABI" \
+  "$TMPDIR/unlabeled-base.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$COMPOSED_MARKER_BASE_IMAGE" \
+  --out "$TMPDIR/composed-marker-output.vfs.zst" \
+  --report "$TMPDIR/composed-marker-report.json" \
+  > /dev/null 2>"$TMPDIR/composed-marker.err"; then
+  echo "Homebrew VFS builder accepted a base composition marker" >&2
+  exit 1
+fi
+grep -F "already contains a Homebrew composition" \
+  "$TMPDIR/composed-marker.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --max-bytes "$((BASE_RECORDED_MAX_BYTES + 1))" \
+  --out "$TMPDIR/unaligned-output.vfs.zst" \
+  --report "$TMPDIR/unaligned-report.json" \
+  > /dev/null 2>"$TMPDIR/unaligned.err"; then
+  echo "Homebrew VFS builder accepted an unaligned filesystem maximum" >&2
+  exit 1
+fi
+grep -F -- "--max-bytes must be a multiple of 4096 bytes" \
+  "$TMPDIR/unaligned.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BAD_BASE_IMAGE" \
+  --out "$TMPDIR/bad-base-output.vfs.zst" \
+  --report "$TMPDIR/bad-base-report.json" \
+  > /dev/null 2>"$TMPDIR/bad-base.err"; then
+  echo "Homebrew VFS builder accepted an ABI-mismatched base image" >&2
+  exit 1
+fi
+grep -F "but bottle metadata requires ABI $ABI_VERSION" \
+  "$TMPDIR/bad-base.err" >/dev/null
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$TAP/Kandelo/metadata.json" \
   --tap-root "$TAP" \
@@ -902,6 +1042,45 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --arch wasm32 \
   --runtime node \
   --bottle-cache "$BOTTLE_CACHE" \
+  --out "$TMPDIR/sidecar-tool-clean.vfs.zst" \
+  --report "$TMPDIR/sidecar-tool-clean-report.json" >/dev/null
+jq -e 'has("base_image") | not' \
+  "$TMPDIR/sidecar-tool-clean-report.json" >/dev/null
+npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --out "$TMPDIR/sidecar-tool-base-default.vfs.zst" \
+  --report "$TMPDIR/sidecar-tool-base-default-report.json" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$TMPDIR/sidecar-tool-base-default.vfs.zst" \
+  --out "$TMPDIR/recomposed-output.vfs.zst" \
+  --report "$TMPDIR/recomposed-report.json" \
+  > /dev/null 2>"$TMPDIR/recomposed.err"; then
+  echo "Homebrew VFS builder accepted composed image metadata" >&2
+  exit 1
+fi
+grep -F "already contains a Homebrew composition" \
+  "$TMPDIR/recomposed.err" >/dev/null
+npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --max-bytes "$BASE_REQUESTED_MAX_BYTES" \
   --out "$TMPDIR/sidecar-tool.vfs.zst" \
   --report "$TMPDIR/sidecar-tool-report.json" >/dev/null
 
@@ -913,7 +1092,126 @@ jq -e '
     "include/sidecar-tool.h",
     "lib/libsidecar-tool.a",
     "share/man/man1/sidecar-tool.1"
-  ]
-' "$TMPDIR/sidecar-tool-report.json" >/dev/null
+  ] and
+  .base_image.sha256 == $base_sha and
+  .base_image.bytes == $base_bytes and
+  .base_image.kernelAbi == $abi and
+  .base_image.metadata.platformBase == {"source":"sidecar-test"} and
+  (.base_image.metadata.signature | length) == 55000 and
+  .base_image.metadata.provenance == {
+    "issuer":"fixture-builder",
+    "subject":"base-only"
+  }
+' --arg base_sha "$BASE_IMAGE_SHA256" --argjson base_bytes "$BASE_IMAGE_BYTES" \
+  --argjson abi "$ABI_VERSION" \
+  "$TMPDIR/sidecar-tool-report.json" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
+  "$TMPDIR/sidecar-tool-clean.vfs.zst" "$TMPDIR/sidecar-tool-clean-root" >/dev/null
+if [ -e "$TMPDIR/sidecar-tool-clean-root/etc/base-image-marker" ]; then
+  echo "Homebrew VFS builder added the base marker without --base-image" >&2
+  exit 1
+fi
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
+  "$TMPDIR/sidecar-tool.vfs.zst" "$TMPDIR/sidecar-tool-root" >/dev/null
+grep -Fx 'base-image-marker' \
+  "$TMPDIR/sidecar-tool-root/etc/base-image-marker" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
+  "$TMPDIR/sidecar-tool.vfs.zst" --format json --metadata \
+  > "$TMPDIR/sidecar-tool-inspect.json"
+jq -e '
+  .metadata.baseImage == {
+    "sha256":$base_sha,
+    "bytes":$base_bytes,
+    "kernelAbi":$abi
+  } and
+  .metadata.homebrew.tapRepository == "Automattic/kandelo-homebrew" and
+  .metadata.homebrew.tapName == "automattic/kandelo-homebrew" and
+  (.metadata.baseImage | has("metadata") | not) and
+  (.metadata | has("platformBase") | not) and
+  (.metadata | has("signature") | not) and
+  (.metadata | has("provenance") | not) and
+  .metadata.kernelAbi == $abi and
+  .metadata.createdBy == "images/vfs/scripts/build-homebrew-vfs-image.ts"
+' --arg base_sha "$BASE_IMAGE_SHA256" \
+  --argjson base_bytes "$BASE_IMAGE_BYTES" \
+  --argjson abi "$ABI_VERSION" "$TMPDIR/sidecar-tool-inspect.json" >/dev/null
+npx tsx -e "
+import { readFileSync } from 'node:fs';
+import { MemoryFileSystem } from '$REPO_ROOT/host/src/vfs/memory-fs.ts';
+for (const [path, expected] of [
+  ['$TMPDIR/sidecar-tool-base-default.vfs.zst', $BASE_RECORDED_MAX_BYTES],
+  ['$TMPDIR/sidecar-tool.vfs.zst', $BASE_REQUESTED_MAX_BYTES],
+]) {
+  const bytes = new Uint8Array(readFileSync(path));
+  const capacity = MemoryFileSystem.readImageCapacity(bytes);
+  if (capacity.maxByteLength !== expected) {
+    throw new Error(path + ': configured maximum does not match ' + expected);
+  }
+  const fs = MemoryFileSystem.fromImagePreservingCapacity(bytes);
+  const stats = fs.statfs('/');
+  const statfsCapacity = stats.blocks * stats.bsize;
+  if (statfsCapacity !== expected) {
+    throw new Error(path + ': expected capacity ' + expected + ', got ' + statfsCapacity);
+  }
+}
+
+const base = MemoryFileSystem.fromImagePreservingCapacity(
+  new Uint8Array(readFileSync('$BASE_IMAGE')),
+);
+const composed = MemoryFileSystem.fromImagePreservingCapacity(
+  new Uint8Array(readFileSync('$TMPDIR/sidecar-tool-base-default.vfs.zst')),
+);
+const rebased = MemoryFileSystem.fromImagePreservingCapacity(
+  new Uint8Array(readFileSync('$TMPDIR/sidecar-tool.vfs.zst')),
+);
+const marker = '/etc/base-image-marker';
+const baseCtimeMs = base.stat(marker).ctimeMs;
+const composedCtimeMs = composed.stat(marker).ctimeMs;
+const rebasedCtimeMs = rebased.stat(marker).ctimeMs;
+if (
+  !Number.isFinite(baseCtimeMs) ||
+  !Number.isFinite(composedCtimeMs) ||
+  !Number.isFinite(rebasedCtimeMs)
+) {
+  throw new Error('base marker ctime is unavailable');
+}
+if (baseCtimeMs !== composedCtimeMs) {
+  throw new Error('default composition rebuilt an unchanged base inode');
+}
+if (baseCtimeMs === rebasedCtimeMs) {
+  throw new Error('explicit rebase did not exercise fresh-inode copying');
+}
+" >/dev/null
+
+THIRD_PARTY_TAP="$TMPDIR/third-party-tap"
+mkdir -p "$THIRD_PARTY_TAP/Kandelo"
+cp -R "$TAP/Kandelo/link" "$THIRD_PARTY_TAP/Kandelo/link"
+jq '
+  .tap_repository = "Example/homebrew-kandelo-tools" |
+  .tap_name = "example/kandelo-tools" |
+  (.packages[].full_name |= sub("^automattic/kandelo-homebrew/"; "example/kandelo-tools/")) |
+  (.packages[].bottles[].built_from.tap_repository? = "Example/homebrew-kandelo-tools")
+' "$TAP/Kandelo/metadata.json" > "$THIRD_PARTY_TAP/Kandelo/metadata.json"
+npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$THIRD_PARTY_TAP/Kandelo/metadata.json" \
+  --tap-root "$THIRD_PARTY_TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --out "$TMPDIR/third-party.vfs.zst" \
+  --report "$TMPDIR/third-party-report.json" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
+  "$TMPDIR/third-party.vfs.zst" --format json --metadata \
+  > "$TMPDIR/third-party-inspect.json"
+jq -e '
+  .metadata.homebrew.tapRepository == "Example/homebrew-kandelo-tools" and
+  .metadata.homebrew.tapName == "example/kandelo-tools"
+' "$TMPDIR/third-party-inspect.json" >/dev/null
+jq -e '
+  .metadata.tap_repository == "Example/homebrew-kandelo-tools" and
+  .metadata.tap_name == "example/kandelo-tools"
+' "$TMPDIR/third-party-report.json" >/dev/null
 
 echo "test-homebrew-tap-native-sidecars.sh: ok"
