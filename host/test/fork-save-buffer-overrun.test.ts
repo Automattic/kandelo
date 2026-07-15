@@ -11,10 +11,11 @@
  * unwind crossed the reserved continuation boundary. See worker-main.ts and
  * crates/fork-instrument/src/runtime.rs.
  *
- * End-to-end behavior was validated against the real ABI 18 Homebrew launcher,
- * whose Bash fork needs 20,012 bytes and now fails with the exact diagnostic
- * instead of corrupting its channel. These tests pin the detection arithmetic
- * that the fork paths rely on.
+ * End-to-end behavior was measured against the Homebrew dispatcher, its
+ * /usr/bin/brew alias launcher, the GTK/GLib desktop path, and the exact
+ * candidate bootstrap's Bash child. ABI 41's 60 KiB reserve must fit every
+ * measured continuation while retaining truthful detection for larger ones.
+ * These tests pin the arithmetic that the fork paths use.
  */
 import { describe, it, expect } from "vitest";
 import type { SideModuleForkState } from "../src/dylink";
@@ -97,9 +98,13 @@ describe("forkSaveBufferOverrun", () => {
     ).toBe(4096);
   });
 
-  it("reports the exact ABI 18 Homebrew launcher overrun", () => {
+  it.each([
+    ["Homebrew dispatcher", 20_012],
+    ["Homebrew /usr/bin/brew alias launcher", 29_212],
+    ["GTK/GLib launch", 21_544],
+    ["Homebrew candidate Bash recursive evaluator", 49_232],
+  ])("fits the measured %s continuation", (_name, observedFrameBytes) => {
     const memory = new WebAssembly.Memory({ initial: 3 });
-    const observedFrameBytes = 20_012;
     writeCurrentPos(
       memory,
       FORK_BUF_ADDR,
@@ -108,7 +113,7 @@ describe("forkSaveBufferOverrun", () => {
     );
     expect(
       forkSaveBufferOverrun(memory, FORK_BUF_ADDR, 4, FORK_SAVE_BUFFER_SIZE),
-    ).toBe(observedFrameBytes - FORK_SAVE_BUFFER_SIZE);
+    ).toBe(0);
   });
 
   it("reads current_pos as i64 on the wasm64 path", () => {

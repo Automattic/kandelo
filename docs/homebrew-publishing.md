@@ -635,20 +635,28 @@ rm -rf host/dist
 ```
 
 This probe starts guest Bash with the canonical real script path and xtrace. It
-proves that Homebrew consumes `/etc/homebrew/brew.env`; it does not prove
-shebang dispatch, `/usr/bin/brew` alias execution, Ruby command dispatch, or a
-complete Homebrew operation. On the current ABI 39 runtime, the trace reaches
-the system-file export and then the Ruby dispatcher hits the known fork
-continuation boundary: 20,012 bytes are needed while 16,384 are reserved. The
-probe accepts only that exact diagnostic or a successful `brew --version` after
-recording the export. An attempted `/usr/bin/brew` alias execution also exposed
-the same reserve class earlier in Homebrew's shell launcher. With argv
-`/bin/bash -x /usr/bin/brew --version`, `$0` remained `/usr/bin/brew` and the
-launcher recognized it as a symlink. Its `target="$(readlink "$1")"` command
-substitution then needed 29,212 bytes while 16,384 were reserved. The failed
-substitution left Homebrew's repository empty and its library path as `/Library`,
-so the alias exited 127. This is not exec-time argv rewriting. The platform gap
-remains visible and must not be hidden with a wrapper.
+requires `brew --version` to succeed after proving that Homebrew consumed
+`/etc/homebrew/brew.env`; a fork-save-buffer diagnostic is a failure. It does
+not prove shebang dispatch, `/usr/bin/brew` alias execution, an install, or a
+bottle download.
+
+ABI 41 raised every fork continuation reserve from 16 KiB to 60 KiB. The
+earlier ABI 39 dispatcher and `/usr/bin/brew` alias-launcher measurements needed
+20,012 and 29,212 bytes respectively. The exact candidate bootstrap also found
+a 49,232-byte Bash child continuation in the recursive command evaluator,
+which the 48 KiB draft reserve rejected truthfully. All three now fit without
+weakening the overrun guard. Repeat the probe with
+`--brew-script /usr/bin/brew` when validating the alias path; `$0` must remain
+`/usr/bin/brew`, the launcher must recognize the symlink, and the command must
+print the Homebrew version rather than silently falling back to `/Library`.
+
+For a package or ABI change, Prepare Merge runs both entry-point probes against
+the exact synthetic merge candidate before it can publish merge authority. The
+job materializes the candidate index first and builds the bootstrap image with
+`--skip-package-resolve`, so a green result cannot come from an older canonical
+package release. Both probes clear `host/dist` before loading the TypeScript
+host runtime, preventing stale compiled host code from shadowing the tested
+source.
 
 `--skip-package-resolve` is only for a worktree whose `binaries/` tree has
 already been materialized. It still validates every required output and fails

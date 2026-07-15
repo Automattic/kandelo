@@ -108,9 +108,10 @@ async function main(): Promise<void> {
       );
     });
     exitCode = await Promise.race([exitPromise, timeoutPromise]);
-    if (exitCode !== 0 && exitCode !== -1) {
+    if (exitCode !== 0) {
       throw new Error(
-        `guest Homebrew environment probe exited ${exitCode}; stderr=${JSON.stringify(stderr)}`,
+        `guest Homebrew environment probe exited ${exitCode}; ` +
+          `stderr=${JSON.stringify(stderr)}; diagnostics=${JSON.stringify(hostDiagnostics)}`,
       );
     }
   } catch (error) {
@@ -131,28 +132,14 @@ async function main(): Promise<void> {
     );
   }
   const hasVersion = /^Homebrew [^\r\n]+$/m.test(stdout);
-  const knownReserveFailure = hostDiagnostics.some((message) =>
-    message.includes("needed 20012 bytes but only 16384 (FORK_SAVE_BUFFER_SIZE) are reserved"),
+  const reserveFailure = hostDiagnostics.find((message) =>
+    message.includes("(FORK_SAVE_BUFFER_SIZE) are reserved"),
   );
-  if (exitCode === 0) {
-    if (!hasVersion || knownReserveFailure) {
-      throw new Error(
-        `successful brew --version had inconsistent evidence: ` +
-          `stdout=${JSON.stringify(stdout)}; diagnostics=${JSON.stringify(hostDiagnostics)}`,
-      );
-    }
-  } else if (exitCode === -1) {
-    if (hasVersion || !knownReserveFailure) {
-      throw new Error(
-        `ABI39 reserve failure had inconsistent evidence: ` +
-          `stdout=${JSON.stringify(stdout)}; diagnostics=${JSON.stringify(hostDiagnostics)}`,
-      );
-    }
-    process.stderr.write(
-      "homebrew_bootstrap_guest_env: system brew.env loaded before known ABI39 20012-byte fork reserve failure\n",
+  if (!hasVersion || reserveFailure) {
+    throw new Error(
+      `successful brew --version had inconsistent evidence: ` +
+        `stdout=${JSON.stringify(stdout)}; diagnostics=${JSON.stringify(hostDiagnostics)}`,
     );
-  } else {
-    throw new Error(`guest Homebrew environment probe did not record an exit status`);
   }
   process.stdout.write("homebrew_bootstrap_guest_env: pass\n");
 }

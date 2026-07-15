@@ -8,6 +8,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
+import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth, extractHeapBase } from "../src/constants";
 import { tryResolveBinary } from "../src/binary-resolver";
@@ -125,8 +126,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             // (gl_muxers is a WeakMap keyed by context).
             kernel.gl.attachCanvas(childPid, fakeCanvas);
 
-            const ASYNCIFY_BUF_SIZE = 16384;
-            const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+            const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
 
             const childInit: CentralizedWorkerInitMessage = {
               type: "centralized_init",
@@ -136,7 +136,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               memory: childMemory,
               channelOffset: childChannelOffset,
               isForkChild: true,
-              asyncifyBufAddr,
+              forkBufAddr,
               ptrWidth,
             };
 

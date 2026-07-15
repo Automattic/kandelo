@@ -20,6 +20,7 @@ import { resolve, dirname } from "path";
 import { createConnection } from "net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
+import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import type { CentralizedWorkerInitMessage, WorkerToHostMessage } from "../../../../host/src/worker-protocol";
@@ -195,8 +196,7 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
-        const FORK_BUF_SIZE = 16384;
-        const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
+        const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
