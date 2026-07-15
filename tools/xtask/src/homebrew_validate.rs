@@ -1356,6 +1356,13 @@ mod tests {
         );
 
         let report = fixture.validate();
-        assert!(report.errors.join("\n").contains("noncanonical bottle block"));
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("bottle block outside the direct Formula class body"),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
     }
 }
