@@ -107,6 +107,68 @@ run_verify() {
 
 run_verify >/dev/null
 
+cp "$CANDIDATE_JSON" "$TMP_ROOT/candidate-without-recovery.json"
+cp "$READY_JSON" "$TMP_ROOT/ready-without-recovery.json"
+jq '.recovery = {
+      kind: "immutable-clone-v1",
+      source_candidate_tag: "merge-candidate-abi-v39-pr-1-run-1-attempt-1",
+      source_candidate_index_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }' "$CANDIDATE_JSON" > "$TMP_ROOT/recovery-candidate.json"
+mv "$TMP_ROOT/recovery-candidate.json" "$CANDIDATE_JSON"
+jq '.recovery = {
+      kind: "immutable-clone-v1",
+      source_candidate_tag: "merge-candidate-abi-v39-pr-1-run-1-attempt-1",
+      source_candidate_index_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }' "$READY_JSON" > "$TMP_ROOT/recovery-ready.json"
+mv "$TMP_ROOT/recovery-ready.json" "$READY_JSON"
+run_verify >/dev/null
+
+jq '.recovery.source_candidate_tag = "merge-candidate-abi-v39-pr-1-run-9-attempt-1"' \
+  "$READY_JSON" > "$TMP_ROOT/recovery-mismatch-ready.json"
+mv "$TMP_ROOT/recovery-mismatch-ready.json" "$READY_JSON"
+if run_verify >"$TMP_ROOT/recovery-mismatch.out" 2>"$TMP_ROOT/recovery-mismatch.err"; then
+  echo "expected candidate/ready recovery mismatch to fail" >&2
+  exit 1
+fi
+[ "$(cat "$TMP_ROOT/terminal-reason")" = ready-identity-mismatch ]
+jq '.recovery.source_candidate_tag = "merge-candidate-abi-v39-pr-1-run-1-attempt-1"' \
+  "$READY_JSON" > "$TMP_ROOT/recovery-matched-ready.json"
+mv "$TMP_ROOT/recovery-matched-ready.json" "$READY_JSON"
+
+jq '.recovery.kind = "untrusted-recovery"' "$CANDIDATE_JSON" \
+  > "$TMP_ROOT/malformed-recovery-candidate.json"
+mv "$TMP_ROOT/malformed-recovery-candidate.json" "$CANDIDATE_JSON"
+jq '.recovery.kind = "untrusted-recovery"' "$READY_JSON" \
+  > "$TMP_ROOT/malformed-recovery-ready.json"
+mv "$TMP_ROOT/malformed-recovery-ready.json" "$READY_JSON"
+if run_verify >"$TMP_ROOT/malformed-recovery.out" 2>"$TMP_ROOT/malformed-recovery.err"; then
+  echo "expected malformed recovery provenance to fail" >&2
+  exit 1
+fi
+[ "$(cat "$TMP_ROOT/terminal-reason")" = candidate-metadata-invalid ]
+
+for mismatch in \
+  merge-candidate-abi-v40-pr-1-run-1-attempt-1 \
+  merge-candidate-abi-v39-pr-2-run-1-attempt-1
+do
+  jq --arg source "$mismatch" \
+    '.recovery.kind = "immutable-clone-v1" | .recovery.source_candidate_tag = $source' \
+    "$CANDIDATE_JSON" > "$TMP_ROOT/wrong-source-candidate.json"
+  mv "$TMP_ROOT/wrong-source-candidate.json" "$CANDIDATE_JSON"
+  jq --arg source "$mismatch" \
+    '.recovery.kind = "immutable-clone-v1" | .recovery.source_candidate_tag = $source' \
+    "$READY_JSON" > "$TMP_ROOT/wrong-source-ready.json"
+  mv "$TMP_ROOT/wrong-source-ready.json" "$READY_JSON"
+  if run_verify >"$TMP_ROOT/wrong-source.out" 2>"$TMP_ROOT/wrong-source.err"; then
+    echo "expected recovery source $mismatch to fail" >&2
+    exit 1
+  fi
+  [ "$(cat "$TMP_ROOT/terminal-reason")" = candidate-recovery-invalid ]
+done
+
+cp "$TMP_ROOT/candidate-without-recovery.json" "$CANDIDATE_JSON"
+cp "$TMP_ROOT/ready-without-recovery.json" "$READY_JSON"
+
 jq '.canonical_tag = "binaries-abi-v40"' "$CANDIDATE_JSON" > "$TMP_ROOT/bad-tag-candidate.json"
 mv "$TMP_ROOT/bad-tag-candidate.json" "$CANDIDATE_JSON"
 jq '.canonical_tag = "binaries-abi-v40"' "$READY_JSON" > "$TMP_ROOT/bad-tag-ready.json"

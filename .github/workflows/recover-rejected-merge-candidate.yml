@@ -1,0 +1,61 @@
+name: Recover rejected merge candidate
+
+# This manual escape hatch repairs only the historical shallow-history
+# pr_commit_count defect. It immutably clones the already-tested ledger and
+# archives into a new run-bound candidate, then sends that clone through the
+# ordinary activation transaction. It never removes or edits the rejected
+# source candidate and never rebuilds packages or reruns the runtime gate.
+on:
+  workflow_dispatch:
+    inputs:
+      source_candidate_tag:
+        description: Rejected prepared-commit-count-mismatch candidate tag
+        required: true
+        type: string
+
+jobs:
+  recover:
+    if: github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      SOURCE_CANDIDATE_TAG: ${{ inputs.source_candidate_tag }}
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Clone exact rejected candidate bytes
+        id: clone
+        run: |
+          bash scripts/dev-shell.sh env \
+            GITHUB_DEFAULT_BRANCH="$GITHUB_DEFAULT_BRANCH" \
+            bash .github/scripts/clone-rejected-merge-candidate.sh \
+            --source-candidate-tag "$SOURCE_CANDIDATE_TAG" \
+            --output-file "$GITHUB_OUTPUT"
+
+      - name: Activate recovered candidate through the canonical path
+        run: |
+          bash scripts/dev-shell.sh bash .github/scripts/activate-merge-candidate.sh \
+            --candidate-tag "${{ steps.clone.outputs.candidate_tag }}" \
+            --pr-number "${{ steps.clone.outputs.pr_number }}" \
+            --expected-default-ref "${{ steps.clone.outputs.validated_default_ref }}" \
+            --expected-default-sha "${{ steps.clone.outputs.validated_default_sha }}"

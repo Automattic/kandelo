@@ -93,7 +93,14 @@ if ! jq -e '
     (.canonical_base_state == "present" or .canonical_base_state == "absent") and
     (.base_index_sha256 | test("^[0-9a-f]{64}$")) and
     (.run_id | type == "string" and test("^[0-9]+$")) and
-    (.run_attempt | type == "string" and test("^[0-9]+$"))
+    (.run_attempt | type == "string" and test("^[0-9]+$")) and
+    (.recovery == null or (
+      (.recovery | type == "object") and
+      .recovery.kind == "immutable-clone-v1" and
+      (.recovery.source_candidate_tag | type == "string" and
+        test("^merge-candidate-abi-v[0-9]+-pr-[0-9]+-run-[0-9]+-attempt-[0-9]+$")) and
+      (.recovery.source_candidate_index_sha256 | test("^[0-9a-f]{64}$"))
+    ))
   ' "$CANDIDATE_JSON" >/dev/null
 then
   terminal_fail candidate-metadata-invalid \
@@ -110,18 +117,8 @@ then
     "ready.json does not satisfy schema version 1"
 fi
 
-candidate_identity=$(jq -c '{
-  repository, pr_number, base_ref, base_sha, head_sha,
-  synthetic_merge_sha, synthetic_tree_sha, merge_method,
-  pr_commit_count, abi_version, candidate_tag, canonical_tag,
-  canonical_base_state, base_index_sha256, run_id, run_attempt
-}' "$CANDIDATE_JSON")
-ready_identity=$(jq -c '{
-  repository, pr_number, base_ref, base_sha, head_sha,
-  synthetic_merge_sha, synthetic_tree_sha, merge_method,
-  pr_commit_count, abi_version, candidate_tag, canonical_tag,
-  canonical_base_state, base_index_sha256, run_id, run_attempt
-}' "$READY_JSON")
+candidate_identity=$(jq -S -c . "$CANDIDATE_JSON")
+ready_identity=$(jq -S -c 'del(.candidate_index_sha256, .ready_at)' "$READY_JSON")
 if [ "$candidate_identity" != "$ready_identity" ]; then
   terminal_fail ready-identity-mismatch \
     "ready.json identity does not match candidate.json"
@@ -147,6 +144,14 @@ fi
 if [ "$candidate_tag" != "$bound_candidate_tag" ]; then
   terminal_fail candidate-tag-identity-mismatch \
     "candidate tag is not bound to its ABI/PR/run identity: $candidate_tag"
+fi
+recovery_source_tag=$(jq -r '.recovery.source_candidate_tag // ""' "$CANDIDATE_JSON")
+if [ -n "$recovery_source_tag" ]; then
+  if ! [[ "$recovery_source_tag" =~ ^merge-candidate-abi-v${abi_version}-pr-${pr_number}-run-[1-9][0-9]*-attempt-[1-9][0-9]*$ ]] ||
+     [ "$recovery_source_tag" = "$candidate_tag" ]; then
+    terminal_fail candidate-recovery-invalid \
+      "candidate recovery source is not a distinct candidate for the same ABI and PR"
+  fi
 fi
 if [ "$canonical_tag" != "binaries-abi-v${abi_version}" ]; then
   terminal_fail canonical-tag-mismatch \

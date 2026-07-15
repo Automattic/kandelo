@@ -7,11 +7,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOWS_DIR="$REPO_ROOT/.github/workflows"
 PREPARE="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 ACTIVATE_WORKFLOW="$REPO_ROOT/.github/workflows/activate-merge-candidate.yml"
+REJECTED_RECOVERY_WORKFLOW="$REPO_ROOT/.github/workflows/recover-rejected-merge-candidate.yml"
 ACTIVATE_SCRIPT="$SCRIPT_DIR/activate-merge-candidate.sh"
+REJECTED_RECOVERY_SCRIPT="$SCRIPT_DIR/clone-rejected-merge-candidate.sh"
 RECONCILE_SCRIPT="$SCRIPT_DIR/reconcile-merge-candidates.sh"
 CLEANUP_SCRIPT="$SCRIPT_DIR/cleanup-merge-candidates.sh"
 APPROVAL_SCRIPT="$SCRIPT_DIR/require-exact-head-approval.sh"
 MARK_READY_SCRIPT="$SCRIPT_DIR/mark-merge-candidate-ready.sh"
+VERIFY_SCRIPT="$SCRIPT_DIR/verify-merge-candidate.sh"
 STATUS_SCRIPT="$SCRIPT_DIR/latest-merge-gate-status.sh"
 RECOVERY_SCRIPT="$SCRIPT_DIR/recover-canonical-indexes.sh"
 CLEANUP_WORKFLOW="$REPO_ROOT/.github/workflows/staging-cleanup.yml"
@@ -188,6 +191,7 @@ prepare-merge.yml:matrix-build
 prepare-merge.yml:merge-gate-post
 prepare-merge.yml:preflight
 prepare-merge.yml:promote-staging
+recover-rejected-merge-candidate.yml:recover
 reusable-homebrew-bottle-maintenance.yml:rebuild
 reusable-homebrew-bottle-maintenance.yml:rollback
 reusable-homebrew-bottle-publish.yml:finalize-tap
@@ -217,7 +221,7 @@ actual_lock_callers=$(
       if (line ~ /^#/) next
       if (line ~ /reusable-homebrew-bottle-publish\.yml/ ||
           (line ~ /bash[[:space:]]/ &&
-           line ~ /(state-lock|index-update|compose-initial-index|publish-package-source|homebrew-publish-sidecars|fetch-canonical-index|init-merge-candidate|mark-merge-candidate-ready|recover-canonical-indexes|cleanup-merge-candidates|activate-merge-candidate)\.sh/)) {
+           line ~ /(state-lock|index-update|compose-initial-index|publish-package-source|homebrew-publish-sidecars|fetch-canonical-index|init-merge-candidate|mark-merge-candidate-ready|recover-canonical-indexes|cleanup-merge-candidates|activate-merge-candidate|clone-rejected-merge-candidate)\.sh/)) {
         print workflow ":" job
       }
     }
@@ -262,10 +266,153 @@ fi
 merge_gate=$(job_block "$PREPARE" merge-gate-post)
 grep -Fq 'mark-merge-candidate-ready.sh' <<<"$merge_gate" || \
   fail "merge-gate must seal and publish candidate authority"
+grep -Fq 'candidate_index_sha256: ${{ steps.candidate_index.outputs.sha256 }}' "$PREPARE" || \
+  fail "test preparation must export the exact candidate index digest"
+grep -Fq 'candidate_index_sha256: ${{ steps.gate.outputs.candidate_index_sha256 }}' "$PREPARE" || \
+  fail "test gate must carry the exact candidate index digest to sealing"
+grep -Fq -- '--candidate-index-sha256 "${{ needs.test-gate.outputs.candidate_index_sha256 }}"' <<<"$merge_gate" || \
+  fail "merge-gate must seal only the index digest captured before tests"
+grep -Fq 'candidate index differs from the tested sha256' "$MARK_READY_SCRIPT" || \
+  fail "candidate helper must reject a ledger other than the tested digest"
+materialize_candidate_step=$(step_run_block "$PREPARE" "Materialize binaries")
+grep -Fq 'mv "$index_dir/index.toml" "$index_dir/source-index.toml"' \
+  <<<"$materialize_candidate_step" || \
+  fail "test preparation must freeze candidate index bytes before resolution"
+grep -Fq 'sha256sum "$index_dir/source-index.toml"' <<<"$materialize_candidate_step" || \
+  fail "test preparation must hash the immutable source candidate index"
+grep -Fq 'index-candidate seed' <<<"$materialize_candidate_step" || \
+  fail "test preparation must derive a resolver view from the frozen source index"
+grep -Fq 'WASM_POSIX_BINARY_INDEX_URL="file://$index_dir/index.toml"' \
+  <<<"$materialize_candidate_step" || \
+  fail "test preparation must resolve every package from the frozen local index"
+snapshot_line=$(grep -n 'mv "$index_dir/index.toml" "$index_dir/source-index.toml"' \
+  <<<"$materialize_candidate_step" | cut -d: -f1)
+resolver_line=$(grep -n 'fetch-binaries.sh --fetch-only' \
+  <<<"$materialize_candidate_step" | cut -d: -f1)
+if [ "$snapshot_line" -ge "$resolver_line" ]; then
+  fail "candidate index capture must precede binary materialization"
+fi
+if grep -Fq -- '- name: Capture tested candidate index' "$PREPARE"; then
+  fail "candidate index must not be recaptured from mutable release state after materialization"
+fi
+grep -Fq 'current merge-gate authority changed' "$MARK_READY_SCRIPT" || \
+  fail "candidate recovery authority replacement must be compare-and-swap"
+grep -Fq 'default branch changed after recovery validation' "$MARK_READY_SCRIPT" || \
+  fail "candidate recovery must recheck the validated default tip before authority mutation"
 grep -Fq '/statuses/${EXPECTED_HEAD_SHA}' "$MARK_READY_SCRIPT" || \
   fail "candidate helper must publish status while its authority lock is held"
 grep -Fq 'releases/tag/${CANDIDATE_TAG}' "$MARK_READY_SCRIPT" || \
   fail "merge-gate status must identify the exact candidate release"
+ready_upload_line=$(grep -n 'gh release upload "$CANDIDATE_TAG"' "$MARK_READY_SCRIPT" | cut -d: -f1)
+default_recheck_line=$(grep -n 'git fetch --no-tags origin' "$MARK_READY_SCRIPT" | cut -d: -f1)
+authority_recheck_line=$(grep -n 'current_authority_url=' "$MARK_READY_SCRIPT" | cut -d: -f1)
+status_post_line=$(grep -n '"/repos/${REPOSITORY}/statuses/${EXPECTED_HEAD_SHA}"' \
+  "$MARK_READY_SCRIPT" | cut -d: -f1)
+if [ "$ready_upload_line" -ge "$authority_recheck_line" ] ||
+   [ "$authority_recheck_line" -ge "$default_recheck_line" ] ||
+   [ "$default_recheck_line" -ge "$status_post_line" ]; then
+  fail "recovery default and authority CAS checks must follow sealing and precede status mutation"
+fi
+
+grep -Fq 'workflow_dispatch:' "$REJECTED_RECOVERY_WORKFLOW" || \
+  fail "rejected candidate recovery must be manual"
+if grep -Eq '^  (pull_request|push|schedule):' "$REJECTED_RECOVERY_WORKFLOW"; then
+  fail "rejected candidate recovery must not have an automatic trigger"
+fi
+grep -Fq "if: github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch" \
+  "$REJECTED_RECOVERY_WORKFLOW" || \
+  fail "rejected candidate recovery must run only from the exact default branch, not a same-named tag"
+grep -Fq 'ref: ${{ github.event.repository.default_branch }}' "$REJECTED_RECOVERY_WORKFLOW" || \
+  fail "rejected candidate recovery must execute current default-branch code"
+grep -Fq 'fetch-depth: 0' "$REJECTED_RECOVERY_WORKFLOW" || \
+  fail "rejected candidate recovery requires complete git history"
+recovery_clone_step=$(step_run_block "$REJECTED_RECOVERY_WORKFLOW" "Clone exact rejected candidate bytes")
+grep -Fq 'bash scripts/dev-shell.sh env' <<<"$recovery_clone_step" || \
+  fail "rejected candidate recovery must cross the clean dev-shell boundary explicitly"
+grep -Fq 'GITHUB_DEFAULT_BRANCH="$GITHUB_DEFAULT_BRANCH"' <<<"$recovery_clone_step" || \
+  fail "rejected candidate recovery must preserve the checked default branch across dev-shell"
+if ! bash -n <<<"$recovery_clone_step"; then
+  fail "rejected candidate recovery clone step is not valid nested shell syntax"
+fi
+grep -Fq 'clone-rejected-merge-candidate.sh' "$REJECTED_RECOVERY_WORKFLOW" || \
+  fail "rejected candidate recovery must use the tested immutable clone helper"
+grep -Fq 'activate-merge-candidate.sh' "$REJECTED_RECOVERY_WORKFLOW" || \
+  fail "recovered candidates must use the existing activation path"
+grep -Fq -- '--expected-default-ref "${{ steps.clone.outputs.validated_default_ref }}"' \
+  "$REJECTED_RECOVERY_WORKFLOW" || \
+  fail "recovered activation must carry the validated default branch"
+grep -Fq -- '--expected-default-sha "${{ steps.clone.outputs.validated_default_sha }}"' \
+  "$REJECTED_RECOVERY_WORKFLOW" || \
+  fail "recovered activation must carry the validated default revision"
+grep -Fq 'default branch changed after recovery validation' "$ACTIVATE_SCRIPT" || \
+  fail "recovered activation must recheck the validated default tip before canonical planning"
+canonical_lock_line=$(grep -n 'acquire "$CANONICAL_TAG"' "$ACTIVATE_SCRIPT" | cut -d: -f1)
+activation_authority_line=$(grep -n 'authority_url=$(MERGE_GATE_STATUS' "$ACTIVATE_SCRIPT" | cut -d: -f1)
+activation_default_line=$(grep -n 'git fetch --no-tags origin' "$ACTIVATE_SCRIPT" | tail -1 | cut -d: -f1)
+canonical_read_line=$(grep -n 'ensure_release "$CANONICAL_TAG"' "$ACTIVATE_SCRIPT" | cut -d: -f1)
+if [ "$canonical_lock_line" -ge "$activation_authority_line" ] ||
+   [ "$activation_authority_line" -ge "$activation_default_line" ] ||
+   [ "$activation_default_line" -ge "$canonical_read_line" ]; then
+  fail "recovered activation must check authority and default after locking and before canonical access"
+fi
+if grep -Eq '(ci-run-test-suite|build-programs|archive-stage|index-update\.sh|force-rebuild)' "$REJECTED_RECOVERY_WORKFLOW"; then
+  fail "immutable recovery must not rerun runtime gates or package builds"
+fi
+for evidence in \
+  'prepared-commit-count-mismatch' \
+  '/actions/runs/${SOURCE_RUN_ID}' \
+  'conclusion == "success"' \
+  'gh run download "$SOURCE_RUN_ID"' \
+  'git bundle verify' \
+  'git rev-list --count "$base_sha..$head_sha"' \
+  'git rev-parse "$merge_commit_sha^{tree}"' \
+  'source candidate ABI $ABI is not current platform ABI $platform_abi' \
+  'checked-out platform revision is not the current default-branch tip' \
+  'default branch advanced during recovery validation' \
+  '--mode current' \
+  '--materialize' \
+  'source asset inventory changed during validation' \
+  'current merge-gate authority is not this source or its recovery clone' \
+  'RESUME_EXISTING_CLONE=1' \
+  'authoritative recovery clone changed during validation' \
+  '--expected-current-authority-url "$source_authority_url"' \
+  '--expected-default-ref "$DEFAULT_BRANCH"' \
+  '--expected-default-sha "$CHECKED_OUT_SHA"'
+do
+  grep -Fq -- "$evidence" "$REJECTED_RECOVERY_SCRIPT" || \
+    fail "rejected candidate recovery lacks required evidence check: $evidence"
+done
+if grep -Eq '(rm|gh release delete).*(rejected|SOURCE_CANDIDATE_TAG)' "$REJECTED_RECOVERY_SCRIPT"; then
+  fail "rejected candidate recovery must preserve source rejection evidence"
+fi
+recovery_authority_lock=$(grep -n 'acquire "merge-authority-pr-${PR_NUMBER}"' "$REJECTED_RECOVERY_SCRIPT" | head -1 | cut -d: -f1)
+recovery_source_lock=$(grep -n 'acquire "$SOURCE_CANDIDATE_TAG"' "$REJECTED_RECOVERY_SCRIPT" | head -1 | cut -d: -f1)
+recovery_destination_lock=$(grep -n 'acquire "$DESTINATION_CANDIDATE_TAG"' "$REJECTED_RECOVERY_SCRIPT" | head -1 | cut -d: -f1)
+if [ "$recovery_authority_lock" -ge "$recovery_source_lock" ] ||
+   [ "$recovery_source_lock" -ge "$recovery_destination_lock" ]; then
+  fail "recovery lock order must be authority, rejected source, immutable destination"
+fi
+grep -Fq 'find "$bundle_dir" -type f -name synthesized-merge.bundle -print > "$bundle_list"' \
+  "$REJECTED_RECOVERY_SCRIPT" || \
+  fail "recovery must check source bundle discovery before consuming its list"
+if grep -Fq 'mapfile -t bundles < <(find ' "$REJECTED_RECOVERY_SCRIPT"; then
+  fail "recovery must not mask source bundle discovery failures with process substitution"
+fi
+grep -Fq 'jq -c '\''.[]'\'' "$asset_plan" > "$asset_plan_jsonl"' "$ACTIVATE_SCRIPT" || \
+  fail "activation must materialize the complete asset plan with checked jq status"
+if grep -Fq 'done < <(jq -c '\''.[]'\'' "$asset_plan")' "$ACTIVATE_SCRIPT"; then
+  fail "activation must not consume an unchecked partial asset-plan stream"
+fi
+grep -Fq "del(.merge_commit_sha, .canonical_index_sha256, .activated_at, .activation_run)" \
+  "$ACTIVATE_SCRIPT" || \
+  fail "activation idempotency must preserve every ready-marker identity field"
+grep -Fq 'candidate_identity=$(jq -S -c . "$CANDIDATE_JSON")' "$VERIFY_SCRIPT" || \
+  fail "candidate verification must preserve recovery and future identity fields"
+grep -Fq "ready_identity=\$(jq -S -c 'del(.candidate_index_sha256, .ready_at)'" \
+  "$VERIFY_SCRIPT" || \
+  fail "ready verification must compare its full candidate identity"
+grep -Fq '.recovery.kind == "immutable-clone-v1"' "$VERIFY_SCRIPT" || \
+  fail "candidate verification must validate recovery provenance schema"
 
 grep -Fq 'types: [closed]' "$ACTIVATE_WORKFLOW" || \
   fail "activation workflow lacks the post-merge closed-event fast path"

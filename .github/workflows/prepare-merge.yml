@@ -1235,6 +1235,7 @@ jobs:
       contents: read
     outputs:
       merge_base_sha: ${{ steps.merge_ref.outputs.merge_base_sha }}
+      candidate_index_sha256: ${{ steps.candidate_index.outputs.sha256 }}
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
       PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
@@ -1359,7 +1360,9 @@ jobs:
           bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
 
       - name: Materialize binaries
+        id: candidate_index
         env:
+          GH_TOKEN: ${{ github.token }}
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
         # Package-changing PRs resolve the isolated candidate index. Its
         # unchanged entries carry absolute canonical URLs; changed entries
@@ -1367,7 +1370,37 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
-            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
+            index_dir="$RUNNER_TEMP/tested-candidate-index"
+            rm -rf "$index_dir"
+            mkdir -p "$index_dir"
+            gh release download "$PACKAGE_TARGET_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern index.toml \
+              --dir "$index_dir"
+            mv "$index_dir/index.toml" "$index_dir/source-index.toml"
+            sha=$(sha256sum "$index_dir/source-index.toml" | awk '{print $1}')
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+            candidate_index_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
+            bash scripts/dev-shell.sh env \
+              SOURCE_INDEX="$index_dir/source-index.toml" \
+              LOCALIZED_INDEX="$index_dir/index.toml" \
+              CANDIDATE_INDEX_URL="$candidate_index_url" \
+              EXPECTED_ABI="$ABI" \
+              bash -c '
+                set -euo pipefail
+                host_target=$(rustc -vV | awk "/^host/ {print \$2}")
+                cargo run --release -p xtask --target "$host_target" --quiet -- \
+                  index-candidate seed \
+                    --canonical-index "$SOURCE_INDEX" \
+                    --candidate-index "$LOCALIZED_INDEX" \
+                    --canonical-index-url "$CANDIDATE_INDEX_URL" \
+                    --expected-abi "$EXPECTED_ABI" \
+                    --generated-at "1970-01-01T00:00:00Z" \
+                    --generator "prepare-merge frozen tested ledger"
+              '
+            export WASM_POSIX_BINARY_INDEX_URL="file://$index_dir/index.toml"
+            echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+            echo "Captured source candidate index sha256:$sha before materialization"
             if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
               STAGE="$RUNNER_TEMP/staged-overlay"
               bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
@@ -1587,6 +1620,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       merge_base_sha: ${{ steps.gate.outputs.merge_base_sha }}
+      candidate_index_sha256: ${{ steps.gate.outputs.candidate_index_sha256 }}
     steps:
       - name: Check split test suites
         id: gate
@@ -1597,6 +1631,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "candidate_index_sha256=${{ needs.test-gate-prepare.outputs.candidate_index_sha256 }}" >> "$GITHUB_OUTPUT"
           if [ "$PREPARE_RESULT" != "success" ]; then
             echo "::error::test preparation completed with result: $PREPARE_RESULT"
             exit 1
@@ -1850,7 +1885,8 @@ jobs:
             --head-sha "${{ needs.synthesize-merge.outputs.head_sha }}" \
             --synthetic-tree-sha "${{ needs.synthesize-merge.outputs.tree_sha }}" \
             --run-id "${{ github.run_id }}" \
-            --run-attempt "${{ github.run_attempt }}"
+            --run-attempt "${{ github.run_attempt }}" \
+            --candidate-index-sha256 "${{ needs.test-gate.outputs.candidate_index_sha256 }}"
 
       - name: Comment on original PR
         # Purely informational — the merge gate already succeeded. A transient

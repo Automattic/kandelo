@@ -115,6 +115,12 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/test-activate-merge-candidate.sh" \
   ".github/scripts/test-activate-merge-candidate.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/clone-rejected-merge-candidate.sh" \
+  ".github/scripts/clone-rejected-merge-candidate.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-clone-rejected-merge-candidate.sh" \
+  ".github/scripts/test-clone-rejected-merge-candidate.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/reconcile-merge-candidates.sh" \
   ".github/scripts/reconcile-merge-candidates.sh"
 assert_matches package_publish_flow_changed_files \
@@ -225,8 +231,14 @@ assert_matches ci_control_changed_files \
   ".github/workflows/activate-merge-candidate.yml" \
   ".github/workflows/activate-merge-candidate.yml"
 assert_matches ci_control_changed_files \
+  ".github/workflows/recover-rejected-merge-candidate.yml" \
+  ".github/workflows/recover-rejected-merge-candidate.yml"
+assert_matches ci_control_changed_files \
   ".github/scripts/activate-merge-candidate.sh" \
   ".github/scripts/activate-merge-candidate.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/clone-rejected-merge-candidate.sh" \
+  ".github/scripts/clone-rejected-merge-candidate.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/reconcile-merge-candidates.sh" \
   ".github/scripts/reconcile-merge-candidates.sh"

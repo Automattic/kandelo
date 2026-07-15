@@ -28,7 +28,11 @@ HEAD_SHA=$(git -C "$SOURCE" rev-parse HEAD)
 TREE_SHA=$(git -C "$SOURCE" rev-parse "$HEAD_SHA^{tree}")
 SYNTHETIC_SHA=$(printf 'synthetic\n' | git -C "$SOURCE" commit-tree "$TREE_SHA" -p "$BASE_SHA" -p "$HEAD_SHA")
 MERGE_SHA=$(printf 'squash\n' | git -C "$SOURCE" commit-tree "$TREE_SHA" -p "$BASE_SHA")
+ADVANCED_DEFAULT_SHA=$(printf 'later default change\n' | \
+  git -C "$SOURCE" commit-tree "$TREE_SHA" -p "$MERGE_SHA")
 git -C "$SOURCE" push --quiet "$REMOTE" "$MERGE_SHA:refs/heads/main"
+git -C "$SOURCE" push --quiet "$REMOTE" \
+  "$ADVANCED_DEFAULT_SHA:refs/heads/advanced-default-fixture"
 git -C "$SOURCE" push --quiet "$REMOTE" "$HEAD_SHA:refs/pull/1/head"
 git clone --quiet --branch main "$REMOTE" "$CHECKOUT"
 
@@ -92,7 +96,12 @@ jq -n \
     canonical_base_state: "present",
     base_index_sha256: $base_index_sha,
     run_id: "2",
-    run_attempt: "1"
+    run_attempt: "1",
+    recovery: {
+      kind: "immutable-clone-v1",
+      source_candidate_tag: "merge-candidate-abi-v39-pr-1-run-1-attempt-1",
+      source_candidate_index_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
   }' > "$RELEASES/$CANDIDATE_TAG/candidate.json"
 PR_JSON="$TMP_ROOT/pr.json"
 jq -n \
@@ -112,6 +121,7 @@ jq -n \
 
 STUB_BIN="$TMP_ROOT/bin"
 mkdir -p "$STUB_BIN"
+REAL_JQ=$(command -v jq)
 
 cat > "$STUB_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -226,6 +236,9 @@ case "$command_name" in
             name=$(basename "$arg")
             printf '%s/%s\n' "$tag" "$name" >> "$GH_STUB_UPLOAD_LOG"
             cp "$arg" "$GH_STUB_RELEASES/$tag/$name"
+            if [ "$name" = ready.json ] && [ -n "${GH_STUB_READY_UPLOAD_HOOK:-}" ]; then
+              bash "$GH_STUB_READY_UPLOAD_HOOK"
+            fi
           fi
         done
         ;;
@@ -278,6 +291,20 @@ fi
 EOF
 chmod +x "$STUB_BIN/cargo"
 
+ADVERSARIAL_BIN="$TMP_ROOT/adversarial-bin"
+mkdir -p "$ADVERSARIAL_BIN"
+cat > "$ADVERSARIAL_BIN/jq" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${JQ_STUB_FAIL_ASSET_PLAN_STREAM:-0}" = 1 ] &&
+   [ "${1:-}" = -c ] && [ "${2:-}" = '.[]' ]; then
+  "$REAL_JQ" -c '.[0]' "${3:?asset plan required}"
+  exit 42
+fi
+exec "$REAL_JQ" "$@"
+EOF
+chmod +x "$ADVERSARIAL_BIN/jq"
+
 LOCK_LOG="$TMP_ROOT/locks.log"
 STATE_LOCK_STUB="$TMP_ROOT/state-lock.sh"
 cat > "$STATE_LOCK_STUB" <<'EOF'
@@ -291,10 +318,32 @@ STATUS_STUB="$TMP_ROOT/latest-status.sh"
 cat > "$STATUS_STUB" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+candidate_tag="$STATUS_STUB_CANDIDATE_TAG"
+if [ -n "${STATUS_STUB_CHANGE_AFTER_FILE:-}" ] &&
+   [ -e "$STATUS_STUB_CHANGE_AFTER_FILE" ]; then
+  candidate_tag="${STATUS_STUB_CHANGED_CANDIDATE_TAG:?changed candidate tag required}"
+fi
 printf '%s/%s/releases/tag/%s\n' \
-  "${GITHUB_SERVER_URL:-https://github.com}" "$GITHUB_REPOSITORY" "$STATUS_STUB_CANDIDATE_TAG"
+  "${GITHUB_SERVER_URL:-https://github.com}" "$GITHUB_REPOSITORY" "$candidate_tag"
 EOF
 chmod +x "$STATUS_STUB"
+
+ADVANCE_DEFAULT_HOOK="$TMP_ROOT/advance-default-after-ready.sh"
+cat > "$ADVANCE_DEFAULT_HOOK" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+git --git-dir="$GH_STUB_ADVANCE_REMOTE" update-ref \
+  refs/heads/main "$GH_STUB_ADVANCE_SHA"
+EOF
+chmod +x "$ADVANCE_DEFAULT_HOOK"
+
+CHANGE_AUTHORITY_HOOK="$TMP_ROOT/change-authority-after-ready.sh"
+cat > "$CHANGE_AUTHORITY_HOOK" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+: > "$GH_STUB_AUTHORITY_CHANGE_FILE"
+EOF
+chmod +x "$CHANGE_AUTHORITY_HOOK"
 
 INDEX_STATE_STUB="$TMP_ROOT/release-index-state.sh"
 cat > "$INDEX_STATE_STUB" <<'EOF'
@@ -345,7 +394,8 @@ seal_candidate() {
     --head-sha "$HEAD_SHA" \
     --synthetic-tree-sha "$TREE_SHA" \
     --run-id 2 \
-    --run-attempt 1
+    --run-attempt 1 \
+    --candidate-index-sha256 "$CANDIDATE_INDEX_SHA"
 }
 
 seal_candidate >/dev/null
@@ -357,7 +407,149 @@ seal_candidate >/dev/null
 [ "$ready_sha" = "$(sha256_file "$RELEASES/$CANDIDATE_TAG/ready.json")" ]
 [ "$uploads_after_seal" = "$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')" ]
 
+status_count_before=$(wc -l < "$STATUS_LOG" | tr -d '[:space:]')
+if GH_STUB_RELEASES="$RELEASES" \
+    GH_STUB_UPLOAD_LOG="$UPLOAD_LOG" \
+    GH_STUB_STATUS_LOG="$STATUS_LOG" \
+    STATE_LOCK_STUB_LOG="$LOCK_LOG" \
+    GITHUB_REPOSITORY=example/repo \
+    GITHUB_RUN_ID=2 \
+    STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
+    PATH="$STUB_BIN:$PATH" \
+    "$MARK_READY" \
+      --candidate-tag "$CANDIDATE_TAG" \
+      --base-sha "$BASE_SHA" \
+      --head-sha "$HEAD_SHA" \
+      --synthetic-tree-sha "$TREE_SHA" \
+      --run-id 2 \
+      --run-attempt 1 \
+      --candidate-index-sha256 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff \
+      >"$TMP_ROOT/wrong-tested-index.out" 2>"$TMP_ROOT/wrong-tested-index.err"
+then
+  echo "candidate seal accepted an index other than the tested digest" >&2
+  exit 1
+fi
+grep -q 'differs from the tested sha256' "$TMP_ROOT/wrong-tested-index.err"
+[ "$status_count_before" = "$(wc -l < "$STATUS_LOG" | tr -d '[:space:]')" ]
+
+if GH_STUB_RELEASES="$RELEASES" \
+    GH_STUB_UPLOAD_LOG="$UPLOAD_LOG" \
+    GH_STUB_STATUS_LOG="$STATUS_LOG" \
+    STATE_LOCK_STUB_LOG="$LOCK_LOG" \
+    STATUS_STUB_CANDIDATE_TAG=merge-candidate-abi-v39-pr-1-run-99-attempt-1 \
+    GITHUB_REPOSITORY=example/repo \
+    GITHUB_RUN_ID=2 \
+    STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
+    STATUS_SCRIPT="$STATUS_STUB" \
+    PATH="$STUB_BIN:$PATH" \
+    "$MARK_READY" \
+      --candidate-tag "$CANDIDATE_TAG" \
+      --base-sha "$BASE_SHA" \
+      --head-sha "$HEAD_SHA" \
+      --synthetic-tree-sha "$TREE_SHA" \
+      --run-id 2 \
+      --run-attempt 1 \
+      --candidate-index-sha256 "$CANDIDATE_INDEX_SHA" \
+      --expected-current-authority-url \
+        https://github.com/example/repo/releases/tag/merge-candidate-abi-v39-pr-1-run-2-attempt-1 \
+      >"$TMP_ROOT/authority-cas.out" 2>"$TMP_ROOT/authority-cas.err"
+then
+  echo "candidate seal replaced a different current authority" >&2
+  exit 1
+fi
+grep -q 'current merge-gate authority changed' "$TMP_ROOT/authority-cas.err"
+[ "$status_count_before" = "$(wc -l < "$STATUS_LOG" | tr -d '[:space:]')" ]
+
+# Recovery guards run after ready.json is uploaded. A default-branch advance
+# during that upload may leave an unused sealed candidate, but it cannot move
+# merge-gate authority.
+rm "$RELEASES/$CANDIDATE_TAG/ready.json"
+if (cd "$CHECKOUT" && \
+    GH_STUB_RELEASES="$RELEASES" \
+    GH_STUB_UPLOAD_LOG="$UPLOAD_LOG" \
+    GH_STUB_STATUS_LOG="$STATUS_LOG" \
+    GH_STUB_READY_UPLOAD_HOOK="$ADVANCE_DEFAULT_HOOK" \
+    GH_STUB_ADVANCE_REMOTE="$REMOTE" \
+    GH_STUB_ADVANCE_SHA="$ADVANCED_DEFAULT_SHA" \
+    STATE_LOCK_STUB_LOG="$LOCK_LOG" \
+    STATUS_STUB_CANDIDATE_TAG="$CANDIDATE_TAG" \
+    GITHUB_REPOSITORY=example/repo \
+    GITHUB_RUN_ID=2 \
+    STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
+    STATUS_SCRIPT="$STATUS_STUB" \
+    PATH="$STUB_BIN:$PATH" \
+    "$MARK_READY" \
+      --candidate-tag "$CANDIDATE_TAG" \
+      --base-sha "$BASE_SHA" \
+      --head-sha "$HEAD_SHA" \
+      --synthetic-tree-sha "$TREE_SHA" \
+      --run-id 2 \
+      --run-attempt 1 \
+      --candidate-index-sha256 "$CANDIDATE_INDEX_SHA" \
+      --expected-current-authority-url \
+        "https://github.com/example/repo/releases/tag/$CANDIDATE_TAG" \
+      --expected-default-ref main \
+      --expected-default-sha "$MERGE_SHA") \
+    >"$TMP_ROOT/default-race.out" 2>"$TMP_ROOT/default-race.err"
+then
+  echo "candidate seal accepted a default branch that advanced during ready upload" >&2
+  exit 1
+fi
+grep -q 'default branch changed after recovery validation' "$TMP_ROOT/default-race.err"
+[ -f "$RELEASES/$CANDIDATE_TAG/ready.json" ]
+[ "$status_count_before" = "$(wc -l < "$STATUS_LOG" | tr -d '[:space:]')" ]
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MERGE_SHA"
+rm "$RELEASES/$CANDIDATE_TAG/ready.json"
+
+# The merge-authority CAS is also evaluated after sealing. An authority change
+# during upload must fail before the status POST.
+AUTHORITY_CHANGE_FILE="$TMP_ROOT/authority-changed"
+if (cd "$CHECKOUT" && \
+    GH_STUB_RELEASES="$RELEASES" \
+    GH_STUB_UPLOAD_LOG="$UPLOAD_LOG" \
+    GH_STUB_STATUS_LOG="$STATUS_LOG" \
+    GH_STUB_READY_UPLOAD_HOOK="$CHANGE_AUTHORITY_HOOK" \
+    GH_STUB_AUTHORITY_CHANGE_FILE="$AUTHORITY_CHANGE_FILE" \
+    STATE_LOCK_STUB_LOG="$LOCK_LOG" \
+    STATUS_STUB_CANDIDATE_TAG="$CANDIDATE_TAG" \
+    STATUS_STUB_CHANGE_AFTER_FILE="$AUTHORITY_CHANGE_FILE" \
+    STATUS_STUB_CHANGED_CANDIDATE_TAG=merge-candidate-abi-v39-pr-1-run-99-attempt-1 \
+    GITHUB_REPOSITORY=example/repo \
+    GITHUB_RUN_ID=2 \
+    STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
+    STATUS_SCRIPT="$STATUS_STUB" \
+    PATH="$STUB_BIN:$PATH" \
+    "$MARK_READY" \
+      --candidate-tag "$CANDIDATE_TAG" \
+      --base-sha "$BASE_SHA" \
+      --head-sha "$HEAD_SHA" \
+      --synthetic-tree-sha "$TREE_SHA" \
+      --run-id 2 \
+      --run-attempt 1 \
+      --candidate-index-sha256 "$CANDIDATE_INDEX_SHA" \
+      --expected-current-authority-url \
+        "https://github.com/example/repo/releases/tag/$CANDIDATE_TAG" \
+      --expected-default-ref main \
+      --expected-default-sha "$MERGE_SHA") \
+    >"$TMP_ROOT/authority-upload-race.out" 2>"$TMP_ROOT/authority-upload-race.err"
+then
+  echo "candidate seal accepted authority that changed during ready upload" >&2
+  exit 1
+fi
+grep -q 'current merge-gate authority changed' "$TMP_ROOT/authority-upload-race.err"
+[ -f "$RELEASES/$CANDIDATE_TAG/ready.json" ]
+[ "$status_count_before" = "$(wc -l < "$STATUS_LOG" | tr -d '[:space:]')" ]
+rm "$RELEASES/$CANDIDATE_TAG/ready.json" "$AUTHORITY_CHANGE_FILE"
+seal_candidate >/dev/null
+
 run_activation() {
+  activation_args=(--candidate-tag "$CANDIDATE_TAG" --pr-number 1)
+  if [ -n "${ACTIVATION_EXPECTED_DEFAULT_REF:-}" ]; then
+    activation_args+=(
+      --expected-default-ref "$ACTIVATION_EXPECTED_DEFAULT_REF"
+      --expected-default-sha "${ACTIVATION_EXPECTED_DEFAULT_SHA:?expected default sha required}"
+    )
+  fi
   (cd "$CHECKOUT" && \
     GH_STUB_RELEASES="$RELEASES" \
     GH_STUB_PR_JSON="$PR_JSON" \
@@ -368,6 +560,8 @@ run_activation() {
     CARGO_STUB_ASSET_PLAN="$ASSET_PLAN" \
     CARGO_STUB_NOOP="${CARGO_STUB_NOOP:-0}" \
     CARGO_STUB_REJECT_REASON="${CARGO_STUB_REJECT_REASON:-}" \
+    JQ_STUB_FAIL_ASSET_PLAN_STREAM="${JQ_STUB_FAIL_ASSET_PLAN_STREAM:-0}" \
+    REAL_JQ="$REAL_JQ" \
     STATUS_STUB_CANDIDATE_TAG="${STATUS_STUB_CANDIDATE_TAG:-$CANDIDATE_TAG}" \
     INDEX_STATE_CURRENT="$CURRENT_INDEX" \
     INDEX_STATE_LOG="$UPLOAD_LOG" \
@@ -378,14 +572,24 @@ run_activation() {
     STATUS_SCRIPT="$STATUS_STUB" \
     RELEASE_INDEX_STATE_SCRIPT="$INDEX_STATE_STUB" \
     VERIFY_SCRIPT="$VERIFY" \
-    PATH="$STUB_BIN:$PATH" \
-    "$ACTIVATE" --candidate-tag "$CANDIDATE_TAG" --pr-number 1)
+    PATH="${JQ_STUB_PATH:+$JQ_STUB_PATH:}$STUB_BIN:$PATH" \
+    "$ACTIVATE" "${activation_args[@]}")
 }
 
 # Candidate identity is validated before any metadata-derived ref is fetched.
 # A repository mismatch records a terminal disposition instead of retrying.
 cp "$RELEASES/$CANDIDATE_TAG/candidate.json" "$TMP_ROOT/candidate.json.good"
 cp "$RELEASES/$CANDIDATE_TAG/ready.json" "$TMP_ROOT/ready.json.good"
+jq '.recovery.source_candidate_tag = "merge-candidate-abi-v39-pr-1-run-99-attempt-1"' \
+  "$TMP_ROOT/ready.json.good" > "$RELEASES/$CANDIDATE_TAG/ready.json"
+if run_activation >"$TMP_ROOT/ready-recovery.out" 2>"$TMP_ROOT/ready-recovery.err"; then
+  echo "candidate/ready recovery mismatch unexpectedly activated" >&2
+  exit 1
+fi
+[ "$(jq -r .rejection_reason "$RELEASES/$CANDIDATE_TAG/rejected.json")" = ready-identity-mismatch ]
+cp "$TMP_ROOT/ready.json.good" "$RELEASES/$CANDIDATE_TAG/ready.json"
+rm "$RELEASES/$CANDIDATE_TAG/rejected.json"
+
 jq '.repository = "other/repo"' "$TMP_ROOT/candidate.json.good" \
   > "$RELEASES/$CANDIDATE_TAG/candidate.json"
 jq '.repository = "other/repo"' "$TMP_ROOT/ready.json.good" \
@@ -443,6 +647,55 @@ grep -q 'no longer the latest merge-gate authority' "$TMP_ROOT/authority-race.er
 cmp "$TMP_ROOT/current-index.good" "$CURRENT_INDEX"
 [ ! -f "$RELEASES/$CANONICAL_TAG/foo.tar.zst" ]
 
+# A recovery clone can become authoritative and then spend minutes being
+# revalidated before activation. The recovery-only activation guard must catch
+# a default-branch advance at the final pre-canonical boundary.
+git --git-dir="$REMOTE" update-ref refs/heads/main "$ADVANCED_DEFAULT_SHA"
+if ACTIVATION_EXPECTED_DEFAULT_REF=main \
+    ACTIVATION_EXPECTED_DEFAULT_SHA="$MERGE_SHA" \
+    run_activation >"$TMP_ROOT/activation-default-race.out" \
+      2>"$TMP_ROOT/activation-default-race.err"
+then
+  echo "recovered activation accepted an advanced default branch" >&2
+  exit 1
+fi
+grep -q 'default branch changed after recovery validation' \
+  "$TMP_ROOT/activation-default-race.err"
+cmp "$TMP_ROOT/current-index.good" "$CURRENT_INDEX"
+[ ! -f "$RELEASES/$CANONICAL_TAG/foo.tar.zst" ]
+[ ! -f "$RELEASES/$CANDIDATE_TAG/rejected.json" ]
+[ ! -f "$RELEASES/$CANDIDATE_TAG/activated.json" ]
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MERGE_SHA"
+
+# A producer that emits one valid plan item and then fails must not leak the
+# partial stream into archive uploads or canonical index publication.
+if JQ_STUB_PATH="$ADVERSARIAL_BIN" JQ_STUB_FAIL_ASSET_PLAN_STREAM=1 \
+    run_activation >"$TMP_ROOT/partial-plan.out" 2>"$TMP_ROOT/partial-plan.err"
+then
+  echo "activation accepted a truncated asset-plan stream" >&2
+  exit 1
+fi
+grep -q 'asset plan is malformed or could not be materialized' "$TMP_ROOT/partial-plan.err"
+[ "$(jq -r .rejection_reason "$RELEASES/$CANDIDATE_TAG/rejected.json")" = candidate-index-invalid ]
+cmp "$TMP_ROOT/current-index.good" "$CURRENT_INDEX"
+[ ! -f "$RELEASES/$CANONICAL_TAG/foo.tar.zst" ]
+rm "$RELEASES/$CANDIDATE_TAG/rejected.json"
+
+# A completely invalid plan is likewise a terminal candidate failure before
+# any canonical bytes move.
+cp "$ASSET_PLAN" "$TMP_ROOT/asset-plan.good"
+printf '{"not":"an asset plan"}\n' > "$ASSET_PLAN"
+if run_activation >"$TMP_ROOT/invalid-plan.out" 2>"$TMP_ROOT/invalid-plan.err"; then
+  echo "activation accepted a non-array asset plan" >&2
+  exit 1
+fi
+grep -q 'asset plan is malformed or could not be materialized' "$TMP_ROOT/invalid-plan.err"
+[ "$(jq -r .rejection_reason "$RELEASES/$CANDIDATE_TAG/rejected.json")" = candidate-index-invalid ]
+cmp "$TMP_ROOT/current-index.good" "$CURRENT_INDEX"
+[ ! -f "$RELEASES/$CANONICAL_TAG/foo.tar.zst" ]
+mv "$TMP_ROOT/asset-plan.good" "$ASSET_PLAN"
+rm "$RELEASES/$CANDIDATE_TAG/rejected.json"
+
 # Sealed candidate bytes that disagree with the tested ledger are terminal,
 # not a transient API or current-canonical failure.
 printf 'tampered candidate archive\n' > "$CANDIDATE_ASSET"
@@ -482,6 +735,10 @@ if [ "$asset_upload_line" -ge "$index_upload_line" ]; then
   echo "candidate archive was not uploaded before the canonical index" >&2
   exit 1
 fi
+authority_line=$(grep -n 'acquire merge-authority-pr-1' "$LOCK_LOG" | tail -1 | cut -d: -f1)
+candidate_line=$(grep -n "acquire $CANDIDATE_TAG" "$LOCK_LOG" | tail -1 | cut -d: -f1)
+canonical_line=$(grep -n "acquire $CANONICAL_TAG" "$LOCK_LOG" | tail -1 | cut -d: -f1)
+[ "$authority_line" -lt "$candidate_line" ] && [ "$candidate_line" -lt "$canonical_line" ]
 
 # A receipt with the same PR and merge but a different sealed candidate is not
 # an idempotent retry. Reject it before treating the candidate as activated.
@@ -493,22 +750,32 @@ if CARGO_STUB_NOOP=1 run_activation >"$TMP_ROOT/tampered-receipt.out" 2>"$TMP_RO
   exit 1
 fi
 grep -q 'existing activation marker conflicts' "$TMP_ROOT/tampered-receipt.err"
+
+# Recovery provenance is candidate identity, including fields added after the
+# original receipt schema. It cannot be altered on an idempotent activation.
+jq '.recovery.source_candidate_tag = "merge-candidate-abi-v39-pr-1-run-99-attempt-1"' \
+  "$TMP_ROOT/activated.json.good" > "$RELEASES/$CANDIDATE_TAG/activated.json"
+if CARGO_STUB_NOOP=1 run_activation \
+    >"$TMP_ROOT/tampered-recovery.out" 2>"$TMP_ROOT/tampered-recovery.err"
+then
+  echo "activation accepted altered recovery provenance" >&2
+  exit 1
+fi
+grep -q 'existing activation marker conflicts' "$TMP_ROOT/tampered-recovery.err"
 mv "$TMP_ROOT/activated.json.good" "$RELEASES/$CANDIDATE_TAG/activated.json"
 
-# A retry after an unrelated canonical update must preserve both that update
-# and the original activation receipt instead of rewriting or conflicting.
+# A retry after a later same-package canonical update must treat the validated
+# activation receipt as terminal. It must not replan, reject the old candidate,
+# or rewrite either canonical state or the receipt.
 cp "$ADVANCED_INDEX" "$RELEASES/$CANONICAL_TAG/index.toml"
 receipt_sha=$(sha256_file "$RELEASES/$CANDIDATE_TAG/activated.json")
 uploads_before=$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')
-CARGO_STUB_NOOP=1 run_activation >/dev/null
+CARGO_STUB_REJECT_REASON=same-package-drift run_activation >/dev/null
 cmp "$ADVANCED_INDEX" "$RELEASES/$CANONICAL_TAG/index.toml"
 [ "$receipt_sha" = "$(sha256_file "$RELEASES/$CANDIDATE_TAG/activated.json")" ]
 [ "$uploads_before" = "$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')" ]
+[ ! -f "$RELEASES/$CANDIDATE_TAG/rejected.json" ]
 
 grep -Fq "/statuses/$HEAD_SHA" "$STATUS_LOG"
-authority_line=$(grep -n 'acquire merge-authority-pr-1' "$LOCK_LOG" | tail -1 | cut -d: -f1)
-candidate_line=$(grep -n "acquire $CANDIDATE_TAG" "$LOCK_LOG" | tail -1 | cut -d: -f1)
-canonical_line=$(grep -n "acquire $CANONICAL_TAG" "$LOCK_LOG" | tail -1 | cut -d: -f1)
-[ "$authority_line" -lt "$candidate_line" ] && [ "$candidate_line" -lt "$canonical_line" ]
 
 echo "merge candidate activation tests passed"
