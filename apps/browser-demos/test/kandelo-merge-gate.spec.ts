@@ -226,18 +226,33 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
       "fi",
     /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/user/,
   );
+  await runTerminalCommand(
+    page,
+    "vim /etc/gitconfig",
+    /"\/etc\/gitconfig" \[readonly\] \d+L, \d+B/,
+    180_000,
+  );
+
+  // Exercise Vim through the PTY instead of treating --version as an
+  // interactive-startup proxy. Paced input is required for deterministic
+  // delivery while WebKit is still repainting the alternate screen.
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(250);
+  await page.keyboard.type(":q!", { delay: 100 });
+  await page.waitForTimeout(2_000);
+  const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
+  if (await terminalInput.count()) {
+    await terminalInput.press("Enter");
+  } else {
+    await page.keyboard.press("Enter");
+  }
+  await page.waitForTimeout(1_000);
+  await waitForTerminalContent(page, /kandelo\$ ?/, 30_000);
+
   await runGuideScript(
     page,
-    "vim --version >/tmp/kandelo-vim.out 2>&1\n" +
-      "vim_version=$(</tmp/kandelo-vim.out)\n" +
-      "marker=VIM\n" +
-      "if [[ \"$vim_version\" == *'VIM - Vi IMproved'* ]]; then\n" +
-      "  printf 'KANDELO_%s_OK\\n' \"$marker\"\n" +
-      "else\n" +
-      "  printf 'KANDELO_%s_FAIL\\n' \"$marker\"\n" +
-      "  cat /tmp/kandelo-vim.out\n" +
-      "fi",
-    "KANDELO_VIM_OK",
+    "printf 'KANDELO_VIM_INTERACTIVE_OK\\n'",
+    "KANDELO_VIM_INTERACTIVE_OK",
   );
   await runGuideScript(
     page,

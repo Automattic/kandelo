@@ -2,8 +2,8 @@ kind = "program"
 name = "shell"
 version = "0.1.0"
 kernel_abi = 7
-# Implicit deps consumed by build-shell-vfs-image.ts and the
-# build-{vim,nethack}-zip.sh helpers it drives:
+# Direct artifacts consumed by build-shell-vfs-image.ts and the NetHack
+# bundle helper it drives:
 #
 #   - rootfs.vfs via `resolveBinary("rootfs.vfs")`, falling back to
 #     `resolveBinary("programs/rootfs.vfs")`; that image
@@ -13,19 +13,18 @@ kernel_abi = 7
 #     not already present in rootfs.vfs; the shell image stores lazy-file
 #     stubs and their final sizes so browser boot does not need runtime
 #     HEAD probes.
-#   - vim.wasm + runtime/ via `cargo xtask build-deps resolve vim`
-#     (build-vim-zip.sh) — vim's package archive ships both.
+#   - vim.zip from the resolver-owned vim-browser-bundle package. That
+#     package owns the exact vim.wasm + runtime/ combination represented by
+#     the shell image's lazy-archive entries.
 #   - nethack.wasm + runtime/ via `cargo xtask build-deps resolve
 #     nethack` (build-nethack-zip.sh) — nethack's rev2 archive ships
 #     the runtime tree alongside the wasm.
 #   - fbdoom.wasm and modeset.wasm via `resolveBinary("programs/<name>.wasm")`.
 #
-# Folding each dep's cache_key into ours via depends_on guarantees a
-# fresh shell archive whenever any lazy binary or runtime input changes. The
-# build-{vim,nethack}-zip.sh helpers produce vim.zip and nethack.zip
-# on-the-fly during shell's source build using the resolver-provided
-# cache paths; those zips aren't published as part of vim/nethack's
-# release archives.
+# Folding each dep's cache_key into ours via depends_on guarantees a fresh
+# shell archive whenever any lazy binary or runtime input changes. Vim's
+# bundle is a published package artifact; only the legacy NetHack helper
+# synthesizes its zip during the shell source build.
 depends_on = [
   "rootfs@0.1.0",
   "less@668",
@@ -42,7 +41,7 @@ depends_on = [
   "unzip@6.0",
   "lsof@0.1.0",
   "nano@8.0",
-  "vim@9.1.0900",
+  "vim-browser-bundle@9.1.0900",
   "nethack@3.6.7",
   "fbdoom@0.1.0",
   "modeset@0.1.0"

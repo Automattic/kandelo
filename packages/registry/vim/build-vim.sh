@@ -3,10 +3,10 @@ set -euo pipefail
 
 # Build Vim 9.1 for wasm32-posix-kernel.
 #
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Resolves ncurses via `cargo xtask build-deps resolve ncurses` — the
-# shared library cache (or builds it on miss). See
-# docs/package-management.md.
+# Uses the SDK's wasm32posix-configure wrapper for cross-compilation and the
+# resolver-provided ncurses prefix declared in package.toml. Direct script
+# invocations resolve ncurses explicitly as a convenience; package builds
+# must receive WASM_POSIX_DEP_NCURSES_DIR from the resolver.
 # Applies fork instrumentation so fork+exec works (:!command, filters).
 # wasm-fork-instrument auto-discovers fork paths via call-graph
 # analysis — no onlylist is needed.
@@ -18,6 +18,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/vim-src"
 BIN_DIR="$SCRIPT_DIR/bin"
+
+# Keep compiler-driver and sysroot behavior bound to this worktree.
+source "$REPO_ROOT/sdk/activate.sh"
+
 # Explicit env wins; else the in-tree sysroot. Keeps neighbour-worktree
 # invocations viable (WASM_POSIX_SYSROOT=<other>/sysroot). Same shape as
 # build-curl.sh:49.
@@ -31,7 +35,7 @@ export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after activating $REPO_ROOT/sdk" >&2
     exit 1
 fi
 
@@ -40,8 +44,8 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-# ncurses is resolved via cargo xtask build-deps below — no
-# pre-flight check needed (the resolve step builds-on-miss if absent).
+# ncurses is supplied by the package resolver below, or resolved explicitly
+# for a direct build-vim.sh invocation.
 
 # Check for wasm-opt (used for -O2 optimization after build).
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
@@ -54,12 +58,14 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Resolve ncurses via the dep cache ---
-# An env-var short-circuit lets a caller (e.g. another resolver run,
-# or a wrapper script) pass the prefix in directly and skip the cargo
-# invocation. Otherwise we ask the resolver to build-or-hit the cache.
+# --- Resolve ncurses via the declared dependency ---
 NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
 if [ -z "$NCURSES_PREFIX" ]; then
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        echo "ERROR: vim declares ncurses as a direct dependency, but the resolver did not set WASM_POSIX_DEP_NCURSES_DIR" >&2
+        exit 1
+    fi
+    # Direct/manual invocation: enter the same dependency graph explicitly.
     echo "==> Resolving ncurses via cargo xtask build-deps..."
     HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
     NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"

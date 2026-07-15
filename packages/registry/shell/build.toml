@@ -3,7 +3,6 @@ inputs = [
   "packages/registry/shell/build-shell.sh",
   "images/vfs/scripts/build-shell-vfs-image.sh",
   "images/vfs/scripts/build-shell-vfs-image.ts",
-  "images/vfs/scripts/build-vim-zip.sh",
   "images/vfs/scripts/build-nethack-zip.sh",
   "images/vfs/scripts/shell-vfs-build.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
@@ -24,7 +23,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 11
+revision    = 12
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

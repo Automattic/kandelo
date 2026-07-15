@@ -1,48 +1,51 @@
 #!/usr/bin/env bash
 #
-# Build vim.zip for the browser shell demo.
+# Build the resolver-owned vim-browser-bundle output.
 #
 # Packages vim.wasm plus the minimal runtime tree (syntax/ftplugin/etc.) into
 # a single archive. The demo registers this as a lazy archive with mount
 # prefix /usr/, so entries become /usr/bin/vim and /usr/share/vim/vim91/...
 # On first exec of vim, the whole archive is fetched and unpacked in one go.
 #
-# Sources vim.wasm + runtime/ from the resolver cache canonical dir
-# (populated by `cargo xtask build-deps resolve vim`, which either runs
-# build-vim.sh or fetches the release archive). Falls back to the in-tree
-# source layout `packages/registry/vim/{bin,runtime}` when a cache lookup
-# fails — useful while iterating on build-vim.sh without going through
-# the resolver. Mirrors images/vfs/scripts/build-nethack-zip.sh.
+# A package build consumes WASM_POSIX_DEP_VIM_DIR, which is guaranteed by the
+# vim-browser-bundle manifest and included in its transitive cache identity.
+# A direct script invocation explicitly resolves Vim through the same graph.
+# Resolver failures and incomplete package outputs are never hidden.
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-OUTPUT_DIR="$REPO_ROOT/apps/browser-demos/public"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    OUTPUT_DIR="$WASM_POSIX_DEP_OUT_DIR"
+else
+    OUTPUT_DIR="$REPO_ROOT/apps/browser-demos/public"
+fi
 OUTPUT_FILE="$OUTPUT_DIR/vim.zip"
 
-# Resolve the vim package via the resolver. Returns the cache canonical
-# directory containing vim.wasm + runtime/<vim runtime tree>.
-HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-VIM_DIR="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-    build-deps resolve vim --arch wasm32 2>/dev/null || true)"
+# Package builds must consume the direct dependency chosen by the resolver.
+# Standalone invocations enter the same graph explicitly.
+VIM_DIR="${WASM_POSIX_DEP_VIM_DIR:-}"
+if [ -z "$VIM_DIR" ]; then
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        echo "ERROR: vim-browser-bundle declares vim as a direct dependency, but the resolver did not set WASM_POSIX_DEP_VIM_DIR" >&2
+        exit 1
+    fi
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    VIM_DIR="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+        build-deps resolve vim --arch wasm32)"
+fi
 
 VIM_WASM=""
 RUNTIME_DIR=""
 if [ -n "$VIM_DIR" ] && [ -f "$VIM_DIR/vim.wasm" ] && [ -d "$VIM_DIR/runtime" ]; then
     VIM_WASM="$VIM_DIR/vim.wasm"
     RUNTIME_DIR="$VIM_DIR/runtime"
-elif [ -f "$REPO_ROOT/packages/registry/vim/bin/vim.wasm" ] \
-   && [ -d "$REPO_ROOT/packages/registry/vim/runtime" ]; then
-    # Fallback: in-tree build artifacts.
-    VIM_WASM="$REPO_ROOT/packages/registry/vim/bin/vim.wasm"
-    RUNTIME_DIR="$REPO_ROOT/packages/registry/vim/runtime"
 else
-    echo "vim package not found." >&2
-    echo "  cache lookup: ${VIM_DIR:-<resolve failed>}" >&2
-    echo "  expected: vim.wasm + runtime/ in cache canonical dir" >&2
-    echo "  or build locally: bash packages/registry/vim/build-vim.sh" >&2
+    echo "ERROR: resolved Vim package is incomplete: ${VIM_DIR:-<empty>}" >&2
+    echo "  expected: vim.wasm + runtime/" >&2
+    echo "  for an explicit development build, set WASM_POSIX_DEP_VIM_DIR to a complete package output" >&2
     exit 1
 fi
 
@@ -65,14 +68,33 @@ chmod 755 "$STAGING/bin/vim"
 mkdir -p "$STAGING/share/vim/vim91"
 cp -R "$RUNTIME_DIR/." "$STAGING/share/vim/vim91/"
 
-(cd "$STAGING" && zip -r -q "$OUTPUT_FILE" .)
+# The bundle bytes are part of the package cache/provenance contract. Normalize
+# filesystem metadata and traversal order so identical Vim inputs produce the
+# same zip on every host and at every build time.
+find "$STAGING" -type d -exec chmod 755 {} +
+while IFS= read -r -d '' staged_file; do
+    if [ -x "$staged_file" ]; then
+        chmod 755 "$staged_file"
+    else
+        chmod 644 "$staged_file"
+    fi
+done < <(find "$STAGING" -type f -print0)
+find "$STAGING" -exec touch -h -t 198001010000 {} +
+
+(
+    cd "$STAGING"
+    LC_ALL=C find . -mindepth 1 -print \
+        | LC_ALL=C sort \
+        | zip -X -q "$OUTPUT_FILE" -@
+)
 
 echo "    $(find "$STAGING" -type f | wc -l | tr -d ' ') files"
 ls -lh "$OUTPUT_FILE"
 
-# Install into local-binaries/ so the resolver picks the locally-built
-# vim.zip over the fetched release. In the release layout vim is a
-# single-asset program (the zip IS the bundle), so no dest-name
-# argument — the helper drops it at local-binaries/programs/vim.zip.
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary vim "$OUTPUT_FILE"
+# Resolver builds already wrote the declared output directly into their
+# scratch directory. A standalone invocation also exposes the same package
+# artifact through the local binary resolver.
+if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary vim-browser-bundle "$OUTPUT_FILE"
+fi

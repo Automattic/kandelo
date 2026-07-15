@@ -163,6 +163,25 @@ has_resolvable() {
     "$REPO_ROOT/scripts/resolve-binary.sh" "$1" >/dev/null 2>&1
 }
 
+# Refuse to let Vite's local-binaries precedence silently replace a package
+# artifact with different bytes. Local overrides are intentional developer
+# state, so do not overwrite them; make the conflict explicit instead.
+require_matching_local_artifact() {
+    local label="$1"
+    local resolved="$2"
+    local local_path="$3"
+    local clean_target="$4"
+
+    if [ -e "$local_path" ] && ! cmp -s "$resolved" "$local_path"; then
+        err "$label local override differs from the resolver-owned artifact:"
+        err "  local:    $local_path"
+        err "  resolved: $resolved"
+        err "Refusing to combine a VFS manifest with different runtime bytes."
+        err "Run '$0 clean $clean_target' to use the resolver-owned browser artifact."
+        return 1
+    fi
+}
+
 KERNEL_REQUIRED_EXPORTS=(
     __abi_version
     kernel_alloc_scratch
@@ -330,7 +349,7 @@ has_ncurses()       { pkg_has_output ncurses clear.wasm && pkg_has_output ncurse
 has_zlib()          { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()       { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
 has_libcurl()       { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
-has_vim_zip()       { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/apps/browser-demos/public/vim.zip" ]; }
+has_vim_zip()       { pkg_has_output vim-browser-bundle vim.zip; }
 has_nethack_zip()   { has_resolvable programs/nethack.zip || [ -f "$REPO_ROOT/apps/browser-demos/public/nethack.zip" ]; }
 has_dlopen()        { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                       [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
@@ -860,14 +879,18 @@ build_node_vfs() {
 }
 
 build_vim_zip() {
-    if has_vim_zip; then
-        info "vim.zip"
-        return
-    fi
-
-    step "Packaging vim.zip from cached vim package"
-    bash "$REPO_ROOT/images/vfs/scripts/build-vim-zip.sh"
-    info "vim.zip built ($(du -h "$REPO_ROOT/apps/browser-demos/public/vim.zip" | cut -f1))"
+    step "Resolving the Vim browser bundle"
+    local xtask bundle_dir
+    xtask="$(pkg_xtask_bin)"
+    bundle_dir="$(cd "$REPO_ROOT" && "$xtask" \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" \
+        resolve vim-browser-bundle)"
+    require_matching_local_artifact \
+        "vim.zip" \
+        "$bundle_dir/vim.zip" \
+        "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip" \
+        "vim-zip"
+    info "Vim browser bundle resolved"
 }
 
 build_nethack_zip() {
@@ -888,14 +911,18 @@ build_nethack_zip() {
 }
 
 build_shell_vfs() {
-    if ! has_shell_vfs; then
-        build_fbdoom
-        step "Building Shell VFS image"
-        bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
-        info "Shell VFS image built"
-    else
-        info "Shell VFS image"
-    fi
+    step "Resolving the Shell VFS image"
+    local xtask shell_dir
+    xtask="$(pkg_xtask_bin)"
+    shell_dir="$(cd "$REPO_ROOT" && "$xtask" \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" \
+        resolve shell)"
+    require_matching_local_artifact \
+        "shell.vfs.zst" \
+        "$shell_dir/shell.vfs.zst" \
+        "$REPO_ROOT/local-binaries/programs/wasm32/shell.vfs.zst" \
+        "shell-vfs"
+    info "Shell VFS image resolved"
 }
 
 build_erlang() {
@@ -1581,7 +1608,7 @@ BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1781,7 +1808,8 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst"
             warn "Cleaned Perl VFS image" ;;
         shell-vfs)
-            rm -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
+            rm -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/shell.vfs.zst"
             warn "Cleaned Shell VFS image" ;;
         node)
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
