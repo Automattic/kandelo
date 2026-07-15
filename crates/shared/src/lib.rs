@@ -73,7 +73,9 @@ pub mod host_abi;
 /// 39: kernel-owned POSIX timer expiration preserves exact thread targets,
 ///     SI_TIMER metadata, overruns, and finite signal-wait deadlines through
 ///     the required host timer-fire export.
-pub const ABI_VERSION: u32 = 39;
+/// 40: main-thread, pthread, and side-module fork continuations reserve 48 KiB
+///     so valid wide call stacks do not overwrite adjacent host control state.
+pub const ABI_VERSION: u32 = 40;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1210,8 +1212,10 @@ pub mod process_memory {
     /// Fallback initial brk when a binary does not export `__heap_base`.
     pub const FALLBACK_BRK_BASE: u32 = 0x0100_0000;
 
-    /// Size of one fork save buffer in bytes.
-    pub const FORK_SAVE_BUFFER_SIZE: u32 = 16 * 1024;
+    /// Size of one fork save buffer in bytes. This fits within the dedicated
+    /// 64 KiB scratch page while leaving space below the buffer for host-owned
+    /// metadata such as the dlopen archive head pointer.
+    pub const FORK_SAVE_BUFFER_SIZE: u32 = 48 * 1024;
 
     /// Main-thread fork-save/scratch page, relative to `controlBasePage`.
     pub const MAIN_FORK_SAVE_PAGE: u32 = 0;

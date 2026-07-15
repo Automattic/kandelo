@@ -13,6 +13,7 @@ import { createConnection, createServer } from "node:net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
+import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import type {
   CentralizedWorkerInitMessage,
@@ -24,7 +25,6 @@ const repoRoot = join(__dirname, "../../../..");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
-const FORK_BUF_SIZE = 16384;
 
 const nginxWasmPath = tryResolveBinary("programs/nginx.wasm");
 const nginxPrefix = join(repoRoot, "packages/registry/nginx/demo");
@@ -129,7 +129,7 @@ describe.skipIf(!nginxWasmPath)(
 
             kw.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
-            const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
+            const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
             const childInitData: CentralizedWorkerInitMessage = {
               type: "centralized_init",
               pid: childPid,

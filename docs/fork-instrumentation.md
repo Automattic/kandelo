@@ -249,7 +249,7 @@ already contains live TLS, and reinitialization would overwrite C++ landing-pad
 and application `thread_local` state. TLS-relative exports relocate from that
 base, while `__tls_size` and `__tls_align` remain scalar constants.
 
-Every participating module still uses the fixed 16 KiB save-buffer limit
+Every participating module uses the fixed 48 KiB save-buffer limit
 described below. A dynamically allocated side buffer avoids overlap with the
 main control slab but does not make deep/unbounded frame use safe. Before the
 worker sends `SYS_FORK`, it checks both the main module's buffer and the active
@@ -284,8 +284,8 @@ beyond either end means frame writes crossed that module's reserved boundary.
 The process fails with the required and reserved byte counts instead of
 creating a child from corrupted continuation state. This is detection, not
 prevention: the instrumented unwind has already written past the fixed reserve,
-so the host discards the process and its memory. Increasing or making the
-reserve elastic is a separate ABI layout change.
+so the host discards the process and its memory. Increasing the reserve again
+or making it elastic would be another ABI layout change.
 
 For wasm32 (`P = 4`) with a module that declares three additional scalar
 mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one
