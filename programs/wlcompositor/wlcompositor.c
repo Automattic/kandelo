@@ -82,6 +82,7 @@
 #include <wayland-server.h>
 #include <wayland-server-protocol.h>
 #include "xdg-shell-server-protocol.h"
+#include "linux-dmabuf-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <libinput.h>
@@ -588,6 +589,254 @@ static void shm_bind(struct wl_client *client, void *data, uint32_t version,
     wl_resource_set_implementation(r, &shm_impl, NULL, NULL);
     wl_shm_send_format(r, WL_SHM_FORMAT_XRGB8888);
     wl_shm_send_format(r, WL_SHM_FORMAT_ARGB8888);
+}
+
+/* ====================================================================== */
+/* zwp_linux_dmabuf_v1 (PR11)                                             */
+/* ====================================================================== */
+
+/* A client that renders with GL hands us its frame as a dmabuf (a prime-fd
+ * on a renderD128 bo) instead of a wl_shm pool. Sampling is identical to
+ * the shm path — both wrap a prime-fd + dims — so a dmabuf wl_buffer reuses
+ * struct shm_buffer, backed by a single-plane pool over the dmabuf fd. For
+ * a GPU-tier bo the downstream BIND_FOREIGN_TEXTURE is zero-copy (PR10).
+ *
+ * We advertise version 3 (format + modifier events), LINEAR only — the one
+ * layout the GPU tier and our gbm_bo_import path handle. Feedback (v4+) is
+ * intentionally not offered. */
+
+struct dmabuf_params {
+    int fd;               /* plane-0 fd, dup'd from the client; -1 until add */
+    int32_t offset, stride;
+    int has_plane;        /* add() recorded plane 0 */
+    int used;             /* create/create_immed consumes the params once */
+};
+
+/* Turn finished params into a wl_buffer-backing shm_buffer, transferring
+ * ownership of the plane fd to a fresh single-ref pool. On success *err=0;
+ * on a params error returns NULL with *err set to the code to report; on OOM
+ * returns NULL with *err=0 after posting no_memory. */
+static struct shm_buffer *dmabuf_make_buffer(struct wl_client *c,
+                                             struct dmabuf_params *p,
+                                             int32_t width, int32_t height,
+                                             uint32_t format, uint32_t *err) {
+    *err = 0;
+    if (!p->has_plane) {
+        *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE;
+        return NULL;
+    }
+    if (width <= 0 || height <= 0) {
+        *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_DIMENSIONS;
+        return NULL;
+    }
+    if (format != DRM_FORMAT_XRGB8888 && format != DRM_FORMAT_ARGB8888) {
+        *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT;
+        return NULL;
+    }
+    struct shm_pool *pool = calloc(1, sizeof(*pool));
+    struct shm_buffer *b = calloc(1, sizeof(*b));
+    if (!pool || !b) {
+        free(pool);
+        free(b);
+        wl_client_post_no_memory(c);
+        return NULL;
+    }
+    pool->fd = p->fd;
+    pool->size = p->stride * height;
+    pool->refcount = 1;
+    b->pool = pool;
+    b->offset = p->offset;
+    b->width = width;
+    b->height = height;
+    b->stride = p->stride;
+    b->format = format;
+    p->fd = -1;   /* the pool owns the fd now */
+    return b;
+}
+
+/* Free a built-but-unpublished buffer (wl_resource_create failed after the
+ * fd was already transferred into the pool). */
+static void dmabuf_discard_buffer(struct shm_buffer *b) {
+    if (--b->pool->refcount == 0) shm_pool_free(b->pool);
+    free(b);
+}
+
+static void dmabuf_params_add(struct wl_client *c, struct wl_resource *r,
+                              int32_t fd, uint32_t plane_idx, uint32_t offset,
+                              uint32_t stride, uint32_t modifier_hi,
+                              uint32_t modifier_lo) {
+    struct dmabuf_params *p = wl_resource_get_user_data(r);
+    if (p->used) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+                               "params already used");
+        close(fd);
+        return;
+    }
+    if (plane_idx != 0) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_IDX,
+                               "only plane 0 is supported");
+        close(fd);
+        return;
+    }
+    if (p->has_plane) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_SET,
+                               "plane 0 already set");
+        close(fd);
+        return;
+    }
+    /* LINEAR only: the GPU tier keeps a LINEAR-equivalent layout and the CPU
+     * fallback maps the fd as linear bytes. */
+    if ((((uint64_t)modifier_hi << 32) | modifier_lo) != DRM_FORMAT_MOD_LINEAR) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
+                               "only DRM_FORMAT_MOD_LINEAR is supported");
+        close(fd);
+        return;
+    }
+    p->fd = fd;
+    p->offset = (int32_t)offset;
+    p->stride = (int32_t)stride;
+    p->has_plane = 1;
+}
+
+static void dmabuf_params_create(struct wl_client *c, struct wl_resource *r,
+                                 int32_t width, int32_t height, uint32_t format,
+                                 uint32_t flags) {
+    /* flags (y_invert/interlaced/bottom_first) don't apply: our producers
+     * render top-left-origin into a progressive bo. */
+    struct dmabuf_params *p = wl_resource_get_user_data(r);
+    if (p->used) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+                               "params already used");
+        return;
+    }
+    p->used = 1;
+    uint32_t err = 0;
+    struct shm_buffer *b = dmabuf_make_buffer(c, p, width, height, format, &err);
+    if (!b) {
+        if (err) zwp_linux_buffer_params_v1_send_failed(r);
+        return;
+    }
+    struct wl_resource *br = wl_resource_create(c, &wl_buffer_interface, 1, 0);
+    if (!br) {
+        dmabuf_discard_buffer(b);
+        wl_client_post_no_memory(c);
+        return;
+    }
+    wl_resource_set_implementation(br, &buffer_impl, b, buffer_resource_destroy);
+    zwp_linux_buffer_params_v1_send_created(r, br);
+}
+
+static void dmabuf_params_create_immed(struct wl_client *c,
+                                       struct wl_resource *r, uint32_t buffer_id,
+                                       int32_t width, int32_t height,
+                                       uint32_t format, uint32_t flags) {
+    struct dmabuf_params *p = wl_resource_get_user_data(r);
+    if (p->used) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+                               "params already used");
+        return;
+    }
+    p->used = 1;
+    uint32_t err = 0;
+    struct shm_buffer *b = dmabuf_make_buffer(c, p, width, height, format, &err);
+    if (!b) {
+        /* create_immed reports failure as a fatal protocol error (it has no
+         * 'failed' event — the client committed to the new_id). */
+        if (err) wl_resource_post_error(r, err, "invalid dmabuf params");
+        return;
+    }
+    struct wl_resource *br =
+        wl_resource_create(c, &wl_buffer_interface, 1, buffer_id);
+    if (!br) {
+        dmabuf_discard_buffer(b);
+        wl_client_post_no_memory(c);
+        return;
+    }
+    wl_resource_set_implementation(br, &buffer_impl, b, buffer_resource_destroy);
+}
+
+static void dmabuf_params_destroy_req(struct wl_client *c,
+                                      struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwp_linux_buffer_params_v1_interface dmabuf_params_impl = {
+    .destroy = dmabuf_params_destroy_req,
+    .add = dmabuf_params_add,
+    .create = dmabuf_params_create,
+    .create_immed = dmabuf_params_create_immed,
+};
+static void dmabuf_params_resource_destroy(struct wl_resource *r) {
+    struct dmabuf_params *p = wl_resource_get_user_data(r);
+    if (!p) return;
+    if (p->fd >= 0) close(p->fd);   /* a plane added but never consumed */
+    free(p);
+}
+
+static void dmabuf_create_params(struct wl_client *c, struct wl_resource *r,
+                                 uint32_t params_id) {
+    struct dmabuf_params *p = calloc(1, sizeof(*p));
+    if (!p) { wl_client_post_no_memory(c); return; }
+    p->fd = -1;
+    struct wl_resource *pr = wl_resource_create(
+        c, &zwp_linux_buffer_params_v1_interface, wl_resource_get_version(r),
+        params_id);
+    if (!pr) { free(p); wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(pr, &dmabuf_params_impl, p,
+                                   dmabuf_params_resource_destroy);
+}
+static void dmabuf_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+
+/* Feedback (v4+) is not advertised, so a conforming client never reaches
+ * these. Hand back an inert resource rather than leaving a NULL dispatch
+ * slot a malformed client could crash the compositor through. */
+static void dmabuf_feedback_destroy_req(struct wl_client *c,
+                                        struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwp_linux_dmabuf_feedback_v1_interface dmabuf_feedback_impl = {
+    .destroy = dmabuf_feedback_destroy_req,
+};
+static void dmabuf_get_feedback(struct wl_client *c, struct wl_resource *r,
+                                uint32_t id) {
+    struct wl_resource *fb = wl_resource_create(
+        c, &zwp_linux_dmabuf_feedback_v1_interface, wl_resource_get_version(r),
+        id);
+    if (!fb) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(fb, &dmabuf_feedback_impl, NULL, NULL);
+}
+static void dmabuf_get_default_feedback(struct wl_client *c,
+                                        struct wl_resource *r, uint32_t id) {
+    dmabuf_get_feedback(c, r, id);
+}
+static void dmabuf_get_surface_feedback(struct wl_client *c,
+                                        struct wl_resource *r, uint32_t id,
+                                        struct wl_resource *surface) {
+    dmabuf_get_feedback(c, r, id);
+}
+static const struct zwp_linux_dmabuf_v1_interface dmabuf_impl = {
+    .destroy = dmabuf_destroy_req,
+    .create_params = dmabuf_create_params,
+    .get_default_feedback = dmabuf_get_default_feedback,
+    .get_surface_feedback = dmabuf_get_surface_feedback,
+};
+static void dmabuf_bind(struct wl_client *c, void *data, uint32_t version,
+                        uint32_t id) {
+    struct wl_resource *r =
+        wl_resource_create(c, &zwp_linux_dmabuf_v1_interface, version, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &dmabuf_impl, NULL, NULL);
+    /* Advertise the formats the GPU tier + gbm import path handle, LINEAR
+     * only. The modifier event exists since interface version 3. */
+    static const uint32_t fmts[] = { DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888 };
+    for (unsigned i = 0; i < sizeof(fmts) / sizeof(fmts[0]); i++) {
+        zwp_linux_dmabuf_v1_send_format(r, fmts[i]);
+        if (version >= ZWP_LINUX_DMABUF_V1_MODIFIER_SINCE_VERSION)
+            zwp_linux_dmabuf_v1_send_modifier(
+                r, fmts[i], (uint32_t)(DRM_FORMAT_MOD_LINEAR >> 32),
+                (uint32_t)(DRM_FORMAT_MOD_LINEAR & 0xffffffffu));
+    }
 }
 
 /* ====================================================================== */
@@ -2021,6 +2270,8 @@ int main(void) {
     if (!wl_global_create(g.display, &wl_compositor_interface, 4, NULL,
                           compositor_bind) ||
         !wl_global_create(g.display, &wl_shm_interface, 1, NULL, shm_bind) ||
+        !wl_global_create(g.display, &zwp_linux_dmabuf_v1_interface, 3, NULL,
+                          dmabuf_bind) ||
         !wl_global_create(g.display, &xdg_wm_base_interface, 1, NULL,
                           wm_base_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 1, NULL, seat_bind) ||
