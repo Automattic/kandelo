@@ -979,11 +979,16 @@ export class CentralizedKernelWorker {
    * init at pid 1, etc.). The host is no longer expected to pick pids;
    * this is the single source of truth.
    */
-  allocatePid(): number {
+  allocateTopLevelSpawnPid(): number {
     while (this.processes.has(this.nextChildPid)) {
       this.nextChildPid++;
     }
     return this.nextChildPid++;
+  }
+
+  /** Backward-compatible name for host integrations using this allocator. */
+  allocatePid(): number {
+    return this.allocateTopLevelSpawnPid();
   }
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
