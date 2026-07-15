@@ -194,6 +194,8 @@ elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   exit 2
 fi
 
+unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
+
 run_brew_for_kandelo_bottles() {
   HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
   KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
@@ -202,11 +204,21 @@ run_brew_for_kandelo_bottles() {
 
 INSTALL_LOG="$CONTROL_DIR/install.log"
 DEPENDENCY_LIST="$CONTROL_DIR/dependencies.txt"
+TEST_DEPENDENCY_LIST="$CONTROL_DIR/test-dependencies.txt"
+SAME_TAP_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-test-dependencies.txt"
+HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"
+DEPENDENCY_POUR_LIST="$CONTROL_DIR/pour-dependencies.txt"
 FORMULA_INFO="$CONTROL_DIR/formula-info.json"
 VERIFIED_DEPENDENCIES="$CONTROL_DIR/verified-dependency-provenance.json"
 : >"$INSTALL_LOG"
 : >"$DEPENDENCY_LIST"
-chmod 0600 "$INSTALL_LOG" "$DEPENDENCY_LIST"
+: >"$TEST_DEPENDENCY_LIST"
+: >"$SAME_TAP_TEST_DEPENDENCY_LIST"
+: >"$HOST_DEPENDENCY_LIST"
+: >"$DEPENDENCY_POUR_LIST"
+chmod 0600 "$INSTALL_LOG" "$DEPENDENCY_LIST" \
+  "$TEST_DEPENDENCY_LIST" "$SAME_TAP_TEST_DEPENDENCY_LIST" \
+  "$HOST_DEPENDENCY_LIST" "$DEPENDENCY_POUR_LIST"
 
 run_brew_logged() {
   local status
@@ -221,6 +233,31 @@ run_brew_logged() {
   awk -v prefix="$TAP_NAME/" '
     index(tolower($0), prefix) == 1 && !seen[tolower($0)]++ { print tolower($0) }
   ' >"$DEPENDENCY_LIST"
+"$BREW_BIN" deps --topological --full-name --include-test \
+  --formula "$FORMULA_REF" |
+  awk 'NF && !seen[tolower($0)]++ { print tolower($0) }' >"$TEST_DEPENDENCY_LIST"
+awk -v prefix="$TAP_NAME/" 'index($0, prefix) == 1 { print }' \
+  "$TEST_DEPENDENCY_LIST" >"$SAME_TAP_TEST_DEPENDENCY_LIST"
+awk -v prefix="$TAP_NAME/" 'index($0, prefix) != 1 { print }' \
+  "$TEST_DEPENDENCY_LIST" >"$HOST_DEPENDENCY_LIST"
+awk 'NF && !seen[$0]++ { print }' \
+  "$DEPENDENCY_LIST" "$SAME_TAP_TEST_DEPENDENCY_LIST" >"$DEPENDENCY_POUR_LIST"
+
+validate_dependency_list() {
+  local path="$1" label="$2" bytes count
+  bytes="$(wc -c <"$path" | tr -d '[:space:]')"
+  count="$(awk 'NF { count++ } END { print count + 0 }' "$path")"
+  if [ "$bytes" -gt 65536 ] || [ "$count" -gt 128 ]; then
+    echo "homebrew-verify-poured-bottle.sh: $label exceeds the dependency limit" >&2
+    exit 2
+  fi
+}
+
+validate_dependency_list "$DEPENDENCY_LIST" "runtime dependency list"
+validate_dependency_list \
+  "$SAME_TAP_TEST_DEPENDENCY_LIST" "test dependency list"
+validate_dependency_list "$DEPENDENCY_POUR_LIST" "dependency pour list"
+validate_dependency_list "$HOST_DEPENDENCY_LIST" "host dependency list"
 
 while IFS= read -r dependency; do
   [ -n "$dependency" ] || continue
@@ -232,7 +269,20 @@ while IFS= read -r dependency; do
     }
   run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install \
     --force-bottle --as-dependency --ignore-dependencies --formula "$dependency"
-done <"$DEPENDENCY_LIST"
+done <"$DEPENDENCY_POUR_LIST"
+
+# Homebrew treats the target as unbottled under the native Linux tag, so asking
+# Homebrew to install the target's dependencies would reintroduce pure build deps.
+# Install only the explicitly resolved non-tap runtime/test closure instead.
+while IFS= read -r dependency; do
+  [ -n "$dependency" ] || continue
+  [[ "$dependency" =~ ^[a-z0-9][a-z0-9@+_.-]*$|^[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9@+_.-]*$ ]] || {
+    echo "homebrew-verify-poured-bottle.sh: invalid host dependency: $dependency" >&2
+    exit 2
+  }
+  run_brew_logged "$BREW_BIN" install \
+    --as-dependency --ignore-dependencies --formula "$dependency"
+done <"$HOST_DEPENDENCY_LIST"
 
 SELECTION_MODE="$(jq -er '.bottle.mode' "$SELECTION_RECEIPT")"
 case "$SELECTION_MODE" in

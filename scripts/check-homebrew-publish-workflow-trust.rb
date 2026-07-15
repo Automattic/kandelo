@@ -16,10 +16,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "75468bd935146ca1c78e1a757a314bb6355bce63f01707c3345936d3f9ccaf07"
-PUBLISHER_BUILD_DIGEST = "0704fe37cd33364feff8738163df3203107e98bb73cb68167ab0009ede98c1cf"
+PUBLISHER_BUILD_DIGEST = "682e73ef771a9beebb0bbfaea2770d6f1cd7062882b4bb3145958d204e1436b5"
 PUBLISHER_UPLOAD_DIGEST = "329ff7dfafc8f3c262ae8c817187d875db451da05d7d98a12eafda45cdbf2213"
 PUBLISHER_INDEX_DIGEST = "2c5988c9b840dcc1e845f40b58e47ed8263a9babccdae08140bea145a4199de3"
-PUBLISHER_VERIFY_DIGEST = "3f1a8f4760d1970b08d3dc9bd808e74ec0c1ba5f93b8a795385af4bd0604943b"
+PUBLISHER_VERIFY_DIGEST = "73cc22e389c4fb449f32976860178dc40bce686739c6662cb769ca2ad93b7003"
 PUBLISHER_FINALIZE_DIGEST = "2e7a24cdcaa63e631cee1a967bff1c41bb0f8f8e57e2039929efda5d069cf9f9"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
@@ -827,6 +827,8 @@ def check_publisher(workflow)
     'chmod 0700 "$CONTROL_DIR"',
     'INSTALL_LOG="$CONTROL_DIR/brew-install.log"',
     'DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"',
+    'BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"',
+    'DEPENDENCY_POUR_LIST="$CONTROL_DIR/same-tap-pour-dependencies.txt"',
     'log="$CONTROL_DIR/brew-install-attempt-${attempt}.log"',
     'rm -rf "$CONTROL_DIR"',
     'unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG',
@@ -834,10 +836,93 @@ def check_publisher(workflow)
     'HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG"',
     'KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG"',
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install',
+    'run_brew_logged "$BREW_BIN" install',
+    "--include-build --include-test",
+    'validate_same_tap_dependency_list "$DEPENDENCY_LIST"',
+    '"$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"',
+    'validate_same_tap_dependency_list "$DEPENDENCY_POUR_LIST"',
+    'done <"$DEPENDENCY_POUR_LIST"',
+    '--expected-dependencies "$DEPENDENCY_LIST"',
+    "--only-dependencies",
+    "--include-test",
     'run_brew_for_kandelo_bottles "$BREW_BIN" bottle',
   ].each do |fragment|
     check(bottle_builder.include?(fragment), "reviewed bottle builder lacks #{fragment}")
   end
+  dependency_pour_index = bottle_builder.index(
+    'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install'
+  )
+  runtime_dependency_index = bottle_builder.index(
+    'deps --topological --full-name --formula "$FORMULA_REF"'
+  )
+  build_test_dependency_index = bottle_builder.index(
+    'deps --topological --full-name --include-build --include-test'
+  )
+  test_dependency_index = bottle_builder.index('run_brew_logged "$BREW_BIN" install')
+  target_build_index = bottle_builder.index("brew_install_build_bottle")
+  check(runtime_dependency_index && build_test_dependency_index && dependency_pour_index &&
+        test_dependency_index && target_build_index &&
+        runtime_dependency_index < build_test_dependency_index &&
+        build_test_dependency_index < dependency_pour_index &&
+        dependency_pour_index < test_dependency_index &&
+        test_dependency_index < target_build_index,
+        "reviewed bottle builder installs same-tap or host dependencies outside their phases")
+  bottle_verifier = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-verify-poured-bottle.sh")
+  )
+  [
+    'DEPENDENCY_LIST="$CONTROL_DIR/dependencies.txt"',
+    'TEST_DEPENDENCY_LIST="$CONTROL_DIR/test-dependencies.txt"',
+    'SAME_TAP_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-test-dependencies.txt"',
+    'HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"',
+    'DEPENDENCY_POUR_LIST="$CONTROL_DIR/pour-dependencies.txt"',
+    "--include-test",
+    'validate_dependency_list "$DEPENDENCY_LIST"',
+    '"$SAME_TAP_TEST_DEPENDENCY_LIST" "test dependency list"',
+    'validate_dependency_list "$DEPENDENCY_POUR_LIST"',
+    'validate_dependency_list "$HOST_DEPENDENCY_LIST"',
+    'done <"$DEPENDENCY_POUR_LIST"',
+    'done <"$HOST_DEPENDENCY_LIST"',
+    'unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG',
+    '--expected-dependencies "$DEPENDENCY_LIST"',
+  ].each do |fragment|
+    check(bottle_verifier.include?(fragment), "reviewed bottle verifier lacks #{fragment}")
+  end
+  check(!bottle_verifier.include?("--only-dependencies"),
+        "reviewed bottle verifier reintroduced the target's pure build closure")
+  verifier_runtime_dependency_index = bottle_verifier.index(
+    'deps --topological --full-name --formula "$FORMULA_REF"'
+  )
+  verifier_test_dependency_index = bottle_verifier.index(
+    'deps --topological --full-name --include-test'
+  )
+  verifier_dependency_pour_index = bottle_verifier.index(
+    'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install'
+  )
+  verifier_host_dependency_index = bottle_verifier.index(
+    'run_brew_logged "$BREW_BIN" install'
+  )
+  verifier_cache_clear_index = bottle_verifier.index(
+    'find "$HOMEBREW_CACHE" -mindepth 1 -delete'
+  )
+  verifier_target_install_index = bottle_verifier.index(
+    'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install',
+    (verifier_dependency_pour_index || -1) + 1
+  )
+  verifier_formula_test_index = bottle_verifier.index(
+    'run_brew_logged "$BREW_BIN" test "$FORMULA_REF"'
+  )
+  check(verifier_runtime_dependency_index && verifier_test_dependency_index &&
+        verifier_dependency_pour_index && verifier_host_dependency_index &&
+        verifier_cache_clear_index && verifier_target_install_index &&
+        verifier_formula_test_index &&
+        verifier_runtime_dependency_index < verifier_test_dependency_index &&
+        verifier_test_dependency_index < verifier_dependency_pour_index &&
+        verifier_dependency_pour_index < verifier_host_dependency_index &&
+        verifier_host_dependency_index < verifier_cache_clear_index &&
+        verifier_cache_clear_index < verifier_target_install_index &&
+        verifier_target_install_index < verifier_formula_test_index,
+        "reviewed bottle verifier installs test dependencies, target, or test out of order")
   check(!bottle_builder.include?('$WORK_DIR/brew-install'),
         "reviewed bottle builder writes runner control logs through the Formula work directory")
   check(!bottle_builder.match?(/brew[^\n]*bottle[^\n]*(?:--merge|--write)/),
@@ -895,6 +980,73 @@ def check_publisher(workflow)
           "bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh"
         ), "publisher does not build the reviewed fork-instrument host tool")
   javascript_step = named_step(build_steps, "Install JavaScript dependencies for formula tests")
+  browser_fragments = [
+    'cd "$GITHUB_WORKSPACE/kandelo"', "bash scripts/dev-shell.sh env",
+    'KANDELO_HOMEBREW_SHARED_TEMP="$KANDELO_HOMEBREW_SHARED_TEMP"',
+    'KANDELO_HOMEBREW_BUILD_USER="$KANDELO_HOMEBREW_BUILD_USER"',
+    'KANDELO_HOMEBREW_SUDO_BIN="$KANDELO_HOMEBREW_SUDO_BIN"',
+    'node_bin="$(command -v node)"', "/nix/store/*/bin/node",
+    "Formula browser provisioning resolved an undeclared Node",
+    "bash scripts/homebrew-provision-formula-browser.sh",
+    '--shared-temp "$KANDELO_HOMEBREW_SHARED_TEMP"',
+    '--build-user "$KANDELO_HOMEBREW_BUILD_USER"',
+    '--sudo-bin "$KANDELO_HOMEBREW_SUDO_BIN"', '--node-bin "$node_bin"',
+    '--browser-app "$PWD/apps/browser-demos"',
+  ]
+  check_browser_step = lambda do |steps, name, label|
+    step = named_step(steps, name)
+    check(step.keys.sort == %w[name run shell] && step["shell"] == "bash",
+          "#{label} Formula browser runtime mapping changed")
+    run = step.fetch("run")
+    browser_fragments.each do |fragment|
+      check(run.include?(fragment), "#{label} Formula browser runtime lacks #{fragment}")
+    end
+    dev_shell_index = run.index("bash scripts/dev-shell.sh env")
+    node_resolution_index = run.index('node_bin="$(command -v node)"')
+    check(dev_shell_index && node_resolution_index && dev_shell_index < node_resolution_index,
+          "#{label} resolves Formula browser Node from the hosted runner PATH")
+    step
+  end
+  browser_step = check_browser_step.call(
+    build_steps, "Provision Formula browser runtime", "publisher build"
+  )
+  verify_browser_step = check_browser_step.call(
+    verify_steps, "Provision Formula browser runtime for bottle verification",
+    "publisher verifier"
+  )
+  browser_provisioner = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-provision-formula-browser.sh")
+  )
+  [
+    'BROWSER_CACHE="$SHARED_TEMP/ms-playwright"',
+    '[ -e "$BROWSER_CACHE" ] || [ -L "$BROWSER_CACHE" ]',
+    'PLAYWRIGHT_BROWSERS_PATH="$BROWSER_CACHE"',
+    'HOST_SYSTEM_PATH="$(dirname "$SUDO_BIN"):/usr/sbin:/usr/bin:/sbin:/bin"',
+    'PATH="$PATH:$HOST_SYSTEM_PATH" PLAYWRIGHT_BROWSERS_PATH="$BROWSER_CACHE"',
+    '"$NODE_BIN" "$PLAYWRIGHT_CLI" install chromium --with-deps',
+    'requireFromBrowserApp("@playwright/test")',
+    '"$SUDO_BIN" -n -- chown -R root:root "$BROWSER_CACHE"',
+    '"$SUDO_BIN" -n -- chmod -R a-w "$BROWSER_CACHE"',
+    '"$SUDO_BIN" -n -H -u "$BUILD_USER" --',
+    'test -w "$BROWSER_CACHE" -o -w "$BROWSER_EXECUTABLE"',
+    "Playwright Chromium escaped its cache",
+  ].each do |fragment|
+    check(browser_provisioner.include?(fragment),
+          "reviewed Formula browser provisioner lacks #{fragment}")
+  end
+  verifier_identity_step = named_step(
+    verify_steps, "Create isolated bottle verification identity"
+  )
+  force_pour_step = named_step(
+    verify_steps, "Force-pour and test the exact selected bottle without credentials"
+  )
+  verifier_retirement_step = named_step(
+    verify_steps, "Retire isolated bottle verification identity"
+  )
+  check(verify_steps.index(verifier_identity_step) < verify_steps.index(verify_browser_step) &&
+        verify_steps.index(verify_browser_step) < verify_steps.index(force_pour_step) &&
+        verify_steps.index(force_pour_step) < verify_steps.index(verifier_retirement_step),
+        "publisher provisions or uses the verifier browser outside the isolated test phase")
   build_formula_step = named_step(build_steps,
                                   "Build and test Homebrew bottle without publisher credentials")
   retire_identity_step = named_step(build_steps, "Retire isolated Formula execution identity")
@@ -937,7 +1089,8 @@ def check_publisher(workflow)
         build_steps.index(fork_instrument_step) < build_steps.index(runtime_step) &&
         build_steps.index(runtime_step) < build_steps.index(javascript_step) &&
         build_steps.index(javascript_step) < build_steps.index(identity_step) &&
-        build_steps.index(identity_step) < build_steps.index(build_formula_step) &&
+        build_steps.index(identity_step) < build_steps.index(browser_step) &&
+        build_steps.index(browser_step) < build_steps.index(build_formula_step) &&
         build_steps.index(runtime_step) < build_steps.index(build_formula_step) &&
         build_steps.index(build_formula_step) < build_steps.index(retire_identity_step) &&
         build_steps.index(retire_identity_step) < build_steps.index(postbuild_kandelo_step) &&
@@ -1663,6 +1816,32 @@ def self_test(publisher, maintenance)
         step["name"] == "Build and test Homebrew bottle without publisher credentials"
       end
       steps[runtime_index], steps[formula_index] = steps[formula_index], steps[runtime_index]
+    },
+    "Formula browser runtime bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Provision Formula browser runtime")
+      step["run"] = step.fetch("run").sub(
+        "scripts/homebrew-provision-formula-browser.sh", "true #"
+      )
+    },
+    "Formula browser hosted Node bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Provision Formula browser runtime")
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/dev-shell.sh env", "env"
+      )
+    },
+    "Formula browser Node provenance bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Provision Formula browser runtime")
+      step["run"] = step.fetch("run").sub(
+        "/nix/store/*/bin/node) ;;", "*) ;;"
+      )
+    },
+    "Formula browser runtime ordering bypass" => lambda { |w|
+      steps = w.fetch("jobs").fetch("build-and-test").fetch("steps")
+      browser_index = steps.index { |step| step["name"] == "Provision Formula browser runtime" }
+      formula_index = steps.index do |step|
+        step["name"] == "Build and test Homebrew bottle without publisher credentials"
+      end
+      steps[browser_index], steps[formula_index] = steps[formula_index], steps[browser_index]
     },
     "Formula build identity bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Create isolated Formula execution identity")
