@@ -9,6 +9,7 @@ HOMEBREW_PATCHED_OVERLAY=""
 HOMEBREW_PATCHED_LAUNCHER=""
 HOMEBREW_PATCHED_BREW_BIN=""
 HOMEBREW_PATCHED_PROTECTED_DIR=""
+HOMEBREW_PATCHED_SOURCE_ALIAS_DIR=""
 HOMEBREW_PATCHED_INTEGRITY_SHA256=""
 HOMEBREW_PATCHED_SUDO_BIN=""
 HOMEBREW_PATCHED_SYSTEMD_RUN_BIN=""
@@ -50,11 +51,13 @@ homebrew_assert_tree_not_writable_by_user() {
     echo "homebrew-patched-launcher: privileged host boundary is not initialized" >&2
     return 2
   }
-  writable="$("$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- \
+  if ! writable="$("$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- \
     find "$tree" -xdev \
       \( -writable -print -quit \) -o \
-      \( -type d \( ! -readable -o ! -executable \) -prune \) \
-      2>/dev/null)"
+      \( -type d \( ! -readable -o ! -executable \) -prune \))"; then
+    echo "homebrew-patched-launcher: could not inspect protected source as $user: $tree" >&2
+    return 2
+  fi
   if [ -n "$writable" ]; then
     echo "homebrew-patched-launcher: build user can write protected source: $writable" >&2
     return 1
@@ -137,6 +140,11 @@ homebrew_patched_launcher_cleanup() {
       >/dev/null 2>&1 || true
     HOMEBREW_PATCHED_PROTECTED_DIR=""
   fi
+  if [ -n "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ]; then
+    "$HOMEBREW_PATCHED_SUDO_BIN" rm -rf "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" \
+      >/dev/null 2>&1 || true
+    HOMEBREW_PATCHED_SOURCE_ALIAS_DIR=""
+  fi
   if [ -n "$HOMEBREW_PATCHED_LAUNCHER" ] && [ -L "$HOMEBREW_PATCHED_LAUNCHER" ]; then
     rm -f "$HOMEBREW_PATCHED_LAUNCHER" 2>/dev/null || \
       "$HOMEBREW_PATCHED_SUDO_BIN" rm -f "$HOMEBREW_PATCHED_LAUNCHER" \
@@ -164,16 +172,17 @@ homebrew_patched_launcher_cleanup() {
 # to a dedicated user inside a transient systemd service. KillMode=control-group
 # makes double-forked or session-detached descendants part of the call lifecycle.
 homebrew_patched_launcher_isolate() {
-  if [ "$#" -ne 4 ]; then
-    echo "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR KANDELO_ROOT TAP_ROOT" >&2
+  if [ "$#" -ne 5 ]; then
+    echo "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR KANDELO_ROOT TAP_ROOT OUTPUT_ROOT" >&2
     return 2
   fi
-  local build_user="$1" work_dir="$2" kandelo_root="$3" tap_root="$4"
-  local build_group build_home protected_brew wrapper_source wrapper_path
+  local build_user="$1" work_dir="$2" kandelo_root="$3" tap_root="$4" output_root="$5"
+  local build_group build_home protected_brew protected_audit
+  local wrapper_source wrapper_path audit_source
   local mutable_root protected_root
   local sudo_bin sudo_mode env_bin variable value patched_prefix patched_repo
   local systemd_run_bin systemctl_bin getent_bin pgrep_bin pkill_bin
-  local build_uid systemd_slice unit_prefix
+  local build_uid systemd_slice unit_prefix source_alias_dir
   local -a preserved_variables
 
   [ "$(uname -s)" = "Linux" ] || {
@@ -218,6 +227,8 @@ homebrew_patched_launcher_isolate() {
     "$build_user" "$pgrep_bin" /usr/bin/pgrep pgrep
   homebrew_assert_protected_host_executable \
     "$build_user" "$pkill_bin" /usr/bin/pkill pkill /usr/bin/pgrep
+  homebrew_assert_protected_host_executable \
+    "$build_user" /usr/bin/findmnt /usr/bin/findmnt findmnt
   [ -d /run/systemd/system ] || {
     echo "homebrew-patched-launcher: systemd is not the active service manager" >&2
     return 2
@@ -234,6 +245,19 @@ homebrew_patched_launcher_isolate() {
     echo "homebrew-patched-launcher: build user has no home directory" >&2
     return 2
   }
+
+  for protected_root in "$kandelo_root" "$tap_root" "$output_root"; do
+    if [ ! -d "$protected_root" ] || [ -L "$protected_root" ]; then
+      echo "homebrew-patched-launcher: protected root is not a real directory: $protected_root" >&2
+      return 2
+    fi
+    case "$protected_root" in
+      *:*)
+        echo "homebrew-patched-launcher: protected root cannot contain ':' for a systemd bind: $protected_root" >&2
+        return 2
+        ;;
+    esac
+  done
 
   for mutable_root in "$work_dir" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP"; do
     if [ ! -d "$mutable_root" ] || [ -L "$mutable_root" ]; then
@@ -262,8 +286,42 @@ homebrew_patched_launcher_isolate() {
 
   HOMEBREW_PATCHED_PROTECTED_DIR="$HOMEBREW_PATCHED_PREFIX/.kandelo-homebrew-$$-${RANDOM}"
   "$sudo_bin" install -d -o root -g root -m 0755 "$HOMEBREW_PATCHED_PROTECTED_DIR"
+  source_alias_dir="$work_dir/source-aliases"
+  "$sudo_bin" install -d -o root -g root -m 0555 \
+    "$source_alias_dir" "$source_alias_dir/kandelo" "$source_alias_dir/tap"
+  HOMEBREW_PATCHED_SOURCE_ALIAS_DIR="$source_alias_dir"
   protected_brew="$HOMEBREW_PATCHED_PROTECTED_DIR/brew"
   "$sudo_bin" ln -s "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$protected_brew"
+
+  audit_source="$work_dir/audit-source-aliases"
+  protected_audit="$HOMEBREW_PATCHED_PROTECTED_DIR/audit-source-aliases"
+  {
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+    printf 'expected_kandelo=%q\n' "$source_alias_dir/kandelo"
+    printf 'expected_tap=%q\n' "$source_alias_dir/tap"
+    printf 'if [ "${HOMEBREW_KANDELO_ROOT:-}" != "$expected_kandelo" ] || '
+    printf '[ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" != "$expected_kandelo" ]; then\n'
+    printf '  echo "homebrew-patched-launcher: isolated Kandelo root does not use the protected alias" >&2\n'
+    printf '  exit 2\nfi\n'
+    printf 'for source_alias in "$expected_kandelo" "$expected_tap"; do\n'
+    printf '  if [ ! -d "$source_alias" ] || [ ! -r "$source_alias" ] || [ ! -x "$source_alias" ]; then\n'
+    printf '    echo "homebrew-patched-launcher: protected source alias is inaccessible: $source_alias" >&2\n'
+    printf '    exit 2\n  fi\n'
+    printf '  mount_options="$(/usr/bin/findmnt --noheadings --output VFS-OPTIONS --target "$source_alias")" || {\n'
+    printf '    echo "homebrew-patched-launcher: could not inspect protected source mount: $source_alias" >&2\n'
+    printf '    exit 2\n  }\n'
+    printf '  case ",${mount_options// /}," in\n'
+    printf '    *,ro,*) ;;\n'
+    printf '    *) echo "homebrew-patched-launcher: protected source mount is writable: $source_alias" >&2; exit 1 ;;\n'
+    printf '  esac\ndone\n'
+    printf 'for hidden_root in %q %q %q; do\n' \
+      "$kandelo_root" "$tap_root" "$output_root"
+    printf '  if [ -e "$hidden_root" ] || [ -r "$hidden_root" ] || [ -x "$hidden_root" ]; then\n'
+    printf '    echo "homebrew-patched-launcher: original protected root is visible to Formula execution: $hidden_root" >&2\n'
+    printf '    exit 1\n  fi\ndone\n'
+  } >"$audit_source"
+  "$sudo_bin" install -o root -g root -m 0555 "$audit_source" "$protected_audit"
+  rm -f "$audit_source"
 
   wrapper_source="$work_dir/run-isolated-brew"
   wrapper_path="$HOMEBREW_PATCHED_PROTECTED_DIR/run-brew"
@@ -274,8 +332,8 @@ homebrew_patched_launcher_isolate() {
     PATH XDG_CONFIG_HOME
     HOMEBREW_CACHE HOMEBREW_TEMP HOMEBREW_NO_AUTO_UPDATE
     HOMEBREW_NO_INSTALL_CLEANUP HOMEBREW_NO_ANALYTICS HOMEBREW_DEVELOPER
-    KANDELO_HOMEBREW_ARCH KANDELO_HOMEBREW_KANDELO_ROOT
-    HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_ROOT HOMEBREW_KANDELO_NODE
+    KANDELO_HOMEBREW_ARCH
+    HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_NODE
     HOMEBREW_KANDELO_LLVM_BIN HOMEBREW_KANDELO_ABI
     HOMEBREW_KANDELO_NODE_RECEIPT_PATH
     LLVM_BIN WASM_POSIX_LLVM_DIR
@@ -288,9 +346,11 @@ homebrew_patched_launcher_isolate() {
       printf 'if [ -n "${%s+x}" ]; then bottle_tag_env+=("%s=${%s}"); fi\n' \
         "$variable" "$variable" "$variable"
     done
-    # The workflow checkout may live below a home directory that the isolated
-    # build identity cannot traverse. The mutable work root was already
-    # verified for that identity, so use it as the service working directory.
+    printf 'command_path=%q\n' "$protected_brew"
+    printf 'if [ "${1:-}" = __kandelo_verify_source_aliases ]; then\n'
+    printf '  [ "$#" -eq 1 ] || { echo "homebrew-patched-launcher: source audit accepts no arguments" >&2; exit 2; }\n'
+    printf '  command_path=%q\n' "$protected_audit"
+    printf '  shift\nfi\n'
     printf 'working_directory=%q\n' "$work_dir"
     printf 'unit=%q-$$-${RANDOM}.service\n' "$unit_prefix"
     printf 'exec %q -n -- %q --quiet --wait --collect --pipe' \
@@ -300,6 +360,11 @@ homebrew_patched_launcher_isolate() {
       "--uid=$build_user" "--gid=$build_group" \
       "--property=KillMode=control-group" "--property=SendSIGKILL=yes" \
       "--property=TimeoutStopSec=10s" "--property=NoNewPrivileges=yes" \
+      "--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo" \
+      "--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap" \
+      "--property=InaccessiblePaths=$kandelo_root" \
+      "--property=InaccessiblePaths=$tap_root" \
+      "--property=InaccessiblePaths=$output_root" \
       "--service-type=exec" \
       "--expand-environment=no"
     printf ' --working-directory="$working_directory" -- %q -i' "$env_bin"
@@ -311,14 +376,17 @@ homebrew_patched_launcher_isolate() {
         printf ' %q' "$variable=$value"
       fi
     done
-    printf ' "${bottle_tag_env[@]}" %q "$@"\n' "$protected_brew"
+    printf ' %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
+      "KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo"
+    printf ' "${bottle_tag_env[@]}" "$command_path" "$@"\n'
   } >"$wrapper_source"
   "$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"
   rm -f "$wrapper_source"
   "$sudo_bin" chmod 0555 "$HOMEBREW_PATCHED_PROTECTED_DIR"
 
-  for protected_root in \
-    "$kandelo_root" "$tap_root" "$HOMEBREW_PATCHED_REPO" "$HOMEBREW_PATCHED_OVERLAY"; do
+  # The overlay is a Git worktree, so its backing repository must remain
+  # traversable. Protect the Formula-executing overlay itself instead.
+  for protected_root in "$source_alias_dir" "$HOMEBREW_PATCHED_OVERLAY"; do
     homebrew_assert_tree_not_writable_by_user "$build_user" "$protected_root"
     homebrew_assert_tree_not_replaceable_by_user "$build_user" "$protected_root"
   done
@@ -338,8 +406,18 @@ homebrew_patched_launcher_isolate() {
   "$sudo_bin" rm -f "$HOMEBREW_PATCHED_LAUNCHER"
   HOMEBREW_PATCHED_LAUNCHER="$protected_brew"
   HOMEBREW_PATCHED_BREW_BIN="$wrapper_path"
-  patched_prefix="$("$HOMEBREW_PATCHED_BREW_BIN" --prefix)" || return
-  patched_repo="$("$HOMEBREW_PATCHED_BREW_BIN" --repository)" || return
+  "$HOMEBREW_PATCHED_BREW_BIN" __kandelo_verify_source_aliases || {
+    echo "homebrew-patched-launcher: isolated source aliases failed verification" >&2
+    return 1
+  }
+  if ! patched_prefix="$("$HOMEBREW_PATCHED_BREW_BIN" --prefix)"; then
+    echo "homebrew-patched-launcher: isolated wrapper could not report the Homebrew prefix" >&2
+    return 1
+  fi
+  if ! patched_repo="$("$HOMEBREW_PATCHED_BREW_BIN" --repository)"; then
+    echo "homebrew-patched-launcher: isolated wrapper could not report the Homebrew repository" >&2
+    return 1
+  fi
   [ "$patched_prefix" = "$HOMEBREW_PATCHED_PREFIX" ] || {
     echo "homebrew-patched-launcher: isolated wrapper changed Homebrew prefix" >&2
     return 1
