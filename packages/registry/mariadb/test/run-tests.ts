@@ -18,6 +18,7 @@ import { resolve, dirname } from "path";
 import { createConnection, createServer, type Socket } from "net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
+import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
 import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
@@ -217,8 +218,7 @@ async function main() {
 
                 kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
-                const FORK_BUF_SIZE = 16384;
-                const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
+                const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
                 const childInitData: CentralizedWorkerInitMessage = {
                     type: "centralized_init",
                     pid: childPid, ppid: parentPid,

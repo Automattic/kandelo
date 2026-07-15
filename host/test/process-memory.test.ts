@@ -3,6 +3,7 @@ import {
   CHANNEL_PAGES,
   DEFAULT_PROCESS_THREAD_SLOTS,
   FORK_SAVE_BUFFER_SIZE,
+  FORK_SAVE_CONTROL_PREFIX_SIZE,
   PROCESS_MMAP_BASE,
   PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT,
   computeProcessMemoryLayout,
@@ -91,7 +92,12 @@ describe("process memory layout", () => {
     });
 
     expect(layout.channelPage).toBe(layout.controlBase / WASM_PAGE_SIZE + 1);
-    expect(layout.channelOffset - FORK_SAVE_BUFFER_SIZE).toBeGreaterThanOrEqual(layout.controlBase);
+    expect(FORK_SAVE_BUFFER_SIZE % 16).toBe(0);
+    expect(FORK_SAVE_CONTROL_PREFIX_SIZE).toBe(4 * 1024);
+    expect(FORK_SAVE_CONTROL_PREFIX_SIZE + FORK_SAVE_BUFFER_SIZE).toBe(WASM_PAGE_SIZE);
+    expect(layout.channelOffset - FORK_SAVE_BUFFER_SIZE).toBe(
+      layout.controlBase + FORK_SAVE_CONTROL_PREFIX_SIZE,
+    );
     expect(layout.firstThreadSlotPage).toBe(layout.channelPage + CHANNEL_PAGES);
     expect(layout.firstThreadBasePage).toBe(layout.firstThreadSlotPage + 2);
     expect(layout.threadSlotCount).toBe(DEFAULT_PROCESS_THREAD_SLOTS);

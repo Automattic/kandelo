@@ -1606,6 +1606,31 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Prove Homebrew starts from candidate artifacts
+        if: env.PACKAGE_STAGING_REQUIRED == 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+            bash scripts/build-homebrew-bootstrap.sh --skip-package-resolve
+
+            rm -rf host/dist
+            host/node_modules/.bin/tsx \
+              homebrew/test/homebrew_bootstrap_guest_env.ts \
+              --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
+              --bash binaries/programs/wasm32/bash.wasm \
+              --brew-script /home/linuxbrew/.linuxbrew/bin/brew \
+              --timeout-ms 120000
+
+            rm -rf host/dist
+            host/node_modules/.bin/tsx \
+              homebrew/test/homebrew_bootstrap_guest_env.ts \
+              --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
+              --bash binaries/programs/wasm32/bash.wasm \
+              --brew-script /usr/bin/brew \
+              --timeout-ms 120000
+          '
+
   test-suite:
     name: test-suite (${{ matrix.label }})
     needs: [synthesize-merge, change-scope, test-gate-prepare]

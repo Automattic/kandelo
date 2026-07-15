@@ -22,7 +22,7 @@ import {
   type LoadedSharedLibrary,
   type SideModuleForkState,
 } from "./dylink";
-import { extractAbiVersion } from "./constants";
+import { extractAbiVersion, WASM_PAGE_SIZE } from "./constants";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_IDLE,
@@ -37,7 +37,10 @@ import {
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
 } from "./generated/abi";
-import { FORK_SAVE_BUFFER_SIZE } from "./process-memory";
+import {
+  FORK_SAVE_BUFFER_SIZE,
+  FORK_SAVE_CONTROL_PREFIX_SIZE,
+} from "./process-memory";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -1180,6 +1183,21 @@ const DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64 = 32;
 // clears its copied value before replay because its memory is independent.
 const DLOPEN_LOCK_OFFSET_WASM32 = 20;
 const DLOPEN_LOCK_OFFSET_WASM64 = 40;
+const DLOPEN_MAX_CONTROL_OFFSET = Math.max(
+  DLOPEN_HEAD_OFFSET_WASM32,
+  DLOPEN_HEAD_OFFSET_WASM64,
+  DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM32,
+  DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64,
+  DLOPEN_LOCK_OFFSET_WASM32,
+  DLOPEN_LOCK_OFFSET_WASM64,
+);
+if (
+  FORK_BUF_SIZE % 16 !== 0
+  || FORK_SAVE_CONTROL_PREFIX_SIZE + FORK_BUF_SIZE !== WASM_PAGE_SIZE
+  || DLOPEN_MAX_CONTROL_OFFSET > FORK_SAVE_CONTROL_PREFIX_SIZE
+) {
+  throw new Error("invalid fork-save scratch-page geometry");
+}
 const DLOPEN_LOCK_IDLE = 0;
 const DLOPEN_LOCK_WRITER = -1;
 const DLOPEN_LOCK_MAX_READERS = 0x7fff_ffff;

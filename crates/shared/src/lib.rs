@@ -76,7 +76,9 @@ pub mod host_abi;
 /// 40: advisory locks are kernel-owned, use stable file/OFD identities and
 ///     bounded dynamic storage, report ENOLCK distinctly, and no longer
 ///     require the host_fcntl_lock import; fork/exec OFD state is versioned.
-pub const ABI_VERSION: u32 = 40;
+/// 41: main-thread, pthread, and side-module fork continuations reserve 60 KiB
+///     so valid wide call stacks do not overwrite adjacent host control state.
+pub const ABI_VERSION: u32 = 41;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1217,8 +1219,15 @@ pub mod process_memory {
     /// Fallback initial brk when a binary does not export `__heap_base`.
     pub const FALLBACK_BRK_BASE: u32 = 0x0100_0000;
 
-    /// Size of one fork save buffer in bytes.
-    pub const FORK_SAVE_BUFFER_SIZE: u32 = 16 * 1024;
+    /// Bytes kept below each fork save buffer for host-owned control metadata.
+    /// The current main-module dlopen slots use at most 40 bytes; one 4 KiB
+    /// prefix gives that private layout room to grow without moving the buffer.
+    pub const FORK_SAVE_CONTROL_PREFIX_SIZE: u32 = 4 * 1024;
+
+    /// Size of one fork save buffer in bytes. The control prefix and buffer
+    /// together occupy exactly one dedicated 64 KiB scratch page.
+    pub const FORK_SAVE_BUFFER_SIZE: u32 =
+        WASM_PAGE_SIZE - FORK_SAVE_CONTROL_PREFIX_SIZE;
 
     /// Main-thread fork-save/scratch page, relative to `controlBasePage`.
     pub const MAIN_FORK_SAVE_PAGE: u32 = 0;
