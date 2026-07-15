@@ -39,6 +39,9 @@ on:
       dry-run:
         type: boolean
         default: false
+      require-vfs-acceptance:
+        type: boolean
+        default: false
 
 jobs:
   plan:
@@ -228,6 +231,104 @@ jobs:
             echo "formula-matrix=$formula_matrix"
           } >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq .
+
+      - name: Validate dependency-bearing VFS acceptance selection
+        shell: bash
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          PLANNED_MATRIX: ${{ steps.matrix.outputs.matrix }}
+          REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
+          TAP_NAME: ${{ inputs.tap-name }}
+        run: |
+          set -euo pipefail
+          case "$REQUIRE_VFS_ACCEPTANCE" in
+            true|false) ;;
+            *) echo "::error::require-vfs-acceptance must be true or false"; exit 2 ;;
+          esac
+
+          tap_root="$(realpath "$GITHUB_WORKSPACE/tap")"
+          policy_dir="$GITHUB_WORKSPACE/tap/Kandelo"
+          if [ -L "$policy_dir" ] || { [ -e "$policy_dir" ] && [ ! -d "$policy_dir" ]; }; then
+            echo "::error::tap Kandelo policy path must be a real directory"; exit 2
+          fi
+          config_candidate="$policy_dir/vfs-acceptance.json"
+          if [ ! -e "$config_candidate" ] && [ ! -L "$config_candidate" ]; then
+            if [ "$REQUIRE_VFS_ACCEPTANCE" = "true" ]; then
+              echo "::error::this invocation requires dependency-bearing VFS acceptance, but the tap has no Kandelo/vfs-acceptance.json"
+              exit 1
+            fi
+            echo "::notice::tap has no dependency-bearing VFS acceptance selection; this invocation will produce no closure acceptance evidence"
+            exit 0
+          fi
+          [ -f "$config_candidate" ] && [ ! -L "$config_candidate" ] || {
+            echo "::error::tap VFS acceptance configuration must be a regular non-symlink file"; exit 2;
+          }
+          config="$(realpath "$config_candidate")"
+          case "$config" in
+            "$tap_root"/*) ;;
+            *) echo "::error::tap VFS acceptance configuration resolved outside the exact tap checkout"; exit 2 ;;
+          esac
+          jq -e '
+            type == "object" and
+            keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"] and
+            .schema == 1 and
+            (.formula | type == "string" and test("^[a-z0-9][a-z0-9._-]*$")) and
+            (.brewfile | type == "string" and length > 0 and length <= 255) and
+            (.executable | type == "string" and test("^/([A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$")) and
+            (.argv | type == "array" and length > 0 and length <= 64 and all(.[];
+              type == "string" and length > 0 and length <= 4096 and contains("\u0000") == false) and
+              (tojson | utf8bytelength <= 16384)) and
+            (.expected_stdout | type == "string" and length > 0 and length <= 4096 and
+              contains("\u0000") == false and contains("\u000a") == false and
+              contains("\u000d") == false)
+          ' "$config" >/dev/null || {
+            echo "::error::tap VFS acceptance configuration is invalid"; exit 2;
+          }
+
+          selected_formula="$(jq -er '.formula' "$config")"
+          formula_candidate="$GITHUB_WORKSPACE/tap/Formula/${selected_formula}.rb"
+          [ -f "$formula_candidate" ] && [ ! -L "$formula_candidate" ] || {
+            echo "::error::selected VFS acceptance formula is not a regular tap Formula: $selected_formula"; exit 2;
+          }
+          formula_source="$(realpath "$formula_candidate")"
+          case "$formula_source" in
+            "$tap_root"/*) ;;
+            *) echo "::error::selected VFS acceptance Formula resolved outside the exact tap checkout"; exit 2 ;;
+          esac
+          brewfile_rel="$(jq -er '.brewfile' "$config")"
+          case "$brewfile_rel" in
+            /*|../*|*/../*|*/..) echo "::error::Brewfile path escapes the tap"; exit 2 ;;
+          esac
+          brewfile_candidate="$GITHUB_WORKSPACE/tap/$brewfile_rel"
+          [ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ] || {
+            echo "::error::tap VFS acceptance Brewfile must be a regular non-symlink file"; exit 2;
+          }
+          brewfile="$(realpath "$brewfile_candidate")"
+          case "$brewfile" in
+            "$tap_root"/*) ;;
+            *) echo "::error::Brewfile resolved outside the exact tap checkout"; exit 2 ;;
+          esac
+          selection="$(ruby kandelo/scripts/homebrew-brewfile-selection.rb "$brewfile")"
+          expected_tap="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
+          jq -e --arg formula "$selected_formula" --arg tap "$expected_tap" \
+            '.tap_name == $tap and (.packages | index($formula) != null)' \
+            <<<"$selection" >/dev/null || {
+            echo "::error::acceptance Brewfile must name the selected tap and Formula root"; exit 2;
+          }
+
+          target_planned="$(jq -r --arg formula "$selected_formula" \
+            'any(.[]; .formula == $formula and .arch == "wasm32")' <<<"$PLANNED_MATRIX")"
+          if [ "$REQUIRE_VFS_ACCEPTANCE" = "true" ]; then
+            [ "$DRY_RUN" = "false" ] || {
+              echo "::error::required dependency-bearing VFS acceptance needs a non-dry-run publication"; exit 1;
+            }
+            [ "$target_planned" = "true" ] || {
+              echo "::error::required dependency-bearing VFS acceptance target ${selected_formula}/wasm32 is absent from the planned matrix; include it and use force when its bottle is already current"
+              exit 1
+            }
+          elif [ "$DRY_RUN" = "true" ] || [ "$target_planned" != "true" ]; then
+            echo "::notice::this invocation will produce no dependency-bearing VFS acceptance evidence"
+          fi
 
   build-and-test:
     needs: [plan]
@@ -2165,6 +2266,193 @@ jobs:
             node scripts/validate-software-gallery.mjs "${gallery_validation_args[@]}"
           '
 
+      - name: Boot an exact dependency-bearing Brewfile image on Node and Chromium
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_ACCEPTANCE_ARCH: ${{ matrix.arch }}
+          KANDELO_HOMEBREW_ACCEPTANCE_DRY_RUN: ${{ inputs.dry-run }}
+          KANDELO_HOMEBREW_ACCEPTANCE_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_ACCEPTANCE_REQUIRED: ${{ inputs.require-vfs-acceptance }}
+        run: |
+          set -euo pipefail
+          case "$KANDELO_HOMEBREW_ACCEPTANCE_REQUIRED" in
+            true|false) ;;
+            *) echo "::error::require-vfs-acceptance must be true or false"; exit 2 ;;
+          esac
+          tap_root="$(realpath "$GITHUB_WORKSPACE/tap-postverify")"
+          policy_dir="$GITHUB_WORKSPACE/tap-postverify/Kandelo"
+          if [ -L "$policy_dir" ] || { [ -e "$policy_dir" ] && [ ! -d "$policy_dir" ]; }; then
+            echo "::error::tap Kandelo policy path must be a real directory"; exit 2
+          fi
+          config_candidate="$policy_dir/vfs-acceptance.json"
+          if [ ! -e "$config_candidate" ] && [ ! -L "$config_candidate" ]; then
+            if [ "$KANDELO_HOMEBREW_ACCEPTANCE_REQUIRED" = "true" ]; then
+              echo "::error::required dependency-bearing VFS acceptance selection disappeared after planning"
+              exit 1
+            fi
+            echo "::notice::tap has no dependency-bearing VFS acceptance selection; no closure acceptance evidence was produced"
+            exit 0
+          fi
+          [ -f "$config_candidate" ] && [ ! -L "$config_candidate" ] || {
+            echo "::error::tap VFS acceptance configuration must be a regular non-symlink file"; exit 2;
+          }
+          config="$(realpath "$config_candidate")"
+          case "$config" in
+            "$tap_root"/*) ;;
+            *) echo "::error::tap VFS acceptance configuration resolved outside the exact tap checkout"; exit 2 ;;
+          esac
+          jq -e '
+            type == "object" and
+            keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"] and
+            .schema == 1 and
+            (.formula | type == "string" and test("^[a-z0-9][a-z0-9._-]*$")) and
+            (.brewfile | type == "string" and length > 0 and length <= 255) and
+            (.executable | type == "string" and test("^/([A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$")) and
+            (.argv | type == "array" and length > 0 and length <= 64 and all(.[];
+              type == "string" and length > 0 and length <= 4096 and contains("\u0000") == false) and
+              (tojson | utf8bytelength <= 16384)) and
+            (.expected_stdout | type == "string" and length > 0 and length <= 4096 and
+              contains("\u0000") == false and contains("\u000a") == false and
+              contains("\u000d") == false)
+          ' "$config" >/dev/null || {
+            echo "::error::tap VFS acceptance configuration is invalid"; exit 2;
+          }
+          selected_formula="$(jq -er '.formula' "$config")"
+          if [ "$selected_formula" != "$KANDELO_HOMEBREW_ACCEPTANCE_FORMULA" ] || \
+             [ "$KANDELO_HOMEBREW_ACCEPTANCE_ARCH" != "wasm32" ]; then
+            echo "VFS acceptance belongs to ${selected_formula}/wasm32, not this matrix entry."
+            exit 0
+          fi
+          if [ "$KANDELO_HOMEBREW_ACCEPTANCE_DRY_RUN" = "true" ]; then
+            if [ "$KANDELO_HOMEBREW_ACCEPTANCE_REQUIRED" = "true" ]; then
+              echo "::error::required dependency-bearing VFS acceptance cannot run in dry-run mode"
+              exit 1
+            fi
+            echo "::notice::dependency-bearing VFS acceptance requires anonymous reads of published GHCR bottles; no closure acceptance evidence was produced"
+            exit 0
+          fi
+
+          cd kandelo
+          rm -rf host/dist
+          acceptance_root="$RUNNER_TEMP/homebrew-vfs-acceptance"
+          acceptance_tap="$acceptance_root/tap"
+          public_dir="$GITHUB_WORKSPACE/kandelo/apps/browser-demos/public/__kandelo-acceptance"
+          image="$acceptance_root/homebrew-brewfile.vfs.zst"
+          report="$acceptance_root/homebrew-brewfile-report.json"
+          node_evidence="$acceptance_root/node-evidence.json"
+          browser_evidence="$acceptance_root/browser-evidence.json"
+          playwright_report="$acceptance_root/playwright-report.json"
+          mkdir -p "$acceptance_root" "$public_dir"
+          cp -a "$GITHUB_WORKSPACE/tap-postverify" "$acceptance_tap"
+          rsync -a "$RUNNER_TEMP/homebrew-sidecars/Formula/" "$acceptance_tap/Formula/"
+          rsync -a "$RUNNER_TEMP/homebrew-sidecars/Kandelo/" "$acceptance_tap/Kandelo/"
+
+          brewfile_rel="$(jq -er '.brewfile' "$config")"
+          case "$brewfile_rel" in
+            /*|../*|*/../*|*/..) echo "::error::Brewfile path escapes the tap"; exit 2 ;;
+          esac
+          brewfile_candidate="$GITHUB_WORKSPACE/tap-postverify/$brewfile_rel"
+          [ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ] || {
+            echo "::error::tap VFS acceptance Brewfile must be a regular non-symlink file"; exit 2;
+          }
+          brewfile="$(realpath "$brewfile_candidate")"
+          case "$brewfile" in
+            "$tap_root"/*) ;;
+            *) echo "::error::Brewfile resolved outside the exact tap checkout"; exit 2 ;;
+          esac
+
+          base_image="$(bash scripts/resolve-binary.sh rootfs.vfs)"
+          kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"
+          case "$base_image" in
+            "$PWD/binaries"/*) ;;
+            *) echo "::error::platform base did not resolve from the Kandelo package registry tree"; exit 2 ;;
+          esac
+          case "$kernel" in
+            "$PWD/local-binaries"/*) ;;
+            *) echo "::error::verification kernel did not resolve from the exact worktree build"; exit 2 ;;
+          esac
+
+          vfs_args=(
+            --metadata "$acceptance_tap/Kandelo/metadata.json"
+            --tap-root "$acceptance_tap"
+            --brewfile "$brewfile"
+            --arch wasm32
+            --runtime node
+            --base-image "$base_image"
+            --out "$image"
+            --report "$report"
+            --bottle-cache "$RUNNER_TEMP/homebrew-bottle-cache"
+            --no-fallback
+          )
+          bash scripts/dev-shell.sh npx tsx \
+            images/vfs/scripts/build-homebrew-vfs-image.ts "${vfs_args[@]}"
+
+          executable="$(jq -er '.executable' "$config")"
+          argv_json="$(jq -c '.argv' "$config")"
+          expected_stdout="$(jq -er '.expected_stdout' "$config")"
+          node_args=(
+            --metadata "$acceptance_tap/Kandelo/metadata.json"
+            --tap-root "$acceptance_tap"
+            --brewfile "$brewfile"
+            --base-image "$base_image"
+            --base-origin kandelo-package-registry
+            --image "$image"
+            --report "$report"
+            --kernel "$kernel"
+            --kernel-origin worktree-build
+            --formula "$selected_formula"
+            --executable "$executable"
+            --argv-json "$argv_json"
+            --expect-stdout "$expected_stdout"
+            --evidence "$node_evidence"
+          )
+          bash scripts/dev-shell.sh npx tsx \
+            scripts/homebrew-vfs-acceptance-smoke.ts "${node_args[@]}"
+
+          image_sha256="$(sha256sum "$image" | awk '{print $1}')"
+          kernel_sha256="$(sha256sum "$kernel" | awk '{print $1}')"
+          [ "$(jq -er '.image.sha256' "$node_evidence")" = "$image_sha256" ] || {
+            echo "::error::Node evidence did not bind the composed image"; exit 1;
+          }
+          cp "$image" "$public_dir/homebrew-brewfile.vfs.zst"
+          browser_port="${KANDELO_PLAYWRIGHT_PORT:-5401}"
+          browser_url="http://127.0.0.1:${browser_port}/__kandelo-acceptance/homebrew-brewfile.vfs.zst"
+          (
+            cd apps/browser-demos
+            npx playwright install chromium --with-deps
+            export KANDELO_PLAYWRIGHT_PORT="$browser_port"
+            export KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$browser_url"
+            export KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256="$image_sha256"
+            export KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256="$kernel_sha256"
+            export KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$executable"
+            export KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$argv_json"
+            export KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$expected_stdout"
+            bash ../../scripts/dev-shell.sh env \
+              KANDELO_PLAYWRIGHT_PORT="$KANDELO_PLAYWRIGHT_PORT" \
+              KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL" \
+              KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256" \
+              KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256="$KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256" \
+              KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE" \
+              KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON" \
+              KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT" \
+              npx playwright test test/homebrew-brewfile-vfs.spec.ts \
+                --project=chromium --reporter=json >"$playwright_report"
+          )
+          jq -e '
+            .stats.expected == 1 and .stats.unexpected == 0 and
+            .stats.flaky == 0 and .stats.skipped == 0
+          ' "$playwright_report" >/dev/null || {
+            echo "::error::exact-byte Chromium Homebrew VFS smoke did not report one pass"; exit 1;
+          }
+          jq -nS \
+            --arg image_sha256 "$image_sha256" \
+            --arg kernel_sha256 "$kernel_sha256" \
+            --arg executable "$executable" \
+            --argjson argv "$argv_json" \
+            '{schema: 1, status: "success", runtime: "browser", engine: "chromium",
+              image_sha256: $image_sha256, kernel_sha256: $kernel_sha256,
+              executable: $executable, argv: $argv}' >"$browser_evidence"
+
       - name: Validate generated sidecars against the exact base tap
         shell: bash
         run: |
@@ -2290,6 +2578,7 @@ jobs:
           path: |
             ${{ runner.temp }}/homebrew-browser-gallery/**
             ${{ runner.temp }}/homebrew-browser-vfs/**
+            ${{ runner.temp }}/homebrew-vfs-acceptance/**
             ${{ runner.temp }}/homebrew-sidecars/Kandelo/**
           if-no-files-found: ignore
           retention-days: 14

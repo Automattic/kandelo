@@ -12,6 +12,8 @@ metadata.schema.json
 formula.schema.json
 link-manifest.schema.json
 provenance.schema.json
+vfs-acceptance.json                                # optional tap-owned gate selection
+vfs-acceptance.Brewfile                           # optional selected static roots
 
 metadata.json                                      # generated tap state
 formula/<name>.json                               # generated tap state
@@ -21,6 +23,10 @@ reports/<name>-<version>-rebuild<N>-<arch>.provenance.json
 
 The `examples/` directory contains fixture data for schema and semantic
 validator development. It is not published metadata.
+
+`vfs-acceptance.json` and its referenced Brewfile are reviewed tap policy, not
+generated sidecars. The publisher reads them from the exact tap commit and
+never rewrites them.
 
 ## Generation
 
@@ -183,6 +189,50 @@ the local bottle for a dry run, or the exact anonymously read-back GHCR digest
 for a write run. Kandelo's complete ABI release graph is fetched separately as
 the kernel, host-runtime, and VFS platform prerequisite; it is not the source of
 the migrated package payload.
+
+## Dependency-Bearing Runtime Acceptance
+
+The tap may select one non-dry-run wasm32 publication as its dependency-bearing
+VFS acceptance gate by adding `Kandelo/vfs-acceptance.json` and a referenced
+static Brewfile. The selected Formula must be a Brewfile root and the resolved
+selected Formula's closure must contain at least one dependency edge. The
+configuration records the linked guest executable, argv, and a bounded,
+single-line stdout substring:
+
+```json
+{
+  "schema": 1,
+  "formula": "consumer",
+  "brewfile": "Kandelo/vfs-acceptance.Brewfile",
+  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "argv": ["consumer", "--version"],
+  "expected_stdout": "consumer"
+}
+```
+
+The publisher overlays the current generated sidecars on the exact tap
+checkout, rejects fallback and non-GHCR package sources, composes the bottles
+onto an explicit ABI-matched platform base, and boots the exact resulting VFS
+bytes in Node and Chromium. Evidence lists the Kandelo-owned base VFS and kernel
+separately from Homebrew package inputs so registry platform prerequisites
+cannot be mistaken for migrated package payloads. Without this selection, an
+ordinary publisher invocation continues but explicitly produces no
+dependency-closure acceptance evidence. It must not be described as proving
+this rung.
+
+The reviewed acceptance caller makes the gate mandatory by passing
+`require-vfs-acceptance: true`. That invocation fails during planning unless it
+is non-dry-run and its actual post-cache matrix includes the selected Formula on
+`wasm32`; use `force: true` when an already-current bottle would otherwise be
+filtered out. Formulae other than the selected consumer may publish first, but
+the consumer gate cannot pass until its selected dependency closure is already
+public on GHCR. The configuration, Brewfile, and required caller input should be
+added together only after that prerequisite is true.
+
+Because this may be the closure's first browser smoke, browser eligibility is
+provisional only inside the verifier. The evidence retains the bottles' declared
+runtime flags, the exact Chromium run decides the gate, and no provisional
+`browser_compatible` value is written to the tap.
 
 ## Browser Gallery Assets
 

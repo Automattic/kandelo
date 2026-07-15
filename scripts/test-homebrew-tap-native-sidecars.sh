@@ -318,6 +318,7 @@ make_tool_bottle() {
 (module
   (memory 1)
   (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION))
+  (func (export "_start"))
   (func (export "wpk_fork_unwind_begin"))
   (func (export "wpk_fork_unwind_end"))
   (func (export "wpk_fork_rewind_begin"))
@@ -1201,6 +1202,152 @@ jq -e '
   --argjson brewfile_bytes "$BREWFILE_BYTES" \
   --argjson base_bytes "$BASE_IMAGE_BYTES" \
   --argjson abi "$ABI_VERSION" "$TMPDIR/sidecar-tool-inspect.json" >/dev/null
+
+# Exercise the acceptance verifier against the dependency-bearing fixture.
+# This test checks the artifact/provenance contract only. Real Node and Chromium
+# boot evidence is produced by the trusted publisher from public bottles and a
+# real kernel.
+ACCEPTANCE_TAP="$TMPDIR/acceptance-tap"
+cp -a "$TAP" "$ACCEPTANCE_TAP"
+cat >"$TMPDIR/acceptance-kernel.wat" <<WAT
+(module
+  (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION)))
+WAT
+wat2wasm "$TMPDIR/acceptance-kernel.wat" -o "$TMPDIR/acceptance-kernel.wasm"
+cat >"$TMPDIR/validate-homebrew-vfs-acceptance.ts" <<EOF
+import { writeFileSync } from "node:fs";
+import { validateHomebrewVfsAcceptance } from "$REPO_ROOT/scripts/homebrew-vfs-acceptance-smoke.ts";
+
+const [metadataPath, tapRoot, brewfilePath, expectedRootPackage, executablePath, evidencePath] = process.argv.slice(2);
+validateHomebrewVfsAcceptance({
+  metadataPath,
+  tapRoot,
+  brewfilePath,
+  baseImagePath: "$BASE_IMAGE",
+  baseOrigin: "kandelo-package-registry",
+  imagePath: "$TMPDIR/sidecar-tool.vfs.zst",
+  reportPath: "$TMPDIR/sidecar-tool-report.json",
+  kernelPath: "$TMPDIR/acceptance-kernel.wasm",
+  kernelOrigin: "worktree-build",
+  expectedRootPackage,
+  executablePath,
+  argv: [expectedRootPackage, "--version"],
+  expectedStdout: expectedRootPackage,
+  timeoutMs: 120000,
+}).then((validated) => {
+  writeFileSync(evidencePath, JSON.stringify(validated.evidence));
+}).catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+EOF
+ACCEPTANCE_EVIDENCE="$TMPDIR/acceptance-evidence.json"
+npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
+  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$ACCEPTANCE_EVIDENCE"
+jq -e '
+  .status == "validated" and
+  .dependency_edges == [{"from":"sidecar-tool","to":"sidecar-dep","version":"1.0"}] and
+  .browser_plan == {
+    "compatibility_basis":"pending-exact-image-runtime-test",
+    "packages":["sidecar-dep", "sidecar-tool"]
+  } and
+  [.homebrew_bottles[].name] == ["sidecar-dep", "sidecar-tool"] and
+  all(.homebrew_bottles[];
+    .url == ("https://ghcr.io/v2/automattic/kandelo-homebrew/" + .name +
+      "/blobs/sha256:" + .sha256) and
+    .declared_runtime_support == ["node"] and
+    .declared_browser_compatible == false) and
+  .platform_inputs[0].role == "base-vfs" and
+  .platform_inputs[0].origin == "kandelo-package-registry" and
+  .platform_inputs[1].role == "kernel" and
+  .platform_inputs[1].origin == "worktree-build" and
+  (.image.sha256 | test("^[0-9a-f]{64}$"))
+' "$ACCEPTANCE_EVIDENCE" >/dev/null
+
+DEP_ONLY_BREWFILE="$TMPDIR/dependency-only.Brewfile"
+cat >"$DEP_ONLY_BREWFILE" <<'EOF'
+tap "automattic/kandelo-homebrew"
+brew "sidecar-dep"
+EOF
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
+  "$DEP_ONLY_BREWFILE" sidecar-dep \
+  /home/linuxbrew/.linuxbrew/bin/sidecar-dep "$TMPDIR/no-edge-evidence.json" \
+  > /dev/null 2>"$TMPDIR/no-edge.err"; then
+  echo "Homebrew VFS acceptance accepted a Brewfile without a dependency edge" >&2
+  exit 1
+fi
+grep -F "selected acceptance formula must resolve at least one real package dependency edge" \
+  "$TMPDIR/no-edge.err" >/dev/null
+
+UNRELATED_EDGE_BREWFILE="$TMPDIR/unrelated-edge.Brewfile"
+cat >"$UNRELATED_EDGE_BREWFILE" <<'EOF'
+tap "automattic/kandelo-homebrew"
+brew "sidecar-dep"
+brew "sidecar-tool"
+EOF
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
+  "$UNRELATED_EDGE_BREWFILE" sidecar-dep \
+  /home/linuxbrew/.linuxbrew/bin/sidecar-dep \
+  "$TMPDIR/unrelated-edge-evidence.json" \
+  > /dev/null 2>"$TMPDIR/unrelated-edge.err"; then
+  echo "Homebrew VFS acceptance credited an unrelated root's dependency edge" >&2
+  exit 1
+fi
+grep -F "selected acceptance formula must resolve at least one real package dependency edge" \
+  "$TMPDIR/unrelated-edge.err" >/dev/null
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
+  sidecar-dep /home/linuxbrew/.linuxbrew/bin/sidecar-dep \
+  "$TMPDIR/non-root-evidence.json" > /dev/null 2>"$TMPDIR/non-root.err"; then
+  echo "Homebrew VFS acceptance accepted a transitive package as its selected root" >&2
+  exit 1
+fi
+grep -F "acceptance formula sidecar-dep is not a Brewfile root" \
+  "$TMPDIR/non-root.err" >/dev/null
+
+SYMLINK_BREWFILE="$TMPDIR/symlink.Brewfile"
+ln -s "$BREWFILE" "$SYMLINK_BREWFILE"
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
+  "$SYMLINK_BREWFILE" sidecar-tool \
+  /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$TMPDIR/symlink-evidence.json" > /dev/null 2>"$TMPDIR/symlink.err"; then
+  echo "Homebrew VFS acceptance accepted a symlink Brewfile" >&2
+  exit 1
+fi
+grep -F "Brewfile must be a non-empty regular file" "$TMPDIR/symlink.err" >/dev/null
+
+NON_GHCR_TAP="$TMPDIR/non-ghcr-tap"
+cp -a "$ACCEPTANCE_TAP" "$NON_GHCR_TAP"
+jq '
+  .packages |= map(
+    .name as $name |
+    .bottles |= map(
+      if .arch == "wasm32"
+      then .url = ("https://example.invalid/" + $name)
+      else .
+      end
+    )
+  )
+' "$ACCEPTANCE_TAP/Kandelo/metadata.json" \
+  >"$NON_GHCR_TAP/Kandelo/metadata.json"
+for link in "$NON_GHCR_TAP"/Kandelo/link/*-wasm32.json; do
+  jq '.package as $name | .bottle.url = ("https://example.invalid/" + $name)' \
+    "$link" >"$link.tmp"
+  mv "$link.tmp" "$link"
+done
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$NON_GHCR_TAP/Kandelo/metadata.json" "$NON_GHCR_TAP" "$BREWFILE" \
+  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$TMPDIR/non-ghcr-evidence.json" > /dev/null 2>"$TMPDIR/non-ghcr.err"; then
+  echo "Homebrew VFS acceptance accepted non-GHCR package sources" >&2
+  exit 1
+fi
+grep -F "bottle URL is not the tap GHCR blob" "$TMPDIR/non-ghcr.err" >/dev/null
 npx tsx -e "
 import { readFileSync } from 'node:fs';
 import { MemoryFileSystem } from '$REPO_ROOT/host/src/vfs/memory-fs.ts';

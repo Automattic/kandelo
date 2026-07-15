@@ -15,11 +15,11 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "a4e98950e1360850c15cf4ebe091ffb2676fb6b7fbdfcda7e07d71b203e3a51b"
+PUBLISHER_PLAN_DIGEST = "8a6b23ded396476071c9977123e69c74494db4357ad8e5d38218aadf8726917a"
 PUBLISHER_BUILD_DIGEST = "f873732408b33ab5c412a0a297e543021eb8bb1c2ab6a5c97644fc1fd320c78c"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
 PUBLISHER_INDEX_DIGEST = "143ba3916705d3c76ef337ddf89def07ff3515400a95827eb14042a12ab31cd8"
-PUBLISHER_VERIFY_DIGEST = "62abd1d17ffebe2a8088baa5fb124cd3cdeeae2f8308a37efc393e28d1b4655c"
+PUBLISHER_VERIFY_DIGEST = "b4b3f97cd701941a372555fcc8f0e6b73a63c62766d679cf27c4622817192d11"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
@@ -275,6 +275,7 @@ def check_publisher(workflow)
     "expected-cache-keys" => { "type" => "string", "default" => "" },
     "force" => { "type" => "boolean", "default" => false },
     "dry-run" => { "type" => "boolean", "default" => false },
+    "require-vfs-acceptance" => { "type" => "boolean", "default" => false },
   }, "publisher inputs changed")
   check(!workflow.key?("permissions"), "publisher requests workflow-wide permissions")
   check_common(workflow, "reusable publisher")
@@ -408,6 +409,56 @@ def check_publisher(workflow)
   check(dry_index && caller_index && kandelo_index && tap_name_index &&
         caller_index < dry_index && kandelo_index < dry_index && tap_name_index < dry_index,
         "publisher dry-run can bypass caller authority validation")
+
+  vfs_selection = named_step(
+    plan_steps, "Validate dependency-bearing VFS acceptance selection"
+  )
+  check(vfs_selection.keys.sort == %w[env name run shell] &&
+        vfs_selection["shell"] == "bash" && vfs_selection["env"] == {
+          "DRY_RUN" => "${{ inputs.dry-run }}",
+          "PLANNED_MATRIX" => "${{ steps.matrix.outputs.matrix }}",
+          "REQUIRE_VFS_ACCEPTANCE" => "${{ inputs.require-vfs-acceptance }}",
+          "TAP_NAME" => "${{ inputs.tap-name }}",
+        }, "publisher VFS acceptance planning mapping changed")
+  vfs_selection_run = vfs_selection.fetch("run")
+  [
+    'tap_root="$(realpath "$GITHUB_WORKSPACE/tap")"',
+    'policy_dir="$GITHUB_WORKSPACE/tap/Kandelo"',
+    '[ -L "$policy_dir" ] || { [ -e "$policy_dir" ] && [ ! -d "$policy_dir" ]; }',
+    'config_candidate="$policy_dir/vfs-acceptance.json"',
+    'if [ ! -e "$config_candidate" ] && [ ! -L "$config_candidate" ]; then',
+    'if [ "$REQUIRE_VFS_ACCEPTANCE" = "true" ]; then',
+    'this invocation requires dependency-bearing VFS acceptance',
+    'this invocation will produce no closure acceptance evidence',
+    'tap VFS acceptance configuration must be a regular non-symlink file',
+    'keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"]',
+    'contains("\u000a") == false', 'contains("\u000d") == false',
+    'config="$(realpath "$config_candidate")"',
+    'tap VFS acceptance configuration resolved outside the exact tap checkout',
+    'formula_candidate="$GITHUB_WORKSPACE/tap/Formula/${selected_formula}.rb"',
+    'formula_source="$(realpath "$formula_candidate")"',
+    'selected VFS acceptance Formula resolved outside the exact tap checkout',
+    'brewfile_candidate="$GITHUB_WORKSPACE/tap/$brewfile_rel"',
+    '[ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ]',
+    'brewfile="$(realpath "$brewfile_candidate")"',
+    'ruby kandelo/scripts/homebrew-brewfile-selection.rb "$brewfile"',
+    'expected_tap="$(printf \'%s\' "$TAP_NAME" | tr \'[:upper:]\' \'[:lower:]\')"',
+    '.tap_name == $tap and (.packages | index($formula) != null)',
+    'any(.[]; .formula == $formula and .arch == "wasm32")',
+    'required dependency-bearing VFS acceptance needs a non-dry-run publication',
+    'use force when its bottle is already current',
+  ].each do |fragment|
+    check(vfs_selection_run.include?(fragment),
+          "publisher VFS acceptance planning lacks #{fragment}")
+  end
+  check(vfs_selection_run.match?(
+          /if \[ ! -e "\$config_candidate" \] && \[ ! -L "\$config_candidate" \]; then\n\s+if \[ "\$REQUIRE_VFS_ACCEPTANCE" = "true" \]; then\n\s+echo "::error::[^\n]+"\n\s+exit 1\n\s+fi\n\s+echo "::notice::[^\n]+no closure acceptance evidence"\n\s+exit 0/
+        ), "publisher does not distinguish optional absence from required VFS acceptance")
+  tap_checkout = named_step(plan_steps, "Checkout tap")
+  matrix_plan = named_step(plan_steps, "Plan formula matrix")
+  check(plan_steps.index(tap_checkout) < plan_steps.index(matrix_plan) &&
+        plan_steps.index(matrix_plan) < plan_steps.index(vfs_selection),
+        "publisher validates VFS acceptance selection outside the planning trust boundary")
 
   release_run = named_step(plan_steps, "Resolve release and bottle root").fetch("run")
   check(release_run.include?('expected_release_tag="bottles-abi-v${abi}"') &&
@@ -1452,6 +1503,104 @@ def check_publisher(workflow)
           "publisher browser sidecar regeneration drops explicit identity or root data at the dev-shell boundary")
   end
 
+  acceptance_step = named_step(
+    verify_steps, "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+  )
+  check(acceptance_step.keys.sort == %w[env name run shell] &&
+        acceptance_step["shell"] == "bash" && acceptance_step["env"] == {
+          "KANDELO_HOMEBREW_ACCEPTANCE_ARCH" => "${{ matrix.arch }}",
+          "KANDELO_HOMEBREW_ACCEPTANCE_DRY_RUN" => "${{ inputs.dry-run }}",
+          "KANDELO_HOMEBREW_ACCEPTANCE_FORMULA" => "${{ matrix.formula }}",
+          "KANDELO_HOMEBREW_ACCEPTANCE_REQUIRED" => "${{ inputs.require-vfs-acceptance }}",
+        }, "publisher dependency-bearing VFS acceptance mapping changed")
+  acceptance_run = acceptance_step.fetch("run")
+  [
+    'tap_root="$(realpath "$GITHUB_WORKSPACE/tap-postverify")"',
+    'policy_dir="$GITHUB_WORKSPACE/tap-postverify/Kandelo"',
+    '[ -L "$policy_dir" ] || { [ -e "$policy_dir" ] && [ ! -d "$policy_dir" ]; }',
+    'config_candidate="$policy_dir/vfs-acceptance.json"',
+    'if [ ! -e "$config_candidate" ] && [ ! -L "$config_candidate" ]; then',
+    'required dependency-bearing VFS acceptance selection disappeared after planning',
+    'no closure acceptance evidence was produced',
+    'tap VFS acceptance configuration must be a regular non-symlink file',
+    'config="$(realpath "$config_candidate")"',
+    'tap VFS acceptance configuration resolved outside the exact tap checkout',
+    'keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"]',
+    'contains("\u000a") == false', 'contains("\u000d") == false',
+    'required dependency-bearing VFS acceptance cannot run in dry-run mode',
+    'anonymous reads of published GHCR bottles',
+    'cp -a "$GITHUB_WORKSPACE/tap-postverify" "$acceptance_tap"',
+    'rsync -a "$RUNNER_TEMP/homebrew-sidecars/Formula/" "$acceptance_tap/Formula/"',
+    'rsync -a "$RUNNER_TEMP/homebrew-sidecars/Kandelo/" "$acceptance_tap/Kandelo/"',
+    'brewfile_candidate="$GITHUB_WORKSPACE/tap-postverify/$brewfile_rel"',
+    '[ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ]',
+    'brewfile="$(realpath "$brewfile_candidate")"',
+    'base_image="$(bash scripts/resolve-binary.sh rootfs.vfs)"',
+    'platform base did not resolve from the Kandelo package registry tree',
+    'kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"',
+    'verification kernel did not resolve from the exact worktree build',
+    '--runtime node', '--no-fallback',
+    'bash scripts/dev-shell.sh npx tsx',
+    'scripts/homebrew-vfs-acceptance-smoke.ts',
+    '--base-origin kandelo-package-registry', '--kernel-origin worktree-build',
+    '--formula "$selected_formula"',
+    '[ "$(jq -er \'.image.sha256\' "$node_evidence")" = "$image_sha256" ]',
+    'bash ../../scripts/dev-shell.sh env',
+    'test/homebrew-brewfile-vfs.spec.ts',
+    '.stats.expected == 1', '.stats.unexpected == 0',
+    '.stats.flaky == 0', '.stats.skipped == 0',
+  ].each do |fragment|
+    check(acceptance_run.include?(fragment),
+          "publisher dependency-bearing VFS acceptance lacks #{fragment}")
+  end
+  check(acceptance_run.match?(
+          /if \[ ! -e "\$config_candidate" \] && \[ ! -L "\$config_candidate" \]; then\n\s+if \[ "\$KANDELO_HOMEBREW_ACCEPTANCE_REQUIRED" = "true" \]; then\n\s+echo "::error::[^\n]+"\n\s+exit 1\n\s+fi\n\s+echo "::notice::[^\n]+no closure acceptance evidence was produced"\n\s+exit 0/
+        ), "publisher does not preserve optional and required VFS acceptance semantics")
+  check((credential_names & acceptance_run.scan(/[A-Z][A-Z0-9_]+/)).empty?,
+        "publisher dependency-bearing VFS acceptance references a credential")
+  sidecar_generation = named_step(verify_steps, "Generate sidecars from the selected bottle")
+  sidecar_validation = named_step(
+    verify_steps, "Validate generated sidecars against the exact base tap"
+  )
+  check(verify_steps.index(sidecar_generation) < verify_steps.index(acceptance_step) &&
+        verify_steps.index(acceptance_step) < verify_steps.index(sidecar_validation),
+        "publisher dependency-bearing VFS acceptance runs outside the verified sidecar boundary")
+
+  acceptance_source = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-vfs-acceptance-smoke.ts")
+  )
+  [
+    "allowFallback: false", "createBrowserCandidateMetadata", 'runtime: "node"',
+    'runtime: "browser"', 'compatibility_basis: "pending-exact-image-runtime-test"',
+    "selected acceptance formula must resolve at least one real package dependency edge",
+    "did not select a current successful bottle", "bottle URL is not the tap GHCR blob",
+    "is not a Brewfile root", "is not a link owned by acceptance formula",
+    "base VFS ABI", "kernel Wasm ABI", "Node acceptance stdout did not contain",
+    "expected stdout must be a single-line string",
+  ].each do |fragment|
+    check(acceptance_source.include?(fragment),
+          "Homebrew VFS acceptance verifier lacks #{fragment}")
+  end
+  browser_acceptance_source = File.read(
+    File.join(REPO_ROOT, "apps/browser-demos/pages/homebrew-vfs-test/main.ts")
+  )
+  check(browser_acceptance_source.include?('fetchBytes(request.vfsUrl, "Homebrew VFS image")') &&
+        browser_acceptance_source.include?("vfsImage: new Uint8Array(imageBytes)") &&
+        !browser_acceptance_source.include?("live-setup") &&
+        !browser_acceptance_source.include?(".saveImage("),
+        "browser Homebrew VFS acceptance does not boot the exact fetched image bytes")
+  browser_acceptance_test = File.read(
+    File.join(REPO_ROOT, "apps/browser-demos/test/homebrew-brewfile-vfs.spec.ts")
+  )
+  check(browser_acceptance_test.include?("expect(result.imageSha256).toBe(imageSha256)") &&
+        browser_acceptance_test.include?("expect(result.kernelSha256).toBe(kernelSha256)") &&
+        browser_acceptance_test.include?("expect(result.exitCode, result.stderr).toBe(0)"),
+        "browser Homebrew VFS acceptance test does not bind exact artifacts and command success")
+  diagnostics = named_step(verify_steps, "Upload read-only verification diagnostics")
+  check(diagnostics.dig("with", "path").include?(
+          "${{ runner.temp }}/homebrew-vfs-acceptance/**"
+        ), "publisher diagnostics omit dependency-bearing VFS acceptance evidence")
+
   package_handoff_run = named_step(verify_steps,
                                    "Package validated data-only publication handoff").fetch("run")
   [
@@ -1775,6 +1924,39 @@ def self_test(publisher, maintenance)
       step = mutate_named_step(w, "plan", "Validate caller trust boundary")
       step.fetch("env")["CALLER_EVENT_NAME"] = "push"
     },
+    "required VFS acceptance selection accepted as absent during planning" => lambda { |w|
+      step = mutate_named_step(
+        w, "plan", "Validate dependency-bearing VFS acceptance selection"
+      )
+      step["run"] = step.fetch("run").sub(
+        "::error::this invocation requires dependency-bearing VFS acceptance",
+        "::notice::this invocation omits dependency-bearing VFS acceptance"
+      ).sub("exit 1", "exit 0")
+    },
+    "dangling VFS acceptance config treated as absent during planning" => lambda { |w|
+      step = mutate_named_step(
+        w, "plan", "Validate dependency-bearing VFS acceptance selection"
+      )
+      step["run"] = step.fetch("run").sub(
+        '[ ! -e "$config_candidate" ] && [ ! -L "$config_candidate" ]',
+        '[ ! -e "$config_candidate" ]'
+      )
+    },
+    "VFS acceptance Brewfile symlink accepted during planning" => lambda { |w|
+      step = mutate_named_step(
+        w, "plan", "Validate dependency-bearing VFS acceptance selection"
+      )
+      step["run"] = step.fetch("run").sub(
+        '[ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ]',
+        '[ -f "$brewfile_candidate" ]'
+      )
+    },
+    "VFS acceptance tap identity rebound to repository name" => lambda { |w|
+      step = mutate_named_step(
+        w, "plan", "Validate dependency-bearing VFS acceptance selection"
+      )
+      step.fetch("env")["TAP_NAME"] = "${{ inputs.tap-repository }}"
+    },
     "release tag ABI bypass" => lambda { |w|
       step = mutate_named_step(w, "plan", "Resolve release and bottle root")
       step["run"] = step.fetch("run").sub('[ "$release_tag" != "$expected_release_tag" ]', "false")
@@ -2094,6 +2276,36 @@ def self_test(publisher, maintenance)
     "skipped browser smoke accepted" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
       step["run"] = step.fetch("run").sub(".stats.skipped == 0", ".stats.skipped >= 0")
+    },
+    "required dependency-bearing VFS selection accepted as absent" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        "::error::required dependency-bearing VFS acceptance selection disappeared after planning",
+        "::notice::No dependency-bearing VFS acceptance selected"
+      ).sub("exit 1", "exit 0")
+    },
+    "dependency-bearing VFS Brewfile symlink accepted after planning" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        '[ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ]',
+        '[ -f "$brewfile_candidate" ]'
+      )
+    },
+    "dependency-bearing VFS fallback enabled" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub("--no-fallback", "")
+    },
+    "dependency-bearing VFS exact image digest unchecked" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(".image.sha256", ".image.artifact")
     },
     "unvalidated publication handoff" => lambda { |w|
       step = mutate_named_step(w, "finalize-tap",

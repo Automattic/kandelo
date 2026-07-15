@@ -13,7 +13,10 @@ been validated through Kandelo. The supported implemented path today is:
 - bottle bytes publish to the GHCR/Homebrew bottle URL shape;
 - formula `bottle do` blocks and Kandelo sidecars are generated together;
 - host tooling pours verified bottles into precomposed VFS images;
-- Node and browser smoke tests decide which runtime claims are recorded.
+- Node and browser smoke tests decide which runtime claims are recorded;
+- an explicitly required, tap-selected dependency-bearing Brewfile gate can
+  boot one exact composed image in Node and Chromium before its selected
+  consumer publication passes.
 
 Homebrew formulae and bottle metadata remain Homebrew-native. Kandelo sidecar
 metadata is an additional contract for VFS builders, Node validation, browser
@@ -54,6 +57,7 @@ Homebrew publishing is a sibling to Kandelo package archive publishing:
 | `Kandelo/formula/*.json` | Same as metadata | Formula-level Kandelo sidecar. |
 | `Kandelo/link/*.json` | Same as metadata | VFS builder pour/link plan. |
 | `Kandelo/reports/*.provenance.json` | Same as metadata | Durable publication and validation evidence. |
+| `Kandelo/vfs-acceptance.json` and its Brewfile | Tap git repository | Optional tap-owned dependency-bearing acceptance selection. |
 | Browser gallery assets | Run-scoped diagnostic artifact | Review evidence only; not a durable public gallery. |
 
 Do not publish Homebrew bottles into Kandelo's `binaries-abi-v<N>` package
@@ -688,6 +692,84 @@ blobs.
 ## Node And Browser Claims
 
 Node and browser support are explicit metadata claims.
+
+The trusted publisher implements an opt-in, tap-selected, dependency-bearing
+Brewfile acceptance gate. The tap owns both `Kandelo/vfs-acceptance.json` and
+the referenced Brewfile because formula choice and the dependency graph are tap
+policy, not Kandelo platform policy. A minimal configuration has this shape:
+
+```json
+{
+  "schema": 1,
+  "formula": "consumer",
+  "brewfile": "Kandelo/vfs-acceptance.Brewfile",
+  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "argv": ["consumer", "--version"],
+  "expected_stdout": "consumer"
+}
+```
+
+The acceptance gate parses the static Brewfile, requires at least one real
+dependency edge reachable from the selected Formula, and resolves the same
+dependency-first plan for Node and browser. Every package must select a current
+`success` bottle at the exact public URL
+`https://ghcr.io/v2/<tap-owner>/<tap-repository>/<formula>/blobs/sha256:<digest>`.
+Last-green fallback, source builds, local bottle substitutions, and Kandelo
+package-registry archives are not accepted as package evidence.
+
+The reviewed stdout substring is bounded and single-line so transporting it
+through the workflow cannot change the criterion.
+
+This evidence is optional for an ordinary publisher invocation. When the tap
+does not contain `Kandelo/vfs-acceptance.json`, the workflow records that no
+dependency-closure acceptance evidence was produced and continues with normal
+bottle validation. That outcome must not be reported as a green acceptance
+rung. A malformed configuration or referenced Brewfile still fails planning
+because the tap explicitly opted into an invalid policy file.
+
+A reviewed caller turns the evidence into a required acceptance rung with the
+sealed `require-vfs-acceptance: true` workflow input. A required invocation must
+be non-dry-run and its actual post-cache matrix must contain the configured
+Formula on `wasm32`. If the bottle is already current, the caller must also use
+`force: true` so the acceptance target is not filtered out. Planning fails
+before build or upload when any of those conditions is missing. The default tap
+should enable this input only in the intended acceptance caller after adding
+the configuration and Brewfile and after the complete dependency closure is
+anonymously readable from GitHub Container Registry (GHCR). Adding this input
+does not broaden the current workflow's first-party caller trust boundary.
+
+The gate is not runtime evidence merely because this workflow support exists:
+the tap must complete the required Node and Chromium run before the project can
+claim that dependency-closure acceptance rung.
+
+This closure-level gate may be the first browser evidence for the selected
+bottles. The verifier therefore makes only that in-memory plan provisionally
+browser-eligible, records the bottles' original runtime flags, and then requires
+the exact composed bytes to run successfully in Chromium. It does not edit the
+tap checkout or publish provisional `browser_compatible` claims. The ordinary
+builder command uses the declared Node-compatible plan; the Chromium execution,
+not a pre-existing metadata flag, is the browser evidence for this acceptance
+rung.
+
+The package and platform evidence lanes are intentionally separate during the
+migration:
+
+- **Homebrew package inputs:** all Brewfile roots and their dependency closure
+  come only from verified tap sidecars and public GHCR bottle bytes.
+- **Kandelo platform inputs:** the platform-only base VFS may temporarily come
+  from Kandelo's ABI-matched package release, and the verification kernel comes
+  from the exact Kandelo workflow source. Their origin, digest, byte count, and
+  ABI are recorded separately and never count as migrated package evidence.
+
+The Node runner boots the exact composed image bytes and records their digest.
+The Chromium runner fetches the same file and passes those bytes directly to
+`BrowserKernel.initFromImage`; it does not use the interactive demo setup path,
+which may stage utilities and serialize a new image before boot. The browser
+test independently checks the composed-image and kernel digests before it
+accepts the command result. Formulae other than the selected consumer continue
+to publish dependency-first. Publishing the selected consumer fails until its
+complete dependency closure is already public; existing single-bottle tests do
+not become dependency acceptance evidence.
 
 The Node smoke for the published `hello` bottle:
 
