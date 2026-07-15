@@ -172,6 +172,14 @@ unsafe extern "C" {
         height: u32,
         stride: u32,
     ) -> i32;
+    fn host_gbm_gpu_bo_create(
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32;
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
@@ -937,6 +945,18 @@ impl HostIO for WasmHostIO {
         stride: u32,
     ) -> i32 {
         unsafe { host_gbm_bo_create(pid, bo_id, size, width, height, stride) }
+    }
+
+    fn gbm_gpu_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32 {
+        unsafe { host_gbm_gpu_bo_create(pid, bo_id, width, height, format, usage) }
     }
 
     fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {

@@ -483,7 +483,16 @@ function dispatch(
     }
     case O.OP_BIND_FRAMEBUFFER: {
       const target = v.getUint32(p, true);
-      const fbo = b.fbos.get(v.getUint32(p + 4, true)) ?? null;
+      const name = v.getUint32(p + 4, true);
+      let fbo = b.fbos.get(name) ?? null;
+      // GPU-tier producer redirect: "bind default framebuffer 0" (the
+      // client's window) becomes "render into the target bo's FBO" so a
+      // routed client's output lands in the bo the compositor samples.
+      // Only name 0 is remapped — a real FBO name the client generated
+      // (offscreen ping-pong, etc.) is honored as-is.
+      if (fbo === null && name === 0 && b.renderTargetFbo) {
+        fbo = b.renderTargetFbo;
+      }
       gl.bindFramebuffer(target, fbo);
       if (target !== GL_READ_FRAMEBUFFER) b.shadow.fbo = fbo;
       return;

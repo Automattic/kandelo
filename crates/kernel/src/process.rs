@@ -219,8 +219,32 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
-    /// Free host-side SAB backing for a bo whose refcount has reached
-    /// zero. Idempotent: calling on an unknown `bo_id` is a no-op.
+    /// Allocate host-side `WebGLTexture` backing for a freshly-created
+    /// GPU-tier bo (`DRM_IOCTL_WPK_CREATE_GPU_BO`, PR10). Unlike
+    /// `gbm_bo_create`, there is no SAB: the bo lives as a texture (+FBO)
+    /// on the shared multiplexer context, sampled zero-copy by the
+    /// compositor and rendered into by its producer. `format` is a
+    /// `DRM_FORMAT_*` and `usage` a `GBM_BO_USE_*` bitmask, both passed
+    /// through from the guest. Returns ≥ 0 on success, negative errno on
+    /// failure (e.g. no WebGL backing on a headless host). Released via
+    /// `gbm_bo_destroy` when the refcount reaches zero — the same path as
+    /// CPU-tier bos.
+    #[allow(unused_variables)]
+    fn gbm_gpu_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Free host-side backing for a bo whose refcount has reached zero
+    /// (SAB for CPU-tier, `WebGLTexture`+FBO for GPU-tier). Idempotent:
+    /// calling on an unknown `bo_id` is a no-op.
     #[allow(unused_variables)]
     fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
 

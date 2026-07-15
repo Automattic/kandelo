@@ -273,6 +273,19 @@ export class WasmPosixKernel {
     this.callbacks.markKmsCanvasGlReleased?.(crtc);
   }
 
+  /** The shared multiplexer context that backs GPU-tier bos: the
+   *  DRM-master compositor's scanout WebGL2 context. WebGL textures are
+   *  not shareable across contexts, so every GPU-bo texture (and the FBO
+   *  its producer renders into) must live here for the compositor to
+   *  sample it zero-copy. Null when no pid holds master, or the master
+   *  has no live context yet (headless Node, or before the compositor's
+   *  `eglCreateContext`) — the GPU-bo path then degrades to CPU tier. */
+  private sharedGlContext(): WebGL2RenderingContext | null {
+    const masterPid = this.kms.getMasterPid();
+    if (masterPid == null) return null;
+    return this.gl.get(masterPid)?.gl ?? null;
+  }
+
   private createKernelMemory(): WebAssembly.Memory {
     if (this.kernelPtrWidth === 8) {
       return new WebAssembly.Memory({
@@ -881,11 +894,40 @@ export class WasmPosixKernel {
           this.bos.create({ pid, bo_id, size: Number(size), w, h, stride });
           return 0;
         },
+        // WPK_CREATE_GPU_BO: allocate a GPU-tier bo backed by a
+        // WebGLTexture (+FBO) on the shared multiplexer context — no SAB,
+        // unmappable, sampled zero-copy by the compositor and rendered
+        // into by its producer (PR10).
+        //
+        // The shared context is the DRM-master compositor's scanout
+        // context (`sharedGlContext`). When it is absent — headless Node
+        // (no WebGL at all), or the browser before the compositor's
+        // `eglCreateContext` — we return -ENOSYS so the kernel rolls back
+        // its registry allocation and libgbm falls back to a CPU-tier
+        // dumb bo. That fallback is the correct behavior, not a defect.
+        // A createGpuBo failure (context couldn't allocate the objects)
+        // returns -ENOMEM, likewise rolled back by the kernel.
+        host_gbm_gpu_bo_create: (
+          _pid: number,
+          bo_id: number,
+          width: number,
+          height: number,
+          _format: number,
+          _usage: number,
+        ): number => {
+          const ctx = this.sharedGlContext();
+          if (!ctx) return -38; // -ENOSYS → guest falls back to CPU tier
+          const texId = this.gl.createGpuBo(bo_id, ctx, width, height);
+          if (texId == null) return -12; // -ENOMEM
+          return 0;
+        },
         host_gbm_bo_destroy: (pid: number, bo_id: number): void => {
           // The bo owns any foreign textures bound from it (see shared's
           // BIND_FOREIGN_TEXTURE doc) — drop them across all GL bindings
-          // before the pixel SAB goes away.
+          // before the pixel SAB goes away. A GPU-tier bo instead owns a
+          // texture+FBO on the shared context; release that too.
           this.gl.dropForeignTexturesForBo(bo_id);
+          this.gl.destroyGpuBo(bo_id);
           this.bos.destroy(pid, bo_id);
         },
         host_gbm_bo_bind: (
@@ -931,6 +973,28 @@ export class WasmPosixKernel {
           if (b.forward) {
             b.forward.onCreateContext();
             return;
+          }
+          // GPU-tier producer routing (PR10 §7.1): a non-master GL client
+          // has no display canvas to build a context on. Route it onto
+          // the shared multiplexer context — the DRM-master compositor's
+          // scanout context — so its GPU-bo FBO renders live on the same
+          // context the compositor samples zero-copy. The existing
+          // `GlMuxer` (keyed by the WebGL2 context) multiplexes the two
+          // sessions by replaying each binding's shadow on `switchTo`.
+          //
+          // Ordering: the compositor (DRM master) must have created its
+          // context first, or `sharedGlContext()` is null and we fall
+          // through — leaving `b.gl = null`, i.e. inert (submit/query
+          // no-op), exactly as before. That also keeps this path inert on
+          // headless Node (no WebGL at all). The client's render target
+          // is redirected to its bo's FBO at `gl_create_surface` time; the
+          // viewport is seeded from the bo dims there.
+          if (!b.canvas && !this.kms.isMasterPid(pid)) {
+            const shared = this.sharedGlContext();
+            if (shared) {
+              b.gl = shared;
+              return;
+            }
           }
           let claimedCrtc: number | null = null;
           if (!b.canvas) {
@@ -1027,27 +1091,52 @@ export class WasmPosixKernel {
           const b = this.gl.get(pid);
           if (!b) return;
           b.surfaceId = surfaceId;
-          // GlSurfaceAttrs: u32 kind, width, height, config_id, …
+          // GlSurfaceAttrs: u32 kind, width, height, config_id,
+          //                 reserved[0]=target bo_id, reserved[1..4].
           // Non-zero width/height is an explicit drawing-buffer size
           // request (libEGL forwards EGL_WIDTH/EGL_HEIGHT window-surface
           // attribs). A KMS compositor creates its surface before its
           // first ADDFB, when the create-context fb-resize has nothing
           // to size against — and the canvas may still carry the pump
           // presenter's display-sized drawing buffer.
-          if (b.canvas && attrsLen >= 12n) {
-            const attrs = this.readKernelBytes(Number(attrsPtr), 12);
-            const dv = new DataView(attrs.buffer, attrs.byteOffset, 12);
+          if (attrsLen >= 20n) {
+            const attrs = this.readKernelBytes(Number(attrsPtr), 20);
+            const dv = new DataView(attrs.buffer, attrs.byteOffset, 20);
             const w = dv.getUint32(4, true);
             const h = dv.getUint32(8, true);
-            if (w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
+            if (b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
               b.canvas.width = w;
               b.canvas.height = h;
+            }
+            // GPU-tier producer target: reserved[0] is the global bo_id
+            // (the kernel already translated the per-fd handle) whose FBO
+            // this window surface renders into. When it names a GPU bo on
+            // this session's shared context, redirect the client's default
+            // framebuffer to that FBO and size its viewport to the bo. A 0
+            // id (the common canvas/scanout case) leaves the target unset.
+            const targetBoId = dv.getUint32(16, true);
+            if (targetBoId !== 0) {
+              const gpu = this.gl.gpuBo(targetBoId);
+              if (gpu && b.gl === gpu.gl) {
+                b.renderTargetFbo = gpu.fbo;
+                b.shadow.fbo = gpu.fbo;
+                b.shadow.viewport = [0, 0, gpu.w, gpu.h];
+              }
             }
           }
         },
         host_gl_destroy_surface: (pid: number, _surfaceId: number): void => {
           const b = this.gl.get(pid);
-          if (b) b.surfaceId = null;
+          if (!b) return;
+          b.surfaceId = null;
+          // Drop the producer render-target reference — the FBO itself is
+          // owned by the GPU bo (freed via destroyGpuBo on bo destroy),
+          // so never delete it here. Reset shadow.fbo so a subsequent
+          // surface on this binding starts at the default framebuffer.
+          if (b.renderTargetFbo) {
+            b.renderTargetFbo = null;
+            b.shadow.fbo = null;
+          }
         },
         host_gl_make_current: (
           _pid: number, _ctxId: number, _surfaceId: number,
@@ -1098,9 +1187,16 @@ export class WasmPosixKernel {
             (bb, off, len) => decodeAndDispatch(bb, off, len),
           );
         },
-        host_gl_present: (_pid: number): void => {
-          // RAF-driven canvas presentation handles itself in v1. Hook
-          // is here for explicit-swap / pbuffer paths in v2.
+        host_gl_present: (pid: number): void => {
+          // A GPU-tier producer renders into an offscreen bo FBO on the
+          // shared context, so `eglSwapBuffers` must fence the queued GL
+          // work: `flush()` guarantees the producer's draws are submitted
+          // before the compositor samples the bo (their command order
+          // through the one shared context then gives render-before-sample
+          // for free — no explicit sync object in v1). Canvas-backed
+          // sessions present via RAF and need no fence here.
+          const b = this.gl.get(pid);
+          if (b?.renderTargetFbo) b.gl?.flush();
         },
         host_gl_query: (
           pid: number, op: number,
@@ -1130,6 +1226,16 @@ export class WasmPosixKernel {
           const b = this.gl.get(pid);
           if (!b || !b.gl || b.contextId !== ctxId) return -5;  // EIO
           if (glTarget !== 0x0de1) return -22;                  // EINVAL: TEXTURE_2D only
+          // GPU-tier bo: the texture already lives on the shared context,
+          // so binding it degenerates to "return the texture id" — zero
+          // copies, no upload. The caller must be on that same context
+          // (WebGL textures aren't shareable); otherwise EIO.
+          const gpu = this.gl.gpuBo(boId);
+          if (gpu) {
+            if (b.gl !== gpu.gl) return -5;                     // EIO
+            b.textures.set(gpu.texId, gpu.tex);
+            return gpu.texId;
+          }
           const dims = this.bos.dims(boId);
           const bytes = this.bos.pixelView(boId);
           if (!dims || !bytes) return -2;                       // ENOENT

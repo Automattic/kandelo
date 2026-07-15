@@ -103,6 +103,16 @@ export type GlBinding = GlBindingInput & {
    *  current program (e.g. uniform setters). */
   currentProgram: WebGLProgram | null;
 
+  /** GPU-tier producer render target (PR10 §7.1): the FBO whose color
+   *  attachment IS a GPU bo's texture. Set when the client's EGL window
+   *  surface targets a GPU bo (`GLIO_CREATE_SURFACE` with a target bo).
+   *  Non-null redirects the client's "bind default framebuffer 0" (its
+   *  window) into the bo's FBO, so its GL output lands in the bo the
+   *  compositor samples zero-copy. Owned by the bo, NOT this binding —
+   *  never deleted on unbind (destroyed via `destroyGpuBo` on bo
+   *  destroy). Null for canvas-backed (master) and CPU-tier sessions. */
+  renderTargetFbo: WebGLFramebuffer | null;
+
   shadow: GlShadowState;
 
   forward: GlForwardChannel | null;
@@ -111,9 +121,32 @@ export type GlBinding = GlBindingInput & {
 export type GlChangeEvent = "bind" | "unbind";
 export type GlChangeListener = (pid: number, ev: GlChangeEvent) => void;
 
+/** A GPU-tier bo (`DRM_IOCTL_WPK_CREATE_GPU_BO`): a `WebGLTexture` +
+ *  color-attachment FBO living on the shared multiplexer context (the
+ *  DRM-master compositor's scanout context). Unlike CPU-tier bos there
+ *  is no SAB backing — the pixels only ever exist on the GPU. The
+ *  producer renders into `fbo`; a consumer that `WPK_BIND_FOREIGN_TEXTURE`s
+ *  it samples `tex` zero-copy, so it MUST be on the same `gl`. */
+export type GpuBo = {
+  gl: WebGL2RenderingContext;
+  tex: WebGLTexture;
+  fbo: WebGLFramebuffer;
+  texId: number;
+  w: number;
+  h: number;
+};
+
 export class GlContextRegistry {
   private bindings = new Map<number, GlBinding>();
   private listeners = new Set<GlChangeListener>();
+  /** GPU-tier bos keyed by bo_id. Registry-scoped (NOT per-binding):
+   *  the texture is owned by the bo and shared across every session that
+   *  binds it, so it is freed only on bo destroy, never on `unbind()`. */
+  private gpuBos = new Map<number, GpuBo>();
+  /** Id allocator for GPU-bo textures. Distinct band from per-binding
+   *  foreign textures (`0x4000_0000`) so a stray id never resolves to
+   *  the wrong table when debugging. */
+  private nextGpuBoTexId = 0x6000_0000;
   /** Channels installed before `bind()` fires; drained when it does, so
    *  the embedder can wire forwarding without racing `host_gl_bind`. */
   private pendingForwards = new Map<number, GlForwardChannel>();
@@ -149,6 +182,7 @@ export class GlContextRegistry {
       nextForeignTexId: 0x4000_0000,
       claimedKmsCrtc: null,
       currentProgram: null,
+      renderTargetFbo: null,
       shadow: defaultShadow(),
       forward,
     });
@@ -244,7 +278,11 @@ export class GlContextRegistry {
   /** Delete every binding's foreign texture for a destroyed bo (the bo
    *  is the texture's canonical owner — see shared's
    *  `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` doc). Called from the host's
-   *  `gbm_bo_destroy` hook when the bo refcount hits zero. */
+   *  `gbm_bo_destroy` hook when the bo refcount hits zero.
+   *
+   *  This DELIBERATELY leaves `gpuBos` untouched: a GPU-tier bo's texture
+   *  is owned by the bo itself (this registry), not by any binding, and
+   *  is released only via `destroyGpuBo` on bo destroy. */
   dropForeignTexturesForBo(bo_id: number): void {
     for (const b of this.bindings.values()) {
       const entry = b.foreignTextures.get(bo_id);
@@ -253,6 +291,73 @@ export class GlContextRegistry {
       b.textures.delete(entry.texId);
       b.gl?.deleteTexture(entry.tex);
     }
+  }
+
+  /** Allocate a GPU-tier bo (`DRM_IOCTL_WPK_CREATE_GPU_BO`): an empty
+   *  `w×h` RGBA texture plus a color-attachment FBO on `gl` (the shared
+   *  multiplexer context). Idempotent — a second call for a live `bo_id`
+   *  returns the existing texId without reallocating. Returns the guest-
+   *  visible texture id, or `null` if the context could not allocate the
+   *  objects (the kernel then rolls back and the guest falls back to a
+   *  CPU-tier dumb bo).
+   *
+   *  Runs OUTSIDE the submit-drain/muxer path, so the prior
+   *  TEXTURE_BINDING_2D and FRAMEBUFFER_BINDING are saved and restored —
+   *  the shared context may be mid-frame for another session. */
+  createGpuBo(
+    bo_id: number,
+    gl: WebGL2RenderingContext,
+    w: number,
+    h: number,
+  ): number | null {
+    const existing = this.gpuBos.get(bo_id);
+    if (existing) return existing.texId;
+    const tex = gl.createTexture();
+    const fbo = gl.createFramebuffer();
+    if (!tex || !fbo) {
+      if (tex) gl.deleteTexture(tex);
+      if (fbo) gl.deleteFramebuffer(fbo);
+      return null;
+    }
+    const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+    const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // `null` data → allocate storage without an upload; the producer
+    // fills it by rendering into the FBO.
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0,
+      gl.RGBA, gl.UNSIGNED_BYTE, null,
+    );
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0,
+    );
+    gl.bindTexture(gl.TEXTURE_2D, prevTex);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+    const texId = this.nextGpuBoTexId++;
+    this.gpuBos.set(bo_id, { gl, tex, fbo, texId, w, h });
+    return texId;
+  }
+
+  /** The GPU-tier bo for `bo_id`, or undefined if it is CPU-tier /
+   *  unknown. Used by the foreign-texture bind path to short-circuit to a
+   *  zero-copy texture-id return. */
+  gpuBo(bo_id: number): GpuBo | undefined {
+    return this.gpuBos.get(bo_id);
+  }
+
+  /** Release a GPU-tier bo's FBO + texture from its shared context.
+   *  Called from `gbm_bo_destroy` alongside `dropForeignTexturesForBo`. */
+  destroyGpuBo(bo_id: number): void {
+    const entry = this.gpuBos.get(bo_id);
+    if (!entry) return;
+    this.gpuBos.delete(bo_id);
+    entry.gl.deleteFramebuffer(entry.fbo);
+    entry.gl.deleteTexture(entry.tex);
   }
 
   onChange(fn: GlChangeListener): () => void {

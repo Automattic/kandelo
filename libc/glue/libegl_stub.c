@@ -27,6 +27,11 @@ static EGLint   g_last_error    = EGL_SUCCESS;
 static int      g_initialized   = 0;
 static int      g_context_made  = 0;
 static int      g_surface_made  = 0;
+/* GPU-tier producer target: the bo handle (from PRIME_FD_TO_HANDLE /
+ * gbm_bo) whose FBO the NEXT eglCreateWindowSurface renders into. Set by
+ * wpkEglSetWindowSurfaceTarget, consumed once and cleared. 0 = an
+ * ordinary canvas/scanout window surface (the default). */
+static uint32_t g_pending_surface_target_bo = 0;
 
 #define EGL_DPY_HANDLE      ((EGLDisplay)(uintptr_t)1)
 #define EGL_CONFIG_HANDLE   ((EGLConfig) (uintptr_t)1)
@@ -171,6 +176,13 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
             if (a[0] == EGL_HEIGHT) surf.height = (uint32_t)a[1];
         }
     }
+    /* GPU-tier producer targeting: reserved[0] carries the target bo
+     * handle. The kernel translates it to a global bo_id and the host
+     * redirects this surface's default-framebuffer renders into that
+     * bo's FBO (see GLIO_CREATE_SURFACE). Consumed once. 0 leaves the
+     * ordinary canvas/scanout behavior untouched. */
+    surf.reserved[0] = g_pending_surface_target_bo;
+    g_pending_surface_target_bo = 0;
     if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_SURFACE;
@@ -372,6 +384,18 @@ unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
     };
     if (ioctl(g_fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) != 0) return 0;
     return req.gl_texture_id;
+}
+
+/* Target the NEXT eglCreateWindowSurface at a GPU-tier bo's FBO: a
+ * producer renders its frame into `bo_handle` (allocated via
+ * gbm_bo_create with GPU usage, or imported via PRIME_FD_TO_HANDLE)
+ * instead of a display canvas, and the compositor samples it zero-copy
+ * with wpkEglBindBoTexture. Call immediately before eglCreateWindowSurface;
+ * the target is consumed once. Passing 0 (or not calling this) yields an
+ * ordinary window surface. No-op if the display isn't initialized. */
+void wpkEglSetWindowSurfaceTarget(EGLDisplay dpy, unsigned bo_handle) {
+    if (dpy != EGL_DPY_HANDLE) return;
+    g_pending_surface_target_bo = bo_handle;
 }
 
 /* Release a handle from wpkEglImportDmabufHandle. */

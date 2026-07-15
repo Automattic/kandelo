@@ -29,6 +29,18 @@ pub type BoId = u32;
 /// that doesn't match it gets `EACCES`.
 pub type PrimeCookie = u64;
 
+/// Storage tier of a bo. `CpuShared` bos (`MODE_CREATE_DUMB`) are backed
+/// by a host SAB, LINEAR and CPU-mmap'able. `GpuTexture` bos
+/// (`WPK_CREATE_GPU_BO`, PR10) are backed by a host `WebGLTexture` on the
+/// shared multiplexer context — unmappable on the CPU side; the compositor
+/// samples them and their producer renders into an FBO whose color
+/// attachment IS the texture (zero-copy dmabuf semantics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoTier {
+    CpuShared,
+    GpuTexture,
+}
+
 #[derive(Debug, Clone)]
 pub struct GbmBo {
     pub id: BoId,
@@ -36,6 +48,7 @@ pub struct GbmBo {
     pub size: u64,
     pub refcount: u32,
     pub prime_cookie: Option<PrimeCookie>,
+    pub tier: BoTier,
 }
 
 pub struct BoRegistry {
@@ -54,6 +67,18 @@ impl BoRegistry {
     }
 
     pub fn alloc(&mut self, width: u32, height: u32, bpp: u32) -> &mut GbmBo {
+        self.alloc_tier(width, height, bpp, BoTier::CpuShared)
+    }
+
+    /// Allocate a GPU-tier bo (`WPK_CREATE_GPU_BO`). The stride/size are
+    /// still computed for the LINEAR-equivalent layout so `gbm_bo_get_stride`
+    /// returns a sensible value, but the bo carries no CPU-side SAB and
+    /// cannot be `mmap`'d — the host backs it with a `WebGLTexture`.
+    pub fn alloc_gpu(&mut self, width: u32, height: u32, bpp: u32) -> &mut GbmBo {
+        self.alloc_tier(width, height, bpp, BoTier::GpuTexture)
+    }
+
+    fn alloc_tier(&mut self, width: u32, height: u32, bpp: u32, tier: BoTier) -> &mut GbmBo {
         let id = self.next_id;
         self.next_id += 1;
         // Stride rounded up to a 4-byte boundary so every row is
@@ -67,6 +92,7 @@ impl BoRegistry {
             size,
             refcount: 1,
             prime_cookie: None,
+            tier,
         };
         self.map.insert(id, bo);
         self.map.get_mut(&id).unwrap()
@@ -235,6 +261,44 @@ mod tests {
             assert_eq!(bo2.stride, 20);
             let id2 = bo2.id;
             r.decref(id2);
+        });
+    }
+
+    #[test]
+    fn alloc_defaults_to_cpu_tier() {
+        let _g = fresh();
+        with_registry(|r| {
+            let bo = r.alloc(64, 64, 32);
+            assert_eq!(bo.tier, BoTier::CpuShared);
+            let id = bo.id;
+            r.decref(id);
+        });
+    }
+
+    #[test]
+    fn alloc_gpu_marks_gpu_tier_and_keeps_stride() {
+        let _g = fresh();
+        with_registry(|r| {
+            // GPU-tier bos still compute a LINEAR-equivalent stride/size
+            // so gbm_bo_get_stride returns a sane value.
+            let bo = r.alloc_gpu(17, 3, 32);
+            assert_eq!(bo.tier, BoTier::GpuTexture);
+            assert_eq!(bo.stride, 68);
+            assert_eq!(bo.size, 68 * 3);
+            let id = bo.id;
+            r.decref(id);
+        });
+    }
+
+    #[test]
+    fn gpu_and_cpu_bos_share_the_id_space() {
+        let _g = fresh();
+        with_registry(|r| {
+            let a = r.alloc(64, 64, 32).id;
+            let b = r.alloc_gpu(64, 64, 32).id;
+            assert!(b > a, "gpu bo draws the next monotonic id");
+            r.decref(a);
+            r.decref(b);
         });
     }
 
