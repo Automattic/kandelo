@@ -85,6 +85,7 @@
 #include "linux-dmabuf-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-names.h>
 #include <libinput.h>
 
 #include <gbm.h>
@@ -116,6 +117,13 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 #define MAX_FRAME_CB   32     /* pending frame callbacks per surface */
 #define MAX_SURFACES   16     /* mapped toplevels in the z-order list */
 #define FOCUS_COLOR    0xff4f8fdfu  /* accent ring, GPU and CPU paths */
+#define N_WORKSPACES   9      /* SUPER+1..9, Hyprland's 1-based workspaces */
+
+/* evdev keycodes we bind on (linux/input-event-codes.h is not in the wasm
+ * sysroot). The compositor receives these raw from libinput. */
+#define KEY_1        2
+#define KEY_9        10
+#define KEY_LEFTMETA 125
 
 /* ---- surface state ----------------------------------------------------- */
 
@@ -133,6 +141,7 @@ struct surface {
     char app_id[32];
     int32_t x, y;                       /* top-left on the output */
     int32_t w, h;                       /* committed buffer dims */
+    int workspace;                      /* 1..N_WORKSPACES; 0 until first map */
     int mapped;                         /* has a committed buffer been shown */
     int placed;                         /* position assigned at first map */
     struct wl_resource *frame_cbs[MAX_FRAME_CB];
@@ -218,6 +227,10 @@ struct compositor {
     /* Layout policy (enum layout_mode); FLOATING unless WLC_LAYOUT overrides. */
     int layout;
 
+    /* The visible workspace (1..N_WORKSPACES). Surfaces on other workspaces
+     * stay mapped but are excluded from compositing, input, and tiling. */
+    int active_ws;
+
     /* Bound seat resources (across all clients; routed per-client). */
     struct wl_resource *keyboards[MAX_INPUT_RES];
     struct wl_resource *pointers[MAX_INPUT_RES];
@@ -266,6 +279,21 @@ static void schedule_repaint(void);
 static void kbd_set_focus(struct surface *s);
 static void ptr_refresh_focus(void);
 
+/* A surface participates in compositing, input, and tiling only when it is
+ * mapped AND on the active workspace. */
+static int surface_visible(const struct surface *s) {
+    return s->mapped && s->workspace == g.active_ws;
+}
+
+/* Topmost mapped surface on workspace `ws` (its remembered focus, since
+ * focusing raises), or NULL. */
+static struct surface *topmost_on_ws(int ws) {
+    for (int i = g.n_surfaces - 1; i >= 0; i--)
+        if (g.zorder[i]->mapped && g.zorder[i]->workspace == ws)
+            return g.zorder[i];
+    return NULL;
+}
+
 /* ---- z-order helpers ---------------------------------------------------- */
 
 static void zorder_add(struct surface *s) {
@@ -290,7 +318,7 @@ static void zorder_raise(struct surface *s) {
 static struct surface *surface_at(double x, double y) {
     for (int i = g.n_surfaces - 1; i >= 0; i--) {
         struct surface *s = g.zorder[i];
-        if (!s->mapped) continue;
+        if (!surface_visible(s)) continue;
         if (x >= s->x && x < s->x + s->w && y >= s->y && y < s->y + s->h)
             return s;
     }
@@ -404,7 +432,7 @@ static void retile(void) {
     struct surface *tiled[MAX_SURFACES];
     int n = 0;
     for (int i = 0; i < g.n_surfaces; i++)
-        if (g.zorder[i]->mapped) tiled[n++] = g.zorder[i];
+        if (surface_visible(g.zorder[i])) tiled[n++] = g.zorder[i];
     if (n == 0) return;
 
     struct geom geoms[MAX_SURFACES];
@@ -491,6 +519,7 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
 
     if (!s->mapped) {
         s->mapped = 1;
+        if (!s->workspace) s->workspace = g.active_ws;   /* opens on the visible ws */
         /* Tiling dictates geometry for every window in retile(); only the
          * floating desktop places individually by app_id. */
         if (g.layout == LAYOUT_FLOATING && !s->placed) place_surface(s);
@@ -536,9 +565,8 @@ static void surface_resource_destroy(struct wl_resource *r) {
     zorder_remove(s);
     if (g.kbd_focus == s) {
         g.kbd_focus = NULL;
-        /* Hand focus to the new top window, if any. */
-        if (g.n_surfaces)
-            kbd_set_focus(g.zorder[g.n_surfaces - 1]);
+        /* Hand focus to the new top window on the visible workspace, if any. */
+        kbd_set_focus(topmost_on_ws(g.active_ws));
     }
     if (g.ptr_focus == s) g.ptr_focus = NULL;
     if (g.grab == s) g.grab = NULL;
@@ -1289,6 +1317,38 @@ static void ptr_refresh_focus(void) {
     ptr_set_focus(surface_at(g.cursor_x, g.cursor_y));
 }
 
+/* ---- workspaces --------------------------------------------------------- */
+
+/* Show workspace `ws`: its surfaces become visible + tiled, the rest hide.
+ * Focus restores to that workspace's topmost window (empty → no focus). */
+static void switch_workspace(int ws) {
+    if (ws < 1 || ws > N_WORKSPACES || ws == g.active_ws) return;
+    g.active_ws = ws;
+    kbd_set_focus(topmost_on_ws(ws));
+    ptr_refresh_focus();
+    retile();
+    schedule_repaint();
+    printf("WORKSPACE active=%d\n", ws);
+    fflush(stdout);
+}
+
+/* Send the focused window to workspace `ws`; it vanishes from the current
+ * view, which re-tiles around its absence, and focus falls to the next
+ * window here. */
+static void move_focus_to_workspace(int ws) {
+    if (ws < 1 || ws > N_WORKSPACES || !g.kbd_focus) return;
+    struct surface *s = g.kbd_focus;
+    if (s->workspace == ws) return;
+    s->workspace = ws;
+    g.kbd_focus = NULL;
+    kbd_set_focus(topmost_on_ws(g.active_ws));
+    ptr_refresh_focus();
+    retile();
+    schedule_repaint();
+    printf("MOVE_TO_WS \"%s\" ws=%d\n", s->app_id, ws);
+    fflush(stdout);
+}
+
 static void seat_get_pointer(struct wl_client *client,
                              struct wl_resource *resource, uint32_t id) {
     struct wl_resource *p = wl_resource_create(
@@ -1665,7 +1725,7 @@ static int repaint_gl(void) {
     struct surface *top = NULL;
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
-        if (!s->mapped || !s->buffer) continue;
+        if (!surface_visible(s) || !s->buffer) continue;
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         texs[i] = shm_buffer_gl_texture(b);
@@ -1677,7 +1737,7 @@ static int repaint_gl(void) {
     glc_draw_tex(glc.wallpaper_tex, 0, 0, (int32_t)g.width, (int32_t)g.height);
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
-        if (!s->mapped || !s->buffer || !texs[i]) continue;
+        if (!surface_visible(s) || !s->buffer || !texs[i]) continue;
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         if (g.kbd_focus == s)   /* 2px accent ring behind the window */
@@ -1764,7 +1824,7 @@ static void repaint(void) {
         struct surface *top = NULL;
         for (int i = 0; i < g.n_surfaces; i++) {
             struct surface *s = g.zorder[i];
-            if (!s->mapped) continue;
+            if (!surface_visible(s)) continue;
             if (g.kbd_focus == s) draw_focus_border(s, dst, stride_px);
             blit_surface(s, dst, stride_px);
             top = s;
@@ -1858,6 +1918,28 @@ static int card_readable(int fd, uint32_t mask, void *data) {
 /* Input: libinput → wl_keyboard / wl_pointer                             */
 /* ====================================================================== */
 
+/* Bootstrap keybinds (PR14d replaces this table with the config-file engine):
+ * SUPER+1..9 switch workspace, SUPER+SHIFT+1..9 move the focused window there.
+ * Returns 1 when the combo is handled and must NOT reach the client; the
+ * xkb_state is already updated with this key, so LOGO/SHIFT reflect it. Fires
+ * on press; the matching release is swallowed too so clients see no half
+ * combo. */
+static int try_keybind(uint32_t key, uint32_t state) {
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_LOGO,
+                                     XKB_STATE_MODS_EFFECTIVE) <= 0)
+        return 0;
+    if (key < KEY_1 || key > KEY_9) return 0;
+    if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+        int ws = (int)(key - KEY_1) + 1;
+        if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_SHIFT,
+                                         XKB_STATE_MODS_EFFECTIVE) > 0)
+            move_focus_to_workspace(ws);
+        else
+            switch_workspace(ws);
+    }
+    return 1;
+}
+
 static void handle_keyboard(struct libinput_event_keyboard *k) {
     uint32_t key = libinput_event_keyboard_get_key(k);
     uint32_t state = libinput_event_keyboard_get_key_state(k) ==
@@ -1883,6 +1965,9 @@ static void handle_keyboard(struct libinput_event_keyboard *k) {
         g.sent_mods_locked = lock;
         g.sent_group = grp;
     }
+
+    /* Compositor keybinds intercept the key before the focused client. */
+    if (try_keybind(key, state)) return;
 
     if (!g.kbd_focus) return;
     for (int i = 0; i < MAX_INPUT_RES; i++) {
@@ -2106,6 +2191,7 @@ static int setup_keymap(void) {
         "    <AB01> = 52;  <AB02> = 53;  <AB03> = 54;  <AB04> = 55;\n"
         "    <AB05> = 56;  <AB06> = 57;  <AB07> = 58;  <AB08> = 59;\n"
         "    <AB09> = 60;  <AB10> = 61;  <RTSH> = 62;  <SPCE> = 65;\n"
+        "    <LWIN> = 133;\n"   /* evdev KEY_LEFTMETA (125) + 8: the SUPER key */
         "  };\n"
         "  xkb_types \"kandelo\" {\n"
         "    virtual_modifiers NumLock;\n"
@@ -2130,6 +2216,9 @@ static int setup_keymap(void) {
         "    interpret Control_L+AnyOfOrNone(all) {\n"
         "      action = SetMods(modifiers=Control);\n"
         "    };\n"
+        "    interpret Super_L+AnyOfOrNone(all) {\n"
+        "      action = SetMods(modifiers=Mod4);\n"
+        "    };\n"
         "  };\n"
         "  xkb_symbols \"kandelo\" {\n"
         "    key <ESC>  { [ Escape ] };\n"
@@ -2140,6 +2229,7 @@ static int setup_keymap(void) {
         "    key <LCTL> { [ Control_L ] };\n"
         "    key <LFSH> { [ Shift_L ] };\n"
         "    key <RTSH> { [ Shift_R ] };\n"
+        "    key <LWIN> { [ Super_L ] };\n"
         "    key <AE01> { type=\"TWO_LEVEL\", [ 1, exclam ] };\n"
         "    key <AE02> { type=\"TWO_LEVEL\", [ 2, at ] };\n"
         "    key <AE03> { type=\"TWO_LEVEL\", [ 3, numbersign ] };\n"
@@ -2189,6 +2279,7 @@ static int setup_keymap(void) {
         "    key <AB10> { type=\"TWO_LEVEL\", [ slash, question ] };\n"
         "    modifier_map Shift { <LFSH>, <RTSH> };\n"
         "    modifier_map Control { <LCTL> };\n"
+        "    modifier_map Mod4 { <LWIN> };\n"
         "  };\n"
         "};\n";
 
@@ -2361,6 +2452,7 @@ int main(void) {
 
     /* Layout policy. Absent/unknown WLC_LAYOUT keeps the floating desktop so
      * /?demo=wayland is unchanged; WLC_LAYOUT=dwindle selects the tiler. */
+    g.active_ws = 1;
     const char *want_layout = getenv("WLC_LAYOUT");
     if (want_layout && strcmp(want_layout, "dwindle") == 0)
         g.layout = LAYOUT_DWINDLE;
