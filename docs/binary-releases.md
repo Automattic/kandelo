@@ -137,9 +137,14 @@ Preflight stores three candidate assets before package writers start:
 
 Staging promotion and matrix builds use the ordinary `index-update.sh` path,
 but their target is the candidate tag. The test gate resolves that candidate
-index. After all tests and the final base-drift check pass, `ready.json` records
-the sha256 of the exact tested candidate index. A ready candidate is sealed;
-supported index writers refuse further mutation.
+index from a local snapshot captured before binary materialization. The
+snapshot retains the exact source bytes for hashing and derives a resolver view
+that only makes relative candidate archive URLs absolute, so every resolver
+invocation observes one ledger even if the release changes later. After all
+tests and the final base-drift check pass, `ready.json` records the sha256 of
+the snapshotted source candidate index and sealing verifies the live release
+still has those exact bytes. A ready candidate is sealed; supported index
+writers refuse further mutation.
 
 When the canonical release already contains the exact cache-keyed archive but
 its ledger entry is stale, Prepare merge snapshots that asset's release digest,
@@ -239,6 +244,56 @@ same-package canonical drift write a `rejected.json` disposition, so scheduled
 reconciliation does not repeatedly retry them. Rebuild the affected packages
 from the merged target with `force-rebuild.yml`. Transient release/API failures
 may retry the unchanged candidate.
+
+### Recovering the shallow prepared-commit-count defect
+
+`recover-rejected-merge-candidate.yml` is a manual, default-branch-only repair
+for the historical case where a rebase candidate was rejected solely because
+Prepare recorded its commit count from a shallow checkout. It is not a generic
+rejection override. The operator supplies the rejected candidate tag; the
+workflow does not build packages or rerun the runtime gate.
+
+Before publishing anything, the recovery helper requires all of the following:
+
+- the source has an immutable `rejected.json` whose exact reason is
+  `prepared-commit-count-mismatch`, plus a successful matching Prepare run and
+  its retained synthetic-merge bundle;
+- the checked-out default branch has the same `ABI_VERSION` as the source, the
+  merged PR is on that branch, and the prepared head, base, merge method,
+  synthetic parents, tested tree, merged tree, full-history commit count, and
+  linear rebase result all agree;
+- the source ledger still has every current package key for that ABI, and each
+  indexed archive is downloaded and verified against the snapshotted release
+  size and sha256; and
+- the source remains the PR's current merge-gate authority while the PR
+  authority and source locks are held.
+
+The repair creates a new run-bound prerelease instead of editing or deleting
+the rejected source. It copies the exact base ledger, tested candidate ledger,
+and complete verified archive set; only `candidate.json` changes, recording the
+full-history count and source recovery provenance. The tested index sha256 is
+bound into the new ready marker. With the PR authority lock held, sealing is
+followed by fresh default-tip and source-authority checks before a
+compare-and-swap moves merge-gate authority to the clone. The ordinary
+activation workflow carries the validated default revision forward and checks
+it again under the PR authority lock before publishing the clone through the
+canonical transaction path.
+
+Recovery is resumable at the authority/activation boundary. If a runner stops
+after the clone becomes authoritative, a rerun reuses that exact clone only
+after revalidating its complete identity and every immutable byte. Missing,
+extra, or changed assets fail closed. An existing `activated.json` is also
+validated as terminal evidence for the exact ready marker and merged commit;
+activation exits before replanning against later canonical package changes. A
+rerun never creates a second clone merely because the workflow attempt changed.
+
+The repair workflow must already be present on the default branch. If a stale
+canonical ledger makes the package gate for the protocol repair itself fail,
+the operational sequence is: audit and bootstrap-merge the protocol repair on
+the evidence that only canonical materialization is stale; dispatch rejected
+candidate recovery; confirm canonical activation; then return to the normal
+Prepare and activation gates. For the ABI 39 incident, PR #953 is that single
+bootstrap merge and the rejected source is the candidate prepared by PR #936.
 
 The daily staging cleanup retains all candidates for open PRs and retains state
 whenever a PR, asset, or status lookup is uncertain. It deletes candidates for

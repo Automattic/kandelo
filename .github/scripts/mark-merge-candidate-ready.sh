@@ -7,6 +7,10 @@ EXPECTED_HEAD_SHA=""
 EXPECTED_SYNTHETIC_TREE_SHA=""
 EXPECTED_RUN_ID=""
 EXPECTED_RUN_ATTEMPT=""
+EXPECTED_CANDIDATE_INDEX_SHA256=""
+EXPECTED_CURRENT_AUTHORITY_URL=""
+EXPECTED_DEFAULT_REF=""
+EXPECTED_DEFAULT_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -16,22 +20,49 @@ while [ "$#" -gt 0 ]; do
     --synthetic-tree-sha) EXPECTED_SYNTHETIC_TREE_SHA="$2"; shift 2 ;;
     --run-id) EXPECTED_RUN_ID="$2"; shift 2 ;;
     --run-attempt) EXPECTED_RUN_ATTEMPT="$2"; shift 2 ;;
+    --candidate-index-sha256) EXPECTED_CANDIDATE_INDEX_SHA256="$2"; shift 2 ;;
+    --expected-current-authority-url) EXPECTED_CURRENT_AUTHORITY_URL="$2"; shift 2 ;;
+    --expected-default-ref) EXPECTED_DEFAULT_REF="$2"; shift 2 ;;
+    --expected-default-sha) EXPECTED_DEFAULT_SHA="$2"; shift 2 ;;
     *) echo "mark-merge-candidate-ready: unknown flag $1" >&2; exit 2 ;;
   esac
 done
 
 for value in CANDIDATE_TAG EXPECTED_BASE_SHA EXPECTED_HEAD_SHA \
-  EXPECTED_SYNTHETIC_TREE_SHA EXPECTED_RUN_ID EXPECTED_RUN_ATTEMPT
+  EXPECTED_SYNTHETIC_TREE_SHA EXPECTED_RUN_ID EXPECTED_RUN_ATTEMPT \
+  EXPECTED_CANDIDATE_INDEX_SHA256
 do
   if [ -z "${!value}" ]; then
     echo "mark-merge-candidate-ready: missing ${value,,}" >&2
     exit 2
   fi
 done
+if ! [[ "$EXPECTED_CANDIDATE_INDEX_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "mark-merge-candidate-ready: candidate index sha256 must be 64-char lowercase hex" >&2
+  exit 2
+fi
+if [ -n "$EXPECTED_CURRENT_AUTHORITY_URL" ] &&
+   ! [[ "$EXPECTED_CURRENT_AUTHORITY_URL" =~ ^https://[^[:space:]]+/releases/tag/merge-candidate-abi-v[0-9]+-pr-[0-9]+-run-[0-9]+-attempt-[0-9]+$ ]]; then
+  echo "mark-merge-candidate-ready: expected current authority URL is invalid" >&2
+  exit 2
+fi
+if [ -n "$EXPECTED_DEFAULT_REF" ] || [ -n "$EXPECTED_DEFAULT_SHA" ]; then
+  if [ -z "$EXPECTED_DEFAULT_REF" ] || [ -z "$EXPECTED_DEFAULT_SHA" ]; then
+    echo "mark-merge-candidate-ready: expected default ref and sha must be provided together" >&2
+    exit 2
+  fi
+  if ! git check-ref-format "refs/heads/${EXPECTED_DEFAULT_REF}" >/dev/null 2>&1 ||
+     ! [[ "$EXPECTED_DEFAULT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "mark-merge-candidate-ready: expected default ref or sha is invalid" >&2
+    exit 2
+  fi
+fi
 
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 SERVER_URL="${GITHUB_SERVER_URL:-https://github.com}"
 STATE_LOCK_SCRIPT="${STATE_LOCK_SCRIPT:-.github/scripts/state-lock.sh}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+STATUS_SCRIPT="${STATUS_SCRIPT:-$SCRIPT_DIR/latest-merge-gate-status.sh}"
 AUTHORITY_LOCK_STATE="$(mktemp)"
 CANDIDATE_LOCK_STATE="$(mktemp)"
 TMP_ROOT="$(mktemp -d)"
@@ -107,6 +138,11 @@ if [ "$base_index_sha" != "$(jq -r .base_index_sha256 "$candidate_json")" ]; the
 fi
 
 candidate_index_sha=$(sha256_file "$candidate_index")
+if [ "$candidate_index_sha" != "$EXPECTED_CANDIDATE_INDEX_SHA256" ]; then
+  echo "mark-merge-candidate-ready: candidate index differs from the tested sha256" >&2
+  exit 1
+fi
+
 ready_json="$TMP_ROOT/ready.json"
 jq \
   --arg candidate_index_sha256 "$candidate_index_sha" \
@@ -135,7 +171,40 @@ else
   gh release upload "$CANDIDATE_TAG" \
     --repo "$REPOSITORY" \
     "$ready_json"
+  mkdir -p "$TMP_ROOT/uploaded"
+  gh release download "$CANDIDATE_TAG" \
+    --repo "$REPOSITORY" \
+    --pattern ready.json \
+    --dir "$TMP_ROOT/uploaded"
+  if ! cmp "$ready_json" "$TMP_ROOT/uploaded/ready.json"; then
+    echo "mark-merge-candidate-ready: uploaded ready marker failed byte verification" >&2
+    exit 1
+  fi
   echo "mark-merge-candidate-ready: sealed tested candidate $CANDIDATE_TAG ($candidate_index_sha)"
+fi
+
+# Recovery is a compare-and-swap against both the source candidate's
+# merge-gate authority and the validated default-branch checkout. Perform the
+# unprotected Git ref check last so API retries cannot stale it before the
+# status mutation.
+if [ -n "$EXPECTED_CURRENT_AUTHORITY_URL" ]; then
+  current_authority_url=$(MERGE_GATE_STATUS_RETRY_DELAY_SECONDS=2 \
+    bash "$STATUS_SCRIPT" \
+      --head-sha "$EXPECTED_HEAD_SHA" \
+      --max-pages 50 \
+      --per-page 100)
+  if [ "$current_authority_url" != "$EXPECTED_CURRENT_AUTHORITY_URL" ]; then
+    echo "mark-merge-candidate-ready: current merge-gate authority changed" >&2
+    exit 1
+  fi
+fi
+if [ -n "$EXPECTED_DEFAULT_REF" ]; then
+  git fetch --no-tags origin \
+    "+refs/heads/${EXPECTED_DEFAULT_REF}:refs/remotes/origin/${EXPECTED_DEFAULT_REF}"
+  if [ "$(git rev-parse "refs/remotes/origin/${EXPECTED_DEFAULT_REF}")" != "$EXPECTED_DEFAULT_SHA" ]; then
+    echo "mark-merge-candidate-ready: default branch changed after recovery validation" >&2
+    exit 1
+  fi
 fi
 
 # Candidate selection and its ready marker are one authority transaction. A

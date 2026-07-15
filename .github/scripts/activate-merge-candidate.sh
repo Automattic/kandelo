@@ -4,11 +4,15 @@ set -euo pipefail
 CANDIDATE_TAG=""
 PR_NUMBER=""
 merge_commit_sha=""
+EXPECTED_DEFAULT_REF=""
+EXPECTED_DEFAULT_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --candidate-tag) CANDIDATE_TAG="$2"; shift 2 ;;
     --pr-number) PR_NUMBER="$2"; shift 2 ;;
+    --expected-default-ref) EXPECTED_DEFAULT_REF="$2"; shift 2 ;;
+    --expected-default-sha) EXPECTED_DEFAULT_SHA="$2"; shift 2 ;;
     *) echo "activate-merge-candidate: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -24,6 +28,17 @@ fi
 if ! [[ "$CANDIDATE_TAG" =~ ^merge-candidate-abi-v[0-9]+-pr-${PR_NUMBER}-run-[0-9]+-attempt-[0-9]+$ ]]; then
   echo "activate-merge-candidate: candidate tag does not match PR #$PR_NUMBER: $CANDIDATE_TAG" >&2
   exit 2
+fi
+if [ -n "$EXPECTED_DEFAULT_REF" ] || [ -n "$EXPECTED_DEFAULT_SHA" ]; then
+  if [ -z "$EXPECTED_DEFAULT_REF" ] || [ -z "$EXPECTED_DEFAULT_SHA" ]; then
+    echo "activate-merge-candidate: expected default ref and sha must be provided together" >&2
+    exit 2
+  fi
+  if ! git check-ref-format "refs/heads/${EXPECTED_DEFAULT_REF}" >/dev/null 2>&1 ||
+     ! [[ "$EXPECTED_DEFAULT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "activate-merge-candidate: expected default ref or sha is invalid" >&2
+    exit 2
+  fi
 fi
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 SERVER_URL="${GITHUB_SERVER_URL:-https://github.com}"
@@ -285,6 +300,28 @@ publish_rejection() {
   echo "activate-merge-candidate: recorded terminal rejection $reason for $CANDIDATE_TAG" >&2
 }
 
+verify_activation_receipt() {
+  local receipt="$1"
+  if ! jq -e --arg merge_commit_sha "$merge_commit_sha" '
+      .merge_commit_sha == $merge_commit_sha and
+      (.canonical_index_sha256 | test("^[0-9a-f]{64}$")) and
+      (.activated_at | type == "string" and length > 0) and
+      (.activation_run | type == "string" and length > 0)
+    ' "$receipt" >/dev/null
+  then
+    echo "activate-merge-candidate: existing activation marker is malformed" >&2
+    return 1
+  fi
+  jq -S 'del(.merge_commit_sha, .canonical_index_sha256, .activated_at, .activation_run)' \
+    "$receipt" > "$TMP_ROOT/existing-activated-identity.json"
+  jq -S . "$ready_json" > "$TMP_ROOT/ready-activation-identity.json"
+  if ! cmp "$TMP_ROOT/existing-activated-identity.json" \
+      "$TMP_ROOT/ready-activation-identity.json"; then
+    echo "activate-merge-candidate: existing activation marker conflicts with canonical result" >&2
+    return 1
+  fi
+}
+
 export STATE_LOCK_OWNER_DETAIL="candidate authority, PR ${PR_NUMBER}"
 STATE_LOCK_STATE_FILE="$AUTHORITY_LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "merge-authority-pr-${PR_NUMBER}"
 AUTHORITY_LOCKED=1
@@ -364,6 +401,25 @@ else
   exit "$verify_status"
 fi
 
+# An activation receipt is terminal evidence for this exact sealed candidate.
+# Later canonical package transactions may legitimately change the same entry,
+# so a retry must validate the receipt and stop before replanning against the
+# newer canonical ledger.
+if [ -n "$(release_asset_info "$CANDIDATE_TAG" activated.json)" ]; then
+  existing_dir="$TMP_ROOT/existing-activated"
+  download_asset "$CANDIDATE_TAG" activated.json "$existing_dir"
+  verify_activation_receipt "$existing_dir/activated.json"
+  echo "activate-merge-candidate: $CANDIDATE_TAG was already activated at $merge_commit_sha"
+  exit 0
+fi
+
+if [ -n "$EXPECTED_DEFAULT_REF" ]; then
+  if [ "$base_ref" != "$EXPECTED_DEFAULT_REF" ]; then
+    echo "activate-merge-candidate: candidate base ref differs from validated recovery default" >&2
+    exit 1
+  fi
+fi
+
 CANONICAL_TAG=$(jq -r .canonical_tag "$candidate_json")
 ABI=$(jq -r .abi_version "$candidate_json")
 CANONICAL_BASE_STATE=$(jq -r .canonical_base_state "$candidate_json")
@@ -382,6 +438,18 @@ fi
 if [ "$authority_url" != "$expected_authority_url" ]; then
   echo "activate-merge-candidate: candidate is no longer the latest merge-gate authority" >&2
   exit 1
+fi
+
+# The canonical lock can wait behind another publisher. Recheck the unprotected
+# default ref only after that wait and immediately before canonical state is
+# read or changed.
+if [ -n "$EXPECTED_DEFAULT_REF" ]; then
+  git fetch --no-tags origin \
+    "+refs/heads/${EXPECTED_DEFAULT_REF}:refs/remotes/origin/${EXPECTED_DEFAULT_REF}"
+  if [ "$(git rev-parse "refs/remotes/origin/${EXPECTED_DEFAULT_REF}")" != "$EXPECTED_DEFAULT_SHA" ]; then
+    echo "activate-merge-candidate: default branch changed after recovery validation" >&2
+    exit 1
+  fi
 fi
 
 ensure_release "$CANONICAL_TAG" "$merge_commit_sha" "$CANONICAL_BASE_STATE"
@@ -426,6 +494,22 @@ else
   exit "$activation_status"
 fi
 
+asset_plan_jsonl="$next_dir/assets.jsonl"
+if ! jq -e '
+    type == "array" and
+    all(.[];
+      type == "object" and
+      (.name | type == "string" and length > 0) and
+      (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+      (.source == "candidate" or .source == "canonical"))
+  ' "$asset_plan" >/dev/null ||
+   ! jq -c '.[]' "$asset_plan" > "$asset_plan_jsonl"
+then
+  echo "activate-merge-candidate: asset plan is malformed or could not be materialized" >&2
+  publish_rejection candidate-index-invalid
+  exit 1
+fi
+
 while IFS= read -r asset; do
   name=$(jq -r .name <<<"$asset")
   expected_sha=$(jq -r .sha256 <<<"$asset")
@@ -439,7 +523,7 @@ while IFS= read -r asset; do
       exit 1
       ;;
   esac
-done < <(jq -c '.[]' "$asset_plan")
+done < "$asset_plan_jsonl"
 
 next_index_sha=$(sha256_file "$next_index")
 if [ "$next_index_sha" = "$current_index_sha" ]; then
@@ -468,19 +552,7 @@ jq \
 if [ -n "$(release_asset_info "$CANDIDATE_TAG" activated.json)" ]; then
   existing_dir="$TMP_ROOT/existing-activated"
   download_asset "$CANDIDATE_TAG" activated.json "$existing_dir"
-  receipt_identity='{
-    schema_version, repository, pr_number, base_ref, base_sha, head_sha,
-    synthetic_merge_sha, synthetic_tree_sha, merge_method, pr_commit_count,
-    abi_version, candidate_tag, canonical_tag, canonical_base_state,
-    base_index_sha256, run_id,
-    run_attempt, candidate_index_sha256, ready_at, merge_commit_sha
-  }'
-  existing_core=$(jq -S -c "$receipt_identity" "$existing_dir/activated.json")
-  requested_core=$(jq -S -c "$receipt_identity" "$activated_json")
-  if [ "$existing_core" != "$requested_core" ]; then
-    echo "activate-merge-candidate: existing activation marker conflicts with canonical result" >&2
-    exit 1
-  fi
+  verify_activation_receipt "$existing_dir/activated.json"
 else
   gh_retry gh release upload "$CANDIDATE_TAG" --repo "$REPOSITORY" "$activated_json"
 fi
