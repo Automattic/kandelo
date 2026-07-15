@@ -12,6 +12,9 @@ on:
       tap-repository:
         type: string
         default: Automattic/kandelo-homebrew
+      tap-name:
+        type: string
+        default: Automattic/kandelo-homebrew
       tap-ref:
         type: string
         default: main
@@ -61,13 +64,14 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_REF: ${{ inputs.tap-ref }}
           BOTTLE_ROOT_URL: ${{ inputs.bottle-root-url }}
         run: |
           set -euo pipefail
-          [ "$CALLER_REPOSITORY" = "Automattic/kandelo-homebrew" ] || {
-            echo "::error::publication requires the protected first-party tap caller"; exit 2;
+          [ "$CALLER_REPOSITORY" = "$TAP_REPOSITORY" ] || {
+            echo "::error::the caller repository must own the target tap repository"; exit 2;
           }
           [ "$CALLER_REF" = "refs/heads/main" ] || {
             echo "::error::publication requires the tap main branch"; exit 2;
@@ -78,29 +82,48 @@ jobs:
           [ -z "$BOTTLE_ROOT_URL" ] || {
             echo "::error::the publisher derives the bottle root from the tap repository"; exit 2;
           }
-          if [ "$DRY_RUN" = "true" ]; then
-            [ "$CALLER_WORKFLOW_REF" = "Automattic/kandelo-homebrew/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
-              echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
-            }
-            exit 0
-          fi
-          case "$CALLER_WORKFLOW_REF" in
-            Automattic/kandelo-homebrew/.github/workflows/publish-bottles.yml@refs/heads/main|\
-            Automattic/kandelo-homebrew/.github/workflows/maintain-bottles.yml@refs/heads/main) ;;
-            *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
-          esac
           [ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ] || {
             echo "::error::publication requires Automattic/kandelo"; exit 2;
           }
           [ "$KANDELO_REF" = "main" ] || {
             echo "::error::publication requires Kandelo main"; exit 2;
           }
-          [ "$TAP_REPOSITORY" = "Automattic/kandelo-homebrew" ] || {
-            echo "::error::publication requires Automattic/kandelo-homebrew"; exit 2;
-          }
           [ "$TAP_REF" = "main" ] || {
             echo "::error::publication requires tap main"; exit 2;
           }
+          case "$TAP_REPOSITORY" in
+            Automattic/kandelo-homebrew)
+              [ "$TAP_NAME" = "Automattic/kandelo-homebrew" ] || {
+                echo "::error::the first-party tap name must remain Automattic/kandelo-homebrew"; exit 2;
+              }
+              ;;
+            *)
+              [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+$ ]] || {
+                echo "::error::third-party tap repositories must use owner/homebrew-name"; exit 2;
+              }
+              tap_owner="${TAP_REPOSITORY%%/*}"
+              tap_short_name="${TAP_REPOSITORY#*/homebrew-}"
+              derived_tap_name="${tap_owner}/${tap_short_name}"
+              normalized_derived_tap_name="$(printf '%s' "$derived_tap_name" | tr '[:upper:]' '[:lower:]')"
+              [ "$normalized_derived_tap_name" != "automattic/kandelo-homebrew" ] || {
+                echo "::error::the protected first-party tap name cannot be derived from another repository"; exit 2;
+              }
+              [ "$TAP_NAME" = "${tap_owner}/${tap_short_name}" ] || {
+                echo "::error::tap-name must be owner/name derived from the conventional repository"; exit 2;
+              }
+              ;;
+          esac
+          if [ "$DRY_RUN" = "true" ]; then
+            [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
+              echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
+            }
+            exit 0
+          fi
+          case "$CALLER_WORKFLOW_REF" in
+            "$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"|\
+            "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
+            *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
+          esac
 
       - name: Checkout Kandelo workflow source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -549,6 +572,7 @@ jobs:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -593,6 +617,7 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
             --arch "$KANDELO_HOMEBREW_ARCH" \
             --out "$bottle_out" \
@@ -681,6 +706,7 @@ jobs:
           FORMULA: ${{ matrix.formula }}
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
@@ -702,6 +728,7 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-formula-source-closure.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
             --tap-repository "$TAP_REPOSITORY" \
+            --tap-name "$TAP_NAME" \
             --formula "$FORMULA" \
             --base-ref "$TAP_SHA" \
             --reviewed-tap-root "$GITHUB_WORKSPACE/tap-reviewed"
@@ -716,6 +743,7 @@ jobs:
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kandelo-postbuild"
@@ -726,6 +754,7 @@ jobs:
             --arch "$KANDELO_HOMEBREW_ARCH" \
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT" \
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
@@ -760,6 +789,7 @@ jobs:
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -778,6 +808,7 @@ jobs:
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
@@ -798,6 +829,7 @@ jobs:
             --arch "$ARCH" \
             --abi "$KANDELO_HOMEBREW_ABI" \
             --tap-repository "$TAP_REPOSITORY" \
+            --tap-name "$TAP_NAME" \
             --tap-commit "$TAP_COMMIT" \
             --kandelo-commit "$KANDELO_COMMIT" \
             --bottle-root-url "$BOTTLE_ROOT_URL" \
@@ -901,6 +933,7 @@ jobs:
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -910,6 +943,7 @@ jobs:
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
@@ -930,6 +964,7 @@ jobs:
             --arg arch "$ARCH" \
             --arg abi "${RELEASE_TAG#bottles-abi-v}" \
             --arg tap_repository "$TAP_REPOSITORY" \
+            --arg tap_name "$TAP_NAME" \
             --arg tap_commit "$TAP_COMMIT" \
             --arg kandelo_commit "$KANDELO_COMMIT" \
             --arg sha256 "$BOTTLE_SHA256" \
@@ -937,6 +972,7 @@ jobs:
               .kind == "child" and .formula == $formula and .arch == $arch and
               .abi == ($abi | tonumber) and
               (.tap_repository | ascii_downcase) == ($tap_repository | ascii_downcase) and
+              .tap_name == $tap_name and
               .tap_commit == $tap_commit and .kandelo_commit == $kandelo_commit and
               .bottle.sha256 == $sha256 and .bottle.bytes == ($bytes | tonumber)
             ' "$RUNNER_TEMP/homebrew-oci-child/receipt.json" >/dev/null
@@ -949,6 +985,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -956,6 +993,7 @@ jobs:
             --layout "$RUNNER_TEMP/homebrew-oci-child/layout"
             --layout-receipt "$RUNNER_TEMP/homebrew-oci-child/receipt.json"
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --formula "$KANDELO_HOMEBREW_FORMULA"
             --out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"
           )
@@ -971,6 +1009,7 @@ jobs:
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -981,6 +1020,7 @@ jobs:
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
@@ -1060,6 +1100,7 @@ jobs:
         env:
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -1090,7 +1131,8 @@ jobs:
               --layout-receipt "$receipt" \
               --kind child \
               --formula "$KANDELO_HOMEBREW_FORMULA" \
-              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+              --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             printf '%s\0%s\0' "$child_root/layout" "$receipt" \
               >>"$RUNNER_TEMP/homebrew-index-child-args.txt"
           done
@@ -1101,6 +1143,7 @@ jobs:
         env:
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -1175,6 +1218,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -1182,6 +1226,7 @@ jobs:
             --layout "$RUNNER_TEMP/homebrew-complete-index/layout" \
             --layout-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
             --out-json "$RUNNER_TEMP/homebrew-complete-index/transport-receipt.json"
 
@@ -1369,6 +1414,7 @@ jobs:
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/homebrew-verified-input"
@@ -1379,6 +1425,7 @@ jobs:
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
@@ -1398,6 +1445,7 @@ jobs:
         env:
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -1405,6 +1453,7 @@ jobs:
             --layout "$RUNNER_TEMP/homebrew-oci-child/layout"
             --layout-receipt "$RUNNER_TEMP/homebrew-oci-child/receipt.json"
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --formula "$KANDELO_HOMEBREW_FORMULA"
             --out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"
             --dry-run
@@ -1423,6 +1472,7 @@ jobs:
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -1433,6 +1483,7 @@ jobs:
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
@@ -1455,6 +1506,7 @@ jobs:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -1474,7 +1526,8 @@ jobs:
             --layout-receipt "$layout_receipt" \
             --kind index \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
-            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
           owner_repo="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           remote="ghcr.io/${owner_repo}/${KANDELO_HOMEBREW_FORMULA}"
           jq -e \
@@ -1586,6 +1639,7 @@ jobs:
           merge_args=(
             --tap-root "$merged_tap"
             --tap-repository "$TAP_REPOSITORY"
+            --tap-name "$TAP_NAME"
             --formula "$FORMULA"
             --arch "$ARCH"
             --release-tag "$RELEASE_TAG"
@@ -1779,6 +1833,7 @@ jobs:
           KANDELO_HOMEBREW_RELEASE_ABI: ${{ needs.plan.outputs.abi }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -1816,6 +1871,7 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/homebrew-verify-poured-bottle.sh \
             --tap-root "$RUNNER_TEMP/homebrew-merged-tap" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
             --arch "$KANDELO_HOMEBREW_ARCH" \
@@ -1932,6 +1988,7 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/homebrew-merge-bottle-json.sh \
             --tap-root "$merged_tap" \
             --tap-repository "$TAP_REPOSITORY" \
+            --tap-name "$TAP_NAME" \
             --formula "$FORMULA" \
             --arch "$ARCH" \
             --release-tag "$RELEASE_TAG" \
@@ -1963,6 +2020,7 @@ jobs:
           export KANDELO_HOMEBREW_ARCH="$ARCH"
           export KANDELO_HOMEBREW_RELEASE_TAG="$RELEASE_TAG"
           export KANDELO_HOMEBREW_TAP_REPOSITORY="$TAP_REPOSITORY"
+          export KANDELO_HOMEBREW_TAP_NAME="$TAP_NAME"
           export KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"
           export KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-verified-input/bottle.json"
           export KANDELO_HOMEBREW_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL"
@@ -1978,6 +2036,7 @@ jobs:
             --arg build_home "/home/kandelo-homebrew-build" \
             '[$github_workspace, $runner_workspace, $runner_temp, $build_home]')"
           bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
             bash scripts/homebrew-generate-sidecars-from-env.sh
 
@@ -2001,6 +2060,7 @@ jobs:
           export KANDELO_HOMEBREW_ARCH="$ARCH"
           export KANDELO_HOMEBREW_RELEASE_TAG="$RELEASE_TAG"
           export KANDELO_HOMEBREW_TAP_REPOSITORY="$TAP_REPOSITORY"
+          export KANDELO_HOMEBREW_TAP_NAME="$TAP_NAME"
           export KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"
           export KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-verified-input/bottle.json"
           export KANDELO_HOMEBREW_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL"
@@ -2016,6 +2076,7 @@ jobs:
             --arg build_home "/home/kandelo-homebrew-build" \
             '[$github_workspace, $runner_workspace, $runner_temp, $build_home]')"
           bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
             bash -c '
             set -euo pipefail
@@ -2092,7 +2153,7 @@ jobs:
               --out "$browser_gallery_root"
               --formula hello
               --title "GNU hello Homebrew VFS"
-              --description "GNU hello poured from the published Automattic/kandelo-homebrew bottle into a browser-smoked Kandelo VFS image."
+              --description "GNU hello poured from the published $KANDELO_HOMEBREW_TAP_NAME bottle into a browser-smoked Kandelo VFS image."
             )
             bash scripts/homebrew-create-browser-gallery.sh "${gallery_args[@]}"
             gallery_validation_args=(
@@ -2168,6 +2229,7 @@ jobs:
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           publish_handoff="$RUNNER_TEMP/homebrew-publish-handoff"
@@ -2198,6 +2260,7 @@ jobs:
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
@@ -2305,6 +2368,7 @@ jobs:
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           error_file="$RUNNER_TEMP/homebrew-finalize-error.txt"
@@ -2318,6 +2382,7 @@ jobs:
               --arch "$KANDELO_HOMEBREW_ARCH"
               --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
               --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+              --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
@@ -2351,6 +2416,8 @@ jobs:
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
           STATE_LOCK_OWNER_DETAIL: ${{ matrix.formula }}, ${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -2363,6 +2430,8 @@ jobs:
               --formula "$KANDELO_HOMEBREW_FORMULA"
               --arch "$KANDELO_HOMEBREW_ARCH"
               --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
+              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+              --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
               --status success
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
@@ -2389,6 +2458,8 @@ jobs:
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
           PUBLISH_HANDOFF_OUTCOME: ${{ steps.publish-handoff.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
           STATE_LOCK_OWNER_DETAIL: ${{ matrix.formula }}, ${{ matrix.arch }}
@@ -2402,6 +2473,8 @@ jobs:
             --formula "$KANDELO_HOMEBREW_FORMULA"
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --status failed
             --error "$error_text"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"

@@ -267,6 +267,7 @@ assert_generator_validates_homebrew_commit_as_data() {
     KANDELO_HOMEBREW_ARCH="wasm32" \
     KANDELO_HOMEBREW_RELEASE_TAG="bottles-abi-v${abi}" \
     KANDELO_HOMEBREW_TAP_REPOSITORY="Automattic/kandelo-homebrew" \
+    KANDELO_HOMEBREW_TAP_NAME="automattic/kandelo-homebrew" \
     KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$bottle" \
     KANDELO_HOMEBREW_BOTTLE_JSON="$bottle_json" \
     KANDELO_HOMEBREW_BOTTLE_ROOT_URL="https://ghcr.io/v2/automattic/kandelo-homebrew" \
@@ -277,7 +278,9 @@ assert_generator_validates_homebrew_commit_as_data() {
     KANDELO_HOMEBREW_RUNTIME_EVIDENCE="$runtime_evidence" \
     KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
     bash "$REPO_ROOT/scripts/dev-shell.sh" \
-      env KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
+      env \
+        KANDELO_HOMEBREW_TAP_NAME="automattic/kandelo-homebrew" \
+        KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
       bash "$REPO_ROOT/scripts/homebrew-generate-sidecars-from-env.sh" \
       >"$err" 2>&1; then
     fail "sidecar generator accepted malformed Homebrew commit provenance"
@@ -304,6 +307,11 @@ make_build_handoff() {
   local bottle_json="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.json"
   local dependency_provenance="$source_dir/dependency-provenance.json"
   local bottle_stage="$source_dir/stage/hello/2.12.1"
+  local tap_repository="${BUILD_HANDOFF_TAP_REPOSITORY:-Automattic/kandelo-homebrew}"
+  local tap_name="${BUILD_HANDOFF_TAP_NAME:-automattic/kandelo-homebrew}"
+  local bottle_root="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
+  local formula_key="${tap_name}/hello"
+  local formula_path="Library/Taps/${tap_name%%/*}/homebrew-${tap_name#*/}/Formula/hello.rb"
   local sha256
 
   mkdir -p "$bottle_stage/.brew" "$bottle_stage/bin"
@@ -329,18 +337,19 @@ EOF
   chmod +x "$bottle_stage/bin/hello.wasm"
   tar -czf "$bottle" -C "$source_dir/stage" hello
   sha256="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
-  jq -n --arg sha256 "$sha256" '{
-    "automattic/kandelo-homebrew/hello": {
+  jq -n --arg sha256 "$sha256" --arg formula_key "$formula_key" \
+    --arg formula_path "$formula_path" --arg bottle_root "$bottle_root" '{
+    ($formula_key): {
       formula: {
         name: "hello",
-        path: "Library/Taps/automattic/homebrew-kandelo-homebrew/Formula/hello.rb",
+        path: $formula_path,
         pkg_version: "2.12.1",
         tap_git_path: "Formula/hello.rb",
         tap_git_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         desc: "this artifact-only field must not reach Homebrew merge"
       },
       bottle: {
-        root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+        root_url: $bottle_root,
         cellar: "any_skip_relocation",
         rebuild: 0,
         tags: {
@@ -367,13 +376,15 @@ EOF
   if [ -n "$dependency_provenance_source" ]; then
     cp "$dependency_provenance_source" "$dependency_provenance"
   else
-    jq -nS '{
-      schema: 1,
+    jq -nS --arg tap_repository "$tap_repository" --arg tap_name "$tap_name" \
+      --arg bottle_root "$bottle_root" '{
+      schema: 2,
       formula: "hello",
       arch: "wasm32",
-      tap_repository: "Automattic/kandelo-homebrew",
+      tap_repository: $tap_repository,
+      tap_name: $tap_name,
       tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+      bottle_root_url: $bottle_root,
       bottle_tag: "wasm32_kandelo",
       dependencies: []
     }' >"$dependency_provenance"
@@ -383,15 +394,72 @@ EOF
     --formula hello \
     --arch wasm32 \
     --release-tag bottles-abi-v18 \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository "$tap_repository" \
+    --tap-name "$tap_name" \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --bottle-root-url "$bottle_root" \
     --bottle "$bottle" \
     --bottle-json "$bottle_json" \
     --dependency-provenance "$dependency_provenance" \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --out "$handoff" >/dev/null
+}
+
+assert_generic_tap_build_handoff_identity() {
+  local handoff="$TMPDIR/generic-tap-build-handoff"
+  local canonical_bottle_json="$TMPDIR/generic-tap-canonical-bottle.json"
+  local tap="$TMPDIR/generic-tap-merge"
+  BUILD_HANDOFF_TAP_REPOSITORY=Acme/homebrew-tools \
+    BUILD_HANDOFF_TAP_NAME=acme/tools \
+    make_build_handoff "$handoff"
+  jq -e '
+    .schema == 3 and
+    .tap_repository == "Acme/homebrew-tools" and
+    .tap_name == "acme/tools"
+  ' "$handoff/manifest.json" >/dev/null ||
+    fail "generic tap handoff conflated repository and Homebrew identities"
+  jq -e '
+    keys == ["acme/tools/hello"] and
+    .["acme/tools/hello"].formula.path ==
+      "Library/Taps/acme/homebrew-tools/Formula/hello.rb"
+  ' "$handoff/bottle.json" >/dev/null ||
+    fail "generic tap handoff used the GitHub repository as a Homebrew name"
+  bash "$REPO_ROOT/scripts/homebrew-validate-build-handoff.sh" \
+    --handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --tap-repository Acme/homebrew-tools \
+    --tap-name acme/tools \
+    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --bottle-root-url https://ghcr.io/v2/acme/homebrew-tools \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --out-bottle-json "$canonical_bottle_json" >/dev/null
+  mkdir -p "$tap/Formula"
+  cat >"$tap/Formula/hello.rb" <<'RUBY'
+class Hello < Formula
+  desc "Generic tap merge fixture"
+  homepage "https://example.invalid/hello"
+  url "https://example.invalid/hello-2.12.1.tar.gz"
+  sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+end
+RUBY
+  bash "$REPO_ROOT/scripts/homebrew-merge-bottle-json.sh" \
+    --tap-root "$tap" \
+    --tap-repository Acme/homebrew-tools \
+    --tap-name acme/tools \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --bottle-json "$canonical_bottle_json" \
+    --expected-sha256 "$(jq -er '.hello.bottle.tags.wasm32_kandelo.sha256' "$canonical_bottle_json")" \
+    --expected-root-url https://ghcr.io/v2/acme/homebrew-tools \
+    --expected-cellar any_skip_relocation >/dev/null
+  grep -F 'root_url "https://ghcr.io/v2/acme/homebrew-tools"' \
+    "$tap/Formula/hello.rb" >/dev/null ||
+    fail "generic tap merge used the Homebrew name as the GHCR repository"
 }
 
 refresh_build_handoff_bottle_identity() {
@@ -440,7 +508,7 @@ make_dry_upload_receipt() {
     --arg sha256 "$sha256" \
     --argjson bytes "$bytes" \
     --arg url "$url" '{
-      schema: 1,
+      schema: 2,
       kind: "child",
       formula: "hello",
       arch: "wasm32",
@@ -452,6 +520,7 @@ make_dry_upload_receipt() {
       formula_source_identity_sha256: ("2" * 64),
       source_closure_sha256: ("3" * 64),
       tap_repository: "Automattic/kandelo-homebrew",
+      tap_name: "automattic/kandelo-homebrew",
       tap_commit: ("a" * 40),
       kandelo_commit: ("b" * 40),
       top_ref: "2.12.1",
@@ -474,10 +543,11 @@ make_dry_upload_receipt() {
     --slurpfile layout "$layout" \
     --arg canonical_sha "$canonical_sha" \
     --arg mode "$mode" '{
-      schema: 2,
+      schema: 3,
       kind: "child",
       formula: "hello",
       tap_repository: "Automattic/kandelo-homebrew",
+      tap_name: "automattic/kandelo-homebrew",
       layout: $layout[0],
       layout_receipt_sha256: $canonical_sha,
       publication: {
@@ -898,10 +968,11 @@ make_publish_dependency_provenance() {
   jq -nS \
     --arg xz_formula_sha "$xz_formula_sha" --arg zlib_formula_sha "$zlib_formula_sha" \
     --argjson xz_direct "$xz_direct" --argjson zlib_direct "$zlib_direct" '{
-      schema: 1,
+      schema: 2,
       formula: "hello",
       arch: "wasm32",
       tap_repository: "Automattic/kandelo-homebrew",
+      tap_name: "automattic/kandelo-homebrew",
       tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
       bottle_tag: "wasm32_kandelo",
@@ -3688,6 +3759,7 @@ EOF
 
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
+bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_sysroot_fingerprint_is_arch_specific
 assert_bottle_build_trusts_selected_tap
@@ -3698,6 +3770,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-provision-formula-browser.sh"
 assert_dependency_pour_provenance_is_bounded
 assert_static_formula_closure_is_fail_closed
 assert_generator_validates_homebrew_commit_as_data
+assert_generic_tap_build_handoff_identity
 assert_build_handoff_is_minimal_and_validated
 assert_build_handoff_rejects_untrusted_content
 assert_upload_receipt_is_bound_to_build_handoff

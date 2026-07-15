@@ -102,10 +102,32 @@ def run_brew(brew_bin: pathlib.Path, *arguments: str) -> str:
         fail(f"brew {' '.join(arguments)} output is not UTF-8: {error}")
 
 
-def tap_name(repository: str) -> str:
-    require_string(repository, "tap repository", TAP_REPOSITORY)
-    owner, name = repository.lower().split("/", 1)
+def normalized_tap_name(name: str) -> str:
+    require_string(name, "tap name", TAP_REPOSITORY)
+    owner, name = name.lower().split("/", 1)
     return f"{owner}/{name}"
+
+
+def selected_tap_name(args: argparse.Namespace) -> str:
+    repository = normalized_tap_name(args.tap_repository)
+    owner, repository_name = repository.split("/", 1)
+    if repository == "automattic/kandelo-homebrew":
+        expected = repository
+    else:
+        if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
+            fail("third-party tap repositories must use owner/homebrew-name")
+        expected = f"{owner}/{repository_name.removeprefix('homebrew-')}"
+        if expected == "automattic/kandelo-homebrew":
+            fail("the protected first-party tap name cannot be derived from another repository")
+    requested = args.tap_name
+    if requested is None:
+        if repository != "automattic/kandelo-homebrew":
+            fail("tap name is required when repository and Homebrew identities may differ")
+        requested = args.tap_repository
+    selected = normalized_tap_name(requested)
+    if selected != expected:
+        fail("tap name does not match the tap repository")
+    return selected
 
 
 def parse_expected_dependencies(contents: str, label: str, normalized_tap: str) -> set[str]:
@@ -137,13 +159,13 @@ def expected_dependencies(path: pathlib.Path, normalized_tap: str) -> set[str]:
 
 
 def exact_tap_dependencies(
-    tap_root: pathlib.Path, repository: str, formula: str, arch: str, bottle_root_url: str
+    tap_root: pathlib.Path, tap_name: str, formula: str, arch: str, bottle_root_url: str
 ) -> dict[str, dict[str, Any]]:
     resolver = pathlib.Path(__file__).with_name("homebrew-formula-runtime-closure.rb")
     regular_file(resolver, "static Formula dependency resolver", MAX_JSON_BYTES)
     try:
         result = subprocess.run(
-            ["ruby", str(resolver), str(tap_root), repository, formula, arch],
+            ["ruby", str(resolver), str(tap_root), tap_name, formula, arch],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -163,7 +185,7 @@ def exact_tap_dependencies(
     if not isinstance(document, dict) or len(document) > MAX_DEPENDENCIES:
         fail(f"static Formula dependency metadata must contain at most {MAX_DEPENDENCIES} entries")
 
-    normalized_tap = tap_name(repository)
+    normalized_tap = normalized_tap_name(tap_name)
     expected_tag = f"{arch}_kandelo"
     dependencies: dict[str, dict[str, Any]] = {}
     prior_full_name = ""
@@ -203,13 +225,13 @@ def exact_tap_dependencies(
 
 
 def exact_direct_dependencies(
-    tap_root: pathlib.Path, repository: str, formula: str
+    tap_root: pathlib.Path, tap_name: str, formula: str
 ) -> set[str]:
     resolver = pathlib.Path(__file__).with_name("homebrew-formula-runtime-closure.rb")
     regular_file(resolver, "static Formula dependency resolver", MAX_JSON_BYTES)
     try:
         result = subprocess.run(
-            ["ruby", str(resolver), str(tap_root), repository, formula, "--direct"],
+            ["ruby", str(resolver), str(tap_root), tap_name, formula, "--direct"],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -230,7 +252,7 @@ def exact_direct_dependencies(
     except UnicodeDecodeError as error:
         fail(f"static direct Formula dependency list is not UTF-8: {error}")
     return parse_expected_dependencies(
-        contents, "static direct dependency", tap_name(repository)
+        contents, "static direct dependency", normalized_tap_name(tap_name)
     )
 
 
@@ -306,7 +328,8 @@ def formula_record(info: Any, expected_full_name: str, expected_name: str) -> di
 
 def capture(args: argparse.Namespace) -> None:
     repository = args.tap_repository
-    normalized_tap = tap_name(repository)
+    require_string(repository, "tap repository", TAP_REPOSITORY)
+    normalized_tap = selected_tap_name(args)
     require_string(args.tap_commit, "tap commit", COMMIT)
     require_string(args.formula, "formula", FORMULA_NAME)
     if args.arch not in ("wasm32", "wasm64"):
@@ -464,8 +487,9 @@ def capture(args: argparse.Namespace) -> None:
         "bottle_tag": bottle_tag,
         "dependencies": [selected[name] for name in sorted(selected)],
         "formula": args.formula,
-        "schema": 1,
+        "schema": 2,
         "tap_commit": args.tap_commit,
+        "tap_name": normalized_tap,
         "tap_repository": repository,
     }
     validate_document(output, args)
@@ -511,15 +535,21 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             "formula",
             "schema",
             "tap_commit",
+            "tap_name",
             "tap_repository",
         },
         "dependency provenance",
     )
-    if root["schema"] != 1:
-        fail("dependency provenance schema must be 1")
+    if root["schema"] != 2:
+        fail("dependency provenance schema must be 2")
     if root["formula"] != args.formula or root["arch"] != args.arch:
         fail("dependency provenance formula or architecture does not match the build")
-    if root["tap_repository"] != args.tap_repository or root["tap_commit"] != args.tap_commit:
+    normalized_tap = selected_tap_name(args)
+    if (
+        root["tap_repository"] != args.tap_repository
+        or root["tap_name"] != normalized_tap
+        or root["tap_commit"] != args.tap_commit
+    ):
         fail("dependency provenance tap identity does not match the build")
     if root["bottle_root_url"] != args.bottle_root_url:
         fail("dependency provenance bottle root does not match the build")
@@ -529,7 +559,6 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     dependencies = root["dependencies"]
     if not isinstance(dependencies, list) or len(dependencies) > MAX_DEPENDENCIES:
         fail(f"dependency provenance must contain at most {MAX_DEPENDENCIES} dependencies")
-    normalized_tap = tap_name(args.tap_repository)
     seen: set[str] = set()
     prior_full_name = ""
     validation_tap_root = getattr(args, "tap_root", None)
@@ -538,14 +567,14 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     if validation_tap_root:
         static_dependencies = exact_tap_dependencies(
             pathlib.Path(validation_tap_root),
-            args.tap_repository,
+            normalized_tap,
             args.formula,
             args.arch,
             args.bottle_root_url,
         )
         static_direct_dependencies = exact_direct_dependencies(
             pathlib.Path(validation_tap_root),
-            args.tap_repository,
+            normalized_tap,
             args.formula,
         )
     for index, dependency in enumerate(dependencies):
@@ -675,6 +704,7 @@ def parser() -> argparse.ArgumentParser:
     common.add_argument("--formula", required=True)
     common.add_argument("--arch", required=True)
     common.add_argument("--tap-repository", required=True)
+    common.add_argument("--tap-name")
     common.add_argument("--tap-commit", required=True)
     common.add_argument("--bottle-root-url", required=True)
 

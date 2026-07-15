@@ -84,10 +84,36 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def normalized_tap(repository: str) -> str:
-    require_string(repository, "tap repository", TAP_REPOSITORY)
-    owner, name = repository.lower().split("/", 1)
+def normalized_identity(value: str, label: str) -> str:
+    require_string(value, label, TAP_REPOSITORY)
+    owner, name = value.lower().split("/", 1)
     return f"{owner}/{name}"
+
+
+def normalized_tap_repository(args: argparse.Namespace) -> str:
+    return normalized_identity(args.tap_repository, "tap repository")
+
+
+def normalized_tap_name(args: argparse.Namespace) -> str:
+    repository = normalized_tap_repository(args)
+    owner, repository_name = repository.split("/", 1)
+    if repository == "automattic/kandelo-homebrew":
+        expected = repository
+    else:
+        if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
+            fail("third-party tap repositories must use owner/homebrew-name")
+        expected = f"{owner}/{repository_name.removeprefix('homebrew-')}"
+        if expected == "automattic/kandelo-homebrew":
+            fail("the protected first-party tap name cannot be derived from another repository")
+    requested = args.tap_name
+    if requested is None:
+        if repository != "automattic/kandelo-homebrew":
+            fail("tap name is required when repository and Homebrew identities may differ")
+        requested = args.tap_repository
+    selected = normalized_identity(requested, "tap name")
+    if selected != expected:
+        fail("tap name does not match the tap repository")
+    return selected
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
@@ -97,8 +123,9 @@ def validate_arguments(args: argparse.Namespace) -> None:
     if isinstance(args.abi, bool) or not isinstance(args.abi, int) or args.abi <= 0:
         fail("ABI must be a positive integer")
     require_string(args.tap_commit, "tap commit", COMMIT)
-    tap = normalized_tap(args.tap_repository)
-    expected_root = f"https://ghcr.io/v2/{tap}"
+    repository = normalized_tap_repository(args)
+    normalized_tap_name(args)
+    expected_root = f"https://ghcr.io/v2/{repository}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL does not match {expected_root}")
     require_string(args.bottle_sha256, "bottle sha256", SHA256)
@@ -123,6 +150,8 @@ def validate_dependency_provenance(args: argparse.Namespace) -> dict[str, Any]:
         str(provenance_path),
         "--tap-repository",
         args.tap_repository,
+        "--tap-name",
+        normalized_tap_name(args),
         "--tap-commit",
         args.tap_commit,
         "--formula",
@@ -207,7 +236,7 @@ def validate_formula_info(
     formula = formulae[0]
     if not isinstance(formula, dict):
         fail("Homebrew Formula info record must be an object")
-    expected_full_name = f"{normalized_tap(args.tap_repository)}/{args.formula}"
+    expected_full_name = f"{normalized_tap_name(args)}/{args.formula}"
     if formula.get("name") != args.formula or str(formula.get("full_name", "")).lower() != expected_full_name:
         fail("Homebrew Formula info identity does not match the exact tap Formula")
     versions = formula.get("versions")
@@ -319,7 +348,7 @@ def target_receipt(args: argparse.Namespace, version: str) -> dict[str, Any]:
     source = receipt.get("source")
     if not isinstance(source, dict):
         fail("target receipt source must be an object")
-    tap = normalized_tap(args.tap_repository)
+    tap = normalized_tap_name(args)
     if str(source.get("tap", "")).lower() != tap or source.get("tap_git_head") != args.tap_commit:
         fail("target receipt is not bound to the exact tap commit")
     if source.get("spec") not in (None, "stable"):
@@ -417,9 +446,13 @@ def build_document(args: argparse.Namespace) -> dict[str, Any]:
         "dependencies": dependencies,
         "formula": args.formula,
         "node": node_evidence(args),
-        "schema": 1,
+        "schema": 2,
         "selection": selection,
-        "tap": {"commit": args.tap_commit, "repository": args.tap_repository},
+        "tap": {
+            "commit": args.tap_commit,
+            "name": normalized_tap_name(args),
+            "repository": args.tap_repository,
+        },
         "target": {
             "install_log": target_install_evidence(args, tag_name, selection),
             "receipt": target_receipt(args, version),
@@ -434,12 +467,16 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         {"abi", "arch", "bottle", "dependencies", "formula", "node", "schema", "selection", "tap", "target"},
         "runtime evidence",
     )
-    if root["schema"] != 1 or root["formula"] != args.formula or root["arch"] != args.arch:
+    if root["schema"] != 2 or root["formula"] != args.formula or root["arch"] != args.arch:
         fail("runtime evidence Formula identity does not match")
     if root["abi"] != args.abi:
         fail("runtime evidence ABI does not match")
-    tap = exact_keys(root["tap"], {"commit", "repository"}, "runtime evidence tap")
-    if tap != {"commit": args.tap_commit, "repository": args.tap_repository}:
+    tap = exact_keys(root["tap"], {"commit", "name", "repository"}, "runtime evidence tap")
+    if tap != {
+        "commit": args.tap_commit,
+        "name": normalized_tap_name(args),
+        "repository": args.tap_repository,
+    }:
         fail("runtime evidence tap identity does not match")
     version, tag_name = canonical_bottle(args)
     bottle = exact_keys(
@@ -553,7 +590,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         fail("runtime target receipt is not an explicit target install")
     if receipt["path"] != f"Cellar/{args.formula}/{version}/INSTALL_RECEIPT.json":
         fail("runtime target receipt path does not match")
-    if receipt["source_tap"] != normalized_tap(args.tap_repository) or receipt["source_tap_git_head"] != args.tap_commit:
+    if receipt["source_tap"] != normalized_tap_name(args) or receipt["source_tap_git_head"] != args.tap_commit:
         fail("runtime target receipt source does not match")
     require_string(receipt["sha256"], "runtime target receipt sha256", SHA256)
     homebrew_version = require_string(
@@ -591,6 +628,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--arch", required=True)
     parser.add_argument("--abi", type=int, required=True)
     parser.add_argument("--tap-repository", required=True)
+    parser.add_argument("--tap-name")
     parser.add_argument("--tap-commit", required=True)
     parser.add_argument("--tap-root", required=True)
     parser.add_argument("--bottle-root-url", required=True)

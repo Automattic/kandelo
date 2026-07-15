@@ -8,6 +8,7 @@ FORMULA=""
 ARCH=""
 RELEASE_TAG=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 TAP_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
@@ -18,7 +19,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>] [--allow-dry-run]
+usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>] [--allow-dry-run]
 
 Revalidates the build handoff, then checks the strict upload receipt against
 the plan identity and the handoff's recomputed bottle digest and byte count.
@@ -33,6 +34,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
@@ -89,6 +91,9 @@ if ! [[ "$receipt_bytes" =~ ^[0-9]+$ ]] || [ "$receipt_bytes" -gt 65536 ]; then
 fi
 
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 validation_tmp="$(mktemp -d)"
 trap 'rm -rf "$validation_tmp"' EXIT
 build_env="$validation_tmp/build.env"
@@ -98,6 +103,7 @@ build_validation_args=(
   --arch "$ARCH"
   --release-tag "$RELEASE_TAG"
   --tap-repository "$TAP_REPOSITORY"
+  --tap-name "$TAP_NAME"
   --tap-commit "$TAP_COMMIT"
   --kandelo-commit "$KANDELO_COMMIT"
   --bottle-root-url "$BOTTLE_ROOT_URL"
@@ -137,6 +143,7 @@ if ! jq -e \
   --arg arch "$ARCH" \
   --arg abi "$EXPECTED_ABI" \
   --arg tap_repository "$TAP_REPOSITORY" \
+  --arg tap_name "$TAP_NAME" \
   --arg tap_commit "$TAP_COMMIT" \
   --arg kandelo_commit "$KANDELO_COMMIT" \
   --arg url "$EXPECTED_URL" \
@@ -149,12 +156,13 @@ if ! jq -e \
       type == "object" and keys == ($expected | sort);
     exact_keys([
       "formula", "kind", "layout", "layout_receipt_sha256", "publication", "schema",
-      "tap_repository"
+      "tap_name", "tap_repository"
     ]) and
-    .schema == 2 and
+    .schema == 3 and
     .kind == "child" and
     .formula == $formula and
     (.tap_repository | ascii_downcase) == ($tap_repository | ascii_downcase) and
+    .tap_name == $tap_name and
     .layout_receipt_sha256 == $layout_receipt_sha256 and
     .layout.kind == "child" and
     .layout.formula == $formula and
@@ -163,6 +171,7 @@ if ! jq -e \
     .layout.tap_commit == $tap_commit and
     .layout.kandelo_commit == $kandelo_commit and
     (.layout.tap_repository | ascii_downcase) == ($tap_repository | ascii_downcase) and
+    .layout.tap_name == $tap_name and
     .layout.bottle.url == $url and
     .layout.bottle.sha256 == $sha256 and
     .layout.bottle.bytes == ($bytes | tonumber) and

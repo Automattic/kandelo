@@ -5,6 +5,7 @@ set -euo pipefail
 LAYOUT=""
 LAYOUT_RECEIPT=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 FORMULA=""
 OUT_JSON=""
 DRY_RUN=0
@@ -19,7 +20,7 @@ trap cleanup EXIT
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> --formula <name> --out-json <json> [--dry-run]
+usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--dry-run]
 
 Validates an explicit local OCI layout, preflights the destination reference,
 and uses ORAS only to copy that immutable layout to GHCR. It never evaluates
@@ -32,6 +33,7 @@ while [ "$#" -gt 0 ]; do
     --layout) LAYOUT="${2:-}"; shift 2 ;;
     --layout-receipt) LAYOUT_RECEIPT="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --out-json) OUT_JSON="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -77,6 +79,9 @@ if ! command -v oras >/dev/null 2>&1; then
 fi
 
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 KIND="$(jq -er '.kind' "$LAYOUT_RECEIPT")"
 case "$KIND" in
   child)
@@ -99,7 +104,8 @@ case "$KIND" in
 esac
 if [ "$(jq -er '.formula' "$LAYOUT_RECEIPT")" != "$FORMULA" ] ||
    [ "$(jq -er '.tap_repository | ascii_downcase' "$LAYOUT_RECEIPT")" != \
-     "$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')" ]; then
+     "$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')" ] ||
+   [ "$(jq -er '.tap_name | ascii_downcase' "$LAYOUT_RECEIPT")" != "$TAP_NAME" ]; then
   echo "homebrew-ghcr-upload.sh: layout receipt publication identity mismatch" >&2
   exit 2
 fi
@@ -250,6 +256,7 @@ jq -nS \
   --arg kind "$KIND" \
   --arg formula "$FORMULA" \
   --arg tap_repository "$TAP_REPOSITORY" \
+  --arg tap_name "$TAP_NAME" \
   --arg remote "$REMOTE" \
   --arg reference "$DESTINATION_REF" \
   --arg digest "$EXPECTED_DIGEST" \
@@ -258,10 +265,11 @@ jq -nS \
   --arg public_readback_digest "$public_readback_digest" \
   --arg status "$status" \
   --slurpfile layout "$LAYOUT_RECEIPT" '{
-    schema: 2,
+    schema: 3,
     kind: $kind,
     formula: $formula,
     tap_repository: $tap_repository,
+    tap_name: $tap_name,
     layout: $layout[0],
     layout_receipt_sha256: $layout_receipt_sha256,
     publication: {

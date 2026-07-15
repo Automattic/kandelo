@@ -1,9 +1,9 @@
 # Homebrew Publishing
 
-Kandelo's Homebrew publishing path is a first-party bottle publication and
-validation pipeline. The implementation lives in the main
-`Automattic/kandelo` repository; the live tap repository is
-`Automattic/kandelo-homebrew`.
+Kandelo's Homebrew publishing path is a bottle publication and validation
+pipeline shared by the first-party tap and conventional third-party taps. The
+implementation lives in the main `Automattic/kandelo` repository; the
+first-party live tap repository is `Automattic/kandelo-homebrew`.
 
 This is not a general user-facing Homebrew install guide yet. Do not document
 `brew tap` or guest `brew install` commands until guest Homebrew install has
@@ -26,14 +26,21 @@ Homebrew's `bottle do` block.
 |---|---|
 | `Automattic/kandelo` | Schemas, validators, reusable workflows, package build scripts, VFS planner/builder, Node/browser smoke tests, and this documentation. |
 | `Automattic/kandelo-homebrew` | Tap state: `Formula/`, generated `Kandelo/` sidecars, bottle blocks, and provenance reports. |
+| `<owner>/homebrew-<name>` | A third-party tap's Formulae, generated state, GHCR bottle packages, and caller-scoped publication authority. |
 
 The checked-in `homebrew/kandelo-homebrew/` directory is a reviewable template
 and test fixture for the tap shape. Live generated tap state belongs in
 `Automattic/kandelo-homebrew`, not in the main repository template.
 
-Use the full repository name in automation and documentation. The chosen tap
-name intentionally differs from Homebrew's common `homebrew-<name>` repository
-convention, so do not infer a short tap alias without verifying it.
+Repository identity and Homebrew tap identity are separate inputs. A
+conventional repository `<owner>/homebrew-<name>` has canonical Homebrew tap
+name `<owner>/<name>`. Repository identity owns GitHub checkout, GHCR paths,
+and the caller token; tap identity owns `brew` references, installed Formula
+paths, receipts, OCI titles, and Kandelo sidecars. The first-party repository
+is an explicit exception: both its repository identity and tap name are
+`Automattic/kandelo-homebrew`. No conventional repository may derive that
+protected first-party tap name, so repository and tap identities remain a
+one-to-one publication boundary.
 
 ## Artifact Model
 
@@ -153,7 +160,7 @@ Ruby.
 
 Publish same-tap runtime dependencies before their consumers. The bottle
 builder resolves the selected Formula's recursive runtime closure in
-topological order, filters it to `Automattic/kandelo-homebrew`, and installs
+topological order, filters it to the selected canonical tap name, and installs
 each dependency separately with `--force-bottle --as-dependency
 --ignore-dependencies`. A missing Kandelo bottle therefore fails before the
 consumer source build; Homebrew is not allowed to silently replace a prior
@@ -239,7 +246,7 @@ The reusable publisher is:
 .github/workflows/reusable-homebrew-bottle-publish.yml
 ```
 
-The tap may call it with:
+The first-party tap may call it with:
 
 ```yaml
 jobs:
@@ -251,9 +258,15 @@ jobs:
     uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@<trusted-ref>
     with:
       tap-repository: Automattic/kandelo-homebrew
+      tap-name: Automattic/kandelo-homebrew
       formulae: hello
       arches: wasm32
 ```
+
+A conventional third-party tap repository such as `Example/homebrew-tools`
+uses the same caller shape with `tap-repository: Example/homebrew-tools` and
+`tap-name: Example/tools`. The repository and tap name pair is validated before
+any checkout or dry-run exit.
 
 The caller grants the maximum permission ceiling. A write-capable publication
 caller must grant `contents: write`, `packages: write`, and `actions: read`, but
@@ -268,24 +281,29 @@ schedule explicitly narrows itself to read scopes. PRs from untrusted forks must
 not receive this caller ceiling; they can run schema and local build checks but
 cannot invoke the trusted publisher.
 
-Every call is fixed to a reviewed `repository_dispatch` workflow in
-`Automattic/kandelo-homebrew@main`. Non-dry calls may come from
-`publish-bottles.yml` or `maintain-bottles.yml`; dry calls must come from
-`dry-run-bottles.yml`. The normal caller is displayed as
+Every call is fixed to a reviewed `repository_dispatch` workflow on the target
+tap repository's `main` branch, and the caller repository must exactly equal
+the target tap repository. Non-dry calls may come from `publish-bottles.yml` or
+`maintain-bottles.yml`; dry calls must come from `dry-run-bottles.yml`. The
+first-party normal caller is displayed as
 **Publish Kandelo bottles**; do not restore the narrower legacy **Publish hello
 bottle** name. The three dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`. Publish and dry-run
 payloads must select at least one Formula and architecture; an absent or empty
 selection is an error, not a successful no-op.
-Write-capable publication is additionally fixed to `Automattic/kandelo@main`
-and `Automattic/kandelo-homebrew@main`. The bottle root is never caller-selected:
+All publication, including dry runs, is additionally fixed to
+`Automattic/kandelo@main` and the caller tap's `main` branch. The bottle root is
+never caller-selected:
 the workflow rejects a non-empty `bottle-root-url` and derives
 `https://ghcr.io/v2/<lowercase-owner>/<lowercase-repository>` from the tap
-repository. Arbitrary Kandelo or tap refs are accepted only by the reviewed
-dry-run caller. The maintenance workflow is callable but is not directly
-branch-dispatchable; its operator-facing caller must live on the protected
-default branch and grant write scopes explicitly. Third-party actions in the
-privileged path are pinned by commit.
+repository. The separate reusable maintenance workflow remains first-party
+specific because its rollback and deletion paths own default-tap state. A
+third-party `maintain-bottles.yml` on the protected default branch may call the
+generic publisher for rebuilds, but generic rollback and deletion orchestration
+are not provided by this change. Third-party actions in the privileged path are
+pinned by commit. The reusable workflow uses the caller's scoped
+`github.token`; it cannot publish another repository's tap state or GHCR
+packages because caller and target repository identities must match.
 
 After a read-only planning job resolves the immutable Kandelo commit, tap
 commit, ABI namespace, derived bottle root, and formula matrix, each

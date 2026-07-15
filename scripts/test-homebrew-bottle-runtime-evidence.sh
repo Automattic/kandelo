@@ -25,6 +25,7 @@ version="1.0"
 arch="wasm32"
 abi=39
 tap_repository="Automattic/kandelo-homebrew"
+tap_name="automattic/kandelo-homebrew"
 tap_commit=""
 bottle_root="https://ghcr.io/v2/automattic/kandelo-homebrew"
 bottle="$TMPDIR/hello--1.0.wasm32_kandelo.bottle.tar.gz"
@@ -92,8 +93,9 @@ jq -nS --argjson abi "$abi" '{schema: 1, formula: "hello", arch: "wasm32",
   argv: ["/tmp/hello.wasm", "--version"], status: "success"
 }' >"$node_receipt"
 jq -nS --arg tap_commit "$tap_commit" '{
-  schema: 1, formula: "hello", arch: "wasm32",
-  tap_repository: "Automattic/kandelo-homebrew", tap_commit: $tap_commit,
+  schema: 2, formula: "hello", arch: "wasm32",
+  tap_repository: "Automattic/kandelo-homebrew", tap_name: "automattic/kandelo-homebrew",
+  tap_commit: $tap_commit,
   bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
   bottle_tag: "wasm32_kandelo", dependencies: []
 }' >"$dependency_provenance"
@@ -108,6 +110,7 @@ capture_args=(
   --arch "$arch"
   --abi "$abi"
   --tap-repository "$tap_repository"
+  --tap-name "$tap_name"
   --tap-commit "$tap_commit"
   --tap-root "$tap"
   --bottle-root-url "$bottle_root"
@@ -130,12 +133,14 @@ python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
 python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --input "$evidence" \
   --formula "$formula" --arch "$arch" --abi "$abi" \
-  --tap-repository "$tap_repository" --tap-commit "$tap_commit" --tap-root "$tap" \
+  --tap-repository "$tap_repository" --tap-name "$tap_name" \
+  --tap-commit "$tap_commit" --tap-root "$tap" \
   --bottle-root-url "$bottle_root" --bottle-json "$bottle_json" \
   --bottle-url "$bottle_url" --bottle-sha256 "$bottle_sha" --bottle-bytes "$bottle_bytes" \
   --dependency-provenance "$dependency_provenance"
 
-jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" '
+jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" --arg tap_name "$tap_name" '
+  .schema == 2 and .tap.name == $tap_name and
   .bottle.sha256 == $sha and .bottle.url == $url and
   .selection.bottle.mode == "anonymous-public-readback" and
   .target.receipt.built_as_bottle == true and
@@ -201,7 +206,8 @@ jq '.unexpected = true' "$evidence" >"$TMPDIR/extra.json"
 if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --input "$TMPDIR/extra.json" \
   --formula "$formula" --arch "$arch" --abi "$abi" \
-  --tap-repository "$tap_repository" --tap-commit "$tap_commit" --tap-root "$tap" \
+  --tap-repository "$tap_repository" --tap-name "$tap_name" \
+  --tap-commit "$tap_commit" --tap-root "$tap" \
   --bottle-root-url "$bottle_root" --bottle-json "$bottle_json" \
   --bottle-url "$bottle_url" --bottle-sha256 "$bottle_sha" --bottle-bytes "$bottle_bytes" \
   --dependency-provenance "$dependency_provenance" >/dev/null 2>&1; then

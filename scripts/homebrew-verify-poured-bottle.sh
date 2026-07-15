@@ -4,6 +4,7 @@ set -euo pipefail
 
 TAP_ROOT=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 TAP_COMMIT=""
 FORMULA=""
 ARCH=""
@@ -22,7 +23,7 @@ SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> --tap-commit <sha> --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --out <runtime-evidence.json>
+usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --out <runtime-evidence.json>
 
 The tap must already contain the reconstructed target bottle block. In CI all
 Homebrew and Formula execution runs as the dedicated isolated workflow user.
@@ -37,6 +38,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
@@ -97,6 +99,9 @@ case "$ARCH" in wasm32|wasm64) ;; *) echo "homebrew-verify-poured-bottle.sh: inv
 
 TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 for file in "$BOTTLE" "$BOTTLE_JSON" "$DEPENDENCY_PROVENANCE" "$SELECTION_RECEIPT"; do
   [ -f "$file" ] && [ ! -L "$file" ] || {
     echo "homebrew-verify-poured-bottle.sh: required input is not a regular file: $file" >&2
@@ -158,7 +163,6 @@ chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
 homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
-TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 BOTTLE_TAG="${ARCH}_kandelo"
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
@@ -340,6 +344,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
   --brew-bin "$BREW_BIN" \
   --tap-root "$TAP_ROOT" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --formula "$FORMULA" \
   --arch "$ARCH" \
@@ -365,6 +370,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
   --arch "$ARCH" \
   --abi "$ABI" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --tap-root "$TAP_ROOT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \

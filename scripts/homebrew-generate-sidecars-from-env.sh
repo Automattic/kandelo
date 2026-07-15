@@ -35,6 +35,7 @@ for name in \
   KANDELO_HOMEBREW_ARCH \
   KANDELO_HOMEBREW_RELEASE_TAG \
   KANDELO_HOMEBREW_TAP_REPOSITORY \
+  KANDELO_HOMEBREW_TAP_NAME \
   KANDELO_HOMEBREW_BOTTLE_ARCHIVE \
   KANDELO_HOMEBREW_BOTTLE_JSON \
   KANDELO_HOMEBREW_BOTTLE_ROOT_URL \
@@ -110,7 +111,10 @@ fi
 CACHE_KEY_SHA="$ACTUAL_BOTTLE_SHA256"
 
 FORMULA_SHA256="$(shasum -a 256 "$FORMULA_PATH" | awk '{print $1}')"
-TAP_NAME="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name \
+  "$KANDELO_HOMEBREW_TAP_REPOSITORY" "$KANDELO_HOMEBREW_TAP_NAME")"
 SDK_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sdk/activate.sh" | awk '{print $1}')"
 SYSROOT_FINGERPRINT="$(bash "$KANDELO_ROOT/scripts/homebrew-sysroot-fingerprint.sh" \
   --kandelo-root "$BUILD_ROOT" --arch "$KANDELO_HOMEBREW_ARCH")"
@@ -132,6 +136,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
   --formula "$KANDELO_HOMEBREW_FORMULA" \
   --arch "$KANDELO_HOMEBREW_ARCH" \
   --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
   --tap-root "$FORMULA_SOURCE_ROOT"
@@ -141,6 +146,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --arch "$KANDELO_HOMEBREW_ARCH" \
   --abi "$ABI_VERSION" \
   --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --tap-root "$KANDELO_HOMEBREW_TAP_ROOT" \
   --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
@@ -371,7 +377,7 @@ declarations = run_json_command(
             / "scripts/homebrew-formula-runtime-closure.rb"
         ),
         os.environ["FORMULA_SOURCE_ROOT"],
-        os.environ["KANDELO_HOMEBREW_TAP_REPOSITORY"],
+        os.environ["TAP_NAME"],
         formula,
         "--declarations-json",
     ],

@@ -15,12 +15,12 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "75468bd935146ca1c78e1a757a314bb6355bce63f01707c3345936d3f9ccaf07"
-PUBLISHER_BUILD_DIGEST = "682e73ef771a9beebb0bbfaea2770d6f1cd7062882b4bb3145958d204e1436b5"
-PUBLISHER_UPLOAD_DIGEST = "329ff7dfafc8f3c262ae8c817187d875db451da05d7d98a12eafda45cdbf2213"
-PUBLISHER_INDEX_DIGEST = "2c5988c9b840dcc1e845f40b58e47ed8263a9babccdae08140bea145a4199de3"
-PUBLISHER_VERIFY_DIGEST = "73cc22e389c4fb449f32976860178dc40bce686739c6662cb769ca2ad93b7003"
-PUBLISHER_FINALIZE_DIGEST = "2e7a24cdcaa63e631cee1a967bff1c41bb0f8f8e57e2039929efda5d069cf9f9"
+PUBLISHER_PLAN_DIGEST = "a4e98950e1360850c15cf4ebe091ffb2676fb6b7fbdfcda7e07d71b203e3a51b"
+PUBLISHER_BUILD_DIGEST = "09d9a686acc668c9e432bc4f5509b2b77b49b3783d9a9f7afadee1a1832ec07e"
+PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
+PUBLISHER_INDEX_DIGEST = "143ba3916705d3c76ef337ddf89def07ff3515400a95827eb14042a12ab31cd8"
+PUBLISHER_VERIFY_DIGEST = "a93552df67eb08af5767e0c0c0735d20a953dff8394e5d89dba951c145c46b7b"
+PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
 
@@ -196,6 +196,7 @@ def check_tap_callers
     "kandelo-repository" => "Automattic/kandelo",
     "kandelo-ref" => "main",
     "tap-repository" => "Automattic/kandelo-homebrew",
+    "tap-name" => "Automattic/kandelo-homebrew",
     "tap-ref" => "main",
     "formulae" => "${{ github.event.client_payload.formulae }}",
     "arches" => "${{ github.event.client_payload.arches || 'wasm32' }}",
@@ -223,6 +224,7 @@ def check_tap_callers
       "kandelo-repository" => "${{ github.event.client_payload.kandelo_repository || 'Automattic/kandelo' }}",
       "kandelo-ref" => "${{ github.event.client_payload.kandelo_ref || 'main' }}",
       "tap-repository" => "${{ github.event.client_payload.tap_repository || 'Automattic/kandelo-homebrew' }}",
+      "tap-name" => "${{ github.event.client_payload.tap_name || 'Automattic/kandelo-homebrew' }}",
       "tap-ref" => "${{ github.event.client_payload.tap_ref || 'main' }}",
       "dry-run" => true,
     }),
@@ -264,6 +266,7 @@ def check_publisher(workflow)
     "kandelo-repository" => { "type" => "string", "default" => "Automattic/kandelo" },
     "kandelo-ref" => { "type" => "string", "default" => "main" },
     "tap-repository" => { "type" => "string", "default" => "Automattic/kandelo-homebrew" },
+    "tap-name" => { "type" => "string", "default" => "Automattic/kandelo-homebrew" },
     "tap-ref" => { "type" => "string", "default" => "main" },
     "formulae" => { "type" => "string", "required" => true },
     "arches" => { "type" => "string", "default" => "wasm32" },
@@ -372,21 +375,27 @@ def check_publisher(workflow)
           "DRY_RUN" => "${{ inputs.dry-run }}",
           "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
+          "TAP_NAME" => "${{ inputs.tap-name }}",
           "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "TAP_REF" => "${{ inputs.tap-ref }}",
           "BOTTLE_ROOT_URL" => "${{ inputs.bottle-root-url }}",
         }, "publisher caller validation mapping changed")
   validation_run = validation.fetch("run")
   [
-    '[ "$CALLER_REPOSITORY" = "Automattic/kandelo-homebrew" ]',
+    '[ "$CALLER_REPOSITORY" = "$TAP_REPOSITORY" ]',
     '[ "$CALLER_REF" = "refs/heads/main" ]',
     '[ "$CALLER_EVENT_NAME" = "repository_dispatch" ]',
-    "dry-run-bottles.yml@refs/heads/main",
-    "publish-bottles.yml@refs/heads/main",
-    "maintain-bottles.yml@refs/heads/main",
+    '"$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main"',
+    '"$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"',
+    '"$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main"',
     '[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]',
     '[ "$KANDELO_REF" = "main" ]',
-    '[ "$TAP_REPOSITORY" = "Automattic/kandelo-homebrew" ]',
+    'Automattic/kandelo-homebrew)',
+    '[ "$TAP_NAME" = "Automattic/kandelo-homebrew" ]',
+    '[[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+$ ]]',
+    'tap_short_name="${TAP_REPOSITORY#*/homebrew-}"',
+    '[ "$normalized_derived_tap_name" != "automattic/kandelo-homebrew" ]',
+    '[ "$TAP_NAME" = "${tap_owner}/${tap_short_name}" ]',
     '[ "$TAP_REF" = "main" ]',
     '[ -z "$BOTTLE_ROOT_URL" ]',
   ].each do |predicate|
@@ -394,7 +403,10 @@ def check_publisher(workflow)
   end
   dry_index = validation_run.index('if [ "$DRY_RUN" = "true" ]')
   caller_index = validation_run.index('[ "$CALLER_REF" = "refs/heads/main" ]')
-  check(dry_index && caller_index && caller_index < dry_index,
+  kandelo_index = validation_run.index('[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]')
+  tap_name_index = validation_run.index('case "$TAP_REPOSITORY" in')
+  check(dry_index && caller_index && kandelo_index && tap_name_index &&
+        caller_index < dry_index && kandelo_index < dry_index && tap_name_index < dry_index,
         "publisher dry-run can bypass caller authority validation")
 
   release_run = named_step(plan_steps, "Resolve release and bottle root").fetch("run")
@@ -614,6 +626,7 @@ def check_publisher(workflow)
           "GH_TOKEN" => "${{ github.token }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
         },
         "publisher uploader credentials escape the isolated upload step")
   index_credential_steps = index_steps.select do |step|
@@ -625,6 +638,7 @@ def check_publisher(workflow)
           "GH_TOKEN" => "${{ github.token }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
         },
         "publisher version-index credentials escape the isolated transport step")
   finalizer_credential_steps = finalize_steps.select do |step|
@@ -814,6 +828,8 @@ def check_publisher(workflow)
     KANDELO_HOMEBREW_BROWSER_EVIDENCE
   ].all? { |name| dev_shell.include?("--keep #{name}") },
         "dev shell drops exact Homebrew runtime evidence inputs")
+  check(!dev_shell.include?("--keep KANDELO_HOMEBREW_TAP_NAME"),
+        "dev shell globally preserves caller-selected Homebrew tap identity")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
   [
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
@@ -1079,6 +1095,7 @@ def check_publisher(workflow)
     'git -C "$GITHUB_WORKSPACE/kandelo-postbuild" rev-parse HEAD',
     'git -C "$GITHUB_WORKSPACE/tap-reviewed" rev-parse HEAD',
     '--tap-root "$GITHUB_WORKSPACE/tap"', '--tap-repository "$TAP_REPOSITORY"',
+    '--tap-name "$TAP_NAME"',
     '--formula "$FORMULA"', '--base-ref "$TAP_SHA"',
     '--reviewed-tap-root "$GITHUB_WORKSPACE/tap-reviewed"',
   ].each do |fragment|
@@ -1106,6 +1123,7 @@ def check_publisher(workflow)
   [
     'cd "$GITHUB_WORKSPACE/kandelo-postbuild"',
     "scripts/homebrew-create-build-handoff.sh", '--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"',
+    '--tap-name "$KANDELO_HOMEBREW_TAP_NAME"',
     '--bottle "$BOTTLE_ARCHIVE"', '--bottle-json "$BOTTLE_JSON"',
     '--dependency-provenance "$DEPENDENCY_PROVENANCE"',
     '--out "$RUNNER_TEMP/homebrew-build-handoff"',
@@ -1157,7 +1175,9 @@ def check_publisher(workflow)
         "publisher exposes upload credentials before validating the handoff")
   check(upload_validate.fetch("run").include?("scripts/homebrew-validate-build-handoff.sh") &&
         upload_validate.fetch("run").include?('--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"') &&
+        upload_validate.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
         upload_attempt.fetch("run").include?("scripts/homebrew-ghcr-upload.sh") &&
+        upload_attempt.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
         upload_attempt.fetch("run").include?('--out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"'),
         "publisher isolated upload path changed")
   trusted_runner_roots = [
@@ -1307,6 +1327,7 @@ def check_publisher(workflow)
                                  "Validate receipt against exact bottle bytes").fetch("run")
   [canonical_build, canonical_receipt].each do |run|
     check(run.include?('--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"') &&
+          run.include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
           run.include?('--out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"'),
           "publisher does not reconstruct canonical bottle JSON")
   end
@@ -1320,6 +1341,7 @@ def check_publisher(workflow)
                          "Compose only reconstructed bottle metadata into the fresh tap").fetch("run")
   [
     "scripts/homebrew-merge-bottle-json.sh", '--bottle-json "$BOTTLE_JSON"',
+    '--tap-repository "$TAP_REPOSITORY"', '--tap-name "$TAP_NAME"',
     '--release-tag "$RELEASE_TAG"',
     '--expected-sha256 "$BOTTLE_SHA256"', '--expected-root-url "$BOTTLE_ROOT_URL"',
     'merged_tap="$RUNNER_TEMP/homebrew-merged-tap"',
@@ -1380,13 +1402,14 @@ def check_publisher(workflow)
     check(sidecar_run.include?(fragment),
           "publisher sidecar inspection lacks trusted forbidden-root source #{fragment}")
   end
-  forbidden_root_forwarding = [
+  sidecar_env_forwarding = [
     'bash scripts/dev-shell.sh env \\',
+    'KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \\',
     'KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \\',
   ]
-  forbidden_root_forwarding.each do |fragment|
+  sidecar_env_forwarding.each do |fragment|
     check(sidecar_run.include?(fragment),
-          "publisher sidecar inspection drops trusted forbidden roots at the dev-shell boundary")
+          "publisher sidecar inspection drops explicit identity or root data at the dev-shell boundary")
   end
   verifier_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-generate-sidecars-from-env.sh"))
   fingerprint_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-sysroot-fingerprint.sh"))
@@ -1416,9 +1439,9 @@ def check_publisher(workflow)
     check(browser_run.include?(fragment),
           "publisher browser sidecar regeneration lacks trusted forbidden-root source #{fragment}")
   end
-  forbidden_root_forwarding.each do |fragment|
+  sidecar_env_forwarding.each do |fragment|
     check(browser_run.include?(fragment),
-          "publisher browser sidecar regeneration drops trusted forbidden roots at the dev-shell boundary")
+          "publisher browser sidecar regeneration drops explicit identity or root data at the dev-shell boundary")
   end
 
   package_handoff_run = named_step(verify_steps,
@@ -1581,6 +1604,7 @@ def check_maintenance(workflow)
     "kandelo-repository" => "Automattic/kandelo",
     "kandelo-ref" => "main",
     "tap-repository" => "Automattic/kandelo-homebrew",
+    "tap-name" => "Automattic/kandelo-homebrew",
     "tap-ref" => "main",
     "formulae" => "${{ inputs.formulae }}",
     "arches" => "${{ inputs.arches }}",
@@ -1701,6 +1725,38 @@ def self_test(publisher, maintenance)
     "caller feature branch" => lambda { |w|
       step = mutate_named_step(w, "plan", "Validate caller trust boundary")
       step["run"] = step.fetch("run").sub("refs/heads/main", "refs/heads/feature")
+    },
+    "caller publishes another repository" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        '[ "$CALLER_REPOSITORY" = "$TAP_REPOSITORY" ]', "true"
+      )
+    },
+    "nonconventional third-party tap repository" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        '^[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+$',
+        '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+      )
+    },
+    "repository and Homebrew tap identity mismatch" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        '[ "$TAP_NAME" = "${tap_owner}/${tap_short_name}" ]', "true"
+      )
+    },
+    "conventional repository aliases the protected first-party tap" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        '[ "$normalized_derived_tap_name" != "automattic/kandelo-homebrew" ]', "true"
+      )
+    },
+    "caller workflow rebound to first-party repository" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").gsub(
+        '$CALLER_REPOSITORY/.github/workflows/',
+        'Automattic/kandelo-homebrew/.github/workflows/'
+      )
     },
     "dry-run feature workflow" => lambda { |w|
       step = mutate_named_step(w, "plan", "Validate caller trust boundary")

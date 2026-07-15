@@ -11,6 +11,7 @@ FORMULA=""
 ARCH=""
 RELEASE_TAG=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 TAP_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
@@ -21,7 +22,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>]
+usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>]
 
 Validates an untrusted build handoff against values from the publisher plan.
 The handoff must contain exactly manifest.json, bottle.json,
@@ -41,6 +42,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
@@ -93,6 +95,9 @@ if ! [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "homebrew-validate-build-handoff.sh: invalid tap repository: $TAP_REPOSITORY" >&2
   exit 2
 fi
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 case "$ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-validate-build-handoff.sh: invalid arch: $ARCH" >&2; exit 2 ;;
@@ -176,6 +181,7 @@ if ! jq -e \
   --arg arch "$ARCH" \
   --arg release_tag "$RELEASE_TAG" \
   --arg tap_repository "$TAP_REPOSITORY" \
+  --arg tap_name "$TAP_NAME" \
   --arg tap_commit "$TAP_COMMIT" \
   --arg kandelo_commit "$KANDELO_COMMIT" \
   --arg bottle_root_url "$BOTTLE_ROOT_URL" '
@@ -183,13 +189,14 @@ if ! jq -e \
       type == "object" and keys == ($expected | sort);
     exact_keys([
       "arch", "bottle", "bottle_root_url", "dependency_provenance", "formula",
-      "kandelo_commit", "release_tag", "schema", "tap_commit", "tap_repository"
+      "kandelo_commit", "release_tag", "schema", "tap_commit", "tap_name", "tap_repository"
     ]) and
-    .schema == 2 and
+    .schema == 3 and
     .formula == $formula and
     .arch == $arch and
     .release_tag == $release_tag and
     .tap_repository == $tap_repository and
+    .tap_name == $tap_name and
     .tap_commit == $tap_commit and
     .kandelo_commit == $kandelo_commit and
     .bottle_root_url == $bottle_root_url and
@@ -222,8 +229,8 @@ EXPECTED_DEPENDENCY_BYTES="$(jq -r '.dependency_provenance.bytes' "$MANIFEST")"
 BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$MANIFEST")"
 BOTTLE_TAG="${ARCH}_kandelo"
 BOTTLE_ARCHIVE="$HANDOFF/$ARCHIVE_NAME"
-OWNER_LOWER="$(printf '%s' "${TAP_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
-REPO_LOWER="$(printf '%s' "${TAP_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+OWNER_LOWER="${TAP_NAME%%/*}"
+REPO_LOWER="${TAP_NAME#*/}"
 FORMULA_KEY="${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
 FORMULA_PATH="Library/Taps/${OWNER_LOWER}/homebrew-${REPO_LOWER}/Formula/${FORMULA}.rb"
 BOTTLE_INSTALL_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
@@ -278,6 +285,7 @@ dependency_validation_args=(
   --formula "$FORMULA"
   --arch "$ARCH"
   --tap-repository "$TAP_REPOSITORY"
+  --tap-name "$TAP_NAME"
   --tap-commit "$TAP_COMMIT"
   --bottle-root-url "$BOTTLE_ROOT_URL"
 )
@@ -408,6 +416,7 @@ if [ -n "$OUT_ENV" ]; then
     printf 'ARCH=%q\n' "$ARCH"
     printf 'RELEASE_TAG=%q\n' "$RELEASE_TAG"
     printf 'TAP_REPOSITORY=%q\n' "$TAP_REPOSITORY"
+    printf 'TAP_NAME=%q\n' "$TAP_NAME"
     printf 'TAP_COMMIT=%q\n' "$TAP_COMMIT"
     printf 'KANDELO_COMMIT=%q\n' "$KANDELO_COMMIT"
     printf 'BOTTLE_ROOT_URL=%q\n' "$BOTTLE_ROOT_URL"
