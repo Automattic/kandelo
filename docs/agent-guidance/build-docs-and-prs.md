@@ -44,9 +44,22 @@ libc behavior.
 
 PR titles, PR descriptions, and commit messages should lead with the purpose of
 the work: the platform contract, user-visible behavior, system invariant, or
-project capability being changed or protected. Describe the mechanical edits
-after that purpose is clear. A reader should understand why the change matters
-before learning which files, tools, or implementation steps changed.
+project capability being changed or protected. Every PR description must begin
+its substance with a plain-language `## Why` section. Put `## What changed`,
+implementation details, validation, and rollout information after it. The Why
+section must explain:
+
+- what currently fails, is risky, or is unnecessarily difficult;
+- who or what is affected; and
+- why the change matters to Kandelo's users, platform contracts, or maintainers.
+
+Write for a junior developer who has not followed the incident or earlier PRs.
+Define necessary terms, expand acronyms on first use, and use a concrete example
+when it makes the failure easier to understand. Links may supply evidence or
+history, but the reader must not need to open them to learn why the PR exists.
+Avoid unexplained repository shorthand, internal task names, and descriptions
+that start with file edits or implementation mechanics. Preserve technical
+precision while explaining specialized concepts in ordinary language.
 
 For nontrivial runtime, ABI-adjacent, generated-code, package-artifact, or
 measurement-sensitive work, the commit body and PR description or maintainer
