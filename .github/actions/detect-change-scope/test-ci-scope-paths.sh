@@ -299,4 +299,8 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/reusable-package-source-publish.yml" \
   ".github/workflows/reusable-package-source-publish.yml"
+assert_matches ci_control_changed_files \
+  "tests/scripts/ci-run-test-suite-groups.test.sh" \
+  "tests/scripts/ci-run-test-suite-groups.test.sh"
+
 echo "ci-scope path classifier tests passed"

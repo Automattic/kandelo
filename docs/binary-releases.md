@@ -101,9 +101,14 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   only the exact canonical keys selected to replace stale target entries. The
   composed index is rewritten to relative archive basenames and consumed from
   the same local `file://` directory, so later release mutation cannot redirect
-  the tested resolver. It then runs
-  the standard `cargo test`, Vitest, browser, libc-test, POSIX, and Sortix
-  suites.
+  the tested resolver. Source validation and the Cargo-only suites run in
+  parallel with this preparation. The prepared workspace retains the
+  materialized package tree because its root filesystem refers to package-backed
+  executables lazily (for example, `/bin/sh`). libc-test runs as
+  functional+regression and math shards; Sortix runs as include, basic, and
+  remaining-runtime shards. Browser-local assets are generated in the browser
+  consumer from the already-materialized package tree, without fetching the
+  index a second time.
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
   ledger on the release IS the consumer-visible state, so there's

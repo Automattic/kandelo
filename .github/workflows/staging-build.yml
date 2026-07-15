@@ -39,8 +39,10 @@ jobs:
   # Phase C Task 6 retired the monolithic legacy `build:` job that
   # previously ran the full registry walk + bulk publish + tests in
   # one runner. Today every staging build flows through the per-
-  # package matrix below: preflight → toolchain-cache → matrix-build
-  # → test-gate → f2-status. Each matrix-build job publishes its own
+  # package matrix below: preflight → toolchain-cache → matrix-build,
+  # with source validation and Cargo tests running in parallel before the
+  # prepared-workspace suites converge at test-gate → f2-status. Each
+  # matrix-build job publishes its own
   # archive + index.toml entry atomically via
   # `scripts/index-update.sh`. See
   # docs/plans/2026-05-05-decoupled-package-builds-design.md for the
@@ -670,10 +672,139 @@ jobs:
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
             --repair-only
 
+  test-gate-validation:
+    # Source-only validation does not consume the prepared test workspace.
+    # Run it alongside package materialization and kernel fixture preparation
+    # so typechecking and workflow tests do not extend the suite critical path.
+    needs: [change-scope]
+    if: |
+      !cancelled() &&
+      needs.change-scope.result == 'success' &&
+      (
+        needs.change-scope.outputs.package_staging_required == 'true' ||
+        needs.change-scope.outputs.test_gate_required == 'true'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
+      BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Install host npm deps
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            cd host
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          '
+
+      - name: Typecheck host package
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            cd host && npm run typecheck
+          '
+
+      - name: Test CI suite routing
+        run: |
+          bash scripts/dev-shell.sh bash \
+            tests/scripts/ci-run-test-suite-groups.test.sh
+
+      - name: Test package publish flow
+        if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
+        run: |
+          bash scripts/dev-shell.sh bash tests/scripts/package-publish-flow.sh
+
+      - name: Test binary materialization flow
+        if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
+        run: |
+          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
+
+  test-suite-early:
+    name: test-suite (${{ matrix.label }})
+    # These source-only Cargo suites need neither package materialization nor
+    # the prepared workspace, so start them as soon as change scope is known.
+    needs: [change-scope]
+    if: |
+      !cancelled() &&
+      needs.change-scope.result == 'success' &&
+      (
+        needs.change-scope.outputs.package_staging_required == 'true' ||
+        needs.change-scope.outputs.test_gate_required == 'true'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: cargo-kernel
+            label: cargo-kernel
+          - suite: fork-instrument
+            label: fork-instrument
+    env:
+      KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
+      SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
+      SUITE: ${{ matrix.suite }}
+    steps:
+      - name: Decide whether to run suite
+        id: suite
+        run: |
+          set -euo pipefail
+          if [ "$SKIP_STAGING_TESTS" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip-staging-tests label is present; $SUITE is deferred to prepare-merge."
+            exit 0
+          fi
+          if [ "$KERNEL_CHANGED" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$SUITE is kernel-only and this diff does not require kernel suites."
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7.0.0
+        if: steps.suite.outputs.skip != 'true'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install Nix
+        if: steps.suite.outputs.skip != 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        if: steps.suite.outputs.skip != 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Run ${{ matrix.label }} suite
+        if: steps.suite.outputs.skip != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+
   test-gate-prepare:
     # Materializes the union of (matrix-built archives + durable release
     # fallback), builds the fresh kernel/test fixtures once, and uploads
-    # the prepared workspace for the parallel test-suite jobs below.
+    # the complete prepared workspace for the parallel suites below.
     #
     # Run even when some matrix entries failed. Per the design doc,
     # partial-matrix-failure is a real scenario the consumer side
@@ -701,8 +832,6 @@ jobs:
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
       PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
-      PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
-      BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
       PACKAGE_BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
       PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}
@@ -711,16 +840,6 @@ jobs:
       - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Fetch submodules (musl, libc-test, os-test)
-        # musl       — sysroot rebuild fallback (cache restore should
-        #               succeed; this is defense-in-depth for any
-        #               build-script that reaches into libc/musl/ for headers).
-        # libc-test  — scripts/run-libc-tests.sh
-        # os-test    — scripts/run-sortix-tests.sh
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
@@ -753,32 +872,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
-
-      - name: Install host npm deps
-        # Keep this before the host typecheck, package-system tests,
-        # and later test-program/rootfs build steps. Binary
-        # materialization itself runs fetch-only in CI.
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Typecheck host package
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            cd host && npm run typecheck
-          '
-
-      - name: Test package publish flow
-        if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
-        run: |
-          bash scripts/dev-shell.sh bash tests/scripts/package-publish-flow.sh
-
-      - name: Test binary materialization flow
-        if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
-        run: |
-          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
 
       - name: Materialize binaries
         env:
@@ -868,44 +961,32 @@ jobs:
           echo "staging-build validated preflight, toolchain cache, package matrix/builds, and binary materialization."
           echo "Kernel/test program build, cargo tests, fork-instrument tests, vitest, browser E2E, libc-test, POSIX, and Sortix are deferred to prepare-merge."
 
-      - name: Build kernel + test programs + install host deps
+      - name: Build kernel + test programs + rootfs
         if: env.SKIP_STAGING_TESTS != 'true'
         # Test prereqs not shipped in the release archives: kernel.wasm
         # is built fresh (and copied into local-binaries/ where the
         # resolver finds it ahead of binaries/), as are programs/*.wasm
-        # fixtures consumed by vitest. Two npm installs: host/ for
-        # vitest, repo root for tsx (used by the libc-test/POSIX/sortix
-        # runners). build-rootfs.sh produces host/wasm/rootfs.vfs, which
-        # NodeKernelHost loads when callers request `rootfsImage:"default"`
-        # — the default for runCentralizedProgram. Without this, vitest
-        # tests fail with "rootfs.vfs is missing".
+        # fixtures consumed by vitest. build-rootfs.sh installs only its
+        # own missing Node dependencies and produces host/wasm/rootfs.vfs,
+        # which NodeKernelHost loads for `rootfsImage:"default"`.
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
+            export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
             cargo build --release -p kandelo \
               -Z build-std=core,alloc
             mkdir -p local-binaries
             cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
-          '
-
-      - name: Prepare browser assets from package index
-        if: env.SKIP_STAGING_TESTS != 'true'
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
-            ./run.sh --fetch-only prepare-browser
-            bash scripts/ci-check-browser-assets.sh
           '
 
       - name: Pack prepared test workspace
         if: env.SKIP_STAGING_TESTS != 'true'
         run: |
-          bash scripts/pack-ci-test-workspace.sh "$RUNNER_TEMP/test-workspace.tar.zst"
+          bash scripts/pack-ci-test-workspace.sh \
+            "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
         if: env.SKIP_STAGING_TESTS != 'true'
@@ -917,7 +998,7 @@ jobs:
           if-no-files-found: error
 
   test-suite:
-    name: test-suite (${{ matrix.suite }})
+    name: test-suite (${{ matrix.label }})
     needs: [change-scope, test-gate-prepare]
     if: |
       !cancelled() &&
@@ -930,39 +1011,60 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: cargo-kernel
-            kernel_only: true
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
-          - suite: fork-instrument
-            kernel_only: true
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
           - suite: vitest
+            label: vitest
+            group: all
             kernel_only: false
-            needs_submodules: false
+            submodules: ''
             needs_toolchain: true
             needs_workspace: true
           - suite: browser
+            label: browser
+            group: all
             kernel_only: false
-            needs_submodules: false
+            submodules: ''
             needs_toolchain: true
             needs_workspace: true
           - suite: libc
+            label: libc (functional + regression)
+            group: functional-regression
             kernel_only: true
-            needs_submodules: true
+            submodules: tests/libc/libc-test
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: libc
+            label: libc (math)
+            group: math
+            kernel_only: true
+            submodules: tests/libc/libc-test
             needs_toolchain: true
             needs_workspace: true
           - suite: posix
+            label: posix
+            group: all
             kernel_only: true
-            needs_submodules: false
+            submodules: ''
             needs_toolchain: true
             needs_workspace: true
           - suite: sortix
+            label: sortix (include)
+            group: include
             kernel_only: true
-            needs_submodules: true
+            submodules: tests/sortix/os-test
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            label: sortix (basic)
+            group: basic
+            kernel_only: true
+            submodules: tests/sortix/os-test
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            label: sortix (runtime)
+            group: runtime
+            kernel_only: true
+            submodules: tests/sortix/os-test
             needs_toolchain: true
             needs_workspace: true
     env:
@@ -970,6 +1072,8 @@ jobs:
       KERNEL_ONLY: ${{ matrix.kernel_only }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
       SUITE: ${{ matrix.suite }}
+      TEST_GROUP: ${{ matrix.group }}
+      PREPARE_BROWSER_ASSETS: ${{ matrix.suite == 'browser' }}
     steps:
       - name: Decide whether to run suite
         id: suite
@@ -992,11 +1096,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Fetch submodules (musl, libc-test, os-test)
-        if: steps.suite.outputs.skip != 'true' && matrix.needs_submodules == true
+      - name: Fetch suite submodule
+        if: steps.suite.outputs.skip != 'true' && matrix.submodules != ''
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
+          submodules: ${{ matrix.submodules }}
 
       - name: Install Nix
         if: steps.suite.outputs.skip != 'true'
@@ -1033,9 +1137,10 @@ jobs:
       - name: Extract prepared test workspace
         if: steps.suite.outputs.skip != 'true' && matrix.needs_workspace == true
         run: |
-          tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
+          tar --zstd -xf \
+            "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
 
-      - name: Run ${{ matrix.suite }} suite
+      - name: Run ${{ matrix.label }} suite
         if: steps.suite.outputs.skip != 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
@@ -1051,7 +1156,7 @@ jobs:
           retention-days: 7
 
   test-gate:
-    needs: [change-scope, test-gate-prepare, test-suite]
+    needs: [change-scope, test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
     if: |
       always() &&
       !cancelled() &&
@@ -1061,13 +1166,23 @@ jobs:
       statuses: write
     env:
       GH_TOKEN: ${{ github.token }}
+      VALIDATION_RESULT: ${{ needs.test-gate-validation.result }}
+      EARLY_TEST_SUITE_RESULT: ${{ needs.test-suite-early.result }}
       PREPARE_RESULT: ${{ needs.test-gate-prepare.result }}
       TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
-      - name: Check split test suites
+      - name: Check validation and split test suites
         run: |
           set -euo pipefail
+          if [ "$VALIDATION_RESULT" != "success" ]; then
+            echo "::error::source validation completed with result: $VALIDATION_RESULT"
+            exit 1
+          fi
+          if [ "$EARLY_TEST_SUITE_RESULT" != "success" ]; then
+            echo "::error::early test suites completed with result: $EARLY_TEST_SUITE_RESULT"
+            exit 1
+          fi
           if [ "$PREPARE_RESULT" != "success" ]; then
             echo "::error::test preparation completed with result: $PREPARE_RESULT"
             exit 1

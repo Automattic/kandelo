@@ -79,6 +79,7 @@ ci_control_changed_files() {
     -e '^\.github/scripts/(activate-merge-candidate|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|download-verified-release-asset|fetch-canonical-index|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|select-package-archive-source|state-lock|test-activate-merge-candidate|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-download-verified-release-asset|test-fetch-canonical-index|test-init-merge-candidate|test-latest-merge-gate-status|test-merge-candidate-workflows|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-select-package-archive-source|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate)\.sh$' \
     -e '^scripts/(compose-initial-index|index-update|release-index-state)\.sh$' \
     -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
+    -e '^tests/scripts/ci-run-test-suite-groups\.test\.sh$' \
     -e '^\.github/actions/detect-change-scope/' \
     || true
 }

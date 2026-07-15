@@ -541,7 +541,7 @@ jobs:
   # Per-package matrix flow.
   #
   # Mirrors `staging-build.yml`'s preflight + toolchain-cache +
-  # matrix-build + test-gate flow, but every writer targets one exact
+  # matrix-build + split test-gate flow, but every writer targets one exact
   # run-specific merge-candidate prerelease. The candidate begins as an
   # immutable snapshot of the canonical ledger with unchanged archive URLs
   # made absolute. Canonical state is activated only after merge.
@@ -609,8 +609,8 @@ jobs:
       - name: Fetch musl submodule
         # Hardened submodule fetch via the reusable action (PR #435).
         # preflight only needs musl (it builds xtask and computes the
-        # matrix; tests/libc/libc-test and tests/sortix/os-test materialize in matrix-build / test-gate
-        # via their own checkouts). Mergeability is proven by
+        # matrix; tests/libc/libc-test and tests/sortix/os-test materialize in
+        # their own conformance suite job checkouts. Mergeability is proven by
         # `synthesize-merge`, and base drift is checked by the final
         # merge-gate posting jobs.
         uses: ./.github/actions/fetch-submodules
@@ -1220,6 +1220,200 @@ jobs:
             --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             || true
 
+  test-gate-validation:
+    # Source-only validation does not consume the prepared test workspace.
+    # Run it alongside package materialization and kernel fixture preparation
+    # so typechecking and workflow tests do not extend the suite critical path.
+    needs: [synthesize-merge, change-scope, gate]
+    if: |
+      !cancelled() &&
+      needs.synthesize-merge.result == 'success' &&
+      needs.change-scope.result == 'success' &&
+      needs.gate.result == 'success' &&
+      (
+        needs.change-scope.outputs.package_staging_required == 'true' ||
+        needs.change-scope.outputs.test_gate_required == 'true'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
+      BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Install host npm deps
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            cd host
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          '
+
+      - name: Typecheck host package
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            cd host && npm run typecheck
+          '
+
+      - name: Test CI suite routing
+        run: |
+          bash scripts/dev-shell.sh bash \
+            tests/scripts/ci-run-test-suite-groups.test.sh
+
+      - name: Test package publish flow
+        if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
+        run: |
+          bash scripts/dev-shell.sh bash tests/scripts/package-publish-flow.sh
+
+      - name: Test binary materialization flow
+        if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
+        run: |
+          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
+
+  test-suite-early:
+    name: test-suite (${{ matrix.label }})
+    # These source-only Cargo suites need neither package materialization nor
+    # the prepared workspace, so start them once the review gate and change
+    # scope are known.
+    needs: [synthesize-merge, change-scope, gate]
+    if: |
+      !cancelled() &&
+      needs.synthesize-merge.result == 'success' &&
+      needs.change-scope.result == 'success' &&
+      needs.gate.result == 'success' &&
+      (
+        needs.change-scope.outputs.package_staging_required == 'true' ||
+        needs.change-scope.outputs.test_gate_required == 'true'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: cargo-kernel
+            label: cargo-kernel
+          - suite: fork-instrument
+            label: fork-instrument
+    env:
+      KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
+      SUITE: ${{ matrix.suite }}
+    steps:
+      - name: Decide whether to run suite
+        id: suite
+        run: |
+          set -euo pipefail
+          if [ "$KERNEL_CHANGED" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$SUITE is kernel-only and this diff does not require kernel suites."
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7.0.0
+        if: steps.suite.outputs.skip != 'true'
+        with:
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v8
+        if: steps.suite.outputs.skip != 'true'
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        if: steps.suite.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
+
+      - name: Install Nix
+        if: steps.suite.outputs.skip != 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        if: steps.suite.outputs.skip != 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Run ${{ matrix.label }} suite
+        if: steps.suite.outputs.skip != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+
   test-gate-prepare:
     needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
     if: |
@@ -1239,8 +1433,6 @@ jobs:
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
       PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
-      PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
-      BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
       - uses: actions/checkout@v7.0.0
@@ -1299,11 +1491,6 @@ jobs:
           fi
           echo "merge_base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch submodules (musl, libc-test, os-test)
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
@@ -1332,32 +1519,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
-
-      - name: Install host npm deps
-        # Keep this before the host typecheck, package-system tests,
-        # and later test-program/rootfs build steps. Binary
-        # materialization itself runs fetch-only in CI.
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Typecheck host package
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            cd host && npm run typecheck
-          '
-
-      - name: Test package publish flow
-        if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
-        run: |
-          bash scripts/dev-shell.sh bash tests/scripts/package-publish-flow.sh
-
-      - name: Test binary materialization flow
-        if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
-        run: |
-          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
 
       - name: Materialize binaries
         id: candidate_index
@@ -1412,35 +1573,26 @@ jobs:
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
 
-      - name: Build kernel + test programs + install host deps
-        # The vitest suite installs Chromium in its own runner because
-        # browser downloads are not part of the prepared workspace
-        # artifact.
+      - name: Build kernel + test programs + rootfs
+        # Browser downloads and suite-specific Node dependencies are installed
+        # by the consumer jobs; preparation builds only shared test fixtures.
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
+            export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
             cargo build --release -p kandelo \
               -Z build-std=core,alloc
             mkdir -p local-binaries
             cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
-          '
-
-      - name: Prepare browser assets from package index
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
-            ./run.sh --fetch-only prepare-browser
-            bash scripts/ci-check-browser-assets.sh
           '
 
       - name: Pack prepared test workspace
         run: |
-          bash scripts/pack-ci-test-workspace.sh "$RUNNER_TEMP/test-workspace.tar.zst"
+          bash scripts/pack-ci-test-workspace.sh \
+            "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
         uses: actions/upload-artifact@v7
@@ -1451,7 +1603,7 @@ jobs:
           if-no-files-found: error
 
   test-suite:
-    name: test-suite (${{ matrix.suite }})
+    name: test-suite (${{ matrix.label }})
     needs: [synthesize-merge, change-scope, test-gate-prepare]
     if: |
       !cancelled() &&
@@ -1464,45 +1616,68 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: cargo-kernel
-            kernel_only: true
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
-          - suite: fork-instrument
-            kernel_only: true
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
           - suite: vitest
+            label: vitest
+            group: all
             kernel_only: false
-            needs_submodules: false
+            submodules: ''
             needs_toolchain: true
             needs_workspace: true
           - suite: browser
+            label: browser
+            group: all
             kernel_only: false
-            needs_submodules: false
+            submodules: ''
             needs_toolchain: true
             needs_workspace: true
           - suite: libc
+            label: libc (functional + regression)
+            group: functional-regression
             kernel_only: true
-            needs_submodules: true
+            submodules: tests/libc/libc-test
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: libc
+            label: libc (math)
+            group: math
+            kernel_only: true
+            submodules: tests/libc/libc-test
             needs_toolchain: true
             needs_workspace: true
           - suite: posix
+            label: posix
+            group: all
             kernel_only: true
-            needs_submodules: false
+            submodules: ''
             needs_toolchain: true
             needs_workspace: true
           - suite: sortix
+            label: sortix (include)
+            group: include
             kernel_only: true
-            needs_submodules: true
+            submodules: tests/sortix/os-test
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            label: sortix (basic)
+            group: basic
+            kernel_only: true
+            submodules: tests/sortix/os-test
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            label: sortix (runtime)
+            group: runtime
+            kernel_only: true
+            submodules: tests/sortix/os-test
             needs_toolchain: true
             needs_workspace: true
     env:
       KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
       KERNEL_ONLY: ${{ matrix.kernel_only }}
       SUITE: ${{ matrix.suite }}
+      TEST_GROUP: ${{ matrix.group }}
+      PREPARE_BROWSER_ASSETS: ${{ matrix.suite == 'browser' }}
     steps:
       - name: Decide whether to run suite
         id: suite
@@ -1553,11 +1728,11 @@ jobs:
             exit 1
           fi
 
-      - name: Fetch submodules (musl, libc-test, os-test)
-        if: steps.suite.outputs.skip != 'true' && matrix.needs_submodules == true
+      - name: Fetch suite submodule
+        if: steps.suite.outputs.skip != 'true' && matrix.submodules != ''
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
+          submodules: ${{ matrix.submodules }}
 
       - name: Install Nix
         if: steps.suite.outputs.skip != 'true'
@@ -1594,9 +1769,10 @@ jobs:
       - name: Extract prepared test workspace
         if: steps.suite.outputs.skip != 'true' && matrix.needs_workspace == true
         run: |
-          tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
+          tar --zstd -xf \
+            "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
 
-      - name: Run ${{ matrix.suite }} suite
+      - name: Run ${{ matrix.label }} suite
         if: steps.suite.outputs.skip != 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
@@ -1612,7 +1788,7 @@ jobs:
           retention-days: 7
 
   test-gate:
-    needs: [test-gate-prepare, test-suite]
+    needs: [test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
     if: |
       always() &&
       !cancelled() &&
@@ -1622,16 +1798,26 @@ jobs:
       merge_base_sha: ${{ steps.gate.outputs.merge_base_sha }}
       candidate_index_sha256: ${{ steps.gate.outputs.candidate_index_sha256 }}
     steps:
-      - name: Check split test suites
+      - name: Check validation and split test suites
         id: gate
         env:
           MERGE_BASE_SHA: ${{ needs.test-gate-prepare.outputs.merge_base_sha }}
+          VALIDATION_RESULT: ${{ needs.test-gate-validation.result }}
+          EARLY_TEST_SUITE_RESULT: ${{ needs.test-suite-early.result }}
           PREPARE_RESULT: ${{ needs.test-gate-prepare.result }}
           TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
         run: |
           set -euo pipefail
           echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
           echo "candidate_index_sha256=${{ needs.test-gate-prepare.outputs.candidate_index_sha256 }}" >> "$GITHUB_OUTPUT"
+          if [ "$VALIDATION_RESULT" != "success" ]; then
+            echo "::error::source validation completed with result: $VALIDATION_RESULT"
+            exit 1
+          fi
+          if [ "$EARLY_TEST_SUITE_RESULT" != "success" ]; then
+            echo "::error::early test suites completed with result: $EARLY_TEST_SUITE_RESULT"
+            exit 1
+          fi
           if [ "$PREPARE_RESULT" != "success" ]; then
             echo "::error::test preparation completed with result: $PREPARE_RESULT"
             exit 1
