@@ -208,6 +208,65 @@ describe("Homebrew VFS planner", () => {
     expect(loaded).toBe(false);
   });
 
+  it("accepts the canonical tap name for a conventional third-party repository", async () => {
+    const entry = packageEntry("hello", "2.12.1");
+    entry.full_name = "example/tools/hello";
+    const plan = await planHomebrewVfs(metadata([entry], {
+      tap_repository: "Example/homebrew-tools",
+      tap_name: "example/tools",
+    }), {
+      packages: ["hello"],
+      arch: "wasm32",
+      expectedTapName: "example/tools",
+      loadLinkManifest: manifestMap({
+        "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json": linkManifest("hello", "2.12.1"),
+      }),
+    });
+
+    expect(plan.tapRepository).toBe("Example/homebrew-tools");
+    expect(plan.tapName).toBe("example/tools");
+  });
+
+  it("rejects a repository alias for the protected first-party tap", async () => {
+    let loaded = false;
+    await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")], {
+      tap_repository: "Automattic/homebrew-kandelo-homebrew",
+    }), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest() {
+        loaded = true;
+        return linkManifest("hello", "2.12.1");
+      },
+    })).rejects.toThrow(
+      'metadata tap repository "Automattic/homebrew-kandelo-homebrew" cannot claim protected first-party tap',
+    );
+    expect(loaded).toBe(false);
+  });
+
+  it("rejects a tap name that does not match its conventional repository", async () => {
+    await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")], {
+      tap_repository: "Example/homebrew-tools",
+    }), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow(
+      'metadata tap "automattic/kandelo-homebrew" does not match repository "Example/homebrew-tools"; expected "example/tools"',
+    );
+  });
+
+  it("rejects a third-party repository without the homebrew- prefix", async () => {
+    await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")], {
+      tap_repository: "Example/tools",
+      tap_name: "example/tools",
+    }), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow("must use the conventional owner/homebrew-name form");
+  });
+
   it("rejects package full names that do not belong to the metadata tap", async () => {
     const entry = packageEntry("hello", "2.12.1");
     entry.full_name = "example/tools/hello";
