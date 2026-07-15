@@ -215,6 +215,9 @@ struct compositor {
     struct surface *grab;
     double grab_dx, grab_dy;
 
+    /* Layout policy (enum layout_mode); FLOATING unless WLC_LAYOUT overrides. */
+    int layout;
+
     /* Bound seat resources (across all clients; routed per-client). */
     struct wl_resource *keyboards[MAX_INPUT_RES];
     struct wl_resource *pointers[MAX_INPUT_RES];
@@ -340,6 +343,101 @@ static void place_surface(struct surface *s) {
     s->placed = 1;
 }
 
+/* ---- tiling layout ------------------------------------------------------ */
+
+/* FLOATING (default, zero-initialised) keeps the app_id placement rules that
+ * /?demo=wayland depends on. DWINDLE dictates geometry to clients: the desktop
+ * becomes the tiling mode of the same compositor. Selected by WLC_LAYOUT. */
+enum layout_mode { LAYOUT_FLOATING = 0, LAYOUT_DWINDLE };
+
+struct geom { int x, y, w, h; };
+
+/* Gaps in output pixels. OUTER insets the whole tiling area from the screen
+ * edge; INNER separates adjacent windows. Hardcoded for v1 — PR17 makes them
+ * theme-driven. */
+#define TILE_GAP_OUTER 12
+#define TILE_GAP_INNER 8
+
+/* Pure dwindle tiler: partition `area` among `n` windows, recursively
+ * splitting the remaining region along its LONGER side (Hyprland's default).
+ * Window i takes the near half of the i-th split; the last window takes the
+ * final remainder. It reads nothing but its arguments, so the smoke gate can
+ * predict the exact partition and compare against the emitted geometry. */
+static void compute_tiling(struct geom area, int n, struct geom *out) {
+    if (n <= 0) return;
+    area.x += TILE_GAP_OUTER;
+    area.y += TILE_GAP_OUTER;
+    area.w -= 2 * TILE_GAP_OUTER;
+    area.h -= 2 * TILE_GAP_OUTER;
+    if (area.w < 1) area.w = 1;
+    if (area.h < 1) area.h = 1;
+
+    struct geom region = area;
+    for (int i = 0; i < n; i++) {
+        if (i == n - 1) { out[i] = region; break; }
+        struct geom near = region, rest = region;
+        if (region.w >= region.h) {          /* wider than tall: split L|R */
+            int half = (region.w - TILE_GAP_INNER) / 2;
+            if (half < 1) half = 1;
+            near.w = half;
+            rest.x = region.x + half + TILE_GAP_INNER;
+            rest.w = region.w - half - TILE_GAP_INNER;
+        } else {                             /* taller than wide: split T/B */
+            int half = (region.h - TILE_GAP_INNER) / 2;
+            if (half < 1) half = 1;
+            near.h = half;
+            rest.y = region.y + half + TILE_GAP_INNER;
+            rest.h = region.h - half - TILE_GAP_INNER;
+        }
+        out[i] = near;
+        region = rest;
+    }
+}
+
+/* Recompute geometry for every mapped toplevel (in map order = z-order) and
+ * push it to each client through the xdg configure path. A no-op in FLOATING
+ * mode, so the app_id placement path is untouched. Emits one TILE marker per
+ * window for the smoke gate to verify the partition. */
+static void retile(void) {
+    if (g.layout == LAYOUT_FLOATING) return;
+
+    struct surface *tiled[MAX_SURFACES];
+    int n = 0;
+    for (int i = 0; i < g.n_surfaces; i++)
+        if (g.zorder[i]->mapped) tiled[n++] = g.zorder[i];
+    if (n == 0) return;
+
+    struct geom geoms[MAX_SURFACES];
+    struct geom area = { 0, 0, (int)g.width, (int)g.height };
+    compute_tiling(area, n, geoms);
+
+    for (int i = 0; i < n; i++) {
+        struct surface *s = tiled[i];
+        s->x = geoms[i].x;
+        s->y = geoms[i].y;
+        s->w = geoms[i].w;
+        s->h = geoms[i].h;
+        s->placed = 1;
+        /* Dictate the tile size to the client. The states array carries only
+         * ACTIVATED for now; TILED_* awaits the xdg-shell v2 bump that lands
+         * with server-side decoration (PR14e). */
+        if (s->xdg_toplevel && s->xdg_surface) {
+            struct wl_array states;
+            wl_array_init(&states);
+            uint32_t *st = wl_array_add(&states, sizeof(uint32_t));
+            if (st) *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+            xdg_toplevel_send_configure(s->xdg_toplevel, s->w, s->h, &states);
+            wl_array_release(&states);
+            xdg_surface_send_configure(s->xdg_surface,
+                                       wl_display_next_serial(g.display));
+        }
+        printf("TILE n=%d i=%d x=%d y=%d w=%d h=%d\n",
+               n, i, s->x, s->y, s->w, s->h);
+    }
+    fflush(stdout);
+    schedule_repaint();
+}
+
 /* ====================================================================== */
 /* wl_surface                                                             */
 /* ====================================================================== */
@@ -393,12 +491,15 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
 
     if (!s->mapped) {
         s->mapped = 1;
-        if (!s->placed) place_surface(s);
+        /* Tiling dictates geometry for every window in retile(); only the
+         * floating desktop places individually by app_id. */
+        if (g.layout == LAYOUT_FLOATING && !s->placed) place_surface(s);
         zorder_raise(s);
         /* A newly mapped window takes keyboard focus (and pointer focus if
          * the cursor happens to be over it). */
         kbd_set_focus(s);
         ptr_refresh_focus();
+        retile();   /* no-op when floating */
     }
     schedule_repaint();
 }
@@ -445,6 +546,8 @@ static void surface_resource_destroy(struct wl_resource *r) {
      * callbacks themselves are owned by the client and freed with it. */
     s->n_frame_cbs = 0;
     free(s);
+    /* A closed window frees its slice back to the remaining tiles. */
+    retile();   /* no-op when floating */
     schedule_repaint();
 }
 
@@ -2255,6 +2358,15 @@ int main(void) {
     g.display = wl_display_create();
     if (!g.display) { fprintf(stderr, "wl_display_create\n"); return 1; }
     g.loop = wl_display_get_event_loop(g.display);
+
+    /* Layout policy. Absent/unknown WLC_LAYOUT keeps the floating desktop so
+     * /?demo=wayland is unchanged; WLC_LAYOUT=dwindle selects the tiler. */
+    const char *want_layout = getenv("WLC_LAYOUT");
+    if (want_layout && strcmp(want_layout, "dwindle") == 0)
+        g.layout = LAYOUT_DWINDLE;
+    printf("WLC_LAYOUT %s\n",
+           g.layout == LAYOUT_DWINDLE ? "dwindle" : "floating");
+    fflush(stdout);
 
     if (setup_drm() != 0) return 1;
     if (setup_wallpaper() != 0) return 1;
