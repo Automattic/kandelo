@@ -1422,12 +1422,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: cargo-kernel
-            kernel_only: true
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
-          - suite: fork-instrument
+          - suite: cargo-workspace
+            # Single host-target cargo suite covering every workspace crate
+            # except xtask (kernel, fork-instrument, shared, userspace,
+            # wasm-local-root-spill). Replaces the former per-crate cargo-kernel
+            # and fork-instrument suites; closed-by-default so new crates under
+            # crates/ are gated with no matrix edit. xtask keeps its own
+            # always-run cargo-xtask suite (kernel-independent, tools/-scoped).
             kernel_only: true
             needs_submodules: false
             needs_toolchain: false

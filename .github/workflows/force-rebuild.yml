@@ -896,11 +896,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: cargo-kernel
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
-          - suite: fork-instrument
+          - suite: cargo-workspace
+            # Single host-target cargo suite covering every workspace crate
+            # except xtask; replaces the former cargo-kernel and fork-instrument
+            # suites. xtask keeps its own always-run cargo-xtask suite.
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
