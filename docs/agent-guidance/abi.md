@@ -40,11 +40,11 @@ bump even if the snapshot is unchanged.
 ABI workflow:
 
 ```bash
-bash scripts/check-abi-version.sh update
+bash scripts/dev-shell.sh bash scripts/check-abi-version.sh update
 git diff abi/snapshot.json
 # Decide: no ABI change, additive-compatible snapshot change, or incompatible change.
 # If incompatible: bump ABI_VERSION in crates/shared/src/lib.rs.
-bash scripts/check-abi-version.sh
+bash scripts/dev-shell.sh bash scripts/check-abi-version.sh
 ```
 
 If `ABI_VERSION` changes, expect package-release consequences: existing package

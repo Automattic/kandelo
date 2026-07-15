@@ -2457,10 +2457,15 @@ export async function centralizedThreadWorkerMain(
       wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);
     }
 
+    // Wasm C ABI requires 16-byte stack alignment at function entry. Musl's
+    // generic pthread_create path only guarantees uintptr_t alignment for the
+    // clone stack pointer, so align it before starting the thread instance.
+    const alignedStackPtr = stackPtr - (stackPtr % 16);
+
     // Set __stack_pointer
     const stackPointer = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
     if (stackPointer) {
-      stackPointer.value = ptrWidth === 8 ? BigInt(stackPtr) : stackPtr;
+      stackPointer.value = ptrWidth === 8 ? BigInt(alignedStackPtr) : alignedStackPtr;
     }
 
     // Initialize musl thread pointer if available

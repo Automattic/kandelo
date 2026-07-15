@@ -165,19 +165,19 @@ On a change:
 # 1. Make your change to kernel / shared / glue as needed.
 # 2. Regenerate the snapshot. This rebuilds the kernel wasm first so
 #    a stale binary can't defeat the check.
-bash scripts/check-abi-version.sh update
+bash scripts/dev-shell.sh bash scripts/check-abi-version.sh update
 # 3. Inspect the diff. If it's empty, the change didn't touch the ABI.
 #    If it is only an additive-compatible change, commit the snapshot
 #    without bumping ABI_VERSION. If it changes existing ABI surface,
 #    bump ABI_VERSION in crates/shared/src/lib.rs in the same commit.
 # 4. Verify.
-bash scripts/check-abi-version.sh
+bash scripts/dev-shell.sh bash scripts/check-abi-version.sh
 ```
 
 In CI:
 
 ```bash
-bash scripts/check-abi-version.sh
+bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh abi
 ```
 
 Fails if the committed snapshot drifts from the source. If the snapshot
