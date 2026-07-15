@@ -123,6 +123,7 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --package hello \
   --arch wasm32 \
   --runtime node \
+  --base-image target/platform-base.vfs.zst \
   --out target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json
 ```
@@ -133,6 +134,14 @@ and sha256, rejects unsafe or unsupported tar entries, stages files under the
 declared keg, validates receipts, applies the link manifest under the declared
 prefix, writes `/etc/kandelo/homebrew-vfs.json`, saves a `.vfs.zst`, and emits a
 JSON report beside the image.
+
+`--base-image` is optional and accepts only an ABI-matched platform image that
+does not already contain a Homebrew composition. Output image metadata records
+a bounded binding with the base SHA-256, byte count, and declared ABI; the JSON
+report also retains the full source metadata for auditing. Omit `--max-bytes`
+to retain the base filesystem maximum without rebuilding existing inodes, or
+set it to rebase the filesystem to an exact, 4096-byte-aligned new maximum
+before bottles are staged.
 
 Link and receipt paths starting with `Cellar/` are interpreted relative to the
 Homebrew prefix. Other link and receipt paths are interpreted relative to the

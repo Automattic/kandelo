@@ -123,6 +123,13 @@ export interface VfsImageMetadata {
   [key: string]: unknown;
 }
 
+export interface VfsImageCapacity {
+  /** Serialized SharedArrayBuffer length carried by the image. */
+  byteLength: number;
+  /** Filesystem growth ceiling declared by the image superblock. */
+  maxByteLength: number;
+}
+
 // zstd frame magic (little-endian on the wire: 28 B5 2F FD).
 // fromImage() auto-detects this and decompresses transparently so callers
 // don't have to know whether the bytes came from a `.vfs` or `.vfs.zst`.
@@ -1397,6 +1404,35 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
   }
 
+  /** Read the current and maximum filesystem sizes encoded in an image. */
+  static readImageCapacity(image: Uint8Array): VfsImageCapacity {
+    const parsed = parseImageHeader(image);
+    return SharedFS.inspectImageCapacity(
+      parsed.image.subarray(
+        VFS_IMAGE_HEADER_SIZE,
+        VFS_IMAGE_HEADER_SIZE + parsed.sabLen,
+      ),
+    );
+  }
+
+  /**
+   * Restore an image with the growth ceiling recorded in its SharedFS
+   * superblock. Use fromImage() when a caller intentionally supplies a
+   * different runtime ceiling.
+   */
+  static fromImagePreservingCapacity(image: Uint8Array): MemoryFileSystem {
+    const parsed = parseImageHeader(image);
+    const capacity = SharedFS.inspectImageCapacity(
+      parsed.image.subarray(
+        VFS_IMAGE_HEADER_SIZE,
+        VFS_IMAGE_HEADER_SIZE + parsed.sabLen,
+      ),
+    );
+    return MemoryFileSystem.restoreParsedImage(parsed, {
+      maxByteLength: capacity.maxByteLength,
+    });
+  }
+
   /**
    * Restore a MemoryFileSystem from a previously saved VFS image.
    * Allocates a new SharedArrayBuffer and populates it from the image.
@@ -1410,7 +1446,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     options?: { maxByteLength?: number },
   ): MemoryFileSystem {
     const parsed = parseImageHeader(image);
-    image = parsed.image;
+    return MemoryFileSystem.restoreParsedImage(parsed, options);
+  }
+
+  private static restoreParsedImage(
+    parsed: ParsedImageHeader,
+    options?: { maxByteLength?: number },
+  ): MemoryFileSystem {
+    const image = parsed.image;
     const view = parsed.view;
     const flags = parsed.flags;
     const sabLen = parsed.sabLen;

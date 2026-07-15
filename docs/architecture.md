@@ -634,6 +634,10 @@ const restored = MemoryFileSystem.fromImage(image, { maxByteLength: 1024 * 1024 
 ```
 
 The image must also have been built with a large enough filesystem maximum, for example `MemoryFileSystem.create(sab, 1024 * 1024 * 1024)`. `fromImage(..., { maxByteLength })` only controls the restored buffer's runtime growth ceiling; `statfs`/`df` and allocation remain capped by the image superblock maximum.
+Call `MemoryFileSystem.readImageCapacity(image)` when build tooling needs the
+serialized buffer length and superblock ceiling without restoring the image.
+Call `fromImagePreservingCapacity(image)` to restore a growable buffer with the
+same ceiling the image builder recorded.
 
 A consumer that must stage files larger than the image's recorded allocation
 ceiling first calls `rebaseToNewFileSystem(requiredMaxBytes)`. Shared image
