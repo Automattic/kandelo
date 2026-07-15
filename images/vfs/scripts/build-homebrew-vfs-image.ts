@@ -5,21 +5,23 @@
  *   npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
  *     --metadata homebrew/kandelo-homebrew/Kandelo/metadata.json \
  *     --tap-root homebrew/kandelo-homebrew \
- *     --package hello \
+ *     --brewfile Brewfile \
  *     --arch wasm32 \
  *     --runtime node \
  *     --base-image target/platform-base.vfs.zst \
  *     --out target/homebrew-hello.vfs.zst \
  *     --report target/homebrew-hello.vfs-report.json
  */
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildHomebrewVfs } from "../../../host/src/homebrew-vfs-builder";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
@@ -39,6 +41,7 @@ interface CliOptions {
   metadata: string;
   tapRoot: string;
   packages: string[];
+  brewfile?: string;
   arch: HomebrewBottleArch;
   runtime?: HomebrewRuntime;
   out: string;
@@ -54,6 +57,27 @@ interface CliOptions {
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
 const SHARED_FS_BLOCK_BYTES = 4096;
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
+const MAX_SIDECAR_JSON_BYTES = 16_777_216;
+const MAX_BREWFILE_BYTES = 65_536;
+const MAX_BREWFILE_PACKAGES = 128;
+const MAX_BREWFILE_PARSER_OUTPUT_BYTES = 65_536;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
+const PACKAGE_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const BREWFILE_PARSER = resolve(
+  SCRIPT_DIR,
+  "../../../scripts/homebrew-brewfile-selection.rb",
+);
+
+interface BrewfileSelection {
+  schema: 1;
+  kind: "kandelo-static-brewfile-v1";
+  tap_name: string;
+  sha256: string;
+  bytes: number;
+  packages: string[];
+}
 
 interface BaseImageBinding {
   sha256: string;
@@ -69,10 +93,15 @@ interface LoadedBaseImage {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const metadata = readJsonFile(options.metadata);
+  const brewfileSelection = options.brewfile
+    ? readBrewfileSelection(options.brewfile)
+    : undefined;
+  const requestedPackages = brewfileSelection?.packages ?? options.packages;
 
   const plan = await planHomebrewVfs(metadata, {
-    packages: options.packages,
+    packages: requestedPackages,
     arch: options.arch,
+    expectedTapName: brewfileSelection?.tap_name,
     runtime: options.runtime,
     expectedCacheKeys: options.expectedCacheKeys,
     allowFallback: options.allowFallback,
@@ -88,6 +117,13 @@ async function main(): Promise<void> {
     fs,
     writeProfile: options.writeProfile,
     createdBy: "images/vfs/scripts/build-homebrew-vfs-image.ts",
+    selectionSource: brewfileSelection ? {
+      kind: "brewfile",
+      parser: brewfileSelection.kind,
+      sha256: brewfileSelection.sha256,
+      bytes: brewfileSelection.bytes,
+      requestedPackages: brewfileSelection.packages,
+    } : undefined,
     loadBottleBytes: (pkg) => loadBottleBytes(pkg, options),
   });
 
@@ -102,6 +138,16 @@ async function main(): Promise<void> {
         tapName: plan.tapName,
         tapCommit: plan.tapCommit,
         releaseTag: plan.releaseTag,
+        selection: {
+          kind: result.report.selection.kind,
+          requestedPackageCount:
+            result.report.selection.requested_packages.length,
+          requestedPackagesSha256:
+            result.report.selection.requested_packages_sha256,
+          ...(result.report.selection.brewfile
+            ? { brewfile: result.report.selection.brewfile }
+            : {}),
+        },
         packages: plan.packages.map((pkg) => ({
           name: pkg.name,
           version: pkg.version,
@@ -152,6 +198,12 @@ function parseArgs(args: string[]): CliOptions {
       case "--package":
         options.packages.push(requireValue(args, ++i, arg));
         break;
+      case "--brewfile":
+        if (options.brewfile !== undefined) {
+          usage("--brewfile may be provided only once");
+        }
+        options.brewfile = requireValue(args, ++i, arg);
+        break;
       case "--arch":
         options.arch = parseArch(requireValue(args, ++i, arg));
         break;
@@ -197,7 +249,12 @@ function parseArgs(args: string[]): CliOptions {
   for (const required of ["metadata", "tapRoot", "out", "report"] as const) {
     if (!options[required]) usage(`missing --${required.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
   }
-  if (options.packages.length === 0) usage("at least one --package is required");
+  if (options.brewfile && options.packages.length > 0) {
+    usage("--brewfile cannot be combined with --package");
+  }
+  if (!options.brewfile && options.packages.length === 0) {
+    usage("exactly one package selection mode is required: --brewfile or --package");
+  }
   if (options.baseImage && !existsSync(options.baseImage)) {
     usage(`base image does not exist: ${options.baseImage}`);
   }
@@ -343,7 +400,93 @@ function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
 }
 
 function readJsonFile(path: string): unknown {
-  return JSON.parse(readFileSync(path, "utf8"));
+  const bytes = readBoundedRegularFile(
+    path,
+    MAX_SIDECAR_JSON_BYTES,
+    "Homebrew sidecar JSON",
+  );
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}
+
+function readBoundedRegularFile(
+  path: string,
+  maximumBytes: number,
+  label: string,
+): Uint8Array {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`${label} must be a regular non-symlink file: ${path}`);
+  }
+  if (stat.size > maximumBytes) {
+    throw new Error(`${label} exceeds ${maximumBytes} bytes: ${path}`);
+  }
+  const bytes = new Uint8Array(readFileSync(path));
+  if (bytes.byteLength > maximumBytes) {
+    throw new Error(`${label} exceeds ${maximumBytes} bytes: ${path}`);
+  }
+  return bytes;
+}
+
+function readBrewfileSelection(path: string): BrewfileSelection {
+  const parsed = spawnSync("ruby", [BREWFILE_PARSER, path], {
+    encoding: "utf8",
+    maxBuffer: MAX_BREWFILE_PARSER_OUTPUT_BYTES,
+  });
+  if (parsed.error) {
+    throw new Error(`cannot parse Brewfile ${path}: ${parsed.error.message}`);
+  }
+  if (parsed.status !== 0) {
+    const detail = parsed.stderr.trim() ||
+      `parser exited with status ${String(parsed.status)}`;
+    throw new Error(`cannot parse Brewfile ${path}: ${detail}`);
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(parsed.stdout);
+  } catch {
+    throw new Error(`Brewfile parser returned invalid JSON for ${path}`);
+  }
+  if (!isRecord(value)) {
+    throw new Error(`Brewfile parser returned a non-object for ${path}`);
+  }
+  const expectedKeys = ["bytes", "kind", "packages", "schema", "sha256", "tap_name"];
+  if (Object.keys(value).sort().join("\0") !== expectedKeys.join("\0")) {
+    throw new Error(`Brewfile parser returned an unsupported result shape for ${path}`);
+  }
+  if (value.schema !== 1 || value.kind !== "kandelo-static-brewfile-v1") {
+    throw new Error(`Brewfile parser returned an unsupported schema for ${path}`);
+  }
+  if (typeof value.tap_name !== "string" || !TAP_NAME_RE.test(value.tap_name)) {
+    throw new Error(`Brewfile parser returned an invalid tap name for ${path}`);
+  }
+  if (typeof value.sha256 !== "string" || !SHA256_RE.test(value.sha256)) {
+    throw new Error(`Brewfile parser returned an invalid sha256 for ${path}`);
+  }
+  if (
+    typeof value.bytes !== "number" ||
+    !Number.isInteger(value.bytes) ||
+    value.bytes <= 0 ||
+    value.bytes > MAX_BREWFILE_BYTES
+  ) {
+    throw new Error(`Brewfile parser returned an invalid byte count for ${path}`);
+  }
+  if (
+    !Array.isArray(value.packages) ||
+    value.packages.length === 0 ||
+    value.packages.length > MAX_BREWFILE_PACKAGES ||
+    value.packages.some((pkg) =>
+      typeof pkg !== "string" || !PACKAGE_NAME_RE.test(pkg)
+    ) ||
+    new Set(value.packages).size !== value.packages.length
+  ) {
+    throw new Error(`Brewfile parser returned invalid requested packages for ${path}`);
+  }
+  return value as unknown as BrewfileSelection;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function loadBottleBytes(
@@ -380,7 +523,7 @@ function usage(message?: string, code = 2): never {
   console.error(`usage: npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \\
   --metadata <Kandelo/metadata.json> \\
   --tap-root <tap-root> \\
-  --package <name> [--package <name> ...] \\
+  (--brewfile <Brewfile> | --package <name> [--package <name> ...]) \\
   --arch <wasm32|wasm64> [--runtime <node|browser>] \\
   --out <image.vfs.zst> \\
   --report <report.json> \\

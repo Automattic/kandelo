@@ -22,6 +22,9 @@ const S_IFLNK = 0xa000;
 const O_RDONLY = 0;
 const MODE_BITS = 0o7777;
 const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
+const TEXT_ENCODER = new TextEncoder();
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const MAX_BREWFILE_BYTES = 65_536;
 
 export class HomebrewVfsBuildError extends Error {
   constructor(message: string) {
@@ -37,6 +40,26 @@ export interface HomebrewVfsBuildOptions {
   ) => Uint8Array | Promise<Uint8Array>;
   writeProfile?: boolean;
   createdBy?: string;
+  selectionSource?: HomebrewVfsSelectionSource;
+}
+
+export interface HomebrewVfsSelectionSource {
+  kind: "brewfile";
+  parser: "kandelo-static-brewfile-v1";
+  sha256: string;
+  bytes: number;
+  requestedPackages: string[];
+}
+
+export interface HomebrewVfsSelectionReport {
+  kind: "packages" | "brewfile";
+  requested_packages: string[];
+  requested_packages_sha256: string;
+  brewfile?: {
+    parser: "kandelo-static-brewfile-v1";
+    sha256: string;
+    bytes: number;
+  };
 }
 
 export interface HomebrewVfsPackageReport {
@@ -62,6 +85,7 @@ export interface HomebrewVfsPackageReport {
 export interface HomebrewVfsBuildReport {
   schema: 1;
   image?: string;
+  selection: HomebrewVfsSelectionReport;
   metadata: {
     tap_repository: string;
     tap_name: string;
@@ -101,6 +125,7 @@ export async function buildHomebrewVfs(
 ): Promise<HomebrewVfsBuildResult> {
   const fs = options.fs ?? createDefaultFs();
   const packageReports: HomebrewVfsPackageReport[] = [];
+  const selection = createSelectionReport(plan, options.selectionSource);
 
   ensureDirRecursive(fs, "/etc/kandelo");
 
@@ -135,6 +160,7 @@ export async function buildHomebrewVfs(
 
   const report: HomebrewVfsBuildReport = {
     schema: 1,
+    selection,
     metadata: {
       tap_repository: plan.tapRepository,
       tap_name: plan.tapName,
@@ -153,6 +179,7 @@ export async function buildHomebrewVfs(
     JSON.stringify({
       schema: 1,
       created_by: options.createdBy ?? "host/src/homebrew-vfs-builder.ts",
+      selection,
       metadata: report.metadata,
       packages: packageReports.map((pkg) => ({
         name: pkg.name,
@@ -178,6 +205,55 @@ export async function buildHomebrewVfs(
   }
 
   return { fs, report };
+}
+
+function createSelectionReport(
+  plan: HomebrewVfsPlan,
+  source: HomebrewVfsSelectionSource | undefined,
+): HomebrewVfsSelectionReport {
+  const requestedPackages = [...plan.requestedPackages];
+  if (requestedPackages.length === 0) {
+    throw new HomebrewVfsBuildError("Homebrew VFS plan has no requested packages");
+  }
+  const requestedPackagesSha256 = sha256(
+    TEXT_ENCODER.encode(JSON.stringify(requestedPackages)),
+  );
+  if (source === undefined) {
+    return {
+      kind: "packages",
+      requested_packages: requestedPackages,
+      requested_packages_sha256: requestedPackagesSha256,
+    };
+  }
+  if (
+    source.kind !== "brewfile" ||
+    source.parser !== "kandelo-static-brewfile-v1" ||
+    !SHA256_RE.test(source.sha256) ||
+    !Number.isInteger(source.bytes) ||
+    source.bytes <= 0 ||
+    source.bytes > MAX_BREWFILE_BYTES
+  ) {
+    throw new HomebrewVfsBuildError("Homebrew VFS Brewfile selection provenance is invalid");
+  }
+  if (
+    !Array.isArray(source.requestedPackages) ||
+    source.requestedPackages.length !== requestedPackages.length ||
+    source.requestedPackages.some((pkg, index) => pkg !== requestedPackages[index])
+  ) {
+    throw new HomebrewVfsBuildError(
+      "Homebrew VFS Brewfile requested packages do not match the plan roots",
+    );
+  }
+  return {
+    kind: "brewfile",
+    requested_packages: requestedPackages,
+    requested_packages_sha256: requestedPackagesSha256,
+    brewfile: {
+      parser: source.parser,
+      sha256: source.sha256,
+      bytes: source.bytes,
+    },
+  };
 }
 
 function createDefaultFs(): MemoryFileSystem {
@@ -276,9 +352,10 @@ function applyLinks(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): string[]
   const seenTargets = new Set<string>();
 
   for (const entry of pkg.linkManifest.links) {
-    if (!seenTargets.add(entry.target)) {
+    if (seenTargets.has(entry.target)) {
       fail(pkg, `link target ${entry.target} is duplicated`);
     }
+    seenTargets.add(entry.target);
 
     const sourcePath = resolveManifestSource(pkg, entry.source);
     const targetPath = joinGuestPath(pkg.prefix, entry.target);
