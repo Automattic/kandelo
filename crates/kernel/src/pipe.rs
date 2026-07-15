@@ -60,6 +60,11 @@ pub struct PipeBuffer {
     len: usize,
     read_count: u32,
     write_count: u32,
+    /// Endpoint references owned by descriptors queued in SCM_RIGHTS messages.
+    /// These are included in read_count/write_count, but tracked separately so
+    /// unreachable cycles of queued socket descriptors can be collected.
+    in_flight_read_count: u32,
+    in_flight_write_count: u32,
     /// The receive half of a normally closed TCP endpoint remains as an
     /// orphaned discard sink until the peer closes its write half. This models
     /// TCP's simplex FIN without inventing a fixed number of successful writes
@@ -84,6 +89,8 @@ impl PipeBuffer {
             len: 0,
             read_count: 1,
             write_count: 1,
+            in_flight_read_count: 0,
+            in_flight_write_count: 0,
             orphaned_read: false,
             pipe_idx: 0,
             ancillary_fds: VecDeque::new(),
@@ -235,6 +242,48 @@ impl PipeBuffer {
         self.write_count += 1;
     }
 
+    fn retain_in_flight_reader(&mut self) {
+        self.add_reader();
+        self.in_flight_read_count += 1;
+    }
+
+    fn retain_in_flight_writer(&mut self) {
+        self.add_writer();
+        self.in_flight_write_count += 1;
+    }
+
+    fn adopt_in_flight_reader(&mut self) {
+        debug_assert!(self.in_flight_read_count > 0);
+        self.in_flight_read_count = self.in_flight_read_count.saturating_sub(1);
+    }
+
+    fn adopt_in_flight_writer(&mut self) {
+        debug_assert!(self.in_flight_write_count > 0);
+        self.in_flight_write_count = self.in_flight_write_count.saturating_sub(1);
+    }
+
+    fn release_in_flight_reader(&mut self) {
+        debug_assert!(self.in_flight_read_count > 0);
+        self.in_flight_read_count = self.in_flight_read_count.saturating_sub(1);
+        self.close_read_end();
+    }
+
+    fn release_in_flight_reader_orderly(&mut self) {
+        debug_assert!(self.in_flight_read_count > 0);
+        self.in_flight_read_count = self.in_flight_read_count.saturating_sub(1);
+        self.close_read_end_orderly();
+    }
+
+    fn release_in_flight_writer(&mut self) {
+        debug_assert!(self.in_flight_write_count > 0);
+        self.in_flight_write_count = self.in_flight_write_count.saturating_sub(1);
+        self.close_write_end();
+    }
+
+    fn has_external_reader(&self) -> bool {
+        self.read_count > self.in_flight_read_count
+    }
+
     /// Returns true if the read end is still open (any readers remain).
     pub fn is_read_end_open(&self) -> bool {
         self.read_count > 0 || self.orphaned_read
@@ -259,7 +308,7 @@ impl PipeBuffer {
     }
 
     /// Push ancillary FDs (SCM_RIGHTS) to be delivered with the next recvmsg.
-    pub fn push_ancillary(&mut self, fds: Vec<InFlightFd>) {
+    fn push_ancillary(&mut self, fds: Vec<InFlightFd>) {
         if !fds.is_empty() {
             self.ancillary_fds.push_back(fds);
         }
@@ -351,14 +400,267 @@ impl PipeTable {
         self.pipes.get_mut(idx).and_then(|p| p.as_mut())
     }
 
-    /// Free a pipe buffer slot if both endpoints are closed.
-    pub fn free_if_closed(&mut self, idx: usize) {
-        if let Some(Some(pipe)) = self.pipes.get(idx) {
-            if pipe.is_fully_closed() {
-                self.pipes[idx] = None;
-                self.free_list.push(idx);
+    /// Queue one SCM_RIGHTS message and retain every pipe-backed resource it
+    /// carries. The message is collected immediately if no live or reachable
+    /// socket endpoint can ever receive it.
+    pub fn queue_ancillary(&mut self, carrier_idx: usize, fds: Vec<InFlightFd>) -> bool {
+        if self.get(carrier_idx).is_none() || !self.retain_ancillary_resources(&fds) {
+            return false;
+        }
+        self.get_mut(carrier_idx).unwrap().push_ancillary(fds);
+        self.collect_unreachable_ancillary();
+        true
+    }
+
+    /// Retain every pipe-backed resource carried by one SCM_RIGHTS message.
+    ///
+    /// A successful send owns these references while the descriptors are in
+    /// transit. Receiving a descriptor transfers the matching reference to
+    /// the new OFD; discarding the message releases it instead.
+    pub fn retain_ancillary_resources(&mut self, fds: &[InFlightFd]) -> bool {
+        for (retained, fd) in fds.iter().enumerate() {
+            if !self.retain_ancillary_resource(fd) {
+                for retained_fd in &fds[..retained] {
+                    self.release_ancillary_resource_inner(retained_fd);
+                }
+                self.collect_unreachable_ancillary();
+                return false;
             }
         }
+        true
+    }
+
+    /// Release pipe-backed resources for SCM_RIGHTS descriptors that were not
+    /// installed in a receiving process.
+    pub fn release_ancillary_resources(&mut self, fds: &[InFlightFd]) {
+        for fd in fds {
+            self.release_ancillary_resource_inner(fd);
+        }
+        self.collect_unreachable_ancillary();
+    }
+
+    /// Transfer one retained SCM_RIGHTS reference into a newly installed OFD.
+    /// Call finish_ancillary_transition after every entry in the popped batch
+    /// has either been adopted or released.
+    pub fn adopt_ancillary_resource(&mut self, fd: &InFlightFd) {
+        self.adopt_ancillary_resource_inner(fd);
+    }
+
+    /// Release one entry from a popped SCM_RIGHTS batch that could not be
+    /// installed. Collection is deferred until the entire batch is resolved.
+    pub fn release_ancillary_resource(&mut self, fd: &InFlightFd) {
+        self.release_ancillary_resource_inner(fd);
+    }
+
+    /// Complete a popped SCM_RIGHTS batch after every reference was adopted or
+    /// released, then collect cycles made unreachable by removing that queue.
+    pub fn finish_ancillary_transition(&mut self) {
+        self.collect_unreachable_ancillary();
+    }
+
+    fn retain_ancillary_resource(&mut self, fd: &InFlightFd) -> bool {
+        if fd.file_type == 0 && fd.host_handle < 0 {
+            let pipe_idx = (-(fd.host_handle + 1)) as usize;
+            let Some(pipe) = self.get_mut(pipe_idx) else {
+                return false;
+            };
+            match fd.status_flags & wasm_posix_shared::flags::O_ACCMODE {
+                wasm_posix_shared::flags::O_RDONLY => pipe.retain_in_flight_reader(),
+                wasm_posix_shared::flags::O_WRONLY => pipe.retain_in_flight_writer(),
+                wasm_posix_shared::flags::O_RDWR => {
+                    pipe.retain_in_flight_reader();
+                    pipe.retain_in_flight_writer();
+                }
+                _ => return false,
+            }
+        } else if fd.file_type == 1 {
+            let Some(socket) = fd.socket.as_ref() else {
+                return true;
+            };
+            if !socket.global_pipes {
+                return true;
+            }
+
+            if let Some(send_idx) = socket.send_buf_idx {
+                let Some(pipe) = self.get_mut(send_idx) else {
+                    return false;
+                };
+                pipe.retain_in_flight_writer();
+            }
+            if let Some(recv_idx) = socket.recv_buf_idx {
+                let Some(pipe) = self.get_mut(recv_idx) else {
+                    if let Some(send_idx) = socket.send_buf_idx {
+                        if let Some(pipe) = self.get_mut(send_idx) {
+                            pipe.release_in_flight_writer();
+                        }
+                        self.free_fully_closed_inner(send_idx);
+                    }
+                    return false;
+                };
+                pipe.retain_in_flight_reader();
+            }
+        }
+        true
+    }
+
+    fn adopt_ancillary_resource_inner(&mut self, fd: &InFlightFd) {
+        if fd.file_type == 0 && fd.host_handle < 0 {
+            let pipe_idx = (-(fd.host_handle + 1)) as usize;
+            if let Some(pipe) = self.get_mut(pipe_idx) {
+                match fd.status_flags & wasm_posix_shared::flags::O_ACCMODE {
+                    wasm_posix_shared::flags::O_RDONLY => pipe.adopt_in_flight_reader(),
+                    wasm_posix_shared::flags::O_WRONLY => pipe.adopt_in_flight_writer(),
+                    wasm_posix_shared::flags::O_RDWR => {
+                        pipe.adopt_in_flight_reader();
+                        pipe.adopt_in_flight_writer();
+                    }
+                    _ => {}
+                }
+            }
+        } else if fd.file_type == 1 {
+            let Some(socket) = fd.socket.as_ref() else {
+                return;
+            };
+            if !socket.global_pipes {
+                return;
+            }
+            if let Some(send_idx) = socket.send_buf_idx {
+                if let Some(pipe) = self.get_mut(send_idx) {
+                    pipe.adopt_in_flight_writer();
+                }
+            }
+            if let Some(recv_idx) = socket.recv_buf_idx {
+                if let Some(pipe) = self.get_mut(recv_idx) {
+                    pipe.adopt_in_flight_reader();
+                }
+            }
+        }
+    }
+
+    fn release_ancillary_resource_inner(&mut self, fd: &InFlightFd) {
+        if fd.file_type == 0 && fd.host_handle < 0 {
+            let pipe_idx = (-(fd.host_handle + 1)) as usize;
+            if let Some(pipe) = self.get_mut(pipe_idx) {
+                match fd.status_flags & wasm_posix_shared::flags::O_ACCMODE {
+                    wasm_posix_shared::flags::O_RDONLY => pipe.release_in_flight_reader(),
+                    wasm_posix_shared::flags::O_WRONLY => pipe.release_in_flight_writer(),
+                    wasm_posix_shared::flags::O_RDWR => {
+                        pipe.release_in_flight_reader();
+                        pipe.release_in_flight_writer();
+                    }
+                    _ => {}
+                }
+            }
+            self.free_fully_closed_inner(pipe_idx);
+        } else if fd.file_type == 1 {
+            let Some(socket) = fd.socket.as_ref() else {
+                return;
+            };
+            if !socket.global_pipes {
+                return;
+            }
+
+            if let Some(send_idx) = socket.send_buf_idx {
+                if let Some(pipe) = self.get_mut(send_idx) {
+                    pipe.release_in_flight_writer();
+                }
+                self.free_fully_closed_inner(send_idx);
+            }
+            if let Some(recv_idx) = socket.recv_buf_idx {
+                if let Some(pipe) = self.get_mut(recv_idx) {
+                    let orderly_tcp_close = socket.sock_type == 0
+                        && matches!(socket.domain, 1 | 2);
+                    if orderly_tcp_close {
+                        pipe.release_in_flight_reader_orderly();
+                    } else {
+                        pipe.release_in_flight_reader();
+                    }
+                }
+                self.free_fully_closed_inner(recv_idx);
+            }
+        }
+    }
+
+    /// Free a pipe buffer slot if both endpoints are closed.
+    pub fn free_if_closed(&mut self, idx: usize) {
+        self.free_fully_closed_inner(idx);
+        self.collect_unreachable_ancillary();
+    }
+
+    fn free_fully_closed_inner(&mut self, idx: usize) {
+        let should_free = self
+            .pipes
+            .get(idx)
+            .and_then(Option::as_ref)
+            .is_some_and(PipeBuffer::is_fully_closed);
+        if !should_free {
+            return;
+        }
+
+        let pipe = self.pipes[idx].take().unwrap();
+        self.free_list.push(idx);
+        for fds in pipe.ancillary_fds {
+            for fd in &fds {
+                self.release_ancillary_resource_inner(fd);
+            }
+        }
+    }
+
+    /// Collect ancillary queues that cannot be reached from an externally
+    /// owned receive endpoint. Queued socket descriptors form graph edges to
+    /// their receive pipes; the mark phase preserves every transitively
+    /// receivable cycle and the sweep drops only components with no root.
+    fn collect_unreachable_ancillary(&mut self) {
+        let mut reachable = Vec::new();
+        reachable.resize(self.pipes.len(), false);
+        let mut work = VecDeque::new();
+        for (idx, pipe) in self.pipes.iter().enumerate() {
+            if pipe.as_ref().is_some_and(PipeBuffer::has_external_reader) {
+                reachable[idx] = true;
+                work.push_back(idx);
+            }
+        }
+
+        while let Some(carrier_idx) = work.pop_front() {
+            let Some(pipe) = self.get(carrier_idx) else {
+                continue;
+            };
+            for batch in &pipe.ancillary_fds {
+                for fd in batch {
+                    if fd.file_type != 1 {
+                        continue;
+                    }
+                    let Some(socket) = fd.socket.as_ref() else {
+                        continue;
+                    };
+                    if !socket.global_pipes {
+                        continue;
+                    }
+                    let Some(recv_idx) = socket.recv_buf_idx else {
+                        continue;
+                    };
+                    if recv_idx < reachable.len() && !reachable[recv_idx] {
+                        reachable[recv_idx] = true;
+                        work.push_back(recv_idx);
+                    }
+                }
+            }
+        }
+
+        let mut dropped = Vec::new();
+        for (idx, pipe) in self.pipes.iter_mut().enumerate() {
+            if !reachable[idx] {
+                if let Some(pipe) = pipe.as_mut() {
+                    dropped.extend(pipe.ancillary_fds.drain(..));
+                }
+            }
+        }
+        for batch in dropped {
+            for fd in &batch {
+                self.release_ancillary_resource_inner(fd);
+            }
+        }
+
     }
 
     /// Release both endpoints of a newly allocated buffer that was never
@@ -618,5 +920,135 @@ mod tests {
 
         assert_eq!(table.count_active(), 0);
         assert_eq!(table.alloc(PipeBuffer::new(64)), idx);
+    }
+
+    fn in_flight_pipe_read_end(pipe_idx: usize) -> InFlightFd {
+        InFlightFd {
+            file_type: 0,
+            status_flags: wasm_posix_shared::flags::O_RDONLY,
+            host_handle: -((pipe_idx as i64) + 1),
+            offset: 0,
+            path: b"/dev/pipe".to_vec(),
+            socket: None,
+        }
+    }
+
+    fn in_flight_socket(send_idx: usize, recv_idx: usize) -> InFlightFd {
+        InFlightFd {
+            file_type: 1,
+            status_flags: wasm_posix_shared::flags::O_RDWR,
+            host_handle: -1,
+            offset: 0,
+            path: b"socket".to_vec(),
+            socket: Some(InFlightSocket {
+                domain: 0,
+                sock_type: 0,
+                protocol: 0,
+                state: 3,
+                send_buf_idx: Some(send_idx),
+                recv_buf_idx: Some(recv_idx),
+                global_pipes: true,
+                shut_rd: false,
+                shut_wr: false,
+                bind_addr: [0; 4],
+                bind_port: 0,
+                peer_addr: [0; 4],
+                peer_port: 0,
+            }),
+        }
+    }
+
+    fn close_external_endpoints(table: &mut PipeTable, indices: &[usize]) {
+        for &idx in indices {
+            if let Some(pipe) = table.get_mut(idx) {
+                pipe.close_read_end();
+                pipe.close_write_end();
+            }
+            table.free_if_closed(idx);
+        }
+    }
+
+    #[test]
+    fn scm_rights_reference_becomes_received_pipe_endpoint() {
+        let mut table = PipeTable::new();
+        let pipe_idx = table.alloc(PipeBuffer::new(64));
+        let right = in_flight_pipe_read_end(pipe_idx);
+
+        assert!(table.retain_ancillary_resources(core::slice::from_ref(&right)));
+        table.adopt_ancillary_resource(&right);
+        table.finish_ancillary_transition();
+        table.get_mut(pipe_idx).unwrap().close_read_end();
+        assert_eq!(table.get_mut(pipe_idx).unwrap().write(b"still connected"), 15);
+
+        // Receiving transfers the retained reference to the new OFD. Its final
+        // close, not installation, consumes that same reference.
+        table.get_mut(pipe_idx).unwrap().close_write_end();
+        let mut payload = [0u8; 15];
+        assert_eq!(table.get_mut(pipe_idx).unwrap().read(&mut payload), 15);
+        assert_eq!(&payload, b"still connected");
+        table.get_mut(pipe_idx).unwrap().close_read_end();
+        table.free_if_closed(pipe_idx);
+        assert!(table.get(pipe_idx).is_none());
+    }
+
+    #[test]
+    fn closing_carrier_releases_queued_pipe_endpoint() {
+        let mut table = PipeTable::new();
+        let pipe_idx = table.alloc(PipeBuffer::new(64));
+        let carrier_idx = table.alloc(PipeBuffer::new(64));
+        let right = in_flight_pipe_read_end(pipe_idx);
+
+        assert!(table.queue_ancillary(carrier_idx, vec![right]));
+        table.get_mut(pipe_idx).unwrap().close_read_end();
+        assert_eq!(table.get_mut(pipe_idx).unwrap().write(b"held"), 4);
+
+        table.get_mut(carrier_idx).unwrap().close_read_end();
+        table.get_mut(carrier_idx).unwrap().close_write_end();
+        table.free_if_closed(carrier_idx);
+        assert_eq!(table.get_mut(pipe_idx).unwrap().write(b"released"), 0);
+
+        table.get_mut(pipe_idx).unwrap().close_write_end();
+        table.free_if_closed(pipe_idx);
+        assert!(table.get(pipe_idx).is_none());
+    }
+
+    #[test]
+    fn unreachable_self_socket_right_cycle_is_collected_and_slots_reused() {
+        let mut table = PipeTable::new();
+
+        for _ in 0..32 {
+            let (carrier_idx, peer_send_idx) =
+                table.alloc_pair(PipeBuffer::new(64), PipeBuffer::new(64));
+            assert_eq!((carrier_idx, peer_send_idx), (0, 1));
+
+            // The peer socket receives from carrier_idx. Queuing that peer on
+            // carrier_idx creates the canonical SCM_RIGHTS self-cycle.
+            let peer = in_flight_socket(peer_send_idx, carrier_idx);
+            assert!(table.queue_ancillary(carrier_idx, vec![peer]));
+            assert!(table.get(carrier_idx).unwrap().has_ancillary());
+
+            close_external_endpoints(&mut table, &[carrier_idx, peer_send_idx]);
+            assert_eq!(table.count_active(), 0);
+        }
+    }
+
+    #[test]
+    fn unreachable_cross_socket_right_cycle_is_collected() {
+        let mut table = PipeTable::new();
+        let (a_recv_idx, a_send_idx) =
+            table.alloc_pair(PipeBuffer::new(64), PipeBuffer::new(64));
+        let (b_recv_idx, b_send_idx) =
+            table.alloc_pair(PipeBuffer::new(64), PipeBuffer::new(64));
+
+        let a = in_flight_socket(a_send_idx, a_recv_idx);
+        let b = in_flight_socket(b_send_idx, b_recv_idx);
+        assert!(table.queue_ancillary(a_recv_idx, vec![b]));
+        assert!(table.queue_ancillary(b_recv_idx, vec![a]));
+
+        close_external_endpoints(
+            &mut table,
+            &[a_recv_idx, a_send_idx, b_recv_idx, b_send_idx],
+        );
+        assert_eq!(table.count_active(), 0);
     }
 }
