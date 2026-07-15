@@ -87,6 +87,18 @@ case "${1:-}" in
   assert-working-directory)
     [ "$(pwd -P)" = "$2" ]
     ;;
+  assert-source-aliases)
+    [ "$#" -eq 6 ]
+    [ "${HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
+    [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
+    [ -r "$2/source-marker" ]
+    [ -r "$3/tap-marker" ]
+    [ ! -e "$4" ]
+    [ ! -e "$5" ]
+    [ ! -e "$6" ]
+    if ( : >"$2/write-probe" ) 2>/dev/null; then exit 1; fi
+    if ( : >"$3/write-probe" ) 2>/dev/null; then exit 1; fi
+    ;;
   assert-argv)
     [ "$#" -eq 6 ]
     [ "$2" = "" ]
@@ -190,6 +202,27 @@ HOMEBREW_PATCHED_SUDO_BIN=""
 HOMEBREW_PATCHED_PGREP_BIN=""
 HOMEBREW_PATCHED_BUILD_UID=""
 
+audit_probe_dir="$TMPDIR/audit-probe"
+mkdir -p "$audit_probe_dir/tree"
+cat >"$audit_probe_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "fixture traversal denied" >&2
+exit 13
+EOF
+chmod +x "$audit_probe_dir/sudo"
+HOMEBREW_PATCHED_SUDO_BIN="$audit_probe_dir/sudo"
+set +e
+audit_error="$(homebrew_assert_tree_not_writable_by_user \
+  fixture-user "$audit_probe_dir/tree" 2>&1)"
+audit_status="$?"
+set -e
+[ "$audit_status" -eq 2 ] || fail "failed source audit did not return its contract error"
+[[ "$audit_error" == *"fixture traversal denied"* ]] ||
+  fail "failed source audit suppressed the underlying traversal error"
+[[ "$audit_error" == *"could not inspect protected source"* ]] ||
+  fail "failed source audit did not identify the rejected tree"
+HOMEBREW_PATCHED_SUDO_BIN=""
+
 if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
    [ -x /usr/bin/systemd-run ] && [ -x /usr/bin/systemctl ] && \
    [ -x /usr/bin/getent ] && [ -x /usr/bin/pgrep ] && [ -x /usr/bin/pkill ] && \
@@ -204,15 +237,21 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_work="$ISOLATION_ROOT/work"
   isolated_cache="$ISOLATION_ROOT/cache"
   isolated_temp="$ISOLATION_ROOT/temp"
-  isolated_kandelo="$ISOLATION_ROOT/kandelo"
-  isolated_tap="$ISOLATION_ROOT/tap"
+  isolated_source_parent="$ISOLATION_ROOT/private-runner-home"
+  isolated_kandelo="$isolated_source_parent/kandelo"
+  isolated_tap="$isolated_source_parent/tap"
+  isolated_output="$isolated_source_parent/output"
   isolated_home="/home/$ISOLATION_BUILD_USER"
   daemon_marker="$isolated_work/detached-process-survived"
   daemon_started="$isolated_work/detached-process-started"
   mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
-    "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap"
+    "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
+    "$isolated_output"
+  printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
+  printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   mkdir "$isolated_kandelo/runner-control"
   chmod 0700 "$isolated_kandelo/runner-control"
+  chmod 0700 "$isolated_source_parent"
   cp "$prefix/bin/brew" "$isolated_repo/bin/brew"
   chmod +x "$isolated_repo/bin/brew"
   printf 'unpatched\n' >"$isolated_repo/marker.txt"
@@ -239,10 +278,15 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   homebrew_patched_launcher_prepare \
     "$isolated_prefix/bin/brew" "$patch_file" "$isolated_work"
   homebrew_patched_launcher_isolate \
-    "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap"
+    "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+    "$isolated_output"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-identity \
     "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-source-aliases \
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo" \
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/tap" \
+    "$isolated_kandelo" "$isolated_tap" "$isolated_output"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-argv \
     "" "with spaces" '$dollar' '%percent' $'line one\nline two'
   "$HOMEBREW_PATCHED_BREW_BIN" assert-bottle-tags "" ""

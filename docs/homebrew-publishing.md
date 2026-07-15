@@ -317,12 +317,15 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    `/home/linuxbrew/.linuxbrew` prefix. This preserves the selected prefix and
    Cellar so ordinary host build-dependency bottles remain usable. Within that
    read-only build, all Formula-evaluating Homebrew commands run as a distinct
-   unprivileged user. Kandelo, tap, and patched Homebrew source are recursively
-   non-writable and non-replaceable by that identity; only a root-provisioned
-   shared temporary root, Homebrew cache/temp, prefix, and build home are
-   writable. Dependency lists and install logs used by the workflow identity
-   live in a separate mode-0700 control directory under the protected output
-   root; Formula processes cannot preplant or replace those paths. The wrapper
+   unprivileged user. The original Kandelo and tap checkouts remain hidden from
+   that identity. Each transient service receives root-created, read-only bind
+   aliases for those exact trees, and the Kandelo SDK environment points only
+   at the alias. The patched Homebrew source is recursively non-writable and
+   non-replaceable; only a root-provisioned shared temporary root, Homebrew
+   cache/temp, prefix, and build home are writable. Dependency lists and install
+   logs used by the workflow identity live in a separate mode-0700 control
+   directory under the protected output root; Formula processes cannot preplant
+   or replace those paths. The wrapper
    uses an explicit host `sudo` boundary, a fixed
    environment allowlist, and a transient systemd service with control-group
    kill semantics and `NoNewPrivileges=yes` for every Brew invocation. A final
