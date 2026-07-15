@@ -6575,6 +6575,37 @@ fn extract_scm_rights(
     result
 }
 
+/// Queue one successfully sent SCM_RIGHTS message and retain the resources
+/// represented by its serialized descriptors until receive or discard.
+fn queue_scm_rights_fds(
+    proc: &crate::process::Process,
+    socket_fd: i32,
+    fds: Vec<crate::pipe::InFlightFd>,
+) -> bool {
+    let send_idx = {
+        let Ok(fd_entry) = proc.fd_table.get(socket_fd) else {
+            return false;
+        };
+        let Some(ofd) = proc.ofd_table.get(fd_entry.ofd_ref.0) else {
+            return false;
+        };
+        if ofd.file_type != crate::ofd::FileType::Socket {
+            return false;
+        }
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let Some(socket) = proc.sockets.get(sock_idx) else {
+            return false;
+        };
+        let Some(send_idx) = socket.send_buf_idx else {
+            return false;
+        };
+        send_idx
+    };
+
+    let pipes = unsafe { crate::pipe::global_pipe_table() };
+    pipes.queue_ancillary(send_idx, fds)
+}
+
 /// sendmsg — send a message on a socket.
 /// Parses msghdr to extract iov[0] and delegates to sys_sendmsg.
 /// Handles SCM_RIGHTS ancillary data by serializing FDs into the pipe's ancillary queue.
@@ -6622,45 +6653,10 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
         }
     };
 
-    // If data was sent successfully and we have ancillary FDs, push them to the pipe
+    // If data was sent successfully, the queued SCM_RIGHTS message owns one
+    // resource reference per descriptor until recvmsg installs or discards it.
     if result > 0 && !ancillary_fds.is_empty() {
-        // Increment pipe refcounts for socket FDs being passed BEFORE
-        // borrowing the send pipe (avoids double &mut borrow of global_pipe_table).
-        for in_flight in &ancillary_fds {
-            if let Some(ref sock_info) = in_flight.socket {
-                if sock_info.global_pipes {
-                    let pt = unsafe { crate::pipe::global_pipe_table() };
-                    if let Some(idx) = sock_info.send_buf_idx {
-                        if let Some(p) = pt.get_mut(idx) {
-                            p.add_writer();
-                        }
-                    }
-                    if let Some(idx) = sock_info.recv_buf_idx {
-                        if let Some(p) = pt.get_mut(idx) {
-                            p.add_reader();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Now push ancillary data to the socket's send pipe
-        if let Ok(fd_entry) = proc.fd_table.get(fd) {
-            if let Some(ofd) = proc.ofd_table.get(fd_entry.ofd_ref.0) {
-                if ofd.file_type == crate::ofd::FileType::Socket {
-                    let sock_idx = (-(ofd.host_handle + 1)) as usize;
-                    if let Some(sock) = proc.sockets.get(sock_idx) {
-                        if let Some(send_idx) = sock.send_buf_idx {
-                            let pipe =
-                                unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
-                            if let Some(pipe) = pipe {
-                                pipe.push_ancillary(ancillary_fds);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let _ = queue_scm_rights_fds(proc, fd, ancillary_fds);
     }
 
     deliver_pending_signals(proc, &mut host);
@@ -6721,22 +6717,53 @@ fn install_scm_rights_fds(
                         new_host_handle,
                         entry.path.clone(),
                     );
-                    if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+                    match proc
+                        .fd_table
+                        .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
                     {
-                        new_fds.push(new_fd);
+                        Ok(new_fd) => {
+                            unsafe {
+                                crate::pipe::global_pipe_table().adopt_ancillary_resource(&entry);
+                            }
+                            new_fds.push(new_fd);
+                        }
+                        Err(_) => {
+                            proc.ofd_table.dec_ref(ofd_idx);
+                            proc.sockets.free(new_sock_idx);
+                            unsafe {
+                                crate::pipe::global_pipe_table()
+                                    .release_ancillary_resource(&entry);
+                            }
+                        }
                     }
                 }
             }
             0 => {
-                // Pipe FD
+                // The reference retained by sendmsg becomes this OFD's
+                // endpoint reference. Do not increment it a second time.
                 let ofd_idx = proc.ofd_table.create(
                     FileType::Pipe,
                     entry.status_flags,
                     entry.host_handle,
                     entry.path.clone(),
                 );
-                if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
-                    new_fds.push(new_fd);
+                match proc
+                    .fd_table
+                    .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+                {
+                    Ok(new_fd) => {
+                        unsafe {
+                            crate::pipe::global_pipe_table().adopt_ancillary_resource(&entry);
+                        }
+                        new_fds.push(new_fd);
+                    }
+                    Err(_) => {
+                        proc.ofd_table.dec_ref(ofd_idx);
+                        unsafe {
+                            crate::pipe::global_pipe_table()
+                                .release_ancillary_resource(&entry);
+                        }
+                    }
                 }
             }
             6 | 7 => {
@@ -6789,6 +6816,9 @@ fn install_scm_rights_fds(
         }
     }
 
+    unsafe {
+        crate::pipe::global_pipe_table().finish_ancillary_transition();
+    }
     new_fds
 }
 
@@ -6849,6 +6879,7 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     // Pop ancillary data in a limited scope to avoid holding &mut pipe across
     // install_scm_rights_fds (which modifies proc).
     let mut ancillary_delivered = false;
+    let mut output_msg_flags = 0u32;
     if result > 0 {
         let popped = 'pop: {
             let recv_idx = {
@@ -6877,32 +6908,62 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
             }
         };
 
-        if let Some(in_flight) = popped {
-            let new_fds = install_scm_rights_fds(proc, in_flight);
-            // Build cmsg response in msg_control buffer
-            if control_ptr != 0 && control_len > 0 && !new_fds.is_empty() {
+        if let Some(mut in_flight) = popped {
+            let control_fd_capacity = if control_ptr != 0 && control_len >= 16 {
+                (control_len - 12) / 4
+            } else {
+                0
+            };
+            let install_count = control_fd_capacity.min(in_flight.len());
+            let excess = in_flight.split_off(install_count);
+
+            // Keep collection deferred while the fitting prefix is not yet
+            // represented by receiver OFDs. Otherwise releasing an excess
+            // socket could collect queues that the prefix makes reachable.
+            if !excess.is_empty() {
+                let pipes = unsafe { crate::pipe::global_pipe_table() };
+                for entry in &excess {
+                    pipes.release_ancillary_resource(entry);
+                }
+            }
+
+            let attempted = in_flight.len();
+            let new_fds = if attempted == 0 {
+                unsafe {
+                    crate::pipe::global_pipe_table().finish_ancillary_transition();
+                }
+                Vec::new()
+            } else {
+                install_scm_rights_fds(proc, in_flight)
+            };
+
+            if !excess.is_empty() || new_fds.len() < attempted {
+                output_msg_flags |= wasm_posix_shared::socket::MSG_CTRUNC;
+            }
+
+            // Build cmsg response in msg_control buffer.
+            if !new_fds.is_empty() {
                 let cmsg_data_len = new_fds.len() * 4;
                 let cmsg_len = 12 + cmsg_data_len; // cmsghdr + FD data
                 let cmsg_space = (cmsg_len + 3) & !3; // aligned
-                if cmsg_space <= control_len {
-                    let ctrl =
-                        unsafe { slice::from_raw_parts_mut(control_ptr as *mut u8, control_len) };
-                    // cmsg_len
-                    ctrl[0..4].copy_from_slice(&(cmsg_len as u32).to_le_bytes());
-                    // cmsg_level = SOL_SOCKET
-                    ctrl[4..8].copy_from_slice(&1u32.to_le_bytes());
-                    // cmsg_type = SCM_RIGHTS
-                    ctrl[8..12].copy_from_slice(&1u32.to_le_bytes());
-                    // FD numbers
-                    for (i, &new_fd) in new_fds.iter().enumerate() {
-                        let off = 12 + i * 4;
-                        ctrl[off..off + 4].copy_from_slice(&new_fd.to_le_bytes());
-                    }
-                    // Set msg_controllen
-                    let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
-                    msg_mut[20..24].copy_from_slice(&(cmsg_space as u32).to_le_bytes());
-                    ancillary_delivered = true;
+                let ctrl = unsafe {
+                    slice::from_raw_parts_mut(control_ptr as *mut u8, control_len)
+                };
+                // cmsg_len
+                ctrl[0..4].copy_from_slice(&(cmsg_len as u32).to_le_bytes());
+                // cmsg_level = SOL_SOCKET
+                ctrl[4..8].copy_from_slice(&1u32.to_le_bytes());
+                // cmsg_type = SCM_RIGHTS
+                ctrl[8..12].copy_from_slice(&1u32.to_le_bytes());
+                // FD numbers
+                for (i, &new_fd) in new_fds.iter().enumerate() {
+                    let off = 12 + i * 4;
+                    ctrl[off..off + 4].copy_from_slice(&new_fd.to_le_bytes());
                 }
+                // Set msg_controllen
+                let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
+                msg_mut[20..24].copy_from_slice(&(cmsg_space as u32).to_le_bytes());
+                ancillary_delivered = true;
             }
         }
     }
@@ -6912,6 +6973,8 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
         let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
         msg_mut[20..24].copy_from_slice(&0u32.to_le_bytes());
     }
+    let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
+    msg_mut[24..28].copy_from_slice(&output_msg_flags.to_le_bytes());
 
     deliver_pending_signals(proc, &mut host);
     result
