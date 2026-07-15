@@ -120,6 +120,49 @@ assert_job_needs "$PREPARE" lib-matrix-build preflight
 assert_job_needs "$PREPARE" matrix-build preflight
 assert_job_needs "$PREPARE" merge-gate-post test-gate
 
+synthesize_job=$(job_block "$PREPARE" synthesize-merge)
+synthesize_step=$(step_run_block "$PREPARE" "Capture base and synthesize PR merge")
+preflight_job=$(job_block "$PREPARE" preflight)
+preflight_step=$(step_run_block "$PREPARE" "Compute matrix")
+grep -Fq 'pr_commit_count: ${{ steps.synthesize.outputs.pr_commit_count }}' <<<"$synthesize_job" || \
+  fail "synthesize-merge must export the full-history PR commit count"
+grep -Fq 'PR_COMMIT_COUNT=$(git rev-list --count "$BASE_SHA..$PR_HEAD_SHA")' <<<"$synthesize_step" || \
+  fail "synthesize-merge must count PR commits while both full histories are present"
+grep -Fq 'echo "pr_commit_count=$PR_COMMIT_COUNT"' <<<"$synthesize_step" || \
+  fail "synthesize-merge must publish the computed PR commit count"
+grep -Fq 'SYNTH_PR_COMMIT_COUNT: ${{ needs.synthesize-merge.outputs.pr_commit_count }}' <<<"$preflight_job" || \
+  fail "candidate initialization must consume the synthesized PR commit count"
+grep -Fq 'PR_COMMIT_COUNT="$SYNTH_PR_COMMIT_COUNT"' <<<"$preflight_step" || \
+  fail "candidate initialization must carry the count through the isolated dev shell"
+if grep -Fq 'git rev-list --count "$MERGE_BASE_SHA..$MERGE_HEAD_SHA"' <<<"$preflight_step"; then
+  fail "candidate initialization must not recount commits from the shallow preflight checkout"
+fi
+
+count_fixture=$(mktemp -d)
+trap 'rm -rf "$count_fixture"' EXIT
+git init --quiet --initial-branch=main "$count_fixture"
+git -C "$count_fixture" config user.name fixture
+git -C "$count_fixture" config user.email fixture@example.com
+git -C "$count_fixture" commit --quiet --allow-empty -m base
+git -C "$count_fixture" switch --quiet -c feature
+for commit in one two three; do
+  git -C "$count_fixture" commit --quiet --allow-empty -m "feature-$commit"
+done
+fixture_head=$(git -C "$count_fixture" rev-parse HEAD)
+git -C "$count_fixture" switch --quiet main
+for commit in one two; do
+  git -C "$count_fixture" commit --quiet --allow-empty -m "main-$commit"
+done
+fixture_base=$(git -C "$count_fixture" rev-parse HEAD)
+count_assignment=$(grep -F 'PR_COMMIT_COUNT=$(git rev-list --count "$BASE_SHA..$PR_HEAD_SHA")' <<<"$synthesize_step")
+fixture_count=$(
+  cd "$count_fixture"
+  BASE_SHA="$fixture_base" PR_HEAD_SHA="$fixture_head" \
+    bash -c "$count_assignment; printf '%s\\n' \"\$PR_COMMIT_COUNT\""
+)
+[ "$fixture_count" = 3 ] || \
+  fail "full-history synthesis counted $fixture_count commits for a three-commit PR behind main"
+
 grep -Fq 'select-package-archive-source.sh' "$PREPARE" || \
   fail "Prepare merge must prefer an existing canonical cache-key asset"
 grep -Fq 'download-verified-release-asset.sh' "$PREPARE" || \

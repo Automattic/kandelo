@@ -91,6 +91,7 @@ jobs:
       head_sha: ${{ steps.synthesize.outputs.head_sha }}
       merge_sha: ${{ steps.synthesize.outputs.merge_sha }}
       tree_sha: ${{ steps.synthesize.outputs.tree_sha }}
+      pr_commit_count: ${{ steps.synthesize.outputs.pr_commit_count }}
       bundle_artifact: ${{ steps.synthesize.outputs.bundle_artifact }}
     env:
       BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -118,6 +119,11 @@ jobs:
           git_fetch_retry --quiet --no-tags origin "$PR_HEAD_SHA"
           if ! git cat-file -e "$PR_HEAD_SHA^{commit}" 2>/dev/null; then
             echo "::error::Could not fetch PR head commit $PR_HEAD_SHA"
+            exit 1
+          fi
+          PR_COMMIT_COUNT=$(git rev-list --count "$BASE_SHA..$PR_HEAD_SHA")
+          if ! [[ "$PR_COMMIT_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::PR head $PR_HEAD_SHA has no commits after prepared base $BASE_SHA"
             exit 1
           fi
 
@@ -163,6 +169,7 @@ jobs:
             echo "head_sha=$PR_HEAD_SHA"
             echo "merge_sha=$MERGE_SHA"
             echo "tree_sha=$TREE_SHA"
+            echo "pr_commit_count=$PR_COMMIT_COUNT"
             echo "bundle_artifact=synthetic-pr-merge"
           } >> "$GITHUB_OUTPUT"
           echo "Synthetic merge $MERGE_SHA uses base $BASE_SHA and head $PR_HEAD_SHA."
@@ -648,8 +655,11 @@ jobs:
           SYNTH_BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
           SYNTH_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+          SYNTH_PR_COMMIT_COUNT: ${{ needs.synthesize-merge.outputs.pr_commit_count }}
         run: |
-          bash scripts/dev-shell.sh bash -c '
+          bash scripts/dev-shell.sh env \
+            PR_COMMIT_COUNT="$SYNTH_PR_COMMIT_COUNT" \
+            bash -c '
             set -euo pipefail
             PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
@@ -710,9 +720,8 @@ jobs:
               echo "::error::synthetic tree output drifted: $SYNTHETIC_TREE_SHA != ${{ needs.synthesize-merge.outputs.tree_sha }}"
               exit 1
             fi
-            PR_COMMIT_COUNT=$(git rev-list --count "$MERGE_BASE_SHA..$MERGE_HEAD_SHA")
-            if [ "$PR_COMMIT_COUNT" -le 0 ]; then
-              echo "::error::synthetic candidate has no PR commits after prepared base"
+            if ! [[ "$PR_COMMIT_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::synthesize-merge did not report a positive PR commit count"
               exit 1
             fi
             bash .github/scripts/init-merge-candidate.sh \
