@@ -198,15 +198,48 @@ is_stale_wasm_artifact() {
         esac
 }
 
+has_stale_vfs_abi() {
+    local status=0
+    [ -n "$current_abi" ] || return 0
+    command -v node >/dev/null 2>&1 || return 0
+    node "$script_dir/vfs-has-stale-abi.mjs" "$1" "$current_abi" \
+        >/dev/null 2>&1 || status=$?
+
+    # Status 1 is the only accepted result: it means the image either matches
+    # or carries no ABI declaration (legacy/data-only VFS). Explicit mismatches
+    # and uninspectable metadata both fail closed.
+    [ "$status" -ne 1 ]
+}
+
+has_artifact_policy_failures() {
+    case "$adjusted" in
+        *.wasm)
+            # A Wasm-named artifact must remain fail-closed even when its bytes
+            # are malformed or the structural decoder cannot inspect it.
+            is_stale_wasm_artifact "$1"
+            ;;
+        *.vfs|*.vfs.zst)
+            has_stale_vfs_abi "$1"
+            ;;
+        *)
+            # Fetched archives, Wasm side modules, and declared runtime data
+            # are authenticated by package materialization before entering
+            # binaries/. They have no executable Wasm ABI/export contract;
+            # local-binaries/ remains the user's explicit override tier.
+            false
+            ;;
+    esac
+}
+
 if [ -e "$local_path" ]; then
     if [ -e "$fetched_path" ] \
-        && is_stale_wasm_artifact "$local_path" \
-        && ! is_stale_wasm_artifact "$fetched_path"; then
+        && has_artifact_policy_failures "$local_path" \
+        && ! has_artifact_policy_failures "$fetched_path"; then
         echo "$fetched_path"
         exit 0
     fi
-    if is_stale_wasm_artifact "$local_path"; then
-        echo "ERROR: stale wasm artifact ignored: $local_path" >&2
+    if has_artifact_policy_failures "$local_path"; then
+        echo "ERROR: stale or invalid artifact ignored: $local_path" >&2
         echo "       Rebuild it for ABI ${current_abi:-current}, fetch a fresh release, or remove the stale local override." >&2
         exit 1
     fi
@@ -214,8 +247,8 @@ if [ -e "$local_path" ]; then
     exit 0
 fi
 if [ -e "$fetched_path" ]; then
-    if is_stale_wasm_artifact "$fetched_path"; then
-        echo "ERROR: stale wasm artifact ignored: $fetched_path" >&2
+    if has_artifact_policy_failures "$fetched_path"; then
+        echo "ERROR: stale or invalid artifact ignored: $fetched_path" >&2
         echo "       Rebuild it for ABI ${current_abi:-current} or fetch a fresh release." >&2
         exit 1
     fi

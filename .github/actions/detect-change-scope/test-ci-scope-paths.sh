@@ -93,6 +93,9 @@ assert_matches binary_materialization_changed_files \
   "scripts/test-wasm-artifact-guards.sh" \
   "scripts/test-wasm-artifact-guards.sh"
 assert_matches binary_materialization_changed_files \
+  "scripts/vfs-has-stale-abi.mjs" \
+  "scripts/vfs-has-stale-abi.mjs"
+assert_matches binary_materialization_changed_files \
   "tests/package-system/fetch-binaries-allow-stale.test.ts" \
   "tests/package-system/fetch-binaries-allow-stale.test.ts"
 
@@ -296,5 +299,4 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/reusable-package-source-publish.yml" \
   ".github/workflows/reusable-package-source-publish.yml"
-
 echo "ci-scope path classifier tests passed"
