@@ -515,6 +515,33 @@ jobs:
             echo "HOMEBREW_TEMP=$shared_temp/tmp"
           } >> "$GITHUB_ENV"
 
+      - name: Provision Formula browser runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kandelo"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_SHARED_TEMP="$KANDELO_HOMEBREW_SHARED_TEMP" \
+            KANDELO_HOMEBREW_BUILD_USER="$KANDELO_HOMEBREW_BUILD_USER" \
+            KANDELO_HOMEBREW_SUDO_BIN="$KANDELO_HOMEBREW_SUDO_BIN" \
+            bash -c '
+              set -euo pipefail
+              node_bin="$(command -v node)"
+              case "$node_bin" in
+                /nix/store/*/bin/node) ;;
+                *)
+                  echo "Formula browser provisioning resolved an undeclared Node: $node_bin" >&2
+                  exit 2
+                  ;;
+              esac
+              bash scripts/homebrew-provision-formula-browser.sh \
+                --shared-temp "$KANDELO_HOMEBREW_SHARED_TEMP" \
+                --build-user "$KANDELO_HOMEBREW_BUILD_USER" \
+                --sudo-bin "$KANDELO_HOMEBREW_SUDO_BIN" \
+                --node-bin "$node_bin" \
+                --browser-app "$PWD/apps/browser-demos"
+            '
+
       - name: Build and test Homebrew bottle without publisher credentials
         shell: bash
         env:
@@ -1716,6 +1743,33 @@ jobs:
             echo "HOMEBREW_CACHE=$shared_temp/cache"
             echo "HOMEBREW_TEMP=$shared_temp/tmp"
           } >> "$GITHUB_ENV"
+
+      - name: Provision Formula browser runtime for bottle verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kandelo"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_SHARED_TEMP="$KANDELO_HOMEBREW_SHARED_TEMP" \
+            KANDELO_HOMEBREW_BUILD_USER="$KANDELO_HOMEBREW_BUILD_USER" \
+            KANDELO_HOMEBREW_SUDO_BIN="$KANDELO_HOMEBREW_SUDO_BIN" \
+            bash -c '
+              set -euo pipefail
+              node_bin="$(command -v node)"
+              case "$node_bin" in
+                /nix/store/*/bin/node) ;;
+                *)
+                  echo "Formula browser provisioning resolved an undeclared Node: $node_bin" >&2
+                  exit 2
+                  ;;
+              esac
+              bash scripts/homebrew-provision-formula-browser.sh \
+                --shared-temp "$KANDELO_HOMEBREW_SHARED_TEMP" \
+                --build-user "$KANDELO_HOMEBREW_BUILD_USER" \
+                --sudo-bin "$KANDELO_HOMEBREW_SUDO_BIN" \
+                --node-bin "$node_bin" \
+                --browser-app "$PWD/apps/browser-demos"
+            '
 
       - name: Force-pour and test the exact selected bottle without credentials
         shell: bash

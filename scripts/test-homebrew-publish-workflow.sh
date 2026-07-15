@@ -1627,6 +1627,12 @@ case "${1:-}" in
     ln -sfn "$FAKE_SYMLINK_TARGET" "$work_dir/brew-install-attempt-1.log"
     ;;
   install)
+    if [ "$*" = 'install --only-dependencies --include-test --formula automattic/kandelo-homebrew/hello' ]; then
+      printf 'test-dependency-bottle-tags=%s|%s\n' \
+        "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+        >>"$FAKE_BREW_LOG"
+      exit 0
+    fi
     printf 'target-bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -1693,6 +1699,8 @@ EOF
     fail "bottle build did not tap, trust, and install the selected tap"
   grep -Fx 'target-bottle-tags=|' "$log" >/dev/null ||
     fail "target source build inherited the Kandelo bottle tag intended for bottle selection"
+  grep -Fx 'test-dependency-bottle-tags=|' "$log" >/dev/null ||
+    fail "native test dependency install inherited the Kandelo bottle tag"
   [ "$tap_line" -lt "$trust_line" ] && [ "$trust_line" -lt "$install_line" ] ||
     fail "bottle build did not trust the selected tap before formula evaluation"
 
@@ -1784,6 +1792,398 @@ EOF
     fail "bottle build treated a host dependency as a Kandelo bottle"
   ! grep -F 'install --build-bottle' "$log" >/dev/null ||
     fail "bottle build continued to the target source build after a dependency bottle failure"
+}
+
+assert_bottle_build_installs_test_dependencies() {
+  local tap="$TMPDIR/bottle-test-dependency-tap"
+  local brew_repo="$TMPDIR/bottle-test-dependency-brew-repo"
+  local brew_prefix="$TMPDIR/bottle-test-dependency-prefix"
+  local fake_bin="$TMPDIR/bottle-test-dependency-bin"
+  local fake_brew="$TMPDIR/bottle-test-dependency-brew"
+  local out="$TMPDIR/bottle-test-dependency-out"
+  local log="$TMPDIR/bottle-test-dependency.log"
+  local provenance_capture="$TMPDIR/bottle-test-dependency-provenance.txt"
+  local real_python3
+  make_tap "$tap"
+  mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
+  cat >"$tap/Formula/zlib.rb" <<'EOF'
+class Zlib < Formula
+end
+EOF
+  cat >"$tap/Formula/test-helper.rb" <<'EOF'
+class TestHelper < Formula
+end
+EOF
+
+  cat >"$fake_brew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_BREW_LOG"
+case "${1:-}" in
+  --prefix) printf '%s\n' "$FAKE_BREW_PREFIX" ;;
+  --repository)
+    if [ "$#" -eq 1 ]; then
+      printf '%s\n' "$FAKE_BREW_REPOSITORY"
+    else
+      printf '%s\n' "$FAKE_TAP_ROOT"
+    fi
+    ;;
+  tap|trust) ;;
+  deps)
+    case "$*" in
+      'deps --topological --full-name --formula automattic/kandelo-homebrew/hello')
+        printf '%s\n' 'cmake' 'automattic/kandelo-homebrew/zlib'
+        ;;
+      'deps --topological --full-name --include-build --include-test --formula automattic/kandelo-homebrew/hello')
+        printf '%s\n' \
+          'cmake' \
+          'automattic/kandelo-homebrew/zlib' \
+          'automattic/kandelo-homebrew/test-helper'
+        ;;
+      *) exit 45 ;;
+    esac
+    ;;
+  install)
+    case "$*" in
+      'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib')
+        printf 'zlib-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        ;;
+      'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/test-helper')
+        printf 'test-helper-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        ;;
+      'install --only-dependencies --include-test --formula automattic/kandelo-homebrew/hello')
+        printf 'host-dependency-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        ;;
+      'install --build-bottle --formula automattic/kandelo-homebrew/hello')
+        printf 'target-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        ;;
+      *) exit 43 ;;
+    esac
+    ;;
+  test)
+    [ "$*" = 'test automattic/kandelo-homebrew/hello' ] || exit 46
+    ;;
+  bottle)
+    printf 'bottle-tags=%s|%s\n' \
+      "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+      >>"$FAKE_BREW_LOG"
+    printf '{}\n' >hello--1.0.wasm32_kandelo.bottle.json
+    printf 'fixture bottle\n' >hello--1.0.wasm32_kandelo.bottle.tar.gz
+    ;;
+  *) exit 44 ;;
+esac
+EOF
+  chmod +x "$fake_brew"
+
+  real_python3="$(command -v python3)"
+  cat >"$fake_bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$(basename "${1:-}")" != 'homebrew-dependency-provenance.py' ]; then
+  exec "$REAL_PYTHON3" "$@"
+fi
+shift
+[ "${1:-}" = 'capture' ] || exit 47
+shift
+expected=""
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --expected-dependencies) expected="${2:-}"; shift 2 ;;
+    --out) out="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$expected" ] && [ -n "$out" ] || exit 48
+cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
+printf '{"schema":1}\n' >"$out"
+EOF
+  chmod +x "$fake_bin/python3"
+
+  if ! PATH="$fake_bin:$PATH" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+    FAKE_BREW_LOG="$log" \
+    FAKE_BREW_PREFIX="$brew_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
+    KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
+    GITHUB_ACTIONS= \
+    bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello \
+      --arch wasm32 \
+      --out "$out" \
+      --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+      >/dev/null 2>&1; then
+    fail "test dependency fixture did not complete"
+  fi
+
+  local runtime_query_line build_test_query_line zlib_line test_helper_line host_line target_line
+  runtime_query_line="$(grep -n '^deps --topological --full-name --formula ' "$log" | cut -d: -f1)"
+  build_test_query_line="$(grep -n '^deps --topological --full-name --include-build --include-test ' "$log" | cut -d: -f1)"
+  zlib_line="$(grep -n '^install --force-bottle .*zlib$' "$log" | cut -d: -f1)"
+  test_helper_line="$(grep -n '^install --force-bottle .*test-helper$' "$log" | cut -d: -f1)"
+  host_line="$(grep -n '^install --only-dependencies --include-test ' "$log" | cut -d: -f1)"
+  target_line="$(grep -n '^install --build-bottle ' "$log" | cut -d: -f1)"
+  [ -n "$runtime_query_line" ] && [ -n "$build_test_query_line" ] && \
+    [ -n "$zlib_line" ] && [ -n "$test_helper_line" ] && \
+    [ -n "$host_line" ] && [ -n "$target_line" ] ||
+    fail "bottle build omitted a dependency resolution or installation phase"
+  [ "$runtime_query_line" -lt "$build_test_query_line" ] && \
+    [ "$build_test_query_line" -lt "$zlib_line" ] && \
+    [ "$zlib_line" -lt "$test_helper_line" ] && \
+    [ "$test_helper_line" -lt "$host_line" ] && \
+    [ "$host_line" -lt "$target_line" ] ||
+    fail "bottle build installed same-tap, host, or target dependencies out of order"
+  grep -Fx 'zlib-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
+    fail "same-tap runtime dependency lost the Kandelo bottle tag"
+  grep -Fx 'test-helper-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
+    fail "same-tap build/test dependency was not force-poured as a Kandelo bottle"
+  grep -Fx 'host-dependency-tags=|' "$log" >/dev/null ||
+    fail "native test dependency install inherited the Kandelo bottle tag"
+  grep -Fx 'target-tags=|' "$log" >/dev/null ||
+    fail "target source build inherited the Kandelo bottle tag"
+  grep -Fx 'bottle-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
+    fail "bottle creation lost the Kandelo bottle tag"
+  [ "$(cat "$provenance_capture")" = 'automattic/kandelo-homebrew/zlib' ] ||
+    fail "runtime provenance included the build/test-only same-tap dependency"
+}
+
+assert_bottle_verifier_installs_test_dependencies() {
+  local root="$TMPDIR/bottle-verifier-test-dependencies"
+  local tap="$root/tap"
+  local brew_repo="$root/brew-repo"
+  local brew_prefix="$root/brew-prefix"
+  local fake_bin="$root/bin"
+  local fake_brew="$fake_bin/brew"
+  local bottle="$root/hello.bottle.tar.gz"
+  local bottle_json="$root/hello.bottle.json"
+  local dependency_provenance="$root/dependency-provenance.json"
+  local selection_receipt="$root/selection-receipt.json"
+  local runtime_evidence="$root/runtime-evidence.json"
+  local target_prefix="$root/target-prefix"
+  local cache="$root/cache"
+  local brew_temp="$root/tmp"
+  local log="$root/brew.log"
+  local state="$root/state"
+  local provenance_capture="$root/provenance.txt"
+  local bottle_sha bottle_bytes tap_commit real_python3
+
+  make_tap "$tap"
+  cat >"$tap/Formula/zlib.rb" <<'EOF'
+class Zlib < Formula
+end
+EOF
+  cat >"$tap/Formula/test-helper.rb" <<'EOF'
+class TestHelper < Formula
+end
+EOF
+  git -C "$tap" add Formula
+  git -C "$tap" commit -q -m "add verifier dependencies"
+  tap_commit="$(git -C "$tap" rev-parse HEAD)"
+
+  mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin" "$target_prefix" \
+    "$cache" "$brew_temp" "$state"
+  printf 'stale cache entry\n' >"$cache/stale"
+  printf 'verified bottle bytes\n' >"$bottle"
+  printf '{}\n' >"$bottle_json"
+  printf '{"schema":1}\n' >"$dependency_provenance"
+  printf '{"bottle":{"mode":"anonymous-public-readback"}}\n' >"$selection_receipt"
+  printf '{"poured_from_bottle":true}\n' >"$target_prefix/INSTALL_RECEIPT.json"
+  bottle_sha="$(sha256sum "$bottle" | awk '{print $1}')"
+  bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
+
+  cat >"$fake_brew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_BREW_LOG"
+case "${1:-}" in
+  --prefix)
+    if [ "$#" -eq 1 ]; then
+      printf '%s\n' "$FAKE_BREW_PREFIX"
+    else
+      printf '%s\n' "$FAKE_TARGET_PREFIX"
+    fi
+    ;;
+  --repository)
+    if [ "$#" -eq 1 ]; then
+      printf '%s\n' "$FAKE_BREW_REPOSITORY"
+    else
+      printf '%s\n' "$FAKE_TAP_ROOT"
+    fi
+    ;;
+  tap|trust)
+    ;;
+  deps)
+    case "$*" in
+      'deps --topological --full-name --formula automattic/kandelo-homebrew/hello')
+        printf '%s\n' cmake automattic/kandelo-homebrew/zlib
+        ;;
+      'deps --topological --full-name --include-test --formula automattic/kandelo-homebrew/hello')
+        printf '%s\n' cmake automattic/kandelo-homebrew/zlib \
+          automattic/kandelo-homebrew/test-helper
+        ;;
+      *) exit 41 ;;
+    esac
+    ;;
+  install)
+    case "$*" in
+      'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib')
+        [ -f "$HOMEBREW_CACHE/stale" ] || exit 42
+        printf 'zlib-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        : >"$FAKE_STATE/zlib"
+        ;;
+      'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/test-helper')
+        [ -f "$FAKE_STATE/zlib" ] && [ -f "$HOMEBREW_CACHE/stale" ] || exit 43
+        printf 'test-helper-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        : >"$FAKE_STATE/test-helper"
+        ;;
+      'install --as-dependency --ignore-dependencies --formula cmake')
+        [ -f "$FAKE_STATE/test-helper" ] && [ -f "$HOMEBREW_CACHE/stale" ] || exit 44
+        printf 'host-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        : >"$FAKE_STATE/host"
+        ;;
+      'install --force-bottle --ignore-dependencies --formula automattic/kandelo-homebrew/hello')
+        [ -f "$FAKE_STATE/host" ] && [ ! -e "$HOMEBREW_CACHE/stale" ] || exit 45
+        [ -z "$(find "$HOMEBREW_CACHE" -mindepth 1 -print -quit)" ] || exit 46
+        printf 'target-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        cp "$FAKE_BOTTLE" "$HOMEBREW_CACHE/selected-bottle.tar.gz"
+        : >"$FAKE_STATE/target"
+        ;;
+      *) exit 47 ;;
+    esac
+    ;;
+  list)
+    [ "$*" = 'list --versions --formula automattic/kandelo-homebrew/hello' ] || exit 48
+    ;;
+  info)
+    [ "$*" = 'info --json=v2 automattic/kandelo-homebrew/hello' ] || exit 49
+    printf '{}\n'
+    ;;
+  test)
+    [ "$*" = 'test automattic/kandelo-homebrew/hello' ] && \
+      [ -f "$FAKE_STATE/target" ] || exit 50
+    printf 'test-tags=%s|%s\n' \
+      "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+      >>"$FAKE_BREW_LOG"
+    printf '{"schema":1}\n' >"$HOMEBREW_KANDELO_NODE_RECEIPT_PATH"
+    ;;
+  *) exit 51 ;;
+esac
+EOF
+  chmod +x "$fake_brew"
+
+  real_python3="$(command -v python3)"
+  cat >"$fake_bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+tool="$(basename "${1:-}")"
+if [ "$tool" != homebrew-dependency-provenance.py ] && \
+   [ "$tool" != homebrew-bottle-runtime-evidence.py ]; then
+  exec "$REAL_PYTHON3" "$@"
+fi
+shift
+[ "${1:-}" = capture ] || exit 60
+shift
+expected=""
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --expected-dependencies) expected="${2:-}"; shift 2 ;;
+    --out) out="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$out" ] || exit 61
+if [ "$tool" = homebrew-dependency-provenance.py ]; then
+  [ -n "$expected" ] || exit 62
+  cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
+fi
+printf '{"schema":1}\n' >"$out"
+EOF
+  chmod +x "$fake_bin/python3"
+
+  PATH="$fake_bin:$PATH" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_BREW_LOG="$log" \
+    FAKE_BREW_PREFIX="$brew_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    FAKE_TARGET_PREFIX="$target_prefix" \
+    FAKE_STATE="$state" \
+    FAKE_BOTTLE="$bottle" \
+    FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    HOMEBREW_CACHE="$cache" \
+    HOMEBREW_TEMP="$brew_temp" \
+    HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
+    KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
+    GITHUB_ACTIONS= \
+    bash "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
+      --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --tap-commit "$tap_commit" \
+      --formula hello \
+      --arch wasm32 \
+      --abi 39 \
+      --bottle "$bottle" \
+      --bottle-json "$bottle_json" \
+      --bottle-url https://example.invalid/hello.bottle.tar.gz \
+      --bottle-sha256 "$bottle_sha" \
+      --bottle-bytes "$bottle_bytes" \
+      --bottle-root-url https://example.invalid \
+      --dependency-provenance "$dependency_provenance" \
+      --selection-receipt "$selection_receipt" \
+      --out "$runtime_evidence" >/dev/null
+
+  local runtime_line test_query_line zlib_line helper_line host_line target_line formula_test_line
+  runtime_line="$(grep -n '^deps --topological --full-name --formula ' "$log" | cut -d: -f1)"
+  test_query_line="$(grep -n '^deps --topological --full-name --include-test ' "$log" | cut -d: -f1)"
+  zlib_line="$(grep -n '^install --force-bottle .*zlib$' "$log" | cut -d: -f1)"
+  helper_line="$(grep -n '^install --force-bottle .*test-helper$' "$log" | cut -d: -f1)"
+  host_line="$(grep -n '^install --as-dependency --ignore-dependencies --formula cmake$' "$log" | cut -d: -f1)"
+  target_line="$(grep -n '^install --force-bottle --ignore-dependencies --formula .*hello$' "$log" | cut -d: -f1)"
+  formula_test_line="$(grep -n '^test automattic/kandelo-homebrew/hello$' "$log" | cut -d: -f1)"
+  [ "$runtime_line" -lt "$test_query_line" ] && \
+    [ "$test_query_line" -lt "$zlib_line" ] && \
+    [ "$zlib_line" -lt "$helper_line" ] && \
+    [ "$helper_line" -lt "$host_line" ] && \
+    [ "$host_line" -lt "$target_line" ] && \
+    [ "$target_line" -lt "$formula_test_line" ] ||
+    fail "bottle verifier installed dependencies, target, or test out of order"
+  grep -Fx 'zlib-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
+    fail "verifier runtime dependency lost the Kandelo bottle tag"
+  grep -Fx 'test-helper-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
+    fail "verifier test dependency was not force-poured as a Kandelo bottle"
+  grep -Fx 'host-tags=|' "$log" >/dev/null ||
+    fail "verifier host test dependencies inherited a Kandelo bottle tag"
+  grep -Fx 'target-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
+    fail "verifier public target pour lost the Kandelo bottle tag"
+  grep -Fx 'test-tags=|' "$log" >/dev/null ||
+    fail "Formula test inherited a Kandelo bottle tag"
+  [ "$(cat "$provenance_capture")" = 'automattic/kandelo-homebrew/zlib' ] ||
+    fail "verifier runtime provenance included its test-only dependency"
+  [ -f "$runtime_evidence" ] || fail "bottle verifier did not emit runtime evidence"
 }
 
 assert_dependency_pour_provenance_is_bounded() {
@@ -3292,6 +3692,9 @@ bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_sysroot_fingerprint_is_arch_specific
 assert_bottle_build_trusts_selected_tap
 assert_bottle_build_forces_same_tap_dependencies
+assert_bottle_build_installs_test_dependencies
+assert_bottle_verifier_installs_test_dependencies
+bash "$REPO_ROOT/scripts/test-homebrew-provision-formula-browser.sh"
 assert_dependency_pour_provenance_is_bounded
 assert_static_formula_closure_is_fail_closed
 assert_generator_validates_homebrew_commit_as_data

@@ -333,9 +333,19 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    for a wasm64 matrix entry. Formula builds use the selected target sysroot,
    and generated sidecars fingerprint that target's `libc.a`. The job executes the
    Formula build and test without publisher credentials. The Kandelo bottle tag
-   is scoped to same-tap dependency pours and final bottle creation; target
-   source builds therefore continue to resolve declared native build and test
-   tools from host bottles. Its strict handoff
+   is scoped to same-tap dependency pours and final bottle creation. Homebrew
+   resolves both the runtime-only same-tap closure used for provenance and the
+   complete same-tap build/test closure; their bounded union is force-poured as
+   Kandelo bottles before native dependencies are resolved. Homebrew then
+   completes the remaining declared build and test closure with normal host
+   semantics, so native tools do not inherit a Kandelo target tag and no
+   same-tap dependency can fall back to a source build. Before Formula
+   execution, the workflow uses the repository's Nix dev shell and declared Node
+   to install Playwright Chromium into the location Formula test helpers derive
+   from `HOMEBREW_CACHE`, then makes that browser tree root-owned, read-only, and
+   executable by the isolated Formula identity. Browser tests therefore use the
+   reviewed JavaScript dependency and cannot replace the provisioned executable.
+   Its strict handoff
    contains only `manifest.json`, Homebrew's bottle JSON, one gzip bottle
    archive, and bounded `dependency-provenance.json`. It contains no Formula
    source, scripts, environment files, raw logs, or credentials. Before the
@@ -421,8 +431,15 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    SHA-256 and byte count. It statically composes the selected bottle block from
    reconstructed canonical metadata. In an isolated identity it then runs the
    reviewed pinned Homebrew implementation with the Kandelo platform patch. The
-   target cache starts empty, source fallback is forbidden, and Homebrew itself
-   must fetch, force-pour, inspect, and test the exact public bottle. Formula and
+   verifier independently resolves the runtime-only same-tap closure and the
+   complete runtime/test closure. It force-pours the same-tap portion from prior
+   Kandelo bottles, then installs each remaining native runtime or test tool
+   explicitly without reintroducing the target's pure build closure. It also
+   provisions a separate protected Playwright Chromium
+   tree for the verifier identity. Runtime provenance remains limited to the
+   runtime-only closure. The target cache then starts empty, source fallback is
+   forbidden, and Homebrew itself must fetch, force-pour, inspect, and test the
+   exact public bottle. Formula and
    support source are checked out fresh again before sidecar generation, which
    does not execute Formula Ruby. A bounded
    archive inspector independently derives the keg file inventory, executable

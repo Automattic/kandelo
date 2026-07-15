@@ -152,13 +152,18 @@ run_brew_for_kandelo_bottles() {
 
 INSTALL_LOG="$CONTROL_DIR/brew-install.log"
 DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"
+BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"
+DEPENDENCY_POUR_LIST="$CONTROL_DIR/same-tap-pour-dependencies.txt"
 DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
 : >"$INSTALL_LOG"
 : >"$DEPENDENCY_LIST"
+: >"$BUILD_TEST_DEPENDENCY_LIST"
+: >"$DEPENDENCY_POUR_LIST"
 for attempt in 1 2 3; do
   : >"$CONTROL_DIR/brew-install-attempt-${attempt}.log"
 done
 chmod 0600 "$INSTALL_LOG" "$DEPENDENCY_LIST" \
+  "$BUILD_TEST_DEPENDENCY_LIST" "$DEPENDENCY_POUR_LIST" \
   "$CONTROL_DIR"/brew-install-attempt-*.log
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
@@ -192,14 +197,37 @@ fi
 
 # `brew install --build-bottle` forces only the selected formula to build from
 # source. Homebrew otherwise permits each dependency to fall back to a source
-# build when its bottle is missing. Install the same-tap runtime closure first,
-# one formula at a time, so --force-bottle applies to every Kandelo dependency.
-# Topological order plus --ignore-dependencies prevents those explicit installs
-# from recursively taking Homebrew's source fallback path.
+# build when its bottle is missing. Preserve the runtime-only same-tap closure
+# for published provenance, but separately resolve build and test dependencies
+# so every same-tap Formula is force-poured before Homebrew resolves native host
+# tools. Topological order plus --ignore-dependencies prevents those explicit
+# installs from recursively taking Homebrew's source fallback path.
 "$BREW_BIN" deps --topological --full-name --formula "$FORMULA_REF" |
   awk -v prefix="$TAP_NAME/" '
     index(tolower($0), prefix) == 1 && !seen[tolower($0)]++ { print tolower($0) }
   ' >"$DEPENDENCY_LIST"
+"$BREW_BIN" deps --topological --full-name --include-build --include-test \
+  --formula "$FORMULA_REF" |
+  awk -v prefix="$TAP_NAME/" '
+    index(tolower($0), prefix) == 1 && !seen[tolower($0)]++ { print tolower($0) }
+  ' >"$BUILD_TEST_DEPENDENCY_LIST"
+awk 'NF && !seen[$0]++ { print }' \
+  "$DEPENDENCY_LIST" "$BUILD_TEST_DEPENDENCY_LIST" >"$DEPENDENCY_POUR_LIST"
+
+validate_same_tap_dependency_list() {
+  local path="$1" label="$2" bytes count
+  bytes="$(wc -c <"$path" | tr -d '[:space:]')"
+  count="$(awk 'NF { count++ } END { print count + 0 }' "$path")"
+  if [ "$bytes" -gt 65536 ] || [ "$count" -gt 128 ]; then
+    echo "homebrew-bottle-build.sh: $label exceeds the same-tap dependency limit" >&2
+    exit 2
+  fi
+}
+
+validate_same_tap_dependency_list "$DEPENDENCY_LIST" "runtime dependency list"
+validate_same_tap_dependency_list \
+  "$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"
+validate_same_tap_dependency_list "$DEPENDENCY_POUR_LIST" "dependency pour list"
 
 run_brew_logged() {
   local status
@@ -223,7 +251,17 @@ while IFS= read -r dependency; do
     --as-dependency \
     --ignore-dependencies \
     --formula "$dependency"
-done <"$DEPENDENCY_LIST"
+done <"$DEPENDENCY_POUR_LIST"
+
+# The exact same-tap build and test closure is now installed, so ask Homebrew to
+# complete the selected Formula's remaining declared dependency closure normally.
+# Keep the Kandelo bottle tag unset here: native tools such as Binaryen, WABT,
+# and certificate bundles must resolve as host packages, while the already
+# installed same-tap Formulae remain the reviewed Kandelo bottles above.
+run_brew_logged "$BREW_BIN" install \
+  --only-dependencies \
+  --include-test \
+  --formula "$FORMULA_REF"
 
 brew_install_build_bottle() {
   local attempt status log
