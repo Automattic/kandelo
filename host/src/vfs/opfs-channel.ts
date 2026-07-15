@@ -14,6 +14,8 @@
  */
 
 import { joinSafeI64, splitSafeI64 } from "./i64";
+import type { StatResult } from "../types";
+import { readOpfsStatResult, writeOpfsStatResult } from "./opfs-stat";
 
 const STATUS_OFFSET = 0;
 const OPCODE_OFFSET = 4;
@@ -188,59 +190,14 @@ export class OpfsChannel {
   }
 
   // --- Stat result serialization (written into data section) ---
-  // Layout: 10 × float64 (80 bytes) at DATA_OFFSET
-  // Fields: dev, ino, mode, nlink, uid, gid, size, atimeMs, mtimeMs, ctimeMs
+  // Layout: dev/ino as 2 × uint64, then 8 × float64 numeric fields (80 bytes).
 
-  writeStatResult(stat: {
-    dev: number;
-    ino: number;
-    mode: number;
-    nlink: number;
-    uid: number;
-    gid: number;
-    size: number;
-    atimeMs: number;
-    mtimeMs: number;
-    ctimeMs: number;
-  }): void {
-    const f64 = new Float64Array(this.buffer, DATA_OFFSET, 10);
-    f64[0] = stat.dev;
-    f64[1] = stat.ino;
-    f64[2] = stat.mode;
-    f64[3] = stat.nlink;
-    f64[4] = stat.uid;
-    f64[5] = stat.gid;
-    f64[6] = stat.size;
-    f64[7] = stat.atimeMs;
-    f64[8] = stat.mtimeMs;
-    f64[9] = stat.ctimeMs;
+  writeStatResult(stat: StatResult): void {
+    writeOpfsStatResult(this.buffer, DATA_OFFSET, stat);
   }
 
-  readStatResult(): {
-    dev: number;
-    ino: number;
-    mode: number;
-    nlink: number;
-    uid: number;
-    gid: number;
-    size: number;
-    atimeMs: number;
-    mtimeMs: number;
-    ctimeMs: number;
-  } {
-    const f64 = new Float64Array(this.buffer, DATA_OFFSET, 10);
-    return {
-      dev: f64[0],
-      ino: f64[1],
-      mode: f64[2],
-      nlink: f64[3],
-      uid: f64[4],
-      gid: f64[5],
-      size: f64[6],
-      atimeMs: f64[7],
-      mtimeMs: f64[8],
-      ctimeMs: f64[9],
-    };
+  readStatResult(): StatResult {
+    return readOpfsStatResult(this.buffer, DATA_OFFSET);
   }
 
   writeStatfsResult(statfs: {

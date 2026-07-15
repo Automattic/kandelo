@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFREG};
 use wasm_posix_shared::{Errno, WasmStat};
 
+use crate::lock::{FileId, KernelFileKind};
 use crate::process::Process;
 
 /// Sentinel host_handle for procfs directory OFDs.
@@ -25,6 +26,7 @@ pub const PROCFS_BUF_BASE: i64 = 200;
 #[inline]
 pub fn is_procfs_buf_handle(h: i64) -> bool {
     h <= -PROCFS_BUF_BASE
+        && h > -crate::descriptor_backing::SYNTHETIC_REGULAR_HANDLE_BASE
 }
 
 /// Decode a procfs buffer index from a host_handle.
@@ -36,6 +38,9 @@ pub fn procfs_buf_idx(h: i64) -> usize {
 /// Encode a procfs buffer index as a host_handle.
 #[inline]
 fn procfs_buf_handle(idx: usize) -> i64 {
+    debug_assert!(
+        idx < (crate::descriptor_backing::SYNTHETIC_REGULAR_HANDLE_BASE - PROCFS_BUF_BASE) as usize
+    );
     -(PROCFS_BUF_BASE + idx as i64)
 }
 
@@ -554,6 +559,22 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
     }
 }
 
+/// Stable tagged identity for a regular procfs object. The packed detail is
+/// explicit rather than pathname-derived; fdinfo entries include their fd so
+/// distinct procfs objects cannot alias merely because their stat category is
+/// the same.
+pub fn regular_file_object_id(entry: &ProcfsEntry) -> Option<u64> {
+    if entry.is_dir() || entry.is_symlink() {
+        return None;
+    }
+    let (pid, kind) = entry_ids(entry);
+    let detail = match entry {
+        ProcfsEntry::FdInfo(_, fd) => u16::try_from(*fd).ok()?,
+        _ => 0,
+    };
+    Some(((pid as u64) << 24) | ((kind as u64) << 16) | detail as u64)
+}
+
 // ── Open handler ────────────────────────────────────────────────────────────
 
 /// Open a procfs entry. Returns the fd number on success.
@@ -625,6 +646,7 @@ pub fn procfs_open(
     }
 
     // Regular file: generate one snapshot backing per open file description.
+    let object_id = regular_file_object_id(entry).ok_or(Errno::EINVAL)?;
     let content = generate_content(proc, entry)?;
     let buf_idx = crate::descriptor_backing::with_procfs_bufs(|table| {
         table.alloc(crate::descriptor_backing::ProcfsBacking::new(content))
@@ -634,6 +656,10 @@ pub fn procfs_open(
     let ofd_idx =
         proc.ofd_table
             .create(FileType::Regular, status_flags, host_handle, resolved_path);
+    proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Kernel {
+        kind: KernelFileKind::ProcFsRegular,
+        object_id,
+    });
     match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
         Ok(fd) => Ok(fd),
         Err(err) => {

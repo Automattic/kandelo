@@ -261,7 +261,7 @@ export class HostFileSystem implements FileSystemBackend {
     }
   }
 
-  private toStatResult(s: fs.Stats): StatResult {
+  private toStatResult(s: fs.BigIntStats): StatResult {
     // Normalize uid/gid to match Process::new's default euid (0).
     // The real macOS/Linux uid of the user running the kernel is not
     // exposed to guest programs — guest sees the sandbox as
@@ -281,7 +281,7 @@ export class HostFileSystem implements FileSystemBackend {
     const nativePath = this.safePath(path, !noFollowFinal);
     const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
     const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
-    if (created) this.metadata.chmod(fs.fstatSync(fd), mode);
+    if (created) this.metadata.chmod(fs.fstatSync(fd, { bigint: true }), mode);
     this.fdPositions.set(fd, 0);
     return fd;
   }
@@ -314,8 +314,11 @@ export class HostFileSystem implements FileSystemBackend {
   ): number {
     const pos = offset ?? this.fdPositions.get(handle) ?? 0;
     const bytesWritten = fs.writeSync(handle, buffer, 0, length, pos);
-    if (bytesWritten > 0)
-      this.metadata.noteNativeContentChange(fs.fstatSync(handle));
+    if (bytesWritten > 0) {
+      this.metadata.noteNativeContentChange(
+        fs.fstatSync(handle, { bigint: true }),
+      );
+    }
     if (offset === null) {
       this.fdPositions.set(handle, pos + bytesWritten);
     }
@@ -332,7 +335,7 @@ export class HostFileSystem implements FileSystemBackend {
         newPos = checkedSeekPosition(this.fdPositions.get(handle) ?? 0, offset);
         break;
       case 2: // SEEK_END
-        newPos = checkedSeekPosition(fs.fstatSync(handle).size, offset);
+        newPos = checkedSeekPosition(this.fstat(handle).size, offset);
         break;
       default:
         throw makeHostFsError("EINVAL", `invalid whence value: ${whence}`);
@@ -342,7 +345,7 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   fstat(handle: number): StatResult {
-    return this.toStatResult(fs.fstatSync(handle));
+    return this.toStatResult(fs.fstatSync(handle, { bigint: true }));
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
@@ -362,7 +365,9 @@ export class HostFileSystem implements FileSystemBackend {
 
   ftruncate(handle: number, length: number): void {
     fs.ftruncateSync(handle, length);
-    this.metadata.noteNativeContentChange(fs.fstatSync(handle));
+    this.metadata.noteNativeContentChange(
+      fs.fstatSync(handle, { bigint: true }),
+    );
   }
 
   fsync(handle: number): void {
@@ -370,21 +375,25 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   fchmod(handle: number, mode: number): void {
-    this.metadata.chmod(fs.fstatSync(handle), mode);
+    this.metadata.chmod(fs.fstatSync(handle, { bigint: true }), mode);
   }
 
   fchown(handle: number, uid: number, gid: number): void {
-    this.metadata.chown(fs.fstatSync(handle), uid, gid);
+    this.metadata.chown(fs.fstatSync(handle, { bigint: true }), uid, gid);
   }
 
   // ── Path-based operations ───────────────────────────────────
 
   stat(path: string): StatResult {
-    return this.toStatResult(fs.statSync(this.safePath(path)));
+    return this.toStatResult(
+      fs.statSync(this.safePath(path), { bigint: true }),
+    );
   }
 
   lstat(path: string): StatResult {
-    return this.toStatResult(fs.lstatSync(this.safePath(path, false)));
+    return this.toStatResult(
+      fs.lstatSync(this.safePath(path, false), { bigint: true }),
+    );
   }
 
   statfs(path: string): StatfsResult {
@@ -393,7 +402,7 @@ export class HostFileSystem implements FileSystemBackend {
 
   pathconf(path: string, name: number): PathconfValue {
     const nativePath = this.safePath(path);
-    const stat = this.toStatResult(fs.statSync(nativePath));
+    const stat = this.toStatResult(fs.statSync(nativePath, { bigint: true }));
     return filesystemPathconf(
       stat,
       name,
@@ -407,31 +416,31 @@ export class HostFileSystem implements FileSystemBackend {
   mkdir(path: string, mode: number): void {
     const nativePath = this.safePath(path, false);
     fs.mkdirSync(nativePath, { mode });
-    this.metadata.chmod(fs.statSync(nativePath), mode);
+    this.metadata.chmod(fs.statSync(nativePath, { bigint: true }), mode);
   }
 
   rmdir(path: string): void {
     const nativePath = this.safePath(path, false);
-    const stat = fs.lstatSync(nativePath);
+    const stat = fs.lstatSync(nativePath, { bigint: true });
     fs.rmdirSync(nativePath);
     this.metadata.forget(stat);
   }
 
   unlink(path: string): void {
     const nativePath = this.safePath(path, false);
-    const stat = fs.lstatSync(nativePath);
+    const stat = fs.lstatSync(nativePath, { bigint: true });
     fs.unlinkSync(nativePath);
-    if (stat.nlink <= 1) this.metadata.forget(stat);
+    if (stat.nlink <= 1n) this.metadata.forget(stat);
   }
 
   rename(oldPath: string, newPath: string): void {
     const nativeNewPath = this.safePath(newPath, false);
-    let replaced: fs.Stats | undefined;
+    let replaced: fs.BigIntStats | undefined;
     try {
-      replaced = fs.lstatSync(nativeNewPath);
+      replaced = fs.lstatSync(nativeNewPath, { bigint: true });
     } catch {}
     fs.renameSync(this.safePath(oldPath, false), nativeNewPath);
-    if (replaced !== undefined && replaced.nlink <= 1)
+    if (replaced !== undefined && replaced.nlink <= 1n)
       this.metadata.forget(replaced);
   }
 
@@ -454,19 +463,33 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   chmod(path: string, mode: number): void {
-    this.metadata.chmod(fs.statSync(this.safePath(path)), mode);
+    this.metadata.chmod(
+      fs.statSync(this.safePath(path), { bigint: true }),
+      mode,
+    );
   }
 
   chown(path: string, uid: number, gid: number): void {
-    this.metadata.chown(fs.statSync(this.safePath(path)), uid, gid);
+    this.metadata.chown(
+      fs.statSync(this.safePath(path), { bigint: true }),
+      uid,
+      gid,
+    );
   }
 
   lchown(path: string, uid: number, gid: number): void {
-    this.metadata.chown(fs.lstatSync(this.safePath(path, false)), uid, gid);
+    this.metadata.chown(
+      fs.lstatSync(this.safePath(path, false), { bigint: true }),
+      uid,
+      gid,
+    );
   }
 
   access(path: string, mode: number): void {
-    this.metadata.access(fs.statSync(this.safePath(path)), mode);
+    this.metadata.access(
+      fs.statSync(this.safePath(path), { bigint: true }),
+      mode,
+    );
   }
 
   utimensat(
@@ -479,7 +502,7 @@ export class HostFileSystem implements FileSystemBackend {
     const nativePath = this.safePath(path);
     if (atimeNsec === UTIME_OMIT && mtimeNsec === UTIME_OMIT) return;
 
-    const stat = fs.statSync(nativePath);
+    const stat = fs.statSync(nativePath, { bigint: true });
     const current = this.metadata.toStatResult(stat);
     const nowMs = Date.now();
     const atimeMs =
@@ -495,7 +518,12 @@ export class HostFileSystem implements FileSystemBackend {
           ? nowMs
           : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
     fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
-    this.metadata.utimens(stat, atimeMs, mtimeMs, fs.statSync(nativePath));
+    this.metadata.utimens(
+      stat,
+      atimeMs,
+      mtimeMs,
+      fs.statSync(nativePath, { bigint: true }),
+    );
   }
 
   // ── Directory iteration ─────────────────────────────────────

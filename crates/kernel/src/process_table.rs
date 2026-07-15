@@ -20,6 +20,7 @@ use core::sync::atomic::AtomicI32;
 use wasm_posix_shared::flags::O_ACCMODE;
 use wasm_posix_shared::Errno;
 
+use crate::lock::AdvisoryLockManager;
 use crate::ofd::FileType;
 use crate::process::{ChildWaitEvent, Process, ProcessState, StdioConfig};
 
@@ -41,6 +42,8 @@ pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
 /// calling `kernel_handle_channel`).
 pub struct ProcessTable {
     pub(crate) processes: BTreeMap<u32, Process>,
+    /// Sole machine-wide authority for POSIX, OFD, and flock advisory locks.
+    advisory_locks: AdvisoryLockManager,
     current_pid: u32,
     next_spawn_pid: u32,
     /// Kernel/libc thread id for the syscall currently being serviced.
@@ -76,6 +79,15 @@ pub struct RemoveProcessResult {
     /// this kernel-side bookkeeping intentionally doesn't touch the
     /// host trait so `process_table.rs` stays host-agnostic.
     pub host_net_closes: Vec<i32>,
+}
+
+/// Host resources released while the retained legacy exec ABI replaces a
+/// Process in place. The Wasm export layer drains these through the normal
+/// host close imports after the infallible replacement commit.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct LegacyExecCleanup {
+    pub host_closes: Vec<i64>,
+    pub host_dir_closes: Vec<i64>,
 }
 
 /// Subset of parent state inherited by a `posix_spawn` child. Captured up
@@ -283,6 +295,7 @@ impl ProcessTable {
     pub const fn new() -> Self {
         ProcessTable {
             processes: BTreeMap::new(),
+            advisory_locks: AdvisoryLockManager::new(),
             current_pid: 0,
             next_spawn_pid: 2,
             current_tid: 0,
@@ -350,20 +363,26 @@ impl ProcessTable {
         let mut host_dir_closes: Vec<i64> = Vec::new();
         let mut host_net_closes: Vec<i32> = Vec::new();
 
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        // Keep the global pipe-table borrow in a strict lexical scope. Closing
+        // a final read end can drop queued SCM_RIGHTS entries, whose Drop impl
+        // only appends fixed deferred metadata. The real cleanup below runs
+        // after this scope ends and may safely re-enter the pipe table.
+        {
+            let pipe_table = unsafe { crate::pipe::global_pipe_table() };
 
-        // Clean up pipe OFDs: decrement ref counts in the global pipe table.
-        // Each OFD represents one pipe endpoint (one reader or one writer),
-        // regardless of how many FDs point to it (ofd.ref_count).
-        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
-            if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
-                let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                if let Some(pipe) = pipe_table.get_mut(pipe_idx) {
-                    if let Some(kind) = pipe.reference_kind(ofd.status_flags) {
-                        pipe.close_reference(kind);
+            // Clean up pipe OFDs: decrement ref counts in the global pipe table.
+            // Each OFD represents one pipe endpoint (one reader or one writer),
+            // regardless of how many FDs point to it (ofd.ref_count).
+            for (_ofd_idx, ofd) in proc.ofd_table.iter() {
+                if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
+                    let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+                    if let Some(pipe) = pipe_table.get_mut(pipe_idx) {
+                        if let Some(kind) = pipe.reference_kind(ofd.status_flags) {
+                            pipe.close_reference(kind);
+                        }
                     }
+                    pipe_table.free_if_closed(pipe_idx);
                 }
-                pipe_table.free_if_closed(pipe_idx);
             }
         }
 
@@ -439,52 +458,55 @@ impl ProcessTable {
         // entry, not once per Socket OFD. That matches the per-socket bump
         // in `bump_inherited_resource_refcounts` and stays consistent
         // regardless of fd-dup count.
-        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
-            if ofd.file_type == FileType::Socket && ofd.host_handle < 0 {
-                let sock_idx = (-(ofd.host_handle + 1)) as usize;
-                if let Some(sock) = proc.sockets.get(sock_idx) {
-                    if sock.global_pipes {
-                        let orderly_tcp_close = matches!(
-                            (sock.domain, sock.sock_type),
-                            (
-                                crate::socket::SocketDomain::Inet
-                                    | crate::socket::SocketDomain::Inet6,
-                                crate::socket::SocketType::Stream,
-                            )
-                        );
-                        // Cross-process socket: close pipe ends in global table
-                        if let Some(send_idx) = sock.send_buf_idx {
-                            if let Some(pipe) = pipe_table.get_mut(send_idx) {
-                                pipe.close_write_end();
-                            }
-                            pipe_table.free_if_closed(send_idx);
-                        }
-                        if let Some(recv_idx) = sock.recv_buf_idx {
-                            if let Some(pipe) = pipe_table.get_mut(recv_idx) {
-                                if orderly_tcp_close {
-                                    pipe.close_read_end_orderly();
-                                } else {
-                                    pipe.close_read_end();
+        {
+            let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+            for (_ofd_idx, ofd) in proc.ofd_table.iter() {
+                if ofd.file_type == FileType::Socket && ofd.host_handle < 0 {
+                    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                    if let Some(sock) = proc.sockets.get(sock_idx) {
+                        if sock.global_pipes {
+                            let orderly_tcp_close = matches!(
+                                (sock.domain, sock.sock_type),
+                                (
+                                    crate::socket::SocketDomain::Inet
+                                        | crate::socket::SocketDomain::Inet6,
+                                    crate::socket::SocketType::Stream,
+                                )
+                            );
+                            // Cross-process socket: close pipe ends in global table
+                            if let Some(send_idx) = sock.send_buf_idx {
+                                if let Some(pipe) = pipe_table.get_mut(send_idx) {
+                                    pipe.close_write_end();
                                 }
+                                pipe_table.free_if_closed(send_idx);
                             }
-                            pipe_table.free_if_closed(recv_idx);
-                        }
-                    }
-                    // Clean up unaccepted connections in listen backlog
-                    for &backlog_sock_idx in &sock.listen_backlog {
-                        if let Some(backlog_sock) = proc.sockets.get(backlog_sock_idx) {
-                            if backlog_sock.global_pipes {
-                                if let Some(send_idx) = backlog_sock.send_buf_idx {
-                                    if let Some(pipe) = pipe_table.get_mut(send_idx) {
-                                        pipe.close_write_end();
-                                    }
-                                    pipe_table.free_if_closed(send_idx);
-                                }
-                                if let Some(recv_idx) = backlog_sock.recv_buf_idx {
-                                    if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+                            if let Some(recv_idx) = sock.recv_buf_idx {
+                                if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+                                    if orderly_tcp_close {
+                                        pipe.close_read_end_orderly();
+                                    } else {
                                         pipe.close_read_end();
                                     }
-                                    pipe_table.free_if_closed(recv_idx);
+                                }
+                                pipe_table.free_if_closed(recv_idx);
+                            }
+                        }
+                        // Clean up unaccepted connections in listen backlog
+                        for &backlog_sock_idx in &sock.listen_backlog {
+                            if let Some(backlog_sock) = proc.sockets.get(backlog_sock_idx) {
+                                if backlog_sock.global_pipes {
+                                    if let Some(send_idx) = backlog_sock.send_buf_idx {
+                                        if let Some(pipe) = pipe_table.get_mut(send_idx) {
+                                            pipe.close_write_end();
+                                        }
+                                        pipe_table.free_if_closed(send_idx);
+                                    }
+                                    if let Some(recv_idx) = backlog_sock.recv_buf_idx {
+                                        if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+                                            pipe.close_read_end();
+                                        }
+                                        pipe_table.free_if_closed(recv_idx);
+                                    }
                                 }
                             }
                         }
@@ -534,14 +556,42 @@ impl ProcessTable {
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
 
-        // Release kernel fallback advisory locks. Host-backed locks are owned
-        // by the host shared lock table; fallback locks for non-host files are
-        // coordinated by the kernel.
-        let fallback_locks = unsafe { crate::lock::global_fallback_lock_table() };
-        fallback_locks.remove_all_for_pid(pid);
-        for (ofd_idx, ofd) in proc.ofd_table.iter() {
-            let ofd_lock_owner = (ofd_idx as u32) | 0x80000000;
-            fallback_locks.remove_for_handle(ofd.host_handle, ofd_lock_owner);
+        // A final read-end close above may have discarded queued SCM_RIGHTS
+        // entries. Release their real resource references only after all
+        // PipeTable borrows have ended, and collect host closes for the caller.
+        let mut deferred_lock_state_changed = false;
+        while let Some(release) = crate::pipe::pop_deferred_in_flight_release() {
+            let released = crate::pipe::release_deferred_in_flight_resource(release);
+            if let Some(handle) = released.host_close {
+                host_closes.push(handle);
+            }
+            if released.final_ofd_reference {
+                deferred_lock_state_changed |= self
+                    .advisory_locks
+                    .remove_ofd(released.ofd_id)
+                    .changed;
+            }
+        }
+
+        // POSIX locks are process-owned and disappear on every exit/removal.
+        // OFD/flock locks disappear only when no other machine process still
+        // references that stable open-file-description identity, including a
+        // descriptor currently queued in SCM_RIGHTS ancillary data.
+        let mut lock_state_changed =
+            deferred_lock_state_changed | self.advisory_locks.remove_process(pid).changed;
+        for (_, ofd) in proc.ofd_table.iter() {
+            let still_referenced = self.processes.values().any(|other| {
+                other
+                    .ofd_table
+                    .iter()
+                    .any(|(_, candidate)| candidate.ofd_id == ofd.ofd_id)
+            }) || crate::ofd::has_in_flight_ofd(ofd.ofd_id);
+            if !still_referenced {
+                lock_state_changed |= self.advisory_locks.remove_ofd(ofd.ofd_id).changed;
+            }
+        }
+        if lock_state_changed {
+            crate::wakeup::push_advisory_lock();
         }
 
         if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {
@@ -637,6 +687,42 @@ impl ProcessTable {
         self.processes.get_mut(&self.current_pid)
     }
 
+    /// Borrow the current process and machine-wide lock manager together.
+    /// These references are safe and disjoint because they originate from
+    /// separate `ProcessTable` fields.
+    pub fn current_process_and_advisory_locks(
+        &mut self,
+    ) -> Option<(&mut Process, &mut AdvisoryLockManager)> {
+        let pid = self.current_pid;
+        let processes = &mut self.processes;
+        let advisory_locks = &mut self.advisory_locks;
+        processes
+            .get_mut(&pid)
+            .map(|process| (process, advisory_locks))
+    }
+
+    /// Borrow an addressed process and the lock manager as disjoint fields.
+    pub fn process_and_advisory_locks(
+        &mut self,
+        pid: u32,
+    ) -> Option<(&mut Process, &mut AdvisoryLockManager)> {
+        let processes = &mut self.processes;
+        let advisory_locks = &mut self.advisory_locks;
+        processes
+            .get_mut(&pid)
+            .map(|process| (process, advisory_locks))
+    }
+
+    #[cfg(test)]
+    pub fn advisory_locks(&self) -> &AdvisoryLockManager {
+        &self.advisory_locks
+    }
+
+    #[cfg(test)]
+    pub fn advisory_locks_mut(&mut self) -> &mut AdvisoryLockManager {
+        &mut self.advisory_locks
+    }
+
     /// Get a mutable reference to a process by pid.
     pub fn get_mut(&mut self, pid: u32) -> Option<&mut Process> {
         self.processes.get_mut(&pid)
@@ -730,7 +816,8 @@ impl ProcessTable {
         &mut self,
         pid: u32,
         mut replacement: Process,
-    ) -> Result<(), Errno> {
+    ) -> Result<LegacyExecCleanup, Errno> {
+        let mut cleanup = LegacyExecCleanup::default();
         if replacement.pid != pid {
             return Err(Errno::EINVAL);
         }
@@ -742,10 +829,130 @@ impl ProcessTable {
             // job-control state or unconsumed parent-visible status record.
             replacement.state = old.state;
             replacement.wait_event = old.wait_event;
+
+            // The exec wire format preserves OFD table indices. Validate that
+            // every replacement entry is transferring the exact old entry at
+            // that index. OfdId alone is deliberately insufficient here:
+            // SCM_RIGHTS can install multiple process-local OFD entries that
+            // share one machine-wide identity, and CLOEXEC may remove only one
+            // of those ownership references.
+            for (index, new_ofd) in replacement.ofd_table.iter() {
+                let Some(old_ofd) = old.ofd_table.get(index) else {
+                    return Err(Errno::EBADF);
+                };
+                if new_ofd.ofd_id != old_ofd.ofd_id
+                    || new_ofd.file_id != old_ofd.file_id
+                    || new_ofd.file_type != old_ofd.file_type
+                    || new_ofd.host_handle != old_ofd.host_handle
+                {
+                    return Err(Errno::EBADF);
+                }
+            }
             let removed = crate::descriptor_backing::removed_backings_for_exec(old, &replacement)?;
+
+            // The retained exec wire format omits CLOEXEC descriptors. Track
+            // their file identities before replacing the Process so POSIX's
+            // "close any descriptor for this file" rule is applied to the
+            // process-owned namespace. Stable OfdIds independently identify
+            // descriptions that have no surviving machine reference.
+            let mut closed_file_ids = Vec::new();
+            for (fd, entry) in old.fd_table.iter() {
+                let old_ofd = match old.ofd_table.get(entry.ofd_ref.0) {
+                    Some(ofd) => ofd,
+                    None => continue,
+                };
+                let survived = replacement
+                    .fd_table
+                    .get(fd)
+                    .ok()
+                    .and_then(|new_entry| replacement.ofd_table.get(new_entry.ofd_ref.0))
+                    .is_some_and(|new_ofd| new_ofd.ofd_id == old_ofd.ofd_id);
+                if !survived {
+                    if let Some(file_id) = old_ofd.file_id {
+                        if !closed_file_ids.contains(&file_id) {
+                            closed_file_ids.push(file_id);
+                        }
+                    }
+                }
+            }
+
+            let mut orphaned_ofd_ids = Vec::new();
+            let mut removed_host_handles = Vec::new();
+            let mut removed_host_dir_handles = Vec::new();
+            for (old_index, old_ofd) in old.ofd_table.iter() {
+                // Resource ownership belongs to each process-local OFD entry,
+                // while advisory locks belong to the stable machine-wide
+                // OfdId. Keep those two survival questions separate.
+                let resource_survives_exec = replacement
+                    .ofd_table
+                    .get(old_index)
+                    .is_some_and(|new_ofd| new_ofd.ofd_id == old_ofd.ofd_id);
+                let identity_survives_exec = replacement
+                    .ofd_table
+                    .iter()
+                    .any(|(_, new_ofd)| new_ofd.ofd_id == old_ofd.ofd_id);
+                // Directory iteration handles are deliberately not serialized
+                // across exec; even a surviving OFD restarts with -1.
+                if old_ofd.dir_host_handle >= 0 {
+                    removed_host_dir_handles.push(old_ofd.dir_host_handle);
+                }
+                if !resource_survives_exec {
+                    if old_ofd.host_handle >= 0
+                        && matches!(
+                            old_ofd.file_type,
+                            FileType::Regular
+                                | FileType::Directory
+                                | FileType::CharDevice
+                                | FileType::Pipe
+                        )
+                    {
+                        removed_host_handles.push(old_ofd.host_handle);
+                    }
+                }
+                let referenced_by_peer = self.processes.iter().any(|(&other_pid, peer)| {
+                    other_pid != pid
+                        && peer
+                            .ofd_table
+                            .iter()
+                            .any(|(_, peer_ofd)| peer_ofd.ofd_id == old_ofd.ofd_id)
+                }) || crate::ofd::has_in_flight_ofd(old_ofd.ofd_id);
+                if !identity_survives_exec
+                    && !referenced_by_peer
+                    && !orphaned_ofd_ids.contains(&old_ofd.ofd_id)
+                {
+                    orphaned_ofd_ids.push(old_ofd.ofd_id);
+                }
+            }
+            // POSIX directory streams are also discarded across exec, but
+            // they live outside the OFD table and are intentionally absent
+            // from the legacy exec payload. Return their host iterator
+            // handles alongside the per-OFD iterators before dropping the
+            // old Process.
+            for stream in old.dir_streams.iter().flatten() {
+                removed_host_dir_handles.push(stream.host_handle);
+            }
+
             let old = self.processes.insert(pid, replacement).unwrap();
             crate::descriptor_backing::release_backings(&removed);
             drop(old);
+
+            cleanup.host_dir_closes = removed_host_dir_handles;
+            for host_handle in removed_host_handles {
+                if crate::ofd::host_handle_close_ref(host_handle) {
+                    cleanup.host_closes.push(host_handle);
+                }
+            }
+
+            let mut locks_changed = false;
+            for file_id in closed_file_ids {
+                locks_changed |= self.advisory_locks.remove_process_file(pid, file_id).changed;
+            }
+            for ofd_id in orphaned_ofd_ids {
+                locks_changed |= self.advisory_locks.remove_ofd(ofd_id).changed;
+            }
+            if locks_changed {
+                crate::wakeup::push_advisory_lock();
+            }
         } else {
             // A fresh kernel instance has no old Process from which to
             // transfer global backing ownership, and the retained wire format
@@ -759,7 +966,7 @@ impl ProcessTable {
             }
             self.processes.insert(pid, replacement);
         }
-        Ok(())
+        Ok(cleanup)
     }
 
     /// Non-forking spawn: build a child process for `posix_spawn` without
@@ -942,11 +1149,18 @@ impl ProcessTable {
     ) -> Result<(), Errno> {
         use crate::spawn::FileAction;
         for action in file_actions {
-            let child = self.processes.get_mut(&child_pid).ok_or(Errno::ESRCH)?;
+            let (child, advisory_locks) = self
+                .process_and_advisory_locks(child_pid)
+                .ok_or(Errno::ESRCH)?;
             match action {
                 FileAction::Close { fd } => {
                     // POSIX: close errors are silently ignored for spawn.
-                    let _ = crate::syscalls::sys_close(child, host, *fd);
+                    let _ = crate::syscalls::sys_close_with_locks(
+                        child,
+                        advisory_locks,
+                        host,
+                        *fd,
+                    );
                 }
                 FileAction::Dup2 { srcfd, fd } => {
                     if srcfd == fd {
@@ -955,7 +1169,13 @@ impl ProcessTable {
                         let entry = child.fd_table.get_mut(*fd)?;
                         entry.fd_flags &= !wasm_posix_shared::fd_flags::FD_CLOEXEC;
                     } else {
-                        let _ = crate::syscalls::sys_dup2(child, host, *srcfd, *fd)?;
+                        let _ = crate::syscalls::sys_dup2_with_locks(
+                            child,
+                            advisory_locks,
+                            host,
+                            *srcfd,
+                            *fd,
+                        )?;
                     }
                 }
                 FileAction::Open {
@@ -968,10 +1188,21 @@ impl ProcessTable {
                         crate::syscalls::sys_open(child, host, path, *oflag as u32, *mode)?;
                     if opened != *fd {
                         // Move opened fd to the requested target slot.
-                        let r = crate::syscalls::sys_dup2(child, host, opened, *fd);
+                        let r = crate::syscalls::sys_dup2_with_locks(
+                            child,
+                            advisory_locks,
+                            host,
+                            opened,
+                            *fd,
+                        );
                         // Always close the temporary fd, even if dup2 failed —
                         // we don't want to leak it on the error path.
-                        let _ = crate::syscalls::sys_close(child, host, opened);
+                        let _ = crate::syscalls::sys_close_with_locks(
+                            child,
+                            advisory_locks,
+                            host,
+                            opened,
+                        );
                         let _ = r?;
                     }
                 }
@@ -991,7 +1222,9 @@ impl ProcessTable {
         // basic/spawn/posix_spawn_file_actions_adddup2 exercises exactly
         // this). Run after the action loop so file actions can rescue or
         // clear individual fds before the sweep.
-        let child = self.processes.get_mut(&child_pid).ok_or(Errno::ESRCH)?;
+        let (child, advisory_locks) = self
+            .process_and_advisory_locks(child_pid)
+            .ok_or(Errno::ESRCH)?;
         let cloexec_fds: Vec<i32> = child
             .fd_table
             .iter()
@@ -1001,7 +1234,8 @@ impl ProcessTable {
         for fd in cloexec_fds {
             // POSIX: close errors here are silently ignored — same policy
             // as the FileAction::Close handler above.
-            let _ = crate::syscalls::sys_close(child, host, fd);
+            let _ =
+                crate::syscalls::sys_close_with_locks(child, advisory_locks, host, fd);
         }
 
         Ok(())
@@ -1078,17 +1312,6 @@ impl ProcessTable {
     /// Return the recorded parent pid for a process.
     pub fn parent_pid(&self, pid: u32) -> Option<u32> {
         self.processes.get(&pid).map(|proc| proc.ppid)
-    }
-
-    /// Mark a process as terminated by a host-observed signal death.
-    ///
-    /// Used when the worker dies without reaching the normal `SYS_EXIT`
-    /// path. The process remains in the table as an Exited zombie until its
-    /// parent reaps it, so wait semantics stay kernel-owned.
-    pub fn mark_process_signaled(&mut self, pid: u32, signum: u32) -> Result<(), Errno> {
-        let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
-        proc.record_signal_exit(signum);
-        Ok(())
     }
 
     /// Select the latest status-information record for a direct child.
@@ -1313,14 +1536,104 @@ mod tests {
         table.create_process(200).unwrap();
         assert!(table.get_mut(200).unwrap().record_stop(SIGTSTP));
 
+        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(
+            table.get(200).unwrap(),
+        )
+        .unwrap();
+        let replacement = crate::fork::deserialize_exec_state(&serialized, 200).unwrap();
+
         table
-            .replace_legacy_exec_process(200, Process::new(200))
+            .replace_legacy_exec_process(200, replacement)
             .unwrap();
 
         assert_eq!(table.get(200).unwrap().state, ProcessState::Stopped);
         let event = table.get(200).unwrap().wait_event.unwrap();
         assert_eq!(event.event_mask, EVENT_STOPPED);
         assert_eq!(event.si_status, SIGTSTP as i32);
+    }
+
+    #[test]
+    fn legacy_exec_returns_unserialized_directory_stream_handles() {
+        use crate::process::DirStream;
+
+        let mut table = ProcessTable::new();
+        table.create_process(202).unwrap();
+        table
+            .get_mut(202)
+            .unwrap()
+            .dir_streams
+            .push(Some(DirStream {
+                host_handle: 8_202,
+                path: b"/tmp".to_vec(),
+                position: 3,
+                synth_dot_state: 2,
+            }));
+
+        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(
+            table.get(202).unwrap(),
+        )
+        .unwrap();
+        let replacement = crate::fork::deserialize_exec_state(&serialized, 202).unwrap();
+        assert!(replacement.dir_streams.is_empty());
+
+        let cleanup = table
+            .replace_legacy_exec_process(202, replacement)
+            .unwrap();
+        assert_eq!(cleanup.host_dir_closes, vec![8_202]);
+    }
+
+    #[test]
+    fn legacy_exec_releases_cloexec_process_and_final_ofd_locks() {
+        use crate::fd::OpenFileDescRef;
+        use crate::lock::{AdvisoryLockType, FileId, LockOwner, LockRange};
+        use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+        use wasm_posix_shared::flags::O_RDWR;
+
+        let mut table = ProcessTable::new();
+        table.create_process(201).unwrap();
+        let file = FileId::Host { dev: 8, ino: 9 };
+        let (ofd_id, fd) = {
+            let process = table.get_mut(201).unwrap();
+            let ofd_index = process.ofd_table.create(
+                FileType::Regular,
+                O_RDWR,
+                -50,
+                b"/cloexec".to_vec(),
+            );
+            process.ofd_table.get_mut(ofd_index).unwrap().file_id = Some(file);
+            let ofd_id = process.ofd_table.get(ofd_index).unwrap().ofd_id;
+            let fd = process
+                .fd_table
+                .alloc(OpenFileDescRef(ofd_index), FD_CLOEXEC)
+                .unwrap();
+            (ofd_id, fd)
+        };
+        assert!(table.get(201).unwrap().fd_table.get(fd).is_ok());
+        table
+            .advisory_locks
+            .set_lock(
+                file,
+                LockOwner::Process(201),
+                Some(AdvisoryLockType::Write),
+                LockRange::normalize(0, 1).unwrap(),
+            )
+            .unwrap();
+        table
+            .advisory_locks
+            .set_lock(
+                file,
+                LockOwner::OpenFileDescription(ofd_id),
+                Some(AdvisoryLockType::Write),
+                LockRange::normalize(2, 1).unwrap(),
+            )
+            .unwrap();
+
+        let serialized =
+            crate::fork::serialize_exec_state_with_growing_buffer(table.get(201).unwrap())
+                .unwrap();
+        let replacement = crate::fork::deserialize_exec_state(&serialized, 201).unwrap();
+        table.replace_legacy_exec_process(201, replacement).unwrap();
+        assert!(table.advisory_locks.is_empty());
     }
 
     #[test]
@@ -1622,7 +1935,7 @@ mod tests {
         table.create_process(10).unwrap();
         table.create_process(11).unwrap();
         table.processes.get_mut(&11).unwrap().ppid = 10;
-        table.mark_process_signaled(11, 15).unwrap();
+        table.get_mut(11).unwrap().record_signal_exit(15);
 
         for _ in 0..2 {
             let (_, event) = table
@@ -1723,70 +2036,51 @@ mod tests {
     }
 
     #[test]
-    fn remove_process_releases_global_fallback_locks() {
-        let _guard = crate::lock::FALLBACK_LOCK_TEST_LOCK.lock().unwrap();
-        unsafe { crate::lock::global_fallback_lock_table().clear() };
+    fn remove_process_releases_process_and_final_ofd_locks() {
+        use crate::lock::{
+            AdvisoryLockType, FileId, LockOwner, LockRange, OfdId,
+        };
 
         let mut table = ProcessTable::new();
         table.create_process(20).unwrap();
-        let proc = table.processes.get_mut(&20).unwrap();
-        let host_handle = -900;
-        let ofd_idx = proc.ofd_table.create(
-            FileType::Pipe,
-            wasm_posix_shared::flags::O_RDWR,
-            host_handle,
-            b"/dev/pipe".to_vec(),
-        );
-        proc.fd_table
-            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+        let file = FileId::Host { dev: 3, ino: 9 };
+        let process_range = LockRange::normalize(0, 10).unwrap();
+        let ofd_range = LockRange::normalize(20, 10).unwrap();
+        let ofd_id = OfdId(80_020);
+
+        table
+            .advisory_locks_mut()
+            .set_lock(
+                file,
+                LockOwner::Process(20),
+                Some(AdvisoryLockType::Write),
+                process_range,
+            )
+            .unwrap();
+        table
+            .advisory_locks_mut()
+            .set_lock(
+                file,
+                LockOwner::OpenFileDescription(ofd_id),
+                Some(AdvisoryLockType::Write),
+                ofd_range,
+            )
             .unwrap();
 
-        let ofd_owner = (ofd_idx as u32) | 0x80000000;
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            crate::lock::FileLock {
-                pid: 20,
-                lock_type: wasm_posix_shared::lock_type::F_WRLCK,
-                start: 0,
-                len: 100,
-            },
+        let proc = table.processes.get_mut(&20).unwrap();
+        let idx = proc.ofd_table.create(
+            FileType::Regular,
+            wasm_posix_shared::flags::O_RDWR,
+            901,
+            b"/locked".to_vec(),
         );
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            crate::lock::FileLock {
-                pid: ofd_owner,
-                lock_type: wasm_posix_shared::lock_type::F_WRLCK,
-                start: 200,
-                len: 100,
-            },
-        );
+        proc.ofd_table.get_mut(idx).unwrap().ofd_id = ofd_id;
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(idx), 0)
+            .unwrap();
 
         table.remove_process(20).expect("process removed");
-
-        let locks = unsafe { crate::lock::global_fallback_lock_table() };
-        assert!(
-            locks
-                .get_blocking_lock(
-                    host_handle,
-                    wasm_posix_shared::lock_type::F_WRLCK,
-                    0,
-                    100,
-                    99
-                )
-                .is_none()
-        );
-        assert!(
-            locks
-                .get_blocking_lock(
-                    host_handle,
-                    wasm_posix_shared::lock_type::F_WRLCK,
-                    200,
-                    100,
-                    99
-                )
-                .is_none()
-        );
-        locks.clear();
+        assert!(table.advisory_locks().is_empty());
     }
 
     #[test]

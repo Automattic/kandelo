@@ -5,6 +5,11 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use wasm_posix_shared::WasmStat;
 
+use wasm_posix_shared::Errno;
+
+use crate::lock::{FileId, OfdId};
+use crate::ofd::FileType;
+
 /// POSIX default pipe capacity.
 pub const DEFAULT_PIPE_CAPACITY: usize = 65536;
 
@@ -45,10 +50,10 @@ pub enum InFlightPipeRefKind {
 ///
 /// Stores enough information to reconstruct the file descriptor
 /// in the receiving process without needing access to the sender.
-#[derive(Clone)]
 pub struct InFlightFd {
-    /// FileType discriminant (Pipe=0, Socket=1, Regular=2, etc.)
-    pub file_type: u8,
+    pub ofd_id: OfdId,
+    pub file_id: Option<FileId>,
+    pub file_type: FileType,
     pub status_flags: u32,
     pub host_handle: i64,
     pub offset: i64,
@@ -58,6 +63,123 @@ pub struct InFlightFd {
     pub pipe_ref_kind: Option<InFlightPipeRefKind>,
     /// For socket FDs: serialized socket state.
     pub socket: Option<InFlightSocket>,
+    /// True after this queued payload has acquired its one machine-wide
+    /// backing and OfdId reference. Ownership transfers to the receiver or is
+    /// released through the deferred queue on drop.
+    owns_reference: bool,
+}
+
+impl InFlightFd {
+    pub(crate) fn new(
+        ofd_id: OfdId,
+        file_id: Option<FileId>,
+        file_type: FileType,
+        status_flags: u32,
+        host_handle: i64,
+        offset: i64,
+        path: Vec<u8>,
+    ) -> Self {
+        Self {
+            ofd_id,
+            file_id,
+            file_type,
+            status_flags,
+            host_handle,
+            offset,
+            path,
+            pipe_ref_kind: None,
+            socket: None,
+            owns_reference: false,
+        }
+    }
+
+    fn release_metadata(&self) -> DeferredInFlightFdRelease {
+        DeferredInFlightFdRelease {
+            ofd_id: self.ofd_id,
+            file_type: self.file_type,
+            host_handle: self.host_handle,
+            pipe_ref_kind: self.pipe_ref_kind,
+            socket_send_idx: self.socket.as_ref().and_then(|socket| socket.send_buf_idx),
+            socket_recv_idx: self.socket.as_ref().and_then(|socket| socket.recv_buf_idx),
+            socket_domain: self.socket.as_ref().map(|socket| socket.domain),
+            socket_type: self.socket.as_ref().map(|socket| socket.sock_type),
+            socket_global_pipes: self
+                .socket
+                .as_ref()
+                .is_some_and(|socket| socket.global_pipes),
+        }
+    }
+
+    /// Acquire the real resource and OfdId references represented by one
+    /// queued SCM_RIGHTS entry.
+    pub(crate) fn retain_reference(&mut self) -> Result<(), Errno> {
+        if self.owns_reference {
+            return Ok(());
+        }
+        reserve_deferred_in_flight_release()?;
+        if let Err(err) = crate::ofd::retain_in_flight_ofd(self.ofd_id) {
+            cancel_deferred_in_flight_release();
+            return Err(err);
+        }
+        if let Err(err) = retain_in_flight_resource(self.release_metadata()) {
+            crate::ofd::release_in_flight_ofd(self.ofd_id);
+            cancel_deferred_in_flight_release();
+            return Err(err);
+        }
+        self.owns_reference = true;
+        Ok(())
+    }
+
+    /// Transfer the queued reference to a receiver-side OpenFileDesc without a
+    /// decrement/re-increment window in the underlying resource ownership.
+    pub(crate) fn transfer_reference(&mut self) {
+        debug_assert!(self.owns_reference);
+        if self.owns_reference {
+            transfer_in_flight_resource(self.release_metadata());
+            self.owns_reference = false;
+            crate::ofd::release_in_flight_ofd(self.ofd_id);
+            cancel_deferred_in_flight_release();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owns_reference(&self) -> bool {
+        self.owns_reference
+    }
+}
+
+impl Clone for InFlightFd {
+    fn clone(&self) -> Self {
+        let mut cloned = Self {
+            ofd_id: self.ofd_id,
+            file_id: self.file_id,
+            file_type: self.file_type,
+            status_flags: self.status_flags,
+            host_handle: self.host_handle,
+            offset: self.offset,
+            path: self.path.clone(),
+            pipe_ref_kind: self.pipe_ref_kind,
+            socket: self.socket.clone(),
+            owns_reference: false,
+        };
+        if self.owns_reference {
+            cloned
+                .retain_reference()
+                .expect("failed to retain cloned in-flight OFD reference");
+        }
+        cloned
+    }
+}
+
+impl Drop for InFlightFd {
+    fn drop(&mut self) {
+        if !self.owns_reference {
+            return;
+        }
+        self.owns_reference = false;
+        crate::ofd::release_in_flight_ofd(self.ofd_id);
+        enqueue_deferred_in_flight_release(self.release_metadata());
+    }
 }
 
 /// Serialized socket state for SCM_RIGHTS FD passing.
@@ -76,6 +198,253 @@ pub struct InFlightSocket {
     pub bind_port: u16,
     pub peer_addr: [u8; 4],
     pub peer_port: u16,
+}
+
+/// Fixed cleanup metadata queued by `InFlightFd::drop`. Drop never re-enters
+/// the pipe, PTY, or descriptor-backing globals because it may itself be
+/// running while one of those tables is mutably borrowed.
+#[derive(Clone, Copy)]
+pub(crate) struct DeferredInFlightFdRelease {
+    pub ofd_id: OfdId,
+    file_type: FileType,
+    host_handle: i64,
+    pipe_ref_kind: Option<InFlightPipeRefKind>,
+    socket_send_idx: Option<usize>,
+    socket_recv_idx: Option<usize>,
+    socket_domain: Option<u8>,
+    socket_type: Option<u8>,
+    socket_global_pipes: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReleasedInFlightFd {
+    pub ofd_id: OfdId,
+    pub final_ofd_reference: bool,
+    pub host_close: Option<i64>,
+}
+
+struct DeferredInFlightReleaseQueue {
+    records: Vec<DeferredInFlightFdRelease>,
+    /// Capacity promised to live `InFlightFd` values whose destructor may
+    /// enqueue one record. Reserving before ownership is acquired keeps Drop
+    /// allocation-free even with the kernel's non-reclaiming allocator.
+    reserved: usize,
+}
+
+struct DeferredInFlightReleases(UnsafeCell<Option<DeferredInFlightReleaseQueue>>);
+unsafe impl Sync for DeferredInFlightReleases {}
+
+static DEFERRED_IN_FLIGHT_RELEASES: DeferredInFlightReleases =
+    DeferredInFlightReleases(UnsafeCell::new(None));
+
+fn deferred_in_flight_releases() -> &'static mut DeferredInFlightReleaseQueue {
+    let slot = unsafe { &mut *DEFERRED_IN_FLIGHT_RELEASES.0.get() };
+    slot.get_or_insert_with(|| DeferredInFlightReleaseQueue {
+        records: Vec::new(),
+        reserved: 0,
+    })
+}
+
+fn reserve_deferred_in_flight_release() -> Result<(), Errno> {
+    let queue = deferred_in_flight_releases();
+    if queue.records.capacity() - queue.records.len() <= queue.reserved {
+        queue
+            .records
+            .try_reserve(queue.reserved.checked_add(1).ok_or(Errno::EOVERFLOW)?)
+            .map_err(|_| Errno::ENOMEM)?;
+    }
+    queue.reserved += 1;
+    Ok(())
+}
+
+fn cancel_deferred_in_flight_release() {
+    let queue = deferred_in_flight_releases();
+    debug_assert!(queue.reserved > 0);
+    queue.reserved = queue.reserved.saturating_sub(1);
+}
+
+fn enqueue_deferred_in_flight_release(release: DeferredInFlightFdRelease) {
+    let queue = deferred_in_flight_releases();
+    debug_assert!(queue.reserved > 0);
+    debug_assert!(queue.records.len() < queue.records.capacity());
+    queue.reserved = queue.reserved.saturating_sub(1);
+    queue.records.push(release);
+}
+
+pub(crate) fn pop_deferred_in_flight_release() -> Option<DeferredInFlightFdRelease> {
+    deferred_in_flight_releases().records.pop()
+}
+
+#[cfg(test)]
+pub(crate) fn deferred_in_flight_release_state() -> (usize, usize, usize) {
+    let queue = deferred_in_flight_releases();
+    (queue.records.len(), queue.reserved, queue.records.capacity())
+}
+
+fn retain_in_flight_resource(release: DeferredInFlightFdRelease) -> Result<(), Errno> {
+    if crate::descriptor_backing::add_ref_for_ofd(release.file_type, release.host_handle)? {
+        return Ok(());
+    }
+
+    match release.file_type {
+        FileType::Regular | FileType::Directory | FileType::CharDevice
+            if release.host_handle >= 0 =>
+        {
+            crate::ofd::host_handle_fork_ref(release.host_handle);
+        }
+        FileType::Pipe if release.host_handle >= 0 => {
+            crate::ofd::host_handle_fork_ref(release.host_handle);
+        }
+        FileType::Pipe => {
+            let pipe_idx = (-(release.host_handle + 1)) as usize;
+            let pipe = unsafe { global_pipe_table() }
+                .get_mut(pipe_idx)
+                .ok_or(Errno::EBADF)?;
+            let kind = release.pipe_ref_kind.ok_or(Errno::EINVAL)?;
+            pipe.retain_in_flight_reference(kind);
+        }
+        FileType::Socket if release.socket_global_pipes => {
+            let pipes = unsafe { global_pipe_table() };
+            if release
+                .socket_send_idx
+                .is_some_and(|idx| pipes.get(idx).is_none())
+                || release
+                    .socket_recv_idx
+                    .is_some_and(|idx| pipes.get(idx).is_none())
+            {
+                return Err(Errno::EBADF);
+            }
+            if let Some(idx) = release.socket_send_idx {
+                pipes.get_mut(idx).unwrap().retain_in_flight_writer();
+            }
+            if let Some(idx) = release.socket_recv_idx {
+                pipes.get_mut(idx).unwrap().retain_in_flight_reader();
+            }
+        }
+        FileType::PtyMaster | FileType::PtySlave => {
+            let pty = crate::pty::get_pty(release.host_handle as usize).ok_or(Errno::EBADF)?;
+            if release.file_type == FileType::PtyMaster {
+                pty.master_refs = pty.master_refs.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            } else {
+                pty.slave_refs = pty.slave_refs.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            }
+        }
+        FileType::Epoll => return Err(Errno::EINVAL),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Convert a queued resource reference into the receiver's installed OFD
+/// reference without changing the underlying endpoint count.
+fn transfer_in_flight_resource(release: DeferredInFlightFdRelease) {
+    match release.file_type {
+        FileType::Pipe if release.host_handle < 0 => {
+            let pipe_idx = (-(release.host_handle + 1)) as usize;
+            if let (Some(pipe), Some(kind)) = (
+                unsafe { global_pipe_table() }.get_mut(pipe_idx),
+                release.pipe_ref_kind,
+            ) {
+                pipe.adopt_in_flight_reference(kind);
+            }
+        }
+        FileType::Socket if release.socket_global_pipes => {
+            let pipes = unsafe { global_pipe_table() };
+            if let Some(idx) = release.socket_send_idx {
+                if let Some(pipe) = pipes.get_mut(idx) {
+                    pipe.adopt_in_flight_writer();
+                }
+            }
+            if let Some(idx) = release.socket_recv_idx {
+                if let Some(pipe) = pipes.get_mut(idx) {
+                    pipe.adopt_in_flight_reader();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Release one deferred queued reference after the table borrow that dropped
+/// it has ended. Any nested ancillary payload discarded by closing a pipe is
+/// queued for a later iteration by the caller.
+pub(crate) fn release_deferred_in_flight_resource(
+    release: DeferredInFlightFdRelease,
+) -> ReleasedInFlightFd {
+    let mut final_ofd_reference = false;
+    let mut host_close = None;
+
+    if crate::descriptor_backing::manages_ofd(release.file_type, release.host_handle) {
+        final_ofd_reference =
+            crate::descriptor_backing::release_for_ofd(release.file_type, release.host_handle);
+    } else {
+        match release.file_type {
+            FileType::Regular | FileType::Directory | FileType::CharDevice
+                if release.host_handle >= 0 =>
+            {
+                if crate::ofd::host_handle_close_ref(release.host_handle) {
+                    final_ofd_reference = true;
+                    host_close = Some(release.host_handle);
+                }
+            }
+            FileType::Pipe if release.host_handle >= 0 => {
+                if crate::ofd::host_handle_close_ref(release.host_handle) {
+                    host_close = Some(release.host_handle);
+                }
+            }
+            FileType::Pipe => {
+                let pipe_idx = (-(release.host_handle + 1)) as usize;
+                let pipes = unsafe { global_pipe_table() };
+                if let Some(pipe) = pipes.get_mut(pipe_idx) {
+                    if let Some(kind) = release.pipe_ref_kind {
+                        pipe.release_in_flight_reference(kind);
+                    }
+                }
+                pipes.free_if_closed(pipe_idx);
+            }
+            FileType::Socket if release.socket_global_pipes => {
+                let pipes = unsafe { global_pipe_table() };
+                if let Some(idx) = release.socket_send_idx {
+                    if let Some(pipe) = pipes.get_mut(idx) {
+                        pipe.release_in_flight_writer();
+                    }
+                    pipes.free_if_closed(idx);
+                }
+                if let Some(idx) = release.socket_recv_idx {
+                    if let Some(pipe) = pipes.get_mut(idx) {
+                        let orderly_tcp_close = release.socket_type == Some(0)
+                            && matches!(release.socket_domain, Some(1 | 2));
+                        if orderly_tcp_close {
+                            pipe.release_in_flight_reader_orderly();
+                        } else {
+                            pipe.release_in_flight_reader();
+                        }
+                    }
+                    pipes.free_if_closed(idx);
+                }
+            }
+            FileType::PtyMaster | FileType::PtySlave => {
+                let pty_idx = release.host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    if release.file_type == FileType::PtyMaster {
+                        pty.master_refs = pty.master_refs.saturating_sub(1);
+                    } else {
+                        pty.slave_refs = pty.slave_refs.saturating_sub(1);
+                    }
+                    if !pty.is_alive() {
+                        crate::pty::free_pty(pty_idx);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    ReleasedInFlightFd {
+        ofd_id: release.ofd_id,
+        final_ofd_reference,
+        host_close,
+    }
 }
 
 /// A ring buffer backing a pipe.
@@ -561,6 +930,10 @@ impl PipeBuffer {
             self.head = 0;
             self.tail = 0;
             self.len = 0;
+            // No process can receive these queued descriptors now. Dropping
+            // them only enqueues fixed cleanup metadata; resource tables are
+            // drained after this PipeBuffer borrow ends.
+            self.discard_unreceivable_ancillary();
         }
         // Read end closed → pipe became writable (writers get EPIPE/SIGPIPE)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
@@ -579,6 +952,7 @@ impl PipeBuffer {
             self.tail = 0;
             self.len = 0;
             self.orphaned_read = self.write_count > 0;
+            self.discard_unreceivable_ancillary();
         }
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
@@ -652,6 +1026,22 @@ impl PipeBuffer {
 
     fn has_external_reader(&self) -> bool {
         self.read_count > self.in_flight_read_count
+    }
+
+    fn discard_unreceivable_ancillary(&mut self) {
+        #[cfg(test)]
+        if self
+            .ancillary_fds
+            .iter()
+            .flatten()
+            .any(|fd| !fd.owns_reference)
+        {
+            // Local PipeTable unit fixtures exercise the lower-level reference
+            // counters without the machine-wide RAII owner. Their containing
+            // table releases the fixture records when the carrier is freed.
+            return;
+        }
+        self.ancillary_fds.clear();
     }
 
     /// Returns true if the read end is still open (any readers remain).
@@ -800,9 +1190,25 @@ impl PipeTable {
         self.pipes.get_mut(idx).and_then(|p| p.as_mut())
     }
 
-    /// Queue one SCM_RIGHTS message and retain every pipe-backed resource it
-    /// carries. The message is collected immediately if no live or reachable
-    /// socket endpoint can ever receive it.
+    /// Queue SCM_RIGHTS entries that already own their machine-wide references.
+    /// The message is collected immediately if no live or reachable socket
+    /// endpoint can ever receive it.
+    pub fn queue_retained_ancillary(
+        &mut self,
+        carrier_idx: usize,
+        fds: Vec<InFlightFd>,
+    ) -> bool {
+        debug_assert!(fds.iter().all(|fd| fd.owns_reference));
+        if self.get(carrier_idx).is_none() {
+            return false;
+        }
+        self.get_mut(carrier_idx).unwrap().push_ancillary(fds);
+        self.collect_unreachable_ancillary();
+        true
+    }
+
+    /// Lower-level resource accounting used by the local PipeTable tests.
+    #[cfg(test)]
     pub fn queue_ancillary(&mut self, carrier_idx: usize, fds: Vec<InFlightFd>) -> bool {
         if self.get(carrier_idx).is_none() || !self.retain_ancillary_resources(&fds) {
             return false;
@@ -817,6 +1223,7 @@ impl PipeTable {
     /// A successful send owns these references while the descriptors are in
     /// transit. Receiving a descriptor transfers the matching reference to
     /// the new OFD; discarding the message releases it instead.
+    #[cfg(test)]
     pub fn retain_ancillary_resources(&mut self, fds: &[InFlightFd]) -> bool {
         for (retained, fd) in fds.iter().enumerate() {
             if !self.retain_ancillary_resource(fd) {
@@ -832,6 +1239,7 @@ impl PipeTable {
 
     /// Release pipe-backed resources for SCM_RIGHTS descriptors that were not
     /// installed in a receiving process.
+    #[cfg(test)]
     pub fn release_ancillary_resources(&mut self, fds: &[InFlightFd]) {
         for fd in fds {
             self.release_ancillary_resource_inner(fd);
@@ -842,12 +1250,14 @@ impl PipeTable {
     /// Transfer one retained SCM_RIGHTS reference into a newly installed OFD.
     /// Call finish_ancillary_transition after every entry in the popped batch
     /// has either been adopted or released.
+    #[cfg(test)]
     pub fn adopt_ancillary_resource(&mut self, fd: &InFlightFd) {
         self.adopt_ancillary_resource_inner(fd);
     }
 
     /// Release one entry from a popped SCM_RIGHTS batch that could not be
     /// installed. Collection is deferred until the entire batch is resolved.
+    #[cfg(test)]
     pub fn release_ancillary_resource(&mut self, fd: &InFlightFd) {
         self.release_ancillary_resource_inner(fd);
     }
@@ -858,8 +1268,9 @@ impl PipeTable {
         self.collect_unreachable_ancillary();
     }
 
+    #[cfg(test)]
     fn retain_ancillary_resource(&mut self, fd: &InFlightFd) -> bool {
-        if fd.file_type == 0 && fd.host_handle < 0 {
+        if fd.file_type == FileType::Pipe && fd.host_handle < 0 {
             let pipe_idx = (-(fd.host_handle + 1)) as usize;
             let Some(pipe) = self.get_mut(pipe_idx) else {
                 return false;
@@ -868,7 +1279,7 @@ impl PipeTable {
                 return false;
             };
             pipe.retain_in_flight_reference(kind);
-        } else if fd.file_type == 1 {
+        } else if fd.file_type == FileType::Socket {
             let Some(socket) = fd.socket.as_ref() else {
                 return true;
             };
@@ -898,15 +1309,16 @@ impl PipeTable {
         true
     }
 
+    #[cfg(test)]
     fn adopt_ancillary_resource_inner(&mut self, fd: &InFlightFd) {
-        if fd.file_type == 0 && fd.host_handle < 0 {
+        if fd.file_type == FileType::Pipe && fd.host_handle < 0 {
             let pipe_idx = (-(fd.host_handle + 1)) as usize;
             if let Some(pipe) = self.get_mut(pipe_idx) {
                 if let Some(kind) = fd.pipe_ref_kind {
                     pipe.adopt_in_flight_reference(kind);
                 }
             }
-        } else if fd.file_type == 1 {
+        } else if fd.file_type == FileType::Socket {
             let Some(socket) = fd.socket.as_ref() else {
                 return;
             };
@@ -926,8 +1338,9 @@ impl PipeTable {
         }
     }
 
+    #[cfg(test)]
     fn release_ancillary_resource_inner(&mut self, fd: &InFlightFd) {
-        if fd.file_type == 0 && fd.host_handle < 0 {
+        if fd.file_type == FileType::Pipe && fd.host_handle < 0 {
             let pipe_idx = (-(fd.host_handle + 1)) as usize;
             if let Some(pipe) = self.get_mut(pipe_idx) {
                 if let Some(kind) = fd.pipe_ref_kind {
@@ -935,7 +1348,7 @@ impl PipeTable {
                 }
             }
             self.free_fully_closed_inner(pipe_idx);
-        } else if fd.file_type == 1 {
+        } else if fd.file_type == FileType::Socket {
             let Some(socket) = fd.socket.as_ref() else {
                 return;
             };
@@ -983,9 +1396,13 @@ impl PipeTable {
         let pipe = self.pipes[idx].take().unwrap();
         self.free_list.push(idx);
         for fds in pipe.ancillary_fds {
+            #[cfg(test)]
             for fd in &fds {
-                self.release_ancillary_resource_inner(fd);
+                if !fd.owns_reference {
+                    self.release_ancillary_resource_inner(fd);
+                }
             }
+            drop(fds);
         }
     }
 
@@ -1010,7 +1427,7 @@ impl PipeTable {
             };
             for batch in &pipe.ancillary_fds {
                 for fd in batch {
-                    if fd.file_type != 1 {
+                    if fd.file_type != FileType::Socket {
                         continue;
                     }
                     let Some(socket) = fd.socket.as_ref() else {
@@ -1039,9 +1456,13 @@ impl PipeTable {
             }
         }
         for batch in dropped {
+            #[cfg(test)]
             for fd in &batch {
-                self.release_ancillary_resource_inner(fd);
+                if !fd.owns_reference {
+                    self.release_ancillary_resource_inner(fd);
+                }
             }
+            drop(batch);
         }
 
     }
@@ -1437,17 +1858,19 @@ mod tests {
     }
 
     fn in_flight_pipe_read_end(pipe_idx: usize) -> InFlightFd {
-        InFlightFd {
-            file_type: 0,
-            status_flags: wasm_posix_shared::flags::O_RDONLY,
-            host_handle: -((pipe_idx as i64) + 1),
-            offset: 0,
-            path: b"/dev/pipe".to_vec(),
-            pipe_ref_kind: Some(InFlightPipeRefKind::Read {
-                fifo_read_only: false,
-            }),
-            socket: None,
-        }
+        let mut fd = InFlightFd::new(
+            OfdId(1),
+            None,
+            FileType::Pipe,
+            wasm_posix_shared::flags::O_RDONLY,
+            -((pipe_idx as i64) + 1),
+            0,
+            b"/dev/pipe".to_vec(),
+        );
+        fd.pipe_ref_kind = Some(InFlightPipeRefKind::Read {
+            fifo_read_only: false,
+        });
+        fd
     }
 
     fn in_flight_fifo(
@@ -1455,26 +1878,30 @@ mod tests {
         status_flags: u32,
         kind: InFlightPipeRefKind,
     ) -> InFlightFd {
-        InFlightFd {
-            file_type: 0,
+        let mut fd = InFlightFd::new(
+            OfdId(1),
+            None,
+            FileType::Pipe,
             status_flags,
-            host_handle: -((pipe_idx as i64) + 1),
-            offset: 0,
-            path: b"/tmp/fifo".to_vec(),
-            pipe_ref_kind: Some(kind),
-            socket: None,
-        }
+            -((pipe_idx as i64) + 1),
+            0,
+            b"/tmp/fifo".to_vec(),
+        );
+        fd.pipe_ref_kind = Some(kind);
+        fd
     }
 
     fn in_flight_socket(send_idx: usize, recv_idx: usize) -> InFlightFd {
-        InFlightFd {
-            file_type: 1,
-            status_flags: wasm_posix_shared::flags::O_RDWR,
-            host_handle: -1,
-            offset: 0,
-            path: b"socket".to_vec(),
-            pipe_ref_kind: None,
-            socket: Some(InFlightSocket {
+        let mut fd = InFlightFd::new(
+            OfdId(1),
+            None,
+            FileType::Socket,
+            wasm_posix_shared::flags::O_RDWR,
+            -1,
+            0,
+            b"socket".to_vec(),
+        );
+        fd.socket = Some(InFlightSocket {
                 domain: 0,
                 sock_type: 0,
                 protocol: 0,
@@ -1488,8 +1915,8 @@ mod tests {
                 bind_port: 0,
                 peer_addr: [0; 4],
                 peer_port: 0,
-            }),
-        }
+            });
+        fd
     }
 
     fn close_external_endpoints(table: &mut PipeTable, indices: &[usize]) {

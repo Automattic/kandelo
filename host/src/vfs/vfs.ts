@@ -19,6 +19,21 @@ interface HandleInfo {
   localHandle: number;
 }
 
+const MAX_U64 = (1n << 64n) - 1n;
+
+function exactUnsignedIdentity(value: number | bigint, field: string): bigint {
+  if (typeof value === "bigint") {
+    if (value >= 0n && value <= MAX_U64) return value;
+  } else if (Number.isSafeInteger(value) && value >= 0) {
+    return BigInt(value);
+  }
+  const error = new Error(
+    `EOVERFLOW: ${field} is not exactly representable as an unsigned 64-bit value`,
+  ) as Error & { code: string };
+  error.code = "EOVERFLOW";
+  throw error;
+}
+
 function normalizeMountPoint(mp: string): string {
   // Remove trailing slash unless it's the root
   if (mp !== "/" && mp.endsWith("/")) {
@@ -34,6 +49,11 @@ export class VirtualPlatformIO implements PlatformIO {
   private dirHandles = new Map<number, HandleInfo>();
   private nextFileHandle = 100;
   private nextDirHandle = 1;
+  private readonly qualifiedDeviceIds = new Map<
+    FileSystemBackend,
+    Map<bigint, bigint>
+  >();
+  private nextQualifiedDeviceId = 1n;
   network?: NetworkIO;
 
   constructor(mounts: MountConfig[], time: TimeProvider) {
@@ -112,6 +132,34 @@ export class VirtualPlatformIO implements PlatformIO {
     return info;
   }
 
+  /**
+   * Turn a backend-local device number into a machine-visible device number.
+   * The backend object, not its mount point, owns the namespace: alias mounts
+   * therefore agree, while distinct backend instances can never collide.
+   */
+  private qualifyStat(backend: FileSystemBackend, stat: StatResult): StatResult {
+    const localDevice = exactUnsignedIdentity(stat.dev, "st_dev");
+    const inode = exactUnsignedIdentity(stat.ino, "st_ino");
+    let devices = this.qualifiedDeviceIds.get(backend);
+    if (devices === undefined) {
+      devices = new Map();
+      this.qualifiedDeviceIds.set(backend, devices);
+    }
+    let device = devices.get(localDevice);
+    if (device === undefined) {
+      if (this.nextQualifiedDeviceId > MAX_U64) {
+        const error = new Error(
+          "EOVERFLOW: exhausted virtual filesystem device identities",
+        ) as Error & { code: string };
+        error.code = "EOVERFLOW";
+        throw error;
+      }
+      device = this.nextQualifiedDeviceId++;
+      devices.set(localDevice, device);
+    }
+    return { ...stat, dev: device, ino: inode };
+  }
+
   fileIdentity(path: string, dev: bigint, ino: bigint): string | null {
     if (ino <= 0n || dev < 0n) return null;
     const { backendId } = this.resolve(path);
@@ -168,7 +216,7 @@ export class VirtualPlatformIO implements PlatformIO {
 
   fstat(handle: number): StatResult {
     const info = this.getFileHandle(handle);
-    return info.backend.fstat(info.localHandle);
+    return this.qualifyStat(info.backend, info.backend.fstat(info.localHandle));
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
@@ -200,12 +248,12 @@ export class VirtualPlatformIO implements PlatformIO {
 
   stat(path: string): StatResult {
     const { backend, relativePath } = this.resolve(path);
-    return backend.stat(relativePath);
+    return this.qualifyStat(backend, backend.stat(relativePath));
   }
 
   lstat(path: string): StatResult {
     const { backend, relativePath } = this.resolve(path);
-    return backend.lstat(relativePath);
+    return this.qualifyStat(backend, backend.lstat(relativePath));
   }
 
   statfs(path: string): StatfsResult {

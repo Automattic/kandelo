@@ -76,6 +76,13 @@ host-scheduled POSIX timer expiration so the kernel can preserve exact
 selection. A kernel without it must fail manifest validation rather than fall
 back to process-wide delivery.
 
+ABI 40 moves advisory file-lock authority into the Rust kernel. It removes the
+required `host_fcntl_lock` import and the public host-package `SharedLockTable`
+API, distinguishes lock conflicts (`EAGAIN`) from bounded-manager exhaustion
+(`ENOLCK`), and adds exact `FileId` plus machine-wide `OfdId` state to fork/exec
+serialization version 12. Kernels, hosts, libc, guest programs, packages, and
+VFS images from ABI 39 must be rebuilt rather than mixed with ABI 40 artifacts.
+
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI
 changes and do not require a bump.

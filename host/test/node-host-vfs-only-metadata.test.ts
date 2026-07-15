@@ -9,9 +9,12 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import type { BigIntStats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodePlatformIO } from "../src/platform/node";
+import { NativeMetadataOverlay } from "../src/platform/native-metadata";
+import type { StatResult } from "../src/types";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { NodeTimeProvider } from "../src/vfs/time";
@@ -27,12 +30,12 @@ const PERMISSION_MASK = 0o777;
 const UID_GID_UNCHANGED = 0xffffffff;
 
 interface MetadataBackend {
-  stat(path: string): { mode: number; uid: number; gid: number };
+  stat(path: string): StatResult;
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
   read(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
   seek(handle: number, offset: number, whence: number): number;
-  fstat(handle: number): { mode: number; uid: number; gid: number };
+  fstat(handle: number): StatResult;
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
   fchmod(handle: number, mode: number): void;
@@ -113,6 +116,29 @@ const backendFactories: Array<[string, () => BackendCase]> = [
 ];
 
 describe.each(backendFactories)("%s", (_name, makeCase) => {
+  it("returns exact bigint identity with checked numeric size and times", () => {
+    const c = makeCase();
+    const native = c.nativePath("exact-stat");
+    writeFileSync(native, "identity");
+
+    const pathStat = c.backend.stat(c.vfsPath("exact-stat"));
+    expect(typeof pathStat.dev).toBe("bigint");
+    expect(typeof pathStat.ino).toBe("bigint");
+    expect(typeof pathStat.size).toBe("number");
+    expect(typeof pathStat.atimeMs).toBe("number");
+    expect(typeof pathStat.mtimeMs).toBe("number");
+    expect(typeof pathStat.ctimeMs).toBe("number");
+
+    const fd = c.backend.open(c.vfsPath("exact-stat"), O_RDWR, 0);
+    try {
+      const handleStat = c.backend.fstat(fd);
+      expect(handleStat.dev).toBe(pathStat.dev);
+      expect(handleStat.ino).toBe(pathStat.ino);
+    } finally {
+      c.backend.close(fd);
+    }
+  });
+
   it("rejects negative seek targets without changing the file offset", () => {
     const c = makeCase();
     const native = c.nativePath("seek-file");
@@ -294,6 +320,54 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
     expect(virtual.mode & MODE_MASK).not.toBe(0o711);
     expect(virtual.uid).toBe(0);
     expect(virtual.gid).toBe(0);
+  });
+});
+
+describe("NativeMetadataOverlay exact native metadata", () => {
+  function withIdentity(
+    stat: BigIntStats,
+    dev: bigint,
+    ino: bigint,
+  ): BigIntStats {
+    return { ...stat, dev, ino } as BigIntStats;
+  }
+
+  it("does not alias dev/inode values that differ beyond number precision", () => {
+    const root = makeTempRoot("wasm-posix-native-metadata-bigint-");
+    const native = join(root, "file");
+    writeFileSync(native, "data");
+    const base = statSync(native, { bigint: true });
+    const first = withIdentity(
+      base,
+      (1n << 60n) + 1n,
+      (1n << 60n) + 3n,
+    );
+    const second = withIdentity(
+      base,
+      (1n << 60n) + 2n,
+      (1n << 60n) + 4n,
+    );
+    const overlay = new NativeMetadataOverlay();
+
+    overlay.chmod(first, 0o700);
+
+    expect(overlay.toStatResult(first).mode & MODE_MASK).toBe(0o700);
+    expect(overlay.toStatResult(second).mode & MODE_MASK).not.toBe(0o700);
+  });
+
+  it("rejects native sizes that cannot be represented exactly", () => {
+    const root = makeTempRoot("wasm-posix-native-metadata-overflow-");
+    const native = join(root, "file");
+    writeFileSync(native, "data");
+    const stat = statSync(native, { bigint: true });
+    const oversized = {
+      ...stat,
+      size: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+    } as BigIntStats;
+
+    expect(() => new NativeMetadataOverlay().toStatResult(oversized)).toThrow(
+      /EOVERFLOW: st_size/,
+    );
   });
 });
 

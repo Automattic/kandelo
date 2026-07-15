@@ -14,8 +14,9 @@ export interface KernelConfig {
 }
 
 export interface StatResult {
-  dev: number;
-  ino: number;
+  /** Exact filesystem identity values. Native backends should prefer bigint. */
+  dev: number | bigint;
+  ino: number | bigint;
   mode: number;
   nlink: number;
   uid: number;

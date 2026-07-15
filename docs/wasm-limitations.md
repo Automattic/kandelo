@@ -70,12 +70,14 @@ with `CLONE_VM` do share one memory and are not subject to this cross-process
 boundary.
 
 Regular-file `MAP_SHARED` has further explicit limits. The backend must provide
-stable device/inode identity; current OPFS metadata reports no stable inode and
-is rejected with `ENOTSUP`. In-kernel memfds also return `ENOTSUP` for shared
-mappings until they have a mapping bridge. Bytes beyond EOF are zero-filled or
-dropped rather than raising Linux's `SIGBUS`, and changes made by an external
-host writer do not invalidate Kandelo's page cache. `MAP_PRIVATE` is unaffected
-by the identity and memfd restrictions.
+stable device/inode identity. Node and mounted VFS backends provide exact
+live-handle identity, and OPFS assigns session-scoped inode tokens that remain
+stable across simultaneous opens, rename, and unlink-while-open. A backend that
+cannot prove such identity is rejected with `ENOTSUP`. In-kernel memfds also
+return `ENOTSUP` for shared mappings until they have a mapping bridge. Bytes
+beyond EOF are zero-filled or dropped rather than raising Linux's `SIGBUS`, and
+changes made by an external host writer do not invalidate Kandelo's page cache.
+`MAP_PRIVATE` is unaffected by the identity and memfd restrictions.
 
 ## 8. Summary: What Cannot Be Implemented in Wasm
 
@@ -106,7 +108,7 @@ by the identity and memfd restrictions.
 | `sem_open` | Implemented |
 | PTY / terminal | Full pseudoterminal with line discipline (PR #181) |
 | Threads via `clone()` | Host-managed Web Workers, MariaDB runs 5 threads (PR #88) |
-| OPFS filesystem | `host/src/vfs/opfs.ts` provides browser persistence; current zero-inode metadata means regular-file `MAP_SHARED` returns `ENOTSUP` there |
+| OPFS filesystem | Browser persistence includes exact `u64` stat identity, session-scoped inode tokens, simultaneous-open unification, and live-handle identity across supported rename/unlink operations; browsers missing the required identity or move primitives fail at that explicit boundary |
 
 ## Current libc-test Results (2026-04-05)
 

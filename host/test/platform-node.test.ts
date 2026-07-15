@@ -4,9 +4,12 @@
  */
 
 import {
+  fstatSync,
+  lstatSync,
   linkSync,
   mkdtempSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,6 +72,18 @@ describe("NodePlatformIO file identity", () => {
       const originalStat = io.stat(original);
       const aliasStat = io.stat(alias);
       const otherStat = io.stat(other);
+      const nativeOriginalStat = statSync(original, { bigint: true });
+      const nativeAliasLstat = lstatSync(alias, { bigint: true });
+      const aliasLstat = io.lstat(alias);
+
+      expect(originalStat.dev).toBe(nativeOriginalStat.dev);
+      expect(originalStat.ino).toBe(nativeOriginalStat.ino);
+      expect(typeof originalStat.dev).toBe("bigint");
+      expect(typeof originalStat.ino).toBe("bigint");
+      expect(aliasLstat.dev).toBe(nativeAliasLstat.dev);
+      expect(aliasLstat.ino).toBe(nativeAliasLstat.ino);
+      expect(typeof originalStat.size).toBe("number");
+      expect(typeof originalStat.mtimeMs).toBe("number");
       const originalIdentity = io.fileIdentity(
         original,
         BigInt(originalStat.dev),
@@ -89,6 +104,9 @@ describe("NodePlatformIO file identity", () => {
 
       const handle = io.open(original, 2, 0);
       const handleStat = io.fstat(handle);
+      const nativeHandleStat = fstatSync(handle, { bigint: true });
+      expect(handleStat.dev).toBe(nativeHandleStat.dev);
+      expect(handleStat.ino).toBe(nativeHandleStat.ino);
       const handleIdentity = io.fileHandleIdentity(
         handle,
         BigInt(handleStat.dev),

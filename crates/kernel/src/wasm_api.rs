@@ -26,8 +26,8 @@ use crate::process::{
     HostIO, Process, ProcessState, StdioConfig, StdioKind, normalize_posix_timer_signo,
 };
 use crate::signal::{
-    DefaultSignalOutcome, apply_default_signal_action, deliver_pending_signals,
-    dequeue_signal_for, terminate_process_by_signal,
+    DefaultSignalOutcome, apply_default_signal_action_with_locks, deliver_pending_signals_with_locks,
+    dequeue_signal_for, terminate_process_by_signal_with_locks,
 };
 use crate::syscalls;
 
@@ -139,18 +139,6 @@ unsafe extern "C" {
         name_len: u32,
         result_ptr: *mut u8,
         result_len: u32,
-    ) -> i32;
-    fn host_fcntl_lock(
-        path_ptr: *const u8,
-        path_len: u32,
-        pid: u32,
-        cmd: u32,
-        lock_type: u32,
-        start_lo: u32,
-        start_hi: u32,
-        len_lo: u32,
-        len_hi: u32,
-        result_ptr: *mut u8,
     ) -> i32;
     fn host_fork() -> i32;
     fn host_futex_wait(addr: usize, expected: u32, timeout_ns_lo: u32, timeout_ns_hi: u32) -> i32;
@@ -842,37 +830,6 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_fcntl_lock(
-        &mut self,
-        path: &[u8],
-        pid: u32,
-        cmd: u32,
-        lock_type: u32,
-        start: i64,
-        len: i64,
-        result_buf: &mut [u8],
-    ) -> Result<(), Errno> {
-        let start_lo = start as u32;
-        let start_hi = (start >> 32) as u32;
-        let len_lo = len as u32;
-        let len_hi = (len >> 32) as u32;
-        let result = unsafe {
-            host_fcntl_lock(
-                path.as_ptr(),
-                path.len() as u32,
-                pid,
-                cmd,
-                lock_type,
-                start_lo,
-                start_hi,
-                len_lo,
-                len_hi,
-                result_buf.as_mut_ptr(),
-            )
-        };
-        i32_to_result(result)
-    }
-
     fn host_fork(&self) -> i32 {
         gkl_release();
         let result = unsafe { host_fork() };
@@ -1198,6 +1155,27 @@ unsafe fn get_process() -> (GklGuard, &'static mut Process) {
         Some(p) => (guard, p),
         #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
         None => core::hint::unreachable_unchecked(),
+        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        None => panic!("no current process in table"),
+    }
+}
+
+/// Get disjoint mutable references to the current process and the
+/// machine-wide advisory-lock manager under the kernel lock.
+///
+/// SAFETY: Must only be called from kernel export functions.
+#[inline]
+unsafe fn get_process_and_advisory_locks() -> (
+    GklGuard,
+    &'static mut Process,
+    &'static mut crate::lock::AdvisoryLockManager,
+) {
+    let guard = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.current_process_and_advisory_locks() {
+        Some((process, locks)) => (guard, process, locks),
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+        None => unsafe { core::hint::unreachable_unchecked() },
         #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
         None => panic!("no current process in table"),
     }
@@ -1799,10 +1777,10 @@ pub extern "C" fn kernel_get_process_state(pid: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.get_mut(pid) {
-        Some(proc) => {
+    match table.process_and_advisory_locks(pid) {
+        Some((proc, advisory_locks)) => {
             let mut host = WasmHostIO;
-            terminate_process_by_signal(proc, &mut host, signum);
+            terminate_process_by_signal_with_locks(proc, advisory_locks, &mut host, signum);
             0
         }
         None => -(Errno::ESRCH as i32),
@@ -2243,8 +2221,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
     use crate::signal::{SignalHandler, sig_bit};
     let tid = crate::process_table::current_tid();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let proc = match table.get_mut(pid) {
-        Some(p) => p,
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+        Some(pair) => pair,
         None => return 0,
     };
     loop {
@@ -2315,7 +2293,7 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
             SignalHandler::Default => {
                 let _ = dequeue_signal_for(proc, tid, signum);
                 let mut host = WasmHostIO;
-                match apply_default_signal_action(proc, &mut host, signum) {
+                match apply_default_signal_action_with_locks(proc, advisory_locks, &mut host, signum) {
                     DefaultSignalOutcome::Continue => continue,
                     DefaultSignalOutcome::Stopped | DefaultSignalOutcome::Exited => return 0,
                 }
@@ -2360,7 +2338,9 @@ pub extern "C" fn kernel_exec_prepare(pid: u32, caller_tid: u32) -> i32 {
 
 fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let proc = table.get_mut(pid).ok_or(Errno::ESRCH)?;
+    let (proc, advisory_locks) = table
+        .process_and_advisory_locks(pid)
+        .ok_or(Errno::ESRCH)?;
 
     if matches!(
         proc.state,
@@ -2385,10 +2365,16 @@ fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
         use crate::process::FdAction;
         match action {
             FdAction::Dup2 { old_fd, new_fd } => {
-                syscalls::sys_dup2(proc, &mut host, old_fd, new_fd)?;
+                syscalls::sys_dup2_with_locks(
+                    proc,
+                    advisory_locks,
+                    &mut host,
+                    old_fd,
+                    new_fd,
+                )?;
             }
             FdAction::Close { fd } => {
-                syscalls::sys_close(proc, &mut host, fd)?;
+                syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd)?;
             }
             FdAction::Open {
                 fd,
@@ -2399,8 +2385,19 @@ fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
                 let opened_fd =
                     syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32)?;
                 if opened_fd != fd {
-                    syscalls::sys_dup2(proc, &mut host, opened_fd, fd)?;
-                    let _ = syscalls::sys_close(proc, &mut host, opened_fd);
+                    syscalls::sys_dup2_with_locks(
+                        proc,
+                        advisory_locks,
+                        &mut host,
+                        opened_fd,
+                        fd,
+                    )?;
+                    let _ = syscalls::sys_close_with_locks(
+                        proc,
+                        advisory_locks,
+                        &mut host,
+                        opened_fd,
+                    );
                 }
             }
         }
@@ -2426,12 +2423,12 @@ fn kernel_exec_setup_inner(pid: u32, caller_tid: u32) -> i32 {
     }
 
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let proc = match table.get_mut(pid) {
-        Some(proc) => proc,
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+        Some(pair) => pair,
         None => return -(Errno::ESRCH as i32),
     };
     let mut host = WasmHostIO;
-    match syscalls::commit_exec_state(proc, &mut host, caller_tid) {
+    match syscalls::commit_exec_state_with_locks(proc, advisory_locks, &mut host, caller_tid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }
@@ -2611,19 +2608,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         92 => kernel_setsid() as i32,  // SYS_SETSID
         214 => {
             // SYS_GETPGID
-            let (_gkl, proc) = unsafe { get_process() };
+            let _gkl = GklGuard::acquire();
+            let table = unsafe { &*PROCESS_TABLE.0.get() };
             let pid = a1 as u32;
-            if pid != 0 && pid != proc.pid {
-                let table = unsafe { &*PROCESS_TABLE.0.get() };
-                match table.get(pid) {
-                    Some(target) => target.pgid as i32,
-                    None => -(Errno::ESRCH as i32),
-                }
-            } else {
-                match syscalls::sys_getpgid(proc, pid) {
-                    Ok(pgid) => pgid as i32,
-                    Err(e) => -(e as i32),
-                }
+            let effective_pid = if pid == 0 { table.current_pid() } else { pid };
+            match table.get(effective_pid) {
+                Some(target) => target.pgid as i32,
+                None => -(Errno::ESRCH as i32),
             }
         }
 
@@ -2807,7 +2798,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             // musl passes pointers to sigset_t (8 bytes). Read set from pointer,
             // call kernel, write old set to output pointer.
             // POSIX: if set is NULL, the signal mask is not changed (query only).
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             if a2 != 0 {
                 let ptr = a2 as usize as *const u32;
                 let (set_lo, set_hi) = unsafe { (*ptr, *ptr.add(1)) };
@@ -2829,7 +2820,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     }
                 }
                 let mut host = WasmHostIO;
-                deliver_pending_signals(proc, &mut host);
+                deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
                 0
             } else {
                 // set is NULL: just read the current mask without modifying
@@ -2860,7 +2851,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         111 => kernel_pause(), // SYS_PAUSE
         206 => {
             // SYS_RT_SIGPENDING: (set_ptr, sigsetsize)
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             if a1 != 0 {
                 let ptr = a1 as usize as *mut u8;
                 unsafe {
@@ -2876,7 +2867,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
         207 => {
             // SYS_RT_SIGTIMEDWAIT: (mask_ptr, info_ptr, timeout_ptr, sigsetsize)
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             let mut host = WasmHostIO;
             // Read the 64-bit signal mask from the pointer
             let mask = if a1 != 0 {
@@ -2946,7 +2937,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 }
                 Err(e) => -(e as i32),
             };
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             result
         }
 
@@ -2980,7 +2971,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             // -EPERM.
             let pgoff = a6 as u32;
             let byte_off = ((pgoff as u64) << 12) as i64;
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             let mut host = WasmHostIO;
             let result = match syscalls::sys_mmap(
                 proc,
@@ -3001,7 +2992,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 }
                 Err(e) => -(e as i32),
             };
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             result
         }
         47 => kernel_munmap(a1 as usize, a2 as usize), // SYS_MUNMAP
@@ -3224,30 +3215,46 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             // SYS_SETPGID
             let pid = a1 as u32;
             let pgid = a2 as u32;
-            let (_gkl, proc) = unsafe { get_process() };
-            let effective_pid = if pid == 0 { proc.pid } else { pid };
-            if effective_pid == proc.pid {
+            let _gkl = GklGuard::acquire();
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            let caller_pid = table.current_pid();
+            let effective_pid = if pid == 0 { caller_pid } else { pid };
+            if effective_pid == caller_pid {
                 // Self — use syscalls::sys_setpgid
-                match syscalls::sys_setpgid(proc, pid, pgid) {
-                    Ok(()) => {
-                        let mut host = WasmHostIO;
-                        deliver_pending_signals(proc, &mut host);
-                        0
+                match table.current_process_and_advisory_locks() {
+                    Some((proc, advisory_locks)) => {
+                        match syscalls::sys_setpgid(proc, pid, pgid) {
+                            Ok(()) => {
+                                let mut host = WasmHostIO;
+                                deliver_pending_signals_with_locks(
+                                    proc,
+                                    advisory_locks,
+                                    &mut host,
+                                );
+                                0
+                            }
+                            Err(e) => -(e as i32),
+                        }
                     }
-                    Err(e) => -(e as i32),
+                    None => -(Errno::ESRCH as i32),
                 }
+            } else if (pgid as i32) < 0 {
+                -(Errno::EINVAL as i32)
             } else {
                 let new_pgid = if pgid == 0 { effective_pid } else { pgid };
-                let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+                let caller_sid = match table.get(caller_pid) {
+                    Some(caller) => caller.sid,
+                    None => return -(Errno::ESRCH as i32),
+                };
                 match table.get_mut(effective_pid) {
                     Some(target) => {
                         // POSIX: can only setpgid on a child of the calling process
-                        if target.ppid != proc.pid {
+                        if target.ppid != caller_pid {
                             -(Errno::ESRCH as i32)
                         } else if target.has_exec {
                             // POSIX: cannot setpgid on a child that has called exec
                             -(Errno::EACCES as i32)
-                        } else if target.sid != proc.sid {
+                        } else if target.sid != caller_sid {
                             // POSIX: both processes must be in the same session
                             -(Errno::EPERM as i32)
                         } else if target.is_session_leader {
@@ -3265,19 +3272,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
         91 => {
             // SYS_GETSID
-            let (_gkl, proc) = unsafe { get_process() };
+            let _gkl = GklGuard::acquire();
+            let table = unsafe { &*PROCESS_TABLE.0.get() };
             let pid = a1 as u32;
-            if pid != 0 && pid != proc.pid {
-                let table = unsafe { &*PROCESS_TABLE.0.get() };
-                match table.get(pid) {
-                    Some(target) => target.sid as i32,
-                    None => -(Errno::ESRCH as i32),
-                }
-            } else {
-                match syscalls::sys_getsid(proc, pid) {
-                    Ok(sid) => sid as i32,
-                    Err(e) => -(e as i32),
-                }
+            let effective_pid = if pid == 0 { table.current_pid() } else { pid };
+            match table.get(effective_pid) {
+                Some(target) => target.sid as i32,
+                None => -(Errno::ESRCH as i32),
             }
         }
         104 => kernel_setuid(a1 as u32),  // SYS_SETUID
@@ -3594,7 +3595,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // SYS_RT_SIGRETURN: signal handler return — clean up alt stack state
         208 => {
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             if proc.alt_stack_depth > 0 {
                 proc.alt_stack_depth -= 1;
                 if proc.alt_stack_depth == 0 {
@@ -3638,7 +3639,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // SYS_SCHED_RR_GET_INTERVAL: (pid, timespec_ptr)
         236 => {
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             let pid = a1 as u32;
             if pid != 0 && pid != proc.pid {
                 -(Errno::ESRCH as i32)
@@ -3694,7 +3695,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         282 | 283 => 0, // mlockall, munlockall: success
         // SYS_GETPRIORITY
         285 => {
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             match syscalls::sys_getpriority(proc, a1, a2 as u32) {
                 Ok(v) => v,
                 Err(e) => -(e as i32),
@@ -3702,7 +3703,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
         286 => {
             // SYS_SETPRIORITY
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             match syscalls::sys_setpriority(proc, a1, a2 as u32, a3) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
@@ -3761,7 +3762,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         256 => {
             // SYS_MEMFD_CREATE: (name, flags)
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             let name_ptr = a1 as *const u8;
             let name_len = unsafe { cstr_len(name_ptr) } as usize;
             let name = if name_ptr.is_null() || name_len == 0 {
@@ -3776,7 +3777,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
         290 => {
             // SYS_COPY_FILE_RANGE: (fd_in, off_in*, fd_out, off_out*, len, flags)
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             let mut host = WasmHostIO;
             let off_in_ptr = a2 as *mut u8;
             let off_out_ptr = a4 as *mut u8;
@@ -3821,13 +3822,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 }
                 Err(e) => -(e as i32),
             };
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             result
         }
 
         291 => {
             // SYS_SPLICE: (fd_in, off_in*, fd_out, off_out*, len, flags)
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             let mut host = WasmHostIO;
             let off_in_ptr = a2 as *mut u8;
             let off_out_ptr = a4 as *mut u8;
@@ -3870,7 +3871,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 }
                 Err(e) => -(e as i32),
             };
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             result
         }
         293 => 0, // SYS_READAHEAD: advisory, always succeed
@@ -3907,7 +3908,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             if mode != 0 {
                 -(Errno::EOPNOTSUPP as i32)
             } else {
-                let (_gkl, proc) = unsafe { get_process() };
+                let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
                 let mut host = WasmHostIO;
                 let offset = args[2];
                 let len = args[3];
@@ -3915,7 +3916,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 };
-                deliver_pending_signals(proc, &mut host);
+                deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
                 result
             }
         }
@@ -3955,11 +3956,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // --- setfsuid/setfsgid: return previous fsuid/fsgid (we mirror euid/egid) ---
         370 => {
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             proc.euid as i32
         }
         371 => {
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             proc.egid as i32
         }
 
@@ -3978,7 +3979,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // --- inotify stubs: create eventfd-like fd ---
         247 | 381 => {
             // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
-            let (_gkl, proc) = unsafe { get_process() };
+            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
             match syscalls::sys_inotify_init(proc) {
                 Ok(fd) => fd,
                 Err(e) => -(e as i32),
@@ -4613,7 +4614,7 @@ pub extern "C" fn kernel_init(pid: u32) {
 /// Serialize current process state for fork. Returns bytes written, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fork_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     match crate::fork::serialize_fork_state(proc, buf) {
         Ok(written) => written as i32,
@@ -4646,7 +4647,7 @@ pub extern "C" fn kernel_init_from_fork(buf_ptr: *const u8, buf_len: u32, child_
 /// preserves pending signals and signal mask.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_exec_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     match crate::fork::serialize_exec_state(proc, buf) {
         Ok(written) => written as i32,
@@ -4662,8 +4663,15 @@ pub extern "C" fn kernel_init_from_exec(buf_ptr: *const u8, buf_len: u32, pid: u
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_exec_state(buf, pid) {
         Ok(proc) => {
-            if let Err(e) = table.replace_legacy_exec_process(pid, proc) {
-                return -(e as i32);
+            let cleanup = match table.replace_legacy_exec_process(pid, proc) {
+                Ok(cleanup) => cleanup,
+                Err(e) => return -(e as i32),
+            };
+            for dir_handle in cleanup.host_dir_closes {
+                unsafe { host_closedir(dir_handle) };
+            }
+            for handle in cleanup.host_closes {
+                unsafe { host_close(handle) };
             }
             table.set_current_pid(pid);
             0
@@ -4676,7 +4684,7 @@ pub extern "C" fn kernel_init_from_exec(buf_ptr: *const u8, buf_len: u32, pid: u
 /// After this, reads/writes for this OFD will go through host_read/host_write.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_convert_pipe_to_host(ofd_idx: u32, new_host_handle: i64) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let ofd = match proc.ofd_table.get_mut(ofd_idx as usize) {
         Some(ofd) => ofd,
         None => return -(Errno::EBADF as i32),
@@ -4692,7 +4700,7 @@ pub extern "C" fn kernel_convert_pipe_to_host(ofd_idx: u32, new_host_handle: i64
 /// Returns number of pipe OFDs found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_pipe_ofds(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let entry_size = 4 + 8 + 4; // ofd_index(u32) + host_handle(i64) + is_read(u32)
     let max_entries = buf.len() / entry_size;
@@ -4722,14 +4730,14 @@ pub extern "C" fn kernel_get_pipe_ofds(buf_ptr: *mut u8, buf_len: u32) -> i32 {
 /// Open a file. Returns fd (>= 0) on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_open(proc, &mut host, path, flags, mode) {
         Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -4737,13 +4745,14 @@ pub extern "C" fn kernel_open(path_ptr: *const u8, path_len: u32, flags: u32, mo
 /// Only supports S_IFREG (regular files). Creates an empty file via open+close.
 fn kernel_mknod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
     use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let flags = O_CREAT | O_EXCL | O_WRONLY;
     match syscalls::sys_open(proc, &mut host, path, flags, mode) {
         Ok(fd) => {
-            let _ = syscalls::sys_close(proc, &mut host, fd);
+            let _ =
+                syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd);
             0
         }
         Err(e) => -(e as i32),
@@ -4775,13 +4784,14 @@ fn kernel_mkfifoat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) ->
 /// mknodat — create a regular file node relative to directory fd.
 fn kernel_mknodat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
     use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let flags = O_CREAT | O_EXCL | O_WRONLY;
     match syscalls::sys_openat(proc, &mut host, dirfd, path, flags, mode) {
         Ok(fd) => {
-            let _ = syscalls::sys_close(proc, &mut host, fd);
+            let _ =
+                syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd);
             0
         }
         Err(e) => -(e as i32),
@@ -4791,41 +4801,42 @@ fn kernel_mknodat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> 
 /// Close a file descriptor. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_close(fd: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_close(proc, &mut host, fd) {
+    let result =
+        match syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Read from a file descriptor. Returns bytes read (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_read(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_read(proc, &mut host, fd, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Write to a file descriptor. Returns bytes written (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_write(fd: i32, buf_ptr: *const u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_write(proc, &mut host, fd, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -4847,8 +4858,8 @@ pub extern "C" fn kernel_prepare_write_operation(
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     table.set_current_pid(pid);
-    let proc = match table.get_mut(pid) {
-        Some(proc) => proc,
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+        Some(pair) => pair,
         None => return -(Errno::ESRCH as i64),
     };
     let mut host = WasmHostIO;
@@ -4862,7 +4873,7 @@ pub extern "C" fn kernel_prepare_write_operation(
         Ok(len) => len as i64,
         Err(e) => -(e as i64),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -4871,55 +4882,55 @@ pub extern "C" fn kernel_prepare_write_operation(
 /// Returns the new offset (i64) or negative errno (i64).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_lseek(fd: i32, offset_lo: u32, offset_hi: i32, whence: u32) -> i64 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
     let result = match syscalls::sys_lseek(proc, &mut host, fd, offset, whence) {
         Ok(pos) => pos,
         Err(e) => -(e as i64),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// pread - read at offset without modifying position. Returns bytes read or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pread(fd: i32, buf_ptr: *mut u8, buf_len: u32, offset: i64) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_pread(proc, &mut host, fd, buf, offset) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// pwrite - write at offset without modifying position. Returns bytes written or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pwrite(fd: i32, buf_ptr: *const u8, buf_len: u32, offset: i64) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_pwrite(proc, &mut host, fd, buf, offset) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Duplicate a file descriptor. Returns new fd (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_dup(fd: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_dup(proc, fd) {
         Ok(new_fd) => new_fd,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -4927,13 +4938,19 @@ pub extern "C" fn kernel_dup(fd: i32) -> i32 {
 /// Returns newfd (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_dup2(oldfd: i32, newfd: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_dup2(proc, &mut host, oldfd, newfd) {
+    let result = match syscalls::sys_dup2_with_locks(
+        proc,
+        advisory_locks,
+        &mut host,
+        oldfd,
+        newfd,
+    ) {
         Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -4941,7 +4958,7 @@ pub extern "C" fn kernel_dup2(oldfd: i32, newfd: i32) -> i32 {
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe(fildes_ptr: *mut i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_pipe(proc) {
         Ok((read_fd, write_fd)) => {
             unsafe {
@@ -4953,7 +4970,7 @@ pub extern "C" fn kernel_pipe(fildes_ptr: *mut i32) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -4961,13 +4978,21 @@ pub extern "C" fn kernel_pipe(fildes_ptr: *mut i32) -> i32 {
 /// Returns newfd (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_dup3(oldfd: i32, newfd: i32, flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_dup3(proc, &mut host, oldfd, newfd, flags) {
+    let result =
+        match syscalls::sys_dup3_with_locks(
+            proc,
+            advisory_locks,
+            &mut host,
+            oldfd,
+            newfd,
+            flags,
+        ) {
         Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -4975,7 +5000,7 @@ pub extern "C" fn kernel_dup3(oldfd: i32, newfd: i32, flags: u32) -> i32 {
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe2(flags: u32, fd_ptr: *mut i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_pipe2(proc, flags) {
         Ok((r, w)) => {
             unsafe {
@@ -4987,7 +5012,7 @@ pub extern "C" fn kernel_pipe2(flags: u32, fd_ptr: *mut i32) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -4995,13 +5020,13 @@ pub extern "C" fn kernel_pipe2(flags: u32, fd_ptr: *mut i32) -> i32 {
 /// Returns fd (>= 0) on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_eventfd2(initval: u32, flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_eventfd2(proc, initval, flags) {
         Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5009,13 +5034,13 @@ pub extern "C" fn kernel_eventfd2(initval: u32, flags: u32) -> i32 {
 /// Returns fd (>= 0) on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_epoll_create1(flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_epoll_create1(proc, flags) {
         Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5023,7 +5048,7 @@ pub extern "C" fn kernel_epoll_create1(flags: u32) -> i32 {
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     // Read epoll_event struct from memory: { events: u32, data: u64 }
     // On wasm32 without packing, u64 may be at offset 4 or 8 depending on alignment.
@@ -5047,7 +5072,7 @@ pub extern "C" fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *cons
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5061,7 +5086,7 @@ pub extern "C" fn kernel_epoll_pwait(
     timeout: i32,
     sigmask_ptr: *const u8,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     // Read signal mask if provided
@@ -5087,20 +5112,20 @@ pub extern "C" fn kernel_epoll_pwait(
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Create a timerfd.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_timerfd_create(clock_id: u32, flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_timerfd_create(proc, clock_id, flags) {
         Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5114,7 +5139,7 @@ pub extern "C" fn kernel_timerfd_settime(
     new_ptr: *const u8,
     old_ptr: *mut u8,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     // Read itimerspec: { it_interval: { tv_sec, tv_nsec }, it_value: { tv_sec, tv_nsec } }
@@ -5142,14 +5167,14 @@ pub extern "C" fn kernel_timerfd_settime(
             }
             Err(e) => -(e as i32),
         };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the remaining time of a timerfd timer.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_timerfd_gettime(fd: i32, cur_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let result = match syscalls::sys_timerfd_gettime(proc, &mut host, fd) {
@@ -5164,7 +5189,7 @@ pub extern "C" fn kernel_timerfd_gettime(fd: i32, cur_ptr: *mut u8) -> i32 {
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5176,7 +5201,7 @@ pub extern "C" fn kernel_signalfd4(
     _sigsetsize: u32,
     flags: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     // Read signal mask from pointer
     let mask = if !mask_ptr.is_null() {
@@ -5190,7 +5215,7 @@ pub extern "C" fn kernel_signalfd4(
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5198,7 +5223,7 @@ pub extern "C" fn kernel_signalfd4(
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fstat(fd: i32, stat_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fstat(proc, &mut host, fd) {
         Ok(stat) => {
@@ -5215,20 +5240,20 @@ pub extern "C" fn kernel_fstat(fd: i32, stat_ptr: *mut u8) -> i32 {
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// fcntl operations. Returns result (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_fcntl(proc, fd, cmd, arg) {
         Ok(val) => val,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5236,14 +5261,24 @@ pub extern "C" fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    if flock_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let flock = unsafe { &mut *(flock_ptr as *mut wasm_posix_shared::WasmFlock) };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_fcntl_lock(proc, fd, cmd, flock, &mut host) {
+    let result = match syscalls::sys_fcntl_lock(
+        proc,
+        advisory_locks,
+        fd,
+        cmd,
+        flock,
+        &mut host,
+    ) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5251,13 +5286,14 @@ pub extern "C" fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i3
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_flock(fd: i32, operation: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_flock(proc, fd, operation, &mut host) {
+    let result =
+        match syscalls::sys_flock(proc, advisory_locks, fd, operation, &mut host) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5265,7 +5301,7 @@ pub extern "C" fn kernel_flock(fd: i32, operation: u32) -> i32 {
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_stat(proc, &mut host, path) {
@@ -5283,7 +5319,7 @@ pub extern "C" fn kernel_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5291,7 +5327,7 @@ pub extern "C" fn kernel_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_lstat(proc, &mut host, path) {
@@ -5309,49 +5345,49 @@ pub extern "C" fn kernel_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mu
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Create a directory. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_mkdir(proc, &mut host, path, mode) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Remove a directory. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rmdir(path_ptr: *const u8, path_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_rmdir(proc, &mut host, path) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Unlink (delete) a file. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_unlink(path_ptr: *const u8, path_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_unlink(proc, &mut host, path) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5363,7 +5399,7 @@ pub extern "C" fn kernel_rename(
     new_ptr: *const u8,
     new_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
     let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
     let mut host = WasmHostIO;
@@ -5371,7 +5407,7 @@ pub extern "C" fn kernel_rename(
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5383,7 +5419,7 @@ pub extern "C" fn kernel_link(
     new_ptr: *const u8,
     new_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
     let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
     let mut host = WasmHostIO;
@@ -5391,7 +5427,7 @@ pub extern "C" fn kernel_link(
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5403,7 +5439,7 @@ pub extern "C" fn kernel_symlink(
     link_ptr: *const u8,
     link_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let target = unsafe { slice::from_raw_parts(target_ptr, target_len as usize) };
     let linkpath = unsafe { slice::from_raw_parts(link_ptr, link_len as usize) };
     let mut host = WasmHostIO;
@@ -5411,7 +5447,7 @@ pub extern "C" fn kernel_symlink(
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5423,7 +5459,7 @@ pub extern "C" fn kernel_readlink(
     buf_ptr: *mut u8,
     buf_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
@@ -5431,35 +5467,35 @@ pub extern "C" fn kernel_readlink(
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Change file permissions. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_chmod(proc, &mut host, path, mode) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Change file ownership. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_chown(proc, &mut host, path, uid, gid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5470,83 +5506,83 @@ fn kernel_lchown(
     uid: u32,
     gid: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_lchown(proc, &mut host, path, uid, gid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Check file accessibility. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_access(proc, &mut host, path, amode) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Change working directory. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_chdir(path_ptr: *const u8, path_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_chdir(proc, &mut host, path) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Change directory by file descriptor. Returns 0 or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fchdir(fd: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fchdir(proc, fd) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get current working directory. Returns length written (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getcwd(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_getcwd(proc, &mut host, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Open a directory for reading. Returns dir handle (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_opendir(path_ptr: *const u8, path_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_opendir(proc, &mut host, path) {
         Ok(dh) => dh,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5558,7 +5594,7 @@ pub extern "C" fn kernel_readdir(
     name_ptr: *mut u8,
     name_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let dirent_buf =
         unsafe { slice::from_raw_parts_mut(dirent_ptr, core::mem::size_of::<WasmDirent>()) };
     let name_buf = unsafe { slice::from_raw_parts_mut(name_ptr, name_len as usize) };
@@ -5567,144 +5603,144 @@ pub extern "C" fn kernel_readdir(
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Close a directory stream. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_closedir(dir_handle: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_closedir(proc, &mut host, dir_handle) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Read directory entries in linux_dirent64 format. Returns bytes written or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getdents64(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_getdents64(proc, &mut host, fd, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Rewind a directory stream to the beginning. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rewinddir(dir_handle: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_rewinddir(proc, &mut host, dir_handle) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Return current position in a directory stream. Returns position (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_telldir(dir_handle: i32) -> i64 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_telldir(proc, dir_handle) {
         Ok(pos) => pos as i64,
         Err(e) => -(e as i64),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Seek to a position in a directory stream. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_seekdir(dir_handle: i32, loc_lo: u32, loc_hi: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let loc = (loc_hi as u64) << 32 | (loc_lo as u64);
     let result = match syscalls::sys_seekdir(proc, &mut host, dir_handle, loc) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the process ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getpid() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getpid(proc);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the parent process ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getppid() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getppid(proc);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the real user ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getuid() -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getuid(proc);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the effective user ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_geteuid() -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_geteuid(proc);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the real group ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getgid() -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getgid(proc);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the effective group ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getegid() -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getegid(proc);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the process group ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getpgrp() -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getpgrp(proc);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5722,39 +5758,39 @@ pub extern "C" fn kernel_getpgid_direct(pid: u32) -> i32 {
 /// Set the process group ID. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setpgid(pid: u32, pgid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setpgid(proc, pid, pgid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get the session ID. Returns session ID on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getsid(pid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_getsid(proc, pid) {
         Ok(sid) => sid as i32,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Create a new session. Returns session ID on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setsid() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setsid(proc) {
         Ok(sid) => sid as i32,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -5767,72 +5803,85 @@ pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
 /// Send signal with si_value (for sigqueue/rt_sigqueueinfo).
 fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
     use wasm_posix_shared::signal::NSIG;
-    let (_gkl, proc) = unsafe { get_process() };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let mut host = WasmHostIO;
+    let caller_pid = table.current_pid();
+    let (caller_pgid, sender_uid, sender_euid) = match table.get(caller_pid) {
+        Some(caller) => (caller.pgid, caller.uid, caller.euid),
+        None => return -(Errno::ESRCH as i32),
+    };
+
+    let deliver_caller = |table: &mut crate::process_table::ProcessTable,
+                          host: &mut WasmHostIO| {
+        if let Some((caller, locks)) = table.process_and_advisory_locks(caller_pid) {
+            deliver_pending_signals_with_locks(caller, locks, host);
+        }
+    };
 
     // Handle cross-process kill directly via ProcessTable.
-    let is_local = pid == proc.pid as i32 || pid == 0 || pid == -(proc.pgid as i32);
+    let is_local = pid == caller_pid as i32 || pid == 0 || pid == -(caller_pgid as i32);
     if !is_local && pid > 0 {
         if sig >= NSIG && sig != 0 {
-            deliver_pending_signals(proc, &mut host);
+            deliver_caller(table, &mut host);
             return -(Errno::EINVAL as i32);
         }
-        let (sender_uid, sender_euid) = (proc.uid, proc.euid);
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
         table.ensure_init();
-        let result = match table.get_mut(pid as u32) {
-            Some(target) => {
-                if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
-                    -(Errno::EPERM as i32)
-                } else {
-                    if sig > 0 {
+        let target_pid = pid as u32;
+        let result = match table.get(target_pid) {
+            Some(target)
+                if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) =>
+            {
+                -(Errno::EPERM as i32)
+            }
+            Some(_) => {
+                if sig > 0 {
+                    if let Some((target, locks)) = table.process_and_advisory_locks(target_pid) {
                         target.raise_signal_with_value(sig, si_value);
-                        deliver_pending_signals(target, &mut host);
+                        deliver_pending_signals_with_locks(target, locks, &mut host);
                     }
-                    0
                 }
+                0
             }
             None => -(Errno::ESRCH as i32),
         };
-        deliver_pending_signals(proc, &mut host);
+        deliver_caller(table, &mut host);
         return result;
     }
     // kill(-pgid, sig) sends signal to all processes in group |pid|
     if !is_local && pid < -1 {
         if sig >= NSIG && sig != 0 {
-            deliver_pending_signals(proc, &mut host);
+            deliver_caller(table, &mut host);
             return -(Errno::EINVAL as i32);
         }
         let target_pgid = (-pid) as u32;
-        let caller_pid = proc.pid;
-        let (sender_uid, sender_euid) = (proc.uid, proc.euid);
-        let table = unsafe { &*PROCESS_TABLE.0.get() };
         let pids = table.pids_in_group(target_pgid);
         if pids.is_empty() {
-            deliver_pending_signals(proc, &mut host);
+            deliver_caller(table, &mut host);
             return -(Errno::ESRCH as i32);
         }
         // POSIX: kill(-pgid) returns success if at least one target received
         // the signal, EPERM only if *none* could be signalled due to permission.
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
         let mut delivered = false;
         let mut any_perm_denied = false;
         for &target_pid in &pids {
-            if let Some(target) = table.get_mut(target_pid) {
+            if let Some(target) = table.get(target_pid) {
                 if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
                     any_perm_denied = true;
                     continue;
                 }
                 delivered = true;
                 if sig > 0 {
-                    target.raise_signal_with_value(sig, si_value);
-                    deliver_pending_signals(target, &mut host);
+                    if let Some((target, locks)) =
+                        table.process_and_advisory_locks(target_pid)
+                    {
+                        target.raise_signal_with_value(sig, si_value);
+                        deliver_pending_signals_with_locks(target, locks, &mut host);
+                    }
                 }
             }
         }
-        if let Some(caller) = table.get_mut(caller_pid) {
-            deliver_pending_signals(caller, &mut host);
-        }
+        deliver_caller(table, &mut host);
         if delivered {
             return 0;
         } else if any_perm_denied {
@@ -5844,15 +5893,21 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
 
     // For local sigqueue, raise with value on the current process directly.
     if si_value != 0 && sig > 0 {
-        proc.raise_signal_with_value(sig, si_value);
-        deliver_pending_signals(proc, &mut host);
+        let Some((caller, locks)) = table.process_and_advisory_locks(caller_pid) else {
+            return -(Errno::ESRCH as i32);
+        };
+        caller.raise_signal_with_value(sig, si_value);
+        deliver_pending_signals_with_locks(caller, locks, &mut host);
         return 0;
     }
-    let result = match syscalls::sys_kill(proc, &mut host, pid, sig) {
+    let Some((caller, locks)) = table.process_and_advisory_locks(caller_pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let result = match syscalls::sys_kill(caller, &mut host, pid, sig) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(caller, locks, &mut host);
     result
 }
 
@@ -5861,7 +5916,7 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
 /// oss_ptr receives the previous state (may be null).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     // Write old state to oss_ptr if non-null
     if !oss_ptr.is_null() {
@@ -5893,7 +5948,7 @@ pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32
     }
 
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
@@ -6002,26 +6057,26 @@ pub extern "C" fn kernel_sched_getparam(pid: i32, param_ptr: *mut u8) -> i32 {
 /// Returns 0 on success, -EINVAL for invalid signal.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_deliver_signal(sig: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
         return -(Errno::EINVAL as i32);
     }
     proc.raise_signal(sig);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
 /// Send a signal to the current process. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_raise(sig: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_raise(proc, &mut host, sig) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6046,11 +6101,11 @@ pub extern "C" fn kernel_tkill(tid: u32, sig: u32) -> i32 {
 /// this reduces to the same check plus an outer PID match.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_tgkill(tgid: u32, tid: u32, sig: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     if tgid != proc.pid {
         // We don't support cross-process per-thread signalling.
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return -(Errno::ESRCH as i32);
     }
     kernel_tkill_with_value(tid, sig, 0, 0)
@@ -6061,11 +6116,11 @@ pub extern "C" fn kernel_tgkill(tgid: u32, tid: u32, sig: u32) -> i32 {
 /// `sigqueue`-style metadata.
 fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i32 {
     use wasm_posix_shared::signal::NSIG;
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     if sig >= NSIG {
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return -(Errno::EINVAL as i32);
     }
 
@@ -6078,7 +6133,7 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
                 proc.raise_for_thread(tid, sig);
             }
         }
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return 0;
     }
 
@@ -6105,7 +6160,7 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
             }
         }
     }
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
@@ -6115,7 +6170,7 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sigaction(sig: u32, act_ptr: *const u8, oldact_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     // Parse new action from act_ptr (if non-null)
     let (handler_val, flags, mask) = if !act_ptr.is_null() {
@@ -6141,7 +6196,7 @@ pub extern "C" fn kernel_sigaction(sig: u32, act_ptr: *const u8, oldact_ptr: *mu
             old[8..16].copy_from_slice(&old_action.mask.to_le_bytes());
         }
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return 0;
     };
 
@@ -6158,20 +6213,20 @@ pub extern "C" fn kernel_sigaction(sig: u32, act_ptr: *const u8, oldact_ptr: *mu
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// signal() — set signal handler (legacy API). Returns old handler or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_signal(signum: u32, handler: usize) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_signal(proc, signum, handler as u32) {
         Ok(old) => old,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6179,14 +6234,14 @@ pub extern "C" fn kernel_signal(signum: u32, handler: usize) -> i32 {
 /// Returns old mask as i64 (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let set = ((set_hi as u64) << 32) | (set_lo as u64);
     let result = match syscalls::sys_sigprocmask(proc, how, set) {
         Ok(old) => old as i64,
         Err(e) => -(e as i64),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6195,7 +6250,7 @@ pub extern "C" fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_clock_gettime(proc, &mut host, clock_id) {
         Ok(ts) => {
@@ -6212,7 +6267,7 @@ pub extern "C" fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6221,21 +6276,21 @@ pub extern "C" fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_nanosleep(req_ptr: *const u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let req = unsafe { &*(req_ptr as *const WasmTimespec) };
     let result = match syscalls::sys_nanosleep(proc, &mut host, req) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get clock resolution. Returns 0 or negative errno. Writes WasmTimespec to ts_ptr.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_clock_getres(proc, clock_id) {
         Ok(ts) => {
@@ -6254,14 +6309,14 @@ pub extern "C" fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Sleep with clock selection. Returns 0 or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *const u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let req = unsafe { &*(req_ptr as *const WasmTimespec) };
     let result = match syscalls::sys_clock_nanosleep(proc, &mut host, clock_id, flags, req, req_ptr)
@@ -6269,7 +6324,7 @@ pub extern "C" fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *co
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6282,7 +6337,7 @@ pub extern "C" fn kernel_utimensat(
     times_ptr: *const u8,
     flags: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let times = if times_ptr.is_null() {
         None
@@ -6294,7 +6349,7 @@ pub extern "C" fn kernel_utimensat(
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6307,26 +6362,26 @@ pub extern "C" fn kernel_mremap(
     new_len: usize,
     flags: u32,
 ) -> usize {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_mremap(proc, old_addr, old_len, new_len, flags) {
         Ok(addr) => addr,
         Err(e) => (-(e as i32)) as usize,
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Memory advice hint. No-op, returns 0.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_madvise(addr: usize, len: usize, advice: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_madvise(proc, addr as u32, len as u32, advice) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6334,7 +6389,7 @@ pub extern "C" fn kernel_madvise(addr: usize, len: usize, advice: u32) -> i32 {
 /// Returns 0 on success.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_statfs(path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_statfs(proc, &mut host, path) {
@@ -6356,7 +6411,7 @@ pub extern "C" fn kernel_statfs(path_ptr: *const u8, path_len: u32, buf_ptr: *mu
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6364,7 +6419,7 @@ pub extern "C" fn kernel_statfs(path_ptr: *const u8, path_len: u32, buf_ptr: *mu
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fstatfs(fd: i32, buf_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fstatfs(proc, &mut host, fd) {
         Ok(statfs) => {
@@ -6385,20 +6440,20 @@ pub extern "C" fn kernel_fstatfs(fd: i32, buf_ptr: *mut u8) -> i32 {
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// setresuid — set real, effective, and saved user IDs.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setresuid(ruid: u32, euid: u32, suid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setresuid(proc, ruid, euid, suid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6410,7 +6465,7 @@ pub extern "C" fn kernel_getresuid(
     euid_ptr: *mut u32,
     suid_ptr: *mut u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let (ruid, euid, suid) = syscalls::sys_getresuid(proc);
     unsafe {
         *ruid_ptr = ruid;
@@ -6418,20 +6473,20 @@ pub extern "C" fn kernel_getresuid(
         *suid_ptr = suid;
     }
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
 /// setresgid — set real, effective, and saved group IDs.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setresgid(rgid: u32, egid: u32, sgid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setresgid(proc, rgid, egid, sgid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6443,7 +6498,7 @@ pub extern "C" fn kernel_getresgid(
     egid_ptr: *mut u32,
     sgid_ptr: *mut u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let (rgid, egid, sgid) = syscalls::sys_getresgid(proc);
     unsafe {
         *rgid_ptr = rgid;
@@ -6451,7 +6506,7 @@ pub extern "C" fn kernel_getresgid(
         *sgid_ptr = sgid;
     }
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
@@ -6459,7 +6514,7 @@ pub extern "C" fn kernel_getresgid(
 /// Returns count on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getgroups(size: u32, list_ptr: *mut u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_getgroups(proc, size) {
         Ok((count, gid)) => {
             if size > 0 {
@@ -6472,20 +6527,20 @@ pub extern "C" fn kernel_getgroups(size: u32, list_ptr: *mut u32) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// setgroups — set supplementary group IDs (no-op).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setgroups(size: u32, _list_ptr: *const u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setgroups(proc, size) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -6551,24 +6606,15 @@ fn extract_scm_rights(
                 // Look up this FD in the sender's process
                 if let Ok(fd_entry) = proc.fd_table.get(fd_num) {
                     if let Some(ofd) = proc.ofd_table.get(fd_entry.ofd_ref.0) {
-                        let mut in_flight = InFlightFd {
-                            file_type: match ofd.file_type {
-                                crate::ofd::FileType::Pipe => 0,
-                                crate::ofd::FileType::Socket => 1,
-                                crate::ofd::FileType::Regular => 2,
-                                crate::ofd::FileType::Directory => 3,
-                                crate::ofd::FileType::CharDevice => 4,
-                                crate::ofd::FileType::PtyMaster => 6,
-                                crate::ofd::FileType::PtySlave => 7,
-                                _ => 5,
-                            },
-                            status_flags: ofd.status_flags,
-                            host_handle: ofd.host_handle,
-                            offset: ofd.offset,
-                            path: ofd.path.clone(),
-                            pipe_ref_kind: None,
-                            socket: None,
-                        };
+                        let mut in_flight = InFlightFd::new(
+                            ofd.ofd_id,
+                            ofd.file_id,
+                            ofd.file_type,
+                            ofd.status_flags,
+                            ofd.host_handle,
+                            ofd.offset,
+                            ofd.path.clone(),
+                        );
 
                         // Serialize the resource ownership while the sender's
                         // OFD and backing pipe are both authoritative. FIFO
@@ -6662,7 +6708,7 @@ fn queue_scm_rights_fds(
     };
 
     let pipes = unsafe { crate::pipe::global_pipe_table() };
-    pipes.queue_ancillary(send_idx, fds)
+    pipes.queue_retained_ancillary(send_idx, fds)
 }
 
 /// sendmsg — send a message on a socket.
@@ -6670,7 +6716,7 @@ fn queue_scm_rights_fds(
 /// Handles SCM_RIGHTS ancillary data by serializing FDs into the pipe's ancillary queue.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     // Parse msghdr: msg_name(0), msg_namelen(4), msg_iov(8), msg_iovlen(12),
@@ -6684,12 +6730,21 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
     let control_len = u32::from_le_bytes([msg[20], msg[21], msg[22], msg[23]]) as usize;
 
     if iov_len == 0 {
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return 0;
     }
 
     // Extract SCM_RIGHTS ancillary FDs before sending data
-    let ancillary_fds = extract_scm_rights(proc, control_ptr, control_len);
+    let mut ancillary_fds = extract_scm_rights(proc, control_ptr, control_len);
+    if let Err(err) = ancillary_fds
+        .iter_mut()
+        .try_for_each(crate::pipe::InFlightFd::retain_reference)
+    {
+        drop(ancillary_fds);
+        syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+        return -(err as i32);
+    }
 
     // Parse first iovec: iov_base at offset 0, iov_len at offset 4
     let iov = unsafe { slice::from_raw_parts(iov_ptr as *const u8, 8) };
@@ -6712,173 +6767,20 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
         }
     };
 
-    // If data was sent successfully, the queued SCM_RIGHTS message owns one
-    // resource reference per descriptor until recvmsg installs or discards it.
-    if result > 0 && !ancillary_fds.is_empty() {
-        let _ = queue_scm_rights_fds(proc, fd, ancillary_fds);
+    let mut ancillary_fds = Some(ancillary_fds);
+    if result > 0 && ancillary_fds.as_ref().is_some_and(|fds| !fds.is_empty()) {
+        // The entries already own their backing and OfdId references. Queue
+        // them without a second retain; failure drops them into deferred cleanup.
+        let _ = queue_scm_rights_fds(proc, fd, ancillary_fds.take().unwrap());
     }
 
-    deliver_pending_signals(proc, &mut host);
+    // A failed send or a socket without a deliverable pipe drops the retained
+    // entries here. Their destructors only enqueue fixed cleanup metadata.
+    drop(ancillary_fds);
+    syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
-}
-
-/// Install SCM_RIGHTS FDs in the receiver's process, returning the new FD numbers.
-fn install_scm_rights_fds(
-    proc: &mut crate::process::Process,
-    in_flight: Vec<crate::pipe::InFlightFd>,
-) -> Vec<i32> {
-    use crate::ofd::FileType;
-    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
-
-    let mut new_fds = Vec::new();
-
-    for entry in in_flight {
-        match entry.file_type {
-            1 => {
-                // Socket FD — create new socket in receiver's process
-                if let Some(ref sock_data) = entry.socket {
-                    let domain = match sock_data.domain {
-                        0 => SocketDomain::Unix,
-                        1 => SocketDomain::Inet,
-                        _ => SocketDomain::Inet6,
-                    };
-                    let sock_type = match sock_data.sock_type {
-                        0 => SocketType::Stream,
-                        _ => SocketType::Dgram,
-                    };
-                    let state = match sock_data.state {
-                        0 => SocketState::Unbound,
-                        1 => SocketState::Bound,
-                        2 => SocketState::Listening,
-                        3 => SocketState::Connected,
-                        _ => SocketState::Closed,
-                    };
-
-                    let mut sock = SocketInfo::new(domain, sock_type, sock_data.protocol);
-                    sock.state = state;
-                    sock.send_buf_idx = sock_data.send_buf_idx;
-                    sock.recv_buf_idx = sock_data.recv_buf_idx;
-                    sock.global_pipes = sock_data.global_pipes;
-                    sock.shut_rd = sock_data.shut_rd;
-                    sock.shut_wr = sock_data.shut_wr;
-                    sock.bind_addr = sock_data.bind_addr;
-                    sock.bind_port = sock_data.bind_port;
-                    sock.peer_addr = sock_data.peer_addr;
-                    sock.peer_port = sock_data.peer_port;
-
-                    // Allocate socket slot in receiver
-                    let new_sock_idx = proc.sockets.alloc(sock);
-
-                    let new_host_handle = -((new_sock_idx as i64) + 1);
-                    let ofd_idx = proc.ofd_table.create(
-                        FileType::Socket,
-                        entry.status_flags,
-                        new_host_handle,
-                        entry.path.clone(),
-                    );
-                    match proc
-                        .fd_table
-                        .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
-                    {
-                        Ok(new_fd) => {
-                            unsafe {
-                                crate::pipe::global_pipe_table().adopt_ancillary_resource(&entry);
-                            }
-                            new_fds.push(new_fd);
-                        }
-                        Err(_) => {
-                            proc.ofd_table.dec_ref(ofd_idx);
-                            proc.sockets.free(new_sock_idx);
-                            unsafe {
-                                crate::pipe::global_pipe_table()
-                                    .release_ancillary_resource(&entry);
-                            }
-                        }
-                    }
-                }
-            }
-            0 => {
-                // The reference retained by sendmsg becomes this OFD's
-                // endpoint reference. Do not increment it a second time.
-                let ofd_idx = proc.ofd_table.create(
-                    FileType::Pipe,
-                    entry.status_flags,
-                    entry.host_handle,
-                    entry.path.clone(),
-                );
-                match proc
-                    .fd_table
-                    .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
-                {
-                    Ok(new_fd) => {
-                        unsafe {
-                            crate::pipe::global_pipe_table().adopt_ancillary_resource(&entry);
-                        }
-                        new_fds.push(new_fd);
-                    }
-                    Err(_) => {
-                        proc.ofd_table.dec_ref(ofd_idx);
-                        unsafe {
-                            crate::pipe::global_pipe_table()
-                                .release_ancillary_resource(&entry);
-                        }
-                    }
-                }
-            }
-            6 | 7 => {
-                // PTY master (6) or slave (7) — share by incrementing refs
-                let is_master = entry.file_type == 6;
-                let file_type = if is_master {
-                    FileType::PtyMaster
-                } else {
-                    FileType::PtySlave
-                };
-                let pty_idx = entry.host_handle as usize;
-                if let Some(pty) = crate::pty::get_pty(pty_idx) {
-                    if is_master {
-                        pty.master_refs += 1;
-                    } else {
-                        pty.slave_refs += 1;
-                    }
-                }
-                let ofd_idx = proc.ofd_table.create(
-                    file_type,
-                    entry.status_flags,
-                    entry.host_handle,
-                    entry.path.clone(),
-                );
-                if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
-                    new_fds.push(new_fd);
-                }
-            }
-            _ => {
-                // Regular file / directory / char device — share via host_handle
-                let file_type = match entry.file_type {
-                    2 => FileType::Regular,
-                    3 => FileType::Directory,
-                    4 => FileType::CharDevice,
-                    _ => FileType::Regular,
-                };
-                let ofd_idx = proc.ofd_table.create(
-                    file_type,
-                    entry.status_flags,
-                    entry.host_handle,
-                    entry.path.clone(),
-                );
-                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-                    ofd.offset = entry.offset;
-                }
-                if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
-                    new_fds.push(new_fd);
-                }
-            }
-        }
-    }
-
-    unsafe {
-        crate::pipe::global_pipe_table().finish_ancillary_transition();
-    }
-    new_fds
 }
 
 /// recvmsg — receive a message from a socket.
@@ -6886,7 +6788,7 @@ fn install_scm_rights_fds(
 /// Delivers SCM_RIGHTS ancillary data by installing FDs in the receiver's process.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     // Parse msghdr: msg_name(0), msg_namelen(4), msg_iov(8), msg_iovlen(12),
@@ -6900,7 +6802,7 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let control_len = u32::from_le_bytes([msg[20], msg[21], msg[22], msg[23]]) as usize;
 
     if iov_len == 0 {
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return 0;
     }
 
@@ -6975,28 +6877,22 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
             };
             let install_count = control_fd_capacity.min(in_flight.len());
             let excess = in_flight.split_off(install_count);
-
-            // Keep collection deferred while the fitting prefix is not yet
-            // represented by receiver OFDs. Otherwise releasing an excess
-            // socket could collect queues that the prefix makes reachable.
-            if !excess.is_empty() {
-                let pipes = unsafe { crate::pipe::global_pipe_table() };
-                for entry in &excess {
-                    pipes.release_ancillary_resource(entry);
-                }
-            }
+            let had_excess = !excess.is_empty();
+            // Dropped entries enqueue allocation-free cleanup. The queue is
+            // drained only after the fitting prefix has become receiver OFDs.
+            drop(excess);
 
             let attempted = in_flight.len();
             let new_fds = if attempted == 0 {
-                unsafe {
-                    crate::pipe::global_pipe_table().finish_ancillary_transition();
-                }
                 Vec::new()
             } else {
-                install_scm_rights_fds(proc, in_flight)
+                syscalls::install_scm_rights_fds(proc, in_flight)
             };
+            unsafe {
+                crate::pipe::global_pipe_table().finish_ancillary_transition();
+            }
 
-            if !excess.is_empty() || new_fds.len() < attempted {
+            if had_excess || new_fds.len() < attempted {
                 output_msg_flags |= wasm_posix_shared::socket::MSG_CTRUNC;
             }
 
@@ -7035,7 +6931,9 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
     msg_mut[24..28].copy_from_slice(&output_msg_flags.to_le_bytes());
 
-    deliver_pending_signals(proc, &mut host);
+    syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7048,7 +6946,7 @@ pub extern "C" fn kernel_wait4(
     options: u32,
     _rusage_ptr: *mut u8,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_waitpid(proc, &mut host, pid, options) {
         Ok((child_pid, status)) => {
@@ -7061,7 +6959,7 @@ pub extern "C" fn kernel_wait4(
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7069,13 +6967,13 @@ pub extern "C" fn kernel_wait4(
 /// Returns 1 if terminal, or negative errno on error (ENOTTY if not a terminal).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_isatty(fd: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_isatty(proc, fd) {
         Ok(v) => v,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7088,7 +6986,7 @@ pub extern "C" fn kernel_getenv(
     buf_ptr: *mut u8,
     buf_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_getenv(proc, name, buf) {
@@ -7096,7 +6994,7 @@ pub extern "C" fn kernel_getenv(
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7110,7 +7008,7 @@ pub extern "C" fn kernel_setenv(
     val_len: u32,
     overwrite: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
     let value = unsafe { slice::from_raw_parts(val_ptr, val_len as usize) };
     let result = match syscalls::sys_setenv(proc, name, value, overwrite != 0) {
@@ -7118,7 +7016,7 @@ pub extern "C" fn kernel_setenv(
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7126,21 +7024,21 @@ pub extern "C" fn kernel_setenv(
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_unsetenv(name_ptr: *const u8, name_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
     let result = match syscalls::sys_unsetenv(proc, name) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Return the number of environment variables in proc.environ.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_environ_count() -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     proc.environ.len() as u32
 }
 
@@ -7148,7 +7046,7 @@ pub extern "C" fn kernel_environ_count() -> u32 {
 /// Returns the number of bytes written, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_environ_get(index: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let idx = index as usize;
     if idx >= proc.environ.len() {
         return -(Errno::EINVAL as i32);
@@ -7169,14 +7067,14 @@ pub extern "C" fn kernel_environ_get(index: u32, buf_ptr: *mut u8, buf_len: u32)
 /// Clear all argv entries.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clear_argv() {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     proc.argv.clear();
 }
 
 /// Push an argument string. Called by host before _start.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_push_argv(ptr: *const u8, len: u32) {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let data = unsafe { slice::from_raw_parts(ptr, len as usize) };
     proc.argv.push(data.to_vec());
 }
@@ -7184,14 +7082,14 @@ pub extern "C" fn kernel_push_argv(ptr: *const u8, len: u32) {
 /// Return the number of arguments.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_argc() -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     proc.argv.len() as u32
 }
 
 /// Copy argument at `index` into `buf_ptr`. Returns bytes written.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_argv_read(index: u32, buf_ptr: *mut u8, buf_max: u32) -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     if let Some(arg) = proc.argv.get(index as usize) {
         let len = arg.len().min(buf_max as usize);
         let dst = unsafe { slice::from_raw_parts_mut(buf_ptr, len) };
@@ -7206,14 +7104,14 @@ pub extern "C" fn kernel_argv_read(index: u32, buf_ptr: *mut u8, buf_max: u32) -
 /// Returns number of bytes written, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
     let result = match host.host_getrandom(buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7228,7 +7126,7 @@ pub extern "C" fn kernel_mmap(
     offset_lo: u32,
     offset_hi: i32,
 ) -> usize {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
     let mut host = WasmHostIO;
     let result = match syscalls::sys_mmap(proc, &mut host, addr, len, prot, flags, fd, offset) {
@@ -7243,20 +7141,20 @@ pub extern "C" fn kernel_mmap(
         ensure_memory_covers(end);
     }
 
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// munmap. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_munmap(addr: usize, len: usize) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_munmap(proc, &mut host, addr, len) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7264,7 +7162,7 @@ pub extern "C" fn kernel_munmap(addr: usize, len: usize) -> i32 {
 /// Grows Wasm memory if the new break exceeds the current memory size.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_brk(addr: usize) -> usize {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_brk(proc, addr);
 
     // Ensure Wasm memory covers the new program break.
@@ -7273,20 +7171,20 @@ pub extern "C" fn kernel_brk(addr: usize) -> usize {
     }
 
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// mprotect. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_mprotect(proc, addr, len, prot) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7295,7 +7193,7 @@ pub extern "C" fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exit(status: i32) -> ! {
     {
-        let (_gkl, proc) = unsafe { get_process() };
+        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
         if unsafe { host_is_thread_worker() } != 0 {
             // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
             // Just set exit status and return — the glue will trap via unreachable.
@@ -7304,7 +7202,7 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
             // Drop GKL guard before trapping
         } else {
             let mut host = WasmHostIO;
-            syscalls::sys_exit(proc, &mut host, status);
+            syscalls::sys_exit_with_locks(proc, advisory_locks, &mut host, status);
         }
     } // _gkl dropped here — GKL released
     // Halt execution — musl's _exit loops forever if we just return.
@@ -7319,7 +7217,7 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
 /// Get the exit status of the current process (set by kernel_exit).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_exit_status() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     proc.exit_status
 }
 
@@ -7330,13 +7228,13 @@ pub extern "C" fn kernel_get_exit_status() -> i32 {
 /// Create a socket. Returns fd or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_socket(domain: u32, sock_type: u32, protocol: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_socket(proc, &mut host, domain, sock_type, protocol) {
         Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7349,7 +7247,7 @@ pub extern "C" fn kernel_socketpair(
     protocol: u32,
     sv_ptr: *mut i32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_socketpair(proc, &mut host, domain, sock_type, protocol) {
         Ok((fd0, fd1)) => {
@@ -7361,34 +7259,34 @@ pub extern "C" fn kernel_socketpair(
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Bind a socket to an address. Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_bind(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_bind(proc, &mut host, fd, addr) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Listen for connections. Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_listen(proc, &mut host, fd, backlog) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7412,10 +7310,10 @@ pub extern "C" fn kernel_accept4(
     use wasm_posix_shared::flags::O_NONBLOCK;
     use wasm_posix_shared::socket::{SOCK_CLOEXEC, SOCK_NONBLOCK};
 
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     if !accept4_flags_are_valid(flags) {
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return -(Errno::EINVAL as i32);
     }
     let result = match syscalls::sys_accept(proc, &mut host, fd) {
@@ -7501,7 +7399,7 @@ pub extern "C" fn kernel_accept4(
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -7512,16 +7410,22 @@ pub extern "C" fn kernel_accept4(
 /// cross-process loopback (e.g. nginx -> php-fpm).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
     let mut host = WasmHostIO;
     let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
-    let result = match syscalls::sys_connect(proc, &mut host, fd, addr) {
+    let connect_result = match table.get_mut(pid) {
+        Some(proc) => syscalls::sys_connect(proc, &mut host, fd, addr),
+        None => return -(Errno::ESRCH as i32),
+    };
+    let result = match connect_result {
         Ok(()) => 0,
         Err(Errno::ECONNREFUSED) if addr_len >= 3 => {
             let family = u16::from_le_bytes([addr[0], addr[1]]);
             if family == 1 {
                 // AF_UNIX — try cross-process connect
-                match cross_process_unix_connect(proc, &mut host, fd, addr) {
+                match cross_process_unix_connect(table, pid, &mut host, fd, addr) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
@@ -7529,7 +7433,7 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
                 // AF_INET loopback
                 let ip = [addr[4], addr[5], addr[6], addr[7]];
                 if ip == [127, 0, 0, 1] {
-                    match cross_process_loopback_connect(proc, fd, addr) {
+                    match cross_process_loopback_connect(table, pid, fd, addr) {
                         Ok(()) => 0,
                         Err(e) => -(e as i32),
                     }
@@ -7538,7 +7442,7 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
                 }
             } else if family == 10 && addr_len >= 28 {
                 // AF_INET6 loopback
-                match cross_process_loopback_connect6(proc, fd, addr) {
+                match cross_process_loopback_connect6(table, pid, fd, addr) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
@@ -7548,7 +7452,9 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    if let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) {
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    }
     result
 }
 
@@ -7556,7 +7462,12 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
 ///
 /// Searches all processes in the ProcessTable for a listening socket on the
 /// target port, then creates global pipe pairs to connect the two processes.
-fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
+fn cross_process_loopback_connect(
+    table: &mut crate::process_table::ProcessTable,
+    my_pid: u32,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
     use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::{IPPROTO_IPV6, IPV6_V6ONLY};
@@ -7564,23 +7475,26 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
     let port = u16::from_be_bytes([addr[2], addr[3]]);
     let ip = [addr[4], addr[5], addr[6], addr[7]];
 
-    // Get the client socket info
-    let entry = proc.fd_table.get(fd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Socket {
-        return Err(Errno::ENOTSOCK);
-    }
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
-    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    if client_sock.domain != SocketDomain::Inet || client_sock.sock_type != SocketType::Stream {
-        return Err(Errno::ECONNREFUSED);
-    }
+    // Validate the client and snapshot its process-local socket index before
+    // searching or mutating any other process.
+    let sock_idx = {
+        let proc = table.get(my_pid).ok_or(Errno::ESRCH)?;
+        let entry = proc.fd_table.get(fd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.file_type != FileType::Socket {
+            return Err(Errno::ENOTSOCK);
+        }
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        if client_sock.domain != SocketDomain::Inet
+            || client_sock.sock_type != SocketType::Stream
+        {
+            return Err(Errno::ECONNREFUSED);
+        }
+        sock_idx
+    };
 
-    // Search ALL processes for a listener on the target port
-    let my_pid = proc.pid;
-    // Do not read through `proc` after reborrowing the containing global
-    // process table.
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    // Search ALL processes for a listener on the target port.
 
     // Find the listener process and socket index
     let mut listener_pid: Option<u32> = None;
@@ -7700,7 +7614,8 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
 /// carries a native IPv6 peer address so accept/getpeername retain the family
 /// and do not collapse the connection onto the IPv4 host bridge.
 fn cross_process_loopback_connect6(
-    proc: &mut Process,
+    table: &mut crate::process_table::ProcessTable,
+    my_pid: u32,
     fd: i32,
     addr: &[u8],
 ) -> Result<(), Errno> {
@@ -7718,21 +7633,22 @@ fn cross_process_loopback_connect6(
         return Err(Errno::ECONNREFUSED);
     }
 
-    let entry = proc.fd_table.get(fd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Socket {
-        return Err(Errno::ENOTSOCK);
-    }
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
-    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    if client_sock.domain != SocketDomain::Inet6 || client_sock.sock_type != SocketType::Stream {
-        return Err(Errno::ECONNREFUSED);
-    }
-
-    let my_pid = proc.pid;
-    // Do not read through `proc` after reborrowing the containing global
-    // process table.
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let sock_idx = {
+        let proc = table.get(my_pid).ok_or(Errno::ESRCH)?;
+        let entry = proc.fd_table.get(fd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.file_type != FileType::Socket {
+            return Err(Errno::ENOTSOCK);
+        }
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        if client_sock.domain != SocketDomain::Inet6
+            || client_sock.sock_type != SocketType::Stream
+        {
+            return Err(Errno::ECONNREFUSED);
+        }
+        sock_idx
+    };
     let mut listener = None;
     for (&pid, target_proc) in table.processes.iter().rev() {
         if pid == my_pid {
@@ -7823,7 +7739,8 @@ fn cross_process_loopback_connect6(
 /// global pipe pairs to connect the client (current process) to the listener
 /// (possibly in a different process).
 fn cross_process_unix_connect(
-    proc: &mut Process,
+    table: &mut crate::process_table::ProcessTable,
+    my_pid: u32,
     host: &mut dyn HostIO,
     fd: i32,
     addr: &[u8],
@@ -7836,54 +7753,50 @@ fn cross_process_unix_connect(
         return Err(Errno::EINVAL);
     }
     let path_bytes = &addr[2..];
-    let resolved = if path_bytes.first().copied() == Some(0) {
-        if path_bytes.len() < 2 {
-            return Err(Errno::ECONNREFUSED);
-        }
-        path_bytes.to_vec()
-    } else {
-        let path_end = path_bytes
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(path_bytes.len());
-        if path_end == 0 {
-            return Err(Errno::ECONNREFUSED);
-        }
-        syscalls::resolve_existing_namespace_path(proc, host, &path_bytes[..path_end])?
-    };
+    let (resolved, sock_idx) = {
+        let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+        let resolved = if path_bytes.first().copied() == Some(0) {
+            if path_bytes.len() < 2 {
+                return Err(Errno::ECONNREFUSED);
+            }
+            path_bytes.to_vec()
+        } else {
+            let path_end = path_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(path_bytes.len());
+            if path_end == 0 {
+                return Err(Errno::ECONNREFUSED);
+            }
+            syscalls::resolve_existing_namespace_path(proc, host, &path_bytes[..path_end])?
+        };
 
-    // Only AF_UNIX stream sockets can enter the cross-process stream-pipe
-    // connection path. In particular, never reinterpret a datagram socket as
-    // a stream merely because its registry lookup found another process.
-    let entry = proc.fd_table.get(fd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Socket {
-        return Err(Errno::ENOTSOCK);
-    }
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
-    let client = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    // sys_connect already returned ECONNREFUSED for this attempt. Datagram
-    // routing is deliberately not retried through the stream-only
-    // cross-process path: doing so would rewrite the truthful datagram error
-    // to EPROTOTYPE at the exported syscall boundary.
-    if client.domain == SocketDomain::Unix && client.sock_type == SocketType::Dgram {
-        return Err(Errno::ECONNREFUSED);
-    }
-    if client.domain != SocketDomain::Unix || client.sock_type != SocketType::Stream {
-        return Err(Errno::EPROTOTYPE);
-    }
+        // Only AF_UNIX stream sockets can enter the cross-process stream-pipe
+        // connection path. In particular, never reinterpret a datagram socket
+        // as a stream merely because its registry lookup found another process.
+        let entry = proc.fd_table.get(fd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.file_type != FileType::Socket {
+            return Err(Errno::ENOTSOCK);
+        }
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let client = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        // sys_connect already returned ECONNREFUSED for this attempt. Datagram
+        // routing is deliberately not retried through the stream-only path.
+        if client.domain == SocketDomain::Unix && client.sock_type == SocketType::Dgram {
+            return Err(Errno::ECONNREFUSED);
+        }
+        if client.domain != SocketDomain::Unix || client.sock_type != SocketType::Stream {
+            return Err(Errno::EPROTOTYPE);
+        }
+        (resolved, sock_idx)
+    };
 
     // Look up in global registry
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     let entry = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
     let listener_pid = entry.pid;
     let listener_sock_idx = entry.sock_idx;
-
-    // Access process table for cross-process operation
-    let my_pid = proc.pid;
-    // Do not read through `proc` after reborrowing the containing global
-    // process table.
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
 
     // Verify listener exists and is listening
     let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ECONNREFUSED)?;
@@ -7947,6 +7860,7 @@ mod socket_wrapper_tests {
     use crate::fd::OpenFileDescRef;
     use crate::ofd::FileType;
     use crate::process::Process;
+    use crate::process_table::ProcessTable;
     use crate::socket::{SocketDomain, SocketInfo, SocketType};
     use wasm_posix_shared::flags::O_RDWR;
 
@@ -7970,9 +7884,11 @@ mod socket_wrapper_tests {
         // focused on the retry's socket-type guard.
         let addr = [1, 0, 0, b'm', b'i', b's', b's'];
         let mut host = WasmHostIO;
+        let mut table = ProcessTable::new();
+        table.processes.insert(proc.pid, proc);
 
         assert_eq!(
-            cross_process_unix_connect(&mut proc, &mut host, fd, &addr),
+            cross_process_unix_connect(&mut table, 9040, &mut host, fd, &addr),
             Err(Errno::ECONNREFUSED),
         );
     }
@@ -8011,21 +7927,21 @@ mod socket_wrapper_tests {
 /// Send data on a socket. Returns bytes sent or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_send(proc, &mut host, fd, buf, flags) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Receive data from a socket. Returns bytes received or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_recv(fd: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     // A zero-length output is not assigned scratch space by the host. Avoid
     // treating the unchanged guest pointer as a kernel-memory pointer.
@@ -8038,20 +7954,21 @@ pub extern "C" fn kernel_recv(fd: i32, buf_ptr: *mut u8, buf_len: u32, flags: u3
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Shut down a socket. Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_shutdown(fd: i32, how: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_shutdown(proc, &mut host, fd, how) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8091,7 +8008,7 @@ pub extern "C" fn kernel_getsockopt(
     optlen_ptr: *mut u32,
 ) -> i32 {
     use wasm_posix_shared::socket::*;
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     // Handle struct tcp_info (TCP_INFO)
     if level == IPPROTO_TCP && optname == TCP_INFO {
@@ -8103,7 +8020,7 @@ pub extern "C" fn kernel_getsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8122,7 +8039,7 @@ pub extern "C" fn kernel_getsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8142,7 +8059,7 @@ pub extern "C" fn kernel_getsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8159,7 +8076,7 @@ pub extern "C" fn kernel_getsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8181,7 +8098,7 @@ pub extern "C" fn kernel_getsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8195,7 +8112,7 @@ pub extern "C" fn kernel_getsockopt(
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8210,7 +8127,7 @@ pub extern "C" fn kernel_setsockopt(
     optlen: u32,
 ) -> i32 {
     use wasm_posix_shared::socket::*;
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO).
     // Both supported ABIs use two 64-bit fields here: wasm32 uses time64,
@@ -8218,7 +8135,7 @@ pub extern "C" fn kernel_setsockopt(
     if let Some(timeout_optname) = syscalls::canonical_socket_timeout_optname(level, optname) {
         if optval_ptr.is_null() || optlen < 16 {
             let mut host = WasmHostIO;
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             return -(Errno::EINVAL as i32);
         }
         let buf = unsafe { slice::from_raw_parts(optval_ptr, 16) };
@@ -8226,7 +8143,7 @@ pub extern "C" fn kernel_setsockopt(
         let tv_usec = i64::from_le_bytes(buf[8..16].try_into().unwrap());
         if tv_sec < 0 || tv_usec < 0 || tv_usec >= 1_000_000 {
             let mut host = WasmHostIO;
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             return -(Errno::EINVAL as i32);
         }
         let timeout_us = (tv_sec as u64) * 1_000_000 + (tv_usec as u64);
@@ -8235,7 +8152,7 @@ pub extern "C" fn kernel_setsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8243,7 +8160,7 @@ pub extern "C" fn kernel_setsockopt(
     if level == SOL_SOCKET && optname == SO_LINGER {
         if optval_ptr.is_null() || optlen < 8 {
             let mut host = WasmHostIO;
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             return -(Errno::EINVAL as i32);
         }
         let buf = unsafe { slice::from_raw_parts(optval_ptr, 8) };
@@ -8254,7 +8171,7 @@ pub extern "C" fn kernel_setsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8262,7 +8179,7 @@ pub extern "C" fn kernel_setsockopt(
     if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
         if optval_ptr.is_null() {
             let mut host = WasmHostIO;
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             return -(Errno::EFAULT as i32);
         }
         let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
@@ -8271,7 +8188,7 @@ pub extern "C" fn kernel_setsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8279,7 +8196,7 @@ pub extern "C" fn kernel_setsockopt(
     if level == IPPROTO_TCP && optname == TCP_CONGESTION {
         if optval_ptr.is_null() {
             let mut host = WasmHostIO;
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             return -(Errno::EFAULT as i32);
         }
         let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
@@ -8288,7 +8205,7 @@ pub extern "C" fn kernel_setsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
 
@@ -8314,7 +8231,7 @@ pub extern "C" fn kernel_setsockopt(
     {
         if optval_ptr.is_null() {
             let mut host = WasmHostIO;
-            deliver_pending_signals(proc, &mut host);
+            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             return -(Errno::EFAULT as i32);
         }
         let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
@@ -8411,7 +8328,7 @@ pub extern "C" fn kernel_setsockopt(
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
-        deliver_pending_signals(proc, &mut host);
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
         return result;
     }
     // Read first 4 bytes as u32 value (covers most int-valued options)
@@ -8432,7 +8349,7 @@ pub extern "C" fn kernel_setsockopt(
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8440,7 +8357,7 @@ pub extern "C" fn kernel_setsockopt(
 /// fds_ptr points to an array of WasmPollFd structs (8 bytes each: i32 fd, i16 events, i16 revents).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_poll(fds_ptr: *mut u8, nfds: u32, timeout: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let fds = unsafe {
         slice::from_raw_parts_mut(fds_ptr as *mut wasm_posix_shared::WasmPollFd, nfds as usize)
     };
@@ -8449,7 +8366,7 @@ pub extern "C" fn kernel_poll(fds_ptr: *mut u8, nfds: u32, timeout: i32) -> i32 
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8463,7 +8380,7 @@ pub extern "C" fn kernel_sendto(
     addr_ptr: *const u8,
     addr_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
     let addr = if addr_ptr.is_null() || addr_len == 0 {
@@ -8475,7 +8392,7 @@ pub extern "C" fn kernel_sendto(
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8490,7 +8407,7 @@ pub extern "C" fn kernel_recvfrom(
     addr_ptr: *mut u8,
     addrlen_ptr: *mut u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     // The generic host marshaller leaves a zero-sized pointer unadjusted.
     // Construct a real empty slice instead of interpreting that guest-memory
@@ -8522,20 +8439,20 @@ pub extern "C" fn kernel_recvfrom(
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// time() - returns seconds since epoch as i64.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_time() -> i64 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_time(proc, &mut host) {
         Ok(t) => t,
         Err(e) => -(e as i64),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8543,7 +8460,7 @@ pub extern "C" fn kernel_time() -> i64 {
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_gettimeofday(sec_ptr: *mut i64, usec_ptr: *mut i64) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_gettimeofday(proc, &mut host) {
         Ok((sec, usec)) => {
@@ -8555,7 +8472,7 @@ pub extern "C" fn kernel_gettimeofday(sec_ptr: *mut i64, usec_ptr: *mut i64) -> 
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8563,13 +8480,13 @@ pub extern "C" fn kernel_gettimeofday(sec_ptr: *mut i64, usec_ptr: *mut i64) -> 
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_usleep(usec: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_usleep(proc, &mut host, usec) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8583,14 +8500,14 @@ pub extern "C" fn kernel_openat(
     flags: u32,
     mode: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_openat(proc, &mut host, dirfd, path, flags, mode) {
         Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8604,7 +8521,7 @@ pub extern "C" fn kernel_fstatat(
     stat_ptr: *mut u8,
     flags: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_fstatat(proc, &mut host, dirfd, path, flags) {
@@ -8622,7 +8539,7 @@ pub extern "C" fn kernel_fstatat(
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8635,14 +8552,14 @@ pub extern "C" fn kernel_unlinkat(
     path_len: u32,
     flags: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_unlinkat(proc, &mut host, dirfd, path, flags) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8650,14 +8567,14 @@ pub extern "C" fn kernel_unlinkat(
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mkdirat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_mkdirat(proc, &mut host, dirfd, path, mode) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8672,7 +8589,7 @@ pub extern "C" fn kernel_renameat(
     new_ptr: *const u8,
     new_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
     let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
@@ -8681,7 +8598,7 @@ pub extern "C" fn kernel_renameat(
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8692,42 +8609,42 @@ pub extern "C" fn kernel_renameat(
 /// Get terminal attributes. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_tcgetattr(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_tcgetattr(proc, fd, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Set terminal attributes. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_tcsetattr(fd: i32, action: u32, buf_ptr: *const u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_tcsetattr(proc, fd, action, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Perform an ioctl operation. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_ioctl(proc, &mut host, fd, request, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8735,7 +8652,7 @@ pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len:
 /// buf_ptr is used for PR_SET_NAME (read name from buf) and PR_GET_NAME (write name to buf).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_prctl(option: u32, arg2: u32, _arg3: *mut u8, _arg4: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     // For PR_SET_NAME (15) and PR_GET_NAME (16), arg2 is the pointer to
     // a 16-byte name buffer.  The other prctl args are option-specific and
     // may be garbage for options that don't use them.
@@ -8751,123 +8668,123 @@ pub extern "C" fn kernel_prctl(option: u32, arg2: u32, _arg3: *mut u8, _arg4: u3
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Set file creation mask. Returns the previous mask value.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_umask(mask: u32) -> u32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_umask(proc, mask);
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get system identification. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_uname(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_uname(buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Get configurable system variables. Returns the value on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sysconf(name: i32) -> i64 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_sysconf(name) {
         Ok(val) => val,
         Err(e) => -(e as i64),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Truncate a file to a specified length. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_ftruncate(fd: i32, length: i64) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_ftruncate(proc, &mut host, fd, length) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Synchronize file state to storage. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fsync(proc, &mut host, fd) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Truncate a file to a specified length (path-based). Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_truncate(path_ptr: *const u8, path_len: u32, length: i64) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_truncate(proc, &mut host, path, length) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Synchronize file data to storage (alias for fsync). Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fdatasync(fd: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fdatasync(proc, &mut host, fd) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Change file mode via file descriptor. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fchmod(fd: i32, mode: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fchmod(proc, &mut host, fd, mode) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// Change file owner and group via file descriptor. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fchown(fd: i32, uid: u32, gid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fchown(proc, &mut host, fd, uid, gid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8876,7 +8793,7 @@ pub extern "C" fn kernel_fchown(fd: i32, uid: u32, gid: u32) -> i32 {
 /// Returns total bytes written (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let result = 'done: {
@@ -8901,7 +8818,7 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
             Err(e) => -(e as i32),
         }
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8910,7 +8827,7 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
 /// Returns total bytes read (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let result = 'done: {
@@ -8946,7 +8863,7 @@ pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
         }
         total as i32
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -8962,7 +8879,7 @@ pub extern "C" fn kernel_preadv(
     offset_lo: u32,
     offset_hi: i32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
 
@@ -9001,7 +8918,7 @@ pub extern "C" fn kernel_preadv(
         }
         total as i32
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9017,7 +8934,7 @@ pub extern "C" fn kernel_pwritev(
     offset_lo: u32,
     offset_hi: i32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
 
@@ -9043,7 +8960,7 @@ pub extern "C" fn kernel_pwritev(
             Err(e) => -(e as i32),
         }
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9052,7 +8969,7 @@ pub extern "C" fn kernel_pwritev(
 /// Returns total bytes copied or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sendfile(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, count: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let offset = if offset_ptr.is_null() {
@@ -9075,7 +8992,7 @@ pub extern "C" fn kernel_sendfile(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, 
             }
             Err(e) => -(e as i32),
         };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9092,7 +9009,7 @@ pub extern "C" fn kernel_statx(
     mask: u32,
     statx_ptr: *mut u8,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
 
@@ -9143,7 +9060,7 @@ pub extern "C" fn kernel_statx(
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9151,7 +9068,7 @@ pub extern "C" fn kernel_statx(
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getrlimit(resource: u32, rlim_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_getrlimit(proc, resource) {
         Ok((soft, hard)) => {
             let buf = unsafe { core::slice::from_raw_parts_mut(rlim_ptr, 16) };
@@ -9162,7 +9079,7 @@ pub extern "C" fn kernel_getrlimit(resource: u32, rlim_ptr: *mut u8) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9170,7 +9087,7 @@ pub extern "C" fn kernel_getrlimit(resource: u32, rlim_ptr: *mut u8) -> i32 {
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts(rlim_ptr, 16) };
     let soft = u64::from_le_bytes([
         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
@@ -9183,7 +9100,7 @@ pub extern "C" fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9200,14 +9117,14 @@ pub extern "C" fn kernel_faccessat(
     amode: u32,
     flags: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_faccessat(proc, &mut host, dirfd, path, amode, flags) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9220,14 +9137,14 @@ pub extern "C" fn kernel_fchmodat(
     mode: u32,
     flags: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_fchmodat(proc, &mut host, dirfd, path, mode, flags) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9241,14 +9158,14 @@ pub extern "C" fn kernel_fchownat(
     gid: u32,
     flags: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_fchownat(proc, &mut host, dirfd, path, uid, gid, flags) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9263,7 +9180,7 @@ pub extern "C" fn kernel_linkat(
     new_len: u32,
     flags: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
     let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
@@ -9272,7 +9189,7 @@ pub extern "C" fn kernel_linkat(
             Ok(()) => 0,
             Err(e) => -(e as i32),
         };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9285,7 +9202,7 @@ pub extern "C" fn kernel_symlinkat(
     link_ptr: *const u8,
     link_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let target = unsafe { slice::from_raw_parts(target_ptr, target_len as usize) };
     let linkpath = unsafe { slice::from_raw_parts(link_ptr, link_len as usize) };
@@ -9293,7 +9210,7 @@ pub extern "C" fn kernel_symlinkat(
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9306,7 +9223,7 @@ pub extern "C" fn kernel_readlinkat(
     buf_ptr: *mut u8,
     buf_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
@@ -9314,7 +9231,7 @@ pub extern "C" fn kernel_readlinkat(
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9334,7 +9251,7 @@ pub extern "C" fn kernel_select(
     exceptfds_ptr: *mut u8,
     timeout_ms: i32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     let readfds = if readfds_ptr.is_null() {
         None
@@ -9359,7 +9276,7 @@ pub extern "C" fn kernel_select(
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9370,52 +9287,52 @@ pub extern "C" fn kernel_select(
 /// setuid — set real and effective user ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setuid(uid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setuid(proc, uid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// setgid — set real and effective group ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setgid(gid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setgid(proc, gid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// seteuid — set effective user ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_seteuid(euid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_seteuid(proc, euid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// setegid — set effective group ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setegid(egid: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setegid(proc, egid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9429,14 +9346,14 @@ pub extern "C" fn kernel_getrusage(who: i32, buf_ptr: *mut u8, buf_len: u32) -> 
     if buf_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_getrusage(proc, who, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9452,7 +9369,7 @@ pub extern "C" fn kernel_realpath(
     buf_ptr: *mut u8,
     buf_len: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
@@ -9460,7 +9377,7 @@ pub extern "C" fn kernel_realpath(
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9474,13 +9391,13 @@ pub extern "C" fn kernel_realpath(
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
     let result = {
-        let (_gkl, proc) = unsafe { get_process() };
+        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
         let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
         let mut host = WasmHostIO;
         match syscalls::sys_execve(proc, &mut host, path) {
             Ok(()) => Ok(()),
             Err(e) => {
-                deliver_pending_signals(proc, &mut host);
+                deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
                 Err(e)
             }
         }
@@ -9516,13 +9433,13 @@ pub extern "C" fn kernel_execveat(
     flags: u32,
 ) -> i32 {
     let result = {
-        let (_gkl, proc) = unsafe { get_process() };
+        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
         let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
         let mut host = WasmHostIO;
         match syscalls::sys_execveat(proc, &mut host, dirfd, path, flags) {
             Ok(()) => Ok(()),
             Err(e) => {
-                deliver_pending_signals(proc, &mut host);
+                deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
                 Err(e)
             }
         }
@@ -9550,7 +9467,7 @@ pub extern "C" fn kernel_execveat(
 /// Fork the current process. Returns child PID in parent, 0 in child, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fork() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let host = WasmHostIO;
     match syscalls::sys_fork(proc, &host) {
         Ok(pid) => pid as i32,
@@ -9569,7 +9486,7 @@ pub extern "C" fn kernel_clone(
     tls_ptr: usize,
     ctid_ptr: usize,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     match syscalls::sys_clone(
         proc, &mut host, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr,
@@ -9582,14 +9499,14 @@ pub extern "C" fn kernel_clone(
 /// Returns 1 if this process is a fork child (should exec on startup), 0 otherwise.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_is_fork_child() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     if proc.fork_child { 1 } else { 0 }
 }
 
 /// Read the saved fork exec path into buf. Returns bytes written, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fork_exec_path(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     match &proc.fork_exec_path {
         Some(path) => {
             let len = path.len().min(buf_len as usize);
@@ -9604,7 +9521,7 @@ pub extern "C" fn kernel_get_fork_exec_path(buf_ptr: *mut u8, buf_len: u32) -> i
 /// Read fork exec argv[idx] into buf. Returns bytes written, 0 if index out of range.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fork_exec_argv(idx: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     match &proc.fork_exec_argv {
         Some(argv) => {
             if (idx as usize) < argv.len() {
@@ -9624,7 +9541,7 @@ pub extern "C" fn kernel_get_fork_exec_argv(idx: u32, buf_ptr: *mut u8, buf_len:
 /// Return the number of fork exec argv entries, or 0 if none.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fork_exec_argc() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     match &proc.fork_exec_argv {
         Some(argv) => argv.len() as i32,
         None => 0,
@@ -9640,7 +9557,7 @@ pub extern "C" fn kernel_set_fork_exec(
     argv_ptrs: *const u32,
     argc: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     proc.fork_exec_path = Some(path.to_vec());
 
@@ -9660,7 +9577,7 @@ pub extern "C" fn kernel_set_fork_exec(
 /// action_type: 0=DUP2(fd1→fd2), 1=CLOSE(fd1), 2=OPEN(fd1, path at fd2 interpreted as ptr+len)
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_fork_fd_action(action_type: u32, fd1: i32, fd2: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     use crate::process::FdAction;
     match action_type {
         0 => proc.fork_fd_actions.push(FdAction::Dup2 {
@@ -9676,18 +9593,26 @@ pub extern "C" fn kernel_set_fork_fd_action(action_type: u32, fd1: i32, fd2: i32
 /// Apply saved fork fd actions (dup2, close). Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_apply_fork_fd_actions() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
     for action in actions {
         match action {
             crate::process::FdAction::Dup2 { old_fd, new_fd } => {
-                if let Err(e) = syscalls::sys_dup2(proc, &mut host, old_fd, new_fd) {
+                if let Err(e) = syscalls::sys_dup2_with_locks(
+                    proc,
+                    advisory_locks,
+                    &mut host,
+                    old_fd,
+                    new_fd,
+                ) {
                     return -(e as i32);
                 }
             }
             crate::process::FdAction::Close { fd } => {
-                if let Err(e) = syscalls::sys_close(proc, &mut host, fd) {
+                if let Err(e) =
+                    syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd)
+                {
                     return -(e as i32);
                 }
             }
@@ -9699,10 +9624,21 @@ pub extern "C" fn kernel_apply_fork_fd_actions() -> i32 {
             } => match syscalls::sys_open(proc, &mut host, &path, flags as u32, mode as u32) {
                 Ok(opened_fd) => {
                     if opened_fd != fd {
-                        if let Err(e) = syscalls::sys_dup2(proc, &mut host, opened_fd, fd) {
+                        if let Err(e) = syscalls::sys_dup2_with_locks(
+                            proc,
+                            advisory_locks,
+                            &mut host,
+                            opened_fd,
+                            fd,
+                        ) {
                             return -(e as i32);
                         }
-                        let _ = syscalls::sys_close(proc, &mut host, opened_fd);
+                        let _ = syscalls::sys_close_with_locks(
+                            proc,
+                            advisory_locks,
+                            &mut host,
+                            opened_fd,
+                        );
                     }
                 }
                 Err(e) => return -(e as i32),
@@ -9717,7 +9653,7 @@ pub extern "C" fn kernel_apply_fork_fd_actions() -> i32 {
 /// Clear saved fork exec state (path, argv, fd_actions).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clear_fork_exec() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     proc.fork_exec_path = None;
     proc.fork_exec_argv = None;
     proc.fork_fd_actions.clear();
@@ -9730,7 +9666,7 @@ pub extern "C" fn kernel_clear_fork_exec() -> i32 {
 /// re-init).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_child_pid(new_pid: u32) {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     proc.ppid = proc.pid;
     proc.pid = new_pid;
 }
@@ -9743,13 +9679,13 @@ pub extern "C" fn kernel_set_child_pid(new_pid: u32) {
 /// Returns the number of seconds remaining from a previous alarm, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_alarm(seconds: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_alarm(proc, &mut host, seconds) {
         Ok(remaining) => remaining as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9765,7 +9701,7 @@ pub extern "C" fn kernel_alarm(seconds: u32) -> i32 {
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setitimer(which: u32, new_ptr: *const u8, old_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     // Parse new itimerval from memory (4 x i32 longs on wasm32)
@@ -9801,7 +9737,7 @@ pub extern "C" fn kernel_setitimer(which: u32, new_ptr: *const u8, old_ptr: *mut
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9810,7 +9746,7 @@ pub extern "C" fn kernel_setitimer(which: u32, new_ptr: *const u8, old_ptr: *mut
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_getitimer(proc, &mut host, which) {
         Ok((isec, iusec, vsec, vusec)) => {
@@ -9825,7 +9761,7 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -9924,7 +9860,7 @@ pub extern "C" fn kernel_timer_create(
 ) -> i32 {
     use crate::process::PosixTimerState;
 
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     let host_clock_id = match timer_clock_to_host_clock(clock_id) {
         Some(id) => id,
@@ -9992,7 +9928,7 @@ pub extern "C" fn kernel_timer_create(
     }
 
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
@@ -10070,7 +10006,7 @@ pub extern "C" fn kernel_timer_settime(
     new_ptr: *const u8,
     old_ptr: *mut u8,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let tid = timerid as usize;
@@ -10135,7 +10071,7 @@ pub extern "C" fn kernel_timer_settime(
     let signo = timer.sigev_signo as i32;
     let _ = host.host_set_posix_timer(timerid, signo, value_ms, interval_ms);
 
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
@@ -10143,7 +10079,7 @@ pub extern "C" fn kernel_timer_settime(
 /// Writes current itimerspec (32 bytes) to curr_value_ptr.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_timer_gettime(timerid: i32, curr_ptr: *mut u8) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let tid = timerid as usize;
@@ -10160,7 +10096,7 @@ pub extern "C" fn kernel_timer_gettime(timerid: i32, curr_ptr: *mut u8) -> i32 {
         buf[24..32].copy_from_slice(&timer.value_nsec.to_le_bytes());
     }
 
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
@@ -10168,7 +10104,7 @@ pub extern "C" fn kernel_timer_gettime(timerid: i32, curr_ptr: *mut u8) -> i32 {
 /// Returns the overrun count on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_timer_getoverrun(timerid: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let tid = timerid as usize;
@@ -10177,14 +10113,14 @@ pub extern "C" fn kernel_timer_getoverrun(timerid: i32) -> i32 {
         _ => return -(Errno::EINVAL as i32),
     };
 
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// timer_delete(timerid)
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let tid = timerid as usize;
@@ -10198,7 +10134,7 @@ pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
     proc.remove_posix_timer_notification(timerid as u32);
     proc.posix_timers[tid] = None;
 
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
 }
 
@@ -10223,14 +10159,14 @@ pub extern "C" fn kernel_posix_timer_interval_fire(pid: u32, timer_id: u32) -> i
 /// Always returns negative EINTR on success (signal was delivered).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
     let result = match syscalls::sys_sigsuspend(proc, &mut host, mask) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -10238,13 +10174,13 @@ pub extern "C" fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
 /// Always returns negative EINTR.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pause() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_pause(proc, &mut host) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -10253,14 +10189,14 @@ pub extern "C" fn kernel_pause() -> i32 {
 /// Returns signal number on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rt_sigtimedwait(mask_lo: u32, mask_hi: u32, timeout_ms: i32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
     let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
         Ok((sig, ..)) => sig as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -10275,7 +10211,7 @@ pub extern "C" fn kernel_pathconf(
     if path_ptr.is_null() || value_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_pathconf(proc, &mut host, path, name) {
@@ -10285,7 +10221,7 @@ pub extern "C" fn kernel_pathconf(
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -10295,7 +10231,7 @@ pub extern "C" fn kernel_fpathconf(fd: i32, name: i32, value_ptr: *mut i64) -> i
     if value_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fpathconf(proc, &mut host, fd, name) {
         Ok(value) => {
@@ -10304,14 +10240,14 @@ pub extern "C" fn kernel_fpathconf(fd: i32, name: i32, value_ptr: *mut i64) -> i
         }
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// getsockname -- get local socket address.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mut u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     // addrlen_ptr points to a u32 containing the buffer size (channel-rewritten pointer)
     let addrlen = if !addrlen_ptr.is_null() {
         unsafe { *addrlen_ptr }
@@ -10332,14 +10268,14 @@ pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mu
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
 /// getpeername -- get remote socket address.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mut u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let addrlen = if !addrlen_ptr.is_null() {
         unsafe { *addrlen_ptr }
     } else {
@@ -10358,7 +10294,7 @@ pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mu
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -10369,7 +10305,7 @@ pub extern "C" fn kernel_getaddrinfo(
     name_len: u32,
     result_ptr: *mut u8,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
     let result_buf = unsafe { slice::from_raw_parts_mut(result_ptr, 16) };
@@ -10386,7 +10322,7 @@ pub extern "C" fn kernel_getaddrinfo(
 /// gettid - returns pid for the main thread or the host-bound worker TID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_gettid() -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     syscalls::sys_gettid(proc)
 }
 
@@ -10397,7 +10333,7 @@ pub extern "C" fn kernel_gettid() -> i32 {
 /// kernel compatibility.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_tid_address(tidptr: usize) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     syscalls::sys_set_tid_address(proc, tidptr)
 }
 
@@ -10463,7 +10399,7 @@ pub extern "C" fn kernel_ppoll(
     mask_lo: u32,
     mask_hi: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let fds = unsafe {
         slice::from_raw_parts_mut(fds_ptr as *mut wasm_posix_shared::WasmPollFd, nfds as usize)
     };
@@ -10477,7 +10413,7 @@ pub extern "C" fn kernel_ppoll(
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -10494,7 +10430,7 @@ pub extern "C" fn kernel_pselect6(
     mask_lo: u32,
     mask_hi: u32,
 ) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     let readfds = if readfds_ptr.is_null() {
         None
@@ -10525,7 +10461,7 @@ pub extern "C" fn kernel_pselect6(
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals(proc, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -11038,9 +10974,10 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
     use crate::ofd::FileType;
     use wasm_posix_shared::flags::O_RDWR;
 
+    let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let proc = match table.get_mut(pid) {
-        Some(p) => p,
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+        Some(fields) => fields,
         None => return -(Errno::ESRCH as i32),
     };
 
@@ -11051,14 +10988,16 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
     };
 
     // Configure the PTY pair
-    let pty = crate::pty::get_pty(pty_idx).unwrap();
-    pty.locked = false; // unlockpt equivalent
-    pty.slave_refs = 1; // one OFD references the slave
-    pty.master_refs = 1; // host holds the master side
+    {
+        let pty = crate::pty::get_pty(pty_idx).unwrap();
+        pty.locked = false; // unlockpt equivalent
+        pty.slave_refs = 1; // one OFD references the slave
+        pty.master_refs = 1; // host holds the master side
 
-    // Set controlling terminal
-    pty.terminal.session_id = pid as i32;
-    pty.terminal.foreground_pgid = pid as i32;
+        // Set controlling terminal
+        pty.terminal.session_id = pid as i32;
+        pty.terminal.foreground_pgid = pid as i32;
+    }
 
     // Create a PtySlave OFD. host_handle stores pty_idx for the kernel's
     // read/write handlers to find the right PTY pair.
@@ -11071,11 +11010,38 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
         .ofd_table
         .create(FileType::PtySlave, O_RDWR, pty_idx as i64, path);
 
-    // Close the existing stdio OFDs for fds 0, 1, 2
+    // Close the existing stdio descriptors through the normal machine path.
+    // Directly replacing fd-table entries would bypass POSIX close-any-fd
+    // cleanup, final-OFD/flock cleanup, and host/backing release.
+    let mut host = WasmHostIO;
     for fd in 0..3i32 {
-        if let Ok(entry) = proc.fd_table.get(fd) {
-            let old_ofd_ref = entry.ofd_ref.0;
-            proc.ofd_table.dec_ref(old_ofd_ref);
+        if proc.fd_table.get(fd).is_ok() {
+            if let Err(err) = syscalls::sys_close_with_locks(
+                proc,
+                advisory_locks,
+                &mut host,
+                fd,
+            ) {
+                // The close operation may already have consumed the old fd,
+                // just as close(2) may report a late I/O failure. Drop the
+                // not-yet-installed PTY OFD and its resource references.
+                proc.ofd_table.dec_ref(ofd_idx);
+                let should_free = if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    if pty.slave_refs > 0 {
+                        pty.slave_refs -= 1;
+                    }
+                    if pty.master_refs > 0 {
+                        pty.master_refs -= 1;
+                    }
+                    !pty.is_alive()
+                } else {
+                    false
+                };
+                if should_free {
+                    crate::pty::free_pty(pty_idx);
+                }
+                return -(err as i32);
+            }
         }
     }
 

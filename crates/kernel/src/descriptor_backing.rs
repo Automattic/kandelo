@@ -152,6 +152,19 @@ pub struct ProcfsBacking {
     pub offset: i64,
 }
 
+/// Shared cursor/lifetime state for one open description of a read-only
+/// synthetic regular file such as `/etc/mtab`.
+#[derive(Debug)]
+pub struct SyntheticRegularBacking {
+    pub offset: i64,
+}
+
+impl SyntheticRegularBacking {
+    pub fn new() -> Self {
+        Self { offset: 0 }
+    }
+}
+
 impl ProcfsBacking {
     pub fn new(data: Vec<u8>) -> Self {
         Self { data, offset: 0 }
@@ -204,6 +217,12 @@ static TIMERFDS: GlobalBackingTable<TimerFdState> = GlobalBackingTable::new();
 static SIGNALFDS: GlobalBackingTable<SignalFdState> = GlobalBackingTable::new();
 static MEMFDS: GlobalBackingTable<MemFdBacking> = GlobalBackingTable::new();
 static PROCFS_BUFS: GlobalBackingTable<ProcfsBacking> = GlobalBackingTable::new();
+static SYNTHETIC_REGULARS: GlobalBackingTable<SyntheticRegularBacking> =
+    GlobalBackingTable::new();
+
+// Keep synthetic backing handles disjoint from the small negative sentinels
+// used by pipes, devices, and procfs.
+pub(crate) const SYNTHETIC_REGULAR_HANDLE_BASE: i64 = 1_000_000_000;
 
 pub fn with_eventfds<R>(
     f: impl for<'a> FnOnce(&'a mut SharedBackingTable<EventFdState>) -> R,
@@ -233,6 +252,32 @@ pub fn with_procfs_bufs<R>(
     PROCFS_BUFS.with(f)
 }
 
+fn with_synthetic_regulars<R>(
+    f: impl for<'a> FnOnce(&'a mut SharedBackingTable<SyntheticRegularBacking>) -> R,
+) -> R {
+    SYNTHETIC_REGULARS.with(f)
+}
+
+pub fn alloc_synthetic_regular() -> i64 {
+    let idx = with_synthetic_regulars(|table| table.alloc(SyntheticRegularBacking::new()));
+    -(SYNTHETIC_REGULAR_HANDLE_BASE + idx as i64)
+}
+
+pub fn is_synthetic_regular_handle(host_handle: i64) -> bool {
+    host_handle <= -SYNTHETIC_REGULAR_HANDLE_BASE
+}
+
+fn synthetic_regular_idx(host_handle: i64) -> Result<usize, Errno> {
+    if !is_synthetic_regular_handle(host_handle) {
+        return Err(Errno::EBADF);
+    }
+    host_handle
+        .checked_add(SYNTHETIC_REGULAR_HANDLE_BASE)
+        .and_then(i64::checked_neg)
+        .and_then(|idx| usize::try_from(idx).ok())
+        .ok_or(Errno::EBADF)
+}
+
 fn negative_handle_idx(host_handle: i64) -> Result<usize, Errno> {
     if host_handle >= 0 {
         return Err(Errno::EBADF);
@@ -252,7 +297,9 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
     matches!(
         file_type,
         FileType::EventFd | FileType::TimerFd | FileType::SignalFd | FileType::MemFd
-    ) || (file_type == FileType::Regular && crate::procfs::is_procfs_buf_handle(host_handle))
+    ) || (file_type == FileType::Regular
+        && (crate::procfs::is_procfs_buf_handle(host_handle)
+            || is_synthetic_regular_handle(host_handle)))
 }
 
 /// Plan ownership transfer for the legacy serialize/init exec ABI. Surviving
@@ -329,6 +376,14 @@ pub fn current_offset(
                     .ok_or(Errno::EBADF)
             })
         }
+        FileType::Regular if is_synthetic_regular_handle(host_handle) => {
+            with_synthetic_regulars(|table| {
+                table
+                    .get(synthetic_regular_idx(host_handle)?)
+                    .map(|backing| backing.offset)
+                    .ok_or(Errno::EBADF)
+            })
+        }
         _ => Ok(local_offset),
     }
 }
@@ -362,6 +417,16 @@ pub fn set_current_offset(
             })?;
             Ok(true)
         }
+        FileType::Regular if is_synthetic_regular_handle(host_handle) => {
+            with_synthetic_regulars(|table| {
+                let backing = table
+                    .get_mut(synthetic_regular_idx(host_handle)?)
+                    .ok_or(Errno::EBADF)?;
+                backing.offset = offset;
+                Ok(())
+            })?;
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
@@ -383,42 +448,35 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
             with_procfs_bufs(|table| table.add_ref(crate::procfs::procfs_buf_idx(host_handle)))?
         }
+        FileType::Regular if is_synthetic_regular_handle(host_handle) => {
+            with_synthetic_regulars(|table| table.add_ref(synthetic_regular_idx(host_handle)?))?
+        }
         _ => return Ok(false),
     }
     Ok(true)
 }
 
-/// Drop one owning OFD reference. Returns true when this module owns the
-/// descriptor type, including when a corrupt/stale handle had no live entry.
+/// Drop one owning OFD reference. Returns true only when this was the final
+/// machine-wide reference and the backing was freed. Descriptor types not
+/// owned by this module, and stale/corrupt handles, return false.
 pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
     match file_type {
-        FileType::EventFd => {
-            if let Ok(idx) = negative_handle_idx(host_handle) {
-                with_eventfds(|table| table.release(idx));
-            }
-            true
-        }
-        FileType::TimerFd => {
-            if let Ok(idx) = negative_handle_idx(host_handle) {
-                with_timerfds(|table| table.release(idx));
-            }
-            true
-        }
-        FileType::SignalFd => {
-            if let Ok(idx) = negative_handle_idx(host_handle) {
-                with_signalfds(|table| table.release(idx));
-            }
-            true
-        }
-        FileType::MemFd => {
-            if let Ok(idx) = negative_handle_idx(host_handle) {
-                with_memfds(|table| table.release(idx));
-            }
-            true
-        }
+        FileType::EventFd => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_eventfds(|table| table.release(idx))),
+        FileType::TimerFd => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_timerfds(|table| table.release(idx))),
+        FileType::SignalFd => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_signalfds(|table| table.release(idx))),
+        FileType::MemFd => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_memfds(|table| table.release(idx))),
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
-            with_procfs_bufs(|table| table.release(crate::procfs::procfs_buf_idx(host_handle)));
-            true
+            with_procfs_bufs(|table| {
+                table.release(crate::procfs::procfs_buf_idx(host_handle))
+            })
+        }
+        FileType::Regular if is_synthetic_regular_handle(host_handle) => {
+            synthetic_regular_idx(host_handle)
+                .is_ok_and(|idx| with_synthetic_regulars(|table| table.release(idx)))
         }
         _ => false,
     }

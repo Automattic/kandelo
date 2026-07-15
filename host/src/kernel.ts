@@ -16,7 +16,6 @@
 
 import type { KernelConfig, PlatformIO, StatResult, StatfsResult } from "./types";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
-import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
@@ -30,6 +29,21 @@ import { STRUCT_SIZE_WASM_DIRENT, STRUCT_SIZE_WASM_STAT } from "./generated/abi"
 import { detectPtrWidth } from "./constants";
 
 export type KernelPointer = number | bigint;
+
+const MAX_U64 = (1n << 64n) - 1n;
+
+function exactU64(value: number | bigint, field: string): bigint {
+  if (typeof value === "bigint") {
+    if (value >= 0n && value <= MAX_U64) return value;
+  } else if (Number.isSafeInteger(value) && value >= 0) {
+    return BigInt(value);
+  }
+  const error = new Error(
+    `EOVERFLOW: ${field} is not exactly representable as an unsigned 64-bit value`,
+  ) as Error & { code: string };
+  error.code = "EOVERFLOW";
+  throw error;
+}
 
 function bufferSourceToArrayBuffer(source: BufferSource): ArrayBuffer {
   const view = source instanceof ArrayBuffer
@@ -251,7 +265,6 @@ export class WasmPosixKernel {
   private kernelPtrWidth: 4 | 8 = 4;
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
   private signalWakeSab: SharedArrayBuffer | null = null;
-  private sharedLockTable: SharedLockTable | null = null;
   private programFuncTable: WebAssembly.Table | null = null;
   private forkSab: SharedArrayBuffer | null = null;
   private waitpidSab: SharedArrayBuffer | null = null;
@@ -538,10 +551,6 @@ export class WasmPosixKernel {
     this.signalWakeSab = sab;
   }
 
-  registerSharedLockTable(sab: SharedArrayBuffer): void {
-    this.sharedLockTable = SharedLockTable.fromBuffer(sab);
-  }
-
   registerForkSab(sab: SharedArrayBuffer): void {
     this.forkSab = sab;
   }
@@ -787,15 +796,6 @@ export class WasmPosixKernel {
         },
         host_getaddrinfo: (namePtr: bigint, nameLen: number, resultPtr: bigint, resultLen: number): number => {
           return this.hostGetaddrinfo(Number(namePtr), nameLen, Number(resultPtr), resultLen);
-        },
-        host_fcntl_lock: (
-          pathPtr: bigint, pathLen: number,
-          pid: number, cmd: number, lockType: number,
-          startLo: number, startHi: number,
-          lenLo: number, lenHi: number,
-          resultPtr: bigint,
-        ): number => {
-          return this.hostFcntlLock(Number(pathPtr), pathLen, pid, cmd, lockType, startLo, startHi, lenLo, lenHi, Number(resultPtr));
         },
         host_fork: (): number => {
           return this.hostFork();
@@ -1380,8 +1380,8 @@ export class WasmPosixKernel {
     const mem = this.getMemoryBuffer();
     mem.fill(0, ptr, ptr + WASM_STAT_SIZE);
 
-    dv.setBigUint64(ptr + 0, BigInt(stat.dev), true); // st_dev
-    dv.setBigUint64(ptr + 8, BigInt(stat.ino), true); // st_ino
+    dv.setBigUint64(ptr + 0, exactU64(stat.dev, "st_dev"), true); // st_dev
+    dv.setBigUint64(ptr + 8, exactU64(stat.ino, "st_ino"), true); // st_ino
     dv.setUint32(ptr + 16, stat.mode, true); // st_mode
     dv.setUint32(ptr + 20, stat.nlink, true); // st_nlink
     dv.setUint32(ptr + 24, stat.uid, true); // st_uid
@@ -2659,71 +2659,6 @@ export class WasmPosixKernel {
     } catch (e: any) {
       if (e?.errno === 11) return -11; // -EAGAIN — kernel-worker retries
       return -2; // -ENOENT
-    }
-  }
-
-  // fcntl lock constants (must match crates/shared/src/lib.rs)
-  private static readonly F_GETLK = 12;
-  private static readonly F_SETLK = 13;
-  private static readonly F_SETLKW = 14;
-  private static readonly F_UNLCK = 2;
-
-  private hostFcntlLock(
-    pathPtr: number, pathLen: number,
-    pid: number, cmd: number, lockType: number,
-    startLo: number, startHi: number,
-    lenLo: number, lenHi: number,
-    resultPtr: number,
-  ): number {
-    if (!this.sharedLockTable) {
-      // No shared lock table — fall through (kernel handles locally)
-      return 0;
-    }
-    try {
-      const mem = this.getMemoryBuffer();
-      const path = new TextDecoder().decode(mem.slice(pathPtr, pathPtr + pathLen));
-      const pathHash = SharedLockTable.hashPath(path);
-      const start = (BigInt(startHi) << 32n) | BigInt(startLo >>> 0);
-      const len = (BigInt(lenHi) << 32n) | BigInt(lenLo >>> 0);
-
-      switch (cmd) {
-        case WasmPosixKernel.F_GETLK: {
-          const blocker = this.sharedLockTable.getBlockingLock(pathHash, lockType, start, len, pid);
-          const dv = this.getMemoryDataView();
-          if (blocker) {
-            dv.setUint32(resultPtr, blocker.lockType, true);
-            dv.setUint32(resultPtr + 4, blocker.pid, true);
-            const bStart = blocker.start;
-            dv.setUint32(resultPtr + 8, Number(bStart & 0xffffffffn), true);
-            dv.setUint32(resultPtr + 12, Number((bStart >> 32n) & 0xffffffffn), true);
-            const bLen = blocker.len;
-            dv.setUint32(resultPtr + 16, Number(bLen & 0xffffffffn), true);
-            dv.setUint32(resultPtr + 20, Number((bLen >> 32n) & 0xffffffffn), true);
-          } else {
-            // No conflict — write F_UNLCK
-            dv.setUint32(resultPtr, WasmPosixKernel.F_UNLCK, true);
-          }
-          return 0;
-        }
-        case WasmPosixKernel.F_SETLK: {
-          const result = this.sharedLockTable.setLockResult(pathHash, pid, lockType, start, len);
-          if (result === "acquired") return 0;
-          if (result === "blocked") return -11; // -EAGAIN
-          return -37; // -ENOLCK
-        }
-        case WasmPosixKernel.F_SETLKW: {
-          const result = this.sharedLockTable.setLockResult(pathHash, pid, lockType, start, len);
-          // The worker retries EAGAIN for a blocking lock. ENOLCK is a real
-          // capacity failure and must be returned instead of spinning.
-          if (result === "acquired") return 0;
-          if (result === "blocked") return -11; // -EAGAIN
-          return -37; // -ENOLCK
-        }
-        default:
-          return -22; // -EINVAL
-      }
-    } catch {
-      return -5; // -EIO
     }
   }
 
