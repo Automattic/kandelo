@@ -484,12 +484,10 @@ function resolveLazyArchivePath(programRel: string, legacyPublicRel: string): st
 }
 
 function populateVimArchive(fs: MemoryFileSystem): void {
-  const path = resolveLazyArchivePath("programs/vim.zip", "apps/browser-demos/public/vim.zip");
-  if (!path) {
-    throw new Error(
-      "vim.zip not found. Run: bash images/vfs/scripts/build-vim-zip.sh",
-    );
-  }
+  // The shell manifest directly depends on vim-browser-bundle. Using the
+  // resolver-aware helper binds these central-directory entries to the same
+  // package artifact the browser serves at runtime.
+  const path = resolveVfsArtifact("programs/vim.zip", "vim-browser-bundle");
   const zipBytes = readFileSync(path);
   const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
   fs.registerLazyArchiveFromEntries("vim.zip", entries, "/usr/");

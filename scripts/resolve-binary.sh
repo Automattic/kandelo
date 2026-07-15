@@ -181,6 +181,15 @@ is_executable_program_wasm_rel() {
 }
 
 is_stale_wasm_artifact() {
+    # Declared data/archive outputs are resolved through the program tree but
+    # do not carry Wasm ABI sections or exports. VFS images deliberately
+    # continue through the existing conservative guard until the shell
+    # resolver has an equivalent of the TypeScript resolver's metadata check.
+    case "$adjusted" in
+        *.wasm|*.vfs|*.vfs.zst) ;;
+        *) return 1 ;;
+    esac
+
     wasm_has_legacy_asyncify "$1" ||
         wasm_has_stale_abi "$1" "$current_abi" ||
         { [ "$adjusted" = "kernel.wasm" ] && wasm_has_missing_exports "$1" "${kernel_required_exports[@]}"; } ||
