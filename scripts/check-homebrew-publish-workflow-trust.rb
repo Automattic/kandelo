@@ -16,10 +16,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "a4e98950e1360850c15cf4ebe091ffb2676fb6b7fbdfcda7e07d71b203e3a51b"
-PUBLISHER_BUILD_DIGEST = "09d9a686acc668c9e432bc4f5509b2b77b49b3783d9a9f7afadee1a1832ec07e"
+PUBLISHER_BUILD_DIGEST = "f873732408b33ab5c412a0a297e543021eb8bb1c2ab6a5c97644fc1fd320c78c"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
 PUBLISHER_INDEX_DIGEST = "143ba3916705d3c76ef337ddf89def07ff3515400a95827eb14042a12ab31cd8"
-PUBLISHER_VERIFY_DIGEST = "a93552df67eb08af5767e0c0c0735d20a953dff8394e5d89dba951c145c46b7b"
+PUBLISHER_VERIFY_DIGEST = "62abd1d17ffebe2a8088baa5fb124cd3cdeeae2f8308a37efc393e28d1b4655c"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
@@ -785,6 +785,7 @@ def check_publisher(workflow)
     'systemd_run_bin="/usr/bin/systemd-run"',
     'systemctl_bin="/usr/bin/systemctl"',
     'getent_bin="/usr/bin/getent"',
+    'findmnt_bin="/usr/bin/findmnt"',
     'pgrep_bin="/usr/bin/pgrep"',
     'pkill_bin="/usr/bin/pkill"',
     'useradd_bin="/usr/sbin/useradd"',
@@ -835,8 +836,7 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
     'homebrew_patched_launcher_teardown "$BUILD_USER"',
     "homebrew_patched_launcher_verify_isolation",
-    'homebrew_assert_tree_not_writable_by_user "$BUILD_USER" "$OUT_DIR"',
-    'homebrew_assert_tree_not_replaceable_by_user "$BUILD_USER" "$OUT_DIR"',
+    '"$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR"',
     "CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER",
     'mktemp -d "$SHARED_TEMP/homebrew-build.XXXXXX"',
     'CONTROL_DIR="$(mktemp -d "$OUT_DIR/.control.XXXXXX")"',
@@ -948,13 +948,21 @@ def check_publisher(workflow)
     "systemd-run", "--wait", "--collect", "--pipe",
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
+    '"--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo"',
+    '"--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap"',
+    '"--property=InaccessiblePaths=$kandelo_root"',
+    '"--property=InaccessiblePaths=$tap_root"',
+    '"--property=InaccessiblePaths=$output_root"',
     '"--uid=$build_user"', '"--gid=$build_group"',
     'env_bin="$(command -v env)"',
     'printf \' --working-directory="$working_directory" -- %q -i\'',
     'printf \'bottle_tag_env=()\\n\'',
     'for variable in KANDELO_HOMEBREW_BOTTLE_TAG HOMEBREW_KANDELO_BOTTLE_TAG',
     'bottle_tag_env+=("%s=${%s}")',
-    'printf \' "${bottle_tag_env[@]}" %q "$@"\\n\' "$protected_brew"',
+    'HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo',
+    'KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo',
+    'printf \' "${bottle_tag_env[@]}" "$command_path" "$@"\\n\'',
+    "__kandelo_verify_source_aliases", "/usr/bin/findmnt",
     '"$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"',
     "-writable -print -quit", "! -readable -o ! -executable", "-prune",
     "homebrew_patched_launcher_uid_has_processes", "homebrew_patched_launcher_teardown",
