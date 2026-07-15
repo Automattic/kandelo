@@ -32,6 +32,16 @@ static int      g_surface_made  = 0;
  * wpkEglSetWindowSurfaceTarget, consumed once and cleared. 0 = an
  * ordinary canvas/scanout window surface (the default). */
 static uint32_t g_pending_surface_target_bo = 0;
+/* The native window (a struct wl_egl_window *) of the most recently created
+ * window surface, remembered so eglSwapBuffers can drive its wl_surface
+ * attach+commit. NULL for canvas/scanout surfaces (KMS compositor). */
+static void    *g_current_egl_window = NULL;
+
+/* libwayland-egl hooks (libc/glue/libwayland-egl.c). Weak so a program that
+ * links libEGL WITHOUT libwayland-egl — a KMS/canvas GL client — still links;
+ * the symbols resolve to NULL and the wayland-egl path is simply skipped. */
+__attribute__((weak)) uint32_t _wpk_wlegl_bo_handle(void *egl_window);
+__attribute__((weak)) void     _wpk_wlegl_present(void *egl_window);
 
 #define EGL_DPY_HANDLE      ((EGLDisplay)(uintptr_t)1)
 #define EGL_CONFIG_HANDLE   ((EGLConfig) (uintptr_t)1)
@@ -153,7 +163,7 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
 EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
                                   EGLNativeWindowType win,
                                   const EGLint *attrib_list) {
-    (void)config; (void)win;
+    (void)config;
     if (dpy != EGL_DPY_HANDLE || g_fd < 0) {
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_SURFACE;
@@ -180,9 +190,18 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
      * handle. The kernel translates it to a global bo_id and the host
      * redirects this surface's default-framebuffer renders into that
      * bo's FBO (see GLIO_CREATE_SURFACE). Consumed once. 0 leaves the
-     * ordinary canvas/scanout behavior untouched. */
-    surf.reserved[0] = g_pending_surface_target_bo;
+     * ordinary canvas/scanout behavior untouched.
+     *
+     * An explicit wpkEglSetWindowSurfaceTarget wins; otherwise, when the
+     * native window is a libwayland-egl wl_egl_window (SDL2's Wayland GL
+     * backend), take the bo it allocated. Remember that window so
+     * eglSwapBuffers can attach+commit it. */
+    uint32_t target = g_pending_surface_target_bo;
     g_pending_surface_target_bo = 0;
+    g_current_egl_window = (void *)win;
+    if (!target && win && _wpk_wlegl_bo_handle)
+        target = _wpk_wlegl_bo_handle((void *)win);
+    surf.reserved[0] = target;
     if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_SURFACE;
@@ -223,6 +242,11 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         g_last_error = EGL_BAD_SURFACE;
         return EGL_FALSE;
     }
+    /* For a libwayland-egl window the flush + GLIO_PRESENT above is the
+     * buffer-ready fence; now attach+commit the dmabuf buffer to the
+     * wl_surface. No-op (skipped) for canvas/scanout surfaces. */
+    if (g_current_egl_window && _wpk_wlegl_present)
+        _wpk_wlegl_present(g_current_egl_window);
     return EGL_TRUE;
 }
 
@@ -230,6 +254,7 @@ EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface) {
     if (dpy != EGL_DPY_HANDLE || surface != EGL_SURFACE_HANDLE) return EGL_FALSE;
     ioctl(g_fd, GLIO_DESTROY_SURFACE, NULL);
     g_surface_made = 0;
+    g_current_egl_window = NULL;
     return EGL_TRUE;
 }
 

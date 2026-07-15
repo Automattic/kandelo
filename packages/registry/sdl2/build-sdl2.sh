@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Build upstream SDL 2 for Kandelo with its unmodified OSS dsp audio
-# backend, its KMSDRM video backend, and its direct evdev input path.
+# backend, its KMSDRM and Wayland video backends, and its direct evdev
+# input path. The Wayland backend (step 12) runs GL clients against
+# wlcompositor through libwayland-client + the wl_egl_window shim
+# (libwayland-egl.a) + libxkbcommon.
 
 set -euo pipefail
 
@@ -24,6 +27,13 @@ if [ "$TARGET_ARCH" != "wasm32" ]; then
 fi
 
 export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+# Wayland backend deps (step 12b): libwayland provides
+# libwayland-{client,cursor}.a + wayland-egl/cursor headers + the
+# wayland-{client,egl,cursor,scanner}.pc files; libxkbcommon provides
+# libxkbcommon.a + xkbcommon.pc. Their pkgconfig dirs feed SDL2's
+# configure gate (see the CheckWayland short-circuit below).
+LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
+LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
 
 # The KMSDRM backend links libdrm and libgbm. libdrm is a package the
 # resolver stages for us; libgbm is a sysroot library scripts/
@@ -59,7 +69,43 @@ tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 echo "==> Applying the Kandelo platform-classification patch..."
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-recognize-kandelo-as-unix.patch"
 
-echo "==> Configuring SDL2 with the OSS, KMSDRM and evdev backends..."
+# --- Wayland pkg-config wiring (step 12b) ------------------------------
+# SDL2's configure gates the Wayland backend on a hard pkg-config probe
+# (configure.ac CheckWayland ~L1742):
+#   $PKG_CONFIG --exists 'wayland-client >= 1.18' wayland-scanner \
+#               wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0'
+# The wayland-* .pc files ship in libwayland's prefix, xkbcommon.pc in
+# libxkbcommon's. egl.pc has no owning resolver package (our libEGL is the
+# sysroot stub from scripts/build-gles-stubs.sh), so we synthesize a
+# minimal one here purely to satisfy the --exists gate — SDL compiles
+# against its own bundled khronos EGL headers (src/video/khronos), and
+# the wayland backend links libEGL.a explicitly at client-link time
+# (step 12c), so egl.pc's Libs/Cflags are never consumed. PKG_CONFIG
+# points at the cross wrapper, which reads PKG_CONFIG_PATH (kandelo
+# cache + this build dir pass its host-path filter).
+export PKG_CONFIG=wasm32posix-pkg-config
+PC_LOCAL="$BUILD_DIR/pkgconfig"
+mkdir -p "$PC_LOCAL"
+cat > "$PC_LOCAL/egl.pc" <<EOF
+Name: egl
+Description: EGL (kandelo libEGL stub; headers via SDL khronos, lib linked at client-link)
+Version: 1.5
+Libs: -lEGL
+Cflags:
+EOF
+export PKG_CONFIG_PATH="$LIBWAYLAND_PREFIX/lib/pkgconfig:$LIBXKBCOMMON_PREFIX/lib/pkgconfig:$PC_LOCAL"
+
+# Sanity: fail loudly if the gate probe won't pass, rather than letting
+# configure silently report "Wayland support: no".
+if ! "$PKG_CONFIG" --exists 'wayland-client >= 1.18' wayland-scanner \
+        wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0'; then
+    echo "ERROR: wayland pkg-config gate failed. PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >&2
+    "$PKG_CONFIG" --exists --print-errors 'wayland-client >= 1.18' \
+        wayland-scanner wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0' >&2 || true
+    exit 1
+fi
+
+echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
 # Kandelo exposes neither the non-POSIX sysctl header nor its matching API.
 # Pin the cross-compile probe so SDL uses its portable sysconf path.
 # Executable links intentionally permit unresolved host imports, so link-only
@@ -106,7 +152,9 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM and evdev backends..."
         --enable-video-kmsdrm \
         --disable-kmsdrm-shared \
         --disable-video-x11 \
-        --disable-video-wayland \
+        --enable-video-wayland \
+        --disable-wayland-shared \
+        --disable-libdecor \
         --disable-video-vivante \
         --disable-video-cocoa \
         --disable-video-directfb \
@@ -171,11 +219,12 @@ test -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
 
 # Autoconf silently drops a backend whose probe fails, which would leave a
 # library that links but cannot open a window. Fail the build instead.
-for feature in SDL_VIDEO_DRIVER_KMSDRM SDL_VIDEO_OPENGL_ES2 \
-    SDL_VIDEO_OPENGL_EGL SDL_INPUT_LINUXEV SDL_AUDIO_DRIVER_OSS; do
+for feature in SDL_VIDEO_DRIVER_KMSDRM SDL_VIDEO_DRIVER_WAYLAND \
+    SDL_VIDEO_OPENGL_ES2 SDL_VIDEO_OPENGL_EGL SDL_INPUT_LINUXEV \
+    SDL_AUDIO_DRIVER_OSS; do
     grep -q "^#define $feature 1" "$INSTALL_DIR/include/SDL2/SDL_config.h" || {
         echo "ERROR: configure did not enable $feature" >&2
         exit 1
     }
 done
-echo "==> SDL2 static package complete (KMSDRM video, evdev input, OSS audio)"
+echo "==> SDL2 static package complete (KMSDRM + Wayland video, evdev input, OSS audio)"
