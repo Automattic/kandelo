@@ -10,6 +10,7 @@ FORMULA=""
 ARCH=""
 RELEASE_TAG=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 TAP_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
@@ -21,7 +22,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...]
+usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...]
 
 Creates a handoff containing only manifest.json, bottle.json, one bottle
 archive, and bounded dependency-pour provenance. Formula sources, environment
@@ -35,6 +36,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
@@ -91,6 +93,9 @@ if ! [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "homebrew-create-build-handoff.sh: invalid tap repository: $TAP_REPOSITORY" >&2
   exit 2
 fi
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 case "$ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-create-build-handoff.sh: invalid arch: $ARCH" >&2; exit 2 ;;
@@ -146,6 +151,7 @@ python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
   --formula "$FORMULA" \
   --arch "$ARCH" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL"
 
@@ -172,8 +178,8 @@ sha256_file() {
 BOTTLE_SHA256="$(sha256_file "$BOTTLE")"
 BOTTLE_BYTES="$(wc -c <"$BOTTLE" | tr -d '[:space:]')"
 BOTTLE_TAG="${ARCH}_kandelo"
-OWNER_LOWER="$(printf '%s' "${TAP_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
-REPO_LOWER="$(printf '%s' "${TAP_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+OWNER_LOWER="${TAP_NAME%%/*}"
+REPO_LOWER="${TAP_NAME#*/}"
 FORMULA_KEY="${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
 FORMULA_PATH="Library/Taps/${OWNER_LOWER}/homebrew-${REPO_LOWER}/Formula/${FORMULA}.rb"
 BOTTLE_INSTALL_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
@@ -234,6 +240,7 @@ jq -nS \
   --arg arch "$ARCH" \
   --arg release_tag "$RELEASE_TAG" \
   --arg tap_repository "$TAP_REPOSITORY" \
+  --arg tap_name "$TAP_NAME" \
   --arg tap_commit "$TAP_COMMIT" \
   --arg kandelo_commit "$KANDELO_COMMIT" \
   --arg bottle_root_url "$BOTTLE_ROOT_URL" \
@@ -247,11 +254,12 @@ jq -nS \
   --arg dependency_sha256 "$DEPENDENCY_PROVENANCE_SHA256" \
   --arg dependency_bytes "$DEPENDENCY_PROVENANCE_BYTES" '
     {
-      schema: 2,
+      schema: 3,
       formula: $formula,
       arch: $arch,
       release_tag: $release_tag,
       tap_repository: $tap_repository,
+      tap_name: $tap_name,
       tap_commit: $tap_commit,
       kandelo_commit: $kandelo_commit,
       bottle_root_url: $bottle_root_url,
@@ -281,6 +289,7 @@ bash "$SCRIPT_ROOT/homebrew-validate-build-handoff.sh" \
   --arch "$ARCH" \
   --release-tag "$RELEASE_TAG" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --kandelo-commit "$KANDELO_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \

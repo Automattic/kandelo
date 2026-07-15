@@ -4,6 +4,7 @@ set -euo pipefail
 
 TAP_ROOT=""
 TAP_REPOSITORY="${KANDELO_HOMEBREW_TAP_REPOSITORY:-Automattic/kandelo-homebrew}"
+TAP_NAME_INPUT="${KANDELO_HOMEBREW_TAP_NAME:-}"
 FORMULA=""
 ARCH=""
 OUT_DIR=""
@@ -13,7 +14,7 @@ SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url>
+usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url>
 
 This script is intended to run inside scripts/dev-shell.sh. It invokes the
 absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
@@ -31,6 +32,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
@@ -89,6 +91,9 @@ if [ -z "$BREW_BIN" ] || [ ! -x "$BREW_BIN" ]; then
 fi
 
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 mkdir -p "$OUT_DIR/bottles"
@@ -128,7 +133,6 @@ chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
 homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
-TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 BOTTLE_TAG="${ARCH}_kandelo"
 
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
@@ -301,6 +305,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
   --brew-bin "$BREW_BIN" \
   --tap-root "$TAP_ROOT" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --formula "$FORMULA" \
   --arch "$ARCH" \

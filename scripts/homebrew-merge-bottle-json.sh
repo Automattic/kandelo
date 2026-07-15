@@ -5,6 +5,7 @@ set -euo pipefail
 
 TAP_ROOT=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 FORMULA=""
 ARCH=""
 BOTTLE_JSON=""
@@ -15,7 +16,7 @@ RELEASE_TAG=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-merge-bottle-json.sh --tap-root <dir> --tap-repository <owner/repo> --formula <name> --arch <wasm32|wasm64> --release-tag <bottles-abi-vN> --bottle-json <path> --expected-sha256 <sha256> --expected-root-url <url> --expected-cellar <any|any_skip_relocation|canonical-cellar>
+usage: scripts/homebrew-merge-bottle-json.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --release-tag <bottles-abi-vN> --bottle-json <path> --expected-sha256 <sha256> --expected-root-url <url> --expected-cellar <any|any_skip_relocation|canonical-cellar>
 EOF
 }
 
@@ -23,6 +24,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
@@ -43,6 +45,15 @@ for name in TAP_ROOT TAP_REPOSITORY FORMULA ARCH RELEASE_TAG BOTTLE_JSON EXPECTE
 done
 if ! [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "homebrew-merge-bottle-json.sh: invalid tap repository" >&2
+  exit 2
+fi
+KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
+EXPECTED_REPOSITORY_ROOT="https://ghcr.io/v2/$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+if [ "$EXPECTED_ROOT_URL" != "$EXPECTED_REPOSITORY_ROOT" ]; then
+  echo "homebrew-merge-bottle-json.sh: expected bottle root does not match tap repository" >&2
   exit 2
 fi
 case "$EXPECTED_CELLAR" in
@@ -84,8 +95,10 @@ if [ ! -f "$FORMULA_PATH" ] || [ -L "$FORMULA_PATH" ] || \
 fi
 
 TAG="${ARCH}_kandelo"
+FORMULA_JSON_PATH="Library/Taps/${TAP_NAME%%/*}/homebrew-${TAP_NAME#*/}/Formula/${FORMULA}.rb"
 jq -e \
   --arg formula "$FORMULA" \
+  --arg formula_path "$FORMULA_JSON_PATH" \
   --arg tag "$TAG" \
   --arg sha "$EXPECTED_SHA256" \
   --arg root "$EXPECTED_ROOT_URL" \
@@ -93,6 +106,7 @@ jq -e \
     (keys | length) == 1 and
     (to_entries[0].key == $formula) and
     (to_entries[0].value.formula.name == $formula) and
+    (to_entries[0].value.formula.path == $formula_path) and
     (to_entries[0].value.bottle.root_url == $root) and
     (to_entries[0].value.bottle.cellar == $cellar) and
     (to_entries[0].value.bottle.rebuild | type == "number" and . >= 0 and floor == .) and
@@ -104,7 +118,6 @@ jq -e \
     exit 1
   }
 
-KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-sibling-bottle-policy.sh"
 COMPOSER="$KANDELO_ROOT/scripts/homebrew-compose-formula-bottle.rb"
