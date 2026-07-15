@@ -278,8 +278,16 @@ as a local interactive convenience, but it is not the verification contract.
 
 PR titles, PR descriptions, and commit messages should lead with the purpose of
 the work: the platform contract, user-visible behavior, system invariant, or
-project capability being changed or protected. Describe mechanical edits after
-that purpose is clear.
+project capability being changed or protected. Every PR description must put a
+plain-language `## Why` section before `## What changed`, implementation
+details, or validation. Explain the current problem, who or what it affects,
+and why fixing it matters before describing the mechanics.
+
+Write PR descriptions so a junior developer can understand them without prior
+incident history or repository shorthand. Define necessary terms, expand
+acronyms on first use, use concrete examples where they clarify the failure,
+and do not make issue or PR links carry the explanation. Technical precision is
+required; unexplained jargon is not.
 
 Documentation is part of the platform contract. Do not describe aspirational
 behavior as supported behavior, and do not use documentation to create a
