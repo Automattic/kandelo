@@ -76,6 +76,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -89,6 +90,7 @@
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 #include <libinput.h>
 
 #include <gbm.h>
@@ -126,11 +128,30 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 #define FOCUS_COLOR    0xff4f8fdfu  /* accent ring, GPU and CPU paths */
 #define N_WORKSPACES   9      /* SUPER+1..9, Hyprland's 1-based workspaces */
 
-/* evdev keycodes we bind on (linux/input-event-codes.h is not in the wasm
- * sysroot). The compositor receives these raw from libinput. */
-#define KEY_1        2
-#define KEY_9        10
-#define KEY_LEFTMETA 125
+/* The config path, hyprland.conf-shaped subset. Absent = generic defaults
+ * (install_default_binds); WLC_CONFIG overrides for tests. */
+#define WLC_CONFIG_PATH "/etc/kandelo/wlcompositor.conf"
+#define MAX_BINDS 64
+
+/* Modifier bits used by the keybind engine (mapped from xkb mod state). */
+#define MOD_SUPER 1
+#define MOD_SHIFT 2
+#define MOD_CTRL  4
+
+enum bind_action {
+    ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
+    ACT_CYCLE_NEXT, ACT_CYCLE_PREV,
+};
+
+/* One `bind = MODS, KEY, DISPATCHER, ARGS` rule. sym is the BASE-level keysym
+ * (shift-independent) so `SUPER SHIFT, 1` matches the same key as `SUPER, 1`. */
+struct keybind {
+    uint32_t mods;         /* MOD_* bitmask; matched exactly */
+    xkb_keysym_t sym;
+    int action;
+    int arg;               /* workspace number for workspace/movetoworkspace */
+    char param[64];        /* command line for exec */
+};
 
 /* ---- surface state ----------------------------------------------------- */
 
@@ -244,6 +265,10 @@ struct compositor {
      * `event>>data` stream (Hyprland socket2 format). NULL = free slot. */
     struct kwlctl_conn *listeners[MAX_KWLCTL_CONNS];
 
+    /* Config-driven keybinds (install_default_binds or WLC_CONFIG_PATH). */
+    struct keybind binds[MAX_BINDS];
+    int n_binds;
+
     /* Bound seat resources (across all clients; routed per-client). */
     struct wl_resource *keyboards[MAX_INPUT_RES];
     struct wl_resource *pointers[MAX_INPUT_RES];
@@ -292,6 +317,7 @@ static void schedule_repaint(void);
 static void kbd_set_focus(struct surface *s);
 static void ptr_refresh_focus(void);
 static void kwlctl_emit(const char *fmt, ...);
+static void kwlctl_exec(char *args);
 
 /* A surface participates in compositing, input, and tiling only when it is
  * mapped AND on the active workspace. */
@@ -1934,26 +1960,180 @@ static int card_readable(int fd, uint32_t mask, void *data) {
 /* Input: libinput → wl_keyboard / wl_pointer                             */
 /* ====================================================================== */
 
-/* Bootstrap keybinds (PR14d replaces this table with the config-file engine):
- * SUPER+1..9 switch workspace, SUPER+SHIFT+1..9 move the focused window there.
- * Returns 1 when the combo is handled and must NOT reach the client; the
- * xkb_state is already updated with this key, so LOGO/SHIFT reflect it. Fires
- * on press; the matching release is swallowed too so clients see no half
- * combo. */
-static int try_keybind(uint32_t key, uint32_t state) {
+/* ---- keybind engine (config-driven) ------------------------------------ */
+
+/* The base-level (shift-independent) keysym for an evdev keycode, so a bind
+ * written as `1` matches whether or not Shift is held. */
+static xkb_keysym_t base_keysym(uint32_t key) {
+    struct xkb_keymap *km = xkb_state_get_keymap(g.xkb_state);
+    xkb_layout_index_t layout = xkb_state_key_get_layout(g.xkb_state, key + 8);
+    const xkb_keysym_t *syms;
+    int n = xkb_keymap_key_get_syms_by_level(km, key + 8, layout, 0, &syms);
+    return n > 0 ? syms[0] : XKB_KEY_NoSymbol;
+}
+
+/* The MOD_* bits currently active (only the mods our keymap defines). */
+static uint32_t active_mod_mask(void) {
+    uint32_t m = 0;
     if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_LOGO,
-                                     XKB_STATE_MODS_EFFECTIVE) <= 0)
-        return 0;
-    if (key < KEY_1 || key > KEY_9) return 0;
-    if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-        int ws = (int)(key - KEY_1) + 1;
-        if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_SHIFT,
-                                         XKB_STATE_MODS_EFFECTIVE) > 0)
-            move_focus_to_workspace(ws);
-        else
-            switch_workspace(ws);
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SUPER;
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_SHIFT,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SHIFT;
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_CTRL,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_CTRL;
+    return m;
+}
+
+/* Move keyboard focus to the next/prev visible window in z-order WITHOUT
+ * reordering (so a tiled layout keeps its geometry as focus cycles). */
+static void focus_cycle(int dir) {
+    struct surface *vis[MAX_SURFACES];
+    int n = 0, cur = -1;
+    for (int i = 0; i < g.n_surfaces; i++)
+        if (surface_visible(g.zorder[i])) {
+            if (g.zorder[i] == g.kbd_focus) cur = n;
+            vis[n++] = g.zorder[i];
+        }
+    if (n == 0) return;
+    int next = cur < 0 ? 0 : (cur + dir + n) % n;
+    kbd_set_focus(vis[next]);
+    ptr_refresh_focus();
+}
+
+static void run_dispatch(const struct keybind *b) {
+    switch (b->action) {
+    case ACT_EXEC: {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "%s", b->param);   /* kwlctl_exec strtoks */
+        kwlctl_exec(tmp);
+        break;
     }
-    return 1;
+    case ACT_WORKSPACE:    switch_workspace(b->arg); break;
+    case ACT_MOVE_TO_WS:   move_focus_to_workspace(b->arg); break;
+    case ACT_KILL:
+        if (g.kbd_focus && g.kbd_focus->xdg_toplevel)
+            xdg_toplevel_send_close(g.kbd_focus->xdg_toplevel);
+        break;
+    case ACT_CYCLE_NEXT:   focus_cycle(+1); break;
+    case ACT_CYCLE_PREV:   focus_cycle(-1); break;
+    }
+}
+
+/* Config-driven keybind interception. Returns 1 when the pressed combo matches
+ * a bind and must NOT reach the focused client; the release of a matched combo
+ * is swallowed too. xkb_state already reflects this key. */
+static int try_keybind(uint32_t key, uint32_t state) {
+    uint32_t mods = active_mod_mask();
+    if (!mods) return 0;   /* fast path: unmodified keys go to the client */
+    xkb_keysym_t sym = base_keysym(key);
+    for (int i = 0; i < g.n_binds; i++) {
+        if (g.binds[i].mods != mods || g.binds[i].sym != sym) continue;
+        if (state == WL_KEYBOARD_KEY_STATE_PRESSED) run_dispatch(&g.binds[i]);
+        return 1;
+    }
+    return 0;
+}
+
+/* ---- config parsing ----------------------------------------------------- */
+
+static void add_bind(uint32_t mods, xkb_keysym_t sym, int action, int arg,
+                     const char *param) {
+    if (g.n_binds >= MAX_BINDS) return;
+    struct keybind *b = &g.binds[g.n_binds++];
+    b->mods = mods;
+    b->sym = sym;
+    b->action = action;
+    b->arg = arg;
+    snprintf(b->param, sizeof(b->param), "%s", param ? param : "");
+}
+
+/* Generic defaults when no config file is present (NOT demo-specific): the
+ * standard SUPER-based tiling bindings. */
+static void install_default_binds(void) {
+    add_bind(MOD_SUPER, XKB_KEY_Return, ACT_EXEC, 0, "wlterm");
+    add_bind(MOD_SUPER, XKB_KEY_w, ACT_KILL, 0, NULL);
+    add_bind(MOD_SUPER, XKB_KEY_j, ACT_CYCLE_NEXT, 0, NULL);
+    add_bind(MOD_SUPER, XKB_KEY_k, ACT_CYCLE_PREV, 0, NULL);
+    for (int i = 1; i <= N_WORKSPACES; i++) {
+        add_bind(MOD_SUPER, XKB_KEY_0 + i, ACT_WORKSPACE, i, NULL);
+        add_bind(MOD_SUPER | MOD_SHIFT, XKB_KEY_0 + i, ACT_MOVE_TO_WS, i, NULL);
+    }
+}
+
+/* Trim leading/trailing ASCII whitespace in place, returning the start. */
+static char *trim(char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    char *end = s + strlen(s);
+    while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
+                       end[-1] == '\n'))
+        *--end = '\0';
+    return s;
+}
+
+/* Parse a MODS token ("SUPER SHIFT" or "SUPER+SHIFT") into a MOD_* mask.
+ * Returns -1 on an unknown modifier name. */
+static int parse_mods(char *s, uint32_t *out) {
+    uint32_t m = 0;
+    for (char *tok = strtok(s, " +"); tok; tok = strtok(NULL, " +")) {
+        if (!strcasecmp(tok, "SUPER") || !strcasecmp(tok, "MOD4")) m |= MOD_SUPER;
+        else if (!strcasecmp(tok, "SHIFT")) m |= MOD_SHIFT;
+        else if (!strcasecmp(tok, "CTRL") || !strcasecmp(tok, "CONTROL"))
+            m |= MOD_CTRL;
+        else return -1;
+    }
+    *out = m;
+    return 0;
+}
+
+/* Parse one `bind = MODS, KEY, DISPATCHER[, ARGS]` line into the table. */
+static void parse_bind_line(char *rhs) {
+    char *fields[4] = {0};
+    int nf = 0;
+    for (char *tok = strtok(rhs, ","); tok && nf < 4; tok = strtok(NULL, ","))
+        fields[nf++] = trim(tok);
+    if (nf < 3) return;
+
+    uint32_t mods;
+    if (parse_mods(fields[0], &mods) < 0) return;
+    xkb_keysym_t sym =
+        xkb_keysym_from_name(fields[1], XKB_KEYSYM_CASE_INSENSITIVE);
+    if (sym == XKB_KEY_NoSymbol) return;
+
+    const char *disp = fields[2];
+    const char *arg = nf > 3 ? fields[3] : "";
+    if (!strcmp(disp, "exec"))            add_bind(mods, sym, ACT_EXEC, 0, arg);
+    else if (!strcmp(disp, "workspace"))  add_bind(mods, sym, ACT_WORKSPACE, atoi(arg), NULL);
+    else if (!strcmp(disp, "movetoworkspace")) add_bind(mods, sym, ACT_MOVE_TO_WS, atoi(arg), NULL);
+    else if (!strcmp(disp, "killactive")) add_bind(mods, sym, ACT_KILL, 0, NULL);
+    else if (!strcmp(disp, "cyclenext"))  add_bind(mods, sym, ACT_CYCLE_NEXT, 0, NULL);
+    else if (!strcmp(disp, "cycleprev"))  add_bind(mods, sym, ACT_CYCLE_PREV, 0, NULL);
+}
+
+/* Load keybinds: parse WLC_CONFIG / WLC_CONFIG_PATH if present, else install
+ * generic defaults. */
+static void load_config(void) {
+    const char *env = getenv("WLC_CONFIG");
+    const char *path = env ? env : WLC_CONFIG_PATH;
+    FILE *f = fopen(path, "r");
+    const char *src;
+    if (!f) {
+        install_default_binds();
+        src = "default";
+    } else {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            char *s = trim(line);
+            if (*s == '\0' || *s == '#') continue;
+            if (strncmp(s, "bind", 4) == 0) {
+                char *eq = strchr(s, '=');
+                if (eq) parse_bind_line(trim(eq + 1));
+            }
+        }
+        fclose(f);
+        src = path;
+    }
+    printf("BINDS_LOADED n=%d source=%s\n", g.n_binds, src);
+    fflush(stdout);
 }
 
 static void handle_keyboard(struct libinput_event_keyboard *k) {
@@ -2691,6 +2871,7 @@ int main(void) {
     printf("WLC_LAYOUT %s\n",
            g.layout == LAYOUT_DWINDLE ? "dwindle" : "floating");
     fflush(stdout);
+    load_config();
 
     if (setup_drm() != 0) return 1;
     if (setup_wallpaper() != 0) return 1;
