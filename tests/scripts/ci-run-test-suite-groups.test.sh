@@ -35,6 +35,15 @@ cat > "$FIXTURE/bin/uname" <<'EOF'
 echo Darwin
 EOF
 
+cat > "$FIXTURE/bin/rustc" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-vV" ]; then
+    echo "host: fixture-host"
+    exit 0
+fi
+exit 2
+EOF
+
 cat > "$FIXTURE/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$RUN_CAPTURE"
@@ -55,6 +64,7 @@ done
 chmod +x \
     "$FIXTURE/bin/npm" \
     "$FIXTURE/bin/npx" \
+    "$FIXTURE/bin/rustc" \
     "$FIXTURE/bin/uname" \
     "$FIXTURE/run.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh"
@@ -115,6 +125,7 @@ for workflow in \
 done
 
 prepared_files=(
+    target/fixture-host/release/xtask
     local-binaries/kernel.wasm
     host/wasm/rootfs.vfs
     examples/gencat.wasm
@@ -136,6 +147,7 @@ for prepared in "${prepared_files[@]}"; do
     mkdir -p "$FIXTURE/$(dirname "$prepared")"
     : > "$FIXTURE/$prepared"
 done
+chmod +x "$FIXTURE/target/fixture-host/release/xtask"
 
 pack_archive="$TMP_DIR/workspace.tar.zst"
 PATH="$FIXTURE/bin:$PATH" \
@@ -148,5 +160,12 @@ for prepared in "${prepared_files[@]}"; do
         exit 1
     }
 done
+pack_extract="$TMP_DIR/pack-extract"
+mkdir -p "$pack_extract"
+tar --zstd -xf "$pack_archive" -C "$pack_extract"
+if [ ! -x "$pack_extract/target/fixture-host/release/xtask" ]; then
+    echo "pack-ci-test-workspace.sh: package resolver lost its executable mode" >&2
+    exit 1
+fi
 
 echo "ci-run-test-suite: conformance group mappings passed"

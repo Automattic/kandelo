@@ -10,6 +10,17 @@ if [ -z "$out" ]; then
     exit 2
 fi
 
+host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+if [ -z "$host_target" ]; then
+    echo "pack-ci-test-workspace: rustc did not report a host target" >&2
+    exit 1
+fi
+xtask_path="target/$host_target/release/xtask"
+if [ ! -x "$xtask_path" ]; then
+    echo "pack-ci-test-workspace: missing required package resolver: $xtask_path" >&2
+    exit 1
+fi
+
 for required in \
     local-binaries/kernel.wasm \
     host/wasm/rootfs.vfs \
@@ -30,10 +41,13 @@ for required in \
     fi
 done
 
-items=()
+items=("$xtask_path")
 for item in binaries local-binaries host/wasm; do
     [ -e "$item" ] && items+=("$item")
 done
+# `prepare-browser` uses xtask to map package outputs to their resolver paths.
+# The producer already built this exact binary while fetching packages, so keep
+# it with the prepared workspace instead of rebuilding it in the consumer.
 # The browser consumer reruns `prepare-browser` against this archive. Its
 # `has_programs` guard checks both example and benchmark outputs, so retain the
 # complete build-programs fixture set to prevent an unintended source rebuild.

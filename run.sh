@@ -217,8 +217,16 @@ pkg_xtask_bin() {
     fi
     PKG_XTASK_BIN="$REPO_ROOT/target/$host/release/xtask"
     if [ ! -x "$PKG_XTASK_BIN" ]; then
-        (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
-            cargo build --release -p xtask --target "$host" --quiet) || return 1
+        if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
+            # Consumer jobs already run inside the declared dev shell, where
+            # `nix` is intentionally absent. Build directly in that shell if a
+            # caller did not provide the prepared xtask binary.
+            (cd "$REPO_ROOT" && \
+                cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
+        else
+            (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
+                cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
+        fi
     fi
     echo "$PKG_XTASK_BIN"
 }
