@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# CI-shaped suite runner. The optional group selects deterministic natural
+# shards for the two longest conformance suites:
+#   libc:   functional-regression | math
+#   sortix: include | basic | runtime
+# Omitting the group preserves the complete local suite behavior.
+# Set PREPARE_BROWSER_ASSETS=1 when the caller supplied an already-materialized
+# binaries/ artifact but intentionally deferred local browser asset generation.
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix>" >&2
+    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix> [group]" >&2
     exit 2
 fi
+group="${2:-${TEST_GROUP:-all}}"
+
+invalid_group() {
+    echo "unknown $suite test group: $group" >&2
+    exit 2
+}
 
 host_target() {
     rustc -vV | awk '/^host/ {print $2}'
@@ -64,6 +78,10 @@ case "$suite" in
         ;;
     browser)
         install_node_deps
+        if [ "${PREPARE_BROWSER_ASSETS:-false}" = "true" ] || \
+            [ "${PREPARE_BROWSER_ASSETS:-0}" = "1" ]; then
+            ./run.sh --already-materialized --fetch-only prepare-browser
+        fi
         bash scripts/ci-check-browser-assets.sh
         (
             cd apps/browser-demos
@@ -89,7 +107,12 @@ case "$suite" in
         ;;
     libc)
         install_node_deps
-        bash scripts/run-libc-tests.sh
+        case "$group" in
+            all)                   bash scripts/run-libc-tests.sh ;;
+            functional-regression) bash scripts/run-libc-tests.sh functional regression ;;
+            math)                  bash scripts/run-libc-tests.sh math ;;
+            *)                     invalid_group ;;
+        esac
         ;;
     posix)
         install_node_deps
@@ -97,7 +120,13 @@ case "$suite" in
         ;;
     sortix)
         install_node_deps
-        bash scripts/run-sortix-tests.sh --all
+        case "$group" in
+            all)     bash scripts/run-sortix-tests.sh --all ;;
+            include) bash scripts/run-sortix-tests.sh include ;;
+            basic)   bash scripts/run-sortix-tests.sh basic ;;
+            runtime) bash scripts/run-sortix-tests.sh limits malloc stdio io signal process paths udp ;;
+            *)       invalid_group ;;
+        esac
         ;;
     *)
         echo "unknown CI test suite: $suite" >&2

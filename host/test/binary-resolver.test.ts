@@ -185,12 +185,40 @@ describe("binary resolver artifact policy", () => {
     expect(resolveBinary(relPath)).toBe(localPath);
   });
 
+  it("skips an uninspectable local VFS image for a valid fetched candidate", async () => {
+    const relPath = fixtureRelPath(".vfs.zst");
+    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
+
+    writeCandidate(
+      localBinariesDir(),
+      relPath,
+      new TextEncoder().encode("not a VFS image"),
+    );
+    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
+
+    expect(resolveBinary(relPath)).toBe(fetchedPath);
+  });
+
   it("keeps skipping a stale local .wasm when a fetched ABI-matching candidate exists", () => {
     const relPath = fixtureRelPath(".wasm");
     const staleLocal = executableWasmWithAbi(ABI_VERSION - 1);
     const fetched = executableWasmWithAbi(ABI_VERSION);
 
     writeCandidate(localBinariesDir(), relPath, staleLocal);
+    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
+
+    expect(resolveBinary(relPath)).toBe(fetchedPath);
+  });
+
+  it("skips an uninspectable local .wasm for a valid fetched candidate", () => {
+    const relPath = fixtureRelPath(".wasm");
+    const fetched = executableWasmWithAbi(ABI_VERSION);
+
+    writeCandidate(
+      localBinariesDir(),
+      relPath,
+      new TextEncoder().encode("not a Wasm module"),
+    );
     const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
 
     expect(resolveBinary(relPath)).toBe(fetchedPath);

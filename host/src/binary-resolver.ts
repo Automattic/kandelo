@@ -297,7 +297,9 @@ function hasWasmArtifactPolicyFailures(path: string, relPath: string): boolean {
       forbidForkInstrumentation: forkDisabled,
     }).length > 0;
   } catch {
-    return false;
+    // A path declared as executable Wasm must remain fail-closed when its
+    // bytes or policy metadata cannot be inspected.
+    return true;
   }
 }
 
@@ -308,7 +310,10 @@ function hasVfsArtifactPolicyFailures(path: string): boolean {
     const declaredAbi = metadata?.kernelAbi;
     return declaredAbi !== undefined && declaredAbi !== ABI_VERSION;
   } catch {
-    return false;
+    // A path declared as a VFS image must remain fail-closed when its header,
+    // compression, or metadata cannot be inspected. This also keeps the
+    // TypeScript and shell resolvers aligned.
+    return true;
   }
 }
 

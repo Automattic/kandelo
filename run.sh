@@ -19,6 +19,8 @@
 #                                  verification failure. No-op today.
 #   --fetch-only                  Refuse source-build fallback when fetching
 #                                  package binaries.
+#   --already-materialized        Skip browser package fetching because the
+#                                  exact binaries/ tree was prepared earlier.
 #   --pr-staging                  Use the current PR's staging binary index
 #                                  unless WASM_POSIX_BINARY_INDEX_URL is set.
 #
@@ -55,9 +57,11 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 # nested via build_target) picks them up. Also honor env vars if the
 # user prefers `WASM_POSIX_ALLOW_STALE=1 ./run.sh browser`,
 # `WASM_POSIX_FETCH_ONLY=1 ./run.sh prepare-browser`, or
+# `WASM_POSIX_ALREADY_MATERIALIZED=1 ./run.sh prepare-browser`, or
 # `WASM_POSIX_USE_PR_STAGING=1 ./run.sh browser`.
 ALLOW_STALE_ARGS=()
 FETCH_ONLY_ARGS=()
+ALREADY_MATERIALIZED=0
 USE_PR_STAGING=0
 NEW_ARGS=()
 for a in "$@"; do
@@ -67,6 +71,9 @@ for a in "$@"; do
             ;;
         --fetch-only)
             FETCH_ONLY_ARGS=(--fetch-only)
+            ;;
+        --already-materialized)
+            ALREADY_MATERIALIZED=1
             ;;
         --pr-staging)
             USE_PR_STAGING=1
@@ -83,12 +90,16 @@ fi
 if [ "${WASM_POSIX_FETCH_ONLY:-0}" = "1" ]; then
     FETCH_ONLY_ARGS=(--fetch-only)
 fi
+if [ "${WASM_POSIX_ALREADY_MATERIALIZED:-0}" = "1" ]; then
+    ALREADY_MATERIALIZED=1
+fi
 if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
     err "--allow-stale and --fetch-only cannot be combined."
     exit 2
 fi
 export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
 export WASM_POSIX_FETCH_ONLY=$([ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
+export WASM_POSIX_ALREADY_MATERIALIZED=$ALREADY_MATERIALIZED
 if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
     USE_PR_STAGING=1
 fi
@@ -206,8 +217,16 @@ pkg_xtask_bin() {
     fi
     PKG_XTASK_BIN="$REPO_ROOT/target/$host/release/xtask"
     if [ ! -x "$PKG_XTASK_BIN" ]; then
-        (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
-            cargo build --release -p xtask --target "$host" --quiet) || return 1
+        if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
+            # Consumer jobs already run inside the declared dev shell, where
+            # `nix` is intentionally absent. Build directly in that shell if a
+            # caller did not provide the prepared xtask binary.
+            (cd "$REPO_ROOT" && \
+                cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
+        else
+            (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
+                cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
+        fi
     fi
     echo "$PKG_XTASK_BIN"
 }
@@ -2115,8 +2134,12 @@ cmd_prepare_browser() {
     # build_browser's per-target loop is a no-op for anything that's
     # already published. Only genuinely missing artifacts (local-only
     # programs, stale VFS images) trigger a build.
-    step "Fetching binaries for Kandelo browser UI"
-    fetch_browser_binaries
+    if [ "$ALREADY_MATERIALIZED" -eq 1 ]; then
+        step "Using already-materialized binaries for Kandelo browser UI"
+    else
+        step "Fetching binaries for Kandelo browser UI"
+        fetch_browser_binaries
+    fi
 
     build_browser
 }
@@ -2319,6 +2342,8 @@ cmd_list() {
     echo "                                        verification failure. No-op today."
     echo "  --fetch-only                         Refuse source-build fallback when"
     echo "                                        fetching package binaries."
+    echo "  --already-materialized               Skip browser package fetching and use"
+    echo "                                        the existing binaries/ tree."
     echo "  --pr-staging                         Use the current PR's staging binary"
     echo "                                        index unless WASM_POSIX_BINARY_INDEX_URL"
     echo "                                        is already set."

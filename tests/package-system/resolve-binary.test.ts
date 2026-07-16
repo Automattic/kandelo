@@ -1,0 +1,267 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { zstdCompressSync } from "node:zlib";
+import {
+  MemoryFileSystem,
+  type VfsImageMetadata,
+} from "../../host/src/vfs/memory-fs";
+import { ABI_VERSION } from "../../host/src/generated/abi";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+let fakeRepoRoot: string;
+
+function uleb128(n: number): number[] {
+  const bytes: number[] = [];
+  do {
+    let byte = n & 0x7f;
+    n >>>= 7;
+    if (n !== 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (n !== 0);
+  return bytes;
+}
+
+function sleb128I32(n: number): number[] {
+  const bytes: number[] = [];
+  for (;;) {
+    let byte = n & 0x7f;
+    n >>= 7;
+    const signBit = (byte & 0x40) !== 0;
+    if ((n === 0 && !signBit) || (n === -1 && signBit)) {
+      bytes.push(byte);
+      return bytes;
+    }
+    bytes.push(byte | 0x80);
+  }
+}
+
+function section(id: number, payload: number[]): number[] {
+  return [id, ...uleb128(payload.length), ...payload];
+}
+
+function nameBytes(name: string): number[] {
+  const encoded = new TextEncoder().encode(name);
+  return [...uleb128(encoded.length), ...encoded];
+}
+
+function functionBody(instructions: number[]): number[] {
+  const body = [0x00, ...instructions, 0x0b];
+  return [...uleb128(body.length), ...body];
+}
+
+function executableWasmWithAbi(abi: number): Uint8Array {
+  const bytes: number[] = [
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+  ];
+  bytes.push(...section(1, [0x01, 0x60, 0x00, 0x01, 0x7f]));
+  bytes.push(...section(3, [0x02, 0x00, 0x00]));
+  bytes.push(...section(7, [
+    0x02,
+    ...nameBytes("__abi_version"), 0x00, 0x00,
+    ...nameBytes("_start"), 0x00, 0x01,
+  ]));
+  bytes.push(...section(10, [
+    0x02,
+    ...functionBody([0x41, ...sleb128I32(abi)]),
+    ...functionBody([0x41, 0x00]),
+  ]));
+  return new Uint8Array(bytes);
+}
+
+function vfsWithMalformedMetadata(): Uint8Array {
+  const image = Buffer.alloc(25);
+  image.writeUInt32LE(0x56465349, 0); // VFSI
+  image.writeUInt32LE(1, 4); // image version
+  image.writeUInt32LE(1 << 2, 8); // metadata present
+  image.writeUInt32LE(0, 12); // empty filesystem snapshot
+  image.writeUInt32LE(0, 16); // empty lazy-file section
+  image.writeUInt32LE(1, 20); // one byte of metadata
+  image[24] = "{".charCodeAt(0); // invalid JSON
+  return image;
+}
+
+async function vfsImage(
+  metadata: VfsImageMetadata | null | undefined,
+  compressed: boolean,
+): Promise<Uint8Array> {
+  const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  const image = await mfs.saveImage(
+    metadata === undefined ? undefined : { metadata },
+  );
+  return compressed ? new Uint8Array(zstdCompressSync(image)) : image;
+}
+
+function candidatePath(tier: "local-binaries" | "binaries", relPath: string): string {
+  return join(fakeRepoRoot, tier, relPath);
+}
+
+function writeCandidate(
+  tier: "local-binaries" | "binaries",
+  relPath: string,
+  bytes: Uint8Array,
+): string {
+  const path = candidatePath(tier, relPath);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, bytes);
+  return path;
+}
+
+function resolveBinary(relPath: string) {
+  return spawnSync("bash", [join(fakeRepoRoot, "scripts", "resolve-binary.sh"), relPath], {
+    cwd: fakeRepoRoot,
+    encoding: "utf8",
+  });
+}
+
+beforeAll(() => {
+  fakeRepoRoot = realpathSync(
+    mkdtempSync(join(tmpdir(), "kandelo-resolve-binary-")),
+  );
+  mkdirSync(join(fakeRepoRoot, "scripts"), { recursive: true });
+  mkdirSync(join(fakeRepoRoot, "abi"), { recursive: true });
+  mkdirSync(join(fakeRepoRoot, "crates", "shared", "src"), { recursive: true });
+  writeFileSync(join(fakeRepoRoot, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(join(fakeRepoRoot, "abi", "snapshot.json"), "{}\n");
+  writeFileSync(
+    join(fakeRepoRoot, "crates", "shared", "src", "lib.rs"),
+    `pub const ABI_VERSION: u32 = ${ABI_VERSION};\n`,
+  );
+  for (const script of [
+    "resolve-binary.sh",
+    "wasm-artifact-guards.sh",
+    "vfs-has-stale-abi.mjs",
+  ]) {
+    copyFileSync(join(repoRoot, "scripts", script), join(fakeRepoRoot, "scripts", script));
+  }
+});
+
+afterAll(() => {
+  rmSync(fakeRepoRoot, { recursive: true, force: true });
+});
+
+describe("shell binary resolver artifact policy", () => {
+  it("resolves a ZIP archive without applying Wasm policy", () => {
+    const relPath = "programs/wasm32/__resolve_binary_test__/runtime.zip";
+    const localPath = writeCandidate(
+      "local-binaries",
+      relPath,
+      new TextEncoder().encode("not a wasm module"),
+    );
+
+    const result = resolveBinary(relPath);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(localPath);
+  });
+
+  it("resolves a Wasm side module without applying executable Wasm policy", () => {
+    const relPath = "programs/wasm32/__resolve_binary_test__/extension.so";
+    const localPath = writeCandidate(
+      "local-binaries",
+      relPath,
+      // A deliberately truncated Wasm header proves extension dispatch does
+      // not run executable ABI/export decoding for package side modules.
+      new Uint8Array([0x00, 0x61, 0x73, 0x6d]),
+    );
+
+    const result = resolveBinary(relPath);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(localPath);
+  });
+
+  it("falls back from a stale compressed VFS image to an ABI-matching candidate", async () => {
+    const relPath = "programs/wasm32/__resolve_binary_test__/image.vfs.zst";
+    writeCandidate(
+      "local-binaries",
+      relPath,
+      await vfsImage({ version: 1, kernelAbi: ABI_VERSION - 1 }, true),
+    );
+    const fetchedPath = writeCandidate(
+      "binaries",
+      relPath,
+      await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true),
+    );
+
+    const result = resolveBinary(relPath);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(fetchedPath);
+  });
+
+  it("accepts an uncompressed VFS image without a kernel ABI declaration", async () => {
+    const relPath = "programs/wasm32/__resolve_binary_test__/data.vfs";
+    const localPath = writeCandidate(
+      "local-binaries",
+      relPath,
+      await vfsImage({ version: 1 }, false),
+    );
+
+    const result = resolveBinary(relPath);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(localPath);
+  });
+
+  it.each([
+    [
+      "corrupt zstd compression",
+      new Uint8Array([0x28, 0xb5, 0x2f, 0xfd, 0x00]),
+    ],
+    ["malformed metadata", vfsWithMalformedMetadata()],
+  ])("keeps a VFS image with %s fail-closed", (_description, bytes) => {
+    const relPath = "programs/wasm32/__resolve_binary_test__/broken.vfs.zst";
+    writeCandidate("local-binaries", relPath, bytes);
+
+    const result = resolveBinary(relPath);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("stale or invalid artifact ignored");
+  });
+
+  it("keeps an uninspectable .wasm artifact fail-closed", () => {
+    const relPath = "programs/wasm32/__resolve_binary_test__/broken.wasm";
+    writeCandidate(
+      "local-binaries",
+      relPath,
+      new TextEncoder().encode("not a wasm module"),
+    );
+
+    const result = resolveBinary(relPath);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("stale or invalid artifact ignored");
+  });
+
+  it("falls back from an uninspectable local .wasm to a valid fetched candidate", () => {
+    const relPath = "programs/wasm32/__resolve_binary_test__/fallback.wasm";
+    writeCandidate(
+      "local-binaries",
+      relPath,
+      new TextEncoder().encode("not a wasm module"),
+    );
+    const fetchedPath = writeCandidate(
+      "binaries",
+      relPath,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+
+    const result = resolveBinary(relPath);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(fetchedPath);
+  });
+});
