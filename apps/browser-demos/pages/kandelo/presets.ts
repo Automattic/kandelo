@@ -151,6 +151,17 @@ export const PRESET_LIBRARY: Preset[] = [
     estimatedUrlBytes: 612,
   },
   {
+    id: "hyprland",
+    title: "Hyprland tiling WM",
+    summary: "wlcompositor in dwindle mode — a Hyprland-class tiling window manager on /dev/dri/card0. Two wlterm terminals and a wlclock tile into gapped, borderless (server-side-decorated) frames; each client honors the compositor's xdg configure to resize into its tile. SUPER+Return spawns a terminal, SUPER+W kills the focused window, and SUPER+1..9 switch workspaces; every bind is mirrored on CTRL, which a browser (unlike SUPER=Cmd/Win) doesn't reserve. Bindings from /etc/kandelo/wlcompositor.conf.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#00aaff",
+    glyph: "H",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
+  {
     id: "sdl2gl",
     title: "SDL2 on Wayland (GL)",
     summary: "Upstream SDL2's Wayland+GLES2 backend rendering a spinning triangle through wlcompositor: SDL's wl_egl_window becomes a GPU dmabuf buffer, libEGL targets its FBO, and eglSwapBuffers attach+commits it zero-copy to the compositor on /dev/dri/card0. The first third-party GL toolkit driven end to end over the Wayland DRI path.",
