@@ -6,7 +6,6 @@
  *   kwlctl clients | workspaces | activewindow   -> print the JSON reply
  *   kwlctl dispatch <op ...>                      -> workspace N, movetoworkspace
  *                                                    N, close, exec <prog ...>
- *   kwlctl keyword layout <dwindle|floating>      -> runtime config set
  *   kwlctl --listen                               -> stream `event>>data` lines
  *                                                    until the compositor exits
  *
@@ -44,7 +43,7 @@ static int connect_kwlctl(void) {
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: kwlctl <clients|workspaces|activewindow|"
-                        "dispatch ...|keyword ...|--listen>\n");
+                        "dispatch ...|--listen>\n");
         return 2;
     }
 

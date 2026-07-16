@@ -144,6 +144,16 @@ describe("wlcompositor — kwlctl control + event IPC", () => {
         expect(windows.filter((w) => w.focused).length,
           `exactly one focused.\n${dump()}`).toBe(1);
 
+        // --- workspaces query: all three windows sit on the active ws 1. ---
+        const wsCode = await runKwlctl(["workspaces"]);
+        expect(wsCode, `kwlctl workspaces exit.\n${dump()}`).toBe(0);
+        const wsMatch = out.value.match(/(\[\{"id"[^\n]*\])/);
+        expect(wsMatch, `no workspaces JSON.\n${dump()}`).not.toBeNull();
+        const workspaces = JSON.parse(wsMatch![1]) as Array<{
+          id: number; windows: number; active: boolean;
+        }>;
+        expect(workspaces).toContainEqual({ id: 1, windows: 3, active: true });
+
         // --- --listen streams the workspace event fired by a dispatch. ---
         runKwlctl(["--listen"]); // background; drains until compositor exits
         await waitFor(out, "listening", 10_000, dump);

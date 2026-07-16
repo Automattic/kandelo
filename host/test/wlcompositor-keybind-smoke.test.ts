@@ -36,7 +36,9 @@ const SYN_REPORT = 0x00;
 const KEY_1 = 2;
 const KEY_3 = 4;
 const KEY_5 = 6;
+const KEY_W = 17;
 const KEY_J = 36;
+const KEY_K = 37;
 const KEY_LEFTMETA = 125; // SUPER
 
 function loadBytes(path: string): ArrayBuffer {
@@ -119,12 +121,21 @@ describe("wlcompositor — config-file keybind engine", () => {
         tap(KEY_1);
         await waitFor(out, "workspace>>1", 10_000, dump);
 
-        // SUPER+J (cyclenext) moves keyboard focus to the other window.
+        // SUPER+J (cyclenext) / SUPER+K (cycleprev) move focus and back.
         const before = await activeAddress();
         tap(KEY_J);
         await waitFor(out, "activewindow>>", 10_000, dump);
         const after = await activeAddress();
-        expect(after, `focus did not cycle.\n${dump()}`).not.toBe(before);
+        expect(after, `cyclenext did not move focus.\n${dump()}`).not.toBe(before);
+        tap(KEY_K);
+        const restored = await activeAddress();
+        expect(restored, `cycleprev did not restore focus.\n${dump()}`).toBe(before);
+
+        // SUPER+W (killactive) closes the focused window; it exits and ws 1
+        // re-tiles down to the single remaining window.
+        tap(KEY_W);
+        await waitFor(out, "CLIENT_CLOSED", 10_000, dump);
+        await waitFor(out, /TILE n=1 /, 10_000, dump);
 
         void compExit;
       } finally {
