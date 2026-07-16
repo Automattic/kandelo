@@ -16,7 +16,14 @@ for required in \
     examples/gencat.wasm \
     examples/pthread_channel_reuse_test.wasm \
     examples/wait_lifecycle_test.wasm \
-    examples/wait_lifecycle_test.wasm64.wasm; do
+    examples/wait_lifecycle_test.wasm64.wasm \
+    benchmarks/wasm/pipe-throughput.wasm \
+    benchmarks/wasm/file-throughput.wasm \
+    benchmarks/wasm/syscall-latency.wasm \
+    benchmarks/wasm/fork-bench.wasm \
+    benchmarks/wasm/clone-bench.wasm \
+    benchmarks/wasm/spawn-bench.wasm \
+    benchmarks/wasm/hello.wasm; do
     if [ ! -f "$required" ]; then
         echo "pack-ci-test-workspace: missing required artifact: $required" >&2
         exit 1
@@ -27,7 +34,10 @@ items=()
 for item in binaries local-binaries host/wasm; do
     [ -e "$item" ] && items+=("$item")
 done
-for wasm in examples/*.wasm; do
+# The browser consumer reruns `prepare-browser` against this archive. Its
+# `has_programs` guard checks both example and benchmark outputs, so retain the
+# complete build-programs fixture set to prevent an unintended source rebuild.
+for wasm in examples/*.wasm benchmarks/wasm/*.wasm; do
     [ -f "$wasm" ] && items+=("$wasm")
 done
 

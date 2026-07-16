@@ -9,9 +9,16 @@ FIXTURE="$TMP_DIR/repo"
 mkdir -p \
     "$FIXTURE/scripts" \
     "$FIXTURE/host" \
+    "$FIXTURE/host/wasm" \
+    "$FIXTURE/local-binaries" \
+    "$FIXTURE/examples" \
+    "$FIXTURE/benchmarks/wasm" \
     "$FIXTURE/apps/browser-demos" \
     "$FIXTURE/bin"
-cp "$REPO_ROOT/scripts/ci-run-test-suite.sh" "$FIXTURE/scripts/"
+cp \
+    "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
+    "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
+    "$FIXTURE/scripts/"
 
 cat > "$FIXTURE/bin/npm" <<'EOF'
 #!/usr/bin/env bash
@@ -103,6 +110,41 @@ for workflow in \
     }
     grep -Fq 'bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"' "$workflow" || {
         echo "$(basename "$workflow"): test group is not passed positionally through the dev shell" >&2
+        exit 1
+    }
+done
+
+prepared_files=(
+    local-binaries/kernel.wasm
+    host/wasm/rootfs.vfs
+    examples/gencat.wasm
+    examples/pthread_channel_reuse_test.wasm
+    examples/wait_lifecycle_test.wasm
+    examples/wait_lifecycle_test.wasm64.wasm
+)
+for benchmark in \
+    pipe-throughput.wasm \
+    file-throughput.wasm \
+    syscall-latency.wasm \
+    fork-bench.wasm \
+    clone-bench.wasm \
+    spawn-bench.wasm \
+    hello.wasm; do
+    prepared_files+=("benchmarks/wasm/$benchmark")
+done
+for prepared in "${prepared_files[@]}"; do
+    mkdir -p "$FIXTURE/$(dirname "$prepared")"
+    : > "$FIXTURE/$prepared"
+done
+
+pack_archive="$TMP_DIR/workspace.tar.zst"
+PATH="$FIXTURE/bin:$PATH" \
+    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" "$pack_archive"
+pack_capture="$TMP_DIR/pack.list"
+tar --zstd -tf "$pack_archive" > "$pack_capture"
+for prepared in "${prepared_files[@]}"; do
+    grep -Fxq "$prepared" "$pack_capture" || {
+        echo "pack-ci-test-workspace.sh: omitted prepared artifact $prepared" >&2
         exit 1
     }
 done
