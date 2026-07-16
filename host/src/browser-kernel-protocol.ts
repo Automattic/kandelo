@@ -12,6 +12,7 @@ import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import type {
   HostDiagnosticMessage,
 } from "./host-diagnostic";
+import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -385,6 +386,8 @@ export type MainToKernelMessage =
 
 export interface ReadyMessage {
   type: "ready";
+  /** Versioned PCM-only shared transport claimed by the kernel worker. */
+  pcmTransport?: PcmTransportDescriptor;
 }
 
 export interface InitErrorMessage {

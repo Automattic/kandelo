@@ -33,10 +33,9 @@ use crate::terminal::{NCCS, TerminalState, WinSize};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-// v11 keeps the main thread's directed pending queue distinct from the shared
-// process queue across legacy exec. Fork children still start with no pending
-// signals, so the fork payload itself needs no new directed-signal section.
-const FORK_VERSION: u32 = 11;
+// v12 adds the stable PCM playback OFD type. Its negative host handle names a
+// kernel-global backing, so fork/exec retain the same stream and ownership.
+const FORK_VERSION: u32 = 12;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -458,6 +457,7 @@ fn file_type_to_u32(ft: FileType) -> u32 {
         FileType::MemFd => 9,
         FileType::PtyMaster => 10,
         FileType::PtySlave => 11,
+        FileType::PcmPlayback => 12,
     }
 }
 
@@ -475,6 +475,7 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
         9 => Ok(FileType::MemFd),
         10 => Ok(FileType::PtyMaster),
         11 => Ok(FileType::PtySlave),
+        12 => Ok(FileType::PcmPlayback),
         _ => Err(Errno::EINVAL),
     }
 }

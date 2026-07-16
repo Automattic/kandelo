@@ -14,6 +14,7 @@ import type {
   BootDescriptor,
   GalleryItem,
   LazyDownloadEvent,
+  MachineAudioState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
@@ -70,11 +71,40 @@ export const App: React.FC = () => {
   const [themeOpen, setThemeOpen] = React.useState(false);
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
+  const [audioState, setAudioState] = React.useState<MachineAudioState>(() => host.getAudioState());
+  const [audioError, setAudioError] = React.useState<string | null>(null);
   const nextTerminalIndex = React.useRef(2);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
 
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
+
+  React.useEffect(
+    () => host.subscribeAudioState((state) => {
+      setAudioState(state);
+      if (state === "running") setAudioError(null);
+    }),
+    [host],
+  );
+
+  const activateAudio = React.useCallback(() => {
+    if (host.getAudioState() === "running") return;
+    void host.resumeAudio().then(
+      () => setAudioError(null),
+      (error) => setAudioError(error instanceof Error ? error.message : String(error)),
+    );
+  }, [host]);
+
+  // Web Audio starts only after a trusted gesture. Keep activation at the
+  // machine shell so terminal-only SDL applications use the same PCM sink.
+  React.useEffect(() => {
+    window.addEventListener("pointerdown", activateAudio, { capture: true });
+    window.addEventListener("keydown", activateAudio, { capture: true });
+    return () => {
+      window.removeEventListener("pointerdown", activateAudio, { capture: true });
+      window.removeEventListener("keydown", activateAudio, { capture: true });
+    };
+  }, [activateAudio]);
 
   React.useEffect(() => {
     const query = window.matchMedia("(prefers-color-scheme: dark)");
@@ -228,7 +258,7 @@ export const App: React.FC = () => {
   }, []);
 
   return (
-    <div className={appClassName} style={appStyle}>
+    <div className={appClassName} style={appStyle} data-audio-state={audioState}>
       <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
         {isEmpty ? (
           <EmptyState
@@ -276,6 +306,13 @@ export const App: React.FC = () => {
       )}
 
       <LazyDownloadToasts downloads={lazyDownloads} />
+      {surface.status === "running" && audioState !== "running" && (
+        <AudioStatusToast
+          state={audioState}
+          error={audioError}
+          onEnable={activateAudio}
+        />
+      )}
 
       <Dock
         activePane={dockPane}
@@ -307,6 +344,37 @@ export const App: React.FC = () => {
         onLayoutChange={onDockLayoutChange}
       />
     </div>
+  );
+};
+
+const AudioStatusToast: React.FC<{
+  state: MachineAudioState;
+  error: string | null;
+  onEnable: () => void;
+}> = ({ state, error, onEnable }) => {
+  const detail = error ?? (
+    state === "interrupted"
+      ? "Audio output was interrupted by the browser or operating system."
+      : state === "unavailable"
+      ? "This browser does not provide the required Web Audio output."
+      : state === "error"
+      ? "The browser audio sink could not be started."
+      : "Browser policy pauses audio until you interact with this machine."
+  );
+  return (
+    <aside className="kdownload-toasts kpcm-audio-status" aria-label="Audio status" aria-live="polite">
+      <div className={`kdownload-toast${error || state === "error" ? " kpcm-audio-error" : ""}`}>
+        <div className="kdownload-toast-top">
+          <span className="kdownload-toast-title">Audio {state}</span>
+          {state !== "unavailable" && state !== "closed" && (
+            <button type="button" className="kpcm-audio-enable" onClick={onEnable}>
+              Enable
+            </button>
+          )}
+        </div>
+        <div className="kdownload-toast-detail">{detail}</div>
+      </div>
+    </aside>
   );
 };
 

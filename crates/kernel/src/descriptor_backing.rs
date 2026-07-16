@@ -112,7 +112,6 @@ impl<T> SharedBackingTable<T> {
         true
     }
 
-    #[cfg(test)]
     pub fn ref_count(&self, idx: usize) -> Option<u32> {
         self.entries
             .get(idx)
@@ -204,6 +203,7 @@ static TIMERFDS: GlobalBackingTable<TimerFdState> = GlobalBackingTable::new();
 static SIGNALFDS: GlobalBackingTable<SignalFdState> = GlobalBackingTable::new();
 static MEMFDS: GlobalBackingTable<MemFdBacking> = GlobalBackingTable::new();
 static PROCFS_BUFS: GlobalBackingTable<ProcfsBacking> = GlobalBackingTable::new();
+static PCM_STREAMS: GlobalBackingTable<crate::audio::PcmStream> = GlobalBackingTable::new();
 
 pub fn with_eventfds<R>(
     f: impl for<'a> FnOnce(&'a mut SharedBackingTable<EventFdState>) -> R,
@@ -233,6 +233,12 @@ pub fn with_procfs_bufs<R>(
     PROCFS_BUFS.with(f)
 }
 
+pub fn with_pcm_streams<R>(
+    f: impl for<'a> FnOnce(&'a mut SharedBackingTable<crate::audio::PcmStream>) -> R,
+) -> R {
+    PCM_STREAMS.with(f)
+}
+
 fn negative_handle_idx(host_handle: i64) -> Result<usize, Errno> {
     if host_handle >= 0 {
         return Err(Errno::EBADF);
@@ -251,7 +257,11 @@ fn negative_handle_idx(host_handle: i64) -> Result<usize, Errno> {
 pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
     matches!(
         file_type,
-        FileType::EventFd | FileType::TimerFd | FileType::SignalFd | FileType::MemFd
+        FileType::EventFd
+            | FileType::TimerFd
+            | FileType::SignalFd
+            | FileType::MemFd
+            | FileType::PcmPlayback
     ) || (file_type == FileType::Regular && crate::procfs::is_procfs_buf_handle(host_handle))
 }
 
@@ -380,6 +390,9 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
             with_signalfds(|table| table.add_ref(negative_handle_idx(host_handle)?))?
         }
         FileType::MemFd => with_memfds(|table| table.add_ref(negative_handle_idx(host_handle)?))?,
+        FileType::PcmPlayback => {
+            with_pcm_streams(|table| table.add_ref(negative_handle_idx(host_handle)?))?
+        }
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
             with_procfs_bufs(|table| table.add_ref(crate::procfs::procfs_buf_idx(host_handle)))?
         }
@@ -413,6 +426,15 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
         FileType::MemFd => {
             if let Ok(idx) = negative_handle_idx(host_handle) {
                 with_memfds(|table| table.release(idx));
+            }
+            true
+        }
+        FileType::PcmPlayback => {
+            if let Ok(idx) = negative_handle_idx(host_handle) {
+                let freed = with_pcm_streams(|table| table.release(idx));
+                if freed {
+                    crate::audio::on_last_ofd_released(idx);
+                }
             }
             true
         }

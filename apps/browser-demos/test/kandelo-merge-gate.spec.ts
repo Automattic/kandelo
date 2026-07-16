@@ -336,15 +336,23 @@ test("Kandelo WordPress MariaDB demo is preinstalled and logs into wp-admin", as
   await runWordPressPreinstalledLogin(page, "wordpress-mariadb", "WordPress MariaDB");
 });
 
-test("Kandelo fbDOOM demo renders to the framebuffer", async ({ page }) => {
+test("Kandelo fbDOOM demo renders and starts the OSS audio sink", async ({ page }) => {
   test.setTimeout(240_000);
 
   await gotoOrSkip(page, "/?demo=doom");
-  await expect(page.locator("canvas").first()).toBeVisible({ timeout: 180_000 });
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible({ timeout: 180_000 });
+
+  await canvas.click({ position: { x: 8, y: 8 } });
+  await expect(page.locator("[data-audio-state]").first()).toHaveAttribute(
+    "data-audio-state",
+    "running",
+    { timeout: 10_000 },
+  );
 
   await expect
     .poll(async () => {
-      return page.locator("canvas").first().evaluate((canvas: HTMLCanvasElement) => {
+      return canvas.evaluate((canvas: HTMLCanvasElement) => {
         if (canvas.width === 0 || canvas.height === 0) return false;
         const ctx = canvas.getContext("2d");
         if (!ctx) return false;

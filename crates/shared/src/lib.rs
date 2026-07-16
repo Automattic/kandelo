@@ -73,7 +73,10 @@ pub mod host_abi;
 /// 39: kernel-owned POSIX timer expiration preserves exact thread targets,
 ///     SI_TIMER metadata, overruns, and finite signal-wait deadlines through
 ///     the required host timer-fire export.
-pub const ABI_VERSION: u32 = 39;
+/// 40: OSS PCM ioctl marshalling uses request-sized arguments, `/dev/dsp`
+///     descriptors share a refcounted PCM stream across fork/exec, and the
+///     host consumes a versioned bounded PCM transport at audio-clock pace.
+pub const ABI_VERSION: u32 = 40;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1370,6 +1373,11 @@ pub mod abi {
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
         "kernel_mark_process_signaled",
+        "kernel_pcm_claim_transport",
+        "kernel_pcm_clock_update",
+        "kernel_pcm_reconcile",
+        "kernel_pcm_transport_len",
+        "kernel_pcm_transport_ptr",
         "kernel_pipe_has_readers",
         "kernel_posix_timer_fire",
         "kernel_prepare_write_operation",
@@ -2050,20 +2058,12 @@ mod fbdev_tests {
 
 /// OSS (Open Sound System) ABI constants.
 ///
-/// These mirror what glibc / musl expose via `<sys/soundcard.h>` to
-/// programs that talk to `/dev/dsp`. We accept the subset fbDOOM (and
-/// most real OSS clients) actually emit during init: speed, channel
-/// count, format, and a couple of accept-and-acknowledge ops.
-///
-/// The numeric values are the standard OSS encoding — the same numbers
-/// real Linux kernels return — so user-space programs that hard-code
-/// these constants (rather than `#include`-ing the header) work
-/// unchanged.
+/// This is Kandelo's owned wasm32 source ABI, informed by canonical OSS and
+/// FreeBSD's PCM frontend. Every supported command has real state semantics;
+/// unsupported capture, duplex, trigger, and mmap operations remain errors.
 pub mod oss {
-    // The values below come from the Linux `<sys/soundcard.h>` IOC
-    // encoding — the same ones glibc, musl, and any OSS-targeted DOS
-    // port hard-code. Matching them exactly lets user programs that
-    // skip the header still talk to us.
+    // Pin canonical OSS ioctl encodings explicitly so the SDK header and Rust
+    // frontend cannot inherit or drift with a host operating system's ABI.
 
     /// `SNDCTL_DSP_RESET` — flush + stop. No argument.
     pub const SNDCTL_DSP_RESET: u32 = 0x00005000;
@@ -2075,17 +2075,299 @@ pub mod oss {
     pub const SNDCTL_DSP_STEREO: u32 = 0xc0045003;
     /// `SNDCTL_DSP_GETBLKSIZE` — preferred fragment size. out: i32 bytes.
     pub const SNDCTL_DSP_GETBLKSIZE: u32 = 0xc0045004;
+    /// FreeBSD's distinct block-size setter; pinned for source ABI but unsupported.
+    pub const SNDCTL_DSP_SETBLKSIZE: u32 = 0x40045004;
     /// `SNDCTL_DSP_SETFMT` — get/set sample format. inout: i32 AFMT_*.
     pub const SNDCTL_DSP_SETFMT: u32 = 0xc0045005;
     /// `SNDCTL_DSP_CHANNELS` — get/set explicit channel count. inout: i32.
     pub const SNDCTL_DSP_CHANNELS: u32 = 0xc0045006;
+    /// Legacy PCM filter control; pinned for source ABI but unsupported.
+    pub const SOUND_PCM_WRITE_FILTER: u32 = 0xc0045007;
+    /// `SNDCTL_DSP_POST` — start playback of queued output. No argument.
+    pub const SNDCTL_DSP_POST: u32 = 0x00005008;
+    /// Legacy fragment subdivision control; pinned for source ABI but unsupported.
+    pub const SNDCTL_DSP_SUBDIVIDE: u32 = 0xc0045009;
     /// `SNDCTL_DSP_GETFMTS` — bitmask of supported formats. out: i32 AFMT_* mask.
     pub const SNDCTL_DSP_GETFMTS: u32 = 0x8004500b;
     /// `SNDCTL_DSP_SETFRAGMENT` — fragment-size hint. inout: i32.
     pub const SNDCTL_DSP_SETFRAGMENT: u32 = 0xc004500a;
+    /// `SNDCTL_DSP_GETOSPACE` — immediately writable output geometry.
+    pub const SNDCTL_DSP_GETOSPACE: u32 = 0x8010500c;
+    /// Canonical capture query; pinned for source ABI but unsupported.
+    pub const SNDCTL_DSP_GETISPACE: u32 = 0x8010500d;
+    /// `SNDCTL_DSP_NONBLOCK` — enable non-blocking mode on this OFD.
+    pub const SNDCTL_DSP_NONBLOCK: u32 = 0x0000500e;
+    /// `SNDCTL_DSP_GETCAPS` — query truthful PCM capabilities.
+    pub const SNDCTL_DSP_GETCAPS: u32 = 0x8004500f;
+    /// Canonical trigger controls; pinned for source ABI but unsupported.
+    pub const SNDCTL_DSP_SETTRIGGER: u32 = 0x40045010;
+    pub const SNDCTL_DSP_GETTRIGGER: u32 = 0x80045010;
+    /// Canonical capture position; pinned for source ABI but unsupported.
+    pub const SNDCTL_DSP_GETIPTR: u32 = 0x800c5011;
+    /// `SNDCTL_DSP_GETOPTR` — query monotonic output position.
+    pub const SNDCTL_DSP_GETOPTR: u32 = 0x800c5012;
+    /// Canonical mmap-buffer operations; pinned for source ABI but unsupported.
+    pub const SNDCTL_DSP_MAPINBUF: u32 = 0x80085013;
+    pub const SNDCTL_DSP_MAPOUTBUF: u32 = 0x80085014;
+    /// Canonical synchronization/duplex controls; pinned but unsupported.
+    pub const SNDCTL_DSP_SETSYNCRO: u32 = 0x00005015;
+    pub const SNDCTL_DSP_SETDUPLEX: u32 = 0x00005016;
+    /// `SNDCTL_DSP_GETODELAY` — queued, not-yet-played output bytes.
+    pub const SNDCTL_DSP_GETODELAY: u32 = 0x80045017;
+    /// Read-only aliases used by portable OSS clients.
+    pub const SOUND_PCM_READ_RATE: u32 = 0x80045002;
+    pub const SOUND_PCM_READ_BITS: u32 = 0x80045005;
+    pub const SOUND_PCM_READ_CHANNELS: u32 = 0x80045006;
+    pub const SOUND_PCM_READ_FILTER: u32 = 0x80045007;
 
-    /// `AFMT_S16_LE` — signed 16-bit little-endian. The only format we accept.
-    pub const AFMT_S16_LE: u32 = 0x10;
+    /// Values accepted by the canonical (currently unsupported) trigger ioctls.
+    pub const PCM_ENABLE_INPUT: u32 = 0x0000_0001;
+    pub const PCM_ENABLE_OUTPUT: u32 = 0x0000_0002;
+
+    /// `AFMT_QUERY` — query the current format without changing it.
+    pub const AFMT_QUERY: u32 = 0;
+    // Keep the canonical OSS/FreeBSD format namespace available to source
+    // consumers even when the initial playback core does not implement a
+    // particular encoding.  `GETFMTS` advertises only `SUPPORTED_FORMATS`,
+    // and `SETFMT` rejects every other value.
+    pub const AFMT_MU_LAW: u32 = 0x0000_0001;
+    pub const AFMT_A_LAW: u32 = 0x0000_0002;
+    pub const AFMT_IMA_ADPCM: u32 = 0x0000_0004;
+    /// `AFMT_U8` — unsigned 8-bit PCM.
+    pub const AFMT_U8: u32 = 0x0000_0008;
+    /// `AFMT_S16_LE` — signed 16-bit little-endian PCM.
+    pub const AFMT_S16_LE: u32 = 0x0000_0010;
+    /// `AFMT_S16_BE` — signed 16-bit big-endian PCM.
+    pub const AFMT_S16_BE: u32 = 0x0000_0020;
+    pub const AFMT_S8: u32 = 0x0000_0040;
+    pub const AFMT_U16_LE: u32 = 0x0000_0080;
+    pub const AFMT_U16_BE: u32 = 0x0000_0100;
+    pub const AFMT_MPEG: u32 = 0x0000_0200;
+    pub const AFMT_AC3: u32 = 0x0000_0400;
+    pub const AFMT_S32_LE: u32 = 0x0000_1000;
+    pub const AFMT_S32_BE: u32 = 0x0000_2000;
+    pub const AFMT_U32_LE: u32 = 0x0000_4000;
+    pub const AFMT_U32_BE: u32 = 0x0000_8000;
+    pub const AFMT_S24_LE: u32 = 0x0001_0000;
+    pub const AFMT_S24_BE: u32 = 0x0002_0000;
+    pub const AFMT_U24_LE: u32 = 0x0004_0000;
+    pub const AFMT_U24_BE: u32 = 0x0008_0000;
+    pub const AFMT_F32_LE: u32 = 0x1000_0000;
+    pub const AFMT_F32_BE: u32 = 0x2000_0000;
+
+    pub const SUPPORTED_FORMATS: u32 = AFMT_U8 | AFMT_S16_LE | AFMT_S16_BE;
+
+    // OSS4/FreeBSD core capability bits. The SDK exposes these names for
+    // source compatibility; only output/default/virtual are advertised.
+    pub const PCM_CAP_REVISION: u32 = 0x0000_00ff;
+    pub const PCM_CAP_DUPLEX: u32 = 0x0000_0100;
+    pub const PCM_CAP_REALTIME: u32 = 0x0000_0200;
+    pub const PCM_CAP_BATCH: u32 = 0x0000_0400;
+    pub const PCM_CAP_COPROC: u32 = 0x0000_0800;
+    pub const PCM_CAP_TRIGGER: u32 = 0x0000_1000;
+    pub const PCM_CAP_MMAP: u32 = 0x0000_2000;
+    pub const PCM_CAP_MULTI: u32 = 0x0000_4000;
+    pub const PCM_CAP_BIND: u32 = 0x0000_8000;
+    pub const PCM_CAP_INPUT: u32 = 0x0001_0000;
+    pub const PCM_CAP_OUTPUT: u32 = 0x0002_0000;
+    pub const PCM_CAP_VIRTUAL: u32 = 0x0004_0000;
+    pub const PCM_CAP_DEFAULT: u32 = 0x4000_0000;
+    pub const SUPPORTED_CAPS: u32 = PCM_CAP_OUTPUT | PCM_CAP_VIRTUAL | PCM_CAP_DEFAULT;
+
+    /// Wasm32-owned layout of OSS `audio_buf_info`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct AudioBufInfo {
+        pub fragments: i32,
+        pub fragstotal: i32,
+        pub fragsize: i32,
+        pub bytes: i32,
+    }
+
+    /// Wasm32-owned layout of OSS `count_info`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct CountInfo {
+        pub bytes: i32,
+        pub blocks: i32,
+        pub ptr: i32,
+    }
+
+}
+
+/// Implementation-neutral PCM host transport contract.
+pub mod pcm {
+    pub const PCM_TRANSPORT_MAGIC: u32 = 0x314d_4350; // "PCM1" LE
+    pub const PCM_TRANSPORT_VERSION: u32 = 1;
+    pub const PCM_TRANSPORT_HEADER_BYTES: u32 = 128;
+    pub const PCM_TRANSPORT_RING_BYTES: u32 = 64 * 1024;
+    pub const PCM_TRANSPORT_BYTES: u32 = PCM_TRANSPORT_HEADER_BYTES + PCM_TRANSPORT_RING_BYTES;
+
+    pub const PCM_STATE_CLOSED: u32 = 0;
+    pub const PCM_STATE_STOPPED: u32 = 1;
+    pub const PCM_STATE_RUNNING: u32 = 2;
+    pub const PCM_STATE_DRAINING: u32 = 3;
+
+    pub const PCM_FORMAT_UNKNOWN: u32 = 0;
+    pub const PCM_FORMAT_U8: u32 = 1;
+    pub const PCM_FORMAT_S16_LE: u32 = 2;
+    pub const PCM_FORMAT_S16_BE: u32 = 3;
+
+    pub const PCM_TRANSPORT_UNCLAIMED: u32 = 0;
+    pub const PCM_TRANSPORT_LEGACY_PULL: u32 = 1;
+    pub const PCM_TRANSPORT_SHARED_CLOCK: u32 = 2;
+
+    /// Kernel is publishing a new multi-field stream configuration. Host
+    /// clocks must render silence and avoid cursor publication until clear.
+    pub const PCM_FLAG_CONFIGURING: u32 = 1 << 0;
+    /// Playback is currently in an underrun episode. The first transition
+    /// into an episode increments `PcmSharedControl::underruns`.
+    pub const PCM_FLAG_UNDERRUN_ACTIVE: u32 = 1 << 1;
+    /// The attached physical sink failed permanently. Suspension and browser
+    /// user-activation waits are recoverable and must not set this bit.
+    pub const PCM_FLAG_FATAL_ERROR: u32 = 1 << 2;
+
+    /// Versioned PCM-only header shared with browser AudioWorklets and Node
+    /// sinks. Every field is a 32-bit word so JS can use `Atomics` directly.
+    /// The three u64 cursors use odd/even seqlocks around low/high words.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct PcmSharedControl {
+        pub magic: u32,
+        pub version: u32,
+        pub header_bytes: u32,
+        pub physical_capacity_bytes: u32,
+        pub active_capacity_bytes: u32,
+        pub format: u32,
+        pub rate: u32,
+        pub channels: u32,
+        pub frame_bytes: u32,
+        pub fragment_bytes: u32,
+        pub fragment_count: u32,
+        pub state: u32,
+        pub generation: u32,
+        pub flags: u32,
+        pub transport_mode: u32,
+        pub producer_seq: u32,
+        pub producer_lo: u32,
+        pub producer_hi: u32,
+        pub consumer_seq: u32,
+        pub consumer_lo: u32,
+        pub consumer_hi: u32,
+        pub discard_seq: u32,
+        pub discard_lo: u32,
+        pub discard_hi: u32,
+        pub underruns: u32,
+        pub wake_seq: u32,
+        pub reserved: [u32; 6],
+    }
+}
+
+#[cfg(test)]
+mod oss_abi_tests {
+    use super::oss::*;
+    use super::pcm::*;
+    use core::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn ioctl_values_and_struct_layouts_are_pinned() {
+        assert_eq!(SNDCTL_DSP_RESET, 0x0000_5000);
+        assert_eq!(SNDCTL_DSP_SYNC, 0x0000_5001);
+        assert_eq!(SNDCTL_DSP_SPEED, 0xc004_5002);
+        assert_eq!(SNDCTL_DSP_STEREO, 0xc004_5003);
+        assert_eq!(SNDCTL_DSP_GETBLKSIZE, 0xc004_5004);
+        assert_eq!(SNDCTL_DSP_SETBLKSIZE, 0x4004_5004);
+        assert_eq!(SNDCTL_DSP_SETFMT, 0xc004_5005);
+        assert_eq!(SNDCTL_DSP_CHANNELS, 0xc004_5006);
+        assert_eq!(SOUND_PCM_WRITE_FILTER, 0xc004_5007);
+        assert_eq!(SNDCTL_DSP_POST, 0x0000_5008);
+        assert_eq!(SNDCTL_DSP_SUBDIVIDE, 0xc004_5009);
+        assert_eq!(SNDCTL_DSP_SETFRAGMENT, 0xc004_500a);
+        assert_eq!(SNDCTL_DSP_GETFMTS, 0x8004_500b);
+        assert_eq!(SNDCTL_DSP_GETOSPACE, 0x8010_500c);
+        assert_eq!(SNDCTL_DSP_GETISPACE, 0x8010_500d);
+        assert_eq!(SNDCTL_DSP_NONBLOCK, 0x0000_500e);
+        assert_eq!(SNDCTL_DSP_GETCAPS, 0x8004_500f);
+        assert_eq!(SNDCTL_DSP_SETTRIGGER, 0x4004_5010);
+        assert_eq!(SNDCTL_DSP_GETTRIGGER, 0x8004_5010);
+        assert_eq!(SNDCTL_DSP_GETIPTR, 0x800c_5011);
+        assert_eq!(SNDCTL_DSP_GETOPTR, 0x800c_5012);
+        assert_eq!(SNDCTL_DSP_MAPINBUF, 0x8008_5013);
+        assert_eq!(SNDCTL_DSP_MAPOUTBUF, 0x8008_5014);
+        assert_eq!(SNDCTL_DSP_SETSYNCRO, 0x0000_5015);
+        assert_eq!(SNDCTL_DSP_SETDUPLEX, 0x0000_5016);
+        assert_eq!(SNDCTL_DSP_GETODELAY, 0x8004_5017);
+        assert_eq!(SOUND_PCM_READ_RATE, 0x8004_5002);
+        assert_eq!(SOUND_PCM_READ_BITS, 0x8004_5005);
+        assert_eq!(SOUND_PCM_READ_CHANNELS, 0x8004_5006);
+        assert_eq!(SOUND_PCM_READ_FILTER, 0x8004_5007);
+        assert_eq!(PCM_ENABLE_INPUT, 0x0000_0001);
+        assert_eq!(PCM_ENABLE_OUTPUT, 0x0000_0002);
+        assert_eq!(AFMT_QUERY, 0x0000_0000);
+        assert_eq!(AFMT_MU_LAW, 0x0000_0001);
+        assert_eq!(AFMT_A_LAW, 0x0000_0002);
+        assert_eq!(AFMT_IMA_ADPCM, 0x0000_0004);
+        assert_eq!(AFMT_U8, 0x0000_0008);
+        assert_eq!(AFMT_S16_LE, 0x0000_0010);
+        assert_eq!(AFMT_S16_BE, 0x0000_0020);
+        assert_eq!(AFMT_S8, 0x0000_0040);
+        assert_eq!(AFMT_U16_LE, 0x0000_0080);
+        assert_eq!(AFMT_U16_BE, 0x0000_0100);
+        assert_eq!(AFMT_MPEG, 0x0000_0200);
+        assert_eq!(AFMT_AC3, 0x0000_0400);
+        assert_eq!(AFMT_S32_LE, 0x0000_1000);
+        assert_eq!(AFMT_S32_BE, 0x0000_2000);
+        assert_eq!(AFMT_U32_LE, 0x0000_4000);
+        assert_eq!(AFMT_U32_BE, 0x0000_8000);
+        assert_eq!(AFMT_S24_LE, 0x0001_0000);
+        assert_eq!(AFMT_S24_BE, 0x0002_0000);
+        assert_eq!(AFMT_U24_LE, 0x0004_0000);
+        assert_eq!(AFMT_U24_BE, 0x0008_0000);
+        assert_eq!(AFMT_F32_LE, 0x1000_0000);
+        assert_eq!(AFMT_F32_BE, 0x2000_0000);
+        assert_eq!(SUPPORTED_FORMATS, 0x0000_0038);
+        assert_eq!(PCM_CAP_REVISION, 0x0000_00ff);
+        assert_eq!(PCM_CAP_DUPLEX, 0x0000_0100);
+        assert_eq!(PCM_CAP_REALTIME, 0x0000_0200);
+        assert_eq!(PCM_CAP_BATCH, 0x0000_0400);
+        assert_eq!(PCM_CAP_COPROC, 0x0000_0800);
+        assert_eq!(PCM_CAP_TRIGGER, 0x0000_1000);
+        assert_eq!(PCM_CAP_MMAP, 0x0000_2000);
+        assert_eq!(PCM_CAP_MULTI, 0x0000_4000);
+        assert_eq!(PCM_CAP_BIND, 0x0000_8000);
+        assert_eq!(PCM_CAP_INPUT, 0x0001_0000);
+        assert_eq!(PCM_CAP_OUTPUT, 0x0002_0000);
+        assert_eq!(PCM_CAP_VIRTUAL, 0x0004_0000);
+        assert_eq!(PCM_CAP_DEFAULT, 0x4000_0000);
+        assert_eq!(size_of::<AudioBufInfo>(), 16);
+        assert_eq!(align_of::<AudioBufInfo>(), 4);
+        assert_eq!(offset_of!(AudioBufInfo, fragments), 0);
+        assert_eq!(offset_of!(AudioBufInfo, fragstotal), 4);
+        assert_eq!(offset_of!(AudioBufInfo, fragsize), 8);
+        assert_eq!(offset_of!(AudioBufInfo, bytes), 12);
+        assert_eq!(size_of::<CountInfo>(), 12);
+        assert_eq!(align_of::<CountInfo>(), 4);
+        assert_eq!(offset_of!(CountInfo, bytes), 0);
+        assert_eq!(offset_of!(CountInfo, blocks), 4);
+        assert_eq!(offset_of!(CountInfo, ptr), 8);
+    }
+
+    #[test]
+    fn pcm_transport_layout_is_fixed_for_js_atomics() {
+        assert_eq!(size_of::<PcmSharedControl>(), 128);
+        assert_eq!(align_of::<PcmSharedControl>(), 4);
+        assert_eq!(offset_of!(PcmSharedControl, active_capacity_bytes), 16);
+        assert_eq!(offset_of!(PcmSharedControl, state), 44);
+        assert_eq!(offset_of!(PcmSharedControl, producer_seq), 60);
+        assert_eq!(offset_of!(PcmSharedControl, consumer_seq), 72);
+        assert_eq!(offset_of!(PcmSharedControl, discard_seq), 84);
+        assert_eq!(offset_of!(PcmSharedControl, underruns), 96);
+        assert_eq!(offset_of!(PcmSharedControl, wake_seq), 100);
+        assert_eq!(PCM_FLAG_CONFIGURING, 1);
+        assert_eq!(PCM_FLAG_UNDERRUN_ACTIVE, 2);
+        assert_eq!(PCM_FLAG_FATAL_ERROR, 4);
+        assert_eq!(PCM_TRANSPORT_BYTES, 65_664);
+    }
 }
 
 

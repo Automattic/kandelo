@@ -1,18 +1,20 @@
 kind = "program"
 name = "fbdoom"
 version = "0.1.0"
-# rev5: coalesce queued PS/2 mouse packets into one Doom mouse event per
-# input poll so pointer-lock motion is not lost inside a game tic. rev4 fixed
+# rev6: use the SDK OSS API, negotiate a latency-sized buffer, and complete
+# short writes so the generic /dev/dsp backend remains correctly paced. rev5
+# coalesced queued PS/2 mouse packets into one Doom mouse event per input poll
+# so pointer-lock motion is not lost inside a game tic. rev4 fixed
 # fbDOOM's wasm exit path by avoiding an invalid G_CheckDemoStatus ->
 # atexit_func_t cast. rev3 dropped the bundled IWAD; the browser demo fetches
 # the DOOM shareware `doom1.wad` at page load from a Linux-distro mirror and
 # caches it via the Cache API. The archive carries only `fbdoom.wasm`.
-kernel_abi = 7
+kernel_abi = 40
 depends_on = []
 
-# Upstream is a depth-1 git clone of maximevince/fbDOOM at HEAD; no
-# release-tag tarball exists. Source SHA is placeholder until either
-# the upstream pins a release or we mirror a frozen tarball.
+# The build script pins a maximevince/fbDOOM commit because upstream has no
+# release-tag tarball. Source SHA remains a placeholder until we mirror that
+# frozen tree as an archive.
 [source]
 url = "https://github.com/maximevince/fbDOOM"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

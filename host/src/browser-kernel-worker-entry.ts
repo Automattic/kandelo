@@ -177,6 +177,7 @@ const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
 // their exit path and drain. See docs/jsc-terminate-atomics-wait-workaround.md.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
+const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -825,7 +826,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = true;
   flushPendingLazyRegistrations();
 
-  post({ type: "ready" });
+  const pcmTransport = kernelWorker.claimPcmTransport(true);
+  post({ type: "ready", pcmTransport });
 }
 
 // ── Spawn ──
@@ -2046,6 +2048,16 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   threadedProcessPids.clear();
   ptyByPid.clear();
   await waitForProcessTeardowns();
+  if (!(await kernelWorker.waitForPcmDrain(PCM_DESTROY_DRAIN_TIMEOUT_MS))) {
+    post({
+      type: "host_diagnostic",
+      pid: 0,
+      source: "browser PCM output",
+      message:
+        "Audio clock did not consume the queued close tail before machine teardown; the remaining tail was discarded.",
+    });
+  }
+  kernelWorker.shutdownPcmTransport();
   initReady = false;
   initFailure = "kernel worker destroyed";
   failPendingLazyRegistrations(initFailure);

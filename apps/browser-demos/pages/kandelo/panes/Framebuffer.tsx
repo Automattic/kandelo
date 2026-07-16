@@ -1,6 +1,6 @@
 // Framebuffer pane — paints whatever process is bound to /dev/fb0, forwards
 // focused keyboard input as Linux input keycodes encoded in MEDIUMRAW, forwards
-// pointer-lock mouse input to /dev/input/mice, and drains /dev/dsp audio.
+// pointer-lock mouse input to /dev/input/mice. PCM output is machine-level.
 //
 // Painting: host.attachFramebuffer(canvas) returns a FramebufferHandle; the
 // host owns the requestAnimationFrame loop and BGRA→RGBA swizzle (see
@@ -21,10 +21,7 @@ import {
   attachPointerLockMouse,
   type PointerLockMouseHandle,
 } from "../../../../../host/src/framebuffer/browser-controls";
-import type {
-  AudioOutputHandle,
-  FramebufferHandle,
-} from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { FramebufferHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { useFittedCanvasStyle } from "./canvasFit";
 
 export interface FramebufferProps {
@@ -43,7 +40,6 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<FramebufferHandle | null>(null);
   const mouseRef = React.useRef<PointerLockMouseHandle | null>(null);
-  const audioRef = React.useRef<AudioOutputHandle | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
@@ -55,27 +51,16 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
 
     let handle: FramebufferHandle | null = null;
     let offBound: (() => void) | null = null;
-    let cancelled = false;
     try {
       handle = host.attachFramebuffer(canvasRef.current);
       handleRef.current = handle;
       setBoundPid(handle.getBoundPid());
       offBound = handle.onBoundPidChange(setBoundPid);
       setError(null);
-      void handle.startAudio().then((audio) => {
-        if (cancelled) {
-          audio?.close();
-          return;
-        }
-        audioRef.current = audio;
-      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
     return () => {
-      cancelled = true;
-      try { audioRef.current?.close(); } catch { /* noop */ }
-      audioRef.current = null;
       try { offBound?.(); } catch { /* noop */ }
       try { handle?.close(); } catch { /* noop */ }
       handleRef.current = null;
@@ -151,7 +136,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
 
   const onCanvasClick = () => {
     canvasRef.current?.focus();
-    void audioRef.current?.resume();
+    void host.resumeAudio().catch(() => {});
     mouseRef.current?.requestCapture();
   };
 

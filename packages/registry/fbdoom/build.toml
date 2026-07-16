@@ -1,7 +1,17 @@
 script_path = "packages/registry/fbdoom/build-fbdoom.sh"
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 5
+inputs = [
+  "packages/registry/fbdoom/build-fbdoom.sh",
+  "packages/registry/fbdoom/patches/0001-fix-I_InitInput-signature.patch",
+  "packages/registry/fbdoom/patches/0002-add-mice-input.patch",
+  "packages/registry/fbdoom/patches/0003-add-sound-support.patch",
+  "packages/registry/fbdoom/patches/0004-music-support-vendor-fixups.patch",
+  "packages/registry/fbdoom/patches/0005-add-music-support.patch",
+  "packages/registry/fbdoom/patches/0006-fix-G_CheckDemoStatus-atexit-signature.patch",
+  "packages/registry/fbdoom/patches/0007-use-home-for-save-directory.patch",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 6
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

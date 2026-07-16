@@ -4,6 +4,13 @@ import { targetTriple, toolPrefix } from './arch.ts';
 export function compileFlags(arch: WasmArch): string[] {
   return [
     `--target=${targetTriple(arch)}`,
+    // LLVM's generic wasm target has no operating-system identity, but
+    // Kandelo is a Unix/POSIX userspace.  Publish that source-environment
+    // contract through the reserved macros that Unix compilers conventionally
+    // predefine.  This keeps upstream feature selection (including SDL's Unix
+    // platform headers) truthful without claiming Linux or another host OS.
+    '-D__unix__=1',
+    '-D__unix=1',
     '-matomics',
     '-mbulk-memory',
     '-mexception-handling',

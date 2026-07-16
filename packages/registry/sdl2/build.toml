@@ -1,0 +1,11 @@
+script_path = "packages/registry/sdl2/build-sdl2.sh"
+inputs = [
+  "packages/registry/sdl2/build-sdl2.sh",
+  "packages/registry/sdl2/patches/0001-recognize-kandelo-as-unix.patch",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

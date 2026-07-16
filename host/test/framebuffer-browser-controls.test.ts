@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   attachLinuxMediumRawKeyboard,
+  createPcmAudioScheduler,
   DEFAULT_POINTER_LOCK_MOUSE_SENSITIVITY,
   encodeKeyboardEventAsLinuxMediumRaw,
   encodeLinuxMediumRawKeyCode,
@@ -140,5 +141,20 @@ describe("framebuffer browser controls", () => {
       { dx: 127, dy: -128, buttons: 0b101 },
       { dx: 46, dy: -4, buttons: 0b101 },
     ]);
+  });
+
+  it("keeps the retired PCM scheduler export explicitly unavailable", async () => {
+    let drainCalls = 0;
+    const output = createPcmAudioScheduler({
+      drainAudio: async () => {
+        drainCalls++;
+        return { bytes: new Uint8Array(), sampleRate: 48_000, channels: 2 };
+      },
+    });
+
+    expect(output.getState()).toBe("unavailable");
+    await expect(output.resume()).rejects.toThrow("machine-level AudioWorklet PCM driver");
+    expect(drainCalls).toBe(0);
+    expect(() => output.close()).not.toThrow();
   });
 });

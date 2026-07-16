@@ -106,12 +106,16 @@ int *__errno_location(void);
 #define EFAULT 14
 #define EINTR 4
 #define EINVAL 22
+#define SYS_WRITE 4
 #define SYS_SIGACTION 36
+#define SYS_IOCTL 72
+#define SYS_WRITEV 81
 #define SYS_WAIT4 139
 #define SYS_WAITID 288
 #define SYS_SIGPROCMASK 37
 #define SYS_RT_SIGRETURN 208
 #define SIG_SETMASK 2
+#define SNDCTL_DSP_SYNC 0x00005001u
 
 /* The kernel ABI deliberately keeps sigaction's transport record fixed at
  * 16 bytes: u32 table index, u32 flags, u64 mask.  musl's internal
@@ -522,14 +526,17 @@ restart_wait_syscall:
      * semantics (raise() doesn't return until signal handler completes). */
     delivered_flags = __deliver_pending_signal(get_channel_base());
 
-    /* wait4()/waitid() are host-deferred, so a caught signal completes the
-     * channel with EINTR in order to run its handler on this guest thread.
-     * SA_RESTART makes that interruption transparent: after the handler and
-     * mask restoration finish, submit the same wait operation again. Keep the
-     * retry list deliberately narrow; several other EINTR-returning calls have
-     * timeout/cancellation rules that forbid this generic treatment. */
+    /* Host-deferred waits and slow PCM output complete the channel with EINTR
+     * so the caught handler can run on this guest thread. SA_RESTART makes the
+     * interruption transparent for wait4()/waitid(), write()/writev(), and the
+     * one blocking OSS ioctl (SNDCTL_DSP_SYNC). Keep the retry list deliberately
+     * narrow: timed waits have different restart rules, and an interrupted
+     * final /dev/dsp close deliberately leaves its fd valid for an explicit
+     * caller retry. */
     if (err == EINTR && (delivered_flags & SA_RESTART) != 0 &&
-        (n == SYS_WAIT4 || n == SYS_WAITID)) {
+        (n == SYS_WAIT4 || n == SYS_WAITID ||
+         n == SYS_WRITE || n == SYS_WRITEV ||
+         (n == SYS_IOCTL && (uint32_t)a2 == SNDCTL_DSP_SYNC))) {
         /* __syscall_cp's outer cancellation check has not run yet. A signal
          * handler may have enabled a cancellation that was already pending,
          * or the host may have used this EINTR completion to wake a canceled

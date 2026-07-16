@@ -1,4 +1,9 @@
 import { defineConfig } from "tsup";
+import { copyFileSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   entry: [
@@ -19,4 +24,12 @@ export default defineConfig({
   clean: true,
   target: "es2022",
   splitting: false,
+  onSuccess: async () => {
+    const outputDir = resolve(here, "dist/audio");
+    mkdirSync(outputDir, { recursive: true });
+    copyFileSync(
+      resolve(here, "src/audio/pcm-audio-worklet.js"),
+      resolve(outputDir, "pcm-audio-worklet.js"),
+    );
+  },
 });
