@@ -15,6 +15,12 @@ url = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
 [build]
 script_path = "packages/registry/vim-browser-bundle/build-vim-browser-bundle.sh"
 
+[[host_tools]]
+name = "zip"
+version_constraint = ">=3.0"
+probe = { args = ["-v"], version_regex = "Zip (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
 [[outputs]]
 name = "vim"
 wasm = "vim.zip"

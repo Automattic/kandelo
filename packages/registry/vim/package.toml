@@ -2,7 +2,7 @@ kind = "program"
 name = "vim"
 version = "9.1.0900"
 kernel_abi = 7
-depends_on = []
+depends_on = ["ncurses@6.5"]
 
 [source]
 url = "https://github.com/vim/vim/archive/refs/tags/v9.1.0900.tar.gz"

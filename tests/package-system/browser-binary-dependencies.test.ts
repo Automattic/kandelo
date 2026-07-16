@@ -9,6 +9,7 @@ const browserRoot = join(repoRoot, "apps", "browser-demos");
 
 type ProgramOutputOwner = {
   packageName: string;
+  packageVersion: string;
   hasBuildToml: boolean;
 };
 
@@ -55,6 +56,12 @@ function parseArches(text: string): string[] {
   return [...match[1].matchAll(/"([^"]+)"/g)].map((arch) => arch[1]);
 }
 
+function parseDependsOn(text: string): string[] {
+  const match = text.match(/^\s*depends_on\s*=\s*\[([\s\S]*?)\]/m);
+  if (!match) return [];
+  return [...match[1].matchAll(/"([^"]+)"/g)].map((dep) => dep[1]);
+}
+
 function parseProgramOutputs(text: string): { name: string; wasm: string }[] {
   return text
     .split(/^\s*\[\[outputs\]\]\s*$/m)
@@ -82,7 +89,8 @@ function packageOutputOwners(): Map<string, ProgramOutputOwner> {
     if (firstTomlString(manifest, "kind") !== "program") continue;
 
     const packageName = firstTomlString(manifest, "name");
-    if (!packageName) continue;
+    const packageVersion = firstTomlString(manifest, "version");
+    if (!packageName || !packageVersion) continue;
 
     const outputs = parseProgramOutputs(manifest);
     if (outputs.length === 0) continue;
@@ -95,7 +103,7 @@ function packageOutputOwners(): Map<string, ProgramOutputOwner> {
             ? `${packageName}/${output.name}${outputExtension(output.wasm)}`
             : `${output.name}${outputExtension(output.wasm)}`;
         const rel = `programs/${arch}/${dest}`;
-        owners.set(rel, { packageName, hasBuildToml });
+        owners.set(rel, { packageName, packageVersion, hasBuildToml });
       }
     }
   }
@@ -164,5 +172,45 @@ describe("browser binary dependencies", () => {
 
     expect(missingOwners).toEqual([]);
     expect(unfetchableOwners).toEqual([]);
+  });
+
+  it("binds Vim consumers to the exact package artifacts they use", () => {
+    const owners = packageOutputOwners();
+    const vimBundle = owners.get("programs/wasm32/vim.zip");
+    expect(vimBundle).toBeDefined();
+
+    const shellManifest = readFileSync(
+      join(registryRoot, "shell", "package.toml"),
+      "utf8",
+    );
+    expect(parseDependsOn(shellManifest)).toContain(
+      `${vimBundle!.packageName}@${vimBundle!.packageVersion}`,
+    );
+
+    const vimPackageManifest = readFileSync(
+      join(registryRoot, "vim", "package.toml"),
+      "utf8",
+    );
+    const vimVersion = firstTomlString(vimPackageManifest, "version");
+    expect(vimVersion).not.toBeNull();
+
+    const vimBundleManifest = readFileSync(
+      join(registryRoot, vimBundle!.packageName, "package.toml"),
+      "utf8",
+    );
+    expect(parseDependsOn(vimBundleManifest)).toContain(
+      `vim@${vimVersion}`,
+    );
+
+    const ncursesManifest = readFileSync(
+      join(registryRoot, "ncurses", "package.toml"),
+      "utf8",
+    );
+    const ncursesVersion = firstTomlString(ncursesManifest, "version");
+    expect(ncursesVersion).not.toBeNull();
+
+    expect(parseDependsOn(vimPackageManifest)).toContain(
+      `ncurses@${ncursesVersion}`,
+    );
   });
 });
