@@ -980,7 +980,15 @@ pub mod process_memory {
     pub const FALLBACK_BRK_BASE: u32 = 0x0100_0000;
 
     /// Size of one fork save buffer in bytes.
-    pub const FORK_SAVE_BUFFER_SIZE: u32 = 16 * 1024;
+    ///
+    /// Raised from 16 KB after bash's `$(...)` fork pushed frames past 16 KB
+    /// into the adjacent syscall channel, trapping the child on rewind. The
+    /// buffer occupies the top of a dedicated 64 KB fork-save page, so it may
+    /// grow up to one page without moving any other region. Growth needs no
+    /// `ABI_VERSION` bump — instrumented binaries take the address at runtime
+    /// and never bake the size in (see `classify_process_memory_layout` in
+    /// `tools/xtask/src/dump_abi.rs`).
+    pub const FORK_SAVE_BUFFER_SIZE: u32 = 48 * 1024;
 
     /// Main-thread fork-save/scratch page, relative to `controlBasePage`.
     pub const MAIN_FORK_SAVE_PAGE: u32 = 0;

@@ -2197,7 +2197,7 @@
       "max_pages": 16384,
       "thread_slots": 1024
     },
-    "fork_save_buffer_size": 16384,
+    "fork_save_buffer_size": 49152,
     "legacy": {
       "fallback_brk_base": 16777216,
       "mmap_base": 67108864

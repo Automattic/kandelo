@@ -75,6 +75,7 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
    *   - multi-arch binary package (`bravo` — `arches = ["wasm32", "wasm64"]`)
    *   - another multi-arch package (`charlie` — catches repeated arch parsing)
    *   - package without build.toml (`delta` — must skip)
+   *   - kind=source package WITH build.toml (`sourcepkg` — must skip by kind)
    *   - stray dir without package.toml (`stray/` — must skip silently)
    *
    * The fake cargo logs every invocation but does no work — it's
@@ -191,6 +192,31 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
       ].join("\n"),
     );
 
+    // sourcepkg: kind=source WITH a build.toml (mirrors
+    // wayland-protocols, which carries build.toml only for its
+    // `inputs` cache-key list). The build.toml check below would
+    // treat it as publishable, so it must be skipped by kind first —
+    // a source package can never resolve under --fetch-only.
+    mkdirSync(path.join(registry, "sourcepkg"), { recursive: true });
+    writeFileSync(
+      path.join(registry, "sourcepkg", "package.toml"),
+      [
+        `kind = "source"`,
+        `name = "sourcepkg"`,
+        `version = "0.5.0"`,
+        `revision = 1`,
+        ``,
+        `[source]`,
+        `url = "https://example.test/sourcepkg.tar.gz"`,
+        `sha256 = "${"0".repeat(64)}"`,
+        ``,
+        `[license]`,
+        `spdx = "MIT"`,
+        ``,
+      ].join("\n"),
+    );
+    writeFileSync(path.join(registry, "sourcepkg", "build.toml"), `revision = 1\n`);
+
     // stray: dir without package.toml. Must be skipped silently
     // (no error, no "missing" warning).
     mkdirSync(path.join(registry, "stray"), { recursive: true });
@@ -278,6 +304,10 @@ exit 0
     const deltaLines = logLines(/build-deps.*resolve\s+delta\b/);
     expect(deltaLines.length).toBe(0);
 
+    // sourcepkg: kind=source (despite a build.toml) → no invocation.
+    const sourceLines = logLines(/build-deps.*resolve\s+sourcepkg\b/);
+    expect(sourceLines.length).toBe(0);
+
     // Regression gate: the old install-release codepath was deleted in
     // Phase C Task 6. This assertion ensures it doesn't quietly come
     // back as a fallback under any code path — that dead code must
@@ -286,9 +316,9 @@ exit 0
     expect(installLines.length).toBe(0);
 
     // Summary prints resolved=5 (alpha ×1 + bravo ×2 + charlie ×2),
-    // skipped=1 (delta). The stray dir without package.toml is
-    // silently ignored (counted as neither resolved nor skipped).
-    expect(stdout).toMatch(/resolved=5\s+total=5\s+skipped=1/);
+    // skipped=2 (delta + sourcepkg). The stray dir without
+    // package.toml is silently ignored (neither resolved nor skipped).
+    expect(stdout).toMatch(/resolved=5\s+total=5\s+skipped=2/);
   });
 
   it("--allow-stale resolves the same packages as the default (banner printed)", () => {
@@ -320,6 +350,22 @@ exit 0
     expect(bravoLines.every((l) => /--fetch-only/.test(l))).toBe(true);
 
     expect(stdout).toMatch(/--fetch-only enabled/);
+  });
+
+  it("skips kind=source packages under --fetch-only even with a build.toml", () => {
+    // Regression gate for test-gate-prepare's "Materialize binaries"
+    // step: it runs with --fetch-only, which forbids source builds.
+    // wayland-protocols is kind=source yet carries a build.toml (for
+    // its inputs cache-key), so a build.toml-only skip test would let
+    // it through and the --fetch-only resolve would fail the run. The
+    // skip must key off `kind = "source"`, not build.toml presence.
+    const { status, stdout, stderr } = runScript(["--fetch-only"]);
+    expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
+
+    // Never resolved — the guard fires before the arch loop.
+    expect(logLines(/build-deps.*resolve\s+sourcepkg\b/).length).toBe(0);
+    // Reported as a kind=source skip so CI logs explain the omission.
+    expect(stdout).toMatch(/skip sourcepkg \(kind=source\)/);
   });
 
   it("--allow-stale degrades per-package failures to warnings (exit 0)", () => {
