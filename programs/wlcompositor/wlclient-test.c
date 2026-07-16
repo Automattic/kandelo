@@ -61,6 +61,7 @@ struct client {
     uint32_t key_code, key_state;
     int got_button;     /* wl_pointer.button arrived */
     uint32_t btn_code, btn_state;
+    int closed;         /* compositor sent xdg_toplevel.close (killactive) */
 };
 
 /* ---- registry ---------------------------------------------------------- */
@@ -124,7 +125,9 @@ static const struct xdg_surface_listener xdg_surface_listener = {
 
 static void toplevel_configure(void *data, struct xdg_toplevel *t, int32_t w,
                                int32_t h, struct wl_array *states) {}
-static void toplevel_close(void *data, struct xdg_toplevel *t) {}
+static void toplevel_close(void *data, struct xdg_toplevel *t) {
+    ((struct client *)data)->closed = 1;
+}
 static const struct xdg_toplevel_listener toplevel_listener = {
     .configure = toplevel_configure,
     .close = toplevel_close,
@@ -349,9 +352,17 @@ int main(void) {
     fflush(stdout);
 
     /* Receive one host-injected key and one pointer button, forwarded by
-     * the compositor from libinput. */
-    while (!(c.got_key && c.got_button))
+     * the compositor from libinput — or exit if the compositor closes us
+     * (SUPER+W killactive). */
+    while (!(c.got_key && c.got_button) && !c.closed)
         if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
+
+    if (c.closed) {
+        printf("CLIENT_CLOSED\n");
+        fflush(stdout);
+        wl_display_disconnect(display);
+        return 0;
+    }
 
     if (!c.got_keymap) {
         fprintf(stderr, "never received a valid xkb keymap\n");

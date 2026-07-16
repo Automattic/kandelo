@@ -137,7 +137,6 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 /* Modifier bits used by the keybind engine (mapped from xkb mod state). */
 #define MOD_SUPER 1
 #define MOD_SHIFT 2
-#define MOD_CTRL  4
 
 enum bind_action {
     ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
@@ -427,11 +426,9 @@ struct geom { int x, y, w, h; };
 #define TILE_GAP_OUTER 12
 #define TILE_GAP_INNER 8
 
-/* Pure dwindle tiler: partition `area` among `n` windows, recursively
- * splitting the remaining region along its LONGER side (Hyprland's default).
- * Window i takes the near half of the i-th split; the last window takes the
- * final remainder. It reads nothing but its arguments, so the smoke gate can
- * predict the exact partition and compare against the emitted geometry. */
+/* Pure dwindle tiler: at each step split the remaining region along its LONGER
+ * side (Hyprland's default). Pure — reads only its arguments — so the smoke
+ * gate predicts the exact partition and checks it against the emitted geometry. */
 static void compute_tiling(struct geom area, int n, struct geom *out) {
     if (n <= 0) return;
     area.x += TILE_GAP_OUTER;
@@ -487,9 +484,8 @@ static void retile(void) {
         s->w = geoms[i].w;
         s->h = geoms[i].h;
         s->placed = 1;
-        /* Dictate the tile size to the client. The states array carries only
-         * ACTIVATED for now; TILED_* awaits the xdg-shell v2 bump that lands
-         * with server-side decoration (PR14e). */
+        /* The states array carries only ACTIVATED for now; TILED_* awaits an
+         * xdg-shell v2 bump. */
         if (s->xdg_toplevel && s->xdg_surface) {
             struct wl_array states;
             wl_array_init(&states);
@@ -2032,8 +2028,6 @@ static uint32_t active_mod_mask(void) {
                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SUPER;
     if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_SHIFT,
                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SHIFT;
-    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_CTRL,
-                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_CTRL;
     return m;
 }
 
@@ -2130,8 +2124,6 @@ static int parse_mods(char *s, uint32_t *out) {
     for (char *tok = strtok(s, " +"); tok; tok = strtok(NULL, " +")) {
         if (!strcasecmp(tok, "SUPER") || !strcasecmp(tok, "MOD4")) m |= MOD_SUPER;
         else if (!strcasecmp(tok, "SHIFT")) m |= MOD_SHIFT;
-        else if (!strcasecmp(tok, "CTRL") || !strcasecmp(tok, "CONTROL"))
-            m |= MOD_CTRL;
         else return -1;
     }
     *out = m;
@@ -2822,13 +2814,6 @@ static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
             kwlctl_send(c->fd, "err unknown dispatch\n", 21);
             return 0;
         }
-        kwlctl_send(c->fd, "ok\n", 3);
-        return 0;
-    }
-    if (strncmp(line, "keyword layout ", 15) == 0) {
-        g.layout = strcmp(line + 15, "dwindle") == 0 ? LAYOUT_DWINDLE
-                                                     : LAYOUT_FLOATING;
-        retile();
         kwlctl_send(c->fd, "ok\n", 3);
         return 0;
     }
