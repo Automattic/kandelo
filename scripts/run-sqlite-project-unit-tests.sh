@@ -310,7 +310,14 @@ with report.open("w", encoding="utf-8") as f:
         )
     f.write("\n## Artifacts\n\n")
     for host, _status in hosts:
-        f.write(f"- `{host}`: `{results_root / host}`\n")
+        host_dir = results_root / host
+        f.write(f"- `{host}`: `{host_dir}`\n")
+        f.write(f"  - `summary.txt`: `{host_dir / 'summary.txt'}`\n")
+        f.write(f"  - `failures.tsv`: `{host_dir / 'failures.tsv'}`\n")
+        f.write(f"  - `passed-jobs.tsv`: `{host_dir / 'outcome-lists' / 'passed-jobs.tsv'}`\n")
+        f.write(f"  - `failed-jobs.tsv`: `{host_dir / 'outcome-lists' / 'failed-jobs.tsv'}`\n")
+        f.write(f"  - `skipped-jobs.tsv`: `{host_dir / 'outcome-lists' / 'skipped-jobs.tsv'}`\n")
+        f.write(f"  - `incomplete-jobs.tsv`: `{host_dir / 'outcome-lists' / 'incomplete-jobs.tsv'}`\n")
     f.write("\n")
 
 print(f"===== Combined SQLite project unit test summary: {report} =====")
