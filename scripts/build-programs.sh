@@ -735,6 +735,7 @@ if [ -d "$LIBKWL_DIR/src" ]; then
         "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
             "$REPO_ROOT/programs/$kwl_app.c" \
             "$KWL_GEN/xdg-shell-protocol.c" \
+            "$KWL_GEN/xdg-decoration-v1-protocol.c" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libkwl.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
@@ -767,6 +768,7 @@ if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1; then
         "$REPO_ROOT/programs/wlterm/wlterm.c" \
         "$REPO_ROOT/programs/wlterm/vt100.c" \
         "$KWL_GEN/xdg-shell-protocol.c" \
+        "$KWL_GEN/xdg-decoration-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libkwl.a" \
         "$SYSROOT/lib/libwpkdraw.a" \

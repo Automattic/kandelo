@@ -40,6 +40,7 @@ const KEY_W = 17;
 const KEY_J = 36;
 const KEY_K = 37;
 const KEY_LEFTMETA = 125; // SUPER
+const KEY_LEFTCTRL = 29; // CTRL
 
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -198,6 +199,70 @@ describe("wlcompositor — config-file keybind engine", () => {
         tap(KEY_5);
         await waitFor(out, "workspace>>7", 10_000, dump);
         expect(out.value).not.toContain("workspace>>5");
+
+        void compExit;
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  // A browser reserves SUPER (Cmd/Win), so the demo also binds CTRL; this
+  // gates that the bind engine matches the CTRL modifier. The key is a LETTER
+  // on purpose: xkb_keysym_from_name("W") resolves to the uppercase keysym,
+  // but binds are matched against the lowercase base-level keysym, so without
+  // the parse-time fold `bind = CTRL, W` silently never fires (a digit bind
+  // has no case and wouldn't catch the regression).
+  it.skipIf(!hasBinaries)(
+    "a CTRL + letter bind fires (the browser-usable modifier, case-folded)",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const clientBytes = loadBytes(clientBin!);
+      const kwlctlBytes = loadBytes(kwlctlBin!);
+
+      const dir = mkdtempSync(join(tmpdir(), "wlc-conf-"));
+      const confPath = join(dir, "wlcompositor.conf");
+      writeFileSync(confPath, "bind = CTRL, W, workspace, 4\n");
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      const tapCtrl = (code: number) => {
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, code, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, code, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+      };
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
+          env: ["WLC_LAYOUT=dwindle", `WLC_CONFIG=${confPath}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+        expect(out.value, `config not parsed.\n${dump()}`)
+          .toContain(`BINDS_LOADED n=1 source=${confPath}`);
+
+        host.spawn(clientBytes, ["wlclient-test"], {});
+        await waitFor(out, "CLIENT_CONNECTED count=1", 20_000, dump);
+
+        host.spawn(kwlctlBytes, ["kwlctl", "--listen"], {});
+        await waitFor(out, "listening", 10_000, dump);
+
+        tapCtrl(KEY_W);
+        await waitFor(out, "workspace>>4", 10_000, dump);
 
         void compExit;
       } finally {
