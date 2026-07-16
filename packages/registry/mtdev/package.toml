@@ -1,0 +1,45 @@
+# Per-library manifest for mtdev. See docs/package-management.md.
+#
+# This is a libinput-SCOPED STUB of the mtdev API, NOT a vendored
+# upstream mtdev. libinput's evdev backend unconditionally
+# `#include <mtdev-plumbing.h>` and links the `mtdev_*` symbols, but the
+# runtime calls are gated behind `evdev_need_mtdev()`, which is true only
+# for legacy multitouch protocol-A devices. The kernel's virtual devices
+# are single-touch pointer + keyboard (no MT protocol at all), so
+# `evdev_need_mtdev()` is always false and no `mtdev_*` function is ever
+# invoked at runtime — the symbols exist purely to satisfy the link.
+#
+# So we ship a stub providing `struct mtdev` (opaque to libinput, which
+# only holds the pointer) and the linked entry points, each of which
+# aborts if ever called — a called stub means the "never needed for our
+# devices" invariant broke and must be diagnosed, not silently ignored.
+# See docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b) and
+# include/mtdev-plumbing.h for the full rationale. This mirrors the
+# libffi Wayland-scoped-shim precedent (packages/registry/libffi/).
+#
+# No upstream source is fetched; the build script compiles the bundled
+# `src/mtdev_stub.c` directly. The `[source]` block carries a sentinel
+# URL + zero sha so the manifest schema parses but no remote fetch is
+# attempted (matches the libffi / libinput-lite in-tree-only convention).
+
+kind = "library"
+
+name = "mtdev"
+version = "0.1.0"
+kernel_abi = 16
+depends_on = []
+
+[source]
+url = "https://example.invalid/mtdev-stub-0.1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/Automattic/kandelo/blob/main/packages/registry/mtdev/build-mtdev.sh"
+
+[build]
+script_path = "packages/registry/mtdev/build-mtdev.sh"
+
+[outputs]
+libs = ["lib/libmtdev.a"]
+headers = ["include/mtdev.h", "include/mtdev-plumbing.h"]

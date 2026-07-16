@@ -1,0 +1,57 @@
+# Per-package manifest for wayland-protocols. See docs/package-management.md
+# ("Source-kind manifests").
+#
+# This is a `kind = "source"` package: it provides the Wayland protocol
+# XML definitions that `wayland-scanner` (a host build tool, provided via
+# flake.nix) turns into C marshalling glue. It builds no wasm artifact of
+# its own — the generated glue is compiled by each *consumer* (libwayland
+# in PR3, the compositor and clients in PR6+) against the wasm sysroot.
+#
+# The XML files are VENDORED in-tree under `xml/` rather than fetched,
+# for three reasons:
+#   1. Darwin/Linux parity — the core `wayland.xml` ships only inside the
+#      Linux-only `wayland` library, which cannot even evaluate on macOS
+#      (`meta.badPlatforms` includes darwin). Vendoring gives both hosts
+#      identical inputs.
+#   2. Explicit ABI pin — the generated wire glue's opcodes and
+#      `wl_interface`/`wl_message` tables are frozen by these exact files.
+#      Vendoring makes the pin reviewable and independent of nixpkgs bumps.
+#   3. Simple dep wiring — consumers list `wayland-protocols` in
+#      `depends_on` and read `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/`.
+#
+# VERSION PIN (must stay coherent with the host `wayland-scanner` and the
+# eventual `libwayland` port in PR3):
+#   - xml/wayland.xml   — wayland 1.24.0 (core protocol)
+#   - xml/xdg-shell.xml — wayland-protocols 1.45 (stable/xdg-shell)
+#   - host wayland-scanner — 1.24.0 (flake.nix, nixpkgs-25.11)
+# PR3's libwayland MUST pin wayland 1.24.0 so its runtime matches the
+# glue generated from this wayland.xml. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §3.
+#
+# The `[source]` block carries a sentinel URL + zero sha so the manifest
+# schema parses; the `[build]` script stages the vendored `xml/` into the
+# cache instead of fetching (matches the libffi / libinput-lite
+# in-tree-only convention).
+
+kind = "source"
+
+name = "wayland-protocols"
+version = "1.45"
+# Required because this source package declares a [build] script (the
+# resolver enforces it for script-override sources). The XML is
+# arch-agnostic, but kernel_abi must track ABI_VERSION in
+# crates/shared/src/lib.rs.
+kernel_abi = 16
+depends_on = []
+
+[source]
+url = "https://example.invalid/wayland-protocols-1.45.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+# Both wayland.xml (Kristian Høgsberg / Intel) and xdg-shell.xml are MIT.
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/1.45/COPYING"
+
+[build]
+script_path = "packages/registry/wayland-protocols/build-wayland-protocols.sh"

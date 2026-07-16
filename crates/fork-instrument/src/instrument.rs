@@ -2484,7 +2484,15 @@ fn populate_preamble_then(
 ) {
     let s = &mut local.block_mut(preamble_then).instrs;
 
-    // frame_ptr = *(buf + 0) - frame_size
+    // current_pos (*(buf + 0)) is a buffer-relative *offset*, not an
+    // absolute address. Pop this frame's offset, write it back as the
+    // new current_pos, then convert it to an absolute memory address
+    // (`_wpk_fork_buf + offset`) for the frame loads below. Omitting the
+    // `+ _wpk_fork_buf` here writes/reads frames at absolute low memory
+    // instead of inside the save buffer — it only "works" while that low
+    // memory is unused scratch, and corrupts live data otherwise.
+    //
+    // new_off = *(buf + 0) - frame_size
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
@@ -2496,7 +2504,7 @@ fn populate_preamble_then(
     push_instr(s, Instr::Binop(Binop { op: ptr_sub(ptr_ty) }));
     push_instr(s, Instr::LocalSet(LocalSet { local: frame_ptr_local }));
 
-    // *(buf + 0) = frame_ptr
+    // *(buf + 0) = new_off   (current_pos stays a buffer-relative offset)
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
@@ -2505,6 +2513,17 @@ fn populate_preamble_then(
     );
     push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
     push_instr(s, store_ptr(memory, ptr_ty, 0));
+
+    // frame_ptr = _wpk_fork_buf + new_off   (absolute address)
+    push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
+    push_instr(
+        s,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.buf_global,
+        }),
+    );
+    push_instr(s, Instr::Binop(Binop { op: ptr_add(ptr_ty) }));
+    push_instr(s, Instr::LocalSet(LocalSet { local: frame_ptr_local }));
 
     // call_idx_local = *(frame_ptr + CALL_INDEX_OFFSET)
     push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
@@ -2570,7 +2589,9 @@ fn populate_postamble(
     func_ordinal: u32,
     result_types: &[ValType],
 ) {
-    // frame_ptr = *(buf + 0)
+    // frame_ptr = _wpk_fork_buf + *(buf + 0). current_pos (*(buf + 0)) is
+    // a buffer-relative offset; the frame stores below need an absolute
+    // memory address. (See the matching comment in populate_preamble_then.)
     push_instr(
         out,
         Instr::GlobalGet(GlobalGet {
@@ -2578,6 +2599,13 @@ fn populate_postamble(
         }),
     );
     push_instr(out, load_ptr(memory, ptr_ty, 0));
+    push_instr(
+        out,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.buf_global,
+        }),
+    );
+    push_instr(out, Instr::Binop(Binop { op: ptr_add(ptr_ty) }));
     push_instr(
         out,
         Instr::LocalSet(LocalSet {
@@ -2672,7 +2700,9 @@ fn populate_postamble(
         push_instr(out, Instr::TableSet(TableSet { table }));
     }
 
-    // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
+    // Advance current_pos in offset space: *(buf + 0) = *(buf + 0) +
+    // frame_size. frame_ptr_local is now an absolute address, so it can
+    // no longer be reused here — reload the offset from the header.
     push_instr(
         out,
         Instr::GlobalGet(GlobalGet {
@@ -2681,10 +2711,11 @@ fn populate_postamble(
     );
     push_instr(
         out,
-        Instr::LocalGet(LocalGet {
-            local: frame_ptr_local,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.buf_global,
         }),
     );
+    push_instr(out, load_ptr(memory, ptr_ty, 0));
     push_instr(out, ptr_const(ptr_ty, frame_size as i64));
     push_instr(out, Instr::Binop(Binop { op: ptr_add(ptr_ty) }));
     push_instr(out, store_ptr(memory, ptr_ty, 0));

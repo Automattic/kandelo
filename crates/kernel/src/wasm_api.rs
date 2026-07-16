@@ -189,6 +189,7 @@ unsafe extern "C" {
         in_ptr: *const u8, in_len: usize,
         out_ptr: *mut u8, out_len: usize,
     ) -> i32;
+    fn host_gl_bind_foreign_texture(pid: i32, ctx_id: u32, bo_id: u32, gl_target: u32) -> i32;
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
     fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
@@ -298,6 +299,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_fstat(handle, stat_ptr) };
@@ -321,6 +323,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_stat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -344,6 +347,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -991,6 +995,16 @@ impl HostIO for WasmHostIO {
                 out.as_mut_ptr(), out.len(),
             )
         }
+    }
+
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
+        unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
     }
 
     fn kms_set_master(&mut self, pid: i32) {
@@ -4807,17 +4821,13 @@ pub extern "C" fn kernel_epoll_create1(flags: u32) -> i32 {
 pub extern "C" fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
 
-    // Read epoll_event struct from memory: { events: u32, data: u64 }
-    // On wasm32 without packing, u64 may be at offset 4 or 8 depending on alignment.
-    // musl's epoll_event on non-x86_64: events at offset 0 (4B), data at offset 4 (8B) = 12B total.
-    // But wasm32 aligns u64 to 8 bytes, so it's likely: events at 0, pad at 4, data at 8 = 16B.
-    // We'll try reading from offset 4 (packed) since musl doesn't use __packed__ on non-x86_64.
-    // Actually, for epoll_data_t which is a union, the alignment depends on the platform.
-    // On wasm32, the union has 4-byte alignment if the ABI is ILP32, making epoll_event 12 bytes.
+    // musl's `struct epoll_event` is `__packed__` only on x86_64; on wasm32 it
+    // is unpacked, so the 8-byte data union is 8-aligned: events@0, pad@4,
+    // data@8 = 16B. Reading data at offset 4 desyncs multi-event results.
     let (events, data) = if !event_ptr.is_null() {
         unsafe {
             let events = core::ptr::read_unaligned(event_ptr as *const u32);
-            let data = core::ptr::read_unaligned(event_ptr.add(4) as *const u64);
+            let data = core::ptr::read_unaligned(event_ptr.add(8) as *const u64);
             (events, data)
         }
     } else {
@@ -4856,13 +4866,13 @@ pub extern "C" fn kernel_epoll_pwait(
     let result = match syscalls::sys_epoll_pwait(proc, &mut host, epfd, maxevents, timeout, sigmask)
     {
         Ok((count, events)) => {
-            // Write events to output buffer
-            // Each epoll_event: { events: u32, data: u64 } = 12 bytes (packed on wasm32)
+            // 16-byte stride, data@8 — the wasm32 layout (see kernel_epoll_ctl).
+            // A 12-byte stride desyncs every event from i>=1 onward.
             for (i, (ev, data)) in events.iter().enumerate() {
-                let offset = i * 12;
+                let offset = i * 16;
                 unsafe {
                     core::ptr::write_unaligned(events_ptr.add(offset) as *mut u32, *ev);
-                    core::ptr::write_unaligned(events_ptr.add(offset + 4) as *mut u64, *data);
+                    core::ptr::write_unaligned(events_ptr.add(offset + 8) as *mut u64, *data);
                 }
             }
             count
@@ -6283,6 +6293,7 @@ fn extract_scm_rights(
                             offset: ofd.offset,
                             path: ofd.path.clone(),
                             socket: None,
+                            prime_bo: ofd.prime_bo().cloned(),
                         };
 
                         // For socket FDs, serialize socket state
@@ -6543,6 +6554,17 @@ fn install_scm_rights_fds(
                     ofd.offset = entry.offset;
                 }
                 if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
+                    // Take a bo refcount for the receiver's new fd; its close
+                    // drops it (dri_release_ofd_state). Balanced by the
+                    // sender's own reference keeping the bo alive across the hop.
+                    if let Some(pb) = entry.prime_bo.clone() {
+                        crate::dri::with_registry(|r| r.incref(pb.bo_id));
+                        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                            ofd.dri_state = Some(alloc::boxed::Box::new(
+                                crate::ofd::DriOfdState::PrimeBo(pb),
+                            ));
+                        }
+                    }
                     new_fds.push(new_fd);
                 }
             }
@@ -7444,6 +7466,38 @@ pub extern "C" fn kernel_getsockopt(
                 };
                 let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
                 out.copy_from_slice(&info_buf[..write_len]);
+                if !optlen_ptr.is_null() {
+                    unsafe {
+                        *optlen_ptr = write_len as u32;
+                    }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle struct ucred { pid_t pid; uid_t uid; gid_t gid; } (SO_PEERCRED).
+    // 12 bytes, three little-endian u32s. libwayland's wl_client_create fails
+    // outright if this errors, so every accepted Wayland client depends on it.
+    if level == SOL_SOCKET && optname == SO_PEERCRED {
+        let result = match syscalls::sys_getsockopt_peercred(proc, fd) {
+            Ok((pid, uid, gid)) => {
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    12
+                };
+                let write_len = avail.min(12);
+                let ucred = [pid, uid, gid];
+                let bytes: &[u8] = unsafe {
+                    slice::from_raw_parts(ucred.as_ptr() as *const u8, 12)
+                };
+                let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                out.copy_from_slice(&bytes[..write_len]);
                 if !optlen_ptr.is_null() {
                     unsafe {
                         *optlen_ptr = write_len as u32;

@@ -1063,12 +1063,23 @@ export class BrowserKernel {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
     this.sendToKernel(
       { type: "kms_attach_canvas", crtcId, canvas, stats, opts },
       [canvas],
     );
+  }
+
+  /**
+   * Report the CRTC canvas's current display size in device pixels.
+   * Feeds the virtual connector's PREFERRED mode and the vblank pump's
+   * `webgl2-scanout` presenter, which resizes the drawing buffer and
+   * GPU-scales the scanout into it. Feed from a ResizeObserver on the
+   * placeholder canvas element.
+   */
+  kmsSetDisplaySize(crtcId: number, width: number, height: number): void {
+    this.sendToKernel({ type: "kms_set_display_size", crtcId, width, height });
   }
 
   /**

@@ -25,6 +25,9 @@ pub struct InFlightFd {
     pub path: Vec<u8>,
     /// For socket FDs: serialized socket state.
     pub socket: Option<InFlightSocket>,
+    /// For DRM prime-bo FDs: the bo sidecar, without which the fd arrives as a
+    /// plain CharDevice and the receiver's `PRIME_FD_TO_HANDLE` import fails.
+    pub prime_bo: Option<crate::ofd::PrimeBoState>,
 }
 
 /// Serialized socket state for SCM_RIGHTS FD passing.

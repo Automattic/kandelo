@@ -26,6 +26,7 @@ import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
+import { bindForeignTexture } from "./webgl/foreign-texture";
 import { STRUCT_SIZE_WASM_DIRENT, STRUCT_SIZE_WASM_STAT } from "./generated/abi";
 import { detectPtrWidth } from "./constants";
 
@@ -151,6 +152,21 @@ export interface KernelCallbacks {
    * for canvases now painted directly by WebGL2. Idempotent.
    */
   markKmsCanvasGlOwned?: (crtcId: number) => void;
+  /**
+   * Inverse of `markKmsCanvasGlOwned`: the GL session that claimed the
+   * canvas is gone (context destroyed or renderD128 session terminated),
+   * so the pump presenter should resume in its pre-claim mode. Fired on
+   * a GPU compositor's runtime degrade to its CPU path. Idempotent.
+   */
+  markKmsCanvasGlReleased?: (crtcId: number) => void;
+  /**
+   * Embedder-reported display size (device pixels) for the KMS scanout,
+   * if one has been registered via `setKmsDisplaySize`. Used by
+   * `host_kms_mode_info` to advertise a connector mode matching the
+   * display's aspect ratio, so mode-picking clients fill the pane
+   * without letterboxing. `undefined` → the 1920x1080 default.
+   */
+  getKmsDisplaySize?: () => { width: number; height: number } | undefined;
 }
 
 export class WasmPosixKernel {
@@ -242,6 +258,19 @@ export class WasmPosixKernel {
       throw new Error(`invalid kernel pointer ${String(value)}`);
     }
     return this.kernelPtrWidth === 8 ? BigInt(numberValue) : numberValue;
+  }
+
+  /** Hand a GL-claimed KMS canvas back to the vblank pump. Fired from
+   *  context destruction and renderD128 session teardown so a GPU
+   *  compositor that degrades to its CPU path (or exits) doesn't leave
+   *  the canvas frozen on its last GL frame. */
+  private releaseClaimedKmsCanvas(pid: number): void {
+    const b = this.gl.get(pid);
+    if (!b || b.claimedKmsCrtc == null) return;
+    const crtc = b.claimedKmsCrtc;
+    b.claimedKmsCrtc = null;
+    b.canvas = null;
+    this.callbacks.markKmsCanvasGlReleased?.(crtc);
   }
 
   private createKernelMemory(): WebAssembly.Memory {
@@ -853,6 +882,10 @@ export class WasmPosixKernel {
           return 0;
         },
         host_gbm_bo_destroy: (pid: number, bo_id: number): void => {
+          // The bo owns any foreign textures bound from it (see shared's
+          // BIND_FOREIGN_TEXTURE doc) — drop them across all GL bindings
+          // before the pixel SAB goes away.
+          this.gl.dropForeignTexturesForBo(bo_id);
           this.bos.destroy(pid, bo_id);
         },
         host_gbm_bo_bind: (
@@ -885,6 +918,7 @@ export class WasmPosixKernel {
           });
         },
         host_gl_unbind: (pid: number): void => {
+          this.releaseClaimedKmsCanvas(pid);
           this.gl.unbind(pid);
         },
         host_gl_create_context: (
@@ -898,6 +932,7 @@ export class WasmPosixKernel {
             b.forward.onCreateContext();
             return;
           }
+          let claimedCrtc: number | null = null;
           if (!b.canvas) {
             // Auto-attach the KMS scanout canvas if this pid holds DRM
             // master on a CRTC the embedder has registered with
@@ -935,7 +970,7 @@ export class WasmPosixKernel {
                 }
                 this.gl.attachCanvas(pid, canvas);
                 b.canvas = canvas;
-                this.callbacks.markKmsCanvasGlOwned?.(crtc);
+                claimedCrtc = crtc;
               }
             }
             if (!b.canvas) return;
@@ -966,8 +1001,18 @@ export class WasmPosixKernel {
             b.shadow.viewport = [0, 0, b.canvas.width, b.canvas.height];
           }
           b.gl = ctx;
+          // Only hand the CRTC canvas over (pump presenter stands down,
+          // mode flips to "webgl2") once the context actually exists —
+          // marking on a failed acquisition would silence the pump's
+          // webgl2-scanout/2d presenter while the program has no way to
+          // paint either, leaving a black canvas.
+          if (ctx && claimedCrtc != null) {
+            b.claimedKmsCrtc = claimedCrtc;
+            this.callbacks.markKmsCanvasGlOwned?.(claimedCrtc);
+          }
         },
         host_gl_destroy_context: (pid: number, _ctxId: number): void => {
+          this.releaseClaimedKmsCanvas(pid);
           const b = this.gl.get(pid);
           if (!b) return;
           b.gl = null;
@@ -977,10 +1022,28 @@ export class WasmPosixKernel {
         },
         host_gl_create_surface: (
           pid: number, surfaceId: number,
-          _attrsPtr: bigint, _attrsLen: bigint,
+          attrsPtr: bigint, attrsLen: bigint,
         ): void => {
           const b = this.gl.get(pid);
-          if (b) b.surfaceId = surfaceId;
+          if (!b) return;
+          b.surfaceId = surfaceId;
+          // GlSurfaceAttrs: u32 kind, width, height, config_id, …
+          // Non-zero width/height is an explicit drawing-buffer size
+          // request (libEGL forwards EGL_WIDTH/EGL_HEIGHT window-surface
+          // attribs). A KMS compositor creates its surface before its
+          // first ADDFB, when the create-context fb-resize has nothing
+          // to size against — and the canvas may still carry the pump
+          // presenter's display-sized drawing buffer.
+          if (b.canvas && attrsLen >= 12n) {
+            const attrs = this.readKernelBytes(Number(attrsPtr), 12);
+            const dv = new DataView(attrs.buffer, attrs.byteOffset, 12);
+            const w = dv.getUint32(4, true);
+            const h = dv.getUint32(8, true);
+            if (w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
+              b.canvas.width = w;
+              b.canvas.height = h;
+            }
+          }
         },
         host_gl_destroy_surface: (pid: number, _surfaceId: number): void => {
           const b = this.gl.get(pid);
@@ -1056,6 +1119,25 @@ export class WasmPosixKernel {
           }
           return written;
         },
+        // DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: upload a CPU-tier bo's
+        // pixels (canonical storage: the DRI registry SAB) into a
+        // WebGLTexture in `pid`'s context. Returns the stable guest-
+        // visible texture id, or negative errno — the kernel surfaces
+        // any failure as EIO and callers degrade to their CPU path.
+        host_gl_bind_foreign_texture: (
+          pid: number, ctxId: number, boId: number, glTarget: number,
+        ): number => {
+          const b = this.gl.get(pid);
+          if (!b || !b.gl || b.contextId !== ctxId) return -5;  // EIO
+          if (glTarget !== 0x0de1) return -22;                  // EINVAL: TEXTURE_2D only
+          const dims = this.bos.dims(boId);
+          const bytes = this.bos.pixelView(boId);
+          if (!dims || !bytes) return -2;                       // ENOENT
+          // The SAB is bind-boundary-synced; pull the producer's live
+          // mapping in first so the texture sees its latest commit.
+          this.bos.syncCreatorToSab(boId);
+          return bindForeignTexture(b, boId, bytes, dims);
+        },
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
         host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
         host_proc_write_bytes: (
@@ -1095,7 +1177,10 @@ export class WasmPosixKernel {
         host_kms_mode_info: (connector_id: number, out_ptr: bigint): void => {
           this.writeKernelBytes(
             Number(out_ptr),
-            buildVirtualConnectorMode(connector_id),
+            buildVirtualConnectorMode(
+              connector_id,
+              this.callbacks.getKmsDisplaySize?.(),
+            ),
           );
         },
         host_kms_addfb: (

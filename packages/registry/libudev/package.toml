@@ -1,0 +1,52 @@
+# Per-library manifest for libudev. See docs/package-management.md.
+#
+# This is a libinput-SCOPED SHIM of the libudev API, NOT a vendored
+# upstream libudev (which is part of systemd and unbuildable on this
+# kernel — no /sys, no netlink uevent socket, no udevd). libinput can run
+# in two modes: a udev-seat backend that enumerates devices off a live
+# udevd, and a PATH backend where the caller hands it device nodes
+# explicitly (`libinput_path_add_device("/dev/input/event0")`). We use
+# the PATH backend, so the udev enumeration machinery is never exercised.
+#
+# BUT libinput's evdev core still funnels every device through a
+# `struct udev_device` and — critically — refuses to configure a device
+# unless `udev_device_get_property_value(dev, "ID_INPUT")` (and the
+# ID_INPUT_KEYBOARD / ID_INPUT_MOUSE / … class tags) are set. On a real
+# system those tags are written by udev's `input_id` builtin from the
+# device's evdev capability bits. So the load-bearing part of this shim
+# is NOT the object plumbing — it is reimplementing that `input_id`
+# classification: open the devnode, EVIOCGBIT/EVIOCGPROP-probe its
+# EV_/KEY_/REL_/ABS_/INPUT_PROP_ bits, and synthesize the ID_INPUT_*
+# properties. Every other property lookup returns NULL, parent lookups
+# return NULL, and `udev_device_get_is_initialized` returns true — none
+# of which libinput's path backend depends on. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b) and
+# include/libudev.h for the full rationale. Mirrors the libffi
+# Wayland-scoped-shim precedent (packages/registry/libffi/).
+#
+# No upstream source is fetched; the build script compiles the bundled
+# `src/libudev_shim.c` directly. The `[source]` block carries a sentinel
+# URL + zero sha so the manifest schema parses but no remote fetch is
+# attempted (matches the libffi / libinput-lite in-tree-only convention).
+
+kind = "library"
+
+name = "libudev"
+version = "0.1.0"
+kernel_abi = 16
+depends_on = []
+
+[source]
+url = "https://example.invalid/libudev-shim-0.1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/Automattic/kandelo/blob/main/packages/registry/libudev/build-libudev.sh"
+
+[build]
+script_path = "packages/registry/libudev/build-libudev.sh"
+
+[outputs]
+libs = ["lib/libudev.a"]
+headers = ["include/libudev.h"]

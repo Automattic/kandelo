@@ -39,7 +39,16 @@ pub mod host_abi;
 ///     shrinks 64→56 (mapped at MMAP_OFFSET_STATUS_NEW =
 ///     `__snd_pcm_mmap_status64`). `WpkAlsaPcmMmapControl` shrinks
 ///     64→12 (= `__snd_pcm_mmap_control64`).
-pub const ABI_VERSION: u32 = 16;
+/// 17: `WasmStat` grows 88→96 with a trailing `st_rdev: u64` (offset 88,
+///     the slot the libc `struct kstat` already reserved). Virtual
+///     device nodes now report a Linux-encoded `dev_t` — `/dev/input/event{N}`
+///     is char major 13, minor 64+N — so a `stat().st_rdev` uniquely
+///     identifies an evdev node. Required by the real libinput path
+///     backend (`udev_device_new_from_devnum`), which is handed only the
+///     `st_rdev` and must recover the devnode from it. Also folds in the
+///     other DRI-branch ABI changes accumulated since v16 (the WpkDrm/Gl
+///     struct removals and syscall-descriptor edits) under one bump.
+pub const ABI_VERSION: u32 = 17;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -587,6 +596,10 @@ pub mod socket {
     pub const SO_TYPE: u32 = 3;
     pub const SO_DOMAIN: u32 = 39;
     pub const SO_ACCEPTCONN: u32 = 30;
+    /// `SO_PEERCRED` (Linux value). Returns `struct ucred { pid, uid, gid }`
+    /// for a connected AF_UNIX socket. libwayland's `wl_client_create` calls
+    /// this on every accepted client and fails if it errors.
+    pub const SO_PEERCRED: u32 = 17;
     pub const SHUT_RD: u32 = 0;
     pub const SHUT_WR: u32 = 1;
     pub const SHUT_RDWR: u32 = 2;
@@ -732,7 +745,10 @@ pub mod channel {
 /// Stat structure for the Wasm POSIX interface.
 ///
 /// Uses `repr(C)` for a stable, predictable memory layout that can be
-/// shared across the Wasm shared-memory boundary.
+/// shared across the Wasm shared-memory boundary. 96 bytes total; the
+/// libc side reads it into `struct kstat` (see
+/// `libc/musl-overlay/arch/*/kstat.h`), whose `st_rdev` sits at offset
+/// 88 to match `st_rdev` below.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WasmStat {
@@ -750,6 +766,12 @@ pub struct WasmStat {
     pub st_ctime_sec: u64,
     pub st_ctime_nsec: u32,
     pub _pad: u32,
+    /// Device ID for a special file (char/block device), encoded like
+    /// Linux `dev_t` (see musl `makedev`). 0 for anything that is not a
+    /// device node. Offset 88 — kept last so the layout through
+    /// `st_ctime_nsec`/`_pad` is unchanged; the libc `struct kstat`
+    /// already reserves `st_rdev` at this offset.
+    pub st_rdev: u64,
 }
 
 /// Directory entry structure for the Wasm POSIX interface.
@@ -958,7 +980,15 @@ pub mod process_memory {
     pub const FALLBACK_BRK_BASE: u32 = 0x0100_0000;
 
     /// Size of one fork save buffer in bytes.
-    pub const FORK_SAVE_BUFFER_SIZE: u32 = 16 * 1024;
+    ///
+    /// Raised from 16 KB after bash's `$(...)` fork pushed frames past 16 KB
+    /// into the adjacent syscall channel, trapping the child on rewind. The
+    /// buffer occupies the top of a dedicated 64 KB fork-save page, so it may
+    /// grow up to one page without moving any other region. Growth needs no
+    /// `ABI_VERSION` bump — instrumented binaries take the address at runtime
+    /// and never bake the size in (see `classify_process_memory_layout` in
+    /// `tools/xtask/src/dump_abi.rs`).
+    pub const FORK_SAVE_BUFFER_SIZE: u32 = 48 * 1024;
 
     /// Main-thread fork-save/scratch page, relative to `controlBasePage`.
     pub const MAIN_FORK_SAVE_PAGE: u32 = 0;
@@ -2193,9 +2223,16 @@ pub mod dri {
 
     /// `_IOWR('d', 0xE1, WpkDrmBindForeignTexture)` — bind a foreign bo as
     /// a `WebGLTexture` in the caller's GL context. The caller must already
-    /// hold a local bo handle (via PRIME_FD_TO_HANDLE), and the bo must be
-    /// GPU-tier. Used by the compositor to sample client bos and by
-    /// `gbm_bo_import` callers that want texture-side access.
+    /// hold a local bo handle (via PRIME_FD_TO_HANDLE). Used by the
+    /// compositor to sample client bos and by `gbm_bo_import` callers that
+    /// want texture-side access.
+    ///
+    /// Implemented for CPU-tier (dumb) bos: each successful call
+    /// (re)uploads the bo's current pixels into the texture from host-side
+    /// storage, so callers refresh a texture by re-issuing the ioctl after
+    /// the producer commits new content. The returned `gl_texture_id` is
+    /// stable across rebinds of the same bo. GPU-tier bos
+    /// (`WPK_CREATE_GPU_BO`) remain unimplemented.
     pub const DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: u32 = 0xc010_64e1;
 
     /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and
@@ -2732,6 +2769,34 @@ pub mod input {
     /// `EVIOCGABS(axis)` — `_IOR('E', 0x40 + axis, WpkInputAbsinfo)`.
     /// `axis` is a small integer (`ABS_X = 0`, `ABS_Y = 1`, …).
     pub const EVIOCGABS_NR_BASE: u32 = 0x40;
+
+    // Variable-length device-introspection reads (`_IOC(_IOC_READ, 'E',
+    // nr, len)`), matched on `nr`. libevdev's `libevdev_set_fd` issues
+    // every one of these during construction and treats most as fatal on
+    // failure (see docs/plans/2026-07-08-dri-wayland-compositor-plan.md
+    // §5 PR5). Our virtual devices have no phys/uniq node, no input
+    // properties, and no keys/LEDs/switches currently latched, so the
+    // kernel answers with the honest empty state.
+
+    /// `EVIOCGPHYS(len)` — physical location string. Virtual devices have
+    /// none; the kernel returns `ENOENT`, which libevdev treats as "unset".
+    pub const EVIOCGPHYS_NR: u32 = 0x07;
+
+    /// `EVIOCGUNIQ(len)` — unique identifier string. As with phys, unset →
+    /// `ENOENT`.
+    pub const EVIOCGUNIQ_NR: u32 = 0x08;
+
+    /// `EVIOCGPROP(len)` — `INPUT_PROP_*` bitmap. No properties → zeroed.
+    pub const EVIOCGPROP_NR: u32 = 0x09;
+
+    /// `EVIOCGKEY(len)` — currently-pressed key/button state bitmap.
+    pub const EVIOCGKEY_NR: u32 = 0x18;
+
+    /// `EVIOCGLED(len)` — current LED state bitmap.
+    pub const EVIOCGLED_NR: u32 = 0x19;
+
+    /// `EVIOCGSW(len)` — current switch state bitmap.
+    pub const EVIOCGSW_NR: u32 = 0x1b;
 
     /// `_IOW('E', 0x90, int)` = `0x4004_4590`.
     pub const EVIOCGRAB: u32 = 0x4004_4590;

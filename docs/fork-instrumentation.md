@@ -171,6 +171,57 @@ time and 0 in modules that do not contain plain-catch capture sites.
 internal `Runtime` struct, and `wpk_fork_unwind_begin` writes it into
 `*(buf + 0)` on every invocation.
 
+`current_pos` is a **buffer-relative byte offset**, not an absolute linear-memory
+address. A frame therefore lives at the absolute address `_wpk_fork_buf +
+current_pos`; the postamble (frame write, `UNWINDING`) and preamble (frame read,
+`REWINDING`) must both add `_wpk_fork_buf` when turning `current_pos` into a
+pointer. Advancing the cursor stays in offset space: `*(buf + 0) := *(buf + 0) +
+frame_size`.
+
+> **Historical bug (fixed 2026-07-09).** The postamble/preamble helpers once used
+> `current_pos` **directly as an absolute address** — dropping the `+
+> _wpk_fork_buf` add — so every frame was written to absolute low memory (addr
+> `16..`) instead of inside the save buffer. Small programs survived by luck
+> (their low memory is unused scratch that the whole-memory fork copy preserves),
+> but a larger program (`wlterm`) collided with live data, corrupting a
+> `call_indirect` funcidx and trapping with `table index out of bounds` during
+> the child rewind replay. The invariant above (`frame @ _wpk_fork_buf +
+> current_pos`) is what makes the two access sites agree.
+
+### Buffer capacity and overflow
+
+The buffer is `FORK_SAVE_BUFFER_SIZE` bytes (`crates/shared/src/lib.rs`),
+currently **48 KB**. It occupies the top of the dedicated fork-save/scratch
+page — one full 64 KB Wasm page reserved immediately below the syscall channel
+(`MAIN_FORK_SAVE_PAGE` / `THREAD_SLOT_FORK_SAVE_PAGE`) — so the host places it
+at `forkBufAddr = channelOffset - FORK_SAVE_BUFFER_SIZE`. Because that page is
+otherwise unused (only the 12/24-byte dlopen head-pointer slot sits just below
+`forkBufAddr`), the buffer can grow up to nearly a full page without disturbing
+any other region; only `forkBufAddr` moves lower. Growing it is
+backward-compatible — instrumented binaries take the buffer address as a
+runtime parameter and self-seed `current_pos`, so the size is never baked in.
+The ABI classifier (`xtask dump-abi --classify-compat`) treats a within-page
+*increase* as additive, so no `ABI_VERSION` bump is required (a shrink, or a
+value exceeding one page, is still breaking).
+
+The instrumented binary performs **no bounds check** when pushing frames: if
+the fork call stack is deeper than the buffer, the postamble writes frames past
+`forkBufAddr + FORK_SAVE_BUFFER_SIZE` into the channel region and silently
+corrupts it, and the child later traps on rewind with a `call_indirect`
+"function signature mismatch". The host closes this gap: after each unwind
+completes (`wpk_fork_unwind_end`, `current_pos` at its high-water mark) and
+before `SYS_FORK`, `assertForkBufferWithinBounds` (`host/src/worker-main.ts`,
+shared by both hosts) reads `*(forkBufAddr + 0)` and throws if it exceeds the
+buffer — converting silent corruption into a diagnostic that names the peak.
+
+> **Sizing history (2026-07-15).** The buffer was 16 KB and had no bounds
+> check. Interactive `bash`'s `$(...)` command-substitution fork stack pushed
+> past 16 KB of frames, spilled into the channel, and trapped the child on its
+> first replayed indirect call — surfacing only once the browser merge-gate
+> shell demo actually forked bash (earlier fork tests used shallow C `fork()`
+> or `dash`, which fit). The fix raised the buffer to 48 KB within the reserved
+> page and added the host overflow guard above.
+
 For wasm32 (`P = 4`) with a module that declares three additional scalar
 mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one
 user i64) and one fork-path function with a single `(catch $tag (param i32))`

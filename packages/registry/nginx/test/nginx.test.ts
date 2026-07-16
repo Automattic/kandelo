@@ -18,13 +18,17 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../../../../host/src/worker-protocol";
+import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
-const FORK_BUF_SIZE = 16384;
+// Must track the kernel's FORK_SAVE_BUFFER_SIZE: the child's forkBufAddr is
+// derived as channelOffset - FORK_BUF_SIZE, and a stale literal here would
+// point the fork replay at the wrong address and hang the worker.
+const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 const nginxWasmPath = tryResolveBinary("programs/nginx.wasm");
 const nginxPrefix = join(repoRoot, "packages/registry/nginx/demo");

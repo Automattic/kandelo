@@ -267,6 +267,16 @@ impl MemoryManager {
         if len == 0 {
             return false;
         }
+        // Linux munmap semantics: the length is rounded up to a page
+        // multiple — "all pages containing a part of the indicated range
+        // are unmapped." mmap_anonymous rounds allocations up to the wasm
+        // page, so an unrounded len here would strand a sub-page tail
+        // remnant per map/unmap cycle, fragmenting the gap so find_gap
+        // never reuses it and leaking the mapping's full address range.
+        let len = match len.checked_add(0xFFFF) {
+            Some(v) => v & !0xFFFF,
+            None => return false,
+        };
         let unmap_end = addr.saturating_add(len);
         let mut found = false;
         let mut new_mappings: Vec<MappedRegion> = Vec::new();
@@ -572,6 +582,40 @@ mod tests {
     fn test_munmap_nonexistent() {
         let mut mm = MemoryManager::new();
         assert!(!mm.munmap(0xDEAD0000, 4096));
+    }
+
+    #[test]
+    fn test_munmap_unaligned_len_releases_whole_mapping() {
+        // Linux munmap rounds the length up to a page multiple. An
+        // unrounded len used to strand a sub-page tail remnant per
+        // map/unmap cycle: the remnant fragmented the gap so the very
+        // next same-size mmap could not reuse it, leaking the whole
+        // range each frame (wlcompositor's 1920*1080*4 = 0x7E9000
+        // scanout map exhausted the 1GB space after ~124 frames).
+        let mut mm = MemoryManager::new();
+        let len = 1920 * 1080 * 4; // 0x7E9000 — not 64KB-aligned
+        let addr = mm.mmap_anonymous(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_ne!(addr, MAP_FAILED);
+        assert!(mm.munmap(addr, len));
+        // The rounded-up tail page must be gone too...
+        assert!(!mm.is_mapped(addr + (len & !0xFFFF)));
+        // ...so the next same-size map reuses the exact same gap.
+        let addr2 = mm.mmap_anonymous(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_eq!(addr2, addr);
+    }
+
+    #[test]
+    fn test_munmap_map_unmap_cycle_does_not_exhaust_address_space() {
+        // Drive many more cycles than the 1GB space could hold if each
+        // cycle leaked its mapping (regression for the frame-loop leak).
+        let mut mm = MemoryManager::new();
+        let len = 1920 * 1080 * 4;
+        for _ in 0..1000 {
+            let addr =
+                mm.mmap_anonymous(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+            assert_ne!(addr, MAP_FAILED);
+            assert!(mm.munmap(addr, len));
+        }
     }
 
     #[test]

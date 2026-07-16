@@ -1606,6 +1606,9 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "syscall_arg_descriptors" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            "process_memory_layout" => {
+                classify_process_memory_layout(key, old_value, new_value, &mut report)?
+            }
             _ if old_value != new_value => {
                 report
                     .breaking
@@ -1651,6 +1654,82 @@ fn classify_additive_object_by_key(
             report
                 .additive
                 .push(format!("added {section} entry {key:?}"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Classify a change to the `process_memory_layout` section.
+///
+/// Every field is a hard layout contract EXCEPT `fork_save_buffer_size`. The
+/// host derives `forkBufAddr = channelOffset - fork_save_buffer_size` at
+/// runtime and instrumented binaries take that address as a parameter, so
+/// *growing* the buffer within its dedicated 64 KB fork-save page only moves
+/// `forkBufAddr` lower inside already-reserved space — backward-compatible, no
+/// `ABI_VERSION` bump. A shrink, a value exceeding one page, or a change to
+/// any other field is breaking.
+fn classify_process_memory_layout(
+    section: &str,
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    const FORK_BUF_KEY: &str = "fork_save_buffer_size";
+
+    let old_obj = old
+        .as_object()
+        .ok_or_else(|| format!("old {section} section must be a JSON object"))?;
+    let new_obj = new
+        .as_object()
+        .ok_or_else(|| format!("new {section} section must be a JSON object"))?;
+
+    // Any added/removed field is breaking.
+    for key in old_obj.keys() {
+        if !new_obj.contains_key(key) {
+            report
+                .breaking
+                .push(format!("removed {section} field {key:?}"));
+        }
+    }
+    for key in new_obj.keys() {
+        if !old_obj.contains_key(key) {
+            report
+                .breaking
+                .push(format!("added {section} field {key:?}"));
+        }
+    }
+
+    for key in old_obj.keys().filter(|k| new_obj.contains_key(*k)) {
+        let old_value = &old_obj[key];
+        let new_value = &new_obj[key];
+        if old_value == new_value {
+            continue;
+        }
+        if key == FORK_BUF_KEY {
+            let old_size = old_value.as_u64();
+            let new_size = new_value.as_u64();
+            let page_size = new_obj.get("wasm_page_size").and_then(Value::as_u64);
+            match (old_size, new_size, page_size) {
+                (Some(old_size), Some(new_size), Some(page_size))
+                    if new_size > old_size && new_size <= page_size =>
+                {
+                    report.additive.push(format!(
+                        "grew {section} {FORK_BUF_KEY} {old_size} -> {new_size} \
+                         (fits within one {page_size}-byte page; forkBufAddr moves \
+                         lower inside the reserved fork-save page, no binary breaks)"
+                    ));
+                }
+                _ => report.breaking.push(format!(
+                    "changed {section} {FORK_BUF_KEY} {old_value} -> {new_value} \
+                     (only an increase that still fits within one page is \
+                     backward-compatible)"
+                )),
+            }
+        } else {
+            report
+                .breaking
+                .push(format!("changed {section} field {key:?}"));
         }
     }
 
@@ -1953,6 +2032,97 @@ mod tests {
         assert_eq!(
             report.breaking,
             vec!["changed top-level section \"channel_header\""]
+        );
+    }
+
+    fn snapshot_with_pml(pml: Value) -> Value {
+        let mut snap = base_snapshot();
+        snap.as_object_mut()
+            .unwrap()
+            .insert("process_memory_layout".to_string(), pml);
+        snap
+    }
+
+    fn pml(fork_save_buffer_size: u64) -> Value {
+        json!({
+            "wasm_page_size": 65536,
+            "channel_pages": 2,
+            "fork_save_buffer_size": fork_save_buffer_size,
+        })
+    }
+
+    #[test]
+    fn growing_fork_save_buffer_within_one_page_is_additive() {
+        let old = snapshot_with_pml(pml(16 * 1024));
+        let new = snapshot_with_pml(pml(48 * 1024));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(report.additive.len(), 1);
+        assert!(report.additive[0].contains("fork_save_buffer_size"));
+    }
+
+    #[test]
+    fn shrinking_fork_save_buffer_is_breaking() {
+        let old = snapshot_with_pml(pml(48 * 1024));
+        let new = snapshot_with_pml(pml(16 * 1024));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.additive.is_empty(), "{report:?}");
+        assert_eq!(report.breaking.len(), 1);
+        assert!(report.breaking[0].contains("fork_save_buffer_size"));
+    }
+
+    #[test]
+    fn growing_fork_save_buffer_beyond_one_page_is_breaking() {
+        let old = snapshot_with_pml(pml(48 * 1024));
+        let new = snapshot_with_pml(pml(128 * 1024));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.additive.is_empty(), "{report:?}");
+        assert_eq!(report.breaking.len(), 1);
+        assert!(report.breaking[0].contains("fits within one page"));
+    }
+
+    #[test]
+    fn changing_other_process_memory_field_is_breaking() {
+        let old = snapshot_with_pml(pml(48 * 1024));
+        let mut new_pml = pml(48 * 1024);
+        new_pml["channel_pages"] = json!(3);
+        let new = snapshot_with_pml(new_pml);
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed process_memory_layout field \"channel_pages\""]
+        );
+    }
+
+    #[test]
+    fn adding_process_memory_field_is_breaking() {
+        let old = snapshot_with_pml(pml(48 * 1024));
+        let mut new_pml = pml(48 * 1024);
+        new_pml["extra_field"] = json!(1);
+        let new = snapshot_with_pml(new_pml);
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["added process_memory_layout field \"extra_field\""]
+        );
+    }
+
+    #[test]
+    fn removing_process_memory_field_is_breaking() {
+        let mut old_pml = pml(48 * 1024);
+        old_pml["extra_field"] = json!(1);
+        let old = snapshot_with_pml(old_pml);
+        let new = snapshot_with_pml(pml(48 * 1024));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["removed process_memory_layout field \"extra_field\""]
         );
     }
 }

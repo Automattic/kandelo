@@ -224,3 +224,57 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     expect(() => reg.syncFromMemory(999)).not.toThrow();
   });
 });
+
+describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
+  function twoPidSetup(): { memA: WebAssembly.Memory; memB: WebAssembly.Memory; reg: GbmBoRegistry } {
+    const memA = newMemory(); // creator (the wl_shm client, the writer)
+    const memB = newMemory(); // importer (the compositor, a reader)
+    const reg = new GbmBoRegistry({
+      getProcessMemory: (pid) => (pid === 100 ? memA : pid === 200 ? memB : undefined),
+    });
+    reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    return { memA, memB, reg };
+  }
+
+  it("dims() reports geometry without requiring pid membership", () => {
+    const { reg } = twoPidSetup();
+    // The foreign-texture path holds only a kernel bo id (PRIME import
+    // without an mmap), so this must not need a consumer-set pid.
+    expect(reg.dims(1)).toEqual({ w: 16, h: 16, stride: 64 });
+    expect(reg.dims(2)).toBeUndefined();
+  });
+
+  it("syncCreatorToSab flushes the creator's mapping, never an importer's stale copy", () => {
+    const { memA, memB, reg } = twoPidSetup();
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    fillPattern(memA, BO_ADDR, BO_SIZE, 0x30); // creator's fresh frame
+    fillPattern(memB, BO_ADDR, BO_SIZE, 0x99); // importer's stale snapshot
+    reg.syncCreatorToSab(1);
+    // An importer flush after the creator's would clobber fresh bytes
+    // with 0x99 — the texture bind must see the producer's pixels.
+    expectPattern(reg.pixelView(1)!.slice(0, BO_SIZE), 0x30);
+  });
+
+  it("hasStaleableImports flags only importers whose creator also holds a live mapping", () => {
+    const { reg } = twoPidSetup();
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    expect(reg.hasStaleableImports(100)).toBe(false); // the creator itself
+    expect(reg.hasStaleableImports(200)).toBe(false); // not bound yet
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    expect(reg.hasStaleableImports(200)).toBe(true);
+    reg.unbind(100, 1, BO_ADDR, BO_SIZE);
+    expect(reg.hasStaleableImports(200)).toBe(false); // nothing left to go stale from
+  });
+
+  it("syncImportsForPid delivers the creator's latest bytes into the importer's mapping", () => {
+    const { memA, memB, reg } = twoPidSetup();
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    // The creator paints AFTER both binds — without the coherence pass
+    // the importer only ever sees its bind-time snapshot.
+    fillPattern(memA, BO_ADDR, BO_SIZE, 0x42);
+    reg.syncImportsForPid(200, memB);
+    expectPattern(readPattern(memB, BO_ADDR, BO_SIZE), 0x42);
+  });
+});
