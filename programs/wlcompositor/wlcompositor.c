@@ -87,6 +87,7 @@
 #include <wayland-server-protocol.h>
 #include "xdg-shell-server-protocol.h"
 #include "linux-dmabuf-v1-server-protocol.h"
+#include "xdg-decoration-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -1225,6 +1226,58 @@ static void wm_base_bind(struct wl_client *client, void *data, uint32_t version,
         wl_resource_create(client, &xdg_wm_base_interface, version, id);
     if (!r) { wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(r, &wm_base_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
+/* zxdg_decoration_manager_v1 — force server-side decorations (PR14e)     */
+/* ====================================================================== */
+
+/* Always negotiate SERVER_SIDE: a tiled window has no titlebar and even a
+ * floating one gets only the compositor's focus ring, so the client must not
+ * draw its own CSD. The client's preferred mode is acknowledged but ignored. */
+static void decoration_send_ssd(struct wl_resource *r) {
+    zxdg_toplevel_decoration_v1_send_configure(
+        r, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+}
+static void decoration_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void decoration_set_mode(struct wl_client *c, struct wl_resource *r,
+                                uint32_t mode) {
+    decoration_send_ssd(r);
+}
+static void decoration_unset_mode(struct wl_client *c, struct wl_resource *r) {
+    decoration_send_ssd(r);
+}
+static const struct zxdg_toplevel_decoration_v1_interface decoration_impl = {
+    .destroy = decoration_destroy,
+    .set_mode = decoration_set_mode,
+    .unset_mode = decoration_unset_mode,
+};
+
+static void decoration_mgr_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void decoration_mgr_get_toplevel_decoration(
+        struct wl_client *client, struct wl_resource *resource, uint32_t id,
+        struct wl_resource *toplevel) {
+    struct wl_resource *d = wl_resource_create(
+        client, &zxdg_toplevel_decoration_v1_interface,
+        wl_resource_get_version(resource), id);
+    if (!d) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(d, &decoration_impl, NULL, NULL);
+    decoration_send_ssd(d);   /* initial configure */
+}
+static const struct zxdg_decoration_manager_v1_interface decoration_mgr_impl = {
+    .destroy = decoration_mgr_destroy,
+    .get_toplevel_decoration = decoration_mgr_get_toplevel_decoration,
+};
+static void decoration_mgr_bind(struct wl_client *client, void *data,
+                                uint32_t version, uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        client, &zxdg_decoration_manager_v1_interface, version, id);
+    if (!r) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(r, &decoration_mgr_impl, NULL, NULL);
 }
 
 /* ====================================================================== */
@@ -2891,6 +2944,8 @@ int main(void) {
                           dmabuf_bind) ||
         !wl_global_create(g.display, &xdg_wm_base_interface, 1, NULL,
                           wm_base_bind) ||
+        !wl_global_create(g.display, &zxdg_decoration_manager_v1_interface, 1,
+                          NULL, decoration_mgr_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 1, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 2, NULL,
                           output_bind)) {

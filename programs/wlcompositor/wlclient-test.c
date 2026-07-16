@@ -33,6 +33,7 @@
 #include <wayland-client.h>
 #include <wayland-client-protocol.h>
 #include "xdg-shell-client-protocol.h"
+#include "xdg-decoration-v1-client-protocol.h"
 
 #include <gbm.h>
 
@@ -47,6 +48,7 @@ struct client {
     struct xdg_wm_base *wm_base;
     struct wl_seat *seat;
     struct wl_output *output;
+    struct zxdg_decoration_manager_v1 *decor_mgr;
 
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
@@ -77,7 +79,23 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
         c->seat = wl_registry_bind(reg, name, &wl_seat_interface, 1);
     else if (strcmp(iface, "wl_output") == 0)
         c->output = wl_registry_bind(reg, name, &wl_output_interface, 2);
+    else if (strcmp(iface, "zxdg_decoration_manager_v1") == 0)
+        c->decor_mgr = wl_registry_bind(
+            reg, name, &zxdg_decoration_manager_v1_interface, 1);
 }
+
+/* ---- xdg-decoration ---------------------------------------------------- */
+
+static void decor_configure(void *data, struct zxdg_toplevel_decoration_v1 *d,
+                            uint32_t mode) {
+    printf("DECOR_MODE %s\n",
+           mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE ? "server_side"
+                                                                : "client_side");
+    fflush(stdout);
+}
+static const struct zxdg_toplevel_decoration_v1_listener decor_listener = {
+    .configure = decor_configure,
+};
 static void registry_global_remove(void *data, struct wl_registry *r,
                                    uint32_t name) {}
 static const struct wl_registry_listener registry_listener = {
@@ -294,6 +312,18 @@ int main(void) {
     c.toplevel = xdg_surface_get_toplevel(c.xdg_surface);
     xdg_toplevel_add_listener(c.toplevel, &toplevel_listener, &c);
     xdg_toplevel_set_title(c.toplevel, "wlclient-test");
+
+    /* Optional: request server-side decorations (PR14e). The compositor forces
+     * SERVER_SIDE for tiling, which the client honors by drawing no titlebar. */
+    if (getenv("WLC_DECOR") && c.decor_mgr) {
+        struct zxdg_toplevel_decoration_v1 *deco =
+            zxdg_decoration_manager_v1_get_toplevel_decoration(c.decor_mgr,
+                                                               c.toplevel);
+        zxdg_toplevel_decoration_v1_add_listener(deco, &decor_listener, &c);
+        zxdg_toplevel_decoration_v1_set_mode(
+            deco, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
+
     wl_surface_commit(c.surface);
 
     /* Wait for the initial configure before attaching a buffer. */

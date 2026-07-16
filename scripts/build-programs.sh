@@ -541,6 +541,14 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner server-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-server-protocol.h"
     wayland-scanner client-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-client-protocol.h"
 
+    # Same for zxdg_decoration_manager_v1 (PR14e): server-side decoration
+    # negotiation. The compositor forces SERVER_SIDE so tiled clients drop CSD;
+    # the client header + private-code drive wlclient-test's decoration request.
+    DECOR_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/xdg-decoration-unstable-v1.xml"
+    wayland-scanner private-code  "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-protocol.c"
+    wayland-scanner server-header "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-server-protocol.h"
+    wayland-scanner client-header "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-client-protocol.h"
+
     # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
     # Wayland+GLES backend uses as its EGLNativeWindowType. It allocates the
     # GPU-tier bo the window renders into and wraps it as a zwp_linux_dmabuf_v1
@@ -572,6 +580,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
         "$WLC_GEN/xdg-shell-protocol.c" \
         "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
+        "$WLC_GEN/xdg-decoration-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-server.a" \
         "$SYSROOT/lib/libwpkdraw.a" \
@@ -594,6 +603,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
         "$REPO_ROOT/programs/wlcompositor/wlclient-test.c" \
         "$WLC_GEN/xdg-shell-protocol.c" \
+        "$WLC_GEN/xdg-decoration-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-client.a" \
         "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \

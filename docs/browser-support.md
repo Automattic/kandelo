@@ -263,6 +263,19 @@ PAGE_FLIP counter, and flicker stability via canvas PNG-size
 distribution) and the node-side twins under `host/test/wl*-smoke.test.ts`
 (including `wldesktop-liveness-smoke.test.ts`).
 
+**Tiling mode.** The same `wlcompositor` binary is also a Hyprland-class
+tiling window manager (the floating desktop above is its default layout).
+Setting `WLC_LAYOUT=dwindle` in the compositor's environment switches it
+to a dwindle tiling layout with nine workspaces, a `/tmp/kwlctl-0`
+control + event socket (the hyprctl analog, driven by the `kwlctl` CLI),
+and a config-file keybind engine (`/etc/kandelo/wlcompositor.conf` or
+`WLC_CONFIG`; absent = generic `SUPER`-based defaults). Windows negotiate
+server-side decorations. See
+[architecture.md](architecture.md#tiling-window-manager-wlc_layout-workspaces-kwlctl-keybinds).
+The tiling paths are gated node-side by
+`host/test/wlcompositor-{tiling,kwlctl,keybind,decoration}-smoke.test.ts`;
+a browser tiling demo is not yet wired.
+
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
 
