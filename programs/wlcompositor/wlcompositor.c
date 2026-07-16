@@ -137,6 +137,8 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 /* Modifier bits used by the keybind engine (mapped from xkb mod state). */
 #define MOD_SUPER 1
 #define MOD_SHIFT 2
+#define MOD_CTRL  4   /* the browser reserves SUPER (Cmd/Win), so CTRL is the
+                         usable modifier for the in-browser demo */
 
 enum bind_action {
     ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
@@ -1228,22 +1230,25 @@ static void wm_base_bind(struct wl_client *client, void *data, uint32_t version,
 /* zxdg_decoration_manager_v1 — force server-side decorations (PR14e)     */
 /* ====================================================================== */
 
-/* Always negotiate SERVER_SIDE: a tiled window has no titlebar and even a
- * floating one gets only the compositor's focus ring, so the client must not
- * draw its own CSD. The client's preferred mode is acknowledged but ignored. */
-static void decoration_send_ssd(struct wl_resource *r) {
-    zxdg_toplevel_decoration_v1_send_configure(
-        r, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+/* Negotiate the decoration mode by layout: a tiled window has no titlebar, so
+ * DWINDLE forces SERVER_SIDE (the compositor draws the border/focus ring and
+ * the client drops its CSD); FLOATING grants CLIENT_SIDE so a draggable
+ * titlebar stays. The client's preferred mode is acknowledged but ignored. */
+static void decoration_send_mode(struct wl_resource *r) {
+    uint32_t mode = g.layout == LAYOUT_DWINDLE
+                        ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                        : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+    zxdg_toplevel_decoration_v1_send_configure(r, mode);
 }
 static void decoration_destroy(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
 }
 static void decoration_set_mode(struct wl_client *c, struct wl_resource *r,
                                 uint32_t mode) {
-    decoration_send_ssd(r);
+    decoration_send_mode(r);
 }
 static void decoration_unset_mode(struct wl_client *c, struct wl_resource *r) {
-    decoration_send_ssd(r);
+    decoration_send_mode(r);
 }
 static const struct zxdg_toplevel_decoration_v1_interface decoration_impl = {
     .destroy = decoration_destroy,
@@ -1262,7 +1267,7 @@ static void decoration_mgr_get_toplevel_decoration(
         wl_resource_get_version(resource), id);
     if (!d) { wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(d, &decoration_impl, NULL, NULL);
-    decoration_send_ssd(d);   /* initial configure */
+    decoration_send_mode(d);   /* initial configure */
 }
 static const struct zxdg_decoration_manager_v1_interface decoration_mgr_impl = {
     .destroy = decoration_mgr_destroy,
@@ -2028,6 +2033,8 @@ static uint32_t active_mod_mask(void) {
                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SUPER;
     if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_SHIFT,
                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SHIFT;
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_CTRL,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_CTRL;
     return m;
 }
 
@@ -2124,6 +2131,8 @@ static int parse_mods(char *s, uint32_t *out) {
     for (char *tok = strtok(s, " +"); tok; tok = strtok(NULL, " +")) {
         if (!strcasecmp(tok, "SUPER") || !strcasecmp(tok, "MOD4")) m |= MOD_SUPER;
         else if (!strcasecmp(tok, "SHIFT")) m |= MOD_SHIFT;
+        else if (!strcasecmp(tok, "CTRL") || !strcasecmp(tok, "CONTROL"))
+            m |= MOD_CTRL;
         else return -1;
     }
     *out = m;
@@ -2140,8 +2149,11 @@ static void parse_bind_line(char *rhs) {
 
     uint32_t mods;
     if (parse_mods(fields[0], &mods) < 0) return;
-    xkb_keysym_t sym =
-        xkb_keysym_from_name(fields[1], XKB_KEYSYM_CASE_INSENSITIVE);
+    /* Match against the base-level keysym, which is lowercase for letters
+     * ("w", not "W"). xkb_keysym_from_name("W") resolves to the uppercase
+     * keysym, so fold to lower or a config `bind = CTRL, W` never fires. */
+    xkb_keysym_t sym = xkb_keysym_to_lower(
+        xkb_keysym_from_name(fields[1], XKB_KEYSYM_CASE_INSENSITIVE));
     if (sym == XKB_KEY_NoSymbol) return;
 
     const char *disp = fields[2];

@@ -1,11 +1,12 @@
 /**
  * PR14e gate: the wlcompositor's zxdg_decoration_manager_v1 support.
  *
- * The compositor advertises the decoration manager and forces SERVER_SIDE mode
- * (a tiled window has no titlebar; even a floating one gets only the focus
- * ring, so clients must not draw CSD). wlclient-test, run with WLC_DECOR=1,
- * binds the manager, creates a toplevel decoration, requests a mode, and prints
- * the negotiated mode from the configure event — which must be server_side.
+ * The compositor advertises the decoration manager and negotiates the mode by
+ * layout: DWINDLE forces SERVER_SIDE (a tiled window has no titlebar, so
+ * clients drop their CSD), while FLOATING grants CLIENT_SIDE (a draggable
+ * titlebar stays). wlclient-test, run with WLC_DECOR=1, binds the manager,
+ * creates a toplevel decoration, requests a mode, and prints the negotiated
+ * mode from the configure event. Both layouts are asserted here.
  *
  * Decoration negotiation is a client<->compositor protocol entirely inside the
  * kernel — no host/src change. Skips if the binaries aren't built.
@@ -69,6 +70,41 @@ describe("wlcompositor — server-side decoration negotiation", () => {
         await waitFor(out, "DECOR_MODE server_side", 20_000, dump);
         expect(out.value, `client-side decoration leaked.\n${dump()}`)
           .not.toContain("DECOR_MODE client_side");
+
+        void compExit;
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries)(
+    "the floating desktop is configured CLIENT_SIDE (draggable titlebar)",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const clientBytes = loadBytes(clientBin!);
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        // No WLC_LAYOUT → the default FLOATING desktop.
+        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        host.spawn(clientBytes, ["wlclient-test"], { env: ["WLC_DECOR=1"] });
+        await waitFor(out, "DECOR_MODE client_side", 20_000, dump);
+        expect(out.value, `server-side decoration leaked into floating.\n${dump()}`)
+          .not.toContain("DECOR_MODE server_side");
 
         void compExit;
       } finally {
