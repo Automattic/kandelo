@@ -152,6 +152,7 @@ Located in `apps/browser-demos/pages/`:
 | sdl2 | SDL2 GLSL playground | legacy spawn | Split-pane shader live-coding playground on a 1920×1080 `/dev/dri/card0` KMS surface (GLES2). Left pane is a gap-buffer code editor (syntax highlighting, selection, undo/redo, clipboard, vertical column memory); right pane renders the fragment shader live, auto-recompiling 250 ms after the last keystroke. F1 edits the **image** shader; F2 edits a **sound** shader whose PCM is synthesized to the host AudioContext (48 kHz stereo) and exposed back to the image shader as an `iAudio` FFT texture. Ctrl+S persists the buffer under `/home/shaders/`, Ctrl+L cycles bundled presets, F5 reloads, ESC quits. Keyboard arrives via evdev (`BrowserInputSource`); no mouse (wheel scrolls the editor). |
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
+| hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm | `kernel.boot` + spawn | Hyprland-class tiling desktop — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.
@@ -263,18 +264,43 @@ PAGE_FLIP counter, and flicker stability via canvas PNG-size
 distribution) and the node-side twins under `host/test/wl*-smoke.test.ts`
 (including `wldesktop-liveness-smoke.test.ts`).
 
-**Tiling mode.** The same `wlcompositor` binary is also a Hyprland-class
-tiling window manager (the floating desktop above is its default layout).
-Setting `WLC_LAYOUT=dwindle` in the compositor's environment switches it
-to a dwindle tiling layout with nine workspaces, a `/tmp/kwlctl-0`
-control + event socket (the hyprctl analog, driven by the `kwlctl` CLI),
-and a config-file keybind engine (`/etc/kandelo/wlcompositor.conf` or
-`WLC_CONFIG`; absent = generic `SUPER`-based defaults). Windows negotiate
-server-side decorations. See
+### Hyprland tiling demo
+
+`/?demo=hyprland` boots the same `wlcompositor` binary as a Hyprland-class
+tiling window manager (the floating `/?demo=wayland` desktop above is its
+default layout). The staging block sets `WLC_LAYOUT=dwindle` in the
+compositor's environment and stages a hyprland.conf-shaped
+`/etc/kandelo/wlcompositor.conf` (read via `WLC_CONFIG`), then spawns three
+real clients — one `wlclock` and two `wlterm` terminals:
+
+- **Dwindle tiling.** Every mapped window is retiled into gapped, borderless
+  frames by recursively splitting the remaining region along its longer side
+  (Hyprland's dwindle default), across nine 1-based workspaces.
+- **Client-side resize (the crux).** The compositor composites each surface
+  at its native buffer size — it does not scale a window to its tile — so
+  tiling requires the *client* to resize. On each retile the compositor
+  sends `xdg_toplevel.configure(w,h)`; the libkwl clients rebuild their
+  `wl_shm` buffers to match and redraw (`wlclock` recomputes its dial,
+  `wlterm` reflows its VT100 grid via `TIOCSWINSZ` + `SIGWINCH`). Floating
+  clients ignore the initial `configure(0,0)`, so `/?demo=wayland` is
+  unchanged.
+- **Server-side decorations.** Under `dwindle` the compositor negotiates
+  `SERVER_SIDE` decorations, so tiled windows have no titlebar (a floating
+  layout keeps client-side CSD).
+- **Keybinds.** `Return` launches a terminal, `W` kills the focused window,
+  and `1..9` switch workspaces — bound on both `SUPER` (real Hyprland) and
+  `CTRL` in the staged `wlcompositor.conf`. Use **`CTRL`** in the browser:
+  the OS/browser reserve `SUPER` (Cmd/Win) — `Cmd+W` closes the tab,
+  `Cmd+1..9` switch browser tabs — so those never reach the page, while
+  `Ctrl+…` does. The compositor also supports move-to-workspace, focus
+  cycling, and a `kwlctl` control socket (the `hyprctl` analog), which this
+  demo doesn't bind — see architecture.md.
+
+See
 [architecture.md](architecture.md#tiling-window-manager-wlc_layout-workspaces-kwlctl-keybinds).
 The tiling paths are gated node-side by
-`host/test/wlcompositor-{tiling,kwlctl,keybind,decoration}-smoke.test.ts`;
-a browser tiling demo is not yet wired.
+`host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`
+and in the browser by `apps/browser-demos/test/kandelo-hyprland.spec.ts`.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.

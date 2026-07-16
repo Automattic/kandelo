@@ -297,6 +297,7 @@ const LIVE_DEMO_IDS = [
   "modeset",
   "sdl2",
   "wayland",
+  "hyprland",
   "sdl2gl",
   "wlcube",
 ] as const;
@@ -394,6 +395,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  hyprland: {
+    image: "shell",
+    features: ["kms"],
+  },
   sdl2gl: {
     image: "shell",
     features: ["kms"],
@@ -488,6 +493,12 @@ interface LiveProfile {
    * Boots like sdl2glDemo. Browser-only (WebGL2). Runs until the client exits.
    */
   wlcubeDemo: boolean;
+  /**
+   * Like waylandDemo, but boots `wlcompositor` with WLC_LAYOUT=dwindle so the
+   * clients (two `wlterm` + a `wlclock`) tile into borderless slots and resize
+   * to fill them. Browser-only page wiring; runs until the shell exits.
+   */
+  hyprlandDemo: boolean;
 }
 
 interface WebReadinessState {
@@ -567,6 +578,36 @@ const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
   default: { env: SHELL_ENV, cwd: DEMO_HOME },
   node: { env: NODE_SHELL_ENV, cwd: NODE_WORKDIR },
 };
+
+// Staged to /etc/kandelo/wlcompositor.conf and read via WLC_CONFIG. The demo
+// gate asserts the compositor loaded it (BINDS_LOADED source=…); the dwindle
+// layout is selected separately by WLC_LAYOUT (the parser only reads binds).
+// SUPER mirrors real Hyprland, but a browser reserves it (Cmd/Win), so every
+// bind is duplicated on CTRL — the modifier that actually reaches the page.
+const HYPRLAND_WLCOMPOSITOR_CONF = `# Kandelo wlcompositor — Hyprland-class tiling desktop (layout via WLC_LAYOUT).
+bind = SUPER, Return, exec, /usr/local/bin/wlterm
+bind = CTRL, Return, exec, /usr/local/bin/wlterm
+bind = SUPER, W, killactive
+bind = CTRL, W, killactive
+bind = SUPER, 1, workspace, 1
+bind = SUPER, 2, workspace, 2
+bind = SUPER, 3, workspace, 3
+bind = SUPER, 4, workspace, 4
+bind = SUPER, 5, workspace, 5
+bind = SUPER, 6, workspace, 6
+bind = SUPER, 7, workspace, 7
+bind = SUPER, 8, workspace, 8
+bind = SUPER, 9, workspace, 9
+bind = CTRL, 1, workspace, 1
+bind = CTRL, 2, workspace, 2
+bind = CTRL, 3, workspace, 3
+bind = CTRL, 4, workspace, 4
+bind = CTRL, 5, workspace, 5
+bind = CTRL, 6, workspace, 6
+bind = CTRL, 7, workspace, 7
+bind = CTRL, 8, workspace, 8
+bind = CTRL, 9, workspace, 9
+`;
 
 const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
   service: () => SERVICE_ENV,
@@ -670,7 +711,8 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     // sdl2) keep the webgl2 default — the GL bridge claims their canvas on
     // eglCreateContext, and the pump never touches it.
     h.setKmsDisplayMode(
-      profile.waylandDemo || profile.sdl2glDemo || profile.wlcubeDemo
+      profile.waylandDemo || profile.sdl2glDemo || profile.wlcubeDemo ||
+        profile.hyprlandDemo
         ? "webgl2-scanout"
         : null,
     );
@@ -801,6 +843,7 @@ function customVfsProfile(
     waylandDemo: false,
     sdl2glDemo: false,
     wlcubeDemo: false,
+    hyprlandDemo: false,
   };
 }
 
@@ -825,6 +868,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       waylandDemo: false,
       sdl2glDemo: false,
       wlcubeDemo: false,
+      hyprlandDemo: false,
     };
   }
 
@@ -861,6 +905,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     waylandDemo: normalized === "wayland",
     sdl2glDemo: normalized === "sdl2gl",
     wlcubeDemo: normalized === "wlcube",
+    hyprlandDemo: normalized === "hyprland",
   };
 }
 
@@ -1644,6 +1689,126 @@ async function bootProfile(
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           tick(`wayland failed: ${msg}`);
+        }
+      })();
+    } else if (profile.hyprlandDemo) {
+      // Like waylandDemo but with WLC_LAYOUT=dwindle: the compositor tiles its
+      // clients and dictates each one's size via xdg configure, which the
+      // libkwl/vt100 clients honor by rebuilding at the tile size (KWL_RESIZE).
+      // That client-side resize is the crux — floating clients never resize.
+      const kernelForHyprland = kernel;
+      void (async () => {
+        try {
+          const compositorUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlcompositor.wasm",
+            "../../../../../binaries/programs/wasm32/wlcompositor.wasm",
+          ], "wlcompositor.wasm");
+          const wltermUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlterm.wasm",
+            "../../../../../binaries/programs/wasm32/wlterm.wasm",
+          ], "wlterm.wasm");
+          const wlclockUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlclock.wasm",
+            "../../../../../binaries/programs/wasm32/wlclock.wasm",
+          ], "wlclock.wasm");
+          tick("staging hyprland binaries...");
+          const [compBytes, termBytes, clockBytes] = await Promise.all([
+            fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wltermUrl).then(failOn("wlterm.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wlclockUrl).then(failOn("wlclock.wasm")).then((r) => r.arrayBuffer()),
+          ]);
+          ensureDirRecursive(kernelForHyprland.fs, "/usr/local/bin");
+          writeVfsBinary(
+            kernelForHyprland.fs,
+            "/usr/local/bin/wlcompositor",
+            new Uint8Array(compBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForHyprland.fs,
+            "/usr/local/bin/wlterm",
+            new Uint8Array(termBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForHyprland.fs,
+            "/usr/local/bin/wlclock",
+            new Uint8Array(clockBytes),
+            0o755,
+          );
+
+          ensureDirRecursive(kernelForHyprland.fs, "/etc/kandelo");
+          writeVfsFile(
+            kernelForHyprland.fs,
+            "/etc/kandelo/wlcompositor.conf",
+            HYPRLAND_WLCOMPOSITOR_CONF,
+            0o644,
+          );
+
+          // Pointer is owned by the Modeset pane (event1); feed keyboard only.
+          tick("attaching input source...");
+          const WL_FB_W = 1920;
+          const WL_FB_H = 1080;
+          kernelForHyprland.attachInputSource(
+            new BrowserInputSource(window, { pointer: false, wheel: false }),
+            { width: WL_FB_W, height: WL_FB_H },
+          );
+
+          // Size the desktop from the Modeset pane's canvas exactly like
+          // the wayland demo (see that block for the rationale).
+          tick("sizing display mode...");
+          const sizeDeadline = performance.now() + 1500;
+          let displaySize = host.getKmsDisplaySize(1);
+          while (!displaySize && performance.now() < sizeDeadline) {
+            const paneCanvas = document.querySelector<HTMLCanvasElement>(
+              ".kmachine-primary-slot:not(.is-hidden) canvas",
+            );
+            const rect = paneCanvas?.getBoundingClientRect();
+            if (rect && rect.width >= 1 && rect.height >= 1) {
+              const dpr = window.devicePixelRatio || 1;
+              displaySize = { width: rect.width * dpr, height: rect.height * dpr };
+              kernelForHyprland.kmsSetDisplaySize(
+                1,
+                displaySize.width,
+                displaySize.height,
+              );
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            displaySize = host.getKmsDisplaySize(1);
+          }
+
+          // Clients retry their connect to /tmp/wayland-0, so the compositor
+          // and clients can be spawned without an ordering barrier.
+          tick("running wlcompositor...");
+          const spawnBg = (bytes: ArrayBuffer, name: string, extraEnv: string[] = []) =>
+            void kernelForHyprland.spawn(bytes, [name], {
+              env: extraEnv.length ? [...SHELL_ENV, ...extraEnv] : SHELL_ENV,
+              cwd: DEMO_HOME,
+              uid: DEMO_UID,
+              gid: DEMO_GID,
+            }).then(
+              () => tick(`${name} exited`),
+              (err: unknown) =>
+                tick(`${name} failed: ${err instanceof Error ? err.message : String(err)}`),
+            );
+          spawnBg(compBytes, "wlcompositor", [
+            "WLC_LAYOUT=dwindle",
+            "WLC_CONFIG=/etc/kandelo/wlcompositor.conf",
+          ]);
+
+          // The clock + first terminal run in the background; the foreground
+          // terminal's shell keeps the demo alive (as waylandDemo does).
+          tick("running wlclock + wlterm...");
+          spawnBg(clockBytes, "wlclock");
+          spawnBg(termBytes, "wlterm");
+
+          tick("running wlterm...");
+          await host.runShellCommand("/usr/local/bin/wlterm");
+          tick("wlterm exited");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          tick(`hyprland failed: ${msg}`);
         }
       })();
     } else if (profile.sdl2glDemo) {
