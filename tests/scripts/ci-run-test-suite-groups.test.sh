@@ -122,6 +122,24 @@ for workflow in \
         echo "$(basename "$workflow"): test group is not passed positionally through the dev shell" >&2
         exit 1
     }
+
+    matrix_rows=$(sed -n '/^  test-suite:/,/^    env:/p' "$workflow" | awk '
+        /^          - suite: / {
+            suite = $0
+            sub(/^          - suite: /, "", suite)
+        }
+        /^            group: / {
+            group = $0
+            sub(/^            group: /, "", group)
+            print suite ":" group
+        }
+    ')
+    expected_rows=$'vitest:all\nbrowser:all\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+    if [ "$matrix_rows" != "$expected_rows" ]; then
+        echo "$(basename "$workflow"): unexpected test-suite matrix:" >&2
+        printf '%s\n' "$matrix_rows" >&2
+        exit 1
+    fi
 done
 
 prepared_files=(

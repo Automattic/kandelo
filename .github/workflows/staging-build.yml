@@ -985,7 +985,7 @@ jobs:
       - name: Pack prepared test workspace
         if: env.SKIP_STAGING_TESTS != 'true'
         run: |
-          bash scripts/pack-ci-test-workspace.sh \
+          bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
             "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
