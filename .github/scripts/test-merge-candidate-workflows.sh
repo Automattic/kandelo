@@ -266,6 +266,11 @@ fi
 merge_gate=$(job_block "$PREPARE" merge-gate-post)
 grep -Fq 'mark-merge-candidate-ready.sh' <<<"$merge_gate" || \
   fail "merge-gate must seal and publish candidate authority"
+grep -Fq 'ref: ${{ needs.synthesize-merge.outputs.base_sha }}' <<<"$merge_gate" || \
+  fail "write-authorized merge-gate helpers must come from the exact prepared base"
+if grep -Fq 'ref: ${{ needs.synthesize-merge.outputs.head_sha }}' <<<"$merge_gate"; then
+  fail "write-authorized merge-gate helpers must not come from the pull request head"
+fi
 grep -Fq 'candidate_index_sha256: ${{ steps.candidate_index.outputs.sha256 }}' "$PREPARE" || \
   fail "test preparation must export the exact candidate index digest"
 grep -Fq 'candidate_index_sha256: ${{ steps.gate.outputs.candidate_index_sha256 }}' "$PREPARE" || \

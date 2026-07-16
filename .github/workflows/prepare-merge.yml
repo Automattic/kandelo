@@ -1873,7 +1873,10 @@ jobs:
       - name: Checkout candidate lifecycle helpers
         uses: actions/checkout@v7.0.0
         with:
-          ref: ${{ needs.synthesize-merge.outputs.head_sha }}
+          # This job has release-write authority. Execute lifecycle code from
+          # the exact trusted base that was synthesized and tested, never from
+          # the pull request whose candidate is being sealed.
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           sparse-checkout: |
             .github/scripts
 

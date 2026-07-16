@@ -168,6 +168,14 @@ closed during activation. This is repository process policy, not tamper-proof
 two-person authorization: same-repository writers are trusted to change the
 workflow and helper code through the normal review process.
 
+The write-authorized merge gate executes candidate lifecycle helpers from the
+exact prepared base commit, not from the pull request head. The pull request is
+candidate data to validate and seal; it is not an authority for code that can
+write release assets or publish the `merge-gate` status. This also lets an older
+pull request use lifecycle helpers added to the base after its branch was
+created, as long as that same base was synthesized and tested with the pull
+request.
+
 `activate-merge-candidate.yml` checks out the current default branch and runs
 after a merged PR emits `pull_request:closed`. That event is only a fast path:
 the workflow also scans for recoverable candidates every 30 minutes and can be
