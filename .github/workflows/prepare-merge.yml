@@ -1774,8 +1774,13 @@ jobs:
 
       - name: Run ${{ matrix.label }} suite
         if: steps.suite.outputs.skip != 'true'
+        # Suite controls must cross dev-shell.sh's --ignore-environment
+        # boundary explicitly; otherwise every shard defaults to "all" and
+        # the browser consumer skips its deferred asset preparation.
         run: |
-          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+          bash scripts/dev-shell.sh env \
+            PREPARE_BROWSER_ASSETS="$PREPARE_BROWSER_ASSETS" \
+            bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
 
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'

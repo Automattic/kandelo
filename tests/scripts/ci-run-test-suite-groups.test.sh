@@ -94,4 +94,17 @@ grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$browser_capture"
 
+for workflow in \
+    "$REPO_ROOT/.github/workflows/staging-build.yml" \
+    "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
+    grep -Fq 'PREPARE_BROWSER_ASSETS="$PREPARE_BROWSER_ASSETS" \' "$workflow" || {
+        echo "$(basename "$workflow"): browser preparation is not passed through the dev shell" >&2
+        exit 1
+    }
+    grep -Fq 'bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"' "$workflow" || {
+        echo "$(basename "$workflow"): test group is not passed positionally through the dev shell" >&2
+        exit 1
+    }
+done
+
 echo "ci-run-test-suite: conformance group mappings passed"
