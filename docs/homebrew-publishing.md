@@ -591,19 +591,35 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
    and deterministic OCI child against the plan before exposing the token to an
-   isolated ORAS transport. This
-   includes bounded tar structure, link safety, receipt identity, local-build-root
+   isolated ORAS transport. This includes bounded tar structure, link safety,
+   receipt identity, local-build-root
    absence across all regular members, and every Wasm member's ABI, memory width,
    object kind, and fork instrumentation. The credentialed step cannot evaluate
-   Formula Ruby or construct OCI metadata. It copies only the validated child
+   Formula Ruby or construct OCI metadata. GHCR returns the same anonymous
+   authorization failure for a missing package namespace and an existing private
+   reference. At that boundary, write mode uses the isolated credentials to fetch
+   the exact destination descriptor. The probe bounds both output streams and
+   accepts only structured descriptors or exact known ORAS errors; oversized or
+   unclassified responses fail closed. When anonymous authorization hides whether
+   the package exists, an authenticated missing descriptor must be followed by an
+   authenticated repository probe. That probe requests the single JSON page after
+   the lexicographically greatest legal OCI tag, so repository existence does not
+   require enumerating an unbounded tag set. On this authorization-hidden path,
+   only a missing repository permits the first upload; an existing repository, an
+   existing descriptor, an unclassified response, or an authorization failure
+   stops before transport. A directly anonymous missing response is already
+   public evidence that the destination tag is absent and does not need that
+   private-state disambiguation. The uploader copies only the validated child
    layout to its content-derived tag, retires the isolated ORAS authentication
    state, and requires an anonymous exact-digest readback. Its only output is a
    strict data receipt binding the canonical layout receipt to that public
    readback.
-3. `publish-bottle-index` receives `packages: write` once per Formula. Under a
-   formula-scoped concurrency lock it validates every requested child layout and
-   public child receipt, anonymously imports the current Homebrew top reference,
-   and preserves a compatible sibling architecture. The anonymous importer
+3. `publish-bottle-index` receives `packages: write` once per Formula. The
+   official caller-repository workflow uses a formula-scoped concurrency lock to
+   serialize supported writers. Under that lock it validates every requested
+   child layout and public child receipt, anonymously imports the current
+   Homebrew top reference, and preserves a compatible sibling architecture. The
+   anonymous importer
    validates bounded top, child, config, and layer descriptors by digest before
    it starts the layer copy, confirms the mutable tag did not change during that
    validation, and pins the copy to the validated top digest. It then composes
@@ -611,9 +627,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    the final layout copy receives registry credentials; Formula Ruby and OCI
    composition remain credential-free. A conflicting same-reference child or a
    stale Formula/support closure fails instead of overwriting bytes. The top
-   index receipt records the previous digest, and transport refuses a concurrent
-   change. First publication of a private GHCR package fails at the explicit
-   visibility boundary; automation never changes package visibility.
+   index receipt records the previous digest, transport rechecks that digest
+   immediately before its copy, and an anonymous readback verifies the result.
+   GitHub Container Registry (GHCR) does not provide this path with a documented
+   conditional tag update, so an authorized writer outside the official workflow
+   lock must not publish the same Formula concurrently. First publication of a
+   private GHCR package fails at the explicit visibility boundary; automation
+   never changes package visibility.
 4. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
    revalidates the build handoff and receipt, fetches the full Kandelo ABI
    runtime graph, builds the VFS image, and runs the runtime and browser gates.
@@ -683,9 +703,12 @@ locally committed success attempt cannot enter a last-green failure commit.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
 tap commits. Dry runs still build bottles and validate the generated metadata
-shape. They seed the VFS builder from the current local bottle. Non-dry runs
-seed it only with bytes returned by the anonymous GHCR readback. The publisher
-deliberately does not restore GitHub
+shape. An anonymous GHCR authorization failure remains a non-public dry-run
+result; dry-run upload planning neither loads registry credentials nor attempts
+to distinguish a missing namespace from a private reference. Dry runs seed the
+VFS builder from the current local bottle. Non-dry runs seed it only with bytes
+returned by the anonymous GHCR readback. The publisher deliberately does not
+restore GitHub
 Actions dependency caches: selected tap and Kandelo refs are executable code,
 and a manually dispatched dry run can write Actions storage in the same
 repository scope as a later privileged publish. Run-scoped diagnostic artifacts

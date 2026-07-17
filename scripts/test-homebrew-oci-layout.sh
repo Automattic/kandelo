@@ -530,14 +530,32 @@ case "${1:-} ${2:-}" in
             cat "$IMPORT_DESCRIPTOR"
           fi
           ;;
-        missing) echo "manifest unknown" >&2; exit 1 ;;
-        private) echo "unauthorized: authentication required" >&2; exit 1 ;;
-        broken) echo "registry transport unavailable" >&2; exit 1 ;;
+        missing) echo "Error response from registry: manifest unknown" >&2; exit 1 ;;
+        private) echo "Error response from registry: unauthorized: authentication required" >&2; exit 1 ;;
+        spoofed) echo 'Error response from registry: GET "https://ghcr.io/v2/example/name-unknown/denied/status-code-404/tags/list": network timeout' >&2; exit 1 ;;
+        truncated-spoofed)
+          {
+            printf 'Error response from registry: manifest unknown'
+            head -c 5000 /dev/zero | tr '\0' ' '
+            printf 'registry transport unavailable\n'
+          } >&2
+          exit 1
+          ;;
+        broken) echo "Error response from registry: registry transport unavailable" >&2; exit 1 ;;
         *) exit 2 ;;
       esac
     elif [[ "$target" == *@sha256:* ]]; then
       digest="${target##*@sha256:}"
-      if [ -n "${IMPORT_SLOW_OVERRUN:-}" ]; then
+      if [ -n "${IMPORT_ORPHAN_OVERRUN:-}" ]; then
+        : "${IMPORT_CHILD_PID_FILE:?IMPORT_CHILD_PID_FILE is required}"
+        (
+          sleep 1
+          printf '{}'
+          sleep 30
+        ) &
+        printf '%s\n' "$!" >"$IMPORT_CHILD_PID_FILE"
+        exit 0
+      elif [ -n "${IMPORT_SLOW_OVERRUN:-}" ]; then
         printf '{}'
         sleep 30
       else
@@ -584,6 +602,8 @@ run_import() {
     IMPORT_DESCRIPTOR="$root/descriptor.json" IMPORT_LAYOUT="$root/remote-layout" \
     IMPORT_BLOB_SIZE="${IMPORT_BLOB_SIZE:-}" \
     IMPORT_MUTATED_DESCRIPTOR="${IMPORT_MUTATED_DESCRIPTOR:-}" \
+    IMPORT_ORPHAN_OVERRUN="${IMPORT_ORPHAN_OVERRUN:-}" \
+    IMPORT_CHILD_PID_FILE="${IMPORT_CHILD_PID_FILE:-}" \
     IMPORT_SLOW_OVERRUN="${IMPORT_SLOW_OVERRUN:-}" \
     IMPORT_STATE="$TMP_ROOT/import-$label-state" \
     PATH="$IMPORT_MOCK_BIN:$PATH" python3 "$TOOL" import-public-index \
@@ -649,6 +669,39 @@ response_elapsed="$(($(date +%s) - response_started))"
   exit 1
 }
 
+# A registry leader can exit while a same-group child still owns its pipes.
+# The bound must kill that descendant, not only reap the leader.
+orphan_pid_file="$TMP_ROOT/import-orphan-overrun.pid"
+: >"$TMP_ROOT/import-orphan-overrun.log"
+orphan_started="$(date +%s)"
+IMPORT_ORPHAN_OVERRUN=1 IMPORT_CHILD_PID_FILE="$orphan_pid_file" \
+  expect_failure import-orphan-overrun \
+    "anonymous registry response exceeds 1 bytes" \
+    run_import orphan-overrun top-response-size
+orphan_elapsed="$(($(date +%s) - orphan_started))"
+[ "$orphan_elapsed" -lt 10 ] || {
+  echo "orphaned over-limit registry response was not terminated promptly" >&2
+  exit 1
+}
+[ -s "$orphan_pid_file" ] || {
+  echo "orphaned registry fixture did not record its child" >&2
+  exit 1
+}
+orphan_pid="$(cat "$orphan_pid_file")"
+for _attempt in 1 2 3 4 5; do
+  ! kill -0 "$orphan_pid" 2>/dev/null && break
+  sleep 1
+done
+if kill -0 "$orphan_pid" 2>/dev/null; then
+  kill -KILL "$orphan_pid" 2>/dev/null || true
+  echo "bounded registry cleanup left a descendant running" >&2
+  exit 1
+fi
+! grep -E '^cp ' "$TMP_ROOT/import-orphan-overrun.log" >/dev/null || {
+  echo "orphaned over-limit registry response reached oras cp" >&2
+  exit 1
+}
+
 # The layer's resolved registry size, not only its manifest claim, is bounded.
 : >"$TMP_ROOT/import-resolved-layer-size.log"
 IMPORT_BLOB_SIZE="$((HOMEBREW_MAX_BOTTLE_BYTES + 1))" \
@@ -689,6 +742,15 @@ IMPORT_MODE=private expect_failure import-private \
 IMPORT_MODE=broken expect_failure import-broken \
   "could not classify anonymous Homebrew index import" run_import broken valid
 ! grep -E '^cp ' "$TMP_ROOT/import-broken.log" >/dev/null
+: >"$TMP_ROOT/import-spoofed.log"
+IMPORT_MODE=spoofed expect_failure import-classifier-spoof \
+  "could not classify anonymous Homebrew index import" run_import spoofed valid
+! grep -E '^cp ' "$TMP_ROOT/import-spoofed.log" >/dev/null
+: >"$TMP_ROOT/import-truncated-spoofed.log"
+IMPORT_MODE=truncated-spoofed expect_failure import-classifier-truncated-spoof \
+  "could not classify anonymous Homebrew index import" \
+  run_import truncated-spoofed valid
+! grep -E '^cp ' "$TMP_ROOT/import-truncated-spoofed.log" >/dev/null
 
 MOCK_BIN="$TMP_ROOT/mock-bin"
 ORAS_LOG="$TMP_ROOT/oras.log"
@@ -697,17 +759,83 @@ cat >"$MOCK_BIN/oras" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$ORAS_LOG"
+reject_credential_env() {
+  for credential in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+    [ -z "${!credential:-}" ] || {
+      echo "credential leaked into ORAS process: $credential" >&2
+      exit 9
+    }
+  done
+}
 case "${1:-}" in
-  manifest)
-    for credential in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-      HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
-      [ -z "${!credential:-}" ] || {
-        echo "credential leaked into anonymous preflight: $credential" >&2
-        exit 9
-      }
-    done
+  manifest|repo)
+    reject_credential_env
     mode="${ORAS_PREFLIGHT:-missing}"
-    if [[ "$mode" == *-* ]]; then
+    registry_config=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = --registry-config ]; then
+        registry_config="$argument"
+        break
+      fi
+      previous="$argument"
+    done
+    case "$registry_config" in
+      */anonymous.json) request_auth=anonymous ;;
+      *)
+        request_auth=authenticated
+        [ -f "$registry_config" ] || {
+          echo "authenticated registry config is missing" >&2
+          exit 9
+        }
+        ;;
+    esac
+    request_kind="${1:-}"
+    if [[ "$mode" == ghcr-* ]]; then
+      : "${ORAS_STATE:?ORAS_STATE is required for GHCR mock responses}"
+      count=0
+      [ ! -f "$ORAS_STATE" ] || count="$(cat "$ORAS_STATE")"
+      count="$((count + 1))"
+      printf '%s\n' "$count" >"$ORAS_STATE"
+      case "$mode:$request_kind:$request_auth:$count" in
+        ghcr-denied-dry:manifest:anonymous:1) mode=private ;;
+        ghcr-missing-present:manifest:anonymous:1) mode=private ;;
+        ghcr-missing-present:manifest:authenticated:2) mode=missing ;;
+        ghcr-missing-present:repo:authenticated:3) mode=repository-missing ;;
+        ghcr-missing-present:manifest:anonymous:4) mode=present ;;
+        ghcr-private-present:manifest:anonymous:1) mode=private ;;
+        ghcr-private-present:manifest:authenticated:2) mode=present ;;
+        ghcr-private-missing:manifest:anonymous:1) mode=private ;;
+        ghcr-private-missing:manifest:authenticated:2) mode=missing ;;
+        ghcr-private-missing:repo:authenticated:3) mode=repository-present ;;
+        ghcr-auth-invalid:manifest:anonymous:1) mode=private ;;
+        ghcr-auth-invalid:manifest:authenticated:2) mode=present ;;
+        ghcr-auth-spoof:manifest:anonymous:1) mode=private ;;
+        ghcr-auth-spoof:manifest:authenticated:2) mode=spoofed ;;
+        ghcr-auth-denied:manifest:anonymous:1|ghcr-auth-denied:manifest:authenticated:2) mode=private ;;
+        ghcr-repo-denied:manifest:anonymous:1) mode=private ;;
+        ghcr-repo-denied:manifest:authenticated:2) mode=missing ;;
+        ghcr-repo-denied:repo:authenticated:3) mode=private ;;
+        ghcr-repo-invalid:manifest:anonymous:1) mode=private ;;
+        ghcr-repo-invalid:manifest:authenticated:2) mode=missing ;;
+        ghcr-repo-invalid:repo:authenticated:3) mode=repository-invalid ;;
+        ghcr-repo-large:manifest:anonymous:1) mode=private ;;
+        ghcr-repo-large:manifest:authenticated:2) mode=missing ;;
+        ghcr-repo-large:repo:authenticated:3) mode=repository-file ;;
+        ghcr-repo-error-large:manifest:anonymous:1) mode=private ;;
+        ghcr-repo-error-large:manifest:authenticated:2) mode=missing ;;
+        ghcr-repo-error-large:repo:authenticated:3) mode=error-file ;;
+        ghcr-repo-spoof:manifest:anonymous:1) mode=private ;;
+        ghcr-repo-spoof:manifest:authenticated:2) mode=missing ;;
+        ghcr-repo-spoof:repo:authenticated:3) mode=spoofed ;;
+        ghcr-missing-private:manifest:anonymous:1) mode=private ;;
+        ghcr-missing-private:manifest:authenticated:2) mode=missing ;;
+        ghcr-missing-private:repo:authenticated:3) mode=repository-missing ;;
+        ghcr-missing-private:manifest:anonymous:4) mode=private ;;
+        *) exit 2 ;;
+      esac
+    elif [[ "$mode" == *-* ]]; then
       : "${ORAS_STATE:?ORAS_STATE is required for sequenced mock responses}"
       count=0
       [ ! -f "$ORAS_STATE" ] || count="$(cat "$ORAS_STATE")"
@@ -720,22 +848,71 @@ case "${1:-}" in
         *) exit 2 ;;
       esac
     fi
+    target="${!#}"
     case "$mode" in
-      missing) echo "manifest unknown" >&2; exit 1 ;;
+      missing) echo "Error response from registry: manifest unknown" >&2; exit 1 ;;
+      observed_missing) echo "Error response from registry: failed to find \"$target\": $target: not found" >&2; exit 1 ;;
       present) cat "$ORAS_DESCRIPTOR" ;;
-      private) echo "unauthorized: authentication required" >&2; exit 1 ;;
-      broken) echo "registry transport unavailable" >&2; exit 1 ;;
+      repository-missing) echo "Error response from registry: name unknown: repository name not known to registry" >&2; exit 1 ;;
+      repository-present) printf '{"tags":[]}\n' ;;
+      repository-invalid) printf '{"tags":"not-an-array"}\n' ;;
+      repository-file) cat "$ORAS_TAGS" ;;
+      error-file) cat "$ORAS_ERROR" >&2; exit 1 ;;
+      private) echo "Error response from registry: unauthorized: authentication required" >&2; exit 1 ;;
+      spoofed) echo 'Error response from registry: GET "https://ghcr.io/v2/example/name-unknown/denied/status-code-404/tags/list": network timeout' >&2; exit 1 ;;
+      truncated-spoofed)
+        {
+          printf 'Error response from registry: unauthorized: authentication required'
+          head -c 5000 /dev/zero | tr '\0' ' '
+          printf 'registry transport unavailable\n'
+        } >&2
+        exit 1
+        ;;
+      broken) echo "Error response from registry: registry transport unavailable" >&2; exit 1 ;;
       *) exit 2 ;;
     esac
     ;;
-  login) cat >/dev/null ;;
-  cp) ;;
+  login)
+    reject_credential_env
+    registry_config=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = --registry-config ]; then
+        registry_config="$argument"
+        break
+      fi
+      previous="$argument"
+    done
+    [ -n "$registry_config" ] || exit 2
+    cat >/dev/null
+    mkdir -p "$(dirname "$registry_config")"
+    printf '{"auths":{"ghcr.io":{}}}\n' >"$registry_config"
+    ;;
+  cp) reject_credential_env ;;
   *) exit 2 ;;
 esac
 EOF
 chmod +x "$MOCK_BIN/oras"
 
-ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" \
+assert_logged_auth_configs_retired() {
+  local config
+  while IFS= read -r config; do
+    [ -z "$config" ] || [ ! -e "$config" ] || {
+      echo "isolated ORAS authentication state was not retired: $config" >&2
+      exit 1
+    }
+  done < <(awk '
+    $1 == "login" {
+      for (i = 1; i <= NF; i += 1) {
+        if ($i == "--registry-config") print $(i + 1)
+      }
+    }
+  ' "$ORAS_LOG")
+}
+
+: >"$ORAS_LOG"
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-denied-dry GH_TOKEN=test-token \
+  ORAS_STATE="$TMP_ROOT/dry-denied-oras-state" PATH="$MOCK_BIN:$PATH" \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
@@ -745,6 +922,10 @@ ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" \
     --dry-run >/dev/null
 jq -e '.kind == "child" and .publication.status == "dry-run"' \
   "$TMP_ROOT/child32/dry-upload.json" >/dev/null
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "dry-run GHCR denial exposed credentials or performed a transport" >&2
+  exit 1
+}
 python3 "$TOOL" validate-publication-receipt \
   --receipt "$TMP_ROOT/child32/dry-upload.json" \
   --layout-receipt "$TMP_ROOT/child32/receipt.json" \
@@ -758,11 +939,29 @@ expect_failure dry-publication-as-public \
     --kind child --formula hello \
     --tap-repository Automattic/kandelo-homebrew
 
+: >"$ORAS_LOG"
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=observed_missing PATH="$MOCK_BIN:$PATH" \
+  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+    --layout "$TMP_ROOT/child32/layout" \
+    --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --out-json "$TMP_ROOT/child32/observed-missing-dry-upload.json" \
+    --dry-run >/dev/null
+jq -e '
+  .publication.status == "dry-run" and
+  .publication.public_readback_digest == null
+' "$TMP_ROOT/child32/observed-missing-dry-upload.json" >/dev/null
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "public missing-tag dry run performed an authenticated transport" >&2
+  exit 1
+}
+
 jq -nS --arg digest "$(jq -r '.oci.manifest.digest' "$TMP_ROOT/child32/receipt.json")" \
   '{mediaType: "application/vnd.oci.image.manifest.v1+json", digest: $digest, size: 1}' \
   >"$TMP_ROOT/present-descriptor.json"
 : >"$ORAS_LOG"
-ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=missing-present \
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
   ORAS_STATE="$TMP_ROOT/upload-oras-state" \
   ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
   KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
@@ -817,6 +1016,10 @@ auth_config="$(awk '
   echo "isolated ORAS authentication state was not retired" >&2
   exit 1
 }
+! grep -F 'test-token' "$ORAS_LOG" >/dev/null || {
+  echo "registry credential appeared in ORAS arguments or logs" >&2
+  exit 1
+}
 
 ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
@@ -831,6 +1034,22 @@ python3 "$TOOL" validate-publication-receipt \
   --layout-receipt "$TMP_ROOT/combined/receipt.json" \
   --kind index --formula hello \
   --tap-repository Automattic/kandelo-homebrew --allow-dry-run
+
+: >"$ORAS_LOG"
+expect_failure dry-index-auth-required \
+  "anonymous index preflight cannot establish the current top reference" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-denied-dry \
+    ORAS_STATE="$TMP_ROOT/dry-index-denied-oras-state" PATH="$MOCK_BIN:$PATH" \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/combined/layout" \
+      --layout-receipt "$TMP_ROOT/combined/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/combined/denied-dry-upload.json" \
+      --dry-run
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "unresolved index dry run performed an authenticated transport" >&2
+  exit 1
+}
 jq '.publication.status = "uploaded" |
     .publication.public_readback_digest = .publication.digest' \
   "$TMP_ROOT/combined/dry-upload.json" >"$TMP_ROOT/combined/public-upload.json"
@@ -866,13 +1085,232 @@ expect_failure transport-conflict "content-derived child tag resolves to differe
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository Automattic/kandelo-homebrew \
       --formula hello --out-json "$TMP_ROOT/conflict-upload.json"
-expect_failure transport-unclassified "could not classify anonymous destination preflight" \
+expect_failure transport-unclassified "could not classify manifest registry probe" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=broken PATH="$MOCK_BIN:$PATH" \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository Automattic/kandelo-homebrew \
       --formula hello --out-json "$TMP_ROOT/broken-upload.json"
+
+: >"$ORAS_LOG"
+expect_failure transport-classifier-name-spoof "could not classify manifest registry probe" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=spoofed PATH="$MOCK_BIN:$PATH" \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/spoofed-upload.json"
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "spoofed anonymous error reached authenticated transport" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+expect_failure transport-classifier-truncated-spoof \
+  "could not classify manifest registry probe" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=truncated-spoofed PATH="$MOCK_BIN:$PATH" \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/truncated-spoofed-upload.json"
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "truncated spoofed error reached authenticated transport" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+expect_failure transport-missing-token "GH_TOKEN is required for GHCR transport" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-denied-dry \
+    ORAS_STATE="$TMP_ROOT/missing-token-oras-state" PATH="$MOCK_BIN:$PATH" \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/missing-token-upload.json"
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "missing-token preflight reached authenticated transport" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+expect_failure transport-existing-private "authorized owner must make the GHCR package public" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-private-present \
+    ORAS_STATE="$TMP_ROOT/existing-private-oras-state" \
+    ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/existing-private-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "existing private reference reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure transport-auth-classifier-spoof "could not classify manifest registry probe" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-auth-spoof \
+    ORAS_STATE="$TMP_ROOT/auth-spoof-oras-state" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/auth-spoof-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "spoofed authenticated manifest error reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+printf '{"digest":"not-a-digest"}\n' >"$TMP_ROOT/invalid-descriptor.json"
+: >"$ORAS_LOG"
+expect_failure transport-auth-invalid-descriptor \
+  "registry probe descriptor must contain exactly" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-auth-invalid \
+    ORAS_STATE="$TMP_ROOT/auth-invalid-oras-state" \
+    ORAS_DESCRIPTOR="$TMP_ROOT/invalid-descriptor.json" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/auth-invalid-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "invalid authenticated descriptor reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure transport-repository-classifier-spoof \
+  "could not classify repository registry probe" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-repo-spoof \
+    ORAS_STATE="$TMP_ROOT/repo-spoof-oras-state" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/repo-spoof-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "spoofed authenticated repository error reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure transport-existing-private-missing-tag \
+  "authorized owner must make the GHCR package public" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-private-missing \
+    ORAS_STATE="$TMP_ROOT/existing-private-missing-oras-state" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/existing-private-missing-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "missing tag in a private repository reached OCI transport" >&2
+  exit 1
+}
+grep -E '^repo tags --last z{128} --format json --registry-config ' "$ORAS_LOG" >/dev/null || {
+  echo "private missing-tag preflight skipped repository inspection" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+head -c 65537 /dev/zero | tr '\0' x >"$TMP_ROOT/large-registry-error.txt"
+: >"$ORAS_LOG"
+expect_failure transport-repository-error-oversized \
+  "registry repository probe error response exceeds 65536 bytes" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-repo-error-large \
+    ORAS_STATE="$TMP_ROOT/repo-error-large-oras-state" \
+    ORAS_ERROR="$TMP_ROOT/large-registry-error.txt" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/repo-error-large-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "oversized authenticated repository error reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure transport-repository-invalid \
+  "registry repository probe tags must be an array" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-repo-invalid \
+    ORAS_STATE="$TMP_ROOT/repo-invalid-oras-state" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/repo-invalid-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "invalid authenticated repository response reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+head -c 65537 /dev/zero | tr '\0' x >"$TMP_ROOT/large-tags.json"
+: >"$ORAS_LOG"
+expect_failure transport-repository-oversized \
+  "registry repository probe response exceeds 65536 bytes" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-repo-large \
+    ORAS_STATE="$TMP_ROOT/repo-large-oras-state" ORAS_TAGS="$TMP_ROOT/large-tags.json" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/repo-large-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "oversized authenticated repository response reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure transport-auth-denied \
+  "authenticated credentials cannot inspect destination preflight" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-auth-denied \
+    ORAS_STATE="$TMP_ROOT/auth-denied-oras-state" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/auth-denied-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "uninspectable authenticated reference reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure transport-repository-auth-denied \
+  "authenticated credentials cannot inspect repository preflight" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-repo-denied \
+    ORAS_STATE="$TMP_ROOT/repo-denied-oras-state" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello --out-json "$TMP_ROOT/repo-denied-upload.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "uninspectable authenticated repository reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
 
 expect_failure transport-race "different digest after upload" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=missing-present \
@@ -885,8 +1323,9 @@ expect_failure transport-race "different digest after upload" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository Automattic/kandelo-homebrew \
       --formula hello --out-json "$TMP_ROOT/race-upload.json"
-expect_failure transport-private "authorized owner must make the GHCR package public" \
-  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=missing-private \
+: >"$ORAS_LOG"
+expect_failure transport-private-after-upload "authorized owner must make the GHCR package public" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-private \
     ORAS_STATE="$TMP_ROOT/private-oras-state" \
     KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
     PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
@@ -895,6 +1334,11 @@ expect_failure transport-private "authorized owner must make the GHCR package pu
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository Automattic/kandelo-homebrew \
       --formula hello --out-json "$TMP_ROOT/private-upload.json"
+grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "first private GHCR package did not upload before the visibility boundary" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
 expect_failure transport-not-public "did not become anonymously readable" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=missing-missing \
     ORAS_STATE="$TMP_ROOT/missing-oras-state" \
