@@ -675,6 +675,11 @@ assert_build_handoff_is_minimal_and_validated() {
   local out_env="$TMPDIR/build-handoff-valid.env"
   local rawless_env="$TMPDIR/build-handoff-valid-rawless.env"
   local canonical_json="$TMPDIR/build-handoff-valid.bottle.json"
+  local rebuild_seed="$TMPDIR/build-handoff-rebuild-seed"
+  local rebuild_handoff="$TMPDIR/build-handoff-rebuild-valid"
+  local rebuild_bottle="$TMPDIR/hello--2.12.1.wasm32_kandelo.bottle.1.tar.gz"
+  local rebuild_json="$TMPDIR/hello--2.12.1.wasm32_kandelo.bottle.json"
+  local rebuild_env="$TMPDIR/build-handoff-rebuild-valid.env"
   local files
   make_build_handoff "$handoff"
   validate_build_handoff "$handoff" --out-env "$rawless_env" >/dev/null
@@ -700,6 +705,8 @@ assert_build_handoff_is_minimal_and_validated() {
       fail "validated handoff env exposed raw artifact bottle JSON"
     [ "$BOTTLE_SHA256" = "$(sha256sum "$BOTTLE_ARCHIVE" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$BOTTLE_ARCHIVE" | awk '{print $1}')" ] ||
       fail "validated handoff env has the wrong archive SHA-256"
+    [ "$BOTTLE_FILENAME" = "hello--2.12.1.wasm32_kandelo.bottle.tar.gz" ] ||
+      fail "validated handoff env has the wrong Homebrew bottle filename"
     [ "$BOTTLE_BYTES" = "$(wc -c <"$BOTTLE_ARCHIVE" | tr -d '[:space:]')" ] ||
       fail "validated handoff env has the wrong archive byte count"
     [ "$BOTTLE_RELOCATION_CELLAR" = "any_skip_relocation" ] ||
@@ -729,6 +736,35 @@ assert_build_handoff_is_minimal_and_validated() {
   ! grep -q "artifact-only" "$canonical_json" ||
     fail "canonical bottle JSON copied untrusted artifact-only fields"
 
+  make_build_handoff "$rebuild_seed"
+  cp "$rebuild_seed/bottle.tar.gz" "$rebuild_bottle"
+  jq '
+    .[].bottle.rebuild = 1 |
+    .[].bottle.tags.wasm32_kandelo.local_filename =
+      "hello--2.12.1.wasm32_kandelo.bottle.1.tar.gz"
+  ' "${rebuild_seed}.source/hello--2.12.1.wasm32_kandelo.bottle.json" \
+    >"$rebuild_json"
+  bash "$REPO_ROOT/scripts/homebrew-create-build-handoff.sh" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
+    --bottle "$rebuild_bottle" \
+    --bottle-json "$rebuild_json" \
+    --dependency-provenance "${rebuild_seed}.source/dependency-provenance.json" \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --out "$rebuild_handoff" >/dev/null
+  validate_build_handoff "$rebuild_handoff" --out-env "$rebuild_env" >/dev/null
+  (
+    # shellcheck disable=SC1090
+    . "$rebuild_env"
+    [ "$BOTTLE_FILENAME" = "hello--2.12.1.wasm32_kandelo.bottle.1.tar.gz" ] ||
+      fail "validated handoff put the bottle rebuild in the wrong filename position"
+  )
+
   handoff="$TMPDIR/build-handoff-large-valid-json"
   BUILD_HANDOFF_EXTRA_FILE_COUNT=30000 make_build_handoff "$handoff"
   [ "$(wc -c <"$handoff/bottle.json" | tr -d '[:space:]')" -gt 1048576 ] ||
@@ -738,10 +774,28 @@ assert_build_handoff_is_minimal_and_validated() {
 }
 
 assert_build_handoff_rejects_untrusted_content() {
-  local handoff err tmp zstd_bottle zstd_out invalid_gzip invalid_json invalid_out invalid_sha canonical_json out_env archive_stage stale_wat
+  local handoff err tmp renamed_bottle renamed_out zstd_bottle zstd_out invalid_gzip invalid_json invalid_out invalid_sha canonical_json out_env archive_stage stale_wat
 
   handoff="$TMPDIR/build-handoff-zstd-seed"
   make_build_handoff "$handoff"
+  renamed_bottle="$TMPDIR/renamed.bottle.tar.gz"
+  renamed_out="$TMPDIR/build-handoff-renamed"
+  cp "$handoff/bottle.tar.gz" "$renamed_bottle"
+  if bash "$REPO_ROOT/scripts/homebrew-create-build-handoff.sh" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
+    --bottle "$renamed_bottle" \
+    --bottle-json "${handoff}.source/hello--2.12.1.wasm32_kandelo.bottle.json" \
+    --dependency-provenance "${handoff}.source/dependency-provenance.json" \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --out "$renamed_out" >/dev/null 2>&1; then
+    fail "build handoff creator accepted a bottle renamed after Homebrew built it"
+  fi
   zstd_bottle="$TMPDIR/hello--2.12.1.wasm32_kandelo.bottle.tar.zst"
   zstd_out="$TMPDIR/build-handoff-zstd"
   cp "$handoff/bottle.tar.gz" "$zstd_bottle"
@@ -932,6 +986,23 @@ EOF
     fail "build handoff validator accepted a bottle JSON SHA that differs from the archive"
   fi
 
+  handoff="$TMPDIR/build-handoff-local-filename"
+  make_build_handoff "$handoff"
+  tmp="$TMPDIR/build-handoff-local-filename.json"
+  jq '.[].bottle.tags.wasm32_kandelo.local_filename = "bottle.tar.gz"' \
+    "$handoff/bottle.json" >"$tmp"
+  mv "$tmp" "$handoff/bottle.json"
+  err="$TMPDIR/build-handoff-local-filename.err"
+  out_env="$TMPDIR/build-handoff-local-filename.env"
+  if validate_build_handoff "$handoff" --out-env "$out_env" >/dev/null 2>"$err"; then
+    fail "build handoff validator accepted a noncanonical Homebrew bottle filename"
+  fi
+  grep -F "bottle local filename does not match Homebrew bottle metadata" \
+    "$err" >/dev/null ||
+    fail "build handoff validator did not explain the noncanonical bottle filename"
+  [ ! -e "$out_env" ] ||
+    fail "build handoff validator exported a noncanonical Homebrew bottle filename"
+
   handoff="$TMPDIR/build-handoff-formula-path"
   make_build_handoff "$handoff"
   tmp="$TMPDIR/build-handoff-formula-path.json"
@@ -1012,6 +1083,8 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     . "$out_env"
     [ "$BOTTLE_URL" = "https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:${BOTTLE_SHA256}" ] ||
       fail "validated receipt env has the wrong bottle URL"
+    [ "$BOTTLE_FILENAME" = "hello--2.12.1.wasm32_kandelo.bottle.tar.gz" ] ||
+      fail "validated receipt env lost the Homebrew bottle filename"
     [ "$BOTTLE_JSON" -ef "$canonical_json" ] ||
       fail "validated receipt env exposed raw artifact bottle JSON"
   )
@@ -2374,7 +2447,8 @@ assert_bottle_verifier_installs_test_dependencies() {
   local brew_prefix="$root/brew-prefix"
   local fake_bin="$root/bin"
   local fake_brew="$fake_bin/brew"
-  local bottle="$root/hello.bottle.tar.gz"
+  local bottle="$root/hello--1.0.wasm32_kandelo.bottle.tar.gz"
+  local renamed_bottle="$root/bottle.tar.gz"
   local bottle_json="$root/hello.bottle.json"
   local dependency_provenance="$root/dependency-provenance.json"
   local selection_receipt="$root/selection-receipt.json"
@@ -2389,6 +2463,7 @@ assert_bottle_verifier_installs_test_dependencies() {
   local provenance_capture="$root/provenance.txt"
   local provenance_log_capture="$root/provenance-install.log"
   local native_prefix_capture="$root/native-prefix.txt"
+  local renamed_err="$root/renamed-bottle.err"
   local bottle_sha bottle_bytes tap_commit native_prefix real_python3
 
   make_tap "$tap"
@@ -2415,12 +2490,46 @@ EOF
     "$cache" "$brew_temp" "$state"
   printf 'stale cache entry\n' >"$cache/stale"
   printf 'verified bottle bytes\n' >"$bottle"
-  printf '{}\n' >"$bottle_json"
   printf '{"schema":1}\n' >"$dependency_provenance"
   printf '{"bottle":{"mode":"anonymous-public-readback"}}\n' >"$selection_receipt"
   printf '{"poured_from_bottle":true}\n' >"$target_prefix/INSTALL_RECEIPT.json"
   bottle_sha="$(sha256sum "$bottle" | awk '{print $1}')"
   bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
+  jq -nS --arg sha256 "$bottle_sha" '{
+    hello: {
+      formula: {name: "hello", path: "Formula/hello.rb", pkg_version: "1.0"},
+      bottle: {
+        root_url: "https://example.invalid",
+        cellar: "any_skip_relocation",
+        rebuild: 0,
+        tags: {wasm32_kandelo: {sha256: $sha256}}
+      }
+    }
+  }' >"$bottle_json"
+
+  cp "$bottle" "$renamed_bottle"
+  if GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$tap_commit" \
+      --formula hello \
+      --arch wasm32 \
+      --abi 39 \
+      --bottle "$renamed_bottle" \
+      --bottle-json "$bottle_json" \
+      --bottle-url https://example.invalid/hello--1.0.wasm32_kandelo.bottle.tar.gz \
+      --bottle-sha256 "$bottle_sha" \
+      --bottle-bytes "$bottle_bytes" \
+      --bottle-root-url https://example.invalid \
+      --dependency-provenance "$dependency_provenance" \
+      --selection-receipt "$selection_receipt" \
+      --out "$root/renamed-runtime-evidence.json" >/dev/null 2>"$renamed_err"; then
+    fail "bottle verifier accepted a generic local archive filename"
+  fi
+  grep -F "selected bottle must use Homebrew filename hello--1.0.wasm32_kandelo.bottle.tar.gz" \
+    "$renamed_err" >/dev/null ||
+    fail "bottle verifier did not explain the generic local archive filename"
 
   cat >"$fake_brew" <<'EOF'
 #!/usr/bin/env bash
@@ -2613,7 +2722,7 @@ EOF
       --abi 39 \
       --bottle "$bottle" \
       --bottle-json "$bottle_json" \
-      --bottle-url https://example.invalid/hello.bottle.tar.gz \
+      --bottle-url https://example.invalid/hello--1.0.wasm32_kandelo.bottle.tar.gz \
       --bottle-sha256 "$bottle_sha" \
       --bottle-bytes "$bottle_bytes" \
       --bottle-root-url https://example.invalid \

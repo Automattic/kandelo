@@ -1810,7 +1810,7 @@ jobs:
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
           bottle_cache="$RUNNER_TEMP/homebrew-bottle-cache"
-          runtime_bottle="$bottle_cache/$(basename "$BOTTLE_ARCHIVE")"
+          runtime_bottle="$bottle_cache/$BOTTLE_FILENAME"
           selection_receipt="$RUNNER_TEMP/homebrew-verified-input/selection-receipt.json"
           mkdir -p "$bottle_cache"
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then

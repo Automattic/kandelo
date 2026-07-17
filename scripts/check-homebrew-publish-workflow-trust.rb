@@ -21,7 +21,7 @@ PUBLISHER_PLAN_DIGEST = "994892064c7903c01a2584ecf42217a44c7fb4b877134a2b85628db
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
 PUBLISHER_INDEX_DIGEST = "b3b2974ae56d7a4e2aff142145abc68fcc2034a6f5933b815bf62454ef1ed5c0"
-PUBLISHER_VERIFY_DIGEST = "7403533011442e94beb66dbac788e2bf3d69c9cf83b7841ec776d745bacaa65c"
+PUBLISHER_VERIFY_DIGEST = "598acea935269f45e78b7aeebcb6fef0c1ac370783d22fa70c0740480318bbe6"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -2066,10 +2066,13 @@ def check_publisher(workflow)
   [
     "scripts/homebrew-verify-public-bottle.ts", '--url "$BOTTLE_URL"',
     '--sha256 "$BOTTLE_SHA256"', '--bytes "$BOTTLE_BYTES"', '--out "$runtime_bottle"',
+    'runtime_bottle="$bottle_cache/$BOTTLE_FILENAME"',
     'actual_sha="$(sha256sum "$runtime_bottle"',
   ].each do |fragment|
     check(anonymous_run.include?(fragment), "publisher anonymous bottle readback lacks #{fragment}")
   end
+  check(!anonymous_run.include?('basename "$BOTTLE_ARCHIVE"'),
+        "publisher renames a selected bottle without validated Homebrew metadata")
   check((credential_names & anonymous_run.scan(/[A-Z][A-Z0-9_]+/)).empty?,
         "publisher anonymous bottle readback references a credential")
   index_verify_run = named_step(
@@ -2947,6 +2950,14 @@ def self_test(publisher, maintenance)
       step = mutate_named_step(w, "verify-bottle",
                                "Select exact anonymous bottle bytes for runtime validation")
       step["run"] = step.fetch("run").sub("homebrew-verify-public-bottle.ts", "true")
+    },
+    "generic runtime bottle filename" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle",
+                               "Select exact anonymous bottle bytes for runtime validation")
+      step["run"] = step.fetch("run").sub(
+        'runtime_bottle="$bottle_cache/$BOTTLE_FILENAME"',
+        'runtime_bottle="$bottle_cache/$(basename "$BOTTLE_ARCHIVE")"'
+      )
     },
     "missing exact public index traversal" => lambda { |w|
       step = mutate_named_step(

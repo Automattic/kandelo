@@ -102,12 +102,44 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
+BOTTLE_TAG="${ARCH}_kandelo"
 for file in "$BOTTLE" "$BOTTLE_JSON" "$DEPENDENCY_PROVENANCE" "$SELECTION_RECEIPT"; do
   [ -f "$file" ] && [ ! -L "$file" ] || {
     echo "homebrew-verify-poured-bottle.sh: required input is not a regular file: $file" >&2
     exit 2
   }
 done
+if ! jq -e \
+  --arg formula "$FORMULA" \
+  --arg bottle_tag "$BOTTLE_TAG" \
+  --arg bottle_root_url "$BOTTLE_ROOT_URL" \
+  --arg sha256 "$BOTTLE_SHA256" '
+    type == "object" and keys == [$formula] and
+    (.[$formula].formula | type == "object") and
+    .[$formula].formula.name == $formula and
+    (.[$formula].formula.pkg_version |
+      type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")) and
+    (.[$formula].bottle | type == "object") and
+    .[$formula].bottle.root_url == $bottle_root_url and
+    (.[$formula].bottle.rebuild |
+      type == "number" and . >= 0 and floor == .) and
+    (.[$formula].bottle.tags | type == "object" and keys == [$bottle_tag]) and
+    .[$formula].bottle.tags[$bottle_tag].sha256 == $sha256
+  ' "$BOTTLE_JSON" >/dev/null; then
+  echo "homebrew-verify-poured-bottle.sh: canonical bottle JSON does not match the selected bottle" >&2
+  exit 2
+fi
+PKG_VERSION="$(jq -r --arg formula "$FORMULA" '.[$formula].formula.pkg_version' "$BOTTLE_JSON")"
+BOTTLE_REBUILD="$(jq -r --arg formula "$FORMULA" '.[$formula].bottle.rebuild' "$BOTTLE_JSON")"
+BOTTLE_REBUILD_SUFFIX=""
+if [ "$BOTTLE_REBUILD" != "0" ]; then
+  BOTTLE_REBUILD_SUFFIX=".$BOTTLE_REBUILD"
+fi
+EXPECTED_BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle${BOTTLE_REBUILD_SUFFIX}.tar.gz"
+if [ "$(basename "$BOTTLE")" != "$EXPECTED_BOTTLE_FILENAME" ]; then
+  echo "homebrew-verify-poured-bottle.sh: selected bottle must use Homebrew filename $EXPECTED_BOTTLE_FILENAME" >&2
+  exit 2
+fi
 [ "$(git -C "$TAP_ROOT" rev-parse HEAD)" = "$TAP_COMMIT" ] || {
   echo "homebrew-verify-poured-bottle.sh: tap HEAD differs from the planned commit" >&2
   exit 2
@@ -216,7 +248,6 @@ homebrew_patched_launcher_prepare_native_prefix \
   "$NATIVE_HOME"
 
 FORMULA_REF="$TAP_NAME/$FORMULA"
-BOTTLE_TAG="${ARCH}_kandelo"
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
 export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
 export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
