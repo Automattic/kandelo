@@ -118,9 +118,9 @@ def validate_arguments(args: argparse.Namespace) -> None:
     if isinstance(args.abi, bool) or not isinstance(args.abi, int) or args.abi <= 0:
         fail("ABI must be a positive integer")
     require_string(args.tap_commit, "tap commit", COMMIT)
-    repository = normalized_tap_repository(args)
-    normalized_tap_name(args)
-    expected_root = f"https://ghcr.io/v2/{repository}"
+    normalized_tap_repository(args)
+    tap_name = normalized_tap_name(args)
+    expected_root = f"https://ghcr.io/v2/{tap_name}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL does not match {expected_root}")
     require_string(args.bottle_sha256, "bottle sha256", SHA256)

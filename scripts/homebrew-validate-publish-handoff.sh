@@ -181,6 +181,11 @@ SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=/dev/null
 . "$SCRIPT_ROOT/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
+EXPECTED_BOTTLE_ROOT_URL="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
+if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
+  echo "homebrew-validate-publish-handoff.sh: bottle root URL does not match Homebrew tap name" >&2
+  exit 2
+fi
 # shellcheck source=/dev/null
 . "$SCRIPT_ROOT/homebrew-sibling-bottle-policy.sh"
 # shellcheck source=/dev/null

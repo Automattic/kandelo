@@ -1252,7 +1252,7 @@ mod tests {
     const FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Fixture\"\nend\n";
     const CURRENT_ARCHIVED_FORMULA_TEXT: &str =
         "class Hello < Formula\n  desc \"Current fixture\"\nend\n";
-    const CURRENT_TAP_FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Current fixture\"\n\n  bottle do\n    root_url \"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core\"\n    sha256 cellar: :any_skip_relocation, wasm64_kandelo: \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"\n  end\nend\n";
+    const CURRENT_TAP_FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Current fixture\"\n\n  bottle do\n    root_url \"https://ghcr.io/v2/kandelo-dev/tap-core\"\n    sha256 cellar: :any_skip_relocation, wasm64_kandelo: \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"\n  end\nend\n";
 
     fn write_text(path: &Path, text: &str) {
         if let Some(parent) = path.parent() {
@@ -1332,7 +1332,7 @@ mod tests {
 
         let mut formula = source.strip_suffix("end\n").unwrap().to_string();
         formula.push_str("\n  bottle do\n");
-        formula.push_str("    root_url \"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core\"\n");
+        formula.push_str("    root_url \"https://ghcr.io/v2/kandelo-dev/tap-core\"\n");
         let rebuild = package["bottle_rebuild"].as_u64().unwrap();
         if rebuild != 0 {
             formula.push_str(&format!("    rebuild {rebuild}\n"));

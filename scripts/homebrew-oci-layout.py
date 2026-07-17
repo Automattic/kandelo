@@ -225,10 +225,10 @@ def validate_arguments(args: argparse.Namespace) -> None:
         fail(f"unsupported architecture: {args.arch}")
     require_int(args.abi, "ABI", 1)
     require_string(args.tap_repository, "tap repository", TAP_REPOSITORY)
-    selected_tap_name(args)
+    tap_name = selected_tap_name(args)
     require_string(args.tap_commit, "tap commit", COMMIT)
     require_string(args.kandelo_commit, "Kandelo commit", COMMIT)
-    expected_root = f"https://ghcr.io/v2/{args.tap_repository.lower()}"
+    expected_root = f"https://ghcr.io/v2/{tap_name}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
 
@@ -1067,11 +1067,11 @@ def load_receipt(path: pathlib.Path) -> dict[str, Any]:
     require_int(bottle["bytes"], "receipt bottle bytes", 1)
     require_string(bottle["sha256"], "receipt bottle sha256", SHA256)
     expected_url = (
-        f"https://ghcr.io/v2/{root['tap_repository'].lower()}/"
+        f"https://ghcr.io/v2/{normalized_identity(receipt_tap_name)}/"
         f"{root['formula']}/blobs/sha256:{bottle['sha256']}"
     )
     if bottle["url"] != expected_url:
-        fail("receipt bottle URL does not match its repository and digest")
+        fail("receipt bottle URL does not match its Homebrew tap name and digest")
     oci = exact_keys(
         root["oci"],
         {"config", "diff_id", "homebrew_ref", "manifest", "platform", "transport_tag"},
@@ -2256,7 +2256,7 @@ def validate_publication_receipt_command(args: argparse.Namespace) -> None:
         },
         "OCI publication result",
     )
-    expected_remote = f"ghcr.io/{normalized_identity(tap_repository)}/{formula}"
+    expected_remote = f"ghcr.io/{tap_name}/{formula}"
     if publication["remote"] != expected_remote:
         fail("OCI publication receipt remote is invalid")
     if publication["reference"] != expected_reference:

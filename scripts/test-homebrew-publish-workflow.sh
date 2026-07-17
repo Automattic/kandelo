@@ -240,7 +240,7 @@ assert_upload_dry_run() {
   . "$out"
   [ "${BOTTLE_BYTES:-}" = "12" ] || fail "unexpected bottle byte count"
   case "${BOTTLE_URL:-}" in
-    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:*) ;;
+    https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:*) ;;
     *) fail "unexpected bottle URL: ${BOTTLE_URL:-}" ;;
   esac
 }
@@ -276,7 +276,7 @@ EOF
       --out-env "$out" >/dev/null
   grep -F "push --registry-config " "$log" >/dev/null ||
     fail "oras push did not use isolated registry configuration"
-  grep -F "ghcr.io/kandelo-dev/homebrew-tap-core/hello:bottles-abi-v15-wasm32-" "$log" >/dev/null ||
+  grep -F "ghcr.io/kandelo-dev/tap-core/hello:bottles-abi-v15-wasm32-" "$log" >/dev/null ||
     fail "oras push was not invoked for the expected image"
   grep -F "hello.bottle.tar.gz:application/vnd.homebrew.bottle.layer.v1+gzip" "$log" >/dev/null ||
     fail "oras push did not use relative bottle layer path"
@@ -367,8 +367,8 @@ assert_generator_validates_homebrew_commit_as_data() {
     KANDELO_HOMEBREW_TAP_NAME="kandelo-dev/tap-core" \
     KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$bottle" \
     KANDELO_HOMEBREW_BOTTLE_JSON="$bottle_json" \
-    KANDELO_HOMEBREW_BOTTLE_ROOT_URL="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" \
-    KANDELO_HOMEBREW_BOTTLE_URL="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:${bottle_sha}" \
+    KANDELO_HOMEBREW_BOTTLE_ROOT_URL="https://ghcr.io/v2/kandelo-dev/tap-core" \
+    KANDELO_HOMEBREW_BOTTLE_URL="https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:${bottle_sha}" \
     KANDELO_HOMEBREW_BOTTLE_SHA256="$bottle_sha" \
     KANDELO_HOMEBREW_BOTTLE_BYTES="$bottle_bytes" \
     KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$provenance" \
@@ -406,7 +406,7 @@ make_build_handoff() {
   local bottle_stage="$source_dir/stage/hello/2.12.1"
   local tap_repository="${BUILD_HANDOFF_TAP_REPOSITORY:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${BUILD_HANDOFF_TAP_NAME:-kandelo-dev/tap-core}"
-  local bottle_root="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
+  local bottle_root="https://ghcr.io/v2/$(printf '%s' "$tap_name" | tr '[:upper:]' '[:lower:]')"
   local formula_key="${tap_name}/hello"
   local formula_path="Library/Taps/${tap_name%%/*}/homebrew-${tap_name#*/}/Formula/hello.rb"
   local sha256
@@ -540,7 +540,7 @@ assert_generic_tap_build_handoff_identity() {
     --tap-name acme/tools \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/acme/homebrew-tools \
+    --bottle-root-url https://ghcr.io/v2/acme/tools \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --out-bottle-json "$canonical_bottle_json" >/dev/null
   mkdir -p "$tap/Formula"
@@ -561,11 +561,11 @@ RUBY
     --release-tag bottles-abi-v18 \
     --bottle-json "$canonical_bottle_json" \
     --expected-sha256 "$(jq -er '.hello.bottle.tags.wasm32_kandelo.sha256' "$canonical_bottle_json")" \
-    --expected-root-url https://ghcr.io/v2/acme/homebrew-tools \
+    --expected-root-url https://ghcr.io/v2/acme/tools \
     --expected-cellar any_skip_relocation >/dev/null
-  grep -F 'root_url "https://ghcr.io/v2/acme/homebrew-tools"' \
+  grep -F 'root_url "https://ghcr.io/v2/acme/tools"' \
     "$tap/Formula/hello.rb" >/dev/null ||
-    fail "generic tap merge used the Homebrew name as the GHCR repository"
+    fail "generic tap merge did not use the canonical Homebrew GHCR namespace"
 }
 
 refresh_build_handoff_bottle_identity() {
@@ -597,7 +597,7 @@ validate_build_handoff() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     "$@"
 }
@@ -608,7 +608,7 @@ make_dry_upload_receipt() {
   local sha256 bytes url layout canonical_sha
   sha256="$(jq -er '.bottle.sha256' "$handoff/manifest.json")"
   bytes="$(jq -er '.bottle.bytes' "$handoff/manifest.json")"
-  url="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:$sha256"
+  url="https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:$sha256"
   layout="${receipt}.layout"
   jq -nS \
     --arg sha256 "$sha256" \
@@ -657,7 +657,7 @@ make_dry_upload_receipt() {
       layout: $layout[0],
       layout_receipt_sha256: $canonical_sha,
       publication: {
-        remote: "ghcr.io/kandelo-dev/homebrew-tap-core/hello",
+        remote: "ghcr.io/kandelo-dev/tap-core/hello",
         reference: ("sha256-" + ("6" * 64)),
         digest: ("sha256:" + ("6" * 64)),
         previous_digest: null,
@@ -717,7 +717,7 @@ assert_build_handoff_is_minimal_and_validated() {
       pkg_version: "2.12.1"
     } and
     (.hello.bottle | keys == ["cellar", "rebuild", "root_url", "tags"]) and
-    .hello.bottle.root_url == "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" and
+    .hello.bottle.root_url == "https://ghcr.io/v2/kandelo-dev/tap-core" and
     .hello.bottle.cellar == "any_skip_relocation" and
     .hello.bottle.rebuild == 0 and
     (.hello.bottle.tags | keys == ["wasm32_kandelo"]) and
@@ -752,7 +752,7 @@ assert_build_handoff_rejects_untrusted_content() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --bottle "$zstd_bottle" \
     --bottle-json "${handoff}.source/hello--2.12.1.wasm32_kandelo.bottle.json" \
     --dependency-provenance "${handoff}.source/dependency-provenance.json" \
@@ -776,7 +776,7 @@ assert_build_handoff_rejects_untrusted_content() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --bottle "$invalid_gzip" \
     --bottle-json "$invalid_json" \
     --dependency-provenance "${handoff}.source/dependency-provenance.json" \
@@ -1002,7 +1002,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --allow-dry-run \
     --out-env "$out_env" \
@@ -1010,7 +1010,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
   (
     # shellcheck disable=SC1090
     . "$out_env"
-    [ "$BOTTLE_URL" = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:${BOTTLE_SHA256}" ] ||
+    [ "$BOTTLE_URL" = "https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:${BOTTLE_SHA256}" ] ||
       fail "validated receipt env has the wrong bottle URL"
     [ "$BOTTLE_JSON" -ef "$canonical_json" ] ||
       fail "validated receipt env exposed raw artifact bottle JSON"
@@ -1025,7 +1025,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --allow-dry-run \
     --out-env "$colliding_output" \
@@ -1045,7 +1045,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --allow-dry-run >/dev/null 2>&1; then
     fail "upload receipt validator accepted an undeclared field"
@@ -1061,7 +1061,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --allow-dry-run >/dev/null 2>&1; then
     fail "upload receipt validator accepted a byte count not backed by the build handoff"
@@ -1078,7 +1078,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --allow-dry-run >/dev/null 2>&1; then
     fail "upload receipt validator accepted a receipt larger than 64 KiB"
@@ -1105,7 +1105,7 @@ make_publish_dependency_provenance() {
       tap_repository: "kandelo-dev/homebrew-tap-core",
       tap_name: "kandelo-dev/tap-core",
       tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+      bottle_root_url: "https://ghcr.io/v2/kandelo-dev/tap-core",
       bottle_tag: "wasm32_kandelo",
       dependencies: [
         {
@@ -1119,7 +1119,7 @@ make_publish_dependency_provenance() {
             rebuild: 0,
             sha256: "2222222222222222222222222222222222222222222222222222222222222222",
             tag: "wasm32_kandelo",
-            url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/xz/blobs/sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            url: "https://ghcr.io/v2/kandelo-dev/tap-core/xz/blobs/sha256:2222222222222222222222222222222222222222222222222222222222222222"
           },
           receipt: {
             built_as_bottle: true,
@@ -1148,7 +1148,7 @@ make_publish_dependency_provenance() {
             rebuild: 0,
             sha256: "1111111111111111111111111111111111111111111111111111111111111111",
             tag: "wasm32_kandelo",
-            url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            url: "https://ghcr.io/v2/kandelo-dev/tap-core/zlib/blobs/sha256:1111111111111111111111111111111111111111111111111111111111111111"
           },
           receipt: {
             built_as_bottle: true,
@@ -1201,7 +1201,7 @@ seed_publish_dependency_sidecars() {
         error: "fixture retained last green bottle",
         last_attempt: "2026-07-12T00:00:00Z",
         last_attempt_by: "https://example.invalid/actions/runs/2",
-        fallback_url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" + $name + "/blobs/sha256:" + $sha),
+        fallback_url: ("https://ghcr.io/v2/kandelo-dev/tap-core/" + $name + "/blobs/sha256:" + $sha),
         fallback_sha256: $sha,
         fallback_bytes: 123,
         fallback_cache_key_sha: $sha,
@@ -1286,7 +1286,7 @@ class Zlib < Formula
   depends_on "kandelo-dev/tap-core/xz"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
   end
 end
@@ -1296,7 +1296,7 @@ class Xz < Formula
   desc "transitive dependency fixture"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
   end
 end
@@ -1402,7 +1402,7 @@ validate_publish_handoff() {
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --tap-root "$tap_root"
 }
@@ -1452,7 +1452,7 @@ assert_publish_handoff_is_exact_inert_data() {
   cp -a "$tap_root" "$generated"
   ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$generated/Formula/hello.rb" "$tap_root/Formula/hello.rb" \
-    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    https://ghcr.io/v2/kandelo-dev/tap-core \
     0 wasm32_kandelo any_skip_relocation \
     "$(jq -r '.layout.bottle.sha256' "$handoff/receipt.json")" \
     discard "$composed"
@@ -1871,7 +1871,7 @@ EOF
       --formula hello \
       --arch wasm32 \
       --out "$out" \
-      --bottle-root-url https://example.invalid/bottles \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       >/dev/null 2>"$ci_err"; then
     fail "CI bottle build ran without an isolated Formula identity"
   fi
@@ -1895,7 +1895,7 @@ EOF
       --formula hello \
       --arch wasm32 \
       --out "$out" \
-      --bottle-root-url https://example.invalid/bottles \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       >/dev/null 2>&1; then
     fail "bottle trust fixture unexpectedly completed its sentinel install"
   fi
@@ -1995,7 +1995,7 @@ EOF
       --formula hello \
       --arch wasm32 \
       --out "$out" \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       >/dev/null 2>&1; then
     fail "dependency force-bottle fixture unexpectedly completed"
   fi
@@ -2199,7 +2199,7 @@ EOF
       --formula hello \
       --arch wasm32 \
       --out "$out" \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       >/dev/null 2>&1; then
     fail "test dependency fixture did not complete"
   fi
@@ -2310,7 +2310,7 @@ EOF
       --formula hello \
       --arch wasm32 \
       --out "$cellar_leak_out" \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       >/dev/null 2>"$cellar_leak_err"
   cellar_leak_status="$?"
   set -e
@@ -2354,7 +2354,7 @@ EOF
       --formula hello \
       --arch wasm32 \
       --out "$cleanup_failure_out" \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       >/dev/null 2>&1
   cleanup_failure_status="$?"
   set -e
@@ -2706,7 +2706,7 @@ class Zlib < Formula
   desc "fixture"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
   end
 end
@@ -2747,7 +2747,7 @@ EOF
         rebuild: 0,
         files: {wasm32_kandelo: {
           cellar: "any_skip_relocation",
-          url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:" + $bottle_sha),
+          url: ("https://ghcr.io/v2/kandelo-dev/tap-core/zlib/blobs/sha256:" + $bottle_sha),
           sha256: $bottle_sha
         }}
       }}
@@ -2779,8 +2779,8 @@ EOF
   chmod +x "$fake_brew_target"
   ln -s "$fake_brew_target" "$fake_brew"
   cat >"$install_log" <<EOF
-==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1
-==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:$bottle_sha
+==> Downloading https://ghcr.io/v2/kandelo-dev/tap-core/zlib/manifests/1.3.1
+==> Downloading https://ghcr.io/v2/kandelo-dev/tap-core/zlib/blobs/sha256:$bottle_sha
 ==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.tar.gz
 EOF
 
@@ -2792,7 +2792,7 @@ EOF
       --tap-commit "$tap_commit" \
       --formula curl \
       --arch wasm32 \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       --target-receipt "$target_receipt" \
       --expected-dependencies "$expected_dependencies" \
       --install-log "$install_log" \
@@ -2803,7 +2803,7 @@ EOF
     --tap-commit "$tap_commit" \
     --formula curl \
     --arch wasm32 \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --tap-root "$tap"
   jq -e --arg bottle_sha "$bottle_sha" '
     (.dependencies | length) == 1 and
@@ -2821,15 +2821,15 @@ EOF
   jq --arg fabricated_sha "$fabricated_sha" '
     .dependencies[0].bottle.sha256 = $fabricated_sha |
     .dependencies[0].bottle.url =
-      ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:" + $fabricated_sha) |
+      ("https://ghcr.io/v2/kandelo-dev/tap-core/zlib/blobs/sha256:" + $fabricated_sha) |
     .dependencies[0].install_log.fetch = [
-      ("==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:" + $fabricated_sha)
+      ("==> Downloading https://ghcr.io/v2/kandelo-dev/tap-core/zlib/blobs/sha256:" + $fabricated_sha)
     ]
   ' "$output" >"$bad"
   if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
     --input "$bad" --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" --formula curl --arch wasm32 \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --tap-root "$tap" >/dev/null 2>&1; then
     fail "fresh dependency validation accepted fabricated prior-bottle metadata"
   fi
@@ -2838,7 +2838,7 @@ EOF
   if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
     --input "$bad" --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" --formula curl --arch wasm32 \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --tap-root "$tap" >/dev/null 2>&1; then
     fail "fresh dependency validation accepted an omitted exact-tap closure"
   fi
@@ -2849,7 +2849,7 @@ EOF
       --brew-bin "$fake_brew" --tap-root "$tap" \
       --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
       --formula curl --arch wasm32 \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       --target-receipt "$bad" --expected-dependencies "$expected_dependencies" \
       --install-log "$install_log" --out "$root/missing-dependency.json" \
       >/dev/null 2>&1; then
@@ -2869,7 +2869,7 @@ EOF
       --brew-bin "$fake_brew" --tap-root "$tap" \
       --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
       --formula curl --arch wasm32 \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       --target-receipt "$bad" --expected-dependencies "$expected_dependencies" \
       --install-log "$install_log" --out "$root/external-dependency.json" \
       >/dev/null 2>"$err"; then
@@ -2888,7 +2888,7 @@ EOF
       --brew-bin "$fake_brew" --tap-root "$tap" \
       --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
       --formula curl --arch wasm32 \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
       --target-receipt "$target_receipt" --expected-dependencies "$expected_dependencies" \
       --install-log "$install_log" --out "$bad" \
       >/dev/null 2>&1; then
@@ -2899,7 +2899,7 @@ EOF
   if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
     --input "$bad" --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" --formula curl --arch wasm32 \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     >/dev/null 2>&1; then
     fail "dependency provenance validator accepted a source-build claim"
   fi
@@ -2908,7 +2908,7 @@ EOF
   if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
     --input "$output" --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" --formula curl --arch wasm32 \
-    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --tap-root "$tap" >/dev/null 2>&1; then
     fail "dependency provenance accepted Formula drift from the exact tap"
   fi
@@ -3662,7 +3662,7 @@ class Hello < Formula
   desc "reviewed fixture"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
   end
 end
@@ -3672,7 +3672,7 @@ class Hello < Formula
   desc "reviewed fixture"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm64_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
   end
 end
@@ -3713,7 +3713,7 @@ EOF
 
   ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$current" "$planned" \
-    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    https://ghcr.io/v2/kandelo-dev/tap-core \
     0 wasm32_kandelo any_skip_relocation \
     2222222222222222222222222222222222222222222222222222222222222222 \
     preserve \
@@ -3725,7 +3725,7 @@ EOF
 
   ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$current" "$planned" \
-    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    https://ghcr.io/v2/kandelo-dev/tap-core \
     1 wasm32_kandelo any_skip_relocation \
     2222222222222222222222222222222222222222222222222222222222222222 \
     discard \
@@ -3757,7 +3757,7 @@ class Hello < Formula
   patch :DATA
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
   end
 
@@ -3773,7 +3773,7 @@ diff --git a/source.c b/source.c
 EOF
   ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$data_formula" "$data_formula" \
-    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    https://ghcr.io/v2/kandelo-dev/tap-core \
     0 wasm32_kandelo any_skip_relocation \
     2222222222222222222222222222222222222222222222222222222222222222 \
     discard \
@@ -3793,7 +3793,7 @@ EOF
   fi
   if ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$malicious" "$planned" \
-    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    https://ghcr.io/v2/kandelo-dev/tap-core \
     0 wasm32_kandelo any_skip_relocation \
     2222222222222222222222222222222222222222222222222222222222222222 \
     preserve \
@@ -3805,7 +3805,7 @@ EOF
 class Hello < Formula
   def install
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
   end
   end
@@ -3817,7 +3817,7 @@ EOF
   fi
   if ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$nested_bottle" "$planned" \
-    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    https://ghcr.io/v2/kandelo-dev/tap-core \
     0 wasm32_kandelo any_skip_relocation \
     2222222222222222222222222222222222222222222222222222222222222222 \
     preserve \
@@ -3840,7 +3840,7 @@ class Hello < Formula
   desc "reviewed fixture"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
   end
 
@@ -3897,7 +3897,7 @@ class Hello < Formula
   desc "reviewed fixture"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
   end
 

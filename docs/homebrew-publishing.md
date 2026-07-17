@@ -38,12 +38,12 @@ and test fixture for the tap shape. Live generated tap state belongs in
 Repository identity and Homebrew tap identity are separate inputs. Every tap,
 including Kandelo's default tap, uses the conventional repository shape. A
 conventional repository `<owner>/homebrew-<name>` has canonical Homebrew tap
-name `<owner>/<name>`. Repository identity owns GitHub checkout, GHCR paths,
-and the caller token; tap identity owns `brew` references, installed Formula
-paths, receipts, OCI titles, and Kandelo sidecars. Therefore the default
+name `<owner>/<name>`. Repository identity owns GitHub checkout, source links,
+and the caller token; tap identity owns the GHCR bottle namespace, `brew`
+references, installed Formula paths, receipts, OCI titles, and Kandelo sidecars. Therefore the default
 repository `kandelo-dev/homebrew-tap-core` is the canonical tap
 `kandelo-dev/tap-core`; its GitHub Container Registry (GHCR) root remains
-`https://ghcr.io/v2/kandelo-dev/homebrew-tap-core`. Tooling may omit the tap
+`https://ghcr.io/v2/kandelo-dev/tap-core`. Tooling may omit the tap
 name only for this protected default, and derives `kandelo-dev/tap-core` through
 the same conventional rule. Other repositories must state the derived tap name
 explicitly so an omitted input cannot silently change publication identity.
@@ -442,8 +442,8 @@ data passed to the already-reviewed caller and reusable workflow definitions;
 they do not select either workflow definition. The bottle root is never
 caller-selected:
 the workflow rejects a non-empty `bottle-root-url` and derives
-`https://ghcr.io/v2/<lowercase-owner>/<lowercase-repository>` from the tap
-repository. The separate reusable maintenance workflow remains first-party
+`https://ghcr.io/v2/<lowercase-owner>/<lowercase-name>` from the canonical
+Homebrew tap name. The separate reusable maintenance workflow remains first-party
 specific because its rollback and deletion paths own default-tap state. A
 third-party `maintain-bottles.yml` on the protected default branch may call the
 generic publisher for rebuilds, but generic rollback and deletion orchestration
@@ -987,7 +987,7 @@ The acceptance gate parses the static Brewfile, requires at least one real
 dependency edge reachable from the selected Formula, and resolves the same
 dependency-first plan for Node and browser. Every package must select a current
 `success` bottle at the exact public URL
-`https://ghcr.io/v2/<tap-owner>/<tap-repository>/<formula>/blobs/sha256:<digest>`.
+`https://ghcr.io/v2/<tap-owner>/<tap-name>/<formula>/blobs/sha256:<digest>`.
 Last-green fallback, source builds, local bottle substitutions, and Kandelo
 package-registry archives are not accepted as package evidence.
 

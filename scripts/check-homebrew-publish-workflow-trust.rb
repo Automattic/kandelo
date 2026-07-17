@@ -17,11 +17,11 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "1a1e7a7fd60a8b14984dde516c1ac93b8c38470d9b7ee38725a7ae7f1da11d93"
+PUBLISHER_PLAN_DIGEST = "994892064c7903c01a2584ecf42217a44c7fb4b877134a2b85628dbca0db1683"
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
-PUBLISHER_INDEX_DIGEST = "143ba3916705d3c76ef337ddf89def07ff3515400a95827eb14042a12ab31cd8"
-PUBLISHER_VERIFY_DIGEST = "bcfa7ac97f98094084c80c026e1adff3ffdb7fbb41830f923b50f6fb3e4e28c4"
+PUBLISHER_INDEX_DIGEST = "b3b2974ae56d7a4e2aff142145abc68fcc2034a6f5933b815bf62454ef1ed5c0"
+PUBLISHER_VERIFY_DIGEST = "7403533011442e94beb66dbac788e2bf3d69c9cf83b7841ec776d745bacaa65c"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -614,10 +614,20 @@ def check_publisher(workflow)
         plan_steps.index(matrix_plan) < plan_steps.index(vfs_selection),
         "publisher validates VFS acceptance selection outside the planning trust boundary")
 
-  release_run = named_step(plan_steps, "Resolve release and bottle root").fetch("run")
+  release_step = named_step(plan_steps, "Resolve release and bottle root")
+  check(release_step.fetch("env") == {
+    "REQUESTED_BOTTLE_ROOT_URL" => "${{ inputs.bottle-root-url }}",
+    "REQUESTED_RELEASE_TAG" => "${{ inputs.release-tag }}",
+    "TAP_NAME" => "${{ inputs.tap-name }}",
+    "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+  }, "publisher bottle root identity mapping changed")
+  release_run = release_step.fetch("run")
   check(release_run.include?('expected_release_tag="bottles-abi-v${abi}"') &&
-        release_run.include?('[ "$release_tag" != "$expected_release_tag" ]'),
-        "publisher does not bind release tag exactly to the resolved ABI")
+        release_run.include?('[ "$release_tag" != "$expected_release_tag" ]') &&
+        release_run.include?('. kandelo/scripts/homebrew-tap-identity.sh') &&
+        release_run.include?(
+          'homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME"'
+        ), "publisher does not bind release tag and bottle root to resolved identities")
   planner_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-plan-matrix.sh"))
   check(planner_source.include?("formula selection must not be empty") &&
         planner_source.include?("architecture selection must not be empty"),
@@ -1876,6 +1886,8 @@ def check_publisher(workflow)
   [
     "anonymous index import received $secret_name",
     "scripts/homebrew-oci-layout.py import-public-index",
+    'tap_name="$(printf \'%s\' "$KANDELO_HOMEBREW_TAP_NAME" | tr \'[:upper:]\' \'[:lower:]\')"',
+    'remote="ghcr.io/${tap_name}/${KANDELO_HOMEBREW_FORMULA}"',
     '--remote "$remote"', '--reference "$top_ref"',
     '--registry-config "$anonymous_config"', '--out-layout "$existing"',
     '--out-result "$result"',
@@ -2015,6 +2027,8 @@ def check_publisher(workflow)
     "validate-index-receipt", "validate-publication-receipt", "--kind index",
     "oras cp", "--from-registry-config", "--to-oci-layout",
     "scripts/homebrew-oci-layout.py validate-index",
+    'tap_name="$(printf \'%s\' "$KANDELO_HOMEBREW_TAP_NAME" | tr \'[:upper:]\' \'[:lower:]\')"',
+    'remote="ghcr.io/${tap_name}/${KANDELO_HOMEBREW_FORMULA}"',
     '.manifest_digest == $child[0].oci.manifest.digest',
     '.bottle_sha256 == $child[0].bottle.sha256',
   ].each do |fragment|
@@ -2584,6 +2598,13 @@ def self_test(publisher, maintenance)
     "release tag ABI bypass" => lambda { |w|
       step = mutate_named_step(w, "plan", "Resolve release and bottle root")
       step["run"] = step.fetch("run").sub('[ "$release_tag" != "$expected_release_tag" ]', "false")
+    },
+    "bottle root rebound to repository identity" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Resolve release and bottle root")
+      step["run"] = step.fetch("run").sub(
+        'homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME"',
+        'homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_REPOSITORY"'
+      )
     },
     "uploader dependency bypass" => lambda { |w|
       w.fetch("jobs").fetch("upload-bottle")["needs"] = ["plan"]

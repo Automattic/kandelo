@@ -107,7 +107,7 @@ jobs:
             echo "::error::publication requires the reviewed repository_dispatch caller"; exit 2;
           }
           [ -z "$BOTTLE_ROOT_URL" ] || {
-            echo "::error::the publisher derives the bottle root from the tap repository"; exit 2;
+            echo "::error::the publisher derives the bottle root from the Homebrew tap name"; exit 2;
           }
           [ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ] || {
             echo "::error::publication requires Automattic/kandelo"; exit 2;
@@ -187,6 +187,7 @@ jobs:
         env:
           REQUESTED_BOTTLE_ROOT_URL: ${{ inputs.bottle-root-url }}
           REQUESTED_RELEASE_TAG: ${{ inputs.release-tag }}
+          TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
         run: |
           set -euo pipefail
@@ -203,12 +204,11 @@ jobs:
           fi
           root_prefix="$REQUESTED_BOTTLE_ROOT_URL"
           if [ -z "$root_prefix" ]; then
-            tap_repo="$TAP_REPOSITORY"
-            owner="${tap_repo%%/*}"
-            repo="${tap_repo#*/}"
-            owner="$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')"
-            repo="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
-            root_prefix="https://ghcr.io/v2/${owner}/${repo}"
+            # Homebrew maps owner/name to the GitHub owner/homebrew-name repository,
+            # but its GHCR bottle namespace remains owner/name.
+            # shellcheck source=/dev/null
+            . kandelo/scripts/homebrew-tap-identity.sh
+            root_prefix="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
           fi
           {
             echo "abi=$abi"
@@ -1279,8 +1279,8 @@ jobs:
             -name receipt.json -type f -print -quit)"
           [ -n "$first_receipt" ] || { echo "::error::missing first child receipt"; exit 1; }
           top_ref="$(jq -er '.top_ref' "$first_receipt")"
-          owner_repo="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          remote="ghcr.io/${owner_repo}/${KANDELO_HOMEBREW_FORMULA}"
+          tap_name="$(printf '%s' "$KANDELO_HOMEBREW_TAP_NAME" | tr '[:upper:]' '[:lower:]')"
+          remote="ghcr.io/${tap_name}/${KANDELO_HOMEBREW_FORMULA}"
           anonymous_config="$RUNNER_TEMP/homebrew-anonymous-oras.json"
           printf '{"auths":{}}\n' >"$anonymous_config"
           existing="$RUNNER_TEMP/homebrew-existing-index"
@@ -1650,8 +1650,8 @@ jobs:
             --formula "$KANDELO_HOMEBREW_FORMULA" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
-          owner_repo="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          remote="ghcr.io/${owner_repo}/${KANDELO_HOMEBREW_FORMULA}"
+          tap_name="$(printf '%s' "$KANDELO_HOMEBREW_TAP_NAME" | tr '[:upper:]' '[:lower:]')"
+          remote="ghcr.io/${tap_name}/${KANDELO_HOMEBREW_FORMULA}"
           jq -e \
             --slurpfile layout "$layout_receipt" \
             --slurpfile child "$RUNNER_TEMP/homebrew-oci-child/receipt.json" \

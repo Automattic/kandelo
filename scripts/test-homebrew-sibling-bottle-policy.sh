@@ -94,7 +94,7 @@ class Sqlite < Formula
   desc "fixture"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
     rebuild 2
     sha256 cellar: :any_skip_relocation, wasm64_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   end
@@ -110,7 +110,7 @@ jq -n --arg sha "$selected_sha" '{
       pkg_version: "3.50.2_1"
     },
     bottle: {
-      root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+      root_url: "https://ghcr.io/v2/kandelo-dev/tap-core",
       cellar: "any_skip_relocation",
       rebuild: 2,
       tags: {wasm32_kandelo: {sha256: $sha}}
@@ -126,7 +126,7 @@ merge_args=(
   --release-tag bottles-abi-v40
   --bottle-json "$TMPDIR/bottle.json"
   --expected-sha256 "$selected_sha"
-  --expected-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core
+  --expected-root-url https://ghcr.io/v2/kandelo-dev/tap-core
   --expected-cellar any_skip_relocation
 )
 bash "$REPO_ROOT/scripts/homebrew-merge-bottle-json.sh" "${merge_args[@]}" >/dev/null

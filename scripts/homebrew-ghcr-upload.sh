@@ -119,9 +119,7 @@ if ! [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
   exit 2
 fi
 
-OWNER_LOWER="$(printf '%s' "${TAP_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
-REPO_LOWER="$(printf '%s' "${TAP_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
-REMOTE="ghcr.io/${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
+REMOTE="ghcr.io/${TAP_NAME}/${FORMULA}"
 auth_parent="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 WORK_DIR="$(mktemp -d "$auth_parent/kandelo-homebrew-preflight.XXXXXX")"
 anonymous_config="$WORK_DIR/anonymous.json"

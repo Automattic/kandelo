@@ -37,3 +37,10 @@ homebrew_resolve_tap_name() {
   fi
   printf '%s\n' "$normalized_name"
 }
+
+homebrew_bottle_root_url() {
+  local repository="${1:-}" requested_name="${2:-}" tap_name
+
+  tap_name="$(homebrew_resolve_tap_name "$repository" "$requested_name")" || return
+  printf 'https://ghcr.io/v2/%s\n' "$tap_name"
+}

@@ -3,8 +3,10 @@
 require "formula"
 require "formulary"
 
-formula_ref, expected_tag, expected_sha256, expected_root_url = ARGV
-raise "usage: kandelo_bootstrap_bottle_selection.rb FORMULA TAG SHA256 ROOT_URL" if expected_root_url.nil?
+formula_ref, expected_tap, expected_tag, expected_sha256, expected_root_url = ARGV
+if expected_root_url.nil?
+  raise "usage: kandelo_bootstrap_bottle_selection.rb FORMULA TAP TAG SHA256 ROOT_URL"
+end
 
 def assert_equal(expected, actual, label)
   return if expected == actual
@@ -18,7 +20,7 @@ tag = Utils::Bottles.tag
 assert_equal(expected_tag.to_sym, tag.to_sym, "current Homebrew bottle tag")
 
 formula = Formulary.factory(formula_ref)
-assert_equal("kandelo-dev/tap-core", formula.tap&.name, "formula tap")
+assert_equal(expected_tap, formula.tap&.name, "formula tap")
 
 bottle = formula.bottle_for_tag(tag)
 raise "#{formula.full_name} did not select a bottle for #{tag}" if bottle.nil?

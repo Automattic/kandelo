@@ -53,7 +53,7 @@ Homebrew tap identity. Every repository uses the conventional
 `<owner>/homebrew-<name>` shape and canonical tap name `<owner>/<name>`. The
 default repository is `kandelo-dev/homebrew-tap-core`, so its tap name is
 `kandelo-dev/tap-core` and its bottle root is
-`https://ghcr.io/v2/kandelo-dev/homebrew-tap-core`. A caller must run from that
+`https://ghcr.io/v2/kandelo-dev/tap-core`. A caller must run from that
 same repository's reviewed `main` workflow.
 
 The caller grants the maximum permission ceiling. Four fresh runner roles then
@@ -84,7 +84,7 @@ the selected static Formula bottle tag, and regenerate `Kandelo/` state. It
 does not execute Formula Ruby or Homebrew with tap write credentials. Failed attempts go
 under `Kandelo/reports/failures/` without replacing last-green
 `Kandelo/metadata.json`. The bottle root is always derived from the lowercase
-tap repository identity; callers cannot override it.
+Homebrew tap name; callers cannot override it.
 
 Manual rebuilds and rollback reporting are
 handled by `.github/workflows/reusable-homebrew-bottle-maintenance.yml`.

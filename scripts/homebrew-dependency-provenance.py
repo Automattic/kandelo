@@ -329,8 +329,9 @@ def capture(args: argparse.Namespace) -> None:
     require_string(args.formula, "formula", FORMULA_NAME)
     if args.arch not in ("wasm32", "wasm64"):
         fail(f"unsupported architecture: {args.arch}")
-    if not re.fullmatch(r"https://[^\s]+", args.bottle_root_url) or args.bottle_root_url.endswith("/"):
-        fail(f"invalid bottle root URL: {args.bottle_root_url}")
+    expected_root = f"https://ghcr.io/v2/{normalized_tap}"
+    if args.bottle_root_url != expected_root:
+        fail(f"bottle root URL must be {expected_root}")
 
     brew_input = pathlib.Path(args.brew_bin)
     brew_bin = pathlib.Path(os.path.abspath(brew_input))
@@ -543,6 +544,9 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     if root["formula"] != args.formula or root["arch"] != args.arch:
         fail("dependency provenance formula or architecture does not match the build")
     normalized_tap = selected_tap_name(args)
+    expected_root = f"https://ghcr.io/v2/{normalized_tap}"
+    if args.bottle_root_url != expected_root:
+        fail(f"bottle root URL must be {expected_root}")
     if (
         root["tap_repository"] != args.tap_repository
         or root["tap_name"] != normalized_tap

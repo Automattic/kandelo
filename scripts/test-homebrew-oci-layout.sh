@@ -27,7 +27,7 @@ make_fixture() {
   local tap_repository="${7:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${8:-kandelo-dev/tap-core}"
   local tap_owner="${tap_name%%/*}" tap_short_name="${tap_name#*/}"
-  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
+  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_name" | tr '[:upper:]' '[:lower:]')"
   local root="$TMP_ROOT/$label"
   local stage="$root/stage/hello/1.0"
   local bottle="$root/hello--1.0.${arch}_kandelo.bottle.tar.gz"
@@ -93,7 +93,7 @@ build_child() {
   local formula_extra="${6:-}"
   local tap_repository="${7:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${8:-kandelo-dev/tap-core}"
-  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
+  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_name" | tr '[:upper:]' '[:lower:]')"
   local paths bottle bottle_json
   mapfile -t paths < <(
     make_fixture "$label" "$arch" "$payload" "$support_payload" \
@@ -222,7 +222,7 @@ for source in no-blank two-blanks; do
   ruby "$FORMULA_COMPOSER" \
     "$TMP_ROOT/source-identity/$source.rb" \
     "$TMP_ROOT/source-identity/$source.rb" \
-    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core 0 wasm32_kandelo \
+    https://ghcr.io/v2/kandelo-dev/tap-core 0 wasm32_kandelo \
     any_skip_relocation "$(printf '0%.0s' {1..64})" discard \
     "$TMP_ROOT/source-identity/$source-composed.rb"
   original_identity="$(ruby "$SOURCE_IDENTITY_TOOL" --identity-excluding-bottle \
@@ -603,7 +603,7 @@ run_import() {
     IMPORT_SLOW_OVERRUN="${IMPORT_SLOW_OVERRUN:-}" \
     IMPORT_STATE="$TMP_ROOT/import-$label-state" \
     PATH="$IMPORT_MOCK_BIN:$PATH" python3 "$TOOL" import-public-index \
-      --remote ghcr.io/kandelo-dev/homebrew-tap-core/hello --reference 1.0 \
+      --remote ghcr.io/kandelo-dev/tap-core/hello --reference 1.0 \
       --registry-config "$TMP_ROOT/anonymous-oras.json" \
       --out-layout "$TMP_ROOT/import-$label-output/layout" \
       --out-result "$TMP_ROOT/import-$label-result.json"
@@ -620,15 +620,15 @@ python3 "$TOOL" validate-index \
   --layout "$TMP_ROOT/import-valid-output/layout" \
   --receipt "$TMP_ROOT/combined/receipt.json"
 grep -F "manifest fetch --descriptor" "$TMP_ROOT/import-valid.log" >/dev/null
-grep -F "ghcr.io/kandelo-dev/homebrew-tap-core/hello@sha256:" \
+grep -F "ghcr.io/kandelo-dev/tap-core/hello@sha256:" \
   "$TMP_ROOT/import-valid.log" >/dev/null
 grep -F "blob fetch --descriptor" "$TMP_ROOT/import-valid.log" >/dev/null
-grep -E '^cp .*ghcr\.io/kandelo-dev/homebrew-tap-core/hello@sha256:' \
+grep -E '^cp .*ghcr\.io/kandelo-dev/tap-core/hello@sha256:' \
   "$TMP_ROOT/import-valid.log" >/dev/null || {
   echo "public index copy was not pinned to the validated digest" >&2
   exit 1
 }
-! grep -E '^cp .*ghcr\.io/kandelo-dev/homebrew-tap-core/hello:1\.0([[:space:]]|$)' \
+! grep -E '^cp .*ghcr\.io/kandelo-dev/tap-core/hello:1\.0([[:space:]]|$)' \
   "$TMP_ROOT/import-valid.log" >/dev/null || {
   echo "public index copy reused a mutable tag" >&2
   exit 1
