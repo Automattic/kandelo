@@ -1262,6 +1262,51 @@ def check_publisher(workflow)
         verifier_isolate_index < protected_bottle_stage_index &&
         protected_bottle_stage_index < local_bottle_pour_index,
         "reviewed bottle verifier does not protect the selected archive before the isolated pour")
+  [
+    'TARGET_OPT_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"',
+    'EXPECTED_TARGET_OPT_PREFIX="$HOMEBREW_PATCHED_PREFIX/opt/$FORMULA"',
+    '[ "$TARGET_OPT_PREFIX" = "$EXPECTED_TARGET_OPT_PREFIX" ]',
+    'target Formula opt prefix is not canonical',
+    'TARGET_PREFIX="$(cd "$TARGET_OPT_PREFIX" && pwd -P)"',
+    'target Formula opt prefix does not resolve',
+    'TARGET_RACK="$HOMEBREW_PATCHED_PREFIX/Cellar/$FORMULA"',
+    '[ -d "$TARGET_RACK" ] && [ ! -L "$TARGET_RACK" ]',
+    'target Formula Cellar rack is not a real directory',
+    'TARGET_RACK="$(cd "$TARGET_RACK" && pwd -P)"',
+    'target Formula Cellar rack does not resolve',
+    'EXPECTED_TARGET_PREFIX="$TARGET_RACK/$PKG_VERSION"',
+    '[ -d "$EXPECTED_TARGET_PREFIX" ] && [ ! -L "$EXPECTED_TARGET_PREFIX" ]',
+    'expected target Formula keg is not a real directory',
+    'EXPECTED_TARGET_PREFIX="$(cd "$EXPECTED_TARGET_PREFIX" && pwd -P)"',
+    'expected target Formula keg does not resolve',
+    '[ "$TARGET_PREFIX" = "$EXPECTED_TARGET_PREFIX" ]',
+    'target Formula opt prefix does not select the exact versioned keg',
+  ].each do |fragment|
+    check(bottle_verifier.include?(fragment),
+          "reviewed bottle verifier target-keg contract lacks #{fragment}")
+  end
+  target_opt_index = bottle_verifier.index(
+    'TARGET_OPT_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"'
+  )
+  target_real_index = bottle_verifier.index(
+    'TARGET_PREFIX="$(cd "$TARGET_OPT_PREFIX" && pwd -P)"'
+  )
+  exact_target_index = bottle_verifier.index(
+    '[ "$TARGET_PREFIX" = "$EXPECTED_TARGET_PREFIX" ]'
+  )
+  target_test_index = bottle_verifier.index(
+    'run_brew_logged "$BREW_BIN" test "$FORMULA_REF"'
+  )
+  runtime_evidence_index = bottle_verifier.index(
+    'homebrew-bottle-runtime-evidence.py" capture'
+  )
+  check(local_bottle_pour_index && target_opt_index && target_real_index && exact_target_index &&
+        target_test_index && runtime_evidence_index &&
+        local_bottle_pour_index < target_opt_index &&
+        target_opt_index < target_real_index && target_real_index < exact_target_index &&
+        exact_target_index < target_test_index &&
+        target_test_index < runtime_evidence_index,
+        "reviewed bottle verifier does not select the exact installed keg before evidence capture")
   reconstructed_source_index = bottle_verifier.index(
     'mapfile -t source_tap_changes'
   )

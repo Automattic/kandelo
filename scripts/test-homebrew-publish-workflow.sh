@@ -2470,7 +2470,9 @@ assert_bottle_verifier_installs_test_dependencies() {
   local dependency_provenance="$root/dependency-provenance.json"
   local selection_receipt="$root/selection-receipt.json"
   local runtime_evidence="$root/runtime-evidence.json"
-  local target_prefix="$root/target-prefix"
+  local target_prefix="$brew_prefix/Cellar/hello/1.0"
+  local target_opt_prefix="$brew_prefix/opt/hello"
+  local nested_target_prefix="$brew_prefix/Cellar/hello/nested/Cellar/hello/1.0"
   local cache="$root/cache"
   local brew_temp="$root/tmp"
   local log="$root/brew.log"
@@ -2481,6 +2483,7 @@ assert_bottle_verifier_installs_test_dependencies() {
   local provenance_log_capture="$root/provenance-install.log"
   local native_prefix_capture="$root/native-prefix.txt"
   local renamed_err="$root/renamed-bottle.err"
+  local nested_target_err="$root/nested-target.err"
   local bottle_sha bottle_bytes tap_commit native_prefix real_python3
 
   make_tap "$tap"
@@ -2503,8 +2506,11 @@ EOF
   tap_commit="$(git -C "$tap" rev-parse HEAD)"
   printf '\n# reconstructed bottle metadata\n' >>"$tap/Formula/hello.rb"
 
-  mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin" "$target_prefix" \
+  mkdir -p "$brew_repo" "$brew_prefix/opt" "$fake_bin" "$target_prefix" \
+    "$nested_target_prefix" \
     "$cache" "$brew_temp" "$state"
+  ln -s ../Cellar/hello/1.0 "$target_opt_prefix"
+  target_prefix="$(cd "$target_prefix" && pwd -P)"
   printf 'stale cache entry\n' >"$cache/stale"
   printf 'verified bottle bytes\n' >"$bottle"
   printf '{"schema":1}\n' >"$dependency_provenance"
@@ -2565,7 +2571,7 @@ case "${1:-}" in
     elif [ "$#" -eq 1 ]; then
       printf '%s\n' "$FAKE_BREW_PREFIX"
     else
-      printf '%s\n' "$FAKE_TARGET_PREFIX"
+      printf '%s\n' "$FAKE_TARGET_OPT_PREFIX"
     fi
     ;;
   --repository)
@@ -2690,10 +2696,14 @@ shift
 expected=""
 out=""
 install_log=""
+target_prefix=""
+target_receipt=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-dependencies) expected="${2:-}"; shift 2 ;;
     --install-log) install_log="${2:-}"; shift 2 ;;
+    --target-prefix) target_prefix="${2:-}"; shift 2 ;;
+    --target-receipt) target_receipt="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
@@ -2703,49 +2713,81 @@ cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
 if [ "$tool" = homebrew-dependency-provenance.py ]; then
   [ -n "$expected" ] || exit 62
   cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
+else
+  [ "$target_prefix" = "$FAKE_TARGET_PREFIX" ] || exit 63
+  [ "$target_receipt" = "$FAKE_TARGET_PREFIX/INSTALL_RECEIPT.json" ] || exit 64
 fi
 printf '{"schema":1}\n' >"$out"
 EOF
   chmod +x "$fake_bin/python3"
 
-  PATH="$fake_bin:$PATH" \
-    REAL_PYTHON3="$real_python3" \
-    FAKE_BREW_LOG="$log" \
-    FAKE_REALM_COMMAND_LOG="$realm_log" \
-    FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
-    FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
-    FAKE_BREW_PREFIX="$brew_prefix" \
-    FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tapped_tap" \
-    FAKE_RECONSTRUCTED_TAP="$tap" \
-    FAKE_TARGET_PREFIX="$target_prefix" \
-    FAKE_STATE="$state" \
-    FAKE_BOTTLE="$bottle" \
-    FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
-    FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
-    HOMEBREW_BREW_FILE="$fake_brew" \
-    HOMEBREW_CACHE="$cache" \
-    HOMEBREW_TEMP="$brew_temp" \
-    HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
-    KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
-    HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
-    GITHUB_ACTIONS= \
-    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
-      --tap-root "$tap" \
-      --tap-repository kandelo-dev/homebrew-tap-core \
-      --tap-commit "$tap_commit" \
-      --formula hello \
-      --arch wasm32 \
-      --abi 39 \
-      --bottle "$bottle" \
-      --bottle-json "$bottle_json" \
-      --bottle-url https://example.invalid/hello--1.0.wasm32_kandelo.bottle.tar.gz \
-      --bottle-sha256 "$bottle_sha" \
-      --bottle-bytes "$bottle_bytes" \
-      --bottle-root-url https://example.invalid \
-      --dependency-provenance "$dependency_provenance" \
-      --selection-receipt "$selection_receipt" \
-      --out "$runtime_evidence" >/dev/null
+  run_bottle_verifier_fixture() {
+    local evidence_out="$1"
+    PATH="$fake_bin:$PATH" \
+      REAL_PYTHON3="$real_python3" \
+      FAKE_BREW_LOG="$log" \
+      FAKE_REALM_COMMAND_LOG="$realm_log" \
+      FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
+      FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
+      FAKE_BREW_PREFIX="$brew_prefix" \
+      FAKE_BREW_REPOSITORY="$brew_repo" \
+      FAKE_TAP_ROOT="$tapped_tap" \
+      FAKE_RECONSTRUCTED_TAP="$tap" \
+      FAKE_TARGET_OPT_PREFIX="$target_opt_prefix" \
+      FAKE_TARGET_PREFIX="$target_prefix" \
+      FAKE_STATE="$state" \
+      FAKE_BOTTLE="$bottle" \
+      FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+      FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
+      HOMEBREW_BREW_FILE="$fake_brew" \
+      HOMEBREW_CACHE="$cache" \
+      HOMEBREW_TEMP="$brew_temp" \
+      HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
+      KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
+      HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
+      GITHUB_ACTIONS= \
+      bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
+        --tap-root "$tap" \
+        --tap-repository kandelo-dev/homebrew-tap-core \
+        --tap-commit "$tap_commit" \
+        --formula hello \
+        --arch wasm32 \
+        --abi 39 \
+        --bottle "$bottle" \
+        --bottle-json "$bottle_json" \
+        --bottle-url https://example.invalid/hello--1.0.wasm32_kandelo.bottle.tar.gz \
+        --bottle-sha256 "$bottle_sha" \
+        --bottle-bytes "$bottle_bytes" \
+        --bottle-root-url https://example.invalid \
+        --dependency-provenance "$dependency_provenance" \
+        --selection-receipt "$selection_receipt" \
+        --out "$evidence_out"
+  }
+
+  rm "$target_opt_prefix"
+  ln -s ../Cellar/hello/nested/Cellar/hello/1.0 "$target_opt_prefix"
+  if run_bottle_verifier_fixture "$root/nested-runtime-evidence.json" \
+      >/dev/null 2>"$nested_target_err"; then
+    fail "bottle verifier accepted a nested lookalike target keg"
+  fi
+  grep -F "target Formula opt prefix does not select the exact versioned keg" \
+    "$nested_target_err" >/dev/null ||
+    fail "bottle verifier did not explain the nested lookalike target keg"
+
+  rm "$target_opt_prefix"
+  ln -s ../Cellar/hello/1.0 "$target_opt_prefix"
+  rm -rf "$brew_prefix/Cellar/hello/nested" "$cache" "$state"
+  mkdir -p "$cache" "$state"
+  printf 'stale cache entry\n' >"$cache/stale"
+  : >"$log"
+  : >"$realm_log"
+  : >"$lifecycle_log"
+
+  run_bottle_verifier_fixture "$runtime_evidence" >/dev/null
+
+  [ -L "$target_opt_prefix" ] && \
+    [ "$(readlink "$target_opt_prefix")" = ../Cellar/hello/1.0 ] ||
+    fail "bottle verifier changed the canonical target opt link"
 
   cmp -s "$tap/Formula/hello.rb" "$tapped_tap/Formula/hello.rb" ||
     fail "bottle verifier did not materialize the reconstructed Formula into Homebrew's tap"

@@ -536,7 +536,38 @@ if [ "$SELECTION_MODE" = "anonymous-public-readback" ]; then
 else
   run_brew_logged "$BREW_BIN" install --force-bottle --ignore-dependencies "$BOTTLE"
 fi
-TARGET_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"
+TARGET_OPT_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"
+EXPECTED_TARGET_OPT_PREFIX="$HOMEBREW_PATCHED_PREFIX/opt/$FORMULA"
+[ "$TARGET_OPT_PREFIX" = "$EXPECTED_TARGET_OPT_PREFIX" ] || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula opt prefix is not canonical" >&2
+  exit 1
+}
+TARGET_PREFIX="$(cd "$TARGET_OPT_PREFIX" && pwd -P)" || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula opt prefix does not resolve" >&2
+  exit 1
+}
+TARGET_RACK="$HOMEBREW_PATCHED_PREFIX/Cellar/$FORMULA"
+[ -d "$TARGET_RACK" ] && [ ! -L "$TARGET_RACK" ] || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula Cellar rack is not a real directory" >&2
+  exit 1
+}
+TARGET_RACK="$(cd "$TARGET_RACK" && pwd -P)" || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula Cellar rack does not resolve" >&2
+  exit 1
+}
+EXPECTED_TARGET_PREFIX="$TARGET_RACK/$PKG_VERSION"
+[ -d "$EXPECTED_TARGET_PREFIX" ] && [ ! -L "$EXPECTED_TARGET_PREFIX" ] || {
+  echo "homebrew-verify-poured-bottle.sh: expected target Formula keg is not a real directory" >&2
+  exit 1
+}
+EXPECTED_TARGET_PREFIX="$(cd "$EXPECTED_TARGET_PREFIX" && pwd -P)" || {
+  echo "homebrew-verify-poured-bottle.sh: expected target Formula keg does not resolve" >&2
+  exit 1
+}
+[ "$TARGET_PREFIX" = "$EXPECTED_TARGET_PREFIX" ] || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula opt prefix does not select the exact versioned keg" >&2
+  exit 1
+}
 TARGET_RECEIPT="$TARGET_PREFIX/INSTALL_RECEIPT.json"
 "$BREW_BIN" info --json=v2 "$FORMULA_REF" >"$FORMULA_INFO"
 homebrew_patched_launcher_snapshot_target_cellar_layout \
