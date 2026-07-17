@@ -58,6 +58,7 @@ jobs:
       tap-sha: ${{ steps.source-commits.outputs.tap-sha }}
     steps:
       - name: Validate caller trust boundary
+        id: trust
         shell: bash
         env:
           CALLER_EVENT_NAME: ${{ github.event_name }}
@@ -73,6 +74,26 @@ jobs:
           BOTTLE_ROOT_URL: ${{ inputs.bottle-root-url }}
         run: |
           set -euo pipefail
+          normalize_dry_run_source_ref() {
+            local label="$1"
+            local ref="$2"
+
+            if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+              printf '%s\n' "$ref"
+              return 0
+            fi
+            if [ "${#ref}" -le 255 ] &&
+               [[ "$ref" != refs/* ]] &&
+               [[ "$ref" != -* ]] &&
+               git check-ref-format "refs/heads/$ref" >/dev/null 2>&1; then
+              printf 'refs/heads/%s\n' "$ref"
+              return 0
+            fi
+
+            echo "::error::dry-run $label ref must be a branch name or exact lowercase 40-character commit SHA" >&2
+            return 2
+          }
+
           [ "$CALLER_REPOSITORY" = "$TAP_REPOSITORY" ] || {
             echo "::error::the caller repository must own the target tap repository"; exit 2;
           }
@@ -87,12 +108,6 @@ jobs:
           }
           [ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ] || {
             echo "::error::publication requires Automattic/kandelo"; exit 2;
-          }
-          [ "$KANDELO_REF" = "main" ] || {
-            echo "::error::publication requires Kandelo main"; exit 2;
-          }
-          [ "$TAP_REF" = "main" ] || {
-            echo "::error::publication requires tap main"; exit 2;
           }
           case "$TAP_REPOSITORY" in
             Automattic/kandelo-homebrew)
@@ -120,20 +135,34 @@ jobs:
             [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
               echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
             }
-            exit 0
+            validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"
+            validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"
+          else
+            case "$CALLER_WORKFLOW_REF" in
+              "$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"|\
+              "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
+              *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
+            esac
+            [ "$KANDELO_REF" = "main" ] || {
+              echo "::error::write publication requires Kandelo main"; exit 2;
+            }
+            [ "$TAP_REF" = "main" ] || {
+              echo "::error::write publication requires tap main"; exit 2;
+            }
+            validated_kandelo_ref="refs/heads/main"
+            validated_tap_ref="refs/heads/main"
           fi
-          case "$CALLER_WORKFLOW_REF" in
-            "$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"|\
-            "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
-            *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
-          esac
+          {
+            echo "kandelo-ref=$validated_kandelo_ref"
+            echo "tap-ref=$validated_tap_ref"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout Kandelo workflow source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
-          ref: ${{ inputs.kandelo-ref }}
+          ref: ${{ steps.trust.outputs.kandelo-ref }}
           path: kandelo
           submodules: false
 
@@ -142,7 +171,7 @@ jobs:
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
-          ref: ${{ inputs.tap-ref }}
+          ref: ${{ steps.trust.outputs.tap-ref }}
           path: tap
 
       - name: Resolve source commits

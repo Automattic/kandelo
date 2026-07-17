@@ -3,6 +3,8 @@
 
 require "digest"
 require "json"
+require "open3"
+require "tempfile"
 require "yaml"
 
 REPO_ROOT = File.expand_path("..", __dir__)
@@ -15,7 +17,7 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "8a6b23ded396476071c9977123e69c74494db4357ad8e5d38218aadf8726917a"
+PUBLISHER_PLAN_DIGEST = "82af04e56e14d7f442936ad969398dd9e7e7f3e6107337d2eb5d043346eebab8"
 PUBLISHER_BUILD_DIGEST = "f873732408b33ab5c412a0a297e543021eb8bb1c2ab6a5c97644fc1fd320c78c"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
 PUBLISHER_INDEX_DIGEST = "143ba3916705d3c76ef337ddf89def07ff3515400a95827eb14042a12ab31cd8"
@@ -91,6 +93,99 @@ def named_step(steps, name)
   matches = steps.select { |step| step["name"] == name }
   check(matches.length == 1, "expected exactly one #{name.inspect} step")
   matches.first
+end
+
+def caller_validation_result(source, overrides = {})
+  env = {
+    "CALLER_EVENT_NAME" => "repository_dispatch",
+    "CALLER_REF" => "refs/heads/main",
+    "CALLER_REPOSITORY" => "Automattic/kandelo-homebrew",
+    "CALLER_WORKFLOW_REF" =>
+      "Automattic/kandelo-homebrew/.github/workflows/dry-run-bottles.yml@refs/heads/main",
+    "DRY_RUN" => "true",
+    "KANDELO_REPOSITORY" => "Automattic/kandelo",
+    "KANDELO_REF" => "main",
+    "TAP_NAME" => "Automattic/kandelo-homebrew",
+    "TAP_REPOSITORY" => "Automattic/kandelo-homebrew",
+    "TAP_REF" => "main",
+    "BOTTLE_ROOT_URL" => "",
+  }.merge(overrides)
+
+  Tempfile.create("kandelo-homebrew-trust-output") do |output|
+    env["GITHUB_OUTPUT"] = output.path
+    stdout, stderr, status = Open3.capture3(
+      env, "bash", "--noprofile", "--norc", "-c", source
+    )
+    output.flush
+    {
+      "status" => status.exitstatus,
+      "stdout" => stdout,
+      "stderr" => stderr,
+      "outputs" => File.read(output.path),
+    }
+  end
+end
+
+def check_caller_validation_behavior(workflow)
+  plan_steps = job_steps(workflow_jobs(workflow).fetch("plan"), "publisher plan")
+  source = named_step(plan_steps, "Validate caller trust boundary").fetch("run")
+
+  branch = caller_validation_result(source, {
+    "KANDELO_REF" => "review/homebrew_source-1.2",
+    "TAP_REF" => "formula/pilot_1.2",
+  })
+  check(branch["status"] == 0 && branch["outputs"] ==
+        "kandelo-ref=refs/heads/review/homebrew_source-1.2\n" \
+        "tap-ref=refs/heads/formula/pilot_1.2\n",
+        "publisher dry-run does not normalize reviewed branch names")
+
+  kandelo_sha = "a" * 40
+  tap_sha = "b" * 40
+  exact = caller_validation_result(source, {
+    "KANDELO_REF" => kandelo_sha,
+    "TAP_REF" => tap_sha,
+  })
+  check(exact["status"] == 0 && exact["outputs"] ==
+        "kandelo-ref=#{kandelo_sha}\ntap-ref=#{tap_sha}\n",
+        "publisher dry-run does not accept exact source commits")
+
+  data_only = caller_validation_result(source, {
+    "KANDELO_REF" => "review/homebrew;still-data",
+  })
+  check(data_only["status"] == 0 && data_only["outputs"].include?(
+          "kandelo-ref=refs/heads/review/homebrew;still-data\n"
+        ), "publisher dry-run interpolates a valid source ref as shell syntax")
+
+  write = caller_validation_result(source, {
+    "CALLER_WORKFLOW_REF" =>
+      "Automattic/kandelo-homebrew/.github/workflows/publish-bottles.yml@refs/heads/main",
+    "DRY_RUN" => "false",
+  })
+  check(write["status"] == 0 && write["outputs"] ==
+        "kandelo-ref=refs/heads/main\ntap-ref=refs/heads/main\n",
+        "publisher write path does not remain fixed to main")
+
+  write_sha = caller_validation_result(source, {
+    "CALLER_WORKFLOW_REF" =>
+      "Automattic/kandelo-homebrew/.github/workflows/publish-bottles.yml@refs/heads/main",
+    "DRY_RUN" => "false",
+    "KANDELO_REF" => kandelo_sha,
+  })
+  check(write_sha["status"] == 2 &&
+        write_sha["stdout"].include?("write publication requires Kandelo main"),
+        "publisher write path accepts a non-main Kandelo ref")
+
+  {
+    "fully qualified ref" => "refs/heads/review/homebrew",
+    "invalid ref traversal" => "review..homebrew",
+    "option-like ref" => "-review",
+    "empty ref" => "",
+  }.each do |label, ref|
+    rejected = caller_validation_result(source, { "KANDELO_REF" => ref })
+    check(rejected["status"] == 2 &&
+          rejected["stderr"].include?("dry-run Kandelo ref must be a branch name or exact"),
+          "publisher dry-run accepts #{label}")
+  end
 end
 
 def check_architecture_aware_sysroot_step(step, label)
@@ -367,7 +462,8 @@ def check_publisher(workflow)
 
   validation = named_step(plan_steps, "Validate caller trust boundary")
   check(plan_steps.first.equal?(validation), "publisher trust validation must be first")
-  check(validation.keys.sort == %w[env name run shell] && validation["shell"] == "bash" &&
+  check(validation.keys.sort == %w[env id name run shell] && validation["id"] == "trust" &&
+        validation["shell"] == "bash" &&
         validation["env"] == {
           "CALLER_EVENT_NAME" => "${{ github.event_name }}",
           "CALLER_REF" => "${{ github.ref }}",
@@ -399,6 +495,16 @@ def check_publisher(workflow)
     '[ "$TAP_NAME" = "${tap_owner}/${tap_short_name}" ]',
     '[ "$TAP_REF" = "main" ]',
     '[ -z "$BOTTLE_ROOT_URL" ]',
+    'normalize_dry_run_source_ref()',
+    '[[ "$ref" =~ ^[0-9a-f]{40}$ ]]',
+    '[ "${#ref}" -le 255 ]',
+    '[[ "$ref" != refs/* ]]',
+    '[[ "$ref" != -* ]]',
+    'git check-ref-format "refs/heads/$ref"',
+    'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"',
+    'validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"',
+    'echo "kandelo-ref=$validated_kandelo_ref"',
+    'echo "tap-ref=$validated_tap_ref"',
   ].each do |predicate|
     check(validation_run.include?(predicate), "publisher caller validation lacks #{predicate}")
   end
@@ -406,9 +512,18 @@ def check_publisher(workflow)
   caller_index = validation_run.index('[ "$CALLER_REF" = "refs/heads/main" ]')
   kandelo_index = validation_run.index('[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]')
   tap_name_index = validation_run.index('case "$TAP_REPOSITORY" in')
+  dry_kandelo_ref_index = validation_run.index(
+    'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"'
+  )
+  write_kandelo_ref_index = validation_run.index('[ "$KANDELO_REF" = "main" ]')
+  write_tap_ref_index = validation_run.index('[ "$TAP_REF" = "main" ]')
   check(dry_index && caller_index && kandelo_index && tap_name_index &&
         caller_index < dry_index && kandelo_index < dry_index && tap_name_index < dry_index,
         "publisher dry-run can bypass caller authority validation")
+  check(dry_kandelo_ref_index && write_kandelo_ref_index && write_tap_ref_index &&
+        dry_index < dry_kandelo_ref_index && dry_kandelo_ref_index < write_kandelo_ref_index &&
+        dry_kandelo_ref_index < write_tap_ref_index,
+        "publisher does not separate selectable dry-run refs from write-only main refs")
 
   vfs_selection = named_step(
     plan_steps, "Validate dependency-bearing VFS acceptance selection"
@@ -499,7 +614,8 @@ def check_publisher(workflow)
       "with" => {
         "persist-credentials" => false,
         "repository" => "${{ inputs.kandelo-repository }}",
-        "ref" => "${{ inputs.kandelo-ref }}", "path" => "kandelo", "submodules" => false,
+        "ref" => "${{ steps.trust.outputs.kandelo-ref }}",
+        "path" => "kandelo", "submodules" => false,
       },
     },
     {
@@ -507,7 +623,7 @@ def check_publisher(workflow)
       "with" => {
         "persist-credentials" => false,
         "repository" => "${{ inputs.tap-repository }}",
-        "ref" => "${{ inputs.tap-ref }}", "path" => "tap",
+        "ref" => "${{ steps.trust.outputs.tap-ref }}", "path" => "tap",
       },
     },
   ], "publisher plan checkout wiring changed")
@@ -2385,6 +2501,7 @@ begin
   maintenance = load_workflow(MAINTENANCE_PATH)
   self_test(publisher, maintenance)
   check_publisher(publisher)
+  check_caller_validation_behavior(publisher)
   check_maintenance(maintenance)
   check_tap_callers
   puts "check-homebrew-publish-workflow-trust.rb: ok"
