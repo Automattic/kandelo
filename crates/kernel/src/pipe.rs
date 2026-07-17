@@ -66,8 +66,18 @@ pub struct PipeBuffer {
     /// Index of this pipe in the PipeTable (for wakeup events).
     pipe_idx: u32,
     /// Ancillary data queue for SCM_RIGHTS FD passing.
-    /// Each entry is a batch of FDs sent with one sendmsg call.
-    ancillary_fds: VecDeque<Vec<InFlightFd>>,
+    ///
+    /// Each entry is `(stream_offset, fds)`: the batch of FDs sent with one
+    /// sendmsg call, tagged with the byte-stream offset of the FIRST data byte
+    /// of that send (Linux stream-socket SCM_RIGHTS semantics — ancillary data
+    /// is attached to the first accompanying data byte). The receiver uses the
+    /// offset to align FD delivery to the bytes actually returned so a single
+    /// recvmsg never spans two sends' FDs.
+    ancillary_fds: VecDeque<(u64, Vec<InFlightFd>)>,
+    /// Total bytes ever written into this pipe (monotonic; never decremented on read).
+    total_written: u64,
+    /// Total bytes ever consumed from this pipe via `read` (monotonic).
+    total_read: u64,
 }
 
 impl PipeBuffer {
@@ -84,6 +94,8 @@ impl PipeBuffer {
             write_count: 1,
             pipe_idx: 0,
             ancillary_fds: VecDeque::new(),
+            total_written: 0,
+            total_read: 0,
         }
     }
 
@@ -126,6 +138,7 @@ impl PipeBuffer {
         }
         self.tail = (self.tail + n) % cap;
         self.len += n;
+        self.total_written += n as u64;
         // Data written → pipe became readable
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
         n
@@ -173,6 +186,7 @@ impl PipeBuffer {
         }
         self.head = (self.head + n) % cap;
         self.len -= n;
+        self.total_read += n as u64;
         // Data consumed → pipe became writable
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
         n
@@ -217,21 +231,65 @@ impl PipeBuffer {
         self.read_count == 0 && self.write_count == 0
     }
 
+    /// Total bytes ever written into this pipe (monotonic).
+    pub fn total_written(&self) -> u64 {
+        self.total_written
+    }
+
+    /// Total bytes ever consumed from this pipe via `read` (monotonic).
+    pub fn total_read(&self) -> u64 {
+        self.total_read
+    }
+
     /// Push ancillary FDs (SCM_RIGHTS) to be delivered with the next recvmsg.
-    pub fn push_ancillary(&mut self, fds: Vec<InFlightFd>) {
+    ///
+    /// `stream_offset` is the byte-stream position of the first data byte of the
+    /// send carrying these FDs (typically `total_written() - bytes_sent`), so the
+    /// receiver can align delivery to the bytes it actually returns.
+    pub fn push_ancillary(&mut self, stream_offset: u64, fds: Vec<InFlightFd>) {
         if !fds.is_empty() {
-            self.ancillary_fds.push_back(fds);
+            self.ancillary_fds.push_back((stream_offset, fds));
         }
     }
 
-    /// Pop ancillary FDs (SCM_RIGHTS) for the next recvmsg call.
+    /// Pop the front ancillary group's FDs (SCM_RIGHTS) for a recvmsg call.
     pub fn pop_ancillary(&mut self) -> Option<Vec<InFlightFd>> {
-        self.ancillary_fds.pop_front()
+        self.ancillary_fds.pop_front().map(|(_, fds)| fds)
+    }
+
+    /// Stream byte-offset of the first data byte carrying the front (oldest)
+    /// ancillary group, if any is queued.
+    pub fn front_ancillary_offset(&self) -> Option<u64> {
+        self.ancillary_fds.front().map(|(off, _)| *off)
+    }
+
+    /// Stream byte-offset of the ancillary group after the front one, if any.
+    ///
+    /// The receiver caps a delivering recvmsg at this offset so it never reads
+    /// into the next send's data (which would strand that send's FDs).
+    pub fn next_ancillary_offset(&self) -> Option<u64> {
+        self.ancillary_fds.get(1).map(|(off, _)| *off)
     }
 
     /// Returns true if there are ancillary FDs pending delivery.
     pub fn has_ancillary(&self) -> bool {
         !self.ancillary_fds.is_empty()
+    }
+
+    /// Drain every still-queued ancillary group, returning the DRM prime-bo ids
+    /// they carried. Called when the pipe is being freed so the caller can
+    /// release the channel's in-flight bo refcount on FDs that were sent but
+    /// never received (otherwise the bo — and its host SAB — would leak).
+    pub fn take_pending_prime_bo_ids(&mut self) -> Vec<u32> {
+        let mut ids = Vec::new();
+        for (_off, group) in self.ancillary_fds.drain(..) {
+            for fd in group {
+                if let Some(pb) = fd.prime_bo {
+                    ids.push(pb.bo_id);
+                }
+            }
+        }
+        ids
     }
 }
 
@@ -500,6 +558,94 @@ mod tests {
         assert!(!pipe.is_fully_closed());
         pipe.close_write_end();
         assert!(pipe.is_fully_closed());
+    }
+
+    fn dummy_fd(tag: u8) -> InFlightFd {
+        InFlightFd {
+            file_type: 4, // CharDevice — matches the DRM prime-fd shape
+            status_flags: 0,
+            host_handle: tag as i64,
+            offset: 0,
+            path: Vec::new(),
+            socket: None,
+            prime_bo: None,
+        }
+    }
+
+    #[test]
+    fn test_stream_byte_counters() {
+        let mut pipe = PipeBuffer::new(DEFAULT_PIPE_CAPACITY);
+        assert_eq!(pipe.total_written(), 0);
+        assert_eq!(pipe.total_read(), 0);
+
+        pipe.write(b"hello"); // 5
+        pipe.write(b"world!"); // +6 = 11
+        assert_eq!(pipe.total_written(), 11);
+        assert_eq!(pipe.total_read(), 0);
+
+        let mut buf = [0u8; 4];
+        pipe.read(&mut buf);
+        assert_eq!(pipe.total_read(), 4);
+
+        // peek must NOT advance total_read (it doesn't consume the stream).
+        let mut pbuf = [0u8; 4];
+        pipe.peek(&mut pbuf);
+        assert_eq!(pipe.total_read(), 4);
+
+        pipe.read(&mut buf);
+        assert_eq!(pipe.total_read(), 8);
+    }
+
+    #[test]
+    fn test_ancillary_offsets_fifo() {
+        let mut pipe = PipeBuffer::new(DEFAULT_PIPE_CAPACITY);
+        assert!(!pipe.has_ancillary());
+        assert_eq!(pipe.front_ancillary_offset(), None);
+        assert_eq!(pipe.next_ancillary_offset(), None);
+
+        // Two sends, each carrying one fd, at distinct stream offsets.
+        pipe.push_ancillary(0, alloc::vec![dummy_fd(1)]);
+        pipe.push_ancillary(12, alloc::vec![dummy_fd(2)]);
+
+        assert!(pipe.has_ancillary());
+        assert_eq!(pipe.front_ancillary_offset(), Some(0));
+        assert_eq!(pipe.next_ancillary_offset(), Some(12));
+
+        // Pop delivers the front group's fds in FIFO order and drops its offset.
+        let g0 = pipe.pop_ancillary().expect("front group");
+        assert_eq!(g0.len(), 1);
+        assert_eq!(g0[0].host_handle, 1);
+        assert_eq!(pipe.front_ancillary_offset(), Some(12));
+        assert_eq!(pipe.next_ancillary_offset(), None);
+
+        let g1 = pipe.pop_ancillary().expect("second group");
+        assert_eq!(g1[0].host_handle, 2);
+        assert!(!pipe.has_ancillary());
+        assert_eq!(pipe.pop_ancillary().is_none(), true);
+    }
+
+    #[test]
+    fn test_push_ancillary_ignores_empty() {
+        let mut pipe = PipeBuffer::new(DEFAULT_PIPE_CAPACITY);
+        pipe.push_ancillary(5, Vec::new());
+        assert!(!pipe.has_ancillary());
+        assert_eq!(pipe.front_ancillary_offset(), None);
+    }
+
+    #[test]
+    fn test_take_pending_prime_bo_ids_drains_undelivered() {
+        let mut pipe = PipeBuffer::new(DEFAULT_PIPE_CAPACITY);
+        // A prime-bo fd carries a bo sidecar; a plain fd does not.
+        let mut prime = dummy_fd(0);
+        prime.prime_bo = Some(crate::ofd::PrimeBoState { bo_id: 42, cookie: 7 });
+        pipe.push_ancillary(0, alloc::vec![prime]);
+        pipe.push_ancillary(8, alloc::vec![dummy_fd(9)]); // no prime_bo → no id
+
+        let ids = pipe.take_pending_prime_bo_ids();
+        assert_eq!(ids, alloc::vec![42u32]);
+        // Draining consumes every queued group.
+        assert!(!pipe.has_ancillary());
+        assert!(pipe.take_pending_prime_bo_ids().is_empty());
     }
 
     #[test]

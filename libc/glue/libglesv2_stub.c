@@ -458,8 +458,8 @@ void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     EMIT_END()
 }
 
-/* Column-major 4x4 matrix uniforms — the MVP path any 3D client needs
- * (wlcube's spinning cube is the first consumer). WebGL2 rejects a
+/* Column-major 4x4 matrix uniforms — the MVP path any 3D client needs.
+ * WebGL2 rejects a
  * transpose flag other than false, so the host forwards `transpose`
  * verbatim to gl.uniformMatrix4fv; callers must pass GL_FALSE and supply
  * column-major data. Payload: i32 loc, u32 count, u32 transposeBool,
