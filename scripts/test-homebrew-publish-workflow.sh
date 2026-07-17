@@ -72,6 +72,10 @@ homebrew_patched_launcher_seed_bundler_groups() {
 }
 
 homebrew_patched_launcher_isolate() {
+  [ "$#" -eq 6 ] || return 2
+  if [ -n "${FAKE_SYSROOT_BUILD_ROOT_CAPTURE:-}" ]; then
+    printf '%s\n' "$6" >"$FAKE_SYSROOT_BUILD_ROOT_CAPTURE"
+  fi
   printf 'isolate\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
 }
 
@@ -2469,6 +2473,7 @@ assert_bottle_verifier_installs_test_dependencies() {
   local bottle_json="$root/hello.bottle.json"
   local dependency_provenance="$root/dependency-provenance.json"
   local selection_receipt="$root/selection-receipt.json"
+  local sysroot_build_root="$root/sysroot-build"
   local runtime_evidence="$root/runtime-evidence.json"
   local target_prefix="$brew_prefix/Cellar/hello/1.0"
   local target_opt_prefix="$brew_prefix/opt/hello"
@@ -2482,9 +2487,11 @@ assert_bottle_verifier_installs_test_dependencies() {
   local provenance_capture="$root/provenance.txt"
   local provenance_log_capture="$root/provenance-install.log"
   local native_prefix_capture="$root/native-prefix.txt"
+  local sysroot_build_root_capture="$root/sysroot-build-root.txt"
+  local shared_temp="$root/shared-temp"
   local renamed_err="$root/renamed-bottle.err"
   local nested_target_err="$root/nested-target.err"
-  local bottle_sha bottle_bytes tap_commit native_prefix real_python3
+  local bottle_sha bottle_bytes tap_commit native_prefix real_python3 real_rm
 
   make_tap "$tap"
   cat >"$tap/Formula/hello.rb" <<'EOF'
@@ -2508,7 +2515,8 @@ EOF
 
   mkdir -p "$brew_repo" "$brew_prefix/opt" "$fake_bin" "$target_prefix" \
     "$nested_target_prefix" \
-    "$cache" "$brew_temp" "$state"
+    "$cache" "$brew_temp" "$state" "$sysroot_build_root/sysroot/lib" "$shared_temp"
+  printf 'fixture libc archive\n' >"$sysroot_build_root/sysroot/lib/libc.a"
   ln -s ../Cellar/hello/1.0 "$target_opt_prefix"
   target_prefix="$(cd "$target_prefix" && pwd -P)"
   printf 'stale cache entry\n' >"$cache/stale"
@@ -2547,6 +2555,7 @@ EOF
       --bottle-root-url https://example.invalid \
       --dependency-provenance "$dependency_provenance" \
       --selection-receipt "$selection_receipt" \
+      --sysroot-build-root "$sysroot_build_root" \
       --out "$root/renamed-runtime-evidence.json" >/dev/null 2>"$renamed_err"; then
     fail "bottle verifier accepted a generic local archive filename"
   fi
@@ -2682,6 +2691,7 @@ EOF
   chmod +x "$fake_brew"
 
   real_python3="$(command -v python3)"
+  real_rm="$(command -v rm)"
   cat >"$fake_bin/python3" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2721,14 +2731,34 @@ printf '{"schema":1}\n' >"$out"
 EOF
   chmod +x "$fake_bin/python3"
 
+  cat >"$fake_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n|--) shift ;;
+    *) break ;;
+  esac
+done
+command="$1"
+shift
+if [ "$command" = /usr/bin/rm ]; then
+  command="${REAL_RM:?}"
+fi
+exec "$command" "$@"
+EOF
+  chmod +x "$fake_bin/sudo"
+
   run_bottle_verifier_fixture() {
     local evidence_out="$1"
     PATH="$fake_bin:$PATH" \
       REAL_PYTHON3="$real_python3" \
+      REAL_RM="$real_rm" \
       FAKE_BREW_LOG="$log" \
       FAKE_REALM_COMMAND_LOG="$realm_log" \
       FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
       FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
+      FAKE_SYSROOT_BUILD_ROOT_CAPTURE="$sysroot_build_root_capture" \
       FAKE_BREW_PREFIX="$brew_prefix" \
       FAKE_BREW_REPOSITORY="$brew_repo" \
       FAKE_TAP_ROOT="$tapped_tap" \
@@ -2742,6 +2772,9 @@ EOF
       HOMEBREW_BREW_FILE="$fake_brew" \
       HOMEBREW_CACHE="$cache" \
       HOMEBREW_TEMP="$brew_temp" \
+      KANDELO_HOMEBREW_BUILD_USER=fixture-build-user \
+      KANDELO_HOMEBREW_SHARED_TEMP="$shared_temp" \
+      KANDELO_HOMEBREW_SUDO_BIN="$fake_bin/sudo" \
       HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
       KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
       HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
@@ -2761,6 +2794,7 @@ EOF
         --bottle-root-url https://example.invalid \
         --dependency-provenance "$dependency_provenance" \
         --selection-receipt "$selection_receipt" \
+        --sysroot-build-root "$sysroot_build_root" \
         --out "$evidence_out"
   }
 
@@ -2784,6 +2818,10 @@ EOF
   : >"$lifecycle_log"
 
   run_bottle_verifier_fixture "$runtime_evidence" >/dev/null
+
+  [ "$(cat "$sysroot_build_root_capture")" = \
+    "$(cd "$sysroot_build_root" && pwd -P)" ] ||
+    fail "bottle verifier passed the wrong protected sysroot build root"
 
   [ -L "$target_opt_prefix" ] && \
     [ "$(readlink "$target_opt_prefix")" = ../Cellar/hello/1.0 ] ||
@@ -2846,7 +2884,7 @@ EOF
     fail "bottle verifier installed dependencies, target, or test out of order"
   ! grep -F 'homebrew/core/dynamic-' "$realm_log" >/dev/null ||
     fail "bottle verifier selected its native plan from evaluated Formula output"
-  [ "$(cat "$lifecycle_log")" = $'prepare-native\nseed-bundler:bottle formula_test\nstage-dependency-plan\nseal-native\nbridge-native:cmake\nbridge-native:ninja\ncleanup' ] ||
+  [ "$(cat "$lifecycle_log")" = $'prepare-native\nseed-bundler:bottle formula_test\nstage-dependency-plan\nisolate\nseal-native\nbridge-native:cmake\nbridge-native:ninja\nteardown\nverify-isolation\ncleanup' ] ||
     fail "bottle verifier did not prepare, seal, bridge, and clean up the native realm"
   if grep -q '^trust --formula ' "$log"; then
     fail "bottle verifier persisted redundant Formula trust"

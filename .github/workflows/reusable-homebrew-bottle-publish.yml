@@ -1385,6 +1385,15 @@ jobs:
           path: kandelo
           submodules: false
 
+      - name: Checkout exact Kandelo sysroot build source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.kandelo-sha }}
+          path: kandelo-sysroot-build
+          submodules: false
+
       - name: Checkout exact tap source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1688,7 +1697,14 @@ jobs:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          cd kandelo
+          expected_sha="$(git -C kandelo rev-parse HEAD)"
+          [ "$(git -C kandelo-sysroot-build rev-parse HEAD)" = "$expected_sha" ] || {
+            echo "::error::Kandelo sysroot build source differs from the verifier source"; exit 2;
+          }
+          [ -z "$(git -C kandelo-sysroot-build status --short)" ] || {
+            echo "::error::Kandelo sysroot build source is dirty before the build"; exit 2;
+          }
+          cd kandelo-sysroot-build
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git config submodule.musl.url "https://github.com/ifduyue/musl.git"
           fetched=0
@@ -2028,6 +2044,7 @@ jobs:
             --bottle-root-url "$BOTTLE_ROOT_URL" \
             --dependency-provenance "$DEPENDENCY_PROVENANCE" \
             --selection-receipt "$SELECTION_RECEIPT" \
+            --sysroot-build-root "$GITHUB_WORKSPACE/kandelo-sysroot-build" \
             --out "$runtime_evidence"
           resume_workflow_commands
           trap - EXIT
@@ -2158,7 +2175,7 @@ jobs:
           . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
           export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap-postverify"
           export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap-postverify"
-          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo"
+          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo-sysroot-build"
           export KANDELO_HOMEBREW_SIDECAR_ROOT="$RUNNER_TEMP/homebrew-sidecars"
           export KANDELO_HOMEBREW_FORMULA="$FORMULA"
           export KANDELO_HOMEBREW_ARCH="$ARCH"
@@ -2198,7 +2215,7 @@ jobs:
           . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
           export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap-postverify"
           export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap-postverify"
-          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo"
+          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo-sysroot-build"
           export KANDELO_HOMEBREW_SIDECAR_ROOT="$RUNNER_TEMP/homebrew-sidecars"
           export KANDELO_HOMEBREW_FORMULA="$FORMULA"
           export KANDELO_HOMEBREW_ARCH="$ARCH"
@@ -2525,6 +2542,16 @@ jobs:
           }
           [ -z "$(git -C kandelo status --short --untracked-files=no)" ] || {
             echo "::error::runtime validation modified reviewed Kandelo tracked files"; exit 1;
+          }
+          [ "$(git -C kandelo-sysroot-build rev-parse HEAD)" = "$KANDELO_SHA" ] || {
+            echo "::error::Kandelo sysroot build source moved during runtime validation"; exit 1;
+          }
+          [ -z "$(git -C kandelo-sysroot-build status --short --untracked-files=no --ignore-submodules=all)" ] || {
+            echo "::error::runtime validation modified Kandelo sysroot build files outside musl"; exit 1;
+          }
+          expected_musl_sha="$(git -C kandelo-sysroot-build rev-parse HEAD:libc/musl)"
+          [ "$(git -C kandelo-sysroot-build/libc/musl rev-parse HEAD)" = "$expected_musl_sha" ] || {
+            echo "::error::Kandelo sysroot build moved the reviewed musl commit"; exit 1;
           }
           [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap verifier source moved during runtime validation"; exit 1;

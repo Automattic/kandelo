@@ -271,6 +271,76 @@ homebrew_assert_tree_not_replaceable_by_user() {
   done
 }
 
+homebrew_assert_tree_symlinks_contained() {
+  if [ "$#" -ne 2 ]; then
+    echo "homebrew_assert_tree_symlinks_contained: expected TREE LABEL" >&2
+    return 2
+  fi
+  local tree="$1" label="$2" physical_tree unsafe_entry
+  physical_tree="$(cd "$tree" && pwd -P)" || {
+    echo "homebrew-patched-launcher: could not resolve protected $label tree" >&2
+    return 2
+  }
+  unsafe_entry="$(/usr/bin/find "$physical_tree" -xdev \
+    ! \( -type d -o -type f -o -type l \) -print -quit)" || return 2
+  [ -z "$unsafe_entry" ] || {
+    echo "homebrew-patched-launcher: protected $label contains a special entry: $unsafe_entry" >&2
+    return 1
+  }
+  if ! /usr/bin/find "$physical_tree" -xdev -type l \
+       -exec /usr/bin/bash -c '
+         set -euo pipefail
+         root="$1"
+         label="$2"
+         shift 2
+         for link in "$@"; do
+           raw_target="$(/usr/bin/readlink -- "$link")" || exit 1
+           case "$raw_target" in
+             /*) lexical_input="$raw_target" ;;
+             *) lexical_input="${link%/*}/$raw_target" ;;
+           esac
+           lexical_target="$(/usr/bin/realpath -m -s -- "$lexical_input")" || exit 1
+           case "$lexical_target" in
+             "$root"|"$root"/*) ;;
+             *)
+               printf "homebrew-patched-launcher: protected %s symlink crosses its tree: %s\n" \
+                 "$label" "$link" >&2
+               exit 1
+               ;;
+           esac
+           resolved="$(/usr/bin/realpath -- "$link")" || {
+             printf "homebrew-patched-launcher: protected %s symlink is unresolved: %s\n" \
+               "$label" "$link" >&2
+             exit 1
+           }
+           case "$resolved" in
+             "$root"|"$root"/*) ;;
+             *)
+               printf "homebrew-patched-launcher: protected %s symlink escapes its tree: %s\n" \
+                 "$label" "$link" >&2
+               exit 1
+               ;;
+           esac
+         done
+       ' kandelo-protected-tree "$physical_tree" "$label" {} +; then
+    echo "homebrew-patched-launcher: protected $label symlink validation failed" >&2
+    return 1
+  fi
+}
+
+homebrew_patched_launcher_emit_sysroot_access_audit() {
+  cat <<'EOF'
+if ! sysroot_access_violation="$(/usr/bin/find "$expected_sysroot" -xdev \( -writable -o ! -readable -o \( -type d ! -executable \) \) -print -quit)"; then
+  echo "homebrew-patched-launcher: could not inspect the protected sysroot alias" >&2
+  exit 2
+fi
+if [ -n "$sysroot_access_violation" ]; then
+  echo "homebrew-patched-launcher: protected sysroot alias has unsafe access: $sysroot_access_violation" >&2
+  exit 1
+fi
+EOF
+}
+
 homebrew_patched_launcher_verify_overlay_seal() {
   if [ "$#" -ne 1 ]; then
     echo "homebrew_patched_launcher_verify_overlay_seal: expected BUILD_USER" >&2
@@ -1259,11 +1329,12 @@ homebrew_patched_launcher_seed_bundler_groups() {
 # to a dedicated user inside a transient systemd service. KillMode=control-group
 # makes double-forked or session-detached descendants part of the call lifecycle.
 homebrew_patched_launcher_isolate() {
-  if [ "$#" -ne 5 ]; then
-    echo "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR KANDELO_ROOT TAP_ROOT OUTPUT_ROOT" >&2
+  if [ "$#" -ne 6 ]; then
+    echo "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR KANDELO_ROOT TAP_ROOT OUTPUT_ROOT SYSROOT_BUILD_ROOT" >&2
     return 2
   fi
   local build_user="$1" work_dir="$2" kandelo_root="$3" tap_root="$4" output_root="$5"
+  local sysroot_build_root="$6" sysroot
   local build_group build_home protected_brew protected_audit
   local wrapper_source wrapper_path audit_source native_runner_source native_runner_path
   local mutable_root protected_root target_state_root native_reported_prefix native_reported_repo
@@ -1377,7 +1448,39 @@ homebrew_patched_launcher_isolate() {
     return 2
   }
 
-  for protected_root in "$kandelo_root" "$tap_root" "$output_root"; do
+  if [ ! -d "$sysroot_build_root" ] || [ -L "$sysroot_build_root" ]; then
+    echo "homebrew-patched-launcher: sysroot build root must be a real directory" >&2
+    return 2
+  fi
+  sysroot_build_root="$(cd "$sysroot_build_root" && pwd -P)" || return 2
+  case "${KANDELO_HOMEBREW_ARCH:-}" in
+    wasm32) sysroot="$sysroot_build_root/sysroot" ;;
+    wasm64) sysroot="$sysroot_build_root/sysroot64" ;;
+    *)
+      echo "homebrew-patched-launcher: KANDELO_HOMEBREW_ARCH must select wasm32 or wasm64" >&2
+      return 2
+      ;;
+  esac
+  if [ ! -d "$sysroot" ] || [ -L "$sysroot" ] || \
+     [ ! -f "$sysroot/lib/libc.a" ] || [ -L "$sysroot/lib/libc.a" ]; then
+    echo "homebrew-patched-launcher: sysroot must be a real directory containing a regular libc archive" >&2
+    return 2
+  fi
+  sysroot="$(cd "$sysroot" && pwd -P)" || return 2
+  [ "$sysroot_build_root" != "/" ] || {
+    echo "homebrew-patched-launcher: sysroot build root cannot be the filesystem root" >&2
+    return 2
+  }
+  case "$sysroot" in
+    *:*)
+      echo "homebrew-patched-launcher: sysroot cannot contain ':' for a systemd bind" >&2
+      return 2
+      ;;
+  esac
+  homebrew_assert_tree_symlinks_contained "$sysroot" sysroot || return
+
+  for protected_root in "$kandelo_root" "$tap_root" "$output_root" \
+    "$sysroot_build_root"; do
     if [ ! -d "$protected_root" ] || [ -L "$protected_root" ]; then
       echo "homebrew-patched-launcher: protected root is not a real directory: $protected_root" >&2
       return 2
@@ -1395,7 +1498,7 @@ homebrew_patched_launcher_isolate() {
       "$HOMEBREW_PATCHED_NATIVE_CACHE" "$HOMEBREW_PATCHED_NATIVE_TEMP" \
       "$HOMEBREW_PATCHED_NATIVE_CONFIG" "$HOMEBREW_PATCHED_NATIVE_HOME"; do
       for protected_root in "$work_dir" "$kandelo_root" "$tap_root" "$output_root" \
-        "$build_home"; do
+        "$sysroot_build_root" "$build_home"; do
         if [ "$mutable_root" = "$protected_root" ]; then
           echo "homebrew-patched-launcher: native and target execution roots must differ: $mutable_root" >&2
           return 2
@@ -1416,7 +1519,14 @@ homebrew_patched_launcher_isolate() {
     done
   fi
 
-  mutable_roots=("$work_dir" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP")
+  mutable_roots=(
+    "$work_dir"
+    "$HOMEBREW_PATCHED_PREFIX"
+    "$HOMEBREW_CACHE"
+    "$HOMEBREW_TEMP"
+    "$XDG_CONFIG_HOME"
+    "$build_home"
+  )
   if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
     mutable_roots+=(
       "$HOMEBREW_PATCHED_NATIVE_PREFIX"
@@ -1431,6 +1541,18 @@ homebrew_patched_launcher_isolate() {
       echo "homebrew-patched-launcher: mutable build root is not a real directory: $mutable_root" >&2
       return 2
     fi
+    case "$sysroot_build_root/" in
+      "$mutable_root/"*)
+        echo "homebrew-patched-launcher: sysroot build root cannot be inside mutable Formula state" >&2
+        return 2
+        ;;
+    esac
+    case "$mutable_root/" in
+      "$sysroot_build_root/"*)
+        echo "homebrew-patched-launcher: mutable Formula state cannot be inside the sysroot build root" >&2
+        return 2
+        ;;
+    esac
   done
   for target_state_root in "$HOMEBREW_PATCHED_PREFIX/Cellar" \
     "$HOMEBREW_PATCHED_PREFIX/opt"; do
@@ -1544,12 +1666,14 @@ homebrew_patched_launcher_isolate() {
       return 2
     fi
   done
+  homebrew_assert_tree_not_replaceable_by_user "$build_user" "$sysroot" || return
 
   HOMEBREW_PATCHED_PROTECTED_DIR="$HOMEBREW_PATCHED_PREFIX/.kandelo-homebrew-$$-${RANDOM}"
   "$sudo_bin" install -d -o root -g root -m 0755 "$HOMEBREW_PATCHED_PROTECTED_DIR"
   source_alias_dir="$work_dir/source-aliases"
   "$sudo_bin" install -d -o root -g root -m 0555 \
-    "$source_alias_dir" "$source_alias_dir/kandelo" "$source_alias_dir/tap"
+    "$source_alias_dir" "$source_alias_dir/kandelo" "$source_alias_dir/tap" \
+    "$source_alias_dir/sysroot"
   HOMEBREW_PATCHED_SOURCE_ALIAS_DIR="$source_alias_dir"
   protected_brew="$HOMEBREW_PATCHED_PROTECTED_DIR/brew"
   "$sudo_bin" ln -s "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$protected_brew"
@@ -1560,11 +1684,19 @@ homebrew_patched_launcher_isolate() {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'
     printf 'expected_kandelo=%q\n' "$source_alias_dir/kandelo"
     printf 'expected_tap=%q\n' "$source_alias_dir/tap"
+    printf 'expected_sysroot=%q\n' "$source_alias_dir/sysroot"
     printf 'if [ "${HOMEBREW_KANDELO_ROOT:-}" != "$expected_kandelo" ] || '
     printf '[ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" != "$expected_kandelo" ]; then\n'
     printf '  echo "homebrew-patched-launcher: isolated Kandelo root does not use the protected alias" >&2\n'
     printf '  exit 2\nfi\n'
-    printf 'for source_alias in "$expected_kandelo" "$expected_tap"; do\n'
+    printf 'if [ "${HOMEBREW_KANDELO_SYSROOT:-}" != "$expected_sysroot" ] || '
+    printf '[ "${WASM_POSIX_SYSROOT:-}" != "$expected_sysroot" ]; then\n'
+    printf '  echo "homebrew-patched-launcher: isolated sysroot does not use the protected alias" >&2\n'
+    printf '  exit 2\nfi\n'
+    printf 'if [ ! -f "$expected_sysroot/lib/libc.a" ] || [ -L "$expected_sysroot/lib/libc.a" ]; then\n'
+    printf '  echo "homebrew-patched-launcher: protected sysroot libc archive is invalid" >&2\n'
+    printf '  exit 2\nfi\n'
+    printf 'for source_alias in "$expected_kandelo" "$expected_tap" "$expected_sysroot"; do\n'
     printf '  if [ ! -d "$source_alias" ] || [ ! -r "$source_alias" ] || [ ! -x "$source_alias" ]; then\n'
     printf '    echo "homebrew-patched-launcher: protected source alias is inaccessible: $source_alias" >&2\n'
     printf '    exit 2\n  fi\n'
@@ -1575,8 +1707,9 @@ homebrew_patched_launcher_isolate() {
     printf '    *,ro,*) ;;\n'
     printf '    *) echo "homebrew-patched-launcher: protected source mount is writable: $source_alias" >&2; exit 1 ;;\n'
     printf '  esac\ndone\n'
-    printf 'for hidden_root in %q %q %q; do\n' \
-      "$kandelo_root" "$tap_root" "$output_root"
+    homebrew_patched_launcher_emit_sysroot_access_audit
+    printf 'for hidden_root in %q %q %q %q; do\n' \
+      "$kandelo_root" "$tap_root" "$output_root" "$sysroot_build_root"
     printf '  if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then\n'
     printf '    echo "homebrew-patched-launcher: original protected root is usable by Formula execution: $hidden_root" >&2\n'
     printf '    exit 1\n  fi\n'
@@ -1643,11 +1776,17 @@ homebrew_patched_launcher_isolate() {
       "--property=TimeoutStopSec=10s" "--property=NoNewPrivileges=yes" \
       "--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo" \
       "--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap" \
+      "--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot" \
       "--property=InaccessiblePaths=$kandelo_root" \
       "--property=InaccessiblePaths=$tap_root" \
       "--property=InaccessiblePaths=$output_root" \
       "--service-type=exec" \
       "--expand-environment=no"
+    if [ "$sysroot_build_root" != "$kandelo_root" ] && \
+       [ "$sysroot_build_root" != "$tap_root" ] && \
+       [ "$sysroot_build_root" != "$output_root" ]; then
+      printf ' %q' "--property=InaccessiblePaths=$sysroot_build_root"
+    fi
     if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
       printf ' %q' \
         "--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX" \
@@ -1665,8 +1804,10 @@ homebrew_patched_launcher_isolate() {
         printf ' %q' "$variable=$value"
       fi
     done
-    printf ' %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
-      "KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo"
+    printf ' %q %q %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
+      "KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
+      "HOMEBREW_KANDELO_SYSROOT=$source_alias_dir/sysroot" \
+      "WASM_POSIX_SYSROOT=$source_alias_dir/sysroot"
     printf ' "${bottle_tag_env[@]}" "$command_path" "$@"\n'
   } >"$wrapper_source"
   "$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"
@@ -1697,6 +1838,11 @@ homebrew_patched_launcher_isolate() {
         "--property=InaccessiblePaths=$build_home" \
         "--service-type=exec" \
         "--expand-environment=no"
+      if [ "$sysroot_build_root" != "$kandelo_root" ] && \
+         [ "$sysroot_build_root" != "$tap_root" ] && \
+         [ "$sysroot_build_root" != "$output_root" ]; then
+        printf ' %q' "--property=InaccessiblePaths=$sysroot_build_root"
+      fi
       printf ' --working-directory="$working_directory" -- %q -i' "$env_bin"
       printf ' %q' "HOME=$HOMEBREW_PATCHED_NATIVE_HOME" \
         "USER=$build_user" "LOGNAME=$build_user" \

@@ -21,7 +21,7 @@ PUBLISHER_PLAN_DIGEST = "994892064c7903c01a2584ecf42217a44c7fb4b877134a2b85628db
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
 PUBLISHER_INDEX_DIGEST = "b3b2974ae56d7a4e2aff142145abc68fcc2034a6f5933b815bf62454ef1ed5c0"
-PUBLISHER_VERIFY_DIGEST = "598acea935269f45e78b7aeebcb6fef0c1ac370783d22fa70c0740480318bbe6"
+PUBLISHER_VERIFY_DIGEST = "e688f625830f3d7f05ce5e2cb0649534dd092533af444369633a6ba7026fd2e2"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -643,7 +643,7 @@ def check_publisher(workflow)
   }, "publisher plan outputs changed")
 
   expected_uses = [
-    *Array.new(18, CHECKOUT_ACTION),
+    *Array.new(19, CHECKOUT_ACTION),
     *Array.new(5, NIX_ACTION),
     *Array.new(2, MAGIC_NIX_ACTION),
     *Array.new(7, UPLOAD_ACTION),
@@ -749,6 +749,15 @@ def check_publisher(workflow)
         "repository" => "${{ inputs.kandelo-repository }}",
         "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
         "path" => "kandelo", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout exact Kandelo sysroot build source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+        "path" => "kandelo-sysroot-build", "submodules" => false,
       },
     },
     {
@@ -1052,7 +1061,7 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
     'homebrew_patched_launcher_teardown "$BUILD_USER"',
     "homebrew_patched_launcher_verify_isolation",
-    '"$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR"',
+    '"$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR" "$KANDELO_ROOT"',
     "CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER",
     'mktemp -d "$SHARED_TEMP/homebrew-build.XXXXXX"',
     'NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"',
@@ -1140,6 +1149,19 @@ def check_publisher(workflow)
   bottle_verifier = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-verify-poured-bottle.sh")
   )
+  [
+    '--sysroot-build-root) SYSROOT_BUILD_ROOT=',
+    'SYSROOT_BUILD_ROOT OUT; do',
+    'sysroot build root must be a real directory',
+    'SYSROOT_BUILD_ROOT="$(cd "$SYSROOT_BUILD_ROOT" && pwd -P)"',
+    '"$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_PARENT" "$SYSROOT_BUILD_ROOT"',
+  ].each do |fragment|
+    check(bottle_verifier.include?(fragment),
+          "reviewed bottle verifier protected sysroot contract lacks #{fragment}")
+  end
+  check(!bottle_verifier.include?('SYSROOT_BUILD_ROOT="${KANDELO_ROOT') &&
+        !bottle_verifier.include?('SYSROOT_BUILD_ROOT="$KANDELO_ROOT"'),
+        "reviewed bottle verifier falls back to the pristine source checkout for its sysroot")
   publisher_isolation_patch_path =
     "homebrew/patches/0002-support-isolated-publisher.patch"
   publisher_isolation_patch = File.read(File.join(REPO_ROOT, publisher_isolation_patch_path))
@@ -1506,13 +1528,22 @@ def check_publisher(workflow)
     "homebrew-patched-launcher: target Cellar is unavailable",
     "target Cellar rack is not a real directory",
     "target Cellar keg is not a real directory",
+    'wasm32) sysroot="$sysroot_build_root/sysroot"',
+    'wasm64) sysroot="$sysroot_build_root/sysroot64"',
+    'sysroot build root must be a real directory',
+    'sysroot must be a real directory containing a regular libc archive',
+    'expected_sysroot=%q',
+    'HOMEBREW_KANDELO_SYSROOT:-}',
+    'WASM_POSIX_SYSROOT:-}',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
     '"--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo"',
     '"--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap"',
+    '"--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot"',
     '"--property=InaccessiblePaths=$kandelo_root"',
     '"--property=InaccessiblePaths=$tap_root"',
     '"--property=InaccessiblePaths=$output_root"',
+    '"--property=InaccessiblePaths=$sysroot_build_root"',
     '"--uid=$build_user"', '"--gid=$build_group"',
     'env_bin="$(command -v env)"',
     'printf \' --working-directory="$working_directory" -- %q -i\'',
@@ -1521,6 +1552,8 @@ def check_publisher(workflow)
     'bottle_tag_env+=("%s=${%s}")',
     'HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo',
     'KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo',
+    'HOMEBREW_KANDELO_SYSROOT=$source_alias_dir/sysroot',
+    'WASM_POSIX_SYSROOT=$source_alias_dir/sysroot',
     'printf \' "${bottle_tag_env[@]}" "$command_path" "$@"\\n\'',
     "__kandelo_verify_source_aliases", "/usr/bin/findmnt",
     '"$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"',
@@ -1538,6 +1571,12 @@ def check_publisher(workflow)
     '.homebrew_gem_groups', '.homebrew_vendor_version',
     'Bundler groups must be unique',
     'cannot seed Bundler groups after isolation',
+    'homebrew_assert_tree_symlinks_contained "$sysroot" sysroot',
+    'homebrew_assert_tree_not_replaceable_by_user "$build_user" "$sysroot"',
+    'sysroot_access_violation="$(/usr/bin/find "$expected_sysroot" -xdev',
+    'protected sysroot alias has unsafe access',
+    'sysroot build root cannot be inside mutable Formula state',
+    'mutable Formula state cannot be inside the sysroot build root',
     'homebrew_patched_launcher_seal_overlay',
     'homebrew_patched_launcher_assert_overlay_symlinks_contained',
     'overlay symlink crosses its worktree',
@@ -1610,6 +1649,16 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(launcher.include?(fragment), "isolated Brew launcher lacks #{fragment}")
   end
+  check(!launcher.include?('homebrew_assert_tree_not_writable_by_user "$build_user" "$sysroot"'),
+        "isolated Brew launcher requires pre-bind access to the protected sysroot owner path")
+  check(launcher.scan("homebrew_patched_launcher_emit_sysroot_access_audit").length == 2,
+        "isolated Brew launcher does not emit its reviewed sysroot alias audit exactly once")
+  check(launcher.include?(
+          "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR " \
+          "KANDELO_ROOT TAP_ROOT OUTPUT_ROOT SYSROOT_BUILD_ROOT"
+        ), "isolated Brew launcher does not require an explicit sysroot build root")
+  check(launcher.scan('"--property=InaccessiblePaths=$sysroot_build_root"').length == 2,
+        "isolated target and native Homebrew do not both hide the sysroot build root")
   [
     'HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""',
     'HOMEBREW_PATCHED_STAGED_INPUT_DIR=""',
@@ -1804,10 +1853,22 @@ def check_publisher(workflow)
   check_architecture_aware_sysroot_step(
     named_step(build_steps, "Build Kandelo sysroot"), "publisher build"
   )
-  check_architecture_aware_sysroot_step(
-    named_step(verify_steps, "Build Kandelo sysroot for sidecar evidence"),
-    "publisher verifier"
+  verifier_sysroot_step = named_step(
+    verify_steps, "Build Kandelo sysroot for sidecar evidence"
   )
+  check_architecture_aware_sysroot_step(verifier_sysroot_step, "publisher verifier")
+  verifier_sysroot_run = verifier_sysroot_step.fetch("run")
+  [
+    'expected_sha="$(git -C kandelo rev-parse HEAD)"',
+    'git -C kandelo-sysroot-build rev-parse HEAD',
+    'git -C kandelo-sysroot-build status --short',
+    "cd kandelo-sysroot-build",
+  ].each do |fragment|
+    check(verifier_sysroot_run.include?(fragment),
+          "publisher verifier sysroot isolation lacks #{fragment}")
+  end
+  check(!verifier_sysroot_run.lines.any? { |line| line.strip == "cd kandelo" },
+        "publisher verifier builds its mutable sysroot in the reviewed source checkout")
   kernel_step = named_step(build_steps, "Build Kandelo kernel")
   fork_instrument_step = named_step(build_steps, "Build fork-instrument host tool")
   check(fork_instrument_step.keys.sort == %w[name run shell] &&
@@ -1877,6 +1938,15 @@ def check_publisher(workflow)
   force_pour_step = named_step(
     verify_steps, "Force-pour and test the exact selected bottle without credentials"
   )
+  force_pour_run = force_pour_step.fetch("run")
+  protected_sysroot_argument =
+    '--sysroot-build-root "$GITHUB_WORKSPACE/kandelo-sysroot-build"'
+  check(force_pour_run.scan(protected_sysroot_argument).length == 1 &&
+        !force_pour_run.include?('--sysroot-build-root "$GITHUB_WORKSPACE/kandelo"') &&
+        !force_pour_run.include?('--sysroot-build-root "$KANDELO_ROOT"'),
+        "publisher verifier does not expose the isolated sysroot build through its exact root")
+  check(verify_steps.index(verifier_sysroot_step) < verify_steps.index(force_pour_step),
+        "publisher verifies a bottle before building its protected sysroot")
   verifier_retirement_step = named_step(
     verify_steps, "Retire isolated bottle verification identity"
   )
@@ -2254,6 +2324,7 @@ def check_publisher(workflow)
   check(sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"') &&
         sidecar_run.include?('KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap-postverify"') &&
         sidecar_run.include?('KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap-postverify"') &&
+        sidecar_run.include?('KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo-sysroot-build"') &&
         sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-verified-input/bottle.json"') &&
         sidecar_run.include?('KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"') &&
         sidecar_run.include?("scripts/homebrew-generate-sidecars-from-env.sh"),
@@ -2298,6 +2369,7 @@ def check_publisher(workflow)
                            "Build and strictly smoke the hello browser image").fetch("run")
   [
     "bash -c", "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
+    'KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo-sysroot-build"',
     "--reporter=json", ".stats.expected == 1", ".stats.unexpected == 0",
     ".stats.flaky == 0", ".stats.skipped == 0",
   ].each do |fragment|
@@ -2411,6 +2483,21 @@ def check_publisher(workflow)
   check(diagnostics.dig("with", "path").include?(
           "${{ runner.temp }}/homebrew-vfs-acceptance/**"
         ), "publisher diagnostics omit dependency-bearing VFS acceptance evidence")
+
+  source_recheck = named_step(
+    verify_steps, "Recheck trusted verifier sources after runtime execution"
+  )
+  source_recheck_run = source_recheck.fetch("run")
+  [
+    'git -C kandelo status --short --untracked-files=no',
+    'git -C kandelo-sysroot-build rev-parse HEAD',
+    'git -C kandelo-sysroot-build status --short --untracked-files=no --ignore-submodules=all',
+    'expected_musl_sha="$(git -C kandelo-sysroot-build rev-parse HEAD:libc/musl)"',
+    'git -C kandelo-sysroot-build/libc/musl rev-parse HEAD',
+  ].each do |fragment|
+    check(source_recheck_run.include?(fragment),
+          "publisher verifier source recheck lacks #{fragment}")
+  end
 
   package_handoff_run = named_step(verify_steps,
                                    "Package validated data-only publication handoff").fetch("run")
@@ -2879,6 +2966,33 @@ def self_test(publisher, maintenance)
       step["run"] = step.fetch("run").sub(
         "bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix",
         "bash scripts/dev-shell.sh bash scripts/build-musl.sh"
+      )
+    },
+    "sidecar sysroot built in reviewed verifier source" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Build Kandelo sysroot for sidecar evidence")
+      step["run"] = step.fetch("run").gsub("kandelo-sysroot-build", "kandelo")
+    },
+    "bottle verifier reads the pristine checkout as its sysroot build" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Force-pour and test the exact selected bottle without credentials"
+      )
+      step["run"] = step.fetch("run").sub("kandelo-sysroot-build", "kandelo")
+    },
+    "sidecar evidence reads reviewed verifier build outputs" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Generate sidecars from the selected bottle")
+      step["run"] = step.fetch("run").sub("kandelo-sysroot-build", "kandelo")
+    },
+    "browser evidence reads reviewed verifier build outputs" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
+      step["run"] = step.fetch("run").sub("kandelo-sysroot-build", "kandelo")
+    },
+    "isolated sysroot source recheck bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Recheck trusted verifier sources after runtime execution"
+      )
+      step["run"] = step.fetch("run").sub(
+        'git -C kandelo-sysroot-build status --short --untracked-files=no --ignore-submodules=all',
+        "true"
       )
     },
     "Formula test runtime architecture drift" => lambda { |w|

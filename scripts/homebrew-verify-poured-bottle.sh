@@ -17,13 +17,14 @@ BOTTLE_BYTES=""
 BOTTLE_ROOT_URL=""
 DEPENDENCY_PROVENANCE=""
 SELECTION_RECEIPT=""
+SYSROOT_BUILD_ROOT=""
 OUT=""
 BUILD_USER="${KANDELO_HOMEBREW_BUILD_USER:-}"
 SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --out <runtime-evidence.json>
+usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --sysroot-build-root <dir> --out <runtime-evidence.json>
 
 The tap must already contain the reconstructed target bottle block. In CI all
 Homebrew and Formula execution runs as the dedicated isolated workflow user.
@@ -51,6 +52,7 @@ while [ "$#" -gt 0 ]; do
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --selection-receipt) SELECTION_RECEIPT="${2:-}"; shift 2 ;;
+    --sysroot-build-root) SYSROOT_BUILD_ROOT="${2:-}"; shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-verify-poured-bottle.sh: unknown flag $1" >&2; usage; exit 2 ;;
@@ -58,7 +60,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 for name in TAP_ROOT TAP_REPOSITORY TAP_COMMIT FORMULA ARCH ABI BOTTLE BOTTLE_JSON \
-  BOTTLE_URL BOTTLE_SHA256 BOTTLE_BYTES BOTTLE_ROOT_URL DEPENDENCY_PROVENANCE OUT; do
+  BOTTLE_URL BOTTLE_SHA256 BOTTLE_BYTES BOTTLE_ROOT_URL DEPENDENCY_PROVENANCE \
+  SYSROOT_BUILD_ROOT OUT; do
   [ -n "${!name}" ] || {
     echo "homebrew-verify-poured-bottle.sh: $name is required" >&2
     exit 2
@@ -96,6 +99,11 @@ case "$ARCH" in wasm32|wasm64) ;; *) echo "homebrew-verify-poured-bottle.sh: inv
 [[ "$BOTTLE_BYTES" =~ ^[1-9][0-9]*$ ]] || {
   echo "homebrew-verify-poured-bottle.sh: invalid bottle byte count" >&2; exit 2;
 }
+[ -d "$SYSROOT_BUILD_ROOT" ] && [ ! -L "$SYSROOT_BUILD_ROOT" ] || {
+  echo "homebrew-verify-poured-bottle.sh: sysroot build root must be a real directory" >&2
+  exit 2
+}
+SYSROOT_BUILD_ROOT="$(cd "$SYSROOT_BUILD_ROOT" && pwd -P)"
 
 TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -383,7 +391,7 @@ mapfile -t selected_tap_changes < <(
 if [ -n "$BUILD_USER" ]; then
   rm -rf "$KANDELO_ROOT/host/dist"
   homebrew_patched_launcher_isolate "$BUILD_USER" \
-    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_PARENT"
+    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_PARENT" "$SYSROOT_BUILD_ROOT"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
   if [ "$SELECTION_MODE" = "local-dry-run" ]; then
