@@ -38,6 +38,7 @@ CANONICAL_UINT = re.compile(r"^(0|[1-9][0-9]*)$")
 OCI_REMOTE = re.compile(
     r"^ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$"
 )
+MAXIMUM_OCI_TAG = "z" * 128
 
 
 def publication_limits() -> tuple[int, int, int, int]:
@@ -1673,6 +1674,7 @@ def run_bounded_command(
     maximum_stdout: int,
     maximum_stderr: int,
     timeout: int,
+    label: str = "anonymous registry",
 ) -> tuple[int, str]:
     process = subprocess.Popen(
         command,
@@ -1693,7 +1695,6 @@ def run_bounded_command(
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    terminate_process_group(process)
                     fail(f"bounded command timed out after {timeout} seconds")
                 for key, _events in selector.select(min(remaining, 1.0)):
                     chunk = os.read(key.fd, 64 * 1024)
@@ -1703,19 +1704,11 @@ def run_bounded_command(
                     if key.data == "stdout":
                         stdout_bytes += len(chunk)
                         if stdout_bytes > maximum_stdout:
-                            terminate_process_group(process)
-                            fail(
-                                "anonymous registry response exceeds "
-                                f"{maximum_stdout} bytes"
-                            )
+                            fail(f"{label} response exceeds {maximum_stdout} bytes")
                         stdout.write(chunk)
                     else:
                         if len(stderr) + len(chunk) > maximum_stderr:
-                            terminate_process_group(process)
-                            fail(
-                                "anonymous registry error response exceeds "
-                                f"{maximum_stderr} bytes"
-                            )
+                            fail(f"{label} error response exceeds {maximum_stderr} bytes")
                         stderr.extend(chunk)
         return_code = process.wait(timeout=max(1, int(deadline - time.monotonic()) + 1))
     except BaseException:
@@ -1725,7 +1718,11 @@ def run_bounded_command(
         selector.close()
         process.stdout.close()
         process.stderr.close()
-    return return_code, stderr.decode("utf-8", errors="replace")[:4096]
+    return return_code, stderr.decode("utf-8", errors="replace")
+
+
+def command_error_detail(error: str) -> str:
+    return error[:4096]
 
 
 def run_oras_fetch(
@@ -1764,6 +1761,116 @@ def run_oras_blob_descriptor_fetch(
     )
 
 
+def classify_registry_error(error: str, *, target: str, kind: str) -> str | None:
+    message = error.strip()
+    authentication_errors = {
+        "Error response from registry: authentication required",
+        "Error response from registry: denied: requested access to the resource is denied",
+        "Error response from registry: unauthorized: authentication required",
+    }
+    if message in authentication_errors:
+        return "auth-required"
+    if kind == "manifest" and message in {
+        f'Error response from registry: failed to find "{target}": {target}: not found',
+        "Error response from registry: manifest unknown",
+        "Error response from registry: manifest unknown: manifest unknown",
+        "Error response from registry: name unknown: repository name not known to registry",
+    }:
+        return "missing"
+    if kind == "repository" and message == (
+        "Error response from registry: name unknown: repository name not known to registry"
+    ):
+        return "missing"
+    return None
+
+
+def run_oras_repository_probe(
+    *, registry_config: pathlib.Path, remote: str, output: pathlib.Path
+) -> tuple[int, str]:
+    return run_bounded_command(
+        command=[
+            "oras", "repo", "tags", "--last", MAXIMUM_OCI_TAG, "--format", "json",
+            "--registry-config", str(registry_config), remote,
+        ],
+        output=output,
+        maximum_stdout=MAX_MANIFEST_BYTES,
+        maximum_stderr=MAX_MANIFEST_BYTES,
+        timeout=180,
+        label="registry repository probe",
+    )
+
+
+def registry_probe(args: argparse.Namespace) -> None:
+    remote = require_string(args.remote, "registry probe remote", OCI_REMOTE)
+    reference = require_string(args.reference, "registry probe reference", OCI_TAG)
+    registry_config = regular_file(
+        pathlib.Path(args.registry_config), "registry probe ORAS config", MAX_MANIFEST_BYTES
+    )
+    for name in (
+        "GH_TOKEN", "GITHUB_TOKEN", "HOMEBREW_GITHUB_API_TOKEN",
+        "HOMEBREW_GITHUB_PACKAGES_TOKEN", "HOMEBREW_DOCKER_REGISTRY_TOKEN",
+    ):
+        if os.environ.get(name):
+            fail(f"registry probe received {name}")
+
+    with tempfile.TemporaryDirectory(prefix="homebrew-registry-probe-") as temporary_name:
+        output = pathlib.Path(temporary_name) / "response.json"
+        if args.kind == "manifest":
+            target = f"{remote}:{reference}"
+            status, error = run_oras_fetch(
+                registry_config=registry_config,
+                target=target,
+                output=output,
+                maximum=MAX_MANIFEST_BYTES,
+                descriptor=True,
+            )
+        else:
+            target = remote
+            status, error = run_oras_repository_probe(
+                registry_config=registry_config, remote=remote, output=output
+            )
+
+        if status != 0:
+            result = classify_registry_error(error, target=target, kind=args.kind)
+            if result is None:
+                fail(
+                    f"could not classify {args.kind} registry probe: "
+                    f"{command_error_detail(error)}"
+                )
+            write_json(
+                pathlib.Path(args.out_result),
+                {"digest": None, "kind": args.kind, "schema": 1, "status": result},
+            )
+            return
+
+        if args.kind == "manifest":
+            descriptor = exact_keys(
+                load_json(output, "registry probe descriptor", MAX_MANIFEST_BYTES),
+                {"digest", "mediaType", "size"},
+                "registry probe descriptor",
+            )
+            if descriptor["mediaType"] not in (OCI_MANIFEST, OCI_INDEX):
+                fail("registry probe descriptor has an unsupported media type")
+            digest = digest_value(descriptor["digest"], "registry probe descriptor digest")
+            require_int(descriptor["size"], "registry probe descriptor size", 1)
+            result_digest: str | None = f"sha256:{digest}"
+        else:
+            tags = exact_keys(
+                load_json(output, "registry repository probe", MAX_MANIFEST_BYTES),
+                {"tags"},
+                "registry repository probe",
+            )["tags"]
+            if not isinstance(tags, list):
+                fail("registry repository probe tags must be an array")
+            if tags != []:
+                fail("registry returned tags after the maximal legal OCI tag")
+            result_digest = None
+        write_json(
+            pathlib.Path(args.out_result),
+            {"digest": result_digest, "kind": args.kind, "schema": 1, "status": "present"},
+        )
+
+
 def remote_descriptor(
     value: Any, label: str, media_type: str, maximum: int
 ) -> tuple[dict[str, Any], str, int]:
@@ -1796,7 +1903,7 @@ def resolve_remote_blob_descriptor(
         output=output,
     )
     if status != 0:
-        fail(f"cannot resolve digest-pinned {label}: {error}")
+        fail(f"cannot resolve digest-pinned {label}: {command_error_detail(error)}")
     descriptor = load_json(output, f"resolved {label}", MAX_MANIFEST_BYTES)
     if not isinstance(descriptor, dict):
         fail(f"resolved {label} must be an object")
@@ -1833,7 +1940,7 @@ def fetch_remote_json(
         maximum=size,
     )
     if status != 0:
-        fail(f"cannot fetch digest-pinned {label}: {error}")
+        fail(f"cannot fetch digest-pinned {label}: {command_error_detail(error)}")
     payload = output.read_bytes()
     if len(payload) != size or sha256_bytes(payload) != digest:
         fail(f"digest-pinned {label} does not match its descriptor")
@@ -2005,25 +2112,21 @@ def import_public_index(args: argparse.Namespace) -> None:
             descriptor=True,
         )
         if status != 0:
-            if re.search(
-                r"manifest[_ -]+unknown|name[_ -]+unknown|404\s+not\s+found|"
-                r"status(?:[_ -]*code)?[\"=: ]+404",
-                error,
-                re.IGNORECASE,
-            ):
+            result = classify_registry_error(
+                error, target=f"{remote}:{reference}", kind="manifest"
+            )
+            if result == "missing":
                 write_json(output_result, {"schema": 1, "status": "missing"})
                 return
-            if re.search(
-                r"unauthorized|authentication\s+required|denied|forbidden|"
-                r"(?:^|[^0-9])(?:401|403)(?:[^0-9]|$)",
-                error,
-                re.IGNORECASE,
-            ):
+            if result == "auth-required":
                 fail(
                     f"{remote}:{reference} is not anonymously readable; "
                     "an authorized owner must make the GHCR package public"
                 )
-            fail(f"could not classify anonymous Homebrew index import: {error}")
+            fail(
+                "could not classify anonymous Homebrew index import: "
+                f"{command_error_detail(error)}"
+            )
         descriptor = load_json(
             descriptor_path, "public top descriptor", MAX_MANIFEST_BYTES
         )
@@ -2044,7 +2147,7 @@ def import_public_index(args: argparse.Namespace) -> None:
         if confirmed_status != 0:
             fail(
                 "public top reference changed during descriptor validation: "
-                f"{confirmed_error}"
+                f"{command_error_detail(confirmed_error)}"
             )
         _confirmed, confirmed_digest, confirmed_size = remote_descriptor(
             load_json(
@@ -2224,6 +2327,11 @@ def parser() -> argparse.ArgumentParser:
     ):
         import_index.add_argument(f"--{flag}", required=True)
     import_index.set_defaults(handler=import_public_index)
+    probe_registry = commands.add_parser("probe-registry")
+    probe_registry.add_argument("--kind", choices=("manifest", "repository"), required=True)
+    for flag in ("remote", "reference", "registry-config", "out-result"):
+        probe_registry.add_argument(f"--{flag}", required=True)
+    probe_registry.set_defaults(handler=registry_probe)
     validate_publication_receipt = commands.add_parser("validate-publication-receipt")
     validate_publication_receipt.add_argument("--receipt", required=True)
     validate_publication_receipt.add_argument("--layout-receipt", required=True)

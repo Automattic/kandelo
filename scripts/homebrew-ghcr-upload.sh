@@ -10,6 +10,7 @@ FORMULA=""
 OUT_JSON=""
 DRY_RUN=0
 AUTH_DIR=""
+AUTH_CONFIG=""
 WORK_DIR=""
 
 cleanup() {
@@ -23,8 +24,11 @@ usage() {
 usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--dry-run]
 
 Validates an explicit local OCI layout, preflights the destination reference,
-and uses ORAS only to copy that immutable layout to GHCR. It never evaluates
-Formula Ruby or constructs registry metadata while credentials are present.
+and uses ORAS only to copy that immutable layout to GHCR. When GHCR hides an
+absent reference behind an anonymous authorization failure, write mode uses
+isolated ORAS credentials only to distinguish missing from present. It never
+evaluates Formula Ruby or constructs registry metadata while credentials are
+present.
 EOF
 }
 
@@ -123,44 +127,88 @@ WORK_DIR="$(mktemp -d "$auth_parent/kandelo-homebrew-preflight.XXXXXX")"
 anonymous_config="$WORK_DIR/anonymous.json"
 printf '{"auths":{}}\n' >"$anonymous_config"
 
-remote_descriptor="$WORK_DIR/remote-descriptor.json"
-remote_error="$WORK_DIR/remote-error.txt"
+remote_probe="$WORK_DIR/remote-probe.json"
+
+ensure_authenticated_config() {
+  [ -z "$AUTH_DIR" ] || return 0
+  if [ -z "${GH_TOKEN:-}" ]; then
+    echo "homebrew-ghcr-upload.sh: GH_TOKEN is required for GHCR transport" >&2
+    exit 2
+  fi
+  AUTH_DIR="$(mktemp -d "$auth_parent/kandelo-homebrew-oras.XXXXXX")"
+  chmod 700 "$AUTH_DIR"
+  AUTH_CONFIG="$AUTH_DIR/config.json"
+  printf '%s\n' "$GH_TOKEN" | \
+    env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
+      -u HOMEBREW_GITHUB_PACKAGES_TOKEN -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+      oras login ghcr.io --registry-config "$AUTH_CONFIG" \
+        -u "${GITHUB_ACTOR:-github-actions}" --password-stdin >/dev/null
+}
+
+registry_probe() {
+  local kind="$1"
+  local registry_config="$2"
+  rm -f "$remote_probe"
+  if ! env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    python3 "$SCRIPT_ROOT/homebrew-oci-layout.py" probe-registry \
+      --kind "$kind" \
+      --remote "$REMOTE" \
+      --reference "$DESTINATION_REF" \
+      --registry-config "$registry_config" \
+      --out-result "$remote_probe"; then
+    return 1
+  fi
+  jq -e --arg kind "$kind" '
+    keys == ["digest", "kind", "schema", "status"] and
+    .schema == 1 and .kind == $kind and
+    (.status == "present" or .status == "missing" or .status == "auth-required") and
+    (if $kind == "manifest" and .status == "present"
+     then (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+     else .digest == null
+     end)
+  ' "$remote_probe" >/dev/null || {
+    echo "homebrew-ghcr-upload.sh: registry probe returned an invalid result" >&2
+    return 1
+  }
+  probe_status="$(jq -r '.status' "$remote_probe")"
+  probe_digest="$(jq -r '.digest // "null"' "$remote_probe")"
+}
 
 anonymous_fetch() {
   local phase="$1"
-  : >"$remote_descriptor"
-  : >"$remote_error"
-  set +e
-  env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-    oras manifest fetch --descriptor --registry-config "$anonymous_config" \
-      "$REMOTE:$DESTINATION_REF" >"$remote_descriptor" 2>"$remote_error"
-  fetch_status="$?"
-  set -e
-  if [ "$fetch_status" -eq 0 ]; then
-    if [ "$(wc -c <"$remote_descriptor")" -gt 65536 ]; then
-      echo "homebrew-ghcr-upload.sh: anonymous $phase descriptor exceeds 65536 bytes" >&2
-      exit 1
-    fi
-    remote_status=present
-    REMOTE_DIGEST="$(jq -er '.digest' "$remote_descriptor")"
-    [[ "$REMOTE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-      echo "homebrew-ghcr-upload.sh: registry returned an invalid descriptor during $phase" >&2
-      exit 1
-    }
-  elif grep -Eiq \
-    'manifest[_ -]+unknown|name[_ -]+unknown|404[[:space:]]+not[[:space:]]+found|status([_ -]*code)?["=:[:space:]]+404' \
-    "$remote_error"; then
-    remote_status=missing
-    REMOTE_DIGEST=null
-  elif grep -Eiq \
-    'unauthorized|authentication[[:space:]]+required|denied|forbidden|(^|[^0-9])(401|403)([^0-9]|$)' \
-    "$remote_error"; then
-    remote_status=private
-    REMOTE_DIGEST=null
-  else
-    echo "homebrew-ghcr-upload.sh: could not classify anonymous destination $phase" >&2
-    sed -n '1,8p' "$remote_error" >&2
+  if ! registry_probe manifest "$anonymous_config"; then
+    echo "homebrew-ghcr-upload.sh: anonymous destination $phase failed" >&2
+    exit 1
+  fi
+  remote_status="$probe_status"
+  REMOTE_DIGEST="$probe_digest"
+}
+
+authenticated_fetch() {
+  local phase="$1"
+  ensure_authenticated_config
+  if ! registry_probe manifest "$AUTH_CONFIG"; then
+    echo "homebrew-ghcr-upload.sh: authenticated destination $phase failed" >&2
+    exit 1
+  fi
+  remote_status="$probe_status"
+  REMOTE_DIGEST="$probe_digest"
+  if [ "$remote_status" = auth-required ]; then
+    echo "homebrew-ghcr-upload.sh: authenticated credentials cannot inspect destination $phase" >&2
+    exit 1
+  fi
+}
+
+authenticated_repository_fetch() {
+  local phase="$1"
+  if ! registry_probe repository "$AUTH_CONFIG"; then
+    echo "homebrew-ghcr-upload.sh: authenticated repository $phase failed" >&2
+    exit 1
+  fi
+  repository_status="$probe_status"
+  if [ "$repository_status" = auth-required ]; then
+    echo "homebrew-ghcr-upload.sh: authenticated credentials cannot inspect repository $phase" >&2
     exit 1
   fi
 }
@@ -172,7 +220,21 @@ visibility_boundary() {
 }
 
 anonymous_fetch preflight
-[ "$remote_status" != private ] || visibility_boundary
+if [ "$remote_status" = auth-required ] && [ "$DRY_RUN" != 1 ]; then
+  authenticated_fetch preflight
+  if [ "$remote_status" = present ]; then
+    visibility_boundary
+  fi
+  authenticated_repository_fetch preflight
+  [ "$repository_status" = missing ] || visibility_boundary
+fi
+if [ "$remote_status" = auth-required ] && [ "$DRY_RUN" = 1 ] && [ "$KIND" = child ]; then
+  echo "homebrew-ghcr-upload.sh: anonymous preflight cannot distinguish a missing package from a private reference; keeping the dry-run receipt non-public" >&2
+fi
+if [ "$remote_status" = auth-required ] && [ "$KIND" = index ]; then
+  echo "homebrew-ghcr-upload.sh: anonymous index preflight cannot establish the current top reference" >&2
+  exit 1
+fi
 
 case "$KIND" in
   child)
@@ -199,20 +261,14 @@ status=already-present
 if [ "$REMOTE_DIGEST" != "$EXPECTED_DIGEST" ]; then
   status=dry-run
   if [ "$DRY_RUN" != 1 ]; then
-    if [ -z "${GH_TOKEN:-}" ]; then
-      echo "homebrew-ghcr-upload.sh: GH_TOKEN is required for GHCR transport" >&2
-      exit 2
-    fi
-    AUTH_DIR="$(mktemp -d "$auth_parent/kandelo-homebrew-oras.XXXXXX")"
-    chmod 700 "$AUTH_DIR"
-    auth_config="$AUTH_DIR/config.json"
-    printf '%s\n' "$GH_TOKEN" | oras login ghcr.io \
-      --registry-config "$auth_config" \
-      -u "${GITHUB_ACTOR:-github-actions}" --password-stdin >/dev/null
-    oras cp --from-oci-layout --to-registry-config "$auth_config" \
-      "$LAYOUT:$SOURCE_REF" "$REMOTE:$DESTINATION_REF"
+    ensure_authenticated_config
+    env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
+      -u HOMEBREW_GITHUB_PACKAGES_TOKEN -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+      oras cp --from-oci-layout --to-registry-config "$AUTH_CONFIG" \
+        "$LAYOUT:$SOURCE_REF" "$REMOTE:$DESTINATION_REF"
     rm -rf "$AUTH_DIR"
     AUTH_DIR=""
+    AUTH_CONFIG=""
     status=uploaded
   fi
 fi
@@ -229,7 +285,7 @@ elif [ "$status" = uploaded ]; then
   fi
   for ((attempt = 1; attempt <= attempts; attempt += 1)); do
     anonymous_fetch post-upload-readback
-    [ "$remote_status" != private ] || visibility_boundary
+    [ "$remote_status" != auth-required ] || visibility_boundary
     if [ "$remote_status" = present ]; then
       if [ "$REMOTE_DIGEST" != "$EXPECTED_DIGEST" ]; then
         echo "homebrew-ghcr-upload.sh: public reference resolves to a different digest after upload" >&2
