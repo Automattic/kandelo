@@ -164,6 +164,11 @@ actual_bytes="$(wc -c <"$BOTTLE" | tr -d '[:space:]')"
   echo "homebrew-verify-poured-bottle.sh: selected bottle bytes differ from the receipt" >&2
   exit 1
 }
+SELECTION_MODE="$(jq -er '.bottle.mode' "$SELECTION_RECEIPT")"
+case "$SELECTION_MODE" in
+  anonymous-public-readback|local-dry-run) ;;
+  *) echo "homebrew-verify-poured-bottle.sh: invalid bottle selection mode" >&2; exit 2 ;;
+esac
 
 BREW_BIN="${HOMEBREW_BREW_FILE:-}"
 [ -n "$BREW_BIN" ] && [ -x "$BREW_BIN" ] || {
@@ -198,7 +203,7 @@ CONTROL_DIR="$(mktemp -d "$OUT_PARENT/.control.XXXXXX")"
 chmod 0700 "$CONTROL_DIR"
 
 cleanup() {
-  local original_status="${1:-0}" launcher_status=0
+  local original_status="${1:-0}" launcher_status=0 realm_cleanup_status=0
   if homebrew_patched_launcher_cleanup; then
     :
   else
@@ -208,12 +213,24 @@ cleanup() {
   if [ "$launcher_status" -ne 0 ]; then
     echo "homebrew-verify-poured-bottle.sh: preserving temporary Homebrew realms after cleanup failure" >&2
   elif [ -n "$BUILD_USER" ] && [ -n "${KANDELO_HOMEBREW_SUDO_BIN:-}" ]; then
-    "$KANDELO_HOMEBREW_SUDO_BIN" rm -rf "$NATIVE_BASE" "$WORK_DIR" >/dev/null 2>&1 || true
+    if "$KANDELO_HOMEBREW_SUDO_BIN" -n -- /usr/bin/rm -rf -- \
+      "$NATIVE_BASE" "$WORK_DIR" >/dev/null 2>&1; then
+      :
+    else
+      realm_cleanup_status="$?"
+      echo "homebrew-verify-poured-bottle.sh: could not remove temporary Homebrew realms" >&2
+    fi
   else
-    rm -rf "$NATIVE_BASE" "$WORK_DIR"
+    if rm -rf "$NATIVE_BASE" "$WORK_DIR"; then
+      :
+    else
+      realm_cleanup_status="$?"
+      echo "homebrew-verify-poured-bottle.sh: could not remove temporary Homebrew realms" >&2
+    fi
   fi
   [ "$original_status" -eq 0 ] || return "$original_status"
-  return "$launcher_status"
+  [ "$launcher_status" -eq 0 ] || return "$launcher_status"
+  return "$realm_cleanup_status"
 }
 
 cleanup_and_exit() {
@@ -368,6 +385,21 @@ if [ -n "$BUILD_USER" ]; then
   homebrew_patched_launcher_isolate "$BUILD_USER" \
     "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_PARENT"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
+
+  if [ "$SELECTION_MODE" = "local-dry-run" ]; then
+    # The workflow-owned RUNNER_TEMP tree is intentionally not part of the
+    # Formula execution realm. Give the isolated identity one immutable copy
+    # of the validated archive instead of weakening that boundary.
+    homebrew_patched_launcher_stage_protected_input \
+      "$BUILD_USER" "$SHARED_TEMP" "$BOTTLE" "$EXPECTED_BOTTLE_FILENAME"
+    PROTECTED_BOTTLE="$HOMEBREW_PATCHED_STAGED_INPUT_PATH"
+    [ "$(sha256sum "$PROTECTED_BOTTLE" | awk '{print $1}')" = "$BOTTLE_SHA256" ] &&
+      [ "$(wc -c <"$PROTECTED_BOTTLE" | tr -d '[:space:]')" = "$BOTTLE_BYTES" ] || {
+        echo "homebrew-verify-poured-bottle.sh: protected bottle input differs from the selected bytes" >&2
+        exit 1
+      }
+    BOTTLE="$PROTECTED_BOTTLE"
+  fi
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-verify-poured-bottle.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
   exit 2
@@ -478,12 +510,6 @@ while IFS= read -r dependency; do
   run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install \
     --force-bottle --as-dependency --ignore-dependencies --formula "$dependency"
 done <"$DEPENDENCY_POUR_LIST"
-
-SELECTION_MODE="$(jq -er '.bottle.mode' "$SELECTION_RECEIPT")"
-case "$SELECTION_MODE" in
-  anonymous-public-readback|local-dry-run) ;;
-  *) echo "homebrew-verify-poured-bottle.sh: invalid bottle selection mode" >&2; exit 2 ;;
-esac
 
 # Dependency downloads have already been proven independently. Remove every
 # cached object before the target selection so a public publication must make

@@ -1191,7 +1191,6 @@ def check_publisher(workflow)
       'homebrew_patched_launcher_run_native "$@" 2>&1 | tee -a "$NATIVE_INSTALL_LOG"',
       '>"$native_info" 2>>"$NATIVE_INSTALL_LOG"',
       '--install-log "$INSTALL_LOG"',
-      'rm -rf "$NATIVE_BASE" "$WORK_DIR"',
       'cleanup_and_exit() {',
       'trap \'cleanup_and_exit $?\' EXIT',
       'if homebrew_patched_launcher_cleanup; then',
@@ -1230,6 +1229,39 @@ def check_publisher(workflow)
     check(formula_runner.scan('NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"').length == 1,
           "Formula runner does not use exactly one bounded native prefix")
   end
+  check(bottle_builder.include?('rm -rf "$NATIVE_BASE" "$WORK_DIR"'),
+        "reviewed bottle builder does not remove its temporary realms")
+  protected_bottle_stage_index = bottle_verifier.index(
+    'homebrew_patched_launcher_stage_protected_input'
+  )
+  local_bottle_pour_index = bottle_verifier.index(
+    'run_brew_logged "$BREW_BIN" install --force-bottle --ignore-dependencies "$BOTTLE"'
+  )
+  [
+    'if [ "$SELECTION_MODE" = "local-dry-run" ]; then',
+    'homebrew_patched_launcher_stage_protected_input',
+    '"$BUILD_USER" "$SHARED_TEMP" "$BOTTLE" "$EXPECTED_BOTTLE_FILENAME"',
+    'PROTECTED_BOTTLE="$HOMEBREW_PATCHED_STAGED_INPUT_PATH"',
+    'sha256sum "$PROTECTED_BOTTLE"',
+    'wc -c <"$PROTECTED_BOTTLE"',
+    'BOTTLE="$PROTECTED_BOTTLE"',
+    '"$KANDELO_HOMEBREW_SUDO_BIN" -n -- /usr/bin/rm -rf --',
+    'realm_cleanup_status="$?"',
+    'could not remove temporary Homebrew realms',
+    '[ "$launcher_status" -eq 0 ] || return "$launcher_status"',
+    'return "$realm_cleanup_status"',
+  ].each do |fragment|
+    check(bottle_verifier.include?(fragment),
+          "reviewed bottle verifier protected input contract lacks #{fragment}")
+  end
+  verifier_isolate_index = bottle_verifier.index(
+    'homebrew_patched_launcher_isolate "$BUILD_USER"'
+  )
+  check(verifier_isolate_index && protected_bottle_stage_index &&
+        local_bottle_pour_index &&
+        verifier_isolate_index < protected_bottle_stage_index &&
+        protected_bottle_stage_index < local_bottle_pour_index,
+        "reviewed bottle verifier does not protect the selected archive before the isolated pour")
   reconstructed_source_index = bottle_verifier.index(
     'mapfile -t source_tap_changes'
   )
@@ -1519,7 +1551,7 @@ def check_publisher(workflow)
     'native Formula bridge rollback failed; preserving launcher state for retry',
     'Formula process teardown failed; preserving launcher state for retry',
     'return "$teardown_status"',
-    'for protected_bin in chmod chown cp id install ln ls readlink rm stat test; do',
+    'for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm stat test; do',
     '"$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775',
     '"$(/usr/bin/stat -c \'%u:%g:%a\' "$target_state_root")" = "0:$build_gid:1775"',
     'target_opt_target="../Cellar/$formula/$native_version"',
@@ -1533,6 +1565,59 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(launcher.include?(fragment), "isolated Brew launcher lacks #{fragment}")
   end
+  [
+    'HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""',
+    'HOMEBREW_PATCHED_STAGED_INPUT_DIR=""',
+    'HOMEBREW_PATCHED_STAGED_INPUT_PATH=""',
+    'homebrew_patched_launcher_remove_staged_input()',
+    'protected input cleanup state is incomplete',
+    'protected input cleanup path left its shared root',
+    'could not remove protected input; preserving cleanup state for retry',
+    'homebrew_patched_launcher_stage_protected_input()',
+    'expected BUILD_USER SHARED_TEMP SOURCE BASENAME',
+    '[ "$build_user" != "$HOMEBREW_PATCHED_BUILD_USER" ]',
+    '[ ! -f "$source" ] || [ -L "$source" ]',
+    '[ "${#basename}" -gt 512 ]',
+    'protected input shared temp must be root-owned mode 1777',
+    '"$shared_temp/homebrew-bottle-input.XXXXXX"',
+    'a protected input is already registered',
+    'HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP="$shared_temp"',
+    'HOMEBREW_PATCHED_STAGED_INPUT_DIR="$protected_dir"',
+    'HOMEBREW_PATCHED_STAGED_INPUT_PATH="$protected_path"',
+    '-o root -g root -m 0444 -- "$source" "$protected_path"',
+    '/usr/bin/chown root:root',
+    '/usr/bin/chmod 0555',
+    '"0:0:555"',
+    '"0:0:444:1"',
+    '[ "$source" -ef "$protected_path" ]',
+    '/usr/bin/cmp -s -- "$source" "$protected_path"',
+    '/usr/bin/test -r "$protected_path"',
+    '/usr/bin/test -w "$protected_path"',
+    '/usr/bin/test -w "$protected_dir"',
+    '/usr/bin/rm -rf --',
+    'if ! homebrew_patched_launcher_remove_staged_input; then',
+    'protected input remains; preserving launcher state for retry',
+  ].each do |fragment|
+    check(launcher.include?(fragment),
+          "protected Formula input staging lacks #{fragment}")
+  end
+  staged_cleanup_owner_index = launcher.index("homebrew_patched_launcher_cleanup()")
+  staged_cleanup_teardown_index = launcher.index(
+    'homebrew_patched_launcher_teardown "$HOMEBREW_PATCHED_BUILD_USER"',
+    staged_cleanup_owner_index
+  )
+  staged_cleanup_remove_index = launcher.index(
+    'if ! homebrew_patched_launcher_remove_staged_input; then',
+    staged_cleanup_owner_index
+  )
+  staged_cleanup_reset_index = launcher.index(
+    'HOMEBREW_PATCHED_SUDO_BIN=""', staged_cleanup_owner_index
+  )
+  check(staged_cleanup_owner_index && staged_cleanup_teardown_index &&
+        staged_cleanup_remove_index && staged_cleanup_reset_index &&
+        staged_cleanup_teardown_index < staged_cleanup_remove_index &&
+        staged_cleanup_remove_index < staged_cleanup_reset_index,
+        "protected Formula input is not removed after teardown and before launcher reset")
   check(launcher.scan("HOMEBREW_RELOCATE_BUILD_PREFIX=1").length == 2,
         "isolated Brew launcher does not own both native relocation paths")
   bridge_registration_index = launcher.index(

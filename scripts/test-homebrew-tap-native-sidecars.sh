@@ -97,6 +97,15 @@ sha256_file() {
   fi
 }
 
+fixture_bottle_filename() {
+  local formula="$1" version="$2" arch="$3" rebuild="$4" rebuild_suffix=""
+  if [ "$rebuild" != "0" ]; then
+    rebuild_suffix=".$rebuild"
+  fi
+  printf '%s--%s.%s_kandelo.bottle%s.tar.gz\n' \
+    "$formula" "$version" "$arch" "$rebuild_suffix"
+}
+
 WASM32_SYSROOT_FINGERPRINT="$(sha256_file "$REPO_ROOT/sysroot/lib/libc.a")"
 WASM64_SYSROOT_FINGERPRINT="$(sha256_file "$REPO_ROOT/sysroot64/lib/libc.a")"
 if [ "$WASM32_SYSROOT_FINGERPRINT" = "$WASM64_SYSROOT_FINGERPRINT" ]; then
@@ -241,7 +250,9 @@ validate_publication_handoff() {
 
 make_dep_bottle() {
   local stage="$TMPDIR/dep-stage/sidecar-dep/1.0"
-  local archive="$TMPDIR/sidecar-dep--1.0.wasm32_kandelo.bottle.tar.gz"
+  local filename
+  filename="$(fixture_bottle_filename sidecar-dep 1.0 wasm32 0)"
+  local archive="$TMPDIR/$filename"
   local bottle_json="$TMPDIR/sidecar-dep--1.0.wasm32_kandelo.bottle.json"
   mkdir -p "$stage/bin" "$stage/.brew"
   printf '#!/bin/sh\necho sidecar-dep\n' >"$stage/bin/sidecar-dep"
@@ -263,6 +274,7 @@ make_dep_bottle() {
   bytes="$(wc -c <"$archive" | tr -d '[:space:]')"
   jq -n \
     --arg sha "$sha" \
+    --arg filename "$filename" \
     --arg tap_commit "$(git -C "$TAP" rev-parse HEAD)" \
     '{
       "kandelo-dev/tap-core/sidecar-dep": {
@@ -279,6 +291,7 @@ make_dep_bottle() {
           rebuild: 0,
           tags: {
             wasm32_kandelo: {
+              local_filename: $filename,
               sha256: $sha,
               tab: {runtime_dependencies: "untrusted bottle JSON inventory"},
               path_exec_files: ["bin/forged"],
@@ -293,13 +306,16 @@ make_dep_bottle() {
 
 make_dep_wasm64_bottle() {
   local source_archive="$1" source_json="$2"
-  local archive="$TMPDIR/sidecar-dep--1.0.wasm64_kandelo.bottle.tar.gz"
+  local filename
+  filename="$(fixture_bottle_filename sidecar-dep 1.0 wasm64 0)"
+  local archive="$TMPDIR/$filename"
   local bottle_json="$TMPDIR/sidecar-dep--1.0.wasm64_kandelo.bottle.json"
   cp "$source_archive" "$archive"
-  jq '
+  jq --arg filename "$filename" '
     .[] |= (
       .bottle.tags.wasm64_kandelo = .bottle.tags.wasm32_kandelo
       | del(.bottle.tags.wasm32_kandelo)
+      | .bottle.tags.wasm64_kandelo.local_filename = $filename
     )
   ' "$source_json" >"$bottle_json"
   local sha bytes
@@ -310,7 +326,9 @@ make_dep_wasm64_bottle() {
 
 make_tool_bottle() {
   local stage="$TMPDIR/tool-stage/sidecar-tool/2.0_3"
-  local archive="$TMPDIR/sidecar-tool--2.0_3.wasm32_kandelo.bottle.tar.gz"
+  local filename
+  filename="$(fixture_bottle_filename sidecar-tool 2.0_3 wasm32 1)"
+  local archive="$TMPDIR/$filename"
   local bottle_json="$TMPDIR/sidecar-tool--2.0_3.wasm32_kandelo.bottle.json"
   mkdir -p "$stage/bin" "$stage/include" "$stage/lib" "$stage/share/man/man1" \
     "$stage/share/info" "$stage/.brew"
@@ -353,6 +371,7 @@ WAT
   bytes="$(wc -c <"$archive" | tr -d '[:space:]')"
   jq -n \
     --arg sha "$sha" \
+    --arg filename "$filename" \
     --arg tap_commit "$(git -C "$TAP" rev-parse HEAD)" \
     '{
       "kandelo-dev/tap-core/sidecar-tool": {
@@ -369,6 +388,7 @@ WAT
           rebuild: 1,
           tags: {
             wasm32_kandelo: {
+              local_filename: $filename,
               sha256: $sha,
               tab: {runtime_dependencies: "untrusted bottle JSON inventory"},
               path_exec_files: ["bin/forged"],
@@ -385,7 +405,9 @@ make_tool_wasm64_bottle() {
   local source_archive="$1" source_json="$2"
   local stage_parent="$TMPDIR/tool-stage-wasm64"
   local stage="$stage_parent/sidecar-tool/2.0_3"
-  local archive="$TMPDIR/sidecar-tool--2.0_3.wasm64_kandelo.bottle.tar.gz"
+  local filename
+  filename="$(fixture_bottle_filename sidecar-tool 2.0_3 wasm64 1)"
+  local archive="$TMPDIR/$filename"
   local bottle_json="$TMPDIR/sidecar-tool--2.0_3.wasm64_kandelo.bottle.json"
   rm -rf "$stage_parent"
   mkdir -p "$stage_parent"
@@ -407,11 +429,12 @@ WAT
   local sha bytes
   sha="$(sha256_file "$archive")"
   bytes="$(wc -c <"$archive" | tr -d '[:space:]')"
-  jq --arg sha "$sha" '
+  jq --arg sha "$sha" --arg filename "$filename" '
     .[] |= (
       .bottle.tags.wasm64_kandelo = .bottle.tags.wasm32_kandelo
       | del(.bottle.tags.wasm32_kandelo)
       | .bottle.tags.wasm64_kandelo.sha256 = $sha
+      | .bottle.tags.wasm64_kandelo.local_filename = $filename
     )
   ' "$source_json" >"$bottle_json"
   printf '%s\n%s\n%s\n%s\n' "$archive" "$bottle_json" "$sha" "$bytes"
@@ -419,14 +442,25 @@ WAT
 
 repack_fixture_bottle() {
   local stage_parent="$1" formula="$2" raw_json="$3" arch="$4" label="$5"
-  local archive="$TMPDIR/${label}.${arch}_kandelo.bottle.tar.gz"
-  local bottle_json="$TMPDIR/${label}.${arch}_kandelo.bottle.json"
+  local formula_key version rebuild filename fixture_dir archive bottle_json
+  formula_key="$(jq -er 'keys[0]' "$raw_json")"
+  version="$(jq -er --arg key "$formula_key" '.[$key].formula.pkg_version' "$raw_json")"
+  rebuild="$(jq -er --arg key "$formula_key" '.[$key].bottle.rebuild' "$raw_json")"
+  filename="$(fixture_bottle_filename "$formula" "$version" "$arch" "$rebuild")"
+  fixture_dir="$TMPDIR/repacked-$label"
+  rm -rf "$fixture_dir"
+  mkdir -p "$fixture_dir"
+  archive="$fixture_dir/$filename"
+  bottle_json="$fixture_dir/${formula}--${version}.${arch}_kandelo.bottle.json"
   local sha bytes
   tar -czf "$archive" -C "$stage_parent" "$formula"
   sha="$(sha256_file "$archive")"
   bytes="$(wc -c <"$archive" | tr -d '[:space:]')"
-  jq --arg tag "${arch}_kandelo" --arg sha "$sha" \
-    '.[] |= (.bottle.tags[$tag].sha256 = $sha)' \
+  jq --arg tag "${arch}_kandelo" --arg sha "$sha" --arg filename "$filename" \
+    '.[] |= (
+      .bottle.tags[$tag].sha256 = $sha |
+      .bottle.tags[$tag].local_filename = $filename
+    )' \
     "$raw_json" >"$bottle_json"
   printf '%s\n%s\n%s\n%s\n' "$archive" "$bottle_json" "$sha" "$bytes"
 }
@@ -434,11 +468,13 @@ repack_fixture_bottle() {
 generate_sidecars() {
   local formula="$1" archive="$2" bottle_json="$3" sha="$4" bytes="$5" out="$6"
   local arch="${SIDECAR_TEST_ARCH:-wasm32}"
+  local bottle_filename
   local merged_tap="${out}-merged-tap"
   local canonical_json="${out}-merge-bottle.json"
   local dependency_provenance="${out}-dependency-provenance.json"
   local runtime_evidence="${out}-runtime-evidence.json"
   local tap_commit provenance_sha version
+  bottle_filename="$(basename "$archive")"
   tap_commit="$(git -C "$TAP" rev-parse HEAD)"
   rm -rf "$merged_tap" "$out"
   cp -a "$TAP" "$merged_tap"
@@ -487,6 +523,7 @@ generate_sidecars() {
     --arg sha "$sha" \
     --argjson bytes "$bytes" \
     --arg version "$version" \
+    --arg bottle_filename "$bottle_filename" \
     --arg provenance_sha "$provenance_sha" \
     --slurpfile provenance "$dependency_provenance" '{
       schema: 2,
@@ -531,7 +568,7 @@ generate_sidecars() {
       target: {
         install_log: {
           fetch: [("selected local bottle sha256:" + $sha)],
-          pour: [("==> Pouring " + $formula + "--" + $version + "." + $arch + "_kandelo.bottle.tar.gz")],
+          pour: [("==> Pouring " + $bottle_filename)],
           source_build_absent: true
         },
         receipt: {

@@ -35,6 +35,9 @@ HOMEBREW_PATCHED_NATIVE_BREW_BIN=""
 HOMEBREW_PATCHED_NATIVE_RUNNER=""
 HOMEBREW_PATCHED_NATIVE_SEALED=0
 HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=()
+HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""
+HOMEBREW_PATCHED_STAGED_INPUT_DIR=""
+HOMEBREW_PATCHED_STAGED_INPUT_PATH=""
 
 homebrew_sha256_stream() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -623,6 +626,10 @@ homebrew_patched_launcher_cleanup() {
       return "$teardown_status"
     fi
   fi
+  if ! homebrew_patched_launcher_remove_staged_input; then
+    echo "homebrew-patched-launcher: protected input remains; preserving launcher state for retry" >&2
+    return 1
+  fi
   if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ] && \
      [ "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" = "sealed" ]; then
     if ! homebrew_patched_launcher_verify_overlay_seal \
@@ -707,6 +714,9 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_NATIVE_RUNNER=""
   HOMEBREW_PATCHED_NATIVE_SEALED=0
   HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=()
+  HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""
+  HOMEBREW_PATCHED_STAGED_INPUT_DIR=""
+  HOMEBREW_PATCHED_STAGED_INPUT_PATH=""
   HOMEBREW_PATCHED_REPO=""
   HOMEBREW_PATCHED_PREFIX=""
   HOMEBREW_PATCHED_BREW_BIN=""
@@ -1346,7 +1356,7 @@ homebrew_patched_launcher_isolate() {
     "$build_user" /usr/bin/realpath /usr/bin/realpath realpath
   homebrew_assert_protected_host_executable \
     "$build_user" /usr/bin/bash /usr/bin/bash bash
-  for protected_bin in chmod chown cp id install ln ls readlink rm stat test; do
+  for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm stat test; do
     homebrew_assert_protected_host_executable \
       "$build_user" "/usr/bin/$protected_bin" "/usr/bin/$protected_bin" "$protected_bin"
   done
@@ -1767,6 +1777,124 @@ homebrew_patched_launcher_isolate() {
       return 1
     }
   fi
+}
+
+# Remove the one registered protected input without discarding retry state on
+# failure. Formula processes must already be stopped before normal cleanup
+# calls this helper.
+homebrew_patched_launcher_remove_staged_input() {
+  if [ "$#" -ne 0 ]; then
+    echo "homebrew_patched_launcher_remove_staged_input: expected no arguments" >&2
+    return 2
+  fi
+  if [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \
+     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] && \
+     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ]; then
+    return 0
+  fi
+  if [ -z "$HOMEBREW_PATCHED_SUDO_BIN" ] || \
+     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] || \
+     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] || \
+     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ] || \
+     [ "${HOMEBREW_PATCHED_STAGED_INPUT_PATH%/*}" != \
+       "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ]; then
+    echo "homebrew-patched-launcher: protected input cleanup state is incomplete" >&2
+    return 1
+  fi
+  case "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" in
+    "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP"/homebrew-bottle-input.??????) ;;
+    *)
+      echo "homebrew-patched-launcher: protected input cleanup path left its shared root" >&2
+      return 1
+      ;;
+  esac
+  if ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/rm -rf -- \
+       "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" || \
+     [ -e "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] || \
+     [ -L "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ]; then
+    echo "homebrew-patched-launcher: could not remove protected input; preserving cleanup state for retry" >&2
+    return 1
+  fi
+  HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""
+  HOMEBREW_PATCHED_STAGED_INPUT_DIR=""
+  HOMEBREW_PATCHED_STAGED_INPUT_PATH=""
+}
+
+# Copy one workflow-owned input into a root-owned directory that the isolated
+# Formula identity can read but cannot modify or replace.
+homebrew_patched_launcher_stage_protected_input() {
+  if [ "$#" -ne 4 ]; then
+    echo "homebrew_patched_launcher_stage_protected_input: expected BUILD_USER SHARED_TEMP SOURCE BASENAME" >&2
+    return 2
+  fi
+  local build_user="$1" shared_temp="$2" source="$3" basename="$4"
+  local protected_dir="" protected_path=""
+
+  if [ -z "$HOMEBREW_PATCHED_BUILD_USER" ] || \
+     [ "$build_user" != "$HOMEBREW_PATCHED_BUILD_USER" ] || \
+     [ "$HOMEBREW_PATCHED_TEARDOWN_COMPLETE" = "1" ] || \
+     [ -z "$HOMEBREW_PATCHED_SUDO_BIN" ]; then
+    echo "homebrew-patched-launcher: protected input requires the initialized Formula identity" >&2
+    return 2
+  fi
+  if [ -n "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] || \
+     [ -n "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] || \
+     [ -n "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ]; then
+    echo "homebrew-patched-launcher: a protected input is already registered" >&2
+    return 2
+  fi
+  if [ ! -f "$source" ] || [ -L "$source" ]; then
+    echo "homebrew-patched-launcher: protected input source is not a regular file: $source" >&2
+    return 2
+  fi
+  if [ "${#basename}" -gt 512 ] || \
+     ! [[ "$basename" =~ ^[A-Za-z0-9][A-Za-z0-9@._+,\-]*$ ]]; then
+    echo "homebrew-patched-launcher: invalid protected input basename: $basename" >&2
+    return 2
+  fi
+  if [ ! -d "$shared_temp" ] || [ -L "$shared_temp" ]; then
+    echo "homebrew-patched-launcher: protected input shared temp is not a real directory" >&2
+    return 2
+  fi
+  shared_temp="$(cd "$shared_temp" && pwd -P)" || return 2
+  if [ "$(/usr/bin/stat -c '%u:%g:%a' "$shared_temp")" != "0:0:1777" ]; then
+    echo "homebrew-patched-launcher: protected input shared temp must be root-owned mode 1777" >&2
+    return 2
+  fi
+
+  protected_dir="$(/usr/bin/mktemp -d "$shared_temp/homebrew-bottle-input.XXXXXX")" || return 1
+  protected_path="$protected_dir/$basename"
+  HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP="$shared_temp"
+  HOMEBREW_PATCHED_STAGED_INPUT_DIR="$protected_dir"
+  HOMEBREW_PATCHED_STAGED_INPUT_PATH="$protected_path"
+  if ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/install \
+       -o root -g root -m 0444 -- "$source" "$protected_path" || \
+     ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chown root:root \
+       "$protected_dir" || \
+     ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chmod 0555 \
+       "$protected_dir"; then
+    echo "homebrew-patched-launcher: could not stage protected input" >&2
+    homebrew_patched_launcher_remove_staged_input || true
+    return 1
+  fi
+
+  if [ "$(/usr/bin/stat -c '%u:%g:%a' "$protected_dir")" != "0:0:555" ] || \
+     [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$protected_path")" != "0:0:444:1" ] || \
+     [ "$source" -ef "$protected_path" ] || \
+     ! /usr/bin/cmp -s -- "$source" "$protected_path" || \
+     ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$build_user" -- \
+       /usr/bin/test -r "$protected_path" || \
+     "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$build_user" -- \
+       /usr/bin/test -w "$protected_path" || \
+     "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$build_user" -- \
+       /usr/bin/test -w "$protected_dir" || \
+     ! homebrew_assert_tree_not_writable_by_user "$build_user" "$protected_dir" || \
+     ! homebrew_assert_tree_not_replaceable_by_user "$build_user" "$protected_dir"; then
+    echo "homebrew-patched-launcher: protected input is not root-owned, exact, readable, and immutable" >&2
+    homebrew_patched_launcher_remove_staged_input || true
+    return 1
+  fi
+
 }
 
 homebrew_patched_launcher_uid_has_processes() {

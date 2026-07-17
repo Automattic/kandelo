@@ -269,10 +269,25 @@ def read_log_lines(path: pathlib.Path) -> list[str]:
     return lines
 
 
+def canonical_bottle_filename(
+    dependency: str, version: str, tag: str, rebuild: int
+) -> str:
+    rebuild_suffix = f".{rebuild}" if rebuild else ""
+    return f"{dependency}--{version}.{tag}.bottle{rebuild_suffix}.tar.gz"
+
+
+def line_names_bottle(line: str, bottle_filename: str) -> bool:
+    match = re.fullmatch(r"(?:==>\s+)?Pouring\s+(\S+)", line)
+    return match is not None and match.group(1) == bottle_filename
+
+
 def selected_evidence(
-    lines: list[str], dependency: str, tag: str, bottle_url: str, bottle_sha: str
+    lines: list[str],
+    dependency: str,
+    bottle_url: str,
+    bottle_sha: str,
+    bottle_filename: str,
 ) -> tuple[list[str], list[str]]:
-    filename_marker = f".{tag}.bottle.tar."
     dependency_url = f"/{dependency}/blobs/sha256:{bottle_sha}"
     fetch: list[str] = []
     pour: list[str] = []
@@ -290,18 +305,14 @@ def selected_evidence(
             r"\b(?:downloading|downloaded|fetching)\b", line, re.I
         ):
             fetch.append(line)
-        if (
-            "pouring" in lowered
-            and dependency.lower() in lowered
-            and filename_marker in lowered
-        ):
+        if line_names_bottle(line, bottle_filename):
             pour.append(line)
     if source_build:
         fail(f"dependency {dependency} was reported as built from source: {source_build[0]}")
     if not fetch:
         fail(f"dependency {dependency} lacks bounded fetch evidence for {bottle_sha}")
     if not pour:
-        fail(f"dependency {dependency} lacks pour evidence for tag {tag}")
+        fail(f"dependency {dependency} lacks pour evidence for {bottle_filename}")
     return fetch[:MAX_EVIDENCE_LINES], pour[:MAX_EVIDENCE_LINES]
 
 
@@ -377,6 +388,16 @@ def capture(args: argparse.Namespace) -> None:
             dependency.get("declared_directly"),
             f"runtime dependency {full_name} declared_directly",
         )
+        receipt_bottle_rebuild = dependency.get("bottle_rebuild")
+        if (
+            not isinstance(receipt_bottle_rebuild, int)
+            or isinstance(receipt_bottle_rebuild, bool)
+            or receipt_bottle_rebuild < 0
+        ):
+            fail(
+                f"runtime dependency {full_name} bottle_rebuild must be "
+                "a non-negative integer"
+            )
         version = dependency.get("pkg_version") or dependency.get("version")
         version = require_string(version, f"runtime dependency {full_name} version", PKG_VERSION)
 
@@ -435,8 +456,16 @@ def capture(args: argparse.Namespace) -> None:
         rebuild = stable.get("rebuild")
         if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
             fail(f"dependency {full_name} bottle rebuild must be a non-negative integer")
+        if rebuild != receipt_bottle_rebuild:
+            fail(
+                f"dependency {full_name} bottle rebuild differs between "
+                "the target receipt and exact Formula"
+            )
+        bottle_filename = canonical_bottle_filename(
+            name, version, bottle_tag, rebuild
+        )
         fetch_lines, pour_lines = selected_evidence(
-            log_lines, name, bottle_tag, bottle_url, bottle_sha
+            log_lines, name, bottle_url, bottle_sha, bottle_filename
         )
         relative_receipt = f"Cellar/{name}/{version}/INSTALL_RECEIPT.json"
         selected[full_name] = {
@@ -521,6 +550,19 @@ def validate_evidence(lines: Any, label: str, dependency: str, marker: str) -> N
             fail(f"{label}[{index}] contains a control character")
         if dependency not in line.lower() or marker not in line.lower():
             fail(f"{label}[{index}] does not identify {dependency} and {marker}")
+
+
+def validate_pour_evidence(lines: Any, label: str, bottle_filename: str) -> None:
+    if not isinstance(lines, list) or not lines or len(lines) > MAX_EVIDENCE_LINES:
+        fail(f"{label} must contain 1-{MAX_EVIDENCE_LINES} lines")
+    for index, line in enumerate(lines):
+        line = require_string(line, f"{label}[{index}]")
+        if len(line.encode("utf-8")) > MAX_EVIDENCE_LINE_BYTES:
+            fail(f"{label}[{index}] exceeds {MAX_EVIDENCE_LINE_BYTES} bytes")
+        if any(ord(character) < 0x20 and character != "\t" for character in line):
+            fail(f"{label}[{index}] contains a control character")
+        if not line_names_bottle(line, bottle_filename):
+            fail(f"{label}[{index}] does not identify {bottle_filename}")
 
 
 def validate_document(document: Any, args: argparse.Namespace) -> None:
@@ -630,6 +672,9 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             fail(f"dependencies[{index}] bottle cellar is invalid")
         if not isinstance(bottle["rebuild"], int) or isinstance(bottle["rebuild"], bool) or bottle["rebuild"] < 0:
             fail(f"dependencies[{index}] bottle rebuild is invalid")
+        bottle_filename = canonical_bottle_filename(
+            name, version, expected_tag, bottle["rebuild"]
+        )
         if static_dependencies is not None and static_dependencies.get(full_name) != bottle:
             fail(f"dependencies[{index}] bottle metadata differs from the exact tap")
         receipt = exact_keys(
@@ -669,11 +714,10 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             name,
             bottle_sha,
         )
-        validate_evidence(
+        validate_pour_evidence(
             install_log["pour"],
             f"dependencies[{index}].install_log.pour",
-            name,
-            expected_tag,
+            bottle_filename,
         )
         if validation_tap_root:
             formula_path = pathlib.Path(validation_tap_root) / "Formula" / f"{name}.rb"

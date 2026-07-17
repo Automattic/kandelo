@@ -413,6 +413,29 @@ case "${1:-}" in
     [ "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" = "$2" ]
     [ "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" = "$3" ]
     ;;
+  assert-protected-input)
+    [ "$#" -eq 6 ]
+    protected_path="$2"
+    expected_basename="$3"
+    shared_temp="$4"
+    expected_uid="$5"
+    expected_content="$6"
+    protected_dir="${protected_path%/*}"
+    [ "$(/usr/bin/id -u)" = "$expected_uid" ]
+    [ "${protected_path##*/}" = "$expected_basename" ]
+    case "$protected_dir" in
+      "$shared_temp"/homebrew-bottle-input.??????) ;;
+      *) exit 1 ;;
+    esac
+    [ "$(/usr/bin/stat -c '%u:%g:%a' "$protected_dir")" = "0:0:555" ]
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$protected_path")" = "0:0:444:1" ]
+    [ -r "$protected_path" ] && [ ! -w "$protected_path" ] && [ ! -w "$protected_dir" ]
+    [ "$(<"$protected_path")" = "$expected_content" ]
+    if printf 'changed\n' >>"$protected_path" 2>/dev/null; then exit 1; fi
+    if rm -f "$protected_path" 2>/dev/null; then exit 1; fi
+    if mv "$protected_path" "$protected_path-replaced" 2>/dev/null; then exit 1; fi
+    if (: >"$protected_dir/new-input") 2>/dev/null; then exit 1; fi
+    ;;
   list)
     [ "$#" -eq 3 ] && [ "$2" = "--formula" ]
     formula="$3"
@@ -859,7 +882,12 @@ cat >"$process_probe_dir/sudo" <<'EOF'
 set -euo pipefail
 [ "${1:-}" = "-n" ] && shift
 [ "${1:-}" = "--" ] && shift
-exec "$@"
+command="$1"
+shift
+if [ "$command" = /usr/bin/rm ] && [ ! -x "$command" ]; then
+  command="$(command -v rm)"
+fi
+exec "$command" "$@"
 EOF
 cat >"$process_probe_dir/pgrep" <<'EOF'
 #!/usr/bin/env bash
@@ -940,6 +968,32 @@ set -e
   fail "failed source audit did not identify the rejected tree"
 HOMEBREW_PATCHED_SUDO_BIN=""
 
+staged_retry_shared="$TMPDIR/staged-input-retry"
+staged_retry_dir="$staged_retry_shared/homebrew-bottle-input.ABCDEF"
+staged_retry_path="$staged_retry_dir/fixture.bottle.tar.gz"
+mkdir -p "$staged_retry_dir"
+printf 'protected retry fixture\n' >"$staged_retry_path"
+HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP="$staged_retry_shared"
+HOMEBREW_PATCHED_STAGED_INPUT_DIR="$staged_retry_dir"
+HOMEBREW_PATCHED_STAGED_INPUT_PATH="$staged_retry_path"
+HOMEBREW_PATCHED_SUDO_BIN="$audit_probe_dir/sudo"
+if homebrew_patched_launcher_remove_staged_input >/dev/null 2>&1; then
+  fail "protected input cleanup ignored a privileged removal failure"
+fi
+[ -f "$staged_retry_path" ] && \
+  [ "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" = "$staged_retry_shared" ] && \
+  [ "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" = "$staged_retry_dir" ] && \
+  [ "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" = "$staged_retry_path" ] ||
+  fail "failed protected input cleanup discarded retry state"
+HOMEBREW_PATCHED_SUDO_BIN="$process_probe_dir/sudo"
+homebrew_patched_launcher_remove_staged_input
+[ ! -e "$staged_retry_dir" ] && \
+  [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \
+  [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] && \
+  [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ] ||
+  fail "protected input cleanup retry left staged state"
+HOMEBREW_PATCHED_SUDO_BIN=""
+
 if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
    [ -x /usr/bin/systemd-run ] && [ -x /usr/bin/systemctl ] && \
    [ -x /usr/bin/getent ] && [ -x /usr/bin/pgrep ] && [ -x /usr/bin/pkill ] && \
@@ -963,6 +1017,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_native_config="$isolated_native_base/g"
   isolated_native_home="$isolated_native_base/h"
   isolated_source_parent="$ISOLATION_ROOT/private-runner-home"
+  isolated_private_bottle_dir="$ISOLATION_ROOT/private-runner-cache"
+  isolated_shared_temp="$ISOLATION_ROOT/shared-temp"
   isolated_kandelo="$isolated_source_parent/kandelo"
   isolated_tap="$isolated_source_parent/tap"
   isolated_output="$isolated_source_parent/output"
@@ -976,8 +1032,16 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   external_opt="$isolated_work/external-opt"
   mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
     "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
-    "$isolated_output" "$isolated_native_base" "$external_cellar" "$external_opt"
+    "$isolated_output" "$isolated_native_base" "$external_cellar" "$external_opt" \
+    "$isolated_private_bottle_dir" "$isolated_shared_temp"
   chmod 0711 "$isolated_native_base"
+  chmod 0700 "$isolated_private_bottle_dir"
+  /usr/bin/sudo -n -- chown root:root "$isolated_shared_temp"
+  /usr/bin/sudo -n -- chmod 1777 "$isolated_shared_temp"
+  protected_bottle_basename="hello--1.0.wasm32_kandelo.bottle.tar.gz"
+  protected_bottle_content="canonical protected bottle bytes"
+  private_bottle="$isolated_private_bottle_dir/$protected_bottle_basename"
+  printf '%s\n' "$protected_bottle_content" >"$private_bottle"
   printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   printf 'target work\n' >"$isolated_work/target-work-marker"
@@ -1007,6 +1071,10 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   /usr/bin/sudo -n -- chown -R \
     "$ISOLATION_BUILD_USER:$(id -gn "$ISOLATION_BUILD_USER")" \
     "$external_cellar" "$external_opt"
+  if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/test -r "$private_bottle"; then
+    fail "build identity can read the workflow-private bottle path"
+  fi
   export HOMEBREW_CACHE="$isolated_cache"
   export HOMEBREW_TEMP="$isolated_temp"
   export XDG_CONFIG_HOME="$isolated_work/xdg-config"
@@ -1084,6 +1152,37 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
       test -r "$native_root" -a -w "$native_root" -a -x "$native_root" ||
       fail "build identity cannot use a native child root: $native_root"
   done
+  if homebrew_patched_launcher_stage_protected_input \
+       "$ISOLATION_BUILD_USER" "$isolated_shared_temp" "$private_bottle" \
+       '../unsafe-bottle.tar.gz' >/dev/null 2>&1; then
+    fail "protected input staging accepted an unsafe basename"
+  fi
+  if homebrew_patched_launcher_stage_protected_input \
+       "$ISOLATION_BUILD_USER" "$isolated_shared_temp" "$private_bottle" \
+       "$(printf '%0513d' 0)" >/dev/null 2>&1; then
+    fail "protected input staging accepted an oversized basename"
+  fi
+  [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] ||
+    fail "rejected protected input staging left partial state"
+  homebrew_patched_launcher_stage_protected_input \
+    "$ISOLATION_BUILD_USER" "$isolated_shared_temp" "$private_bottle" \
+    "$protected_bottle_basename"
+  protected_bottle="$HOMEBREW_PATCHED_STAGED_INPUT_PATH"
+  protected_bottle_dir="$HOMEBREW_PATCHED_STAGED_INPUT_DIR"
+  case "$protected_bottle_dir" in
+    "$isolated_shared_temp"/homebrew-bottle-input.??????) ;;
+    *) fail "protected bottle used an unexpected directory: $protected_bottle_dir" ;;
+  esac
+  [ "${protected_bottle##*/}" = "$protected_bottle_basename" ] &&
+    [ "$(stat -c '%u:%g:%a' "$protected_bottle_dir")" = "0:0:555" ] &&
+    [ "$(stat -c '%u:%g:%a:%h' "$protected_bottle")" = "0:0:444:1" ] &&
+    cmp -s "$private_bottle" "$protected_bottle" ||
+    fail "protected bottle path, ownership, or content changed"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-protected-input \
+    "$protected_bottle" "$protected_bottle_basename" "$isolated_shared_temp" \
+    "$(id -u "$ISOLATION_BUILD_USER")" "$protected_bottle_content"
+  [ "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" = "$isolated_shared_temp" ] ||
+    fail "protected bottle lifecycle lost its shared temp root"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-identity \
     "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
@@ -1227,6 +1326,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   /usr/bin/sudo -n -- rm -f "$target_proxy_opt"
   /usr/bin/sudo -n -- ln -s ../Cellar/cmake/1.0 "$target_proxy_opt"
   homebrew_patched_launcher_verify_isolation
+  [ -r "$protected_bottle" ] ||
+    fail "protected bottle disappeared before launcher cleanup"
   homebrew_patched_launcher_cleanup
   [ ! -e "$isolated_overlay" ] && \
     [ -z "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" ] ||
@@ -1237,6 +1338,12 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "isolated cleanup left the native Formula proxy opt link"
   [ ! -e "$isolated_prefix/.kandelo-publisher-build-dependencies.json" ] ||
     fail "isolated cleanup left the publisher dependency plan"
+  [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
+    [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \
+    [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \
+    [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] && \
+    [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ] ||
+    fail "isolated cleanup left the protected bottle or lifecycle state"
   /usr/bin/sudo -n -- /usr/sbin/userdel -r "$ISOLATION_BUILD_USER"
   ! id "$ISOLATION_BUILD_USER" >/dev/null 2>&1 || fail "Formula build identity survived retirement"
   ISOLATION_BUILD_USER=""
