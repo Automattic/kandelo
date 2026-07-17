@@ -183,6 +183,52 @@ describe("BrowserKernel", () => {
     ])).toBe(0);
   });
 
+  it("uses the worker pid when fork has reserved the preceding pid", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/bin/parent"],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const initialSpawn = worker.lastMessage("spawn");
+    worker.simulateMessage({
+      type: "response",
+      requestId: initialSpawn.requestId,
+      result: 100,
+    });
+    await bootPromise;
+    worker.simulateMessage({ type: "proc_event", kind: "spawn", pid: 101, ppid: 100 });
+
+    const onStarted = vi.fn();
+    const exitPromise = kernel.spawn(new ArrayBuffer(8), ["/bin/true"], {
+      onStarted,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const spawn = worker.lastMessage("spawn");
+
+    // The main thread cannot know that a guest fork has reserved pid 101 but
+    // has not yet finished registering its process worker. Only the kernel
+    // worker's monotonic allocator can assign the following pid safely.
+    expect(spawn).not.toHaveProperty("pid");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 102,
+    });
+    worker.simulateMessage({ type: "exit", pid: 102, status: 0 });
+
+    expect(await Promise.race([
+      exitPromise,
+      new Promise<number>((resolve) => setTimeout(() => resolve(-999), 50)),
+    ])).toBe(0);
+    expect(onStarted).toHaveBeenCalledWith(102);
+  });
+
   it("delivers host diagnostics without contaminating guest stderr", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const onHostDiagnostic = vi.fn();

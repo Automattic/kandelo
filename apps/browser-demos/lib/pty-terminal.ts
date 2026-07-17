@@ -67,20 +67,21 @@ export class PtyTerminal {
     // kernel's 80x24 default — TUI renderers that latch onto width on
     // startup otherwise render with the wrong dimensions until a
     // SIGWINCH arrives mid-render.
+    let resolveStarted!: (pid: number) => void;
+    let rejectStarted!: (reason?: unknown) => void;
+    const started = new Promise<number>((resolve, reject) => {
+      resolveStarted = resolve;
+      rejectStarted = reject;
+    });
     const exitPromise = this.kernel.spawn(programBytes, argv, {
       ...options,
       pty: true,
       ptyCols: this.terminal.cols,
       ptyRows: this.terminal.rows,
+      onStarted: resolveStarted,
     });
-
-    // The spawn creates the process with the next pid. We need to find it.
-    // BrowserKernel uses sequential pids starting from 1.
-    // The pid is assigned inside spawn() before the worker starts.
-    // We can get it from the exit promise's resolver tracking.
-    // Since spawn returns immediately after creating the process, the pid
-    // is the one that was just assigned. Access it via the kernel's internals.
-    const pid = (this.kernel as any).nextPid - 1;
+    void exitPromise.catch(rejectStarted);
+    const pid = await started;
     this.pid = pid;
 
     // Connect PTY output → xterm.js

@@ -99,8 +99,6 @@ export interface LazyDownloadEvent {
 }
 
 export interface KernelLike {
-  /** Sequential pid counter exposed by BrowserKernel. */
-  readonly nextPid: number;
   /** Synchronous VFS the kernel-worker sees. */
   readonly fs: FileSystemLike;
   /** /dev/fb0 binding registry. Used by attachFramebuffer. */
@@ -176,6 +174,7 @@ export interface KernelLike {
       stdin?: Uint8Array;
       ptyCols?: number;
       ptyRows?: number;
+      onStarted?: (pid: number) => void | Promise<void>;
     },
   ): Promise<number>;
   spawnFromVfs?(
@@ -1255,9 +1254,12 @@ export class LiveKernelHost implements KernelHost {
         pid = spawned.pid;
         exitPromise = spawned.exit;
       } else {
-        // Legacy BrowserKernel.spawn preassigns pids on the main thread.
-        // Prefer spawnFromVfs above whenever the staged shell path is known,
-        // because long-running demos may fork worker-owned pids first.
+        let resolveStarted!: (pid: number) => void;
+        let rejectStarted!: (reason?: unknown) => void;
+        const started = new Promise<number>((resolve, reject) => {
+          resolveStarted = resolve;
+          rejectStarted = reject;
+        });
         exitPromise = kernel.spawn(shell.programBytes, shell.argv, {
           pty: true,
           env: shell.env,
@@ -1266,8 +1268,10 @@ export class LiveKernelHost implements KernelHost {
           gid: shell.gid,
           ptyCols: opts.cols,
           ptyRows: opts.rows,
+          onStarted: resolveStarted,
         });
-        pid = kernel.nextPid - 1;
+        void exitPromise.catch(rejectStarted);
+        pid = await started;
       }
       this.shellPids.set(pid, sessionKey);
 

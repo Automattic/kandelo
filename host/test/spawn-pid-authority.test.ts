@@ -83,4 +83,25 @@ describe("top-level spawn pid authority", () => {
     );
     expect(nodeEntry).not.toContain("nextSpawnPid");
   });
+
+  it("does not let browser main-thread callers choose a pid", () => {
+    const browserEntry = readFileSync(
+      join(repoRoot, "host", "src", "browser-kernel-worker-entry.ts"),
+      "utf8",
+    );
+    const browserProtocol = readFileSync(
+      join(repoRoot, "host", "src", "browser-kernel-protocol.ts"),
+      "utf8",
+    );
+    const spawnMessage = browserProtocol.match(
+      /export interface SpawnMessage \{[\s\S]*?\n\}/,
+    )?.[0];
+
+    expect(browserEntry).toContain(
+      "const pid = kernelWorker.allocateTopLevelSpawnPid();",
+    );
+    expect(browserEntry).not.toContain("msg.pid ??");
+    expect(spawnMessage).toBeDefined();
+    expect(spawnMessage).not.toMatch(/\bpid\??:/);
+  });
 });

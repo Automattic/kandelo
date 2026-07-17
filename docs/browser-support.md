@@ -57,7 +57,7 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
   mutations through the mounted VFS; the main thread never receives the live
   VFS `SharedArrayBuffer`.
-- **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). Kept in place until the kernel grows a "spawn-into-running-kernel" path that doesn't need a main-thread pid.
+- **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the kernel worker allocates and returns its pid so top-level spawns and guest forks share one authoritative sequence.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
@@ -222,7 +222,7 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.
 - **dinit** — `kernelOwnedFs: true`, exec dinit (PID 1), which brings up the per-demo service tree.
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
-- **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary.
+- **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary, and the kernel worker allocates the pid.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
