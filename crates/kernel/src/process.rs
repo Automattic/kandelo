@@ -1276,6 +1276,165 @@ mod tests {
     }
 
     #[test]
+    fn spawn_child_increfs_inherited_dri_bos() {
+        // Regression (hyprland tiling desktop freeze): a posix_spawn'd client
+        // inherits the compositor's O_CLOEXEC card0 OFD, which carries the
+        // scanout bo's GEM handle + KMS framebuffer. spawn must incref those
+        // bos exactly as fork does (read_dri_fd_state / read_kms_fd_state),
+        // otherwise the child's exec-time close (dri_release_ofd_state) decrefs
+        // the compositor's still-live scanout bo to zero, tombstoning it in the
+        // global BoRegistry and freezing the desktop under a gbm_bo_map EINVAL
+        // flood.
+        use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+
+        let mut table = ProcessTable::new();
+        table.create_process(200).unwrap();
+        let parent = table.processes.get_mut(&200).unwrap();
+        let ofd_idx = parent.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        // Mirror the compositor's card0 fd: one GEM handle + one framebuffer,
+        // both referencing the scanout bo.
+        let mut dri = DriFdState::default();
+        dri.handles.insert(5, bo);
+        dri.next_handle = 6;
+        let mut kms = KmsFdState::default();
+        kms.fbs.insert(
+            42,
+            KmsFb {
+                bo_id: bo,
+                width: 64,
+                height: 64,
+                pixel_format: 0x34325241, // AR24
+                stride: 64 * 4,
+            },
+        );
+        kms.next_fb_id = 43;
+        parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+        parent
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(1),
+            "synthetic parent setup leaves the registry at the alloc refcount"
+        );
+
+        let mut host = test_host::NoopHost;
+        table
+            .spawn_child(
+                200,
+                &[b"wlclock".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .expect("spawn_child");
+
+        // Child inherited the card0 OFD's one GEM handle + one framebuffer;
+        // each must have taken its own registry ref so the child's eventual
+        // close-path decref is balanced.
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(3),
+            "spawn child must incref the inherited scanout bo once per handle + fb"
+        );
+
+        crate::dri::with_registry(|r| {
+            r.decref(bo);
+            r.decref(bo);
+            r.decref(bo);
+        });
+    }
+
+    #[test]
+    fn fork_process_increfs_inherited_dri_bos_exactly_once() {
+        // Guard the spawn-vs-fork incref split. DRI bos are increfed on the
+        // fork path inside deserialize (read_dri_fd_state / read_kms_fd_state),
+        // NOT in the shared bump helper — spawn uses `bump_inherited_dri_bos`
+        // instead. If a future change moved the DRI incref into
+        // `bump_inherited_resource_refcounts`, fork_process (deserialize + bump)
+        // would double-incref and leak the bo. This asserts exactly one child
+        // ref per inherited GEM handle + framebuffer.
+        use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
+        use crate::process_table::ProcessTable;
+
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+
+        let mut table = ProcessTable::new();
+        table.create_process(200).unwrap();
+        let parent = table.processes.get_mut(&200).unwrap();
+        let ofd_idx = parent.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        let mut dri = DriFdState::default();
+        dri.handles.insert(5, bo);
+        dri.next_handle = 6;
+        let mut kms = KmsFdState::default();
+        kms.fbs.insert(
+            42,
+            KmsFb {
+                bo_id: bo,
+                width: 64,
+                height: 64,
+                pixel_format: 0x34325241, // AR24
+                stride: 64 * 4,
+            },
+        );
+        kms.next_fb_id = 43;
+        parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+        parent
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(1),
+            "synthetic parent setup leaves the registry at the alloc refcount"
+        );
+
+        table.fork_process(200, 999).expect("fork_process");
+
+        // Parent's ref (1, synthetic) + child's one incref per handle + fb (2).
+        // A deserialize+bump double-count would show 5.
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(3),
+            "fork must incref each inherited DRI bo exactly once (no deserialize + bump double-count)"
+        );
+
+        crate::dri::with_registry(|r| {
+            r.decref(bo);
+            r.decref(bo);
+            r.decref(bo);
+        });
+    }
+
+    #[test]
     fn fork_and_spawn_bump_host_net_handle_refcount() {
         // Regression: connected AF_INET sockets were value-cloned across
         // fork and spawn, so the first process to call close()/host_net_close

@@ -271,4 +271,76 @@ describe("wlcompositor — config-file keybind engine", () => {
     },
     60_000,
   );
+
+  // The `/?demo=hyprland` "new pane" flow: an `exec` bind launches an app when
+  // its key is pressed (CTRL+K=clock, CTRL+P=paint, CTRL+Return=terminal). This
+  // gates that a CTRL exec bind actually spawns a NEW client — the keybind
+  // engine dispatches ACT_EXEC → posix_spawnp, and the spawned client connects
+  // (count bumps). The exec target must exist in the kernel VFS, so it is
+  // mapped through execPrograms exactly as the demo stages the binaries into
+  // /usr/local/bin (the compositor's kwlctl_exec passes libc an absolute path,
+  // so no VFS PATH search is needed).
+  it.skipIf(!hasBinaries)(
+    "a CTRL exec bind launches a new client (the demo's new-pane keybind)",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const clientBytes = loadBytes(clientBin!);
+
+      const dir = mkdtempSync(join(tmpdir(), "wlc-conf-"));
+      const confPath = join(dir, "wlcompositor.conf");
+      // Mirror HYPRLAND_WLCOMPOSITOR_CONF's launch bind shape (exec an absolute
+      // /usr/local/bin path); point CTRL+K (the clock bind) at wlclient-test.
+      writeFileSync(confPath,
+        "bind = CTRL, K, exec, /usr/local/bin/wlclient-test\n");
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+        // Resolve the exec target from path -> wasm file (as the browser demo
+        // stages wlclock/wlpaint/wlterm into /usr/local/bin before spawning).
+        execPrograms: { "/usr/local/bin/wlclient-test": clientBin! },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      const tapCtrl = (code: number) => {
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, code, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, code, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+      };
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
+          env: ["WLC_LAYOUT=dwindle", `WLC_CONFIG=${confPath}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+        expect(out.value, `config not parsed.\n${dump()}`)
+          .toContain(`BINDS_LOADED n=1 source=${confPath}`);
+
+        // One client already mapped so the compositor is live (count=1).
+        host.spawn(clientBytes, ["wlclient-test"], {});
+        await waitFor(out, "CLIENT_CONNECTED count=1", 20_000, dump);
+
+        // CTRL+K fires the exec bind; the compositor spawns the app and the new
+        // client connects (count=2), proving the launch keybind path.
+        tapCtrl(KEY_K);
+        await waitFor(out, 'KWLCTL_EXEC "/usr/local/bin/wlclient-test"', 10_000, dump);
+        await waitFor(out, "CLIENT_CONNECTED count=2", 20_000, dump);
+
+        void compExit;
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
 });

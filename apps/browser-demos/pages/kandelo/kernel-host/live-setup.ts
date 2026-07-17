@@ -130,18 +130,6 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/wlpaint.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/sdl2gl-test.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/sdl2gl-test.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlcube.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlcube.wasm", {
-    query: "?url", import: "default",
-  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(relPaths: string[], label: string): Promise<string> {
@@ -298,8 +286,6 @@ const LIVE_DEMO_IDS = [
   "sdl2",
   "wayland",
   "hyprland",
-  "sdl2gl",
-  "wlcube",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -399,14 +385,6 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
-  sdl2gl: {
-    image: "shell",
-    features: ["kms"],
-  },
-  wlcube: {
-    image: "shell",
-    features: ["kms"],
-  },
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
@@ -476,23 +454,6 @@ interface LiveProfile {
    * to the shell. Runs until the terminal's shell exits.
    */
   waylandDemo: boolean;
-  /**
-   * Stage `wlcompositor` plus `sdl2gl-test` — a minimal SDL2 GLES2 client
-   * that renders a spinning triangle through SDL2's upstream Wayland+GLES
-   * backend (the wl_egl_window shim → libEGL bo-FBO targeting → dmabuf
-   * present chain, steps 10/11/12). Boots like waylandDemo (KMS master +
-   * BrowserInputSource + display sizing) but the sole client is the SDL2
-   * program, so this gates the third-party GL-toolkit path end to end.
-   * Browser-only (WebGL2). Runs until the client exits.
-   */
-  sdl2glDemo: boolean;
-  /**
-   * Stage `wlcompositor` plus `wlcube` — a raw libwayland-egl GLES2 client
-   * (no toolkit) driving the same GL path as sdl2glDemo directly against the
-   * standard wl_egl_window / libEGL entry points a mesa client would use.
-   * Boots like sdl2glDemo. Browser-only (WebGL2). Runs until the client exits.
-   */
-  wlcubeDemo: boolean;
   /**
    * Like waylandDemo, but boots `wlcompositor` with WLC_LAYOUT=dwindle so the
    * clients (two `wlterm` + a `wlclock`) tile into borderless slots and resize
@@ -585,8 +546,19 @@ const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
 // SUPER mirrors real Hyprland, but a browser reserves it (Cmd/Win), so every
 // bind is duplicated on CTRL — the modifier that actually reaches the page.
 const HYPRLAND_WLCOMPOSITOR_CONF = `# Kandelo wlcompositor — Hyprland-class tiling desktop (layout via WLC_LAYOUT).
+# App-launch binds (the "new pane" chooser, done Hyprland-style with per-app
+# keys rather than a launcher UI): Return spawns a terminal, K a clock (K as in
+# clocK — Ctrl+C is left to the terminal's SIGINT), P a paint canvas. A browser
+# reserves SUPER (=Cmd/Win), so every action is bound on CTRL too — that's the
+# modifier users actually press in-browser. Note the compositor grabs bound
+# combos before the focused client, so CTRL+W here shadows the terminal's
+# werase (see docs/browser-support.md).
 bind = SUPER, Return, exec, /usr/local/bin/wlterm
 bind = CTRL, Return, exec, /usr/local/bin/wlterm
+bind = SUPER, K, exec, /usr/local/bin/wlclock
+bind = CTRL, K, exec, /usr/local/bin/wlclock
+bind = SUPER, P, exec, /usr/local/bin/wlpaint
+bind = CTRL, P, exec, /usr/local/bin/wlpaint
 bind = SUPER, W, killactive
 bind = CTRL, W, killactive
 bind = SUPER, 1, workspace, 1
@@ -711,8 +683,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     // sdl2) keep the webgl2 default — the GL bridge claims their canvas on
     // eglCreateContext, and the pump never touches it.
     h.setKmsDisplayMode(
-      profile.waylandDemo || profile.sdl2glDemo || profile.wlcubeDemo ||
-        profile.hyprlandDemo
+      profile.waylandDemo || profile.hyprlandDemo
         ? "webgl2-scanout"
         : null,
     );
@@ -841,8 +812,6 @@ function customVfsProfile(
     modesetDemo: false,
     sdl2Demo: false,
     waylandDemo: false,
-    sdl2glDemo: false,
-    wlcubeDemo: false,
     hyprlandDemo: false,
   };
 }
@@ -866,8 +835,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       modesetDemo: false,
       sdl2Demo: false,
       waylandDemo: false,
-      sdl2glDemo: false,
-      wlcubeDemo: false,
       hyprlandDemo: false,
     };
   }
@@ -903,8 +870,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     modesetDemo: normalized === "modeset",
     sdl2Demo: normalized === "sdl2",
     waylandDemo: normalized === "wayland",
-    sdl2glDemo: normalized === "sdl2gl",
-    wlcubeDemo: normalized === "wlcube",
     hyprlandDemo: normalized === "hyprland",
   };
 }
@@ -1711,11 +1676,19 @@ async function bootProfile(
             "../../../../../local-binaries/programs/wasm32/wlclock.wasm",
             "../../../../../binaries/programs/wasm32/wlclock.wasm",
           ], "wlclock.wasm");
+          // wlpaint is staged so the CTRL+P launch bind can exec it on demand;
+          // unlike the wayland demo it is not auto-spawned into the initial
+          // layout (the user opens it via the keybind, the "new pane" flow).
+          const wlpaintUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlpaint.wasm",
+            "../../../../../binaries/programs/wasm32/wlpaint.wasm",
+          ], "wlpaint.wasm");
           tick("staging hyprland binaries...");
-          const [compBytes, termBytes, clockBytes] = await Promise.all([
+          const [compBytes, termBytes, clockBytes, paintBytes] = await Promise.all([
             fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
             fetch(wltermUrl).then(failOn("wlterm.wasm")).then((r) => r.arrayBuffer()),
             fetch(wlclockUrl).then(failOn("wlclock.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wlpaintUrl).then(failOn("wlpaint.wasm")).then((r) => r.arrayBuffer()),
           ]);
           ensureDirRecursive(kernelForHyprland.fs, "/usr/local/bin");
           writeVfsBinary(
@@ -1734,6 +1707,12 @@ async function bootProfile(
             kernelForHyprland.fs,
             "/usr/local/bin/wlclock",
             new Uint8Array(clockBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForHyprland.fs,
+            "/usr/local/bin/wlpaint",
+            new Uint8Array(paintBytes),
             0o755,
           );
 
@@ -1809,243 +1788,6 @@ async function bootProfile(
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           tick(`hyprland failed: ${msg}`);
-        }
-      })();
-    } else if (profile.sdl2glDemo) {
-      // wlcompositor (KMS master) + one SDL2 GLES2 client (sdl2gl-test).
-      // The client renders a spinning triangle through SDL2's upstream
-      // Wayland+GLES backend: wl_egl_window_create → GPU bo + dmabuf
-      // wl_buffer, eglCreateWindowSurface targets the bo's FBO, and
-      // eglSwapBuffers attach+commits it (steps 10/11/12). The compositor
-      // imports the dmabuf zero-copy and composites it to card0; the
-      // Modeset pane presents card0 via the WebGL2 scanout presenter. No
-      // keyboard/pointer routing needed (the client ignores input) — the
-      // input source is attached only so the compositor's libinput opens
-      // cleanly, matching the wayland demo's boot shape.
-      const kernelForSdl2gl = kernel;
-      void (async () => {
-        try {
-          const compositorUrl = await optionalBinaryUrl([
-            "../../../../../local-binaries/programs/wasm32/wlcompositor.wasm",
-            "../../../../../binaries/programs/wasm32/wlcompositor.wasm",
-          ], "wlcompositor.wasm");
-          const sdl2glUrl = await optionalBinaryUrl([
-            "../../../../../local-binaries/programs/wasm32/sdl2gl-test.wasm",
-            "../../../../../binaries/programs/wasm32/sdl2gl-test.wasm",
-          ], "sdl2gl-test.wasm");
-          tick("staging sdl2gl binaries...");
-          const [compBytes, sdl2glBytes] = await Promise.all([
-            fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
-            fetch(sdl2glUrl).then(failOn("sdl2gl-test.wasm")).then((r) => r.arrayBuffer()),
-          ]);
-          ensureDirRecursive(kernelForSdl2gl.fs, "/usr/local/bin");
-          // XKB config root. SDL's Wayland backend calls xkb_context_new(0),
-          // which (unlike the compositor's NO_DEFAULT_INCLUDES context) hard-
-          // fails if NONE of libxkbcommon's default include dirs exist —
-          // xkb_context_include_path_append only stats the dir, no data files
-          // needed. The kwl clients dodge this by parsing keys themselves;
-          // SDL uses real libxkbcommon, so the config root must exist. Keymaps
-          // still arrive from the compositor as a self-contained string over
-          // wl_keyboard.keymap, so an empty dir is sufficient.
-          ensureDirRecursive(kernelForSdl2gl.fs, "/usr/share/X11/xkb");
-          writeVfsBinary(
-            kernelForSdl2gl.fs,
-            "/usr/local/bin/wlcompositor",
-            new Uint8Array(compBytes),
-            0o755,
-          );
-          writeVfsBinary(
-            kernelForSdl2gl.fs,
-            "/usr/local/bin/sdl2gl-test",
-            new Uint8Array(sdl2glBytes),
-            0o755,
-          );
-
-          // The SDL client ignores input; attach a source anyway so the
-          // compositor's libinput event0/event1 open cleanly (same as the
-          // wayland demo). Pointer/wheel disabled — nothing consumes them.
-          tick("attaching input source...");
-          kernelForSdl2gl.attachInputSource(
-            new BrowserInputSource(window, { pointer: false, wheel: false }),
-            { width: 1920, height: 1080 },
-          );
-
-          // Size the KMS display from the pane canvas so the compositor's
-          // preferred mode fills the pane (identical logic to the wayland
-          // demo; on timeout the 1920×1080 default letterboxes).
-          tick("sizing display mode...");
-          const sizeDeadline = performance.now() + 1500;
-          let displaySize = host.getKmsDisplaySize(1);
-          while (!displaySize && performance.now() < sizeDeadline) {
-            const paneCanvas = document.querySelector<HTMLCanvasElement>(
-              ".kmachine-primary-slot:not(.is-hidden) canvas",
-            );
-            const rect = paneCanvas?.getBoundingClientRect();
-            if (rect && rect.width >= 1 && rect.height >= 1) {
-              const dpr = window.devicePixelRatio || 1;
-              kernelForSdl2gl.kmsSetDisplaySize(
-                1,
-                rect.width * dpr,
-                rect.height * dpr,
-              );
-              break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            displaySize = host.getKmsDisplaySize(1);
-          }
-
-          // Compositor in the background (binds /tmp/wayland-0). Unlike the
-          // kwl test clients, SDL's wl_display_connect does NOT retry, so we
-          // must not launch the client before the socket exists — otherwise
-          // the connect races the compositor's bind(), returns NULL, and
-          // SDL_Init(VIDEO) fails. Barrier below waits for /tmp/wayland-0.
-          // (The client also waits socket-side as a belt-and-suspenders.)
-          tick("running wlcompositor...");
-          void kernelForSdl2gl.spawn(compBytes, ["wlcompositor"], {
-            env: SHELL_ENV,
-            cwd: DEMO_HOME,
-            uid: DEMO_UID,
-            gid: DEMO_GID,
-          }).then(
-            () => tick("wlcompositor exited"),
-            (err: unknown) =>
-              tick(`wlcompositor failed: ${err instanceof Error ? err.message : String(err)}`),
-          );
-
-          // Wait for the compositor to bind its socket before launching the
-          // SDL client. Bounded so a compositor that never comes up doesn't
-          // hang the demo — the client's own wait then reports the timeout.
-          tick("waiting for compositor socket...");
-          const sockDeadline = performance.now() + 5000;
-          while (
-            !vfsPathExists(kernelForSdl2gl.fs, "/tmp/wayland-0") &&
-            performance.now() < sockDeadline
-          ) {
-            await delay(50);
-          }
-
-          // Spawn the client in the background (NOT via the PTY): its stdout
-          // markers (SDL2GL_UP/SDL2GL_FRAME) must reach onStdout → syslog,
-          // which is where the smoke gates read. runShellCommand would route
-          // them to the terminal pane instead, where the spec can't see them
-          // (the compositor is spawned the same way for the same reason).
-          tick("running sdl2gl-test...");
-          await kernelForSdl2gl.spawn(sdl2glBytes, ["sdl2gl-test"], {
-            env: SHELL_ENV,
-            cwd: DEMO_HOME,
-            uid: DEMO_UID,
-            gid: DEMO_GID,
-          });
-          tick("sdl2gl-test exited");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          tick(`sdl2gl failed: ${msg}`);
-        }
-      })();
-    } else if (profile.wlcubeDemo) {
-      // wlcompositor (KMS master) + one raw libwayland-egl client (wlcube);
-      // same boot shape as the sdl2gl demo with no toolkit in between.
-      const kernelForWlcube = kernel;
-      void (async () => {
-        try {
-          const compositorUrl = await optionalBinaryUrl([
-            "../../../../../local-binaries/programs/wasm32/wlcompositor.wasm",
-            "../../../../../binaries/programs/wasm32/wlcompositor.wasm",
-          ], "wlcompositor.wasm");
-          const wlcubeUrl = await optionalBinaryUrl([
-            "../../../../../local-binaries/programs/wasm32/wlcube.wasm",
-            "../../../../../binaries/programs/wasm32/wlcube.wasm",
-          ], "wlcube.wasm");
-          tick("staging wlcube binaries...");
-          const [compBytes, wlcubeBytes] = await Promise.all([
-            fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
-            fetch(wlcubeUrl).then(failOn("wlcube.wasm")).then((r) => r.arrayBuffer()),
-          ]);
-          ensureDirRecursive(kernelForWlcube.fs, "/usr/local/bin");
-          writeVfsBinary(
-            kernelForWlcube.fs,
-            "/usr/local/bin/wlcompositor",
-            new Uint8Array(compBytes),
-            0o755,
-          );
-          writeVfsBinary(
-            kernelForWlcube.fs,
-            "/usr/local/bin/wlcube",
-            new Uint8Array(wlcubeBytes),
-            0o755,
-          );
-
-          // wlcube ignores input; attach a source anyway so the compositor's
-          // libinput event0/event1 open cleanly (same as the sdl2gl demo).
-          tick("attaching input source...");
-          kernelForWlcube.attachInputSource(
-            new BrowserInputSource(window, { pointer: false, wheel: false }),
-            { width: 1920, height: 1080 },
-          );
-
-          // Size the KMS display from the pane canvas so the compositor's
-          // preferred mode fills the pane; on timeout the default letterboxes.
-          tick("sizing display mode...");
-          const sizeDeadline = performance.now() + 1500;
-          let displaySize = host.getKmsDisplaySize(1);
-          while (!displaySize && performance.now() < sizeDeadline) {
-            const paneCanvas = document.querySelector<HTMLCanvasElement>(
-              ".kmachine-primary-slot:not(.is-hidden) canvas",
-            );
-            const rect = paneCanvas?.getBoundingClientRect();
-            if (rect && rect.width >= 1 && rect.height >= 1) {
-              const dpr = window.devicePixelRatio || 1;
-              kernelForWlcube.kmsSetDisplaySize(
-                1,
-                rect.width * dpr,
-                rect.height * dpr,
-              );
-              break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            displaySize = host.getKmsDisplaySize(1);
-          }
-
-          // Compositor in the background (binds /tmp/wayland-0). wlcube's raw
-          // connect retries while the compositor binds, but we still barrier
-          // on the socket below so the client doesn't spin its whole retry
-          // budget racing a slow compositor bring-up.
-          tick("running wlcompositor...");
-          void kernelForWlcube.spawn(compBytes, ["wlcompositor"], {
-            env: SHELL_ENV,
-            cwd: DEMO_HOME,
-            uid: DEMO_UID,
-            gid: DEMO_GID,
-          }).then(
-            () => tick("wlcompositor exited"),
-            (err: unknown) =>
-              tick(`wlcompositor failed: ${err instanceof Error ? err.message : String(err)}`),
-          );
-
-          tick("waiting for compositor socket...");
-          const sockDeadline = performance.now() + 5000;
-          while (
-            !vfsPathExists(kernelForWlcube.fs, "/tmp/wayland-0") &&
-            performance.now() < sockDeadline
-          ) {
-            await delay(50);
-          }
-
-          // Spawn the client in the background (NOT via the PTY): its stdout
-          // markers (WLCUBE_UP/WLCUBE_FRAME) must reach onStdout → syslog,
-          // which is where the smoke gates read. runShellCommand would route
-          // them to the terminal pane instead, where the spec can't see them.
-          tick("running wlcube...");
-          await kernelForWlcube.spawn(wlcubeBytes, ["wlcube"], {
-            env: SHELL_ENV,
-            cwd: DEMO_HOME,
-            uid: DEMO_UID,
-            gid: DEMO_GID,
-          });
-          tick("wlcube exited");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          tick(`wlcube failed: ${msg}`);
         }
       })();
     } else if (presentation?.autoCommand) {

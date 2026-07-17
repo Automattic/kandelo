@@ -2458,18 +2458,53 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                         };
                     }
                     if let Some(send_idx) = sock.send_buf_idx {
-                        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
-                        if let Some(pipe) = pipe {
-                            pipe.close_write_end();
-                            unsafe { crate::pipe::global_pipe_table().free_if_closed(send_idx) };
+                        // If this close fully closes the pipe, no one can ever
+                        // receive its still-queued SCM_RIGHTS FDs — release the
+                        // channel's in-flight bo refcount so those bos don't leak.
+                        let drained = {
+                            let pipe =
+                                unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
+                            if let Some(pipe) = pipe {
+                                pipe.close_write_end();
+                                if pipe.is_fully_closed() {
+                                    pipe.take_pending_prime_bo_ids()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        };
+                        for bo_id in drained {
+                            let rc = crate::dri::with_registry(|r| r.decref(bo_id));
+                            if rc == Some(0) {
+                                host.gbm_bo_destroy(pid as i32, bo_id);
+                            }
                         }
+                        unsafe { crate::pipe::global_pipe_table().free_if_closed(send_idx) };
                     }
                     if let Some(recv_idx) = sock.recv_buf_idx {
-                        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
-                        if let Some(pipe) = pipe {
-                            pipe.close_read_end();
-                            unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
+                        let drained = {
+                            let pipe =
+                                unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
+                            if let Some(pipe) = pipe {
+                                pipe.close_read_end();
+                                if pipe.is_fully_closed() {
+                                    pipe.take_pending_prime_bo_ids()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        };
+                        for bo_id in drained {
+                            let rc = crate::dri::with_registry(|r| r.decref(bo_id));
+                            if rc == Some(0) {
+                                host.gbm_bo_destroy(pid as i32, bo_id);
+                            }
                         }
+                        unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
                     }
                 }
                 proc.sockets.free(sock_idx);

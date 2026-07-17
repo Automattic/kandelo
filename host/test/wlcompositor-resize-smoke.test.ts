@@ -23,7 +23,9 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
 const clockBin = tryResolveBinary("programs/wlclock.wasm");
+const paintBin = tryResolveBinary("programs/wlpaint.wasm");
 const hasBinaries = !!compositorBin && !!clockBin;
+const hasPaint = !!compositorBin && !!paintBin;
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -131,6 +133,65 @@ describe("wlcompositor — libkwl clients resize to the dictated tile", () => {
         const halved = resizes.filter((r) => r === `${two[0].w}x${two[0].h}`);
         expect(halved.length,
           `expected both windows at the two-way tile.\n${dump()}`)
+          .toBeGreaterThanOrEqual(2);
+
+        void compExit;
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  // wlpaint originally rendered a fixed 640×420 island regardless of its tile
+  // (it ignored KWL_RESIZE), so under dwindle it drew in the corner and left
+  // the rest of the tile as stale/blank buffer — reported as the paint window
+  // "not taking the whole width and height". It now honors KWL_RESIZE like
+  // wlclock/wlterm: this gates that WLPAINT_RESIZE reports the dwindle tile
+  // size, i.e. the toolbar+canvas fill the whole slot.
+  it.skipIf(!hasPaint)(
+    "wlpaint resizes to fill its dwindle tile (WLPAINT_RESIZE = the partition)",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const paintBytes = loadBytes(paintBin!);
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
+          env: ["WLC_LAYOUT=dwindle"],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        // Sole window → the whole gapped work area. A fixed-size wlpaint would
+        // never emit WLPAINT_RESIZE at all (it would sit at 640×420), so this
+        // marker alone proves the client now honors the dictated tile size.
+        host.spawn(paintBytes, ["wlpaint"], {});
+        await waitFor(out, "WLPAINT_READY", 20_000, dump);
+        const [solo] = computeTiling({ x: 0, y: 0, w: CANVAS_W, h: CANVAS_H }, 1);
+        await waitFor(out, `WLPAINT_RESIZE w=${solo.w} h=${solo.h}`, 20_000, dump);
+
+        // A second window splits the work area; both wlpaint tiles reconfigure
+        // to the same half-width slot.
+        host.spawn(paintBytes, ["wlpaint"], {});
+        const two = computeTiling({ x: 0, y: 0, w: CANVAS_W, h: CANVAS_H }, 2);
+        expect(two[0].w, "expected an x-axis split").toBe(two[1].w);
+        await waitFor(out, `WLPAINT_RESIZE w=${two[0].w} h=${two[0].h}`, 20_000, dump);
+
+        const halved = [...out.value.matchAll(/WLPAINT_RESIZE w=(\d+) h=(\d+)/g)]
+          .map((m) => `${m[1]}x${m[2]}`)
+          .filter((r) => r === `${two[0].w}x${two[0].h}`);
+        expect(halved.length,
+          `expected both wlpaint windows at the two-way tile.\n${dump()}`)
           .toBeGreaterThanOrEqual(2);
 
         void compExit;
