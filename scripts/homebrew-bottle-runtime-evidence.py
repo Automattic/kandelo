@@ -97,19 +97,14 @@ def normalized_tap_repository(args: argparse.Namespace) -> str:
 def normalized_tap_name(args: argparse.Namespace) -> str:
     repository = normalized_tap_repository(args)
     owner, repository_name = repository.split("/", 1)
-    if repository == "automattic/kandelo-homebrew":
-        expected = repository
-    else:
-        if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
-            fail("third-party tap repositories must use owner/homebrew-name")
-        expected = f"{owner}/{repository_name.removeprefix('homebrew-')}"
-        if expected == "automattic/kandelo-homebrew":
-            fail("the protected first-party tap name cannot be derived from another repository")
+    if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
+        fail("tap repositories must use owner/homebrew-name")
+    expected = f"{owner}/{repository_name.removeprefix('homebrew-')}"
     requested = args.tap_name
     if requested is None:
-        if repository != "automattic/kandelo-homebrew":
-            fail("tap name is required when repository and Homebrew identities may differ")
-        requested = args.tap_repository
+        if repository != "kandelo-dev/homebrew-tap-core":
+            fail("tap name is required outside the protected default tap")
+        requested = expected
     selected = normalized_identity(requested, "tap name")
     if selected != expected:
         fail("tap name does not match the tap repository")

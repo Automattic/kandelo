@@ -82,7 +82,7 @@ Ruby.
 
 The reusable workflow
 `.github/workflows/reusable-homebrew-bottle-publish.yml` is the trusted CI
-entry point for the future `Automattic/kandelo-homebrew` tap. It accepts a
+entry point for the `kandelo-dev/homebrew-tap-core` tap. It accepts a
 selected formula/arch matrix, builds bottles via `scripts/dev-shell.sh`, uploads
 bottle bytes to GHCR, and commits generated `Kandelo/` sidecars back to the tap.
 Failures are recorded as attempt reports without replacing last-green

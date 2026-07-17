@@ -15,7 +15,7 @@ end
 RUBY
 cat >"$TAP_ROOT/Formula/recommended.rb" <<'RUBY'
 class Recommended < Formula
-  depends_on "automattic/kandelo-homebrew/transitive"
+  depends_on "kandelo-dev/tap-core/transitive"
 end
 RUBY
 cat >"$TAP_ROOT/Formula/transitive.rb" <<'RUBY'
@@ -26,9 +26,9 @@ cat >"$TAP_ROOT/Formula/root.rb" <<'RUBY'
 class Root < Formula
   depends_on "pkgconf" => :build
   depends_on "wabt" => [:build, :test]
-  depends_on "automattic/kandelo-homebrew/required"
-  depends_on "automattic/kandelo-homebrew/recommended" => :recommended
-  depends_on "automattic/kandelo-homebrew/optional" => :optional
+  depends_on "kandelo-dev/tap-core/required"
+  depends_on "kandelo-dev/tap-core/recommended" => :recommended
+  depends_on "kandelo-dev/tap-core/optional" => :optional
   depends_on "external-required"
   depends_on "third-party/tools/recommended" => :recommended
   depends_on "external-optional" => :optional
@@ -36,19 +36,19 @@ end
 RUBY
 
 resolver="$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb"
-declarations="$(ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew root --declarations-json)"
+declarations="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core root --declarations-json)"
 jq -e '
   keys == ["dependencies", "formula", "full_name", "schema", "tap"] and
   .schema == 1 and
-  .tap == "automattic/kandelo-homebrew" and
+  .tap == "kandelo-dev/tap-core" and
   .formula == "root" and
-  .full_name == "automattic/kandelo-homebrew/root" and
+  .full_name == "kandelo-dev/tap-core/root" and
   .dependencies == [
-    {kind: "optional", name: "automattic/kandelo-homebrew/optional", same_tap: true},
-    {kind: "recommended", name: "automattic/kandelo-homebrew/recommended", same_tap: true},
-    {kind: "required", name: "automattic/kandelo-homebrew/required", same_tap: true},
     {kind: "optional", name: "external-optional", same_tap: false},
     {kind: "required", name: "external-required", same_tap: false},
+    {kind: "optional", name: "kandelo-dev/tap-core/optional", same_tap: true},
+    {kind: "recommended", name: "kandelo-dev/tap-core/recommended", same_tap: true},
+    {kind: "required", name: "kandelo-dev/tap-core/required", same_tap: true},
     {kind: "recommended", name: "third-party/tools/recommended", same_tap: false}
   ]
 ' <<<"$declarations" >/dev/null
@@ -56,28 +56,28 @@ jq -e '
 cat >"$TAP_ROOT/Formula/host-plan.rb" <<'RUBY'
 class HostPlan < Formula
   depends_on "python@3.14" => :build
-  depends_on "automattic/kandelo-homebrew/required"
+  depends_on "kandelo-dev/tap-core/required"
   depends_on "wabt" => [:build, :test]
-  depends_on "automattic/kandelo-homebrew/same-build" => :build
+  depends_on "kandelo-dev/tap-core/same-build" => :build
   depends_on "check" => :test
-  depends_on "automattic/kandelo-homebrew/recommended" => :recommended
+  depends_on "kandelo-dev/tap-core/recommended" => :recommended
   depends_on "third-party/tools/optional-tool" => :optional
   depends_on "external-optional" => :optional
-  depends_on "automattic/kandelo-homebrew/optional" => :optional
+  depends_on "kandelo-dev/tap-core/optional" => :optional
 end
 RUBY
-host_plan="$(ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew host-plan --host-dependencies-json)"
+host_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core host-plan --host-dependencies-json)"
 jq -e '
   keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap"] and
   .schema == 2 and
-  .tap == "automattic/kandelo-homebrew" and
+  .tap == "kandelo-dev/tap-core" and
   .formula == "host-plan" and
-  .full_name == "automattic/kandelo-homebrew/host-plan" and
+  .full_name == "kandelo-dev/tap-core/host-plan" and
   .build == ["python@3.14", "wabt"] and
   .build_and_test == ["check", "python@3.14", "wabt"] and
   .runtime_and_test == ["check", "wabt"]
 ' <<<"$host_plan" >/dev/null
-[ "$host_plan" = "$(ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew host-plan --host-dependencies-json)" ]
+[ "$host_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core host-plan --host-dependencies-json)" ]
 
 cat >"$TAP_ROOT/Formula/third-party-plan.rb" <<'RUBY'
 class ThirdPartyPlan < Formula
@@ -99,7 +99,7 @@ class ExternalRuntime < Formula
   depends_on "zstd"
 end
 RUBY
-if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew external-runtime \
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core external-runtime \
   --host-dependencies-json >"$TMP_ROOT/external-runtime.out" 2>"$TMP_ROOT/external-runtime.err"; then
   echo "test-homebrew-formula-runtime-closure.sh: treated external runtime dependency as a host dependency" >&2
   exit 1
@@ -112,7 +112,7 @@ class ExternalRecommended < Formula
   depends_on "pkgconf" => :recommended
 end
 RUBY
-if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew external-recommended \
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core external-recommended \
   --host-dependencies-json >"$TMP_ROOT/external-recommended.out" \
   2>"$TMP_ROOT/external-recommended.err"; then
   echo "test-homebrew-formula-runtime-closure.sh: treated recommended runtime dependency as a host dependency" >&2
@@ -126,14 +126,14 @@ class ExternalTap < Formula
   depends_on "third-party/tools/cmake" => :build
 end
 RUBY
-if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew external-tap \
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core external-tap \
   --host-dependencies-json >"$TMP_ROOT/external-tap.out" 2>"$TMP_ROOT/external-tap.err"; then
   echo "test-homebrew-formula-runtime-closure.sh: accepted external tap-qualified host dependency" >&2
   exit 1
 fi
 grep -F 'external tap-qualified host dependency is unsupported: "third-party/tools/cmake"' \
   "$TMP_ROOT/external-tap.err" >/dev/null
-ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew external-tap \
+ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core external-tap \
   --declarations-json >/dev/null
 
 cat >"$TAP_ROOT/Formula/invalid-host.rb" <<'RUBY'
@@ -141,7 +141,7 @@ class InvalidHost < Formula
   depends_on "InvalidHost" => :test
 end
 RUBY
-if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew invalid-host \
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core invalid-host \
   --host-dependencies-json >"$TMP_ROOT/invalid-host.out" 2>"$TMP_ROOT/invalid-host.err"; then
   echo "test-homebrew-formula-runtime-closure.sh: accepted malformed host dependency" >&2
   exit 1
@@ -149,7 +149,7 @@ fi
 grep -F 'invalid host Formula dependency: "InvalidHost"' \
   "$TMP_ROOT/invalid-host.err" >/dev/null
 
-if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew root \
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core root \
   >"$TMP_ROOT/external.out" 2>"$TMP_ROOT/external.err"; then
   echo "test-homebrew-formula-runtime-closure.sh: accepted selected external dependency" >&2
   exit 1
@@ -161,24 +161,24 @@ cat >"$TAP_ROOT/Formula/root.rb" <<'RUBY'
 class Root < Formula
   depends_on "pkgconf" => :build
   depends_on "wabt" => [:build, :test]
-  depends_on "automattic/kandelo-homebrew/required"
-  depends_on "automattic/kandelo-homebrew/recommended" => :recommended
-  depends_on "automattic/kandelo-homebrew/optional" => :optional
+  depends_on "kandelo-dev/tap-core/required"
+  depends_on "kandelo-dev/tap-core/recommended" => :recommended
+  depends_on "kandelo-dev/tap-core/optional" => :optional
   depends_on "external-optional" => :optional
 end
 RUBY
-closure="$(ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew root)"
-[ "$closure" = $'automattic/kandelo-homebrew/recommended\nautomattic/kandelo-homebrew/required\nautomattic/kandelo-homebrew/transitive' ]
-direct="$(ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew root --direct)"
-[ "$direct" = $'automattic/kandelo-homebrew/recommended\nautomattic/kandelo-homebrew/required' ]
+closure="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core root)"
+[ "$closure" = $'kandelo-dev/tap-core/recommended\nkandelo-dev/tap-core/required\nkandelo-dev/tap-core/transitive' ]
+direct="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core root --direct)"
+[ "$direct" = $'kandelo-dev/tap-core/recommended\nkandelo-dev/tap-core/required' ]
 
 cat >"$TAP_ROOT/Formula/recommended.rb" <<'RUBY'
 class Recommended < Formula
-  depends_on "automattic/kandelo-homebrew/transitive"
+  depends_on "kandelo-dev/tap-core/transitive"
   depends_on "transitive-external"
 end
 RUBY
-if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew root \
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core root \
   >"$TMP_ROOT/transitive-external.out" 2>"$TMP_ROOT/transitive-external.err"; then
   echo "test-homebrew-formula-runtime-closure.sh: accepted transitive external dependency" >&2
   exit 1
@@ -186,7 +186,7 @@ fi
 grep -F 'recommended:transitive-external' "$TMP_ROOT/transitive-external.err" >/dev/null
 cat >"$TAP_ROOT/Formula/recommended.rb" <<'RUBY'
 class Recommended < Formula
-  depends_on "automattic/kandelo-homebrew/transitive"
+  depends_on "kandelo-dev/tap-core/transitive"
 end
 RUBY
 
@@ -198,7 +198,7 @@ class Execute < Formula
 end
 RUBY
 if KANDELO_FORMULA_EXECUTION_MARKER="$MARKER" \
-  ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew execute \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core execute \
     --declarations-json >/dev/null 2>&1; then
   echo "test-homebrew-formula-runtime-closure.sh: executable top-level Formula was accepted" >&2
   exit 1
@@ -222,7 +222,7 @@ class Inert < Formula
 end
 RUBY
 KANDELO_FORMULA_EXECUTION_MARKER="$MARKER" \
-  ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew inert \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core inert \
     --declarations-json | jq -e '
       .dependencies == [
         {kind: "required", name: "external-required", same_tap: false}

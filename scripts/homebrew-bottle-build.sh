@@ -3,7 +3,7 @@
 set -euo pipefail
 
 TAP_ROOT=""
-TAP_REPOSITORY="${KANDELO_HOMEBREW_TAP_REPOSITORY:-Automattic/kandelo-homebrew}"
+TAP_REPOSITORY="${KANDELO_HOMEBREW_TAP_REPOSITORY:-kandelo-dev/homebrew-tap-core}"
 TAP_NAME_INPUT="${KANDELO_HOMEBREW_TAP_NAME:-}"
 FORMULA=""
 ARCH=""

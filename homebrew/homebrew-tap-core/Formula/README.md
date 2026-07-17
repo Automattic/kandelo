@@ -1,6 +1,7 @@
 # Formula Directory
 
-The `Automattic/kandelo-homebrew` tap places Homebrew formulae here. This
+The `kandelo-dev/tap-core` tap places Homebrew formulae here. Its GitHub
+repository is `kandelo-dev/homebrew-tap-core`. This
 main-repo scaffold includes `hello.rb` so formula, bottle, sidecar, and smoke
 logic can be reviewed alongside the Kandelo implementation that consumes it.
 

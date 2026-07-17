@@ -4,7 +4,7 @@
  * Run:
  *   npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
  *     --result-dir test-runs/kd-8ho.9/manual \
- *     --tap-repository Automattic/kandelo-homebrew
+ *     --tap-repository kandelo-dev/homebrew-tap-core
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -31,7 +31,7 @@ import { saveImage } from "../../../../images/vfs/scripts/vfs-image-helpers";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../../..");
-const DEFAULT_TAP_REPOSITORY = "Automattic/kandelo-homebrew";
+const DEFAULT_TAP_REPOSITORY = "kandelo-dev/homebrew-tap-core";
 const HELLO_PATH = "/home/linuxbrew/.linuxbrew/bin/hello";
 
 type OutcomeStatus = "pass" | "fail" | "skip";

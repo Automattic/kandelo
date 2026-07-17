@@ -3,7 +3,7 @@
 Kandelo's Homebrew publishing path is a bottle publication and validation
 pipeline shared by the first-party tap and conventional third-party taps. The
 implementation lives in the main `Automattic/kandelo` repository; the
-first-party live tap repository is `Automattic/kandelo-homebrew`.
+first-party live tap repository is `kandelo-dev/homebrew-tap-core`.
 
 This is not a general user-facing Homebrew install guide yet. Do not document
 `brew tap` or guest `brew install` commands until guest Homebrew install has
@@ -28,22 +28,25 @@ Homebrew's `bottle do` block.
 | Repository | Owns |
 |---|---|
 | `Automattic/kandelo` | Schemas, validators, reusable workflows, package build scripts, VFS planner/builder, Node/browser smoke tests, and this documentation. |
-| `Automattic/kandelo-homebrew` | Tap state: `Formula/`, generated `Kandelo/` sidecars, bottle blocks, and provenance reports. |
+| `kandelo-dev/homebrew-tap-core` | Tap state: `Formula/`, generated `Kandelo/` sidecars, bottle blocks, and provenance reports. |
 | `<owner>/homebrew-<name>` | A third-party tap's Formulae, generated state, GHCR bottle packages, and caller-scoped publication authority. |
 
-The checked-in `homebrew/kandelo-homebrew/` directory is a reviewable template
+The checked-in `homebrew/homebrew-tap-core/` directory is a reviewable template
 and test fixture for the tap shape. Live generated tap state belongs in
-`Automattic/kandelo-homebrew`, not in the main repository template.
+`kandelo-dev/homebrew-tap-core`, not in the main repository template.
 
-Repository identity and Homebrew tap identity are separate inputs. A
+Repository identity and Homebrew tap identity are separate inputs. Every tap,
+including Kandelo's default tap, uses the conventional repository shape. A
 conventional repository `<owner>/homebrew-<name>` has canonical Homebrew tap
 name `<owner>/<name>`. Repository identity owns GitHub checkout, GHCR paths,
 and the caller token; tap identity owns `brew` references, installed Formula
-paths, receipts, OCI titles, and Kandelo sidecars. The first-party repository
-is an explicit exception: both its repository identity and tap name are
-`Automattic/kandelo-homebrew`. No conventional repository may derive that
-protected first-party tap name, so repository and tap identities remain a
-one-to-one publication boundary.
+paths, receipts, OCI titles, and Kandelo sidecars. Therefore the default
+repository `kandelo-dev/homebrew-tap-core` is the canonical tap
+`kandelo-dev/tap-core`; its GitHub Container Registry (GHCR) root remains
+`https://ghcr.io/v2/kandelo-dev/homebrew-tap-core`. Tooling may omit the tap
+name only for this protected default, and derives `kandelo-dev/tap-core` through
+the same conventional rule. Other repositories must state the derived tap name
+explicitly so an omitted input cannot silently change publication identity.
 
 ## Artifact Model
 
@@ -328,7 +331,7 @@ Kandelo bottle's declared runtime dependency.
 Fresh verifier and finalizer validation independently derive that closure from
 the exact tap without evaluating Formula Ruby. Same-tap dependencies must use
 direct Formula class-body literal declarations such as `depends_on
-"automattic/kandelo-homebrew/zlib"`. The static resolver includes untagged and
+"kandelo-dev/tap-core/zlib"`. The static resolver includes untagged and
 `:recommended` dependencies, excludes the canonical `:build`, `:test`, and
 `:optional` forms, and recursively resolves explicit same-tap references.
 Conditional, interpolated, helper-hidden, unknown-tag, duplicate, and cyclic
@@ -395,8 +398,8 @@ jobs:
       actions: read
     uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@<trusted-ref>
     with:
-      tap-repository: Automattic/kandelo-homebrew
-      tap-name: Automattic/kandelo-homebrew
+      tap-repository: kandelo-dev/homebrew-tap-core
+      tap-name: kandelo-dev/tap-core
       formulae: hello
       arches: wasm32
 ```
@@ -909,9 +912,9 @@ For reproducible image composition, use the builder's static Brewfile subset.
 For example:
 
 ```ruby
-tap "automattic/kandelo-homebrew"
+tap "kandelo-dev/tap-core"
 brew "sqlite"
-brew "automattic/kandelo-homebrew/xz"
+brew "kandelo-dev/tap-core/xz"
 ```
 
 The subset accepts blank lines, comments, exactly one literal canonical
@@ -1047,7 +1050,7 @@ The Node smoke for the published `hello` bottle:
 ```bash
 scripts/dev-shell.sh npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
   --result-dir test-runs/homebrew-node-smoke \
-  --tap-repository Automattic/kandelo-homebrew
+  --tap-repository kandelo-dev/homebrew-tap-core
 ```
 
 It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs

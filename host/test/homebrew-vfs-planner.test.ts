@@ -41,7 +41,7 @@ function bottle(
     built_from: {
       kandelo_repository: "Automattic/kandelo",
       kandelo_commit: KANDELO_COMMIT,
-      tap_repository: "Automattic/kandelo-homebrew",
+      tap_repository: "kandelo-dev/homebrew-tap-core",
       tap_commit: TAP_COMMIT,
       formula_sha256: SHA_A,
     },
@@ -57,7 +57,7 @@ function packageEntry(
 ): Record<string, unknown> {
   return {
     name,
-    full_name: `automattic/kandelo-homebrew/${name}`,
+    full_name: `kandelo-dev/tap-core/${name}`,
     version,
     formula_revision: 0,
     bottle_rebuild: 0,
@@ -74,8 +74,8 @@ function metadata(
 ): HomebrewTapMetadata {
   return {
     schema: 1,
-    tap_repository: "Automattic/kandelo-homebrew",
-    tap_name: "automattic/kandelo-homebrew",
+    tap_repository: "kandelo-dev/homebrew-tap-core",
+    tap_name: "kandelo-dev/tap-core",
     tap_commit: TAP_COMMIT,
     kandelo_repository: "Automattic/kandelo",
     kandelo_commit: KANDELO_COMMIT,
@@ -203,7 +203,7 @@ describe("Homebrew VFS planner", () => {
         return linkManifest("hello", "2.12.1");
       },
     })).rejects.toThrow(
-      'metadata tap "automattic/kandelo-homebrew" does not match requested tap "example/tools"',
+      'metadata tap "kandelo-dev/tap-core" does not match requested tap "example/tools"',
     );
     expect(loaded).toBe(false);
   });
@@ -227,23 +227,6 @@ describe("Homebrew VFS planner", () => {
     expect(plan.tapName).toBe("example/tools");
   });
 
-  it("rejects a repository alias for the protected first-party tap", async () => {
-    let loaded = false;
-    await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")], {
-      tap_repository: "Automattic/homebrew-kandelo-homebrew",
-    }), {
-      packages: ["hello"],
-      arch: "wasm32",
-      loadLinkManifest() {
-        loaded = true;
-        return linkManifest("hello", "2.12.1");
-      },
-    })).rejects.toThrow(
-      'metadata tap repository "Automattic/homebrew-kandelo-homebrew" cannot claim protected first-party tap',
-    );
-    expect(loaded).toBe(false);
-  });
-
   it("rejects a tap name that does not match its conventional repository", async () => {
     await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")], {
       tap_repository: "Example/homebrew-tools",
@@ -252,7 +235,7 @@ describe("Homebrew VFS planner", () => {
       arch: "wasm32",
       loadLinkManifest: manifestMap({}),
     })).rejects.toThrow(
-      'metadata tap "automattic/kandelo-homebrew" does not match repository "Example/homebrew-tools"; expected "example/tools"',
+      'metadata tap "kandelo-dev/tap-core" does not match repository "Example/homebrew-tools"; expected "example/tools"',
     );
   });
 

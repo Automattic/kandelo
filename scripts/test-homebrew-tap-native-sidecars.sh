@@ -60,10 +60,10 @@ class SidecarTool < Formula
   url "https://example.invalid/sidecar-tool-2.0.tar.gz"
   sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   revision 3
-  depends_on "automattic/kandelo-homebrew/sidecar-dep"
+  depends_on "kandelo-dev/tap-core/sidecar-dep"
 
   bottle do
-    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
     sha256 cellar: :any_skip_relocation, wasm64_kandelo: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
   end
 end
@@ -123,13 +123,13 @@ write_dependency_provenance() {
           rebuild: 0,
           sha256: $bottle_sha,
           tag: ($arch + "_kandelo"),
-          url: ("https://ghcr.io/v2/automattic/kandelo-homebrew/sidecar-dep/blobs/sha256:" + $bottle_sha)
+          url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/sidecar-dep/blobs/sha256:" + $bottle_sha)
         },
         declared_directly: true,
         formula: {path: "Formula/sidecar-dep.rb", sha256: $formula_sha},
-        full_name: "automattic/kandelo-homebrew/sidecar-dep",
+        full_name: "kandelo-dev/tap-core/sidecar-dep",
         install_log: {
-          fetch: [("==> Downloading https://ghcr.io/v2/automattic/kandelo-homebrew/sidecar-dep/blobs/sha256:" + $bottle_sha)],
+          fetch: [("==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/sidecar-dep/blobs/sha256:" + $bottle_sha)],
           pour: [("==> Pouring sidecar-dep--1.0." + $arch + "_kandelo.bottle.tar.gz")],
           source_build_absent: true
         },
@@ -141,7 +141,7 @@ write_dependency_provenance() {
           path: "Cellar/sidecar-dep/1.0/INSTALL_RECEIPT.json",
           poured_from_bottle: true,
           sha256: "3333333333333333333333333333333333333333333333333333333333333333",
-          source_tap: "automattic/kandelo-homebrew",
+          source_tap: "kandelo-dev/tap-core",
           source_tap_git_head: $tap_commit
         },
         version: "1.0"
@@ -153,10 +153,10 @@ write_dependency_provenance() {
       schema: 2,
       formula: $formula,
       arch: $arch,
-      tap_repository: "Automattic/kandelo-homebrew",
-      tap_name: "automattic/kandelo-homebrew",
+      tap_repository: "kandelo-dev/homebrew-tap-core",
+      tap_name: "kandelo-dev/tap-core",
       tap_commit: $tap_commit,
-      bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+      bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
       bottle_tag: $bottle_tag,
       dependencies: $dependencies
     }' >"$out"
@@ -174,10 +174,10 @@ make_publication_handoff() {
     --formula "$formula" \
     --arch "$arch" \
     --release-tag "bottles-abi-v${ABI_VERSION}" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" \
     --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
-    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --bottle "$archive" \
     --bottle-json "$bottle_json" \
     --dependency-provenance "$dependency_provenance" \
@@ -191,10 +191,10 @@ make_publication_handoff() {
     --formula "$formula" \
     --arch "$arch" \
     --release-tag "bottles-abi-v${ABI_VERSION}" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" \
     --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
-    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --tap-root "$TAP" \
     --out-bottle-json "$oci_root/bottle.json" >/dev/null
@@ -202,10 +202,10 @@ make_publication_handoff() {
     --formula "$formula" \
     --arch "$arch" \
     --abi "$ABI_VERSION" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" \
     --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
-    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --bottle "$archive" \
     --bottle-json "$oci_root/bottle.json" \
     --kandelo-root "$REPO_ROOT" \
@@ -216,7 +216,7 @@ make_publication_handoff() {
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$oci_root/layout" \
     --layout-receipt "$oci_root/receipt.json" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --formula "$formula" \
     --out-json "$out/receipt.json" \
     --dry-run >/dev/null
@@ -231,10 +231,10 @@ validate_publication_handoff() {
     --formula "$formula" \
     --arch "$arch" \
     --release-tag "bottles-abi-v${ABI_VERSION}" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" \
     --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
-    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --tap-root "$tap_root" >/dev/null
 }
@@ -265,16 +265,16 @@ make_dep_bottle() {
     --arg sha "$sha" \
     --arg tap_commit "$(git -C "$TAP" rev-parse HEAD)" \
     '{
-      "automattic/kandelo-homebrew/sidecar-dep": {
+      "kandelo-dev/tap-core/sidecar-dep": {
         formula: {
           name: "sidecar-dep",
           pkg_version: "1.0",
-          path: "Library/Taps/automattic/homebrew-kandelo-homebrew/Formula/sidecar-dep.rb",
+          path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/sidecar-dep.rb",
           tap_git_path: "Formula/sidecar-dep.rb",
           tap_git_revision: $tap_commit
         },
         bottle: {
-          root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+          root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
           cellar: "any_skip_relocation",
           rebuild: 0,
           tags: {
@@ -339,7 +339,7 @@ WAT
     source_modified_time: 0,
     compiler: "clang",
     runtime_dependencies: [{
-      full_name: "automattic/kandelo-homebrew/sidecar-dep",
+      full_name: "kandelo-dev/tap-core/sidecar-dep",
       version: "1.0",
       declared_directly: true
     }],
@@ -355,16 +355,16 @@ WAT
     --arg sha "$sha" \
     --arg tap_commit "$(git -C "$TAP" rev-parse HEAD)" \
     '{
-      "automattic/kandelo-homebrew/sidecar-tool": {
+      "kandelo-dev/tap-core/sidecar-tool": {
         formula: {
           name: "sidecar-tool",
           pkg_version: "2.0_3",
-          path: "Library/Taps/automattic/homebrew-kandelo-homebrew/Formula/sidecar-tool.rb",
+          path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/sidecar-tool.rb",
           tap_git_path: "Formula/sidecar-tool.rb",
           tap_git_revision: $tap_commit
         },
         bottle: {
-          root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+          root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
           cellar: "any_skip_relocation",
           rebuild: 1,
           tags: {
@@ -468,13 +468,13 @@ generate_sidecars() {
     "$formula" "$arch" "$tap_commit" "$dependency_provenance"
   bash "$REPO_ROOT/scripts/homebrew-merge-bottle-json.sh" \
     --tap-root "$merged_tap" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --formula "$formula" \
     --arch "$arch" \
     --release-tag "bottles-abi-v${ABI_VERSION}" \
     --bottle-json "$canonical_json" \
     --expected-sha256 "$sha" \
-    --expected-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --expected-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --expected-cellar any_skip_relocation >/dev/null
   provenance_sha="$(sha256_file "$dependency_provenance")"
   version="$(jq -er --arg formula "$formula" '.[$formula].formula.pkg_version' \
@@ -494,15 +494,15 @@ generate_sidecars() {
       arch: $arch,
       abi: $abi,
       tap: {
-        repository: "Automattic/kandelo-homebrew",
-        name: "automattic/kandelo-homebrew",
+        repository: "kandelo-dev/homebrew-tap-core",
+        name: "kandelo-dev/tap-core",
         commit: $tap_commit
       },
       bottle: {
         bytes: $bytes,
         sha256: $sha,
         tag: ($arch + "_kandelo"),
-        url: ("https://ghcr.io/v2/automattic/kandelo-homebrew/" + $formula + "/blobs/sha256:" + $sha),
+        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" + $formula + "/blobs/sha256:" + $sha),
         version: $version
       },
       dependencies: {
@@ -524,7 +524,7 @@ generate_sidecars() {
           bytes: $bytes,
           mode: "local-dry-run",
           sha256: $sha,
-          url: ("https://ghcr.io/v2/automattic/kandelo-homebrew/" + $formula + "/blobs/sha256:" + $sha)
+          url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" + $formula + "/blobs/sha256:" + $sha)
         },
         fetch: [("selected local bottle sha256:" + $sha)]
       },
@@ -541,7 +541,7 @@ generate_sidecars() {
           path: ("Cellar/" + $formula + "/" + $version + "/INSTALL_RECEIPT.json"),
           poured_from_bottle: true,
           sha256: "4444444444444444444444444444444444444444444444444444444444444444",
-          source_tap: "automattic/kandelo-homebrew",
+          source_tap: "kandelo-dev/tap-core",
           source_tap_git_head: $tap_commit
         }
       },
@@ -559,12 +559,12 @@ generate_sidecars() {
   KANDELO_HOMEBREW_FORMULA="$formula" \
   KANDELO_HOMEBREW_ARCH="$arch" \
   KANDELO_HOMEBREW_RELEASE_TAG="bottles-abi-v${ABI_VERSION}" \
-  KANDELO_HOMEBREW_TAP_REPOSITORY=Automattic/kandelo-homebrew \
-  KANDELO_HOMEBREW_TAP_NAME=automattic/kandelo-homebrew \
+  KANDELO_HOMEBREW_TAP_REPOSITORY=kandelo-dev/homebrew-tap-core \
+  KANDELO_HOMEBREW_TAP_NAME=kandelo-dev/tap-core \
   KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$archive" \
   KANDELO_HOMEBREW_BOTTLE_JSON="$canonical_json" \
-  KANDELO_HOMEBREW_BOTTLE_ROOT_URL=https://ghcr.io/v2/automattic/kandelo-homebrew \
-  KANDELO_HOMEBREW_BOTTLE_URL="https://ghcr.io/v2/automattic/kandelo-homebrew/${formula}/blobs/sha256:${sha}" \
+  KANDELO_HOMEBREW_BOTTLE_ROOT_URL=https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+  KANDELO_HOMEBREW_BOTTLE_URL="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/${formula}/blobs/sha256:${sha}" \
   KANDELO_HOMEBREW_BOTTLE_SHA256="$sha" \
   KANDELO_HOMEBREW_BOTTLE_BYTES="$bytes" \
   KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$dependency_provenance" \
@@ -722,7 +722,7 @@ mapfile -t selected_external_bottle < <(repack_fixture_bottle \
   "$TMPDIR/tool-stage" sidecar-tool "${tool_bottle[1]}" wasm32 \
   sidecar-tool-selected-external)
 expect_generate_failure selected-conditional-external \
-  "selected external runtime dependency 'bubblewrap' is outside automattic/kandelo-homebrew" \
+  "selected external runtime dependency 'bubblewrap' is outside kandelo-dev/tap-core" \
   sidecar-tool "${selected_external_bottle[@]}" \
   "$TMPDIR/selected-external-sidecars"
 
@@ -737,7 +737,7 @@ mapfile -t transitive_external_bottle < <(repack_fixture_bottle \
   "$TMPDIR/tool-stage" sidecar-tool "${tool_bottle[1]}" wasm32 \
   sidecar-tool-transitive-external)
 expect_generate_failure transitive-external \
-  "selected external runtime dependency 'libcap' is outside automattic/kandelo-homebrew" \
+  "selected external runtime dependency 'libcap' is outside kandelo-dev/tap-core" \
   sidecar-tool "${transitive_external_bottle[@]}" \
   "$TMPDIR/transitive-external-sidecars"
 cp "$TMPDIR/sidecar-tool.original-receipt.json" \
@@ -753,7 +753,7 @@ text = path.read_text(encoding="utf-8")
 path.write_text(
     text.replace(
         "  bottle do\n",
-        '  depends_on "automattic/kandelo-homebrew/sidecar-optional" => :optional\n\n'
+        '  depends_on "kandelo-dev/tap-core/sidecar-optional" => :optional\n\n'
         "  bottle do\n",
     ),
     encoding="utf-8",
@@ -898,8 +898,8 @@ cp "${dep_bottle[0]}" "$BOTTLE_CACHE/${dep_bottle[2]}.tar.gz"
 cp "${tool_bottle[0]}" "$BOTTLE_CACHE/${tool_bottle[2]}.tar.gz"
 BREWFILE="$TMPDIR/Brewfile"
 cat > "$BREWFILE" <<'EOF'
-tap "automattic/kandelo-homebrew"
-brew "automattic/kandelo-homebrew/sidecar-tool"
+tap "kandelo-dev/tap-core"
+brew "kandelo-dev/tap-core/sidecar-tool"
 EOF
 BREWFILE_SHA256="$(sha256_file "$BREWFILE")"
 BREWFILE_BYTES="$(wc -c < "$BREWFILE" | tr -d ' ')"
@@ -1176,8 +1176,8 @@ jq -e '
     "bytes":$base_bytes,
     "kernelAbi":$abi
   } and
-  .metadata.homebrew.tapRepository == "Automattic/kandelo-homebrew" and
-  .metadata.homebrew.tapName == "automattic/kandelo-homebrew" and
+  .metadata.homebrew.tapRepository == "kandelo-dev/homebrew-tap-core" and
+  .metadata.homebrew.tapName == "kandelo-dev/tap-core" and
   .metadata.homebrew.selection == {
     "kind":"brewfile",
     "requestedPackageCount":1,
@@ -1255,7 +1255,7 @@ jq -e '
   } and
   [.homebrew_bottles[].name] == ["sidecar-dep", "sidecar-tool"] and
   all(.homebrew_bottles[];
-    .url == ("https://ghcr.io/v2/automattic/kandelo-homebrew/" + .name +
+    .url == ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" + .name +
       "/blobs/sha256:" + .sha256) and
     .declared_runtime_support == ["node"] and
     .declared_browser_compatible == false) and
@@ -1268,7 +1268,7 @@ jq -e '
 
 DEP_ONLY_BREWFILE="$TMPDIR/dependency-only.Brewfile"
 cat >"$DEP_ONLY_BREWFILE" <<'EOF'
-tap "automattic/kandelo-homebrew"
+tap "kandelo-dev/tap-core"
 brew "sidecar-dep"
 EOF
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
@@ -1284,7 +1284,7 @@ grep -F "selected acceptance formula must resolve at least one real package depe
 
 UNRELATED_EDGE_BREWFILE="$TMPDIR/unrelated-edge.Brewfile"
 cat >"$UNRELATED_EDGE_BREWFILE" <<'EOF'
-tap "automattic/kandelo-homebrew"
+tap "kandelo-dev/tap-core"
 brew "sidecar-dep"
 brew "sidecar-tool"
 EOF
@@ -1402,7 +1402,7 @@ cp -R "$TAP/Kandelo/link" "$THIRD_PARTY_TAP/Kandelo/link"
 jq '
   .tap_repository = "Example/homebrew-kandelo-tools" |
   .tap_name = "example/kandelo-tools" |
-  (.packages[].full_name |= sub("^automattic/kandelo-homebrew/"; "example/kandelo-tools/")) |
+  (.packages[].full_name |= sub("^kandelo-dev/tap-core/"; "example/kandelo-tools/")) |
   (.packages[].bottles[].built_from.tap_repository? = "Example/homebrew-kandelo-tools")
 ' "$TAP/Kandelo/metadata.json" > "$THIRD_PARTY_TAP/Kandelo/metadata.json"
 THIRD_PARTY_BREWFILE="$TMPDIR/third-party.Brewfile"
@@ -1426,7 +1426,7 @@ if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   echo "Homebrew VFS builder accepted a Brewfile for a different tap" >&2
   exit 1
 fi
-grep -F 'metadata tap "example/kandelo-tools" does not match requested tap "automattic/kandelo-homebrew"' \
+grep -F 'metadata tap "example/kandelo-tools" does not match requested tap "kandelo-dev/tap-core"' \
   "$TMPDIR/wrong-tap.err" >/dev/null
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$THIRD_PARTY_TAP/Kandelo/metadata.json" \

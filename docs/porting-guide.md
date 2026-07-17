@@ -717,8 +717,8 @@ hardcoding it.
 Homebrew formulae are a second publication surface for already-ported Kandelo
 software. Keep the portable package recipe and build script in
 `packages/registry/<name>/`; put Homebrew-specific formula state in the
-`Automattic/kandelo-homebrew` tap. The main repository's
-`homebrew/kandelo-homebrew/` directory is a template and fixture for that tap
+`kandelo-dev/homebrew-tap-core` tap. The main repository's
+`homebrew/homebrew-tap-core/` directory is a template and fixture for that tap
 shape.
 
 Formulae should use normal Homebrew DSL and call the normal Kandelo build path:

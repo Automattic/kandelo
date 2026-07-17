@@ -3,8 +3,8 @@
  *
  * Usage:
  *   npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
- *     --metadata homebrew/kandelo-homebrew/Kandelo/metadata.json \
- *     --tap-root homebrew/kandelo-homebrew \
+ *     --metadata homebrew/homebrew-tap-core/Kandelo/metadata.json \
+ *     --tap-root homebrew/homebrew-tap-core \
  *     --brewfile Brewfile \
  *     --arch wasm32 \
  *     --runtime node \

@@ -20,18 +20,16 @@ expect_identity_rejection() {
   fi
 }
 
-[ "$(homebrew_resolve_tap_name Automattic/kandelo-homebrew '')" = \
-  "automattic/kandelo-homebrew" ] || fail "first-party default identity changed"
+[ "$(homebrew_resolve_tap_name kandelo-dev/homebrew-tap-core '')" = \
+  "kandelo-dev/tap-core" ] || fail "protected default identity changed"
 [ "$(homebrew_resolve_tap_name Acme/homebrew-tools Acme/tools)" = \
   "acme/tools" ] || fail "conventional third-party identity was not normalized"
 
 expect_identity_rejection "an implicit third-party tap name" Acme/homebrew-tools
 expect_identity_rejection "a nonconventional third-party repository" Acme/tools Acme/tools
 expect_identity_rejection "a mismatched third-party tap name" Acme/homebrew-tools Acme/other
-expect_identity_rejection "a renamed first-party tap" \
-  Automattic/kandelo-homebrew Automattic/kandelo
-expect_identity_rejection "a conventional repository alias for the first-party tap" \
-  Automattic/homebrew-kandelo-homebrew Automattic/kandelo-homebrew
+expect_identity_rejection "a mismatched default tap name" \
+  kandelo-dev/homebrew-tap-core kandelo-dev/homebrew-tap-core
 
 provenance="$TMPDIR/dependency-provenance.json"
 jq -nS '{
@@ -66,29 +64,25 @@ if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
   fail "dependency provenance accepted a mismatched repository and tap name"
 fi
 
-collision_provenance="$TMPDIR/collision-dependency-provenance.json"
+default_provenance="$TMPDIR/default-dependency-provenance.json"
 jq -nS '{
   schema: 2,
   formula: "hello",
   arch: "wasm32",
-  tap_repository: "Automattic/homebrew-kandelo-homebrew",
-  tap_name: "automattic/kandelo-homebrew",
+  tap_repository: "kandelo-dev/homebrew-tap-core",
+  tap_name: "kandelo-dev/tap-core",
   tap_commit: ("a" * 40),
-  bottle_root_url: "https://ghcr.io/v2/automattic/homebrew-kandelo-homebrew",
+  bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
   bottle_tag: "wasm32_kandelo",
   dependencies: []
-}' >"$collision_provenance"
-if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
-  --input "$collision_provenance" \
+}' >"$default_provenance"
+python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+  --input "$default_provenance" \
   --formula hello \
   --arch wasm32 \
-  --tap-repository Automattic/homebrew-kandelo-homebrew \
-  --tap-name Automattic/kandelo-homebrew \
+  --tap-repository kandelo-dev/homebrew-tap-core \
   --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --bottle-root-url https://ghcr.io/v2/automattic/homebrew-kandelo-homebrew \
-  >/dev/null 2>&1; then
-  fail "dependency provenance accepted an alias for the protected first-party tap"
-fi
+  --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core
 
 if python3 "$REPO_ROOT/scripts/homebrew-oci-layout.py" source-closure \
   --tap-root "$REPO_ROOT" \
@@ -100,38 +94,11 @@ if python3 "$REPO_ROOT/scripts/homebrew-oci-layout.py" source-closure \
   fail "OCI source closure accepted a mismatched repository and tap name"
 fi
 
-if python3 "$REPO_ROOT/scripts/homebrew-oci-layout.py" source-closure \
-  --tap-root "$REPO_ROOT" \
+python3 "$REPO_ROOT/scripts/homebrew-oci-layout.py" source-closure \
+  --tap-root "$REPO_ROOT/homebrew/homebrew-tap-core" \
   --kandelo-root "$REPO_ROOT" \
-  --tap-repository Automattic/homebrew-kandelo-homebrew \
-  --tap-name Automattic/kandelo-homebrew \
+  --tap-repository kandelo-dev/homebrew-tap-core \
   --formula hello \
-  --out "$TMPDIR/collision-source-closure.json" >/dev/null 2>&1; then
-  fail "OCI source closure accepted an alias for the protected first-party tap"
-fi
-
-printf '{}\n' >"$TMPDIR/runtime-evidence.json"
-runtime_collision_error="$TMPDIR/runtime-collision.err"
-if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
-  --input "$TMPDIR/runtime-evidence.json" \
-  --formula hello \
-  --arch wasm32 \
-  --abi 1 \
-  --tap-repository Automattic/homebrew-kandelo-homebrew \
-  --tap-name Automattic/kandelo-homebrew \
-  --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --tap-root "$REPO_ROOT" \
-  --bottle-root-url https://ghcr.io/v2/automattic/homebrew-kandelo-homebrew \
-  --bottle-json "$TMPDIR/runtime-evidence.json" \
-  --bottle-url "https://ghcr.io/v2/automattic/homebrew-kandelo-homebrew/hello/blobs/sha256:$(printf '0%.0s' {1..64})" \
-  --bottle-sha256 "$(printf '0%.0s' {1..64})" \
-  --bottle-bytes 1 \
-  --dependency-provenance "$collision_provenance" \
-  >/dev/null 2>"$runtime_collision_error"; then
-  fail "runtime evidence accepted an alias for the protected first-party tap"
-fi
-grep -F "protected first-party tap name cannot be derived from another repository" \
-  "$runtime_collision_error" >/dev/null ||
-  fail "runtime evidence did not reject the first-party alias at the identity boundary"
+  --out "$TMPDIR/default-source-closure.json"
 
 echo "test-homebrew-tap-identity.sh: ok"

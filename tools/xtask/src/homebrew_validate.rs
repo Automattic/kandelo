@@ -9,7 +9,7 @@ use std::process::Command;
 use crate::repo_root;
 
 const DEFAULT_METADATA_REL: &str = "Kandelo/metadata.json";
-const SCHEMA_ROOT_REL: &str = "homebrew/kandelo-homebrew/Kandelo";
+const SCHEMA_ROOT_REL: &str = "homebrew/homebrew-tap-core/Kandelo";
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let options = Options::parse(args)?;
@@ -1024,7 +1024,7 @@ mod tests {
                 "  desc \"Fixture\"\n",
                 "\n",
                 "  bottle do\n",
-                "    root_url \"https://ghcr.io/v2/automattic/kandelo-homebrew\"\n",
+                "    root_url \"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core\"\n",
                 "    sha256 cellar: :any_skip_relocation, wasm32_kandelo: ",
                 "\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n",
                 "  end\n",
@@ -1039,14 +1039,14 @@ mod tests {
             write_text(&tap_root.join("Formula/hello.rb"), formula_text);
 
             let mut metadata =
-                load_repo_json("homebrew/kandelo-homebrew/Kandelo/examples/metadata.json");
+                load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/metadata.json");
             let mut formula =
-                load_repo_json("homebrew/kandelo-homebrew/Kandelo/examples/formula/hello.json");
+                load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/formula/hello.json");
             let link = load_repo_json(
-                "homebrew/kandelo-homebrew/Kandelo/examples/link/hello-2.12.1-rebuild0-wasm32.json",
+                "homebrew/homebrew-tap-core/Kandelo/examples/link/hello-2.12.1-rebuild0-wasm32.json",
             );
             let provenance = load_repo_json(
-                "homebrew/kandelo-homebrew/Kandelo/examples/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
+                "homebrew/homebrew-tap-core/Kandelo/examples/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
             );
 
             set(
@@ -1328,7 +1328,7 @@ mod tests {
         write_text(
             &path,
             &source.replace(
-                "https://ghcr.io/v2/automattic/kandelo-homebrew",
+                "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
                 "https://ghcr.io/v2/attacker/wrong-tap",
             ),
         );

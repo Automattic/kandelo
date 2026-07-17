@@ -138,7 +138,7 @@ function metadataForBottle(
     built_from: {
       kandelo_repository: "Automattic/kandelo",
       kandelo_commit: KANDELO_COMMIT,
-      tap_repository: "Automattic/kandelo-homebrew",
+      tap_repository: "kandelo-dev/homebrew-tap-core",
       tap_commit: TAP_COMMIT,
       formula_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
@@ -146,8 +146,8 @@ function metadataForBottle(
   };
   return {
     schema: 1,
-    tap_repository: "Automattic/kandelo-homebrew",
-    tap_name: "automattic/kandelo-homebrew",
+    tap_repository: "kandelo-dev/homebrew-tap-core",
+    tap_name: "kandelo-dev/tap-core",
     tap_commit: TAP_COMMIT,
     kandelo_repository: "Automattic/kandelo",
     kandelo_commit: KANDELO_COMMIT,
@@ -157,7 +157,7 @@ function metadataForBottle(
     generator: "test",
     packages: [{
       name: "hello",
-      full_name: "automattic/kandelo-homebrew/hello",
+      full_name: "kandelo-dev/tap-core/hello",
       version: "2.12.1",
       formula_revision: 0,
       bottle_rebuild: 0,
@@ -262,7 +262,7 @@ describe("Homebrew VFS builder", () => {
   it("records bounded Brewfile and requested-root provenance", async () => {
     const bytes = bottleTar(standardEntries());
     const brewfile = utf8(
-      'tap "automattic/kandelo-homebrew"\nbrew "hello"\n',
+      'tap "kandelo-dev/tap-core"\nbrew "hello"\n',
     );
     const result = await buildFixture(bytes, {
       selectionSource: {

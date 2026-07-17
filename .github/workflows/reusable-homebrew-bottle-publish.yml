@@ -11,10 +11,10 @@ on:
         default: main
       tap-repository:
         type: string
-        default: Automattic/kandelo-homebrew
+        default: kandelo-dev/homebrew-tap-core
       tap-name:
         type: string
-        default: Automattic/kandelo-homebrew
+        default: kandelo-dev/tap-core
       tap-ref:
         type: string
         default: main
@@ -94,7 +94,10 @@ jobs:
             return 2
           }
 
-          [ "$CALLER_REPOSITORY" = "$TAP_REPOSITORY" ] || {
+          normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
+          [ "$normalized_caller_repository" = "$normalized_tap_repository" ] || {
             echo "::error::the caller repository must own the target tap repository"; exit 2;
           }
           [ "$CALLER_REF" = "refs/heads/main" ] || {
@@ -109,28 +112,14 @@ jobs:
           [ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ] || {
             echo "::error::publication requires Automattic/kandelo"; exit 2;
           }
-          case "$TAP_REPOSITORY" in
-            Automattic/kandelo-homebrew)
-              [ "$TAP_NAME" = "Automattic/kandelo-homebrew" ] || {
-                echo "::error::the first-party tap name must remain Automattic/kandelo-homebrew"; exit 2;
-              }
-              ;;
-            *)
-              [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+$ ]] || {
-                echo "::error::third-party tap repositories must use owner/homebrew-name"; exit 2;
-              }
-              tap_owner="${TAP_REPOSITORY%%/*}"
-              tap_short_name="${TAP_REPOSITORY#*/homebrew-}"
-              derived_tap_name="${tap_owner}/${tap_short_name}"
-              normalized_derived_tap_name="$(printf '%s' "$derived_tap_name" | tr '[:upper:]' '[:lower:]')"
-              [ "$normalized_derived_tap_name" != "automattic/kandelo-homebrew" ] || {
-                echo "::error::the protected first-party tap name cannot be derived from another repository"; exit 2;
-              }
-              [ "$TAP_NAME" = "${tap_owner}/${tap_short_name}" ] || {
-                echo "::error::tap-name must be owner/name derived from the conventional repository"; exit 2;
-              }
-              ;;
-          esac
+          [[ "$normalized_tap_repository" =~ ^[a-z0-9_.-]+/homebrew-[a-z0-9_.-]+$ ]] || {
+            echo "::error::tap repositories must use owner/homebrew-name"; exit 2;
+          }
+          tap_owner="${normalized_tap_repository%%/*}"
+          tap_short_name="${normalized_tap_repository#*/homebrew-}"
+          [ "$normalized_tap_name" = "${tap_owner}/${tap_short_name}" ] || {
+            echo "::error::tap-name must be owner/name derived from the conventional repository"; exit 2;
+          }
           if [ "$DRY_RUN" = "true" ]; then
             [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
               echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;

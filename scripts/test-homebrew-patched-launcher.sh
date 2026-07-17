@@ -495,7 +495,7 @@ rm -rf "$prefix/Cellar"
 [ -L "$HOMEBREW_PATCHED_LAUNCHER" ] || fail "launcher symlink was not created"
 
 local_dependency_plan="$TMPDIR/local-dependency-plan.json"
-printf '%s\n' '{"build":[],"build_and_test":[],"formula":"hello","full_name":"automattic/kandelo-homebrew/hello","runtime_and_test":[],"schema":2,"tap":"automattic/kandelo-homebrew"}' \
+printf '%s\n' '{"build":[],"build_and_test":[],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":[],"schema":2,"tap":"kandelo-dev/tap-core"}' \
   >"$local_dependency_plan"
 chmod 0600 "$local_dependency_plan"
 real_cp="$(command -v cp)"
@@ -983,7 +983,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
   printf 'external target untouched\n' >"$external_opt/sentinel"
-  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"automattic/kandelo-homebrew/hello","runtime_and_test":["ninja"],"schema":2,"tap":"automattic/kandelo-homebrew"}'
+  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":["ninja"],"schema":2,"tap":"kandelo-dev/tap-core"}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
   mkdir "$isolated_kandelo/runner-control"
