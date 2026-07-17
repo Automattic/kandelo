@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kandelo <noreply@kandelo.invalid>
+Date: Fri, 17 Jul 2026 00:00:00 +0000
+Subject: [PATCH] Keep trusted publisher taps usable with immutable trust
+
+Kandelo's bottle publisher gives Formula evaluation a root-owned, read-only
+trust store. Homebrew still attempts to persist a redundant per-item entry for
+every fully qualified install, even when the containing tap is already trusted.
+That write fails before a Formula can run.
+
+Skip the automatic per-item persistence when the tap already grants the same
+authority. Explicit `brew trust` operations still use the normal mutation path
+and fail against an immutable publisher store. This patch is applied only to
+the publisher's temporary Homebrew overlay; guest Homebrew keeps its normal
+trust behavior.
+---
+ Library/Homebrew/trust.rb | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/trust.rb
++++ b/Library/Homebrew/trust.rb
+@@ -121,3 +121,4 @@ module Homebrew
+         item_name = ::Utils.name_from_full_name(name)
+         tap = Tap.fetch(tap_name)
++        next if trusted_tap?(tap)
+         next if tap.official?

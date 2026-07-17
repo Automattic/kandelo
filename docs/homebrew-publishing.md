@@ -110,6 +110,22 @@ before fresh validator checkouts or handoff processing. The launcher and
 worktree are removed when the bottle build exits. Do not patch a developer's
 host Homebrew checkout in place.
 
+The bottle builder and verifier also apply a second patch only to their
+temporary publisher worktrees:
+
+```text
+homebrew/patches/0002-publisher-skip-redundant-item-trust.patch
+```
+
+They trust the reviewed tap before isolation, then seal the build-local XDG
+configuration as root-owned directories with mode `0555` and readable regular
+files with mode `0444`. Pinned Homebrew normally tries to persist a redundant
+Formula entry for every fully qualified install even when that tap is already
+trusted. The publisher-only patch skips that automatic persistence. It does
+not change explicit `brew trust`, which still fails under the isolated identity
+because the trust store is immutable. The bootstrap and guest Homebrew apply
+only the platform patch above, so their trust behavior is unchanged.
+
 The transient-service containment above is the current official publisher's
 Linux security backend, not a Kandelo bottle target requirement. Local
 credentialless builds continue to use the ordinary POSIX path when no CI build
@@ -122,6 +138,7 @@ Verify the patch against a Homebrew checkout with:
 
 ```bash
 scripts/dev-shell.sh bash scripts/verify-homebrew-kandelo-platform-tags.sh
+scripts/dev-shell.sh bash scripts/test-homebrew-publisher-trust-patch.sh
 ```
 
 ## Formula Authoring
@@ -344,10 +361,15 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    slice stop, UID-scoped termination, and privileged zero-process check occur
    before bottle artifacts are read. CI then deletes the dedicated account
    before fresh validator checkouts begin. Homebrew uses a build-local,
-   read-only XDG configuration store and trusts only the reviewed selected tap before
-   evaluating its dependency Formulae. The store is removed with the build
-   work directory; the publisher does not disable tap-trust enforcement or
-   reuse persistent account state. The GitHub workflow-command parser is
+   read-only XDG configuration store and trusts only the reviewed selected tap
+   before evaluating its dependency Formulae. Root owns the store; directories
+   are mode `0555`, and its JSON and lock files are mode `0444` so the isolated
+   identity can read but cannot mutate them. The publisher-only Homebrew patch
+   suppresses automatic redundant item persistence for that already-trusted
+   tap. Explicit trust mutations retain stock behavior and fail against the
+   sealed store. The store is removed with the build work directory; the
+   publisher does not disable tap-trust enforcement or reuse persistent account
+   state. The GitHub workflow-command parser is
    suspended around the complete builder invocation with a per-run 256-bit
    token that is never exported into the dev shell or Formula environment; an
    exit trap always restores parsing while preserving the builder status.
@@ -458,6 +480,9 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
 4. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
    revalidates the build handoff and receipt, fetches the full Kandelo ABI
    runtime graph, builds the VFS image, and runs the runtime and browser gates.
+   Its isolated Homebrew process receives the same selected-tap trust as the
+   build process, sealed into a readable, immutable build-local XDG store and
+   using the same publisher-only redundant-persistence exception.
    It uses the locally built bottle in dry-run mode. In write mode it discards
    that bottle as runtime evidence, anonymously imports and validates the exact
    public top-index-to-child-to-layer graph, and rechecks the selected layer's

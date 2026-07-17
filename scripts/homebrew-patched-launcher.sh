@@ -183,6 +183,7 @@ homebrew_patched_launcher_isolate() {
   local sudo_bin sudo_mode env_bin variable value patched_prefix patched_repo
   local systemd_run_bin systemctl_bin getent_bin pgrep_bin pkill_bin
   local build_uid systemd_slice unit_prefix source_alias_dir
+  local config_root config_file unsafe_config_entry trust_file trust_lock
   local -a preserved_variables
 
   [ "$(uname -s)" = "Linux" ] || {
@@ -229,6 +230,8 @@ homebrew_patched_launcher_isolate() {
     "$build_user" "$pkill_bin" /usr/bin/pkill pkill /usr/bin/pgrep
   homebrew_assert_protected_host_executable \
     "$build_user" /usr/bin/findmnt /usr/bin/findmnt findmnt
+  homebrew_assert_protected_host_executable \
+    "$build_user" /usr/bin/find /usr/bin/find find
   [ -d /run/systemd/system ] || {
     echo "homebrew-patched-launcher: systemd is not the active service manager" >&2
     return 2
@@ -272,10 +275,54 @@ homebrew_patched_launcher_isolate() {
   "$sudo_bin" chmod 1775 "$HOMEBREW_PATCHED_PREFIX"
   "$sudo_bin" install -d -o root -g root -m 0755 \
     "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME/homebrew"
-  "$sudo_bin" chown -R root:root "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME"
-  "$sudo_bin" chmod -R a-w "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME"
-  "$sudo_bin" chmod a+rx "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" \
-    "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
+  for config_root in "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME"; do
+    if ! unsafe_config_entry="$("$sudo_bin" -n -- /usr/bin/find "$config_root" \
+      -xdev ! \( -type d -o -type f \) -print -quit)"; then
+      echo "homebrew-patched-launcher: could not inspect isolated config: $config_root" >&2
+      return 2
+    fi
+    [ -z "$unsafe_config_entry" ] || {
+      echo "homebrew-patched-launcher: isolated config contains a non-regular entry: $unsafe_config_entry" >&2
+      return 2
+    }
+    "$sudo_bin" chown -R root:root "$config_root"
+    "$sudo_bin" -n -- /usr/bin/find "$config_root" -xdev -type d \
+      -exec chmod 0555 {} +
+    "$sudo_bin" -n -- /usr/bin/find "$config_root" -xdev -type f \
+      -exec chmod 0444 {} +
+  done
+
+  # The publisher overlay does not persist redundant item trust for an already
+  # trusted tap. Keep both the trust data and any existing lock inode readable
+  # but immutable; explicit trust mutations must still fail in this identity.
+  trust_file="$XDG_CONFIG_HOME/homebrew/trust.json"
+  trust_lock="${trust_file}.lock"
+  for config_file in "$trust_file" "$trust_lock"; do
+    [ -f "$config_file" ] && [ ! -L "$config_file" ] || {
+      echo "homebrew-patched-launcher: required trust-store file is not regular: $config_file" >&2
+      return 2
+    }
+  done
+  [ ! "$trust_file" -ef "$trust_lock" ] &&
+    [ "$(stat -c '%h' "$trust_file")" = "1" ] &&
+    [ "$(stat -c '%h' "$trust_lock")" = "1" ] || {
+      echo "homebrew-patched-launcher: trust-store files must use distinct private inodes" >&2
+      return 2
+    }
+  [ "$(stat -c '%u:%g:%a:%h' "$trust_file")" = "0:0:444:1" ] &&
+    [ "$(stat -c '%u:%g:%a:%h' "$trust_lock")" = "0:0:444:1" ] &&
+    [ "$(stat -c '%u:%g:%a' "$XDG_CONFIG_HOME")" = "0:0:555" ] &&
+    [ "$(stat -c '%u:%g:%a' "$XDG_CONFIG_HOME/homebrew")" = "0:0:555" ] || {
+      echo "homebrew-patched-launcher: isolated trust-store ownership or mode is unsafe" >&2
+      return 2
+    }
+  for config_file in "$trust_file" "$trust_lock"; do
+    "$sudo_bin" -H -u "$build_user" -- test -r "$config_file" &&
+      ! "$sudo_bin" -H -u "$build_user" -- test -w "$config_file" || {
+        echo "homebrew-patched-launcher: isolated trust-store access is unsafe: $config_file" >&2
+        return 2
+      }
+  done
   for mutable_root in "$work_dir" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP" "$build_home"; do
     if ! "$sudo_bin" -H -u "$build_user" -- test -r "$mutable_root" -a \
       -x "$mutable_root" -a -w "$mutable_root"; then
@@ -517,15 +564,21 @@ homebrew_patched_launcher_verify_isolation() {
 }
 
 homebrew_patched_launcher_prepare() {
-  if [ "$#" -ne 3 ]; then
-    echo "homebrew_patched_launcher_prepare: expected BREW_BIN PATCH_FILE WORK_DIR" >&2
+  if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
+    echo "homebrew_patched_launcher_prepare: expected BREW_BIN PATCH_FILE WORK_DIR [EXTRA_PATCH_FILE]" >&2
     return 2
   fi
 
   local brew_bin="$1"
   local patch_file="$2"
   local work_dir="$3"
+  local extra_patch_file="${4:-}"
   local attempt candidate patched_prefix patched_repo
+
+  if [ -n "$extra_patch_file" ] && [ ! -f "$extra_patch_file" ]; then
+    echo "homebrew-patched-launcher: extra patch is unavailable: $extra_patch_file" >&2
+    return 2
+  fi
 
   HOMEBREW_PATCHED_REPO="$("$brew_bin" --repository)" || return
   HOMEBREW_PATCHED_PREFIX="$("$brew_bin" --prefix)" || return
@@ -540,6 +593,10 @@ homebrew_patched_launcher_prepare() {
   HOMEBREW_PATCHED_OVERLAY="$work_dir/homebrew-overlay"
   git -C "$HOMEBREW_PATCHED_REPO" worktree add --detach "$HOMEBREW_PATCHED_OVERLAY" HEAD >/dev/null || return
   git -C "$HOMEBREW_PATCHED_OVERLAY" apply --whitespace=nowarn "$patch_file" || return
+  if [ -n "$extra_patch_file" ]; then
+    git -C "$HOMEBREW_PATCHED_OVERLAY" apply --check "$extra_patch_file" || return
+    git -C "$HOMEBREW_PATCHED_OVERLAY" apply --whitespace=nowarn "$extra_patch_file" || return
+  fi
 
   # Homebrew derives HOMEBREW_PREFIX from the path used to invoke bin/brew and
   # HOMEBREW_REPOSITORY from that symlink's target. Invoking the worktree's
