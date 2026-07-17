@@ -61,6 +61,22 @@ Avoid unexplained repository shorthand, internal task names, and descriptions
 that start with file edits or implementation mechanics. Preserve technical
 precision while explaining specialized concepts in ordinary language.
 
+### Preserve Contributor Attribution
+
+Authorship records contribution; restacking must not transfer it. Before
+rewriting another contributor's branch, inspect the original commits with
+`git show --format=fuller`.
+
+- Keep the contributor as author of derived commits and the restacker as
+  committer. Set `--author` explicitly when reconstructing a commit.
+- For materially combined work, retain the primary author and add accurate
+  `Co-authored-by:` trailers; do not demote the primary author to a trailer.
+- Before force-pushing, verify patch and author preservation with
+  `git range-diff` and `git log --format=fuller`. If provenance is ambiguous,
+  reconstruct it from the original commits and PR timeline instead of guessing.
+- An authorship-changing head invalidates earlier approvals, readiness labels,
+  and validation. Rerun the required gates.
+
 For nontrivial runtime, ABI-adjacent, generated-code, package-artifact, or
 measurement-sensitive work, the commit body and PR description or maintainer
 comment should explain the problem, implementation, measured or observed
