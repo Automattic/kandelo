@@ -95,6 +95,7 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+PUBLISHER_TRUST_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-publisher-skip-redundant-item-trust.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 mkdir -p "$OUT_DIR/bottles"
 if [ -n "$BUILD_USER" ]; then
@@ -130,7 +131,8 @@ export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
 chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
 
-homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
+homebrew_patched_launcher_prepare \
+  "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_TRUST_PATCH_FILE"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
 BOTTLE_TAG="${ARCH}_kandelo"
@@ -171,6 +173,10 @@ chmod 0600 "$INSTALL_LOG" "$DEPENDENCY_LIST" \
   "$CONTROL_DIR"/brew-install-attempt-*.log
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+
+# Trust only the reviewed tap. The publisher-only Homebrew patch suppresses
+# automatic persistence of redundant item entries for that already-trusted
+# tap, so this store can remain immutable during Formula evaluation.
 "$BREW_BIN" trust --tap "$TAP_NAME"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"

@@ -125,6 +125,7 @@ BREW_BIN="${HOMEBREW_BREW_FILE:-}"
   exit 2
 }
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+PUBLISHER_TRUST_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-publisher-skip-redundant-item-trust.patch"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 
@@ -160,7 +161,8 @@ trap cleanup EXIT
 export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
 chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
-homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
+homebrew_patched_launcher_prepare \
+  "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_TRUST_PATCH_FILE"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
 FORMULA_REF="$TAP_NAME/$FORMULA"

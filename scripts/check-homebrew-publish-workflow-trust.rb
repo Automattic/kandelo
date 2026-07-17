@@ -1053,6 +1053,39 @@ def check_publisher(workflow)
   bottle_verifier = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-verify-poured-bottle.sh")
   )
+  publisher_trust_patch_path =
+    "homebrew/patches/0002-publisher-skip-redundant-item-trust.patch"
+  publisher_trust_patch = File.read(File.join(REPO_ROOT, publisher_trust_patch_path))
+  platform_patch = File.read(
+    File.join(REPO_ROOT, "homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch")
+  )
+  [bottle_builder, bottle_verifier].each do |formula_runner|
+    check(formula_runner.include?(
+      "PUBLISHER_TRUST_PATCH_FILE=\"$KANDELO_ROOT/#{publisher_trust_patch_path}\""
+    ) &&
+          formula_runner.include?(
+            '"$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_TRUST_PATCH_FILE"'
+          ), "Formula runner does not apply the publisher-only trust patch")
+    check(formula_runner.include?('"$BREW_BIN" trust --tap "$TAP_NAME"'),
+          "Formula runner does not trust the reviewed tap")
+    check(!formula_runner.include?("trust --formula") &&
+          !formula_runner.include?("homebrew_seed_reviewed_tap_trust"),
+          "Formula runner persists redundant item trust")
+  end
+  [
+    "diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb",
+    "next if trusted_tap?(tap)",
+    "Explicit `brew trust` operations still use the normal mutation path",
+    "applied only to\nthe publisher's temporary Homebrew overlay",
+  ].each do |fragment|
+    check(publisher_trust_patch.include?(fragment),
+          "publisher-only trust patch lacks #{fragment}")
+  end
+  check(!platform_patch.include?("trusted_tap?(tap)"),
+        "guest Homebrew platform patch includes publisher trust behavior")
+  bootstrap_builder = File.read(File.join(REPO_ROOT, "scripts/build-homebrew-bootstrap.sh"))
+  check(!bootstrap_builder.include?(publisher_trust_patch_path),
+        "guest Homebrew bootstrap applies the publisher-only trust patch")
   [
     'DEPENDENCY_LIST="$CONTROL_DIR/dependencies.txt"',
     'TEST_DEPENDENCY_LIST="$CONTROL_DIR/test-dependencies.txt"',
@@ -1131,6 +1164,17 @@ def check_publisher(workflow)
     'printf \' "${bottle_tag_env[@]}" "$command_path" "$@"\\n\'',
     "__kandelo_verify_source_aliases", "/usr/bin/findmnt",
     '"$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"',
+    '/usr/bin/find "$config_root" -xdev -type d',
+    '/usr/bin/find "$config_root" -xdev -type f',
+    '-exec chmod 0555 {} +',
+    '-exec chmod 0444 {} +',
+    'trust_file="$XDG_CONFIG_HOME/homebrew/trust.json"',
+    'trust_lock="${trust_file}.lock"',
+    '"0:0:444:1"',
+    'trust-store files must use distinct private inodes',
+    'isolated trust-store access is unsafe',
+    'EXTRA_PATCH_FILE',
+    'git -C "$HOMEBREW_PATCHED_OVERLAY" apply --check "$extra_patch_file"',
     "-writable -print -quit", "! -readable -o ! -executable", "-prune",
     "homebrew_patched_launcher_uid_has_processes", "homebrew_patched_launcher_teardown",
     '"$HOMEBREW_PATCHED_SUDO_BIN" -n -- "$HOMEBREW_PATCHED_PGREP_BIN"',
@@ -1140,6 +1184,9 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(launcher.include?(fragment), "isolated Brew launcher lacks #{fragment}")
   end
+  check(!launcher.include?('chmod 0660 "$trust_lock"') &&
+        !launcher.include?('chown "root:$build_group" "$trust_lock"'),
+        "isolated Brew launcher leaves the trust lock writable")
   teardown_index = bottle_builder.index('homebrew_patched_launcher_teardown "$BUILD_USER"')
   artifact_index = bottle_builder.index("mapfile -t bottle_jsons")
   check(teardown_index && artifact_index && teardown_index < artifact_index,

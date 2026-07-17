@@ -1658,6 +1658,10 @@ assert_bottle_build_trusts_selected_tap() {
   local caller_config="$TMPDIR/caller-homebrew-config"
   local symlink_target="$TMPDIR/runner-write-target"
   make_tap "$tap"
+  cat >"$tap/Formula/zlib.rb" <<'EOF'
+class Zlib < Formula
+end
+EOF
   mkdir -p "$brew_repo" "$brew_prefix" "$caller_config"
   printf 'sentinel\n' >"$symlink_target"
 
@@ -1682,14 +1686,16 @@ case "${1:-}" in
   tap)
     ;;
   trust)
-    [ "${2:-}" = "--tap" ]
-    [ "${3:-}" = "automattic/kandelo-homebrew" ]
     [ -d "${HOMEBREW_USER_CONFIG_HOME:-}" ]
     permissions="$(stat -c %a "$HOMEBREW_USER_CONFIG_HOME" 2>/dev/null || stat -f %Lp "$HOMEBREW_USER_CONFIG_HOME")"
     [ "$permissions" = "700" ]
     case "$HOMEBREW_USER_CONFIG_HOME" in
       */xdg-config/homebrew) ;;
       *) exit 43 ;;
+    esac
+    case "$*" in
+      'trust --tap automattic/kandelo-homebrew') ;;
+      *) exit 45 ;;
     esac
     ;;
   deps)
@@ -1762,18 +1768,24 @@ EOF
     fail "bottle trust fixture unexpectedly completed its sentinel install"
   fi
 
-  local tap_line trust_line install_line trust_config first_config
+  local tap_line tap_trust_line install_line
+  local trust_config first_config
   tap_line="$(grep -n '|tap automattic/kandelo-homebrew ' "$log" | cut -d: -f1)"
-  trust_line="$(grep -n '|trust --tap automattic/kandelo-homebrew$' "$log" | cut -d: -f1)"
+  tap_trust_line="$(grep -n '|trust --tap automattic/kandelo-homebrew$' "$log" | cut -d: -f1)"
   install_line="$(grep -n '|install --build-bottle --formula automattic/kandelo-homebrew/hello$' "$log" | cut -d: -f1)"
-  [ -n "$tap_line" ] && [ -n "$trust_line" ] && [ -n "$install_line" ] ||
-    fail "bottle build did not tap, trust, and install the selected tap"
+  [ -n "$tap_line" ] && [ -n "$tap_trust_line" ] && \
+    [ -n "$install_line" ] ||
+    fail "bottle build did not trust the selected tap before install"
+  if grep -q '|trust --formula ' "$log"; then
+    fail "bottle build persisted redundant Formula trust"
+  fi
   grep -Fx 'target-bottle-tags=|' "$log" >/dev/null ||
     fail "target source build inherited the Kandelo bottle tag intended for bottle selection"
   grep -Fx 'test-dependency-bottle-tags=|' "$log" >/dev/null ||
     fail "native test dependency install inherited the Kandelo bottle tag"
-  [ "$tap_line" -lt "$trust_line" ] && [ "$trust_line" -lt "$install_line" ] ||
-    fail "bottle build did not trust the selected tap before formula evaluation"
+  [ "$tap_line" -lt "$tap_trust_line" ] && \
+    [ "$tap_trust_line" -lt "$install_line" ] ||
+    fail "bottle build did not freeze selected-tap trust before Formula evaluation"
 
   trust_config="$(grep '|trust --tap automattic/kandelo-homebrew$' "$log" | cut -d'|' -f1)"
   first_config="$(head -n1 "$log" | cut -d'|' -f1)"
@@ -2095,7 +2107,13 @@ case "${1:-}" in
       printf '%s\n' "$FAKE_TAP_ROOT"
     fi
     ;;
-  tap|trust)
+  tap)
+    ;;
+  trust)
+    case "$*" in
+      'trust --tap automattic/kandelo-homebrew') ;;
+      *) exit 40 ;;
+    esac
     ;;
   deps)
     case "$*" in
@@ -2227,7 +2245,9 @@ EOF
       --selection-receipt "$selection_receipt" \
       --out "$runtime_evidence" >/dev/null
 
-  local runtime_line test_query_line zlib_line helper_line host_line target_line formula_test_line
+  local tap_trust_line runtime_line test_query_line
+  local zlib_line helper_line host_line target_line formula_test_line
+  tap_trust_line="$(grep -n '^trust --tap automattic/kandelo-homebrew$' "$log" | cut -d: -f1)"
   runtime_line="$(grep -n '^deps --topological --full-name --formula ' "$log" | cut -d: -f1)"
   test_query_line="$(grep -n '^deps --topological --full-name --include-test ' "$log" | cut -d: -f1)"
   zlib_line="$(grep -n '^install --force-bottle .*zlib$' "$log" | cut -d: -f1)"
@@ -2235,13 +2255,17 @@ EOF
   host_line="$(grep -n '^install --as-dependency --ignore-dependencies --formula cmake$' "$log" | cut -d: -f1)"
   target_line="$(grep -n '^install --force-bottle --ignore-dependencies --formula .*hello$' "$log" | cut -d: -f1)"
   formula_test_line="$(grep -n '^test automattic/kandelo-homebrew/hello$' "$log" | cut -d: -f1)"
-  [ "$runtime_line" -lt "$test_query_line" ] && \
+  [ "$tap_trust_line" -lt "$runtime_line" ] && \
+    [ "$runtime_line" -lt "$test_query_line" ] && \
     [ "$test_query_line" -lt "$zlib_line" ] && \
     [ "$zlib_line" -lt "$helper_line" ] && \
     [ "$helper_line" -lt "$host_line" ] && \
     [ "$host_line" -lt "$target_line" ] && \
     [ "$target_line" -lt "$formula_test_line" ] ||
     fail "bottle verifier installed dependencies, target, or test out of order"
+  if grep -q '^trust --formula ' "$log"; then
+    fail "bottle verifier persisted redundant Formula trust"
+  fi
   grep -Fx 'zlib-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
     fail "verifier runtime dependency lost the Kandelo bottle tag"
   grep -Fx 'test-helper-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
@@ -3760,6 +3784,7 @@ EOF
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-publisher-trust-patch.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_sysroot_fingerprint_is_arch_specific
 assert_bottle_build_trusts_selected_tap
