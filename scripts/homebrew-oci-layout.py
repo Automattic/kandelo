@@ -1658,7 +1658,17 @@ def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        pass
+        process.wait(timeout=1)
+        return
+    except PermissionError as error:
+        # Darwin can report EPERM after a short-lived session leader exits and
+        # its process-group ID is no longer ours. Preserve the original bounded
+        # command failure only after wait() proves that child is already gone.
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            raise error
+        return
     process.wait()
 
 
