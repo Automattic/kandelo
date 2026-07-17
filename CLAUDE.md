@@ -289,6 +289,12 @@ acronyms on first use, use concrete examples where they clarify the failure,
 and do not make issue or PR links carry the explanation. Technical precision is
 required; unexplained jargon is not.
 
+Preserve contributor attribution when rewriting PR history. Inspect original
+authorship before restacking, rebasing, amending, cherry-picking, or squashing;
+keep contributors as authors of derived commits and the restacker as committer.
+Use co-author trailers for materially combined work, and verify attribution
+with `git range-diff` and `git log --format=fuller` before force-pushing.
+
 Documentation is part of the platform contract. Do not describe aspirational
 behavior as supported behavior, and do not use documentation to create a
 platform promise before the implementation, tests, package artifacts, and

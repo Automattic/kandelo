@@ -981,7 +981,7 @@ Main Thread                              Kernel Worker
 **`BrowserKernel`** (`host/src/browser-kernel-host.ts`): Main-thread proxy that communicates with the browser kernel worker via `postMessage`. This is host/runtime code, maintained beside the Node.js host (`host/src/node-kernel-host.ts`). Browser apps and demos consume it; they do not own it. The current API has two boot paths:
 
 - `kernel.boot({ kernelWasm, vfsImage, argv, env, ... })` — preferred. Combined with `kernelOwnedFs: true`, the main thread never holds a `MemoryFileSystem` reference. The kernel worker restores the image and exec()s `argv[0]` as the first process. All FS operations stay inside the worker, off the syscall hot path.
-- `kernel.spawn(programBytes, argv, opts)` — legacy. Posts the wasm bytes to the kernel worker, which allocates and returns the pid before starting the process. Kept for transient binary launches (REPLs, test runners, benchmarks) that the kernel can't currently load via fork+exec from a baked binary.
+- `kernel.spawn(programBytes, argv, opts)` — legacy. Posts the wasm bytes to the kernel worker, which allocates and registers the process, starts its process worker, and then returns the assigned pid in the spawn response. Kept for transient binary launches (REPLs, test runners, benchmarks) that the kernel can't currently load via fork+exec from a baked binary.
 
 The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY routing, framebuffer registry mirroring, HTTP bridge handoff) are pid-addressed and work the same in both boot paths.
 
