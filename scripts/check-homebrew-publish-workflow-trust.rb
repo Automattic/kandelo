@@ -1230,6 +1230,59 @@ def check_publisher(workflow)
     check(formula_runner.scan('NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"').length == 1,
           "Formula runner does not use exactly one bounded native prefix")
   end
+  reconstructed_source_index = bottle_verifier.index(
+    'mapfile -t source_tap_changes'
+  )
+  tap_clone_index = bottle_verifier.index(
+    '"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"'
+  )
+  clean_clone_index = bottle_verifier.index(
+    'git -C "$TAPPED_TAP_ROOT" rev-parse HEAD'
+  )
+  materialize_formula_index = bottle_verifier.index(
+    'cp -- "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"'
+  )
+  selected_formula_index = bottle_verifier.index(
+    'mapfile -t selected_tap_changes'
+  )
+  check(
+    bottle_verifier.include?(
+      'RECONSTRUCTED_FORMULA_RELATIVE="Formula/$FORMULA.rb"'
+    ) &&
+      bottle_verifier.include?(
+        'git -C "$TAP_ROOT" status --short --untracked-files=all'
+      ) &&
+      bottle_verifier.include?(
+        '[ -f "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ]'
+      ) &&
+      bottle_verifier.include?(
+        '[ ! -L "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ]'
+      ) &&
+      bottle_verifier.include?(
+        '"${source_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE"'
+      ) &&
+      bottle_verifier.include?('[ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ]') &&
+      bottle_verifier.include?(
+        '[ -f "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ]'
+      ) &&
+      bottle_verifier.include?(
+        '[ ! -L "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ]'
+      ) &&
+      bottle_verifier.include?(
+        '"${selected_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE"'
+      ) &&
+      bottle_verifier.include?(
+        'cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"'
+      ) &&
+      !bottle_verifier.include?(' -ef "$TAP_ROOT/Formula/$FORMULA.rb"') &&
+      reconstructed_source_index && tap_clone_index && clean_clone_index &&
+      materialize_formula_index && selected_formula_index &&
+      reconstructed_source_index < tap_clone_index &&
+      tap_clone_index < clean_clone_index &&
+      clean_clone_index < materialize_formula_index &&
+      materialize_formula_index < selected_formula_index,
+    "bottle verifier does not materialize only the reconstructed Formula into the planned Homebrew tap clone"
+  )
   [
     "diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb",
     'require "kandelo_publisher"',

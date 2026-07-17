@@ -112,6 +112,20 @@ done
   echo "homebrew-verify-poured-bottle.sh: tap HEAD differs from the planned commit" >&2
   exit 2
 }
+RECONSTRUCTED_FORMULA_RELATIVE="Formula/$FORMULA.rb"
+[ -f "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ] && \
+  [ ! -L "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ] || {
+  echo "homebrew-verify-poured-bottle.sh: reconstructed Formula must be a regular file" >&2
+  exit 2
+}
+mapfile -t source_tap_changes < <(
+  git -C "$TAP_ROOT" status --short --untracked-files=all
+)
+[ "${#source_tap_changes[@]}" -eq 1 ] && \
+  [ "${source_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] || {
+  echo "homebrew-verify-poured-bottle.sh: reconstructed tap must change only $RECONSTRUCTED_FORMULA_RELATIVE" >&2
+  exit 2
+}
 actual_sha="$(sha256sum "$BOTTLE" | awk '{print $1}')"
 actual_bytes="$(wc -c <"$BOTTLE" | tr -d '[:space:]')"
 [ "$actual_sha" = "$BOTTLE_SHA256" ] && [ "$actual_bytes" = "$BOTTLE_BYTES" ] || {
@@ -296,8 +310,25 @@ homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 "$BREW_BIN" trust --tap "$TAP_NAME"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
-[ "$TAPPED_TAP_ROOT/Formula/$FORMULA.rb" -ef "$TAP_ROOT/Formula/$FORMULA.rb" ] || {
-  echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the reconstructed Formula" >&2
+TAPPED_TAP_ROOT="$(cd "$TAPPED_TAP_ROOT" && pwd -P)"
+[ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ] && \
+  [ "$(git -C "$TAPPED_TAP_ROOT" rev-parse HEAD)" = "$TAP_COMMIT" ] && \
+  [ -z "$(git -C "$TAPPED_TAP_ROOT" status --short --untracked-files=all)" ] && \
+  [ -f "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ] && \
+  [ ! -L "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ] || {
+  echo "homebrew-verify-poured-bottle.sh: Homebrew did not clone the planned tap commit cleanly" >&2
+  exit 1
+}
+cp -- "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
+  "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"
+mapfile -t selected_tap_changes < <(
+  git -C "$TAPPED_TAP_ROOT" status --short --untracked-files=all
+)
+[ "${#selected_tap_changes[@]}" -eq 1 ] && \
+  [ "${selected_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] && \
+  cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
+    "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" || {
+  echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
   exit 1
 }
 

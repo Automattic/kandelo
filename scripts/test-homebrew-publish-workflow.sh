@@ -2369,6 +2369,7 @@ EOF
 assert_bottle_verifier_installs_test_dependencies() {
   local root="$TMPDIR/bottle-verifier-test-dependencies"
   local tap="$root/tap"
+  local tapped_tap="$root/tapped-tap"
   local brew_repo="$root/brew-repo"
   local brew_prefix="$root/brew-prefix"
   local fake_bin="$root/bin"
@@ -2408,6 +2409,7 @@ EOF
   git -C "$tap" add Formula
   git -C "$tap" commit -q -m "add verifier dependencies"
   tap_commit="$(git -C "$tap" rev-parse HEAD)"
+  printf '\n# reconstructed bottle metadata\n' >>"$tap/Formula/hello.rb"
 
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin" "$target_prefix" \
     "$cache" "$brew_temp" "$state"
@@ -2448,6 +2450,9 @@ case "${1:-}" in
     fi
     ;;
   tap)
+    [ "$#" -eq 3 ] || exit 39
+    rm -rf "$FAKE_TAP_ROOT"
+    git clone -q --no-local "$3" "$FAKE_TAP_ROOT"
     ;;
   trust)
     case "$*" in
@@ -2495,6 +2500,8 @@ case "${1:-}" in
       'install --force-bottle --ignore-dependencies --formula kandelo-dev/tap-core/hello')
         [ -f "$FAKE_STATE/native" ] && [ -f "$FAKE_STATE/test-helper" ] && \
           [ ! -e "$HOMEBREW_CACHE/stale" ] || exit 45
+        cmp -s "$FAKE_TAP_ROOT/Formula/hello.rb" \
+          "$FAKE_RECONSTRUCTED_TAP/Formula/hello.rb" || exit 44
         [ -z "$(find "$HOMEBREW_CACHE" -mindepth 1 -print -quit)" ] || exit 46
         printf 'target-tags=%s|%s\n' \
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
@@ -2583,7 +2590,8 @@ EOF
     FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped_tap" \
+    FAKE_RECONSTRUCTED_TAP="$tap" \
     FAKE_TARGET_PREFIX="$target_prefix" \
     FAKE_STATE="$state" \
     FAKE_BOTTLE="$bottle" \
@@ -2612,6 +2620,14 @@ EOF
       --dependency-provenance "$dependency_provenance" \
       --selection-receipt "$selection_receipt" \
       --out "$runtime_evidence" >/dev/null
+
+  cmp -s "$tap/Formula/hello.rb" "$tapped_tap/Formula/hello.rb" ||
+    fail "bottle verifier did not materialize the reconstructed Formula into Homebrew's tap"
+  [ "$(git -C "$tapped_tap" rev-parse HEAD)" = "$tap_commit" ] ||
+    fail "bottle verifier changed the selected tap commit"
+  [ "$(git -C "$tapped_tap" status --short --untracked-files=all)" = \
+    " M Formula/hello.rb" ] ||
+    fail "bottle verifier changed the selected tap outside the reconstructed Formula"
 
   native_prefix="$(cat "$native_prefix_capture")"
   case "$native_prefix" in
