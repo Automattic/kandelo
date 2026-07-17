@@ -7,6 +7,72 @@ TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 mkdir -p "$TMPDIR/Library/Homebrew"
+cat >"$TMPDIR/Library/Homebrew/diagnostic.rb" <<'RUBY'
+class FixtureDirectory
+  attr_reader :path
+
+  def initialize(path, exists:, writable:)
+    @path = path
+    @exists = exists
+    @writable = writable
+  end
+
+  def exist?
+    @exists
+  end
+
+  def writable?
+    @writable
+  end
+
+  def to_s
+    path
+  end
+end
+
+HOMEBREW_REPOSITORY = FixtureDirectory.new(
+  "/publisher/homebrew-overlay", exists: true, writable: false
+)
+
+class Keg
+  class << self
+    attr_accessor :directories
+
+    def must_be_writable_directories
+      directories
+    end
+  end
+end
+
+module Homebrew
+  module Diagnostic
+    class Checks
+      def check_access_directories
+        not_writable_dirs =
+          Keg.must_be_writable_directories.select(&:exist?)
+             .reject(&:writable?)
+        return if not_writable_dirs.empty?
+
+        <<~EOS
+          The following directories are not writable by your user:
+          #{not_writable_dirs.join("\n")}
+
+          You should change the ownership of these directories to your user.
+            sudo chown -R #{current_user} #{not_writable_dirs.join(" ")}
+
+          And make sure that your user has write permission.
+            chmod u+w #{not_writable_dirs.join(" ")}
+        EOS
+      end
+
+      def current_user
+        "publisher-build-user"
+      end
+    end
+  end
+end
+RUBY
+
 cat >"$TMPDIR/Library/Homebrew/trust.rb" <<'RUBY'
 module Utils
   def self.full_name?(name)
@@ -114,6 +180,38 @@ patched_line_count="$(grep -c 'next if trusted_tap?(tap)' \
   echo "test-homebrew-publisher-trust-patch.sh: patch did not add one trusted-tap guard" >&2
   exit 1
 }
+
+repository_guard_count="$(grep -c \
+  'reject { |dir| dir == HOMEBREW_REPOSITORY }' \
+  "$TMPDIR/Library/Homebrew/diagnostic.rb")"
+[ "$repository_guard_count" = "1" ] || {
+  echo "test-homebrew-publisher-trust-patch.sh: patch did not add one repository exclusion" >&2
+  exit 1
+}
+
+ruby -I"$TMPDIR/Library/Homebrew" <<'RUBY'
+require "diagnostic"
+
+checks = Homebrew::Diagnostic::Checks.new
+Keg.directories = [HOMEBREW_REPOSITORY]
+unless checks.check_access_directories.nil?
+  raise "immutable publisher repository still failed the writability diagnostic"
+end
+
+other = FixtureDirectory.new("/publisher/cache", exists: true, writable: false)
+Keg.directories = [HOMEBREW_REPOSITORY, other]
+message = checks.check_access_directories
+raise "other unwritable path was skipped" unless message&.include?(other.path)
+if message.include?(HOMEBREW_REPOSITORY.path)
+  raise "publisher repository leaked into the unwritable path report"
+end
+
+writable = FixtureDirectory.new("/publisher/prefix", exists: true, writable: true)
+Keg.directories = [HOMEBREW_REPOSITORY, writable]
+unless checks.check_access_directories.nil?
+  raise "writable non-repository path failed the diagnostic"
+end
+RUBY
 
 ruby -I"$TMPDIR/Library/Homebrew" <<'RUBY'
 require "trust"

@@ -148,6 +148,8 @@ export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 
+homebrew_patched_launcher_seed_bundler_groups bottle formula_test
+
 unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
 
 run_brew_for_kandelo_bottles() {

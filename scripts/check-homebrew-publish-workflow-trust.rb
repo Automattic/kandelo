@@ -1071,8 +1071,16 @@ def check_publisher(workflow)
     check(!formula_runner.include?("trust --formula") &&
           !formula_runner.include?("homebrew_seed_reviewed_tap_trust"),
           "Formula runner persists redundant item trust")
+    seed_index = formula_runner.index(
+      "homebrew_patched_launcher_seed_bundler_groups bottle formula_test"
+    )
+    isolate_index = formula_runner.index("homebrew_patched_launcher_isolate")
+    check(seed_index && isolate_index && seed_index < isolate_index,
+          "Formula runner does not seed locked Bundler groups before isolation")
   end
   [
+    "diff --git a/Library/Homebrew/diagnostic.rb b/Library/Homebrew/diagnostic.rb",
+    ".reject { |dir| dir == HOMEBREW_REPOSITORY }",
     "diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb",
     "next if trusted_tap?(tap)",
     "Explicit `brew trust` operations still use the normal mutation path",
@@ -1081,6 +1089,8 @@ def check_publisher(workflow)
     check(publisher_trust_patch.include?(fragment),
           "publisher-only trust patch lacks #{fragment}")
   end
+  check(!platform_patch.include?("dir == HOMEBREW_REPOSITORY"),
+        "guest Homebrew platform patch skips repository writability")
   check(!platform_patch.include?("trusted_tap?(tap)"),
         "guest Homebrew platform patch includes publisher trust behavior")
   bootstrap_builder = File.read(File.join(REPO_ROOT, "scripts/build-homebrew-bootstrap.sh"))
@@ -1173,6 +1183,11 @@ def check_publisher(workflow)
     '"0:0:444:1"',
     'trust-store files must use distinct private inodes',
     'isolated trust-store access is unsafe',
+    'homebrew_patched_launcher_seed_bundler_groups',
+    'install-bundler-gems --groups="$groups_csv"',
+    '.homebrew_gem_groups', '.homebrew_vendor_version',
+    'Bundler groups must be unique',
+    'cannot seed Bundler groups after isolation',
     'EXTRA_PATCH_FILE',
     'git -C "$HOMEBREW_PATCHED_OVERLAY" apply --check "$extra_patch_file"',
     "-writable -print -quit", "! -readable -o ! -executable", "-prune",

@@ -1,21 +1,38 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Kandelo <noreply@kandelo.invalid>
 Date: Fri, 17 Jul 2026 00:00:00 +0000
-Subject: [PATCH] Keep trusted publisher taps usable with immutable trust
+Subject: [PATCH] Keep publisher source and trust state immutable
 
-Kandelo's bottle publisher gives Formula evaluation a root-owned, read-only
-trust store. Homebrew still attempts to persist a redundant per-item entry for
-every fully qualified install, even when the containing tap is already trusted.
-That write fails before a Formula can run.
+Kandelo's bottle publisher gives Formula evaluation root-owned, read-only
+Homebrew source and trust state. Homebrew normally requires its repository to
+be writable and persists a redundant per-item trust entry for every fully
+qualified install, even when the containing tap is already trusted. Both
+behaviors reject the publisher's intentionally immutable state before a
+Formula can run.
 
-Skip the automatic per-item persistence when the tap already grants the same
-authority. Explicit `brew trust` operations still use the normal mutation path
+Exclude only the Homebrew repository from the preinstall writability diagnostic
+and skip automatic per-item persistence when the tap already grants the same
+authority. Every other required Homebrew path remains subject to the normal
+writability check. Explicit `brew trust` operations still use the normal mutation path
 and fail against an immutable publisher store. This patch is applied only to
 the publisher's temporary Homebrew overlay; guest Homebrew keeps its normal
-trust behavior.
+repository and trust behavior.
 ---
- Library/Homebrew/trust.rb | 1 +
- 1 file changed, 1 insertion(+)
+ Library/Homebrew/diagnostic.rb | 1 +
+ Library/Homebrew/trust.rb      | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/Library/Homebrew/diagnostic.rb b/Library/Homebrew/diagnostic.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/diagnostic.rb
++++ b/Library/Homebrew/diagnostic.rb
+@@ -408,6 +408,7 @@ module Homebrew
+       def check_access_directories
+         not_writable_dirs =
+           Keg.must_be_writable_directories.select(&:exist?)
++             .reject { |dir| dir == HOMEBREW_REPOSITORY }
+              .reject(&:writable?)
+         return if not_writable_dirs.empty?
 
 diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb
 index 0000000000..0000000000 100644

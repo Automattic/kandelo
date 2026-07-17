@@ -108,6 +108,20 @@ case "${1:-}" in
   assert-publisher-patch)
     [ "$(cat "$repository/publisher-marker.txt")" = "publisher-patched" ]
     ;;
+  install-bundler-gems)
+    [ "$*" = "install-bundler-gems --groups=bottle,formula_test" ]
+    vendor_root="$repository/Library/Homebrew/vendor/bundle/ruby"
+    mkdir -p "$vendor_root/4.0.0"
+    printf 'bottle\nformula_test\n' >"$vendor_root/.homebrew_gem_groups"
+    printf '7\n' >"$vendor_root/4.0.0/.homebrew_vendor_version"
+    ;;
+  assert-bundler-seed)
+    vendor_root="$repository/Library/Homebrew/vendor/bundle/ruby"
+    [ "$(cat "$vendor_root/.homebrew_gem_groups")" = $'bottle\nformula_test' ]
+    [ "$(cat "$vendor_root/4.0.0/.homebrew_vendor_version")" = "7" ]
+    [ ! -w "$vendor_root/.homebrew_gem_groups" ]
+    [ ! -w "$vendor_root/4.0.0/.homebrew_vendor_version" ]
+    ;;
   trust)
     printf 'mutation\n' >>"${XDG_CONFIG_HOME:?}/homebrew/trust.json"
     ;;
@@ -170,6 +184,10 @@ EOF
 
 homebrew_patched_launcher_prepare \
   "$prefix/bin/brew" "$patch_file" "$work_dir" "$publisher_patch_file"
+if homebrew_patched_launcher_seed_bundler_groups 'bad/group' >/dev/null 2>&1; then
+  fail "invalid Bundler group unexpectedly succeeded"
+fi
+homebrew_patched_launcher_seed_bundler_groups bottle formula_test
 
 [ "$HOMEBREW_PATCHED_PREFIX" = "$prefix" ] || fail "selected prefix changed"
 [ "$($HOMEBREW_PATCHED_BREW_BIN --prefix)" = "$prefix" ] || fail "launcher reports the wrong prefix"
@@ -184,6 +202,8 @@ homebrew_patched_launcher_prepare \
 [ "$(cat "$HOMEBREW_PATCHED_OVERLAY/marker.txt")" = "patched" ] || fail "overlay patch was not applied"
 [ "$(cat "$HOMEBREW_PATCHED_OVERLAY/publisher-marker.txt")" = "publisher-patched" ] ||
   fail "extra publisher patch was not applied"
+[ "$(cat "$HOMEBREW_PATCHED_OVERLAY/Library/Homebrew/vendor/bundle/ruby/.homebrew_gem_groups")" = \
+  $'bottle\nformula_test' ] || fail "publisher Bundler groups were not seeded"
 [ -L "$HOMEBREW_PATCHED_LAUNCHER" ] || fail "launcher symlink was not created"
 
 launcher="$HOMEBREW_PATCHED_LAUNCHER"
@@ -333,6 +353,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   homebrew_patched_launcher_prepare \
     "$isolated_prefix/bin/brew" "$patch_file" "$isolated_work" \
     "$publisher_patch_file"
+  homebrew_patched_launcher_seed_bundler_groups bottle formula_test
   homebrew_patched_launcher_isolate \
     "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_output"
@@ -341,6 +362,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-immutable-trust reviewed-trust
   "$HOMEBREW_PATCHED_BREW_BIN" assert-publisher-patch
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-bundler-seed
   if "$HOMEBREW_PATCHED_BREW_BIN" trust >/dev/null 2>&1; then
     fail "explicit trust mutation succeeded against the sealed store"
   fi
