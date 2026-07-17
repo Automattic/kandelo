@@ -214,7 +214,6 @@ describe("LiveKernelHost: lazy download events", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        nextPid: 1,
         subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
           kernelCb = cb;
           return offKernel;
@@ -247,7 +246,6 @@ describe("LiveKernelHost: lazy download events", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        nextPid: 1,
         subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
           kernelCb = cb;
           return vi.fn();
@@ -269,7 +267,6 @@ describe("LiveKernelHost: lazy download events", () => {
 
     host.attachKernel({
       fs: makeFs({ "/etc/passwd": "" }),
-      nextPid: 1,
     } as any);
 
     expect(host.lazyDownloadHistory()).toEqual([]);
@@ -289,7 +286,6 @@ describe("LiveKernelHost: process listing", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs,
-        nextPid: 1,
         enumProcs: async () => [
           { pid: 1, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "/sbin/dinit" },
           { pid: 2, ppid: 1, uid: 33, gid: 33, vsizeBytes: 2048, state: "S", comm: "php-fpm", cmdline: "php-fpm: pool www" },
@@ -304,6 +300,43 @@ describe("LiveKernelHost: process listing", () => {
 });
 
 describe("LiveKernelHost: shell command queue", () => {
+  it("uses the worker-returned pid for a transferred shell binary", async () => {
+    const outputPids: number[] = [];
+    const writePids: number[] = [];
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawn(
+          _programBytes: ArrayBuffer,
+          _argv: string[],
+          options?: { onStarted?: (pid: number) => void | Promise<void> },
+        ) {
+          void options?.onStarted?.(37);
+          return new Promise<number>(() => {});
+        },
+        onPtyOutput(pid: number) {
+          outputPids.push(pid);
+        },
+        ptyResize() {},
+        ptyWrite(pid: number) {
+          writePids.push(pid);
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    const pty = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    pty.write("echo ok\n");
+
+    expect(outputPids).toEqual([37]);
+    expect(writePids).toEqual([37]);
+  });
+
   it("does not treat heredoc continuation prompts as command completion", async () => {
     const encoder = new TextEncoder();
     let onOutput: ((data: Uint8Array) => void) | null = null;
@@ -315,7 +348,6 @@ describe("LiveKernelHost: shell command queue", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        nextPid: 1,
         spawnFromVfs: async () => ({ pid: 1, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
@@ -364,7 +396,6 @@ describe("LiveKernelHost: shell command queue", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        nextPid: 1,
         spawnFromVfs: async () => ({ pid: 1, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
@@ -417,7 +448,6 @@ describe("LiveKernelHost: shell command queue", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        nextPid: 1,
         spawnFromVfs: async () => {
           spawnCalls++;
           await spawnGate;
@@ -476,7 +506,6 @@ describe("LiveKernelHost: shell command queue", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        nextPid: 1,
         spawnFromVfs: async () => {
           const pid = nextPid++;
           livePids.add(pid);
@@ -544,7 +573,6 @@ describe("LiveKernelHost: shell command queue", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        nextPid: 1,
         spawnFromVfs: async () => {
           const pid = nextPid++;
           const exit = new Promise<number>((resolve) => {

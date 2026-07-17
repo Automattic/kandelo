@@ -794,9 +794,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       return;
     }
 
-    // Pid: if the caller pre-picked one, honor it (legacy spawn() callers
-    // still do); otherwise the worker is the source of truth and allocates.
-    const pid = msg.pid ?? kernelWorker.allocatePid();
+    const pid = kernelWorker.allocateTopLevelSpawnPid();
     const path = msg.programPath ?? msg.argv[0];
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);

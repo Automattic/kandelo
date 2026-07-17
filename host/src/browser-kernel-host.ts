@@ -121,17 +121,6 @@ export class BrowserKernel {
    *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
-  /**
-   * @internal Legacy spawn() pre-allocates pids on the main thread. New
-   * code uses kernel.boot() which lets the worker allocate, making this
-   * counter irrelevant. Once all demos migrate to boot(), this goes away.
-   *
-   * Starts at 100 to skip the kernel's reserved range (virtual init at
-   * pid 1, future kernel threads). The architectural fix is in the spawn
-   * message protocol where pid is now optional and the worker is the
-   * authority.
-   */
-  nextPid = 100;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "env">
   > &
@@ -382,7 +371,8 @@ export class BrowserKernel {
    * `onStarted(pid)` fires once the kernel has registered the process and the
    * spawn request is acknowledged — but BEFORE awaiting the exit promise. Use
    * this to capture the pid for follow-up calls like `getForkCount(pid)` (the
-   * spawn-regression-guardrail pattern; see `apps/browser-demos/main.ts`).
+   * spawn-regression-guardrail pattern; see
+   * `apps/browser-demos/pages/benchmark/main.ts`).
    * Mirrors `NodeKernelHost.spawn`'s `onStarted` option.
    */
   async spawn(
@@ -400,23 +390,18 @@ export class BrowserKernel {
       ptyRows?: number;
     },
   ): Promise<number> {
-    const pid = this.nextPid++;
     const requestId = this.nextRequestId++;
+    const spawnStartedBeforeExitSequence = this.exitSequence;
     const stdin =
       options?.stdin ??
       (!options?.pty && !options?.onStarted ? new Uint8Array() : undefined);
 
-    const exitPromise = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
-
     // Clone programBytes since it gets transferred (detached)
     const bytesToSend = programBytes.slice(0);
 
-    await this.request(requestId, {
+    const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
-      pid,
       programBytes: bytesToSend,
       argv,
       env: this.mergeEnv(options?.env ?? this.options.env),
@@ -428,7 +413,9 @@ export class BrowserKernel {
       ptyRows: options?.ptyRows,
       stdin,
       maxPages: this.maxPages,
-    }, [bytesToSend]);
+    }, [bytesToSend]) as number;
+
+    const exitPromise = this.claimExitStatus(pid, spawnStartedBeforeExitSequence);
 
     // Register PTY output callback if pty was requested
     if (options?.pty) {
@@ -448,15 +435,14 @@ export class BrowserKernel {
    * Spawn a process whose binary already lives in the kernel-owned VFS.
    * Returns the worker-allocated pid + an exit promise.
    *
-   * Unlike {@link BrowserKernel.spawn}, this does not transfer any
-   * `programBytes` across the worker boundary — the kernel reads the
-   * binary out of its own memfs at `programPath`. Use this in
-   * `kernelOwnedFs: true` mode (or whenever the binary is already in
-   * the VFS) to avoid re-shipping multi-megabyte binaries the kernel
-   * already has.
+   * This does not transfer any `programBytes` across the worker boundary —
+   * the kernel reads the binary out of its own memfs at `programPath`. Use
+   * this in `kernelOwnedFs: true` mode (or whenever the binary is already in
+   * the VFS) to avoid re-shipping multi-megabyte binaries the kernel already
+   * has.
    *
-   * Mirrors the private `spawnFirstProcess` path internally — both
-   * route to the kernel worker's pid allocator.
+   * Like every top-level spawn path, the kernel worker allocates and returns
+   * the pid.
    */
   async spawnFromVfs(
     programPath: string,
