@@ -101,9 +101,14 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   only the exact canonical keys selected to replace stale target entries. The
   composed index is rewritten to relative archive basenames and consumed from
   the same local `file://` directory, so later release mutation cannot redirect
-  the tested resolver. It then runs
-  the standard `cargo test`, Vitest, browser, libc-test, POSIX, and Sortix
-  suites.
+  the tested resolver. Source validation and the Cargo-only suites run in
+  parallel with this preparation. The prepared workspace retains the
+  materialized package tree because its root filesystem refers to package-backed
+  executables lazily (for example, `/bin/sh`). libc-test runs as
+  functional+regression and math shards; Sortix runs as include, basic, and
+  remaining-runtime shards. Browser-local assets are generated in the browser
+  consumer from the already-materialized package tree, without fetching the
+  index a second time.
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
   ledger on the release IS the consumer-visible state, so there's
@@ -167,6 +172,14 @@ The exact merge method is part of `candidate.json` and a different method fails
 closed during activation. This is repository process policy, not tamper-proof
 two-person authorization: same-repository writers are trusted to change the
 workflow and helper code through the normal review process.
+
+The write-authorized merge gate executes candidate lifecycle helpers from the
+exact prepared base commit, not from the pull request head. The pull request is
+candidate data to validate and seal; it is not an authority for code that can
+write release assets or publish the `merge-gate` status. This also lets an older
+pull request use lifecycle helpers added to the base after its branch was
+created, as long as that same base was synthesized and tested with the pull
+request.
 
 `activate-merge-candidate.yml` checks out the current default branch and runs
 after a merged PR emits `pull_request:closed`. That event is only a fast path:
@@ -391,6 +404,15 @@ where `short-cache-key-sha` is the first 8 chars of the cache-key
 sha for that manifest. Two archives with the same `(name, version,
 revision, arch)` but different transitive deps get distinct shas
 and thus distinct names.
+
+The filename is a transport label, not a parseable identity record:
+package names and versions may both contain `-`, so the boundary between
+them is ambiguous in the string alone. Index composition reads `name`,
+`version`, `revision`, architecture, ABI compatibility, and cache key from
+the archive's validated `manifest.toml`, then requires the filename to equal
+the canonical string reconstructed from those fields. Archive creation and
+index recovery call the same renderer so the producer and validator cannot
+drift to different filename grammars.
 
 ### Archive interior layout
 
@@ -637,10 +659,16 @@ checklist.
 When migrating a release from the legacy schema (or recovering after
 a corrupted index), `scripts/compose-initial-index.sh
 <target-tag> <abi>` downloads every `.tar.zst` from the release,
-extracts each archive's internal `manifest.toml` to recover
-`cache_key_sha` + `build_timestamp`, and uploads a freshly composed
-`index.toml`. The script acquires the same state-lock as the
-matrix-build path, so it serializes against any active CI rebuilds.
+extracts each archive's internal `manifest.toml` as the authoritative
+package identity and compatibility record, verifies that the archive's
+filename is the canonical rendering of those fields, and uploads a freshly
+composed `index.toml`. The script acquires the same state-lock as the
+matrix-build path, so it serializes against any active CI rebuilds. It does
+not infer the package name or version by splitting the archive filename. If
+the downloaded inventory contains more than one archive for the same package
+name and target architecture, composition fails and reports both filenames,
+cache keys, and archive hashes. Recovery must select one explicit immutable
+archive rather than depend on directory traversal order.
 
 Day-to-day publishes don't use this script — they go through
 `scripts/index-update.sh` per-matrix-entry. compose-initial-index is

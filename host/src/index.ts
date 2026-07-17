@@ -8,8 +8,6 @@ export { SYSCALL_NAMES } from "./kernel-worker";
 export { SyscallChannel, ChannelStatus } from "./channel";
 export { NodePlatformIO } from "./platform/node";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
-export { SharedLockTable } from "./shared-lock-table";
-export type { LockInfo } from "./shared-lock-table";
 export { NodeWorkerAdapter, MockWorkerAdapter, MockWorkerHandle } from "./worker-adapter";
 export { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
@@ -79,6 +77,8 @@ export type {
   HomebrewVfsBuildReport,
   HomebrewVfsBuildResult,
   HomebrewVfsPackageReport,
+  HomebrewVfsSelectionReport,
+  HomebrewVfsSelectionSource,
 } from "./homebrew-vfs-builder";
 export {
   HomebrewBottleFetchError,

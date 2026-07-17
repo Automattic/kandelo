@@ -23,6 +23,3 @@ export { COREUTILS_NAMES } from "./shell-binaries";
 
 // Service worker bridge
 export { initServiceWorkerBridge } from "./service-worker-bridge";
-
-// MariaDB directory setup
-export { populateMariadbDirs } from "./mariadb-config";

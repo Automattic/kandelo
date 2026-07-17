@@ -932,6 +932,14 @@ the touched package. Outputs land under
 `local-binaries/programs/<arch>/`, which the Vite resolver and
 `scripts/resolve-binary.sh` already prefer over `binaries/`.
 
+Both resolvers apply policy according to the requested artifact kind. A
+`.wasm` executable must have an inspectable, current ABI and the required
+exports and fork-instrumentation policy. A `.vfs` or `.vfs.zst` image must be
+well formed and may not declare a different kernel ABI. Package archives,
+Wasm side modules such as `.so` files, and declared runtime data do not use the
+executable-Wasm policy; fetched copies have already been authenticated by the
+package ledger, while `local-binaries/` remains an explicit developer override.
+
 ### Worked example: zlib
 
 Source manifest at `packages/registry/zlib/package.toml` (recipe):

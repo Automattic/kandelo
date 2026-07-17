@@ -1,0 +1,56 @@
+--- src/test_config.c
++++ src/test_config.c
+@@ -785,13 +785,17 @@
+     static const int cv_ ## x = SQLITE_ ## x; \
+     Tcl_LinkVar(interp, "SQLITE_" #x, (char *)&(cv_ ## x), \
+                 TCL_LINK_INT | TCL_LINK_READ_ONLY); }
+-
++#ifndef SQLITE_JSON_MAX_DEPTH
++# define SQLITE_JSON_MAX_DEPTH 1000
++#endif
++
+   LINKVAR( MAX_LENGTH );
+   LINKVAR( MAX_COLUMN );
+   LINKVAR( MAX_SQL_LENGTH );
+   LINKVAR( MAX_EXPR_DEPTH );
+   LINKVAR( MAX_COMPOUND_SELECT );
++  LINKVAR( JSON_MAX_DEPTH );
+   LINKVAR( MAX_VDBE_OP );
+   LINKVAR( MAX_FUNCTION_ARG );
+   LINKVAR( MAX_VARIABLE_NUMBER );
+   LINKVAR( MAX_PAGE_SIZE );
+--- test/json101.test
++++ test/json101.test
+@@ -813,23 +813,23 @@
+ # The following tests confirm that deeply nested JSON is considered invalid.
+ #
+ do_execsql_test json101-11.0 {
+-  /* Shallow enough to be parsed */
++  /* Valid when the compiled JSON depth limit is at least 1000 */
+   SELECT json_valid(printf('%.1000c0%.1000c','[',']'));
+-} {1}
++} [expr {$SQLITE_JSON_MAX_DEPTH>=1000 ? 1 : 0}]
+ do_execsql_test json101-11.1 {
+-  /* Too deep by one */
++  /* Valid when the compiled JSON depth limit is at least 1001 */
+   SELECT json_valid(printf('%.1001c0%.1001c','[',']'));
+-} {0}
++} [expr {$SQLITE_JSON_MAX_DEPTH>=1001 ? 1 : 0}]
+ do_execsql_test json101-11.2 {
+-  /* Shallow enough to be parsed { */
++  /* Valid when the compiled JSON depth limit is at least 1000 { */
+   SELECT json_valid(replace(printf('%.1000c0%.1000c','[','}'),'[','{"a":'));
+   /* } */
+-} {1}
++} [expr {$SQLITE_JSON_MAX_DEPTH>=1000 ? 1 : 0}]
+ do_execsql_test json101-11.3 {
+-  /* Too deep by one { */
++  /* Valid when the compiled JSON depth limit is at least 1001 { */
+   SELECT json_valid(replace(printf('%.1001c0%.1001c','[','}'),'[','{"a":'));
+   /* } */
+-} {0}
++} [expr {$SQLITE_JSON_MAX_DEPTH>=1001 ? 1 : 0}]
+-
++
+ # 2017-10-27.  Demonstrate the ability to access an element from
+ # a json structure even though the element name constains a "."

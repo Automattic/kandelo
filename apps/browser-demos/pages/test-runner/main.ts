@@ -3,9 +3,10 @@
  *
  * Exposes window.__runTest(wasmBytes) for Playwright to call.
  * Each call creates a fresh BrowserKernel, runs the program, cleans up,
- * and returns { exitCode, stdout, stderr }.
+ * and returns { exitCode, stdout, stderr, hostDiagnostics }.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
+import type { HostDiagnostic } from "@host/host-diagnostic";
 import {
   createBuildFsWithEtc,
   finalizeKernelOwnedImage,
@@ -31,12 +32,17 @@ declare global {
       wasmBytes: ArrayBuffer,
       argv?: string[],
       timeoutMs?: number,
-      options?: { dataFiles?: DataFile[]; cwd?: string; env?: string[] },
+      options?: {
+        dataFiles?: DataFile[];
+        cwd?: string;
+        env?: string[];
+      },
     ) => Promise<{
       exitCode: number;
       stdout: string;
       stderr: string;
       combined: string;
+      hostDiagnostics: HostDiagnostic[];
     }>;
     __testCount: number;
   }
@@ -49,6 +55,11 @@ let coreutilsBytes: ArrayBuffer | null = null;
 let grepBytes: ArrayBuffer | null = null;
 let sedBytes: ArrayBuffer | null = null;
 let genCatBytes: ArrayBuffer | null = null;
+
+const corsProxyUrl = new URL(
+  `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
+  window.location.href,
+).href;
 
 const COREUTILS_NAMES = [
   "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
@@ -145,11 +156,16 @@ async function init() {
     wasmBytes: ArrayBuffer,
     argv?: string[],
     timeoutMs = 30_000,
-    options?: { dataFiles?: DataFile[]; cwd?: string; env?: string[] },
+    options?: {
+      dataFiles?: DataFile[];
+      cwd?: string;
+      env?: string[];
+    },
   ) => {
     let stdout = "";
     let stderr = "";
     let combined = "";
+    const hostDiagnostics: HostDiagnostic[] = [];
 
     // Assemble the test image (exec binaries + /etc + any data files) in a
     // transient build FS, then hand ownership to the kernel worker so the main
@@ -182,6 +198,7 @@ async function init() {
 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      corsProxyUrl,
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;
@@ -191,6 +208,9 @@ async function init() {
         const text = new TextDecoder().decode(data);
         stderr += text;
         combined += text;
+      },
+      onHostDiagnostic: (diagnostic: HostDiagnostic) => {
+        hostDiagnostics.push(diagnostic);
       },
     });
 
@@ -209,7 +229,7 @@ async function init() {
         ),
       ]);
 
-      return { exitCode, stdout, stderr, combined };
+      return { exitCode, stdout, stderr, combined, hostDiagnostics };
     } finally {
       // Clean up to free memory for the next test
       await kernel.destroy();

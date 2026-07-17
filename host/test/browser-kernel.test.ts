@@ -107,7 +107,10 @@ describe("BrowserKernel", () => {
 
   it("boot() spawns a worker, sends init, and resolves on `ready`", async () => {
     const BrowserKernel = await loadBrowserKernel();
-    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      corsProxyUrl: "https://proxy.example/?url=",
+    });
 
     const bootPromise = kernel.boot({
       kernelWasm: new ArrayBuffer(8),
@@ -123,6 +126,7 @@ describe("BrowserKernel", () => {
     expect(init).toBeDefined();
     expect(init.argv).toBeUndefined(); // argv goes in the spawn message
     expect(init.kernelWasmBytes).toBeInstanceOf(ArrayBuffer);
+    expect(init.config.corsProxyUrl).toBe("https://proxy.example/?url=");
 
     // Simulate the worker becoming ready, then reply to the spawn request.
     w.simulateMessage({ type: "ready" });
@@ -209,17 +213,17 @@ describe("BrowserKernel", () => {
     worker.simulateMessage({
       type: "host_diagnostic",
       pid: 100,
-      status: 7,
-      source: "kernel process exit",
-      message: "[kernel-worker] nonzero process exit pid=100 status=7",
+      status: 132,
+      source: "worker-main error message",
+      message: "[process-worker] RuntimeError: unreachable",
     });
 
     expect(onHostDiagnostic).toHaveBeenCalledOnce();
     expect(onHostDiagnostic).toHaveBeenCalledWith({
       pid: 100,
-      status: 7,
-      source: "kernel process exit",
-      message: "[kernel-worker] nonzero process exit pid=100 status=7",
+      status: 132,
+      source: "worker-main error message",
+      message: "[process-worker] RuntimeError: unreachable",
     });
     expect(onStderr).not.toHaveBeenCalled();
   });

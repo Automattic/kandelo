@@ -154,6 +154,7 @@ describe("Homebrew VFS planner", () => {
     });
 
     expect(plan.kandeloAbi).toBe(ABI_VERSION);
+    expect(plan.requestedPackages).toEqual(["hello"]);
     expect(plan.packages.map((entry) => entry.name)).toEqual(["zlib", "hello"]);
     expect(plan.packages.map((entry) => entry.linkManifestPath)).toEqual([
       "Kandelo/link/zlib-1.3.1-rebuild0-wasm32.json",
@@ -189,6 +190,159 @@ describe("Homebrew VFS planner", () => {
       arch: "wasm32",
       loadLinkManifest: manifestMap({}),
     })).rejects.toThrow('package "hello" dependency "zlib" is not present');
+  });
+
+  it("rejects a requested tap mismatch before loading link manifests", async () => {
+    let loaded = false;
+    await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")]), {
+      packages: ["hello"],
+      arch: "wasm32",
+      expectedTapName: "example/tools",
+      loadLinkManifest() {
+        loaded = true;
+        return linkManifest("hello", "2.12.1");
+      },
+    })).rejects.toThrow(
+      'metadata tap "automattic/kandelo-homebrew" does not match requested tap "example/tools"',
+    );
+    expect(loaded).toBe(false);
+  });
+
+  it("accepts the canonical tap name for a conventional third-party repository", async () => {
+    const entry = packageEntry("hello", "2.12.1");
+    entry.full_name = "example/tools/hello";
+    const plan = await planHomebrewVfs(metadata([entry], {
+      tap_repository: "Example/homebrew-tools",
+      tap_name: "example/tools",
+    }), {
+      packages: ["hello"],
+      arch: "wasm32",
+      expectedTapName: "example/tools",
+      loadLinkManifest: manifestMap({
+        "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json": linkManifest("hello", "2.12.1"),
+      }),
+    });
+
+    expect(plan.tapRepository).toBe("Example/homebrew-tools");
+    expect(plan.tapName).toBe("example/tools");
+  });
+
+  it("rejects a repository alias for the protected first-party tap", async () => {
+    let loaded = false;
+    await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")], {
+      tap_repository: "Automattic/homebrew-kandelo-homebrew",
+    }), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest() {
+        loaded = true;
+        return linkManifest("hello", "2.12.1");
+      },
+    })).rejects.toThrow(
+      'metadata tap repository "Automattic/homebrew-kandelo-homebrew" cannot claim protected first-party tap',
+    );
+    expect(loaded).toBe(false);
+  });
+
+  it("rejects a tap name that does not match its conventional repository", async () => {
+    await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")], {
+      tap_repository: "Example/homebrew-tools",
+    }), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow(
+      'metadata tap "automattic/kandelo-homebrew" does not match repository "Example/homebrew-tools"; expected "example/tools"',
+    );
+  });
+
+  it("rejects a third-party repository without the homebrew- prefix", async () => {
+    await expect(planHomebrewVfs(metadata([packageEntry("hello", "2.12.1")], {
+      tap_repository: "Example/tools",
+      tap_name: "example/tools",
+    }), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow("must use the conventional owner/homebrew-name form");
+  });
+
+  it("rejects package full names that do not belong to the metadata tap", async () => {
+    const entry = packageEntry("hello", "2.12.1");
+    entry.full_name = "example/tools/hello";
+    await expect(planHomebrewVfs(metadata([entry]), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow("does not match tap identity");
+  });
+
+  it("bounds explicit package roots and the resolved dependency closure", async () => {
+    const names = Array.from({ length: 129 }, (_, index) => `package-${index}`);
+    const independent = names.map((name) => packageEntry(name, "1.0"));
+    await expect(planHomebrewVfs(metadata(independent), {
+      packages: names,
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow("accepts at most 128 requested packages");
+
+    const chain = names.map((name, index) => packageEntry(
+      name,
+      "1.0",
+      index + 1 < names.length
+        ? [{ name: names[index + 1], version: "1.0" }]
+        : [],
+    ));
+    await expect(planHomebrewVfs(metadata(chain), {
+      packages: [names[0]],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow("dependency closure exceeds 128 packages");
+  });
+
+  it("rejects duplicate dependency declarations", async () => {
+    await expect(planHomebrewVfs(metadata([
+      packageEntry("hello", "2.12.1", [
+        { name: "zlib", version: "1.3.1" },
+        { name: "zlib", version: "1.3.1" },
+      ]),
+      packageEntry("zlib", "1.3.1"),
+    ]), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow('dependencies has duplicate package "zlib"');
+  });
+
+  it("rejects duplicate metadata packages and requested roots", async () => {
+    await expect(planHomebrewVfs(metadata([
+      packageEntry("hello", "2.12.1"),
+      packageEntry("hello", "2.12.1"),
+    ]), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow('metadata has duplicate package "hello"');
+
+    await expect(planHomebrewVfs(metadata([
+      packageEntry("hello", "2.12.1"),
+    ]), {
+      packages: ["hello", "hello"],
+      arch: "wasm32",
+      loadLinkManifest: manifestMap({}),
+    })).rejects.toThrow('requested package "hello" is duplicated');
+  });
+
+  it("rejects duplicate link targets", async () => {
+    const manifest = linkManifest("hello", "2.12.1");
+    manifest.links.push({ ...manifest.links[0] });
+    await expect(planHomebrewVfs(metadata([
+      packageEntry("hello", "2.12.1"),
+    ]), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: () => manifest,
+    })).rejects.toThrow('link manifest duplicate target "bin/hello"');
   });
 
   it("rejects dependency cycles", async () => {

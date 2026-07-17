@@ -12,6 +12,8 @@ metadata.schema.json
 formula.schema.json
 link-manifest.schema.json
 provenance.schema.json
+vfs-acceptance.json                                # optional tap-owned gate selection
+vfs-acceptance.Brewfile                           # optional selected static roots
 
 metadata.json                                      # generated tap state
 formula/<name>.json                               # generated tap state
@@ -21,6 +23,10 @@ reports/<name>-<version>-rebuild<N>-<arch>.provenance.json
 
 The `examples/` directory contains fixture data for schema and semantic
 validator development. It is not published metadata.
+
+`vfs-acceptance.json` and its referenced Brewfile are reviewed tap policy, not
+generated sidecars. The publisher reads them from the exact tap commit and
+never rewrites them.
 
 ## Generation
 
@@ -103,9 +109,9 @@ Host VFS tooling plans a Homebrew-prefix image with
 shared by Node and browser callers. It consumes parsed `Kandelo/metadata.json`
 and a caller-provided link-manifest loader, resolves requested packages plus
 their dependency closure in dependency-first order, and rejects bad ABI,
-unsupported arch, cache-key drift, missing packages, dependency cycles, unsafe
-paths, and link-manifest bottle URL/sha/byte/cache-key drift before any bottle
-bytes are extracted.
+unsupported arch, tap-identity drift, duplicate roots or metadata, cache-key
+drift, missing packages, dependency cycles, unsafe paths, and link-manifest
+bottle URL/sha/byte/cache-key drift before any bottle bytes are extracted.
 
 For `failed`, `pending`, or `building` bottle entries, the planner uses the
 complete last-green fallback fields when available. Without a complete fallback,
@@ -113,19 +119,44 @@ the package is not plannable for a VFS image.
 
 ## VFS Image Building
 
-Build a precomposed Homebrew-prefix image from generated sidecars and verified
-bottle bytes with:
+Write a static Brewfile that names one tap and the formula roots for the image:
+
+```ruby
+tap "automattic/kandelo-homebrew"
+brew "sqlite"
+brew "automattic/kandelo-homebrew/xz"
+```
+
+Then build a precomposed Homebrew-prefix image from generated sidecars and
+verified bottle bytes with:
 
 ```bash
 scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
   --tap-root /path/to/kandelo-homebrew \
-  --package hello \
+  --brewfile /path/to/Brewfile \
   --arch wasm32 \
   --runtime node \
+  --base-image target/platform-base.vfs.zst \
   --out target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json
 ```
+
+This is a deliberately small, non-executing Brewfile subset: blank lines,
+comments, exactly one literal lowercase `tap "owner/tap"`, and 1 to 128 literal
+`brew` entries. A formula may be bare or fully qualified under that exact tap;
+duplicates after normalization are rejected. Ripper validates the syntax tree,
+and the builder never evaluates the file. Options, interpolation, conditionals,
+variables, nested Ruby, other entry types, and multi-tap selection are rejected.
+Use real Homebrew inside a running Kandelo guest when full Homebrew Bundle DSL
+behavior is required.
+
+Homebrew Bundle does not define a `Brewfile.lock.json` contract. The report and
+image manifest instead bind the Brewfile SHA-256 and byte count, ordered roots,
+tap commit, base image, and exact bottle digests. The root digest is SHA-256 over
+the UTF-8 JSON array of normalized roots in declared order. Repeatable
+`--package <name>` is still available to lower-level callers, but it cannot be
+combined with `--brewfile`.
 
 The builder consumes only `metadata.json`, link manifests, and bottle tarballs.
 It does not evaluate Formula Ruby. It verifies the selected bottle byte count
@@ -133,6 +164,14 @@ and sha256, rejects unsafe or unsupported tar entries, stages files under the
 declared keg, validates receipts, applies the link manifest under the declared
 prefix, writes `/etc/kandelo/homebrew-vfs.json`, saves a `.vfs.zst`, and emits a
 JSON report beside the image.
+
+`--base-image` is optional and accepts only an ABI-matched platform image that
+does not already contain a Homebrew composition. Output image metadata records
+a bounded binding with the base SHA-256, byte count, and declared ABI; the JSON
+report also retains the full source metadata for auditing. Omit `--max-bytes`
+to retain the base filesystem maximum without rebuilding existing inodes, or
+set it to rebase the filesystem to an exact, 4096-byte-aligned new maximum
+before bottles are staged.
 
 Link and receipt paths starting with `Cellar/` are interpreted relative to the
 Homebrew prefix. Other link and receipt paths are interpreted relative to the
@@ -150,6 +189,50 @@ the local bottle for a dry run, or the exact anonymously read-back GHCR digest
 for a write run. Kandelo's complete ABI release graph is fetched separately as
 the kernel, host-runtime, and VFS platform prerequisite; it is not the source of
 the migrated package payload.
+
+## Dependency-Bearing Runtime Acceptance
+
+The tap may select one non-dry-run wasm32 publication as its dependency-bearing
+VFS acceptance gate by adding `Kandelo/vfs-acceptance.json` and a referenced
+static Brewfile. The selected Formula must be a Brewfile root and the resolved
+selected Formula's closure must contain at least one dependency edge. The
+configuration records the linked guest executable, argv, and a bounded,
+single-line stdout substring:
+
+```json
+{
+  "schema": 1,
+  "formula": "consumer",
+  "brewfile": "Kandelo/vfs-acceptance.Brewfile",
+  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "argv": ["consumer", "--version"],
+  "expected_stdout": "consumer"
+}
+```
+
+The publisher overlays the current generated sidecars on the exact tap
+checkout, rejects fallback and non-GHCR package sources, composes the bottles
+onto an explicit ABI-matched platform base, and boots the exact resulting VFS
+bytes in Node and Chromium. Evidence lists the Kandelo-owned base VFS and kernel
+separately from Homebrew package inputs so registry platform prerequisites
+cannot be mistaken for migrated package payloads. Without this selection, an
+ordinary publisher invocation continues but explicitly produces no
+dependency-closure acceptance evidence. It must not be described as proving
+this rung.
+
+The reviewed acceptance caller makes the gate mandatory by passing
+`require-vfs-acceptance: true`. That invocation fails during planning unless it
+is non-dry-run and its actual post-cache matrix includes the selected Formula on
+`wasm32`; use `force: true` when an already-current bottle would otherwise be
+filtered out. Formulae other than the selected consumer may publish first, but
+the consumer gate cannot pass until its selected dependency closure is already
+public on GHCR. The configuration, Brewfile, and required caller input should be
+added together only after that prerequisite is true.
+
+Because this may be the closure's first browser smoke, browser eligibility is
+provisional only inside the verifier. The evidence retains the bottles' declared
+runtime flags, the exact Chromium run decides the gate, and no provisional
+`browser_compatible` value is written to the tap.
 
 ## Browser Gallery Assets
 

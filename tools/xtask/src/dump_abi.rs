@@ -376,6 +376,10 @@ fn render_ts_module() -> String {
         shared::process_memory::FALLBACK_BRK_BASE
     ));
     out.push_str(&format!(
+        "export const PROCESS_MEMORY_FORK_SAVE_CONTROL_PREFIX_SIZE = {} as const;\n",
+        shared::process_memory::FORK_SAVE_CONTROL_PREFIX_SIZE
+    ));
+    out.push_str(&format!(
         "export const PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE = {} as const;\n",
         shared::process_memory::FORK_SAVE_BUFFER_SIZE
     ));
@@ -949,6 +953,10 @@ fn process_memory_layout() -> Value {
     let mut m: JsonMap = BTreeMap::new();
     m.insert("wasm_page_size".into(), json!(pm::WASM_PAGE_SIZE));
     m.insert("channel_pages".into(), json!(channel_pages));
+    m.insert(
+        "fork_save_control_prefix_size".into(),
+        json!(pm::FORK_SAVE_CONTROL_PREFIX_SIZE),
+    );
     m.insert(
         "fork_save_buffer_size".into(),
         json!(pm::FORK_SAVE_BUFFER_SIZE),

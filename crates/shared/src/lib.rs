@@ -73,7 +73,12 @@ pub mod host_abi;
 /// 39: kernel-owned POSIX timer expiration preserves exact thread targets,
 ///     SI_TIMER metadata, overruns, and finite signal-wait deadlines through
 ///     the required host timer-fire export.
-pub const ABI_VERSION: u32 = 39;
+/// 40: advisory locks are kernel-owned, use stable file/OFD identities and
+///     bounded dynamic storage, report ENOLCK distinctly, and no longer
+///     require the host_fcntl_lock import; fork/exec OFD state is versioned.
+/// 41: main-thread, pthread, and side-module fork continuations reserve 60 KiB
+///     so valid wide call stacks do not overwrite adjacent host control state.
+pub const ABI_VERSION: u32 = 41;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -489,6 +494,7 @@ pub enum Errno {
     ERANGE = 34,
     EDEADLK = 35,
     ENAMETOOLONG = 36,
+    ENOLCK = 37,
     ENOSYS = 38,
     ENOTEMPTY = 39,
     ELOOP = 40,
@@ -554,6 +560,7 @@ impl Errno {
             34 => Some(Errno::ERANGE),
             35 => Some(Errno::EDEADLK),
             36 => Some(Errno::ENAMETOOLONG),
+            37 => Some(Errno::ENOLCK),
             38 => Some(Errno::ENOSYS),
             39 => Some(Errno::ENOTEMPTY),
             40 => Some(Errno::ELOOP),
@@ -601,6 +608,7 @@ pub mod flags {
     pub const O_DIRECTORY: u32 = 0o200000;
     pub const O_NOFOLLOW: u32 = 0o400000;
     pub const O_CLOEXEC: u32 = 0o2000000;
+    pub const O_PATH: u32 = 0o10000000;
     pub const O_CLOFORK: u32 = 0o40000000;
     pub const AT_FDCWD: i32 = -100;
     pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
@@ -750,6 +758,7 @@ pub mod socket {
     pub const IPV6_TCLASS: u32 = 67;
     pub const MSG_OOB: u32 = 1;
     pub const MSG_PEEK: u32 = 2;
+    pub const MSG_CTRUNC: u32 = 0x08;
     pub const MSG_TRUNC: u32 = 0x20;
     pub const MSG_DONTWAIT: u32 = 64;
     pub const MSG_NOSIGNAL: u32 = 0x4000;
@@ -1210,8 +1219,15 @@ pub mod process_memory {
     /// Fallback initial brk when a binary does not export `__heap_base`.
     pub const FALLBACK_BRK_BASE: u32 = 0x0100_0000;
 
-    /// Size of one fork save buffer in bytes.
-    pub const FORK_SAVE_BUFFER_SIZE: u32 = 16 * 1024;
+    /// Bytes kept below each fork save buffer for host-owned control metadata.
+    /// The current main-module dlopen slots use at most 40 bytes; one 4 KiB
+    /// prefix gives that private layout room to grow without moving the buffer.
+    pub const FORK_SAVE_CONTROL_PREFIX_SIZE: u32 = 4 * 1024;
+
+    /// Size of one fork save buffer in bytes. The control prefix and buffer
+    /// together occupy exactly one dedicated 64 KiB scratch page.
+    pub const FORK_SAVE_BUFFER_SIZE: u32 =
+        WASM_PAGE_SIZE - FORK_SAVE_CONTROL_PREFIX_SIZE;
 
     /// Main-thread fork-save/scratch page, relative to `controlBasePage`.
     pub const MAIN_FORK_SAVE_PAGE: u32 = 0;

@@ -4,7 +4,6 @@ use alloc::vec::Vec;
 use wasm_posix_shared::{Errno, KernelRusage, WasmStat, WasmStatfs};
 
 use crate::fd::FdTable;
-use crate::lock::LockTable;
 use crate::memory::MemoryManager;
 use crate::ofd::{FileType, OfdTable};
 use crate::pipe::PipeBuffer;
@@ -147,16 +146,6 @@ pub trait HostIO {
         Err(Errno::ENETUNREACH)
     }
     fn host_getaddrinfo(&mut self, name: &[u8], result: &mut [u8]) -> Result<usize, Errno>;
-    fn host_fcntl_lock(
-        &mut self,
-        path: &[u8],
-        pid: u32,
-        cmd: u32,
-        lock_type: u32,
-        start: i64,
-        len: i64,
-        result_buf: &mut [u8],
-    ) -> Result<(), Errno>;
     /// Request the host to fork the current process.
     /// Returns child PID (>= 0) on success, or negative errno on error.
     fn host_fork(&self) -> i32;
@@ -596,7 +585,6 @@ pub struct Process {
     pub wait_event: Option<ChildWaitEvent>,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
-    pub lock_table: LockTable,
     pub pipes: Vec<Option<PipeBuffer>>,
     pub sockets: SocketTable,
     pub cwd: Vec<u8>,
@@ -785,7 +773,6 @@ impl Process {
             wait_event: None,
             fd_table,
             ofd_table,
-            lock_table: LockTable::new(),
             pipes: Vec::new(),
             sockets: SocketTable::new(),
             cwd: alloc::vec![b'/'],
@@ -1613,18 +1600,6 @@ pub(crate) mod test_host {
         }
         fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
-        }
-        fn host_fcntl_lock(
-            &mut self,
-            _p: &[u8],
-            _pid: u32,
-            _c: u32,
-            _t: u32,
-            _s: i64,
-            _l: i64,
-            _r: &mut [u8],
-        ) -> Result<(), Errno> {
-            Ok(())
         }
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)

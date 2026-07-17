@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { ensureWasm64ExampleFixture } from "./wasm64-example-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const programs = [
@@ -12,7 +13,10 @@ const programs = [
 describe("RLIMIT_FSIZE operation boundaries", () => {
   it.each(programs)(
     "preserves partial progress for a %s guest",
-    async (_arch, program) => {
+    async (arch, program) => {
+      if (arch === "wasm64") {
+        ensureWasm64ExampleFixture("rlimit_fsize_test.c");
+      }
       const result = await runCentralizedProgram({
         programPath: program,
         argv: ["rlimit-fsize-test"],

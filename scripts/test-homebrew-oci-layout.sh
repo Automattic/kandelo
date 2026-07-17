@@ -10,7 +10,6 @@ ABI="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
 TOOL="$REPO_ROOT/scripts/homebrew-oci-layout.py"
 TAP_COMMIT=1111111111111111111111111111111111111111
 KANDELO_COMMIT=2222222222222222222222222222222222222222
-ROOT_URL=https://ghcr.io/v2/automattic/kandelo-homebrew
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -25,14 +24,18 @@ make_fixture() {
   local support_payload="${4:-fixture support v1}"
   local archived_formula_mode="${5:-0644}"
   local formula_extra="${6:-}"
+  local tap_repository="${7:-Automattic/kandelo-homebrew}"
+  local tap_name="${8:-Automattic/kandelo-homebrew}"
+  local tap_owner="${tap_name%%/*}" tap_short_name="${tap_name#*/}"
+  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
   local root="$TMP_ROOT/$label"
   local stage="$root/stage/hello/1.0"
   local bottle="$root/hello--1.0.${arch}_kandelo.bottle.tar.gz"
   local bottle_json="$root/bottle.json" sha
   mkdir -p "$stage/.brew" "$stage/bin" \
     "$root/tap/Formula" "$root/tap/Kandelo/formula_support"
-  cat >"$root/tap/Formula/hello.rb" <<'RUBY'
-require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+  cat >"$root/tap/Formula/hello.rb" <<RUBY
+require (Tap.fetch("$(printf '%s' "$tap_owner" | tr '[:upper:]' '[:lower:]')", "$(printf '%s' "$tap_short_name" | tr '[:upper:]' '[:lower:]')").path/"Kandelo/formula_support/kandelo_formula_support").to_s
 
 class Hello < Formula
   include KandeloFormulaSupport
@@ -63,15 +66,17 @@ RUBY
   }' >"$stage/INSTALL_RECEIPT.json"
   tar -czf "$bottle" -C "$root/stage" hello
   sha="$(sha256_file "$bottle")"
-  jq -nS --arg arch "$arch" --arg sha "$sha" '{
+  jq -nS --arg arch "$arch" --arg sha "$sha" \
+    --arg formula_path "Library/Taps/$(printf '%s' "$tap_owner" | tr '[:upper:]' '[:lower:]')/homebrew-$(printf '%s' "$tap_short_name" | tr '[:upper:]' '[:lower:]')/Formula/hello.rb" \
+    --arg root_url "$root_url" '{
     hello: {
       formula: {
         name: "hello",
-        path: "Library/Taps/automattic/homebrew-kandelo-homebrew/Formula/hello.rb",
+        path: $formula_path,
         pkg_version: "1.0"
       },
       bottle: {
-        root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+        root_url: $root_url,
         cellar: "any_skip_relocation",
         rebuild: 0,
         tags: {($arch + "_kandelo"): {sha256: $sha}}
@@ -86,10 +91,13 @@ build_child() {
   local support_payload="${4:-fixture support v1}"
   local archived_formula_mode="${5:-0644}"
   local formula_extra="${6:-}"
+  local tap_repository="${7:-Automattic/kandelo-homebrew}"
+  local tap_name="${8:-Automattic/kandelo-homebrew}"
+  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
   local paths bottle bottle_json
   mapfile -t paths < <(
     make_fixture "$label" "$arch" "$payload" "$support_payload" \
-      "$archived_formula_mode" "$formula_extra"
+      "$archived_formula_mode" "$formula_extra" "$tap_repository" "$tap_name"
   )
   bottle="${paths[0]}"
   bottle_json="${paths[1]}"
@@ -97,10 +105,11 @@ build_child() {
     --formula hello \
     --arch "$arch" \
     --abi "$ABI" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository "$tap_repository" \
+    --tap-name "$tap_name" \
     --tap-commit "$TAP_COMMIT" \
     --kandelo-commit "$KANDELO_COMMIT" \
-    --bottle-root-url "$ROOT_URL" \
+    --bottle-root-url "$root_url" \
     --bottle "$bottle" \
     --bottle-json "$bottle_json" \
     --kandelo-root "$REPO_ROOT" \
@@ -228,6 +237,31 @@ done
 
 build_child child32 wasm32
 build_child child64 wasm64
+build_child generic32 wasm32 "hello fixture" "fixture support v1" 0644 "" \
+  Acme/homebrew-tools Acme/tools
+expect_failure protected-first-party-alias \
+  "protected first-party tap name cannot be derived from another repository" \
+  build_child protected-first-party-alias wasm32 "hello fixture" "fixture support v1" \
+  0644 "" Automattic/homebrew-kandelo-homebrew Automattic/kandelo-homebrew
+python3 - "$TMP_ROOT/generic32/layout" "$TMP_ROOT/generic32/receipt.json" <<'PY'
+import json
+import pathlib
+import sys
+
+layout = pathlib.Path(sys.argv[1])
+receipt = json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert receipt["tap_repository"] == "Acme/homebrew-tools"
+assert receipt["tap_name"] == "acme/tools"
+root = json.loads((layout / "index.json").read_text())["manifests"][0]
+manifest = json.loads(
+    (layout / "blobs/sha256" / root["digest"].removeprefix("sha256:")).read_text()
+)
+annotations = manifest["annotations"]
+assert annotations["dev.kandelo.homebrew.tap_repository"] == "acme/homebrew-tools"
+assert annotations["org.opencontainers.image.source"] == "https://github.com/acme/homebrew-tools"
+assert annotations["org.opencontainers.image.title"] == "acme/tools/hello"
+assert "dev.kandelo.homebrew.tap_name" not in annotations
+PY
 expect_failure archived-formula-mode "tap Formula mode differs from the archived" \
   build_child archived-formula-mode wasm32 "hello fixture" "fixture support v1" 0755
 expect_failure require-relative "not a bounded canonical closure" \

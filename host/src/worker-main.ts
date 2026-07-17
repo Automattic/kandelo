@@ -22,7 +22,7 @@ import {
   type LoadedSharedLibrary,
   type SideModuleForkState,
 } from "./dylink";
-import { extractAbiVersion } from "./constants";
+import { extractAbiVersion, WASM_PAGE_SIZE } from "./constants";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_IDLE,
@@ -37,7 +37,10 @@ import {
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
 } from "./generated/abi";
-import { FORK_SAVE_BUFFER_SIZE } from "./process-memory";
+import {
+  FORK_SAVE_BUFFER_SIZE,
+  FORK_SAVE_CONTROL_PREFIX_SIZE,
+} from "./process-memory";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -732,36 +735,43 @@ function buildDlopenImports(
       if (!acquireMainDlopenLock()) return 0;
       hostDlopenError = null;
       try {
-      const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
-      // Copy bytes since memory.buffer may detach during Wasm instantiation
-      const bytesCopy = new Uint8Array(bytes);
-      // TextDecoder.decode() rejects views backed by SharedArrayBuffer
-      // in Firefox (and recent Chrome), so copy the name bytes through
-      // a non-shared Uint8Array before decoding. Same shape as
-      // bytesCopy above.
-      const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
-      const nameBytesCopy = new Uint8Array(nameBytesView);
-      const name = decoder.decode(nameBytesCopy);
-      const handle = getLinker().dlopenSync(name, bytesCopy);
-      if (handle > 0) {
-        // The linker just instantiated this — the map MUST contain it.
-        // A miss means the shared-map ref got rewired and replay would
-        // silently see an empty archive after fork; fail loudly here
-        // instead of corrupting the fork child later.
-        const loaded = loadedLibraries.get(name);
-        if (!loaded) {
-          throw new Error(`__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`);
+        // dlopen(NULL, ...) asks for the main program's global symbol scope.
+        // No module bytes are involved; return the linker's reserved opaque
+        // handle while preserving the existing host-import signature.
+        if (bytesLen === 0 && nameLen === 0) {
+          return getLinker().dlopenMain();
         }
-        persistArchiveEntry(
-          name,
-          bytesCopy,
-          loaded.memoryBase,
-          loaded.tableBase,
-          loaded.forkBufAddr ?? 0,
-          loaded.tlsBase ?? 0,
-        );
-      }
-      return handle;
+
+        const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
+        // Copy bytes since memory.buffer may detach during Wasm instantiation
+        const bytesCopy = new Uint8Array(bytes);
+        // TextDecoder.decode() rejects views backed by SharedArrayBuffer
+        // in Firefox (and recent Chrome), so copy the name bytes through
+        // a non-shared Uint8Array before decoding. Same shape as
+        // bytesCopy above.
+        const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
+        const nameBytesCopy = new Uint8Array(nameBytesView);
+        const name = decoder.decode(nameBytesCopy);
+        const handle = getLinker().dlopenSync(name, bytesCopy);
+        if (handle > 0) {
+          // The linker just instantiated this — the map MUST contain it.
+          // A miss means the shared-map ref got rewired and replay would
+          // silently see an empty archive after fork; fail loudly here
+          // instead of corrupting the fork child later.
+          const loaded = loadedLibraries.get(name);
+          if (!loaded) {
+            throw new Error(`__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`);
+          }
+          persistArchiveEntry(
+            name,
+            bytesCopy,
+            loaded.memoryBase,
+            loaded.tableBase,
+            loaded.forkBufAddr ?? 0,
+            loaded.tlsBase ?? 0,
+          );
+        }
+        return handle;
       } finally {
         releaseMainDlopenLock();
       }
@@ -1173,6 +1183,21 @@ const DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64 = 32;
 // clears its copied value before replay because its memory is independent.
 const DLOPEN_LOCK_OFFSET_WASM32 = 20;
 const DLOPEN_LOCK_OFFSET_WASM64 = 40;
+const DLOPEN_MAX_CONTROL_OFFSET = Math.max(
+  DLOPEN_HEAD_OFFSET_WASM32,
+  DLOPEN_HEAD_OFFSET_WASM64,
+  DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM32,
+  DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64,
+  DLOPEN_LOCK_OFFSET_WASM32,
+  DLOPEN_LOCK_OFFSET_WASM64,
+);
+if (
+  FORK_BUF_SIZE % 16 !== 0
+  || FORK_SAVE_CONTROL_PREFIX_SIZE + FORK_BUF_SIZE !== WASM_PAGE_SIZE
+  || DLOPEN_MAX_CONTROL_OFFSET > FORK_SAVE_CONTROL_PREFIX_SIZE
+) {
+  throw new Error("invalid fork-save scratch-page geometry");
+}
 const DLOPEN_LOCK_IDLE = 0;
 const DLOPEN_LOCK_WRITER = -1;
 const DLOPEN_LOCK_MAX_READERS = 0x7fff_ffff;
@@ -1657,11 +1682,6 @@ export async function centralizedWorkerMain(
         exitCode = kernelExitStatus ?? exitCode;
       }
 
-      if (exitCode === 0) {
-        console.debug(`[worker] pid=${pid} _start() returned, exitCode=0`);
-      } else {
-        console.error(`[worker] pid=${pid} _start() returned, exitCode=${exitCode}`);
-      }
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {

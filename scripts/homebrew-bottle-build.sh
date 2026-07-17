@@ -4,6 +4,7 @@ set -euo pipefail
 
 TAP_ROOT=""
 TAP_REPOSITORY="${KANDELO_HOMEBREW_TAP_REPOSITORY:-Automattic/kandelo-homebrew}"
+TAP_NAME_INPUT="${KANDELO_HOMEBREW_TAP_NAME:-}"
 FORMULA=""
 ARCH=""
 OUT_DIR=""
@@ -13,7 +14,7 @@ SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url>
+usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url>
 
 This script is intended to run inside scripts/dev-shell.sh. It invokes the
 absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
@@ -31,6 +32,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
@@ -89,7 +91,11 @@ if [ -z "$BREW_BIN" ] || [ ! -x "$BREW_BIN" ]; then
 fi
 
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+PUBLISHER_TRUST_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-publisher-skip-redundant-item-trust.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 mkdir -p "$OUT_DIR/bottles"
 if [ -n "$BUILD_USER" ]; then
@@ -125,10 +131,10 @@ export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
 chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
 
-homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
+homebrew_patched_launcher_prepare \
+  "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_TRUST_PATCH_FILE"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
-TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 BOTTLE_TAG="${ARCH}_kandelo"
 
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
@@ -141,6 +147,8 @@ export HOMEBREW_KANDELO_ARCH="$ARCH"
 export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
+
+homebrew_patched_launcher_seed_bundler_groups bottle formula_test
 
 unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
 
@@ -167,6 +175,10 @@ chmod 0600 "$INSTALL_LOG" "$DEPENDENCY_LIST" \
   "$CONTROL_DIR"/brew-install-attempt-*.log
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+
+# Trust only the reviewed tap. The publisher-only Homebrew patch suppresses
+# automatic persistence of redundant item entries for that already-trusted
+# tap, so this store can remain immutable during Formula evaluation.
 "$BREW_BIN" trust --tap "$TAP_NAME"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
@@ -186,9 +198,8 @@ if [ -n "$BUILD_USER" ]; then
   # loading TypeScript sources. Do that while the workflow identity still owns
   # the checkout; the isolated build identity receives no source write access.
   rm -rf "$KANDELO_ROOT/host/dist"
-  homebrew_patched_launcher_isolate "$BUILD_USER" "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT"
-  homebrew_assert_tree_not_writable_by_user "$BUILD_USER" "$OUT_DIR"
-  homebrew_assert_tree_not_replaceable_by_user "$BUILD_USER" "$OUT_DIR"
+  homebrew_patched_launcher_isolate "$BUILD_USER" \
+    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-bottle-build.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
@@ -301,6 +312,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
   --brew-bin "$BREW_BIN" \
   --tap-root "$TAP_ROOT" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --formula "$FORMULA" \
   --arch "$ARCH" \

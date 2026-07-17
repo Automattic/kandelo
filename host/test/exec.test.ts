@@ -26,6 +26,7 @@ describe("execve", () => {
       argv: ["exec-caller"],
       timeout: 15_000,
       execPrograms,
+      useDefaultRootfs: false,
     });
 
     // exec-child exits with 42
@@ -33,9 +34,13 @@ describe("execve", () => {
 
     // exec-child prints its argv
     expect(result.stdout).toContain("argc=3");
-    expect(result.stdout).toContain("argv[0]=exec-child");
+    expect(result.stdout).toContain("argv[0]=/opt/kandelo/bin/exec-child");
     expect(result.stdout).toContain("argv[1]=hello");
     expect(result.stdout).toContain("argv[2]=world");
+    expect(result.stdout).toContain(
+      "program_invocation_name=/opt/kandelo/bin/exec-child",
+    );
+    expect(result.stdout).toContain("program_invocation_short_name=exec-child");
 
     // exec-child prints env vars passed by exec-caller
     expect(result.stdout).toContain("FOO=bar");
@@ -48,6 +53,7 @@ describe("execve", () => {
       argv: ["fork-exec"],
       timeout: 15_000,
       execPrograms,
+      useDefaultRootfs: false,
     });
 
     // Parent exits 0

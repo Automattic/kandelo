@@ -100,6 +100,7 @@ export interface HomebrewVfsPlanOptions {
   packages: string[];
   arch: HomebrewBottleArch;
   expectedAbi?: number;
+  expectedTapName?: string;
   runtime?: HomebrewRuntime;
   expectedCacheKeys?: Record<string, string>;
   allowFallback?: boolean;
@@ -141,6 +142,7 @@ export interface HomebrewVfsPlan {
   kandeloCommit: string;
   kandeloAbi: number;
   releaseTag: string;
+  requestedPackages: string[];
   packages: HomebrewVfsPackagePlan[];
 }
 
@@ -163,8 +165,17 @@ interface SelectedBottle {
 }
 
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
+const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
+const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const FIRST_PARTY_TAP = "automattic/kandelo-homebrew";
+const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SAFE_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
+const MAX_PACKAGE_NAME_BYTES = 255;
+const MAX_REQUESTED_PACKAGES = 128;
+const MAX_RESOLVED_PACKAGES = 128;
+const MAX_METADATA_PACKAGES = 4096;
+const MAX_PACKAGE_DEPENDENCIES = 128;
 
 export async function planHomebrewVfs(
   metadataValue: unknown,
@@ -173,6 +184,7 @@ export async function planHomebrewVfs(
   const metadata = parseTapMetadata(metadataValue);
   const expectedAbi = options.expectedAbi ?? ABI_VERSION;
   validateExpectedAbi(metadata, expectedAbi);
+  validateExpectedTapName(metadata, options.expectedTapName);
   const arch = validateRequestedArch(options.arch);
   const requestedPackages = validateRequestedPackages(options.packages);
   const packages = resolvePackageClosure(metadata, requestedPackages);
@@ -195,6 +207,7 @@ export async function planHomebrewVfs(
     kandeloCommit: metadata.kandelo_commit,
     kandeloAbi: metadata.kandelo_abi,
     releaseTag: metadata.release_tag,
+    requestedPackages,
     packages: planned,
   };
 }
@@ -204,17 +217,54 @@ function parseTapMetadata(value: unknown): HomebrewTapMetadata {
   const schema = requiredInteger(metadata, "schema", "metadata");
   if (schema !== 1) fail(`metadata schema must be 1, got ${schema}`);
 
-  const packages = requiredArray(metadata, "packages", "metadata").map((pkg, index) =>
+  const packageValues = requiredArray(metadata, "packages", "metadata");
+  if (packageValues.length > MAX_METADATA_PACKAGES) {
+    fail(`metadata packages must contain at most ${MAX_METADATA_PACKAGES} entries`);
+  }
+  const packages = packageValues.map((pkg, index) =>
     parseMetadataPackage(pkg, `metadata.packages[${index}]`)
   );
 
+  const tapRepository = requiredString(metadata, "tap_repository", "metadata");
+  const tapName = requiredString(metadata, "tap_name", "metadata");
+  const tapCommit = requiredString(metadata, "tap_commit", "metadata");
+  const kandeloRepository = requiredString(metadata, "kandelo_repository", "metadata");
+  const kandeloCommit = requiredString(metadata, "kandelo_commit", "metadata");
+  if (!REPOSITORY_RE.test(tapRepository)) {
+    fail(`metadata.tap_repository ${quote(tapRepository)} is not a valid owner/repository`);
+  }
+  if (!TAP_NAME_RE.test(tapName)) {
+    fail(`metadata.tap_name ${quote(tapName)} is not a canonical lowercase owner/tap name`);
+  }
+  validateTapIdentity(tapRepository, tapName);
+  if (!GIT_SHA_RE.test(tapCommit)) fail("metadata.tap_commit must be a lowercase 40-char git sha");
+  if (!REPOSITORY_RE.test(kandeloRepository)) {
+    fail(`metadata.kandelo_repository ${quote(kandeloRepository)} is not a valid owner/repository`);
+  }
+  if (!GIT_SHA_RE.test(kandeloCommit)) {
+    fail("metadata.kandelo_commit must be a lowercase 40-char git sha");
+  }
+
+  const seenPackages = new Set<string>();
+  for (const pkg of packages) {
+    if (seenPackages.has(pkg.name)) fail(`metadata has duplicate package ${quote(pkg.name)}`);
+    seenPackages.add(pkg.name);
+    const expectedFullName = `${tapName}/${pkg.name}`;
+    if (pkg.full_name !== expectedFullName) {
+      fail(
+        `metadata package ${quote(pkg.name)} full_name ${quote(pkg.full_name)} ` +
+        `does not match tap identity ${quote(expectedFullName)}`,
+      );
+    }
+  }
+
   return {
     schema: 1,
-    tap_repository: requiredString(metadata, "tap_repository", "metadata"),
-    tap_name: requiredString(metadata, "tap_name", "metadata"),
-    tap_commit: requiredString(metadata, "tap_commit", "metadata"),
-    kandelo_repository: requiredString(metadata, "kandelo_repository", "metadata"),
-    kandelo_commit: requiredString(metadata, "kandelo_commit", "metadata"),
+    tap_repository: tapRepository,
+    tap_name: tapName,
+    tap_commit: tapCommit,
+    kandelo_repository: kandeloRepository,
+    kandelo_commit: kandeloCommit,
     kandelo_abi: requiredInteger(metadata, "kandelo_abi", "metadata"),
     release_tag: requiredString(metadata, "release_tag", "metadata"),
     generated_at: requiredString(metadata, "generated_at", "metadata"),
@@ -227,9 +277,20 @@ function parseMetadataPackage(value: unknown, label: string): HomebrewMetadataPa
   const pkg = requireRecord(value, label);
   const name = requiredString(pkg, "name", label);
   validatePackageName(name, `${label}.name`);
-  const dependencies = requiredArray(pkg, "dependencies", label).map((dep, index) =>
+  const dependencyValues = requiredArray(pkg, "dependencies", label);
+  if (dependencyValues.length > MAX_PACKAGE_DEPENDENCIES) {
+    fail(`${label}.dependencies must contain at most ${MAX_PACKAGE_DEPENDENCIES} entries`);
+  }
+  const dependencies = dependencyValues.map((dep, index) =>
     parseDependency(dep, `${label}.dependencies[${index}]`)
   );
+  const seenDependencies = new Set<string>();
+  for (const dependency of dependencies) {
+    if (seenDependencies.has(dependency.name)) {
+      fail(`${label}.dependencies has duplicate package ${quote(dependency.name)}`);
+    }
+    seenDependencies.add(dependency.name);
+  }
   const bottles = requiredArray(pkg, "bottles", label).map((bottle, index) =>
     parseMetadataBottle(bottle, `${label}.bottles[${index}]`)
   );
@@ -365,6 +426,49 @@ function validateExpectedAbi(metadata: HomebrewTapMetadata, expectedAbi: number)
   }
 }
 
+function validateExpectedTapName(
+  metadata: HomebrewTapMetadata,
+  expectedTapName: string | undefined,
+): void {
+  if (expectedTapName === undefined) return;
+  if (!TAP_NAME_RE.test(expectedTapName)) {
+    fail(`expected tap name ${quote(expectedTapName)} is not a canonical lowercase owner/tap name`);
+  }
+  if (metadata.tap_name !== expectedTapName) {
+    fail(
+      `metadata tap ${quote(metadata.tap_name)} does not match requested tap ${quote(expectedTapName)}`,
+    );
+  }
+}
+
+function validateTapIdentity(tapRepository: string, tapName: string): void {
+  const normalizedRepository = tapRepository.toLowerCase();
+  let expectedTapName: string;
+  if (normalizedRepository === FIRST_PARTY_TAP) {
+    expectedTapName = FIRST_PARTY_TAP;
+  } else {
+    const [owner, repositoryName] = normalizedRepository.split("/", 2);
+    const prefix = "homebrew-";
+    if (!repositoryName.startsWith(prefix) || repositoryName.length === prefix.length) {
+      fail(
+        `metadata tap repository ${quote(tapRepository)} must use the conventional owner/homebrew-name form`,
+      );
+    }
+    expectedTapName = `${owner}/${repositoryName.slice(prefix.length)}`;
+    if (expectedTapName === FIRST_PARTY_TAP) {
+      fail(
+        `metadata tap repository ${quote(tapRepository)} cannot claim protected first-party tap ${quote(FIRST_PARTY_TAP)}`,
+      );
+    }
+  }
+  if (tapName !== expectedTapName) {
+    fail(
+      `metadata tap ${quote(tapName)} does not match repository ${quote(tapRepository)}; ` +
+      `expected ${quote(expectedTapName)}`,
+    );
+  }
+}
+
 function validateRequestedArch(arch: HomebrewBottleArch): HomebrewBottleArch {
   if (arch !== "wasm32" && arch !== "wasm64") {
     fail(`requested arch must be wasm32 or wasm64, got ${String(arch)}`);
@@ -376,13 +480,17 @@ function validateRequestedPackages(packages: string[]): string[] {
   if (!Array.isArray(packages) || packages.length === 0) {
     fail("Homebrew VFS plan requires at least one requested package");
   }
+  if (packages.length > MAX_REQUESTED_PACKAGES) {
+    fail(`Homebrew VFS plan accepts at most ${MAX_REQUESTED_PACKAGES} requested packages`);
+  }
   const seen = new Set<string>();
   for (const pkg of packages) {
     if (typeof pkg !== "string") fail("requested package names must be strings");
     validatePackageName(pkg, "requested package");
-    if (!seen.add(pkg)) fail(`requested package ${quote(pkg)} is duplicated`);
+    if (seen.has(pkg)) fail(`requested package ${quote(pkg)} is duplicated`);
+    seen.add(pkg);
   }
-  return packages;
+  return [...packages];
 }
 
 function resolvePackageClosure(
@@ -414,6 +522,10 @@ function resolvePackageClosure(
         fail(`package ${quote(requiredBy)} dependency ${quote(name)} is not present`);
       }
       fail(`requested package ${quote(name)} is not present in metadata`);
+    }
+
+    if (state.size >= MAX_RESOLVED_PACKAGES) {
+      fail(`Homebrew VFS dependency closure exceeds ${MAX_RESOLVED_PACKAGES} packages`);
     }
 
     state.set(name, "visiting");
@@ -612,9 +724,10 @@ function validateLinkManifest(
   for (const entry of link.links) {
     validateRelativePath(entry.source, "link manifest link source");
     validateRelativePath(entry.target, "link manifest link target");
-    if (!targets.add(entry.target)) {
+    if (targets.has(entry.target)) {
       fail(`link manifest duplicate target ${quote(entry.target)}`);
     }
+    targets.add(entry.target);
     if (entry.mode !== undefined && !/^[0-7]{4}$/.test(entry.mode)) {
       fail(`link manifest link mode ${quote(entry.mode)} is not four octal digits`);
     }
@@ -647,7 +760,9 @@ function parseStatus(value: string, label: string): HomebrewBottleStatus {
 }
 
 function validatePackageName(value: string, label: string): void {
-  if (!PACKAGE_RE.test(value)) fail(`${label} ${quote(value)} is not a valid package name`);
+  if (!PACKAGE_RE.test(value) || value.length > MAX_PACKAGE_NAME_BYTES) {
+    fail(`${label} ${quote(value)} is not a valid package name`);
+  }
 }
 
 function validateSha256(value: string, label: string): string {

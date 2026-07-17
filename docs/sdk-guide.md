@@ -118,6 +118,23 @@ separate `-lunwind`.
 to wasm-EH `try_table` / `catch_ref` instructions. Without it, catch
 handlers are dead-code-eliminated and `throw` hangs at runtime.
 
+#### LLVM 21 SjLj and `noexcept` limitation
+
+Kandelo's pinned LLVM 21.1.7 toolchain lowers `longjmp` and `siglongjmp` to an
+internal Wasm exception. If that transfer crosses a C++ `noexcept` frame,
+Clang's generated termination handler can intercept the internal tag before
+the matching `setjmp` or `sigsetjmp` landing consumes it. The process then
+calls `std::terminate()` even when the C control transfer itself is valid.
+
+This is a known SDK/toolchain limitation tracked in
+[issue #918](https://github.com/Automattic/kandelo/issues/918), not a change to
+POSIX signal or `longjmp` semantics. It is present in raw clang-linked wasm32
+and wasm64 modules and remains present after Kandelo's wasm32 fork
+instrumentation. Until the pinned compiler is fixed, code that establishes a
+jump landing and calls work that can jump back across the current frame must
+not mark that crossed frame `noexcept`. Keep the workaround scoped to that
+boundary; do not disable C++ exceptions, signal delivery, or child reaping.
+
 ### Building static libraries
 
 ```bash
@@ -142,6 +159,13 @@ wasm32posix-cc -ldl main.c -o main.wasm
 wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 ```
 
+Executables that expose their own symbols to loaded modules or resolve them
+through `dlopen(NULL, ...)` / `dlsym(RTLD_DEFAULT, ...)` must also link with
+`-Wl,--export-dynamic`. Symbols intended for lookup must have default
+visibility, either through `__attribute__((visibility("default")))` on the
+public API or a scoped `-fvisibility=default` build flag. `RTLD_NEXT` lookup is
+not currently supported.
+
 ## What the SDK Does
 
 ### Compiler flags injected automatically
@@ -157,7 +181,18 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 # (removed in commit 9 of the fork-instrument mega-PR, 2026-05-14).
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
 --sysroot=<path>                   # musl sysroot
+-ffile-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
+-fdebug-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
+-fmacro-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
+# The same three maps use /usr/src/kandelo-sdk/sysroot for the wasm32
+# <sysroot>, or /usr/src/kandelo-sdk/sysroot64 for the wasm64 <sysroot>.
 ```
+
+The file, debug, and macro prefix maps cover paths owned and injected by the
+SDK. Linked Wasm debug information and `__FILE__` strings therefore do not
+depend on the checkout containing `libc/glue` or the target sysroot. Build
+systems remain responsible for mapping their own source trees and explicit
+dependency prefixes when those paths must also be reproducible.
 
 The musl objects in the SDK sysroot are compiled with the same Wasm exception
 handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not
@@ -171,6 +206,7 @@ leave unresolved host imports in linked programs.
 -Wl,--import-memory                # Memory provided by host
 -Wl,--shared-memory                # Enable SharedArrayBuffer
 -Wl,--max-memory=1073741824        # 1GB max memory
+-Wl,-z,stack-size=8388608          # 8 MiB main-thread shadow stack (see below)
 -Wl,--global-base=1114112          # Data segment start
 -Wl,--no-stack-first               # LLVM 22+: preserve stack-after-data layout
 -Wl,--allow-undefined              # Host imports are resolved at load time
@@ -179,6 +215,95 @@ leave unresolved host imports in linked programs.
 -Wl,--export=__tls_base            # Required for TLS
 -Wl,--export=__wasm_init_tls       # TLS initialization
 ```
+
+#### Why an 8 MiB main-thread stack
+
+wasm-ld's default shadow stack is only ~64 KiB. WebAssembly has **no stack
+guard page**, so a program that overflows the shadow stack does not fault at the
+overflow — `__stack_pointer` simply keeps decrementing past `__data_end` and
+silently overwrites whatever lives at the top of `.bss`. On this platform that
+region holds the pthread/TLS globals (`__wasm_tp_storage`, the main thread's
+`struct pthread`, and `__pthread_tsd_main`), so an overflow corrupts thread-local
+storage and later surfaces as a **spurious "memory access out of bounds"** in an
+unrelated function (e.g. `__pthread_getspecific` or `pthread_mutex_lock`) — far
+from the actual overflow. Deep call chains in ordinary libraries hit this
+easily; GTK's `gdk_pixbuf_new_from_file` → GObject type-registration → glib
+chain is one confirmed case (see `docs/kandelo-lxde-desktop-demo.md`).
+
+POSIX does **not** mandate a default stack size — it is implementation-defined,
+with `RLIMIT_STACK` governing the main thread. We reserve **8 MiB** because that
+is the de-facto default soft `RLIMIT_STACK` on Linux/glibc (and macOS), so the
+large body of C software written and tested on Linux already assumes it fits
+within those bounds. Because a WebAssembly shadow stack cannot grow at runtime,
+the reservation is fixed at link time.
+
+Scope and cost:
+- **Main thread only.** This flag sizes the process's initial shadow stack.
+  Threads created via `pthread_create` get their own stacks from musl's
+  `__default_stacksize` (128 KiB by default), independent of this flag — an
+  8 MiB main stack does **not** multiply per thread.
+- **At least ~8 MiB of initial linear memory per process.** A larger stack raises
+  `__heap_base` 1:1, so each process instance reserves the extra space up front.
+  This is per-process; a `fork()`ed child is a separate address space with the
+  same configured main stack size.
+- The engine's native Wasm call stack (operand stack / call frames) is separate
+  and host/engine-managed; it is not part of this linear-memory reservation.
+
+The SDK treats 8 MiB as a floor. It appends the larger of that floor and every
+valid user stack request after the other linker arguments, where lld gives it
+final precedence. The Node-hosted driver first asks pinned Clang for a `-###`
+job trace without injecting executable glue. Compiler-only traces, including
+`-fsyntax-only`, dependency generation, and analyzer jobs hidden in response
+files, continue without link preparation. Confirmed executable links get a
+second `-###` trace with the complete SDK link inputs, and the SDK scans the
+exact `wasm-ld` argument vector Clang emits. This leaves option classification
+and ordering in Clang: positional inputs, `-Wl,`, `-Xlinker`, and direct `-z`
+transports cannot be misclassified by a duplicate SDK option table. A failed,
+missing, or ambiguous linker trace aborts before the real link. These traces are
+driver-only invocations and do not compile; they add two Clang processes per
+executable link and one for an otherwise-unrecognized compiler-only mode.
+
+The Kandelo-native driver also uses a non-compiling Clang job trace to preserve
+compiler-only modes before entering its manual link path. For a confirmed link,
+it invokes the adjacent `wasm-ld` directly and scans the exact linker arguments
+it has already classified.
+
+Relative lld response paths follow Clang's effective `-working-directory`,
+including when that option comes from a top-level Clang response file,
+configuration file, or environment override. The SDK reads the driver-owned cwd
+slot in the pinned Clang trace and fails before linking if the trace omits or
+contradicts that invariant. Debug, coverage, and file compilation-directory
+options do not affect linker response resolution.
+
+LLVM 21 accepts the lld forms `-z stack-size=<bytes>` and
+`-zstack-size=<bytes>`. Stack sizes follow LLVM 21's radix-0 integer syntax:
+decimal, leading-zero or `0o` octal, `0x`/`0X` hexadecimal, and `0b`/`0B`
+binary.
+
+Clang expands its response files when producing the trace. The SDK expands any
+remaining lld response files, including nested `@file` references, using LLVM's
+POSIX response-file tokenization rules. Expansion uses an iterative work stack,
+not a nesting cutoff: both drivers inspect chains accepted by LLVM and reject
+missing or recursive response files before the real link. To bound hostile or
+accidental input, they also reject an expansion after 4,096 file expansions,
+1,048,576 examined tokens, or 64 MiB of decoded response text. These are
+explicit resource limits; exhausting one never falls back to the 8 MiB floor.
+This keeps quoted or escaped paths distinct from linker options and prevents
+object filenames containing `stack-size=` from changing the stack. Bare
+`stack-size=<bytes>` tokens, `-z=stack-size=<bytes>`, and options after `--` are
+not stack requests. Response-file contents are never rewritten.
+The Node-hosted SDK accepts LLVM's UTF-8, UTF-16LE-BOM, and UTF-16BE-BOM
+response encodings. The Kandelo-native Bash driver accepts UTF-8 response files
+and rejects either UTF-16 BOM before compiling or linking: Bash variables cannot
+retain UTF-16's embedded NUL bytes, and the packaged SDK does not declare a
+transcoding tool. Generate UTF-8 response files when building inside Kandelo.
+Invalid spellings stay visible to LLVM so it can reject them; a valid stack
+larger than the SDK's fixed 1 GiB executable-memory maximum fails in the driver
+instead of being silently replaced by the floor. Smaller legacy requests
+therefore still receive 8 MiB, while programs such as SpiderMonkey that
+explicitly need 16 MiB retain that larger reservation. Changing the platform
+floor or scanner requires updating both `sdk/kandelo/bin/wasm32posix-cc` and
+`sdk/src/lib/flags.ts`.
 
 ### Files linked automatically
 
@@ -230,13 +355,18 @@ The count is a resource limit, not a static memory slab reservation. The host dy
 ### Flags silently ignored
 
 These flags are common in build systems but irrelevant for Wasm:
-- `-pthread`, `-lpthread` (threads are host-managed)
+- `-lpthread` (pthread symbols are provided by musl's `libc.a`)
 - `-fPIE`, `-pie` (no position-independent executables in Wasm)
 - `-lrt`, `-lresolv`, `-lm`, `-lcrypt`, `-lutil` (all in musl libc.a)
 - `-rdynamic`, `-Wl,-Bsymbolic`
 - `-Wl,-rpath,*`, `-Wl,-soname,*`, `-Wl,--version-script*`
 
 ## Autoconf Projects
+
+The compiler drivers preserve `-pthread` so Clang supplies its standard
+thread-aware compilation semantics, including defining `_REENTRANT`. The
+separate `-lpthread` link flag remains an accepted no-op because Kandelo's musl
+provides pthread symbols through `libc.a`.
 
 Use `wasm32posix-configure` to run `./configure` with the correct cross-compilation settings:
 
@@ -253,8 +383,31 @@ This sets:
 - `RANLIB=wasm32posix-ranlib`
 - `NM=wasm32posix-nm`
 - `STRIP=wasm32posix-strip`
-- `--host=wasm32-unknown-none`
+- `--host=wasm32-unknown-linux-musl`
 - `--build` (auto-detected from host system)
+
+The `--host` tuple describes Kandelo's musl userland to GNU build systems.
+GNU `config.sub` only accepts musl when paired with a Linux kernel component,
+so this is the canonical tuple that lets Autoconf and gnulib select musl ABI
+and libc behavior. It is not the compiler code-generation triple and does not
+promise a Linux kernel: `wasm32posix-cc` continues to invoke Clang with
+`--target=wasm32-unknown-unknown`, and Kandelo's documented POSIX surface
+remains authoritative.
+
+The wrapper also loads `sdk/config.site`. That file is authoritative for
+shared target facts that cross-compilation cannot discover reliably, including
+functions present in the Kandelo musl sysroot and extension functions that are
+absent from it. Keep package-specific runtime or semantic probe results in the
+package recipe, but add reusable sysroot availability facts to `config.site`
+instead of duplicating them across packages. An explicitly exported
+`CONFIG_SITE` overrides the SDK default.
+
+Dynamic loading is an important exception to link-only detection. Musl carries
+weak `dlopen`/`dlsym` stubs that link but only report that dynamic loading is
+unsupported. `config.site` therefore directs `AC_SEARCH_LIBS` checks for the
+dlfcn API to `-ldl`; the SDK compiler wrapper interprets that library request
+by linking Kandelo's functional Wasm dynamic-loading glue. A configure result
+of `none required` for those searches would select the nonfunctional stubs.
 
 ### Example: building dash
 
@@ -373,7 +526,9 @@ See the [Porting Guide](porting-guide.md) for preparing browser-facing package i
 
 ## Tips
 
-- **Don't add `-pthread`**: Thread creation is host-managed via `clone()`. The SDK silently ignores `-pthread`.
+- **Use `-pthread` when the build requires it**: The SDK forwards it to Clang
+  for standard compiler semantics such as `_REENTRANT`; pthread symbols still
+  come from musl's `libc.a`.
 - **Use `-O2` or `-Os`**: Unoptimized Wasm is significantly slower and larger.
 - **Check build script examples**: `packages/registry/` contains complete build scripts for 12 real-world libraries including autoconf, CMake, and plain Makefile projects.
 - **For fork support**: Run `scripts/run-wasm-fork-instrument.sh` as the final

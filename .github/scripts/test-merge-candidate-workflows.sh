@@ -170,8 +170,14 @@ grep -Fq 'select-package-archive-source.sh' "$PREPARE" || \
   fail "Prepare merge must prefer an existing canonical cache-key asset"
 grep -Fq 'download-verified-release-asset.sh' "$PREPARE" || \
   fail "Prepare merge must verify snapshotted source asset bytes before promotion"
-grep -Fq -- '--tag "${{ matrix.source_tag }}"' "$PREPARE" || \
+grep -Fq 'ARCHIVE_NAME: ${{ matrix.archive_name }}' "$PREPARE" || \
+  fail "Prepare merge must pass the selected archive name through the environment"
+grep -Fq 'SOURCE_TAG: ${{ matrix.source_tag }}' "$PREPARE" || \
+  fail "Prepare merge must pass the selected source release through the environment"
+grep -Fq -- '--tag "$SOURCE_TAG"' "$PREPARE" || \
   fail "Prepare merge promotion must download from the selected source release"
+grep -Fq -- '--asset "$ARCHIVE_NAME"' "$PREPARE" || \
+  fail "Prepare merge promotion must download the selected archive without shell interpolation"
 grep -Fq 'if select_match "$CANONICAL_ASSETS" canonical' "$ARCHIVE_SOURCE_SCRIPT" || \
   fail "canonical cache-key bytes must take precedence over PR staging bytes"
 grep -Fq 'actual_sha256' "$ARCHIVE_DOWNLOAD_SCRIPT" || \
@@ -266,6 +272,11 @@ fi
 merge_gate=$(job_block "$PREPARE" merge-gate-post)
 grep -Fq 'mark-merge-candidate-ready.sh' <<<"$merge_gate" || \
   fail "merge-gate must seal and publish candidate authority"
+grep -Fq 'ref: ${{ needs.synthesize-merge.outputs.base_sha }}' <<<"$merge_gate" || \
+  fail "write-authorized merge-gate helpers must come from the exact prepared base"
+if grep -Fq 'ref: ${{ needs.synthesize-merge.outputs.head_sha }}' <<<"$merge_gate"; then
+  fail "write-authorized merge-gate helpers must not come from the pull request head"
+fi
 grep -Fq 'candidate_index_sha256: ${{ steps.candidate_index.outputs.sha256 }}' "$PREPARE" || \
   fail "test preparation must export the exact candidate index digest"
 grep -Fq 'candidate_index_sha256: ${{ steps.gate.outputs.candidate_index_sha256 }}' "$PREPARE" || \
@@ -294,6 +305,29 @@ if [ "$snapshot_line" -ge "$resolver_line" ]; then
 fi
 if grep -Fq -- '- name: Capture tested candidate index' "$PREPARE"; then
   fail "candidate index must not be recaptured from mutable release state after materialization"
+fi
+homebrew_guest_block=$(step_block "$PREPARE" "Prove Homebrew starts from candidate artifacts")
+homebrew_guest_step=$(step_run_block "$PREPARE" "Prove Homebrew starts from candidate artifacts")
+grep -Fq "if: env.PACKAGE_STAGING_REQUIRED == 'true'" <<<"$homebrew_guest_block" || \
+  fail "candidate-backed Homebrew execution must run for package and ABI staging"
+grep -Fq 'build-homebrew-bootstrap.sh --skip-package-resolve' <<<"$homebrew_guest_step" || \
+  fail "candidate-backed Homebrew execution must use only materialized candidate packages"
+grep -Fq -- '--brew-script /home/linuxbrew/.linuxbrew/bin/brew' <<<"$homebrew_guest_step" || \
+  fail "candidate-backed Homebrew execution must test the canonical brew entry point"
+grep -Fq -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" || \
+  fail "candidate-backed Homebrew execution must test the /usr/bin/brew alias"
+host_dist_clear_count=$(grep -Fc 'rm -rf host/dist' <<<"$homebrew_guest_step")
+if [ "$host_dist_clear_count" -ne 2 ]; then
+  fail "candidate-backed Homebrew execution must clear host/dist before both probes"
+fi
+first_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '1s/:.*//p')
+second_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '2s/:.*//p')
+canonical_brew_line=$(grep -nF -- '--brew-script /home/linuxbrew/.linuxbrew/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
+alias_brew_line=$(grep -nF -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
+if [ "$first_host_dist_clear_line" -ge "$canonical_brew_line" ] || \
+   [ "$canonical_brew_line" -ge "$second_host_dist_clear_line" ] || \
+   [ "$second_host_dist_clear_line" -ge "$alias_brew_line" ]; then
+  fail "candidate-backed Homebrew execution must clear host/dist before each ordered entry-point probe"
 fi
 grep -Fq 'current merge-gate authority changed' "$MARK_READY_SCRIPT" || \
   fail "candidate recovery authority replacement must be compare-and-swap"

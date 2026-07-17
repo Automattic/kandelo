@@ -20,7 +20,236 @@ export function compileFlags(arch: WasmArch): string[] {
   ];
 }
 
-export function linkFlags(arch: WasmArch): string[] {
+export const DEFAULT_MAIN_THREAD_STACK_SIZE = 8 * 1024 * 1024;
+export const MAX_EXECUTABLE_MEMORY_SIZE = 1024 * 1024 * 1024;
+
+type ParsedStackSize =
+  | { kind: 'valid'; value: number }
+  | { kind: 'invalid' }
+  | { kind: 'overflow' };
+
+function parseLldStackSize(value: string): ParsedStackSize {
+  let digits: string;
+  let radix: 2 | 8 | 10 | 16;
+
+  // Match LLVM 21's radix-0 integer grammar exactly. Invalid spellings are
+  // left for wasm-ld to reject so the compiler driver never rewrites input.
+  if (/^0[xX][0-9a-fA-F]+$/.test(value)) {
+    digits = value.slice(2);
+    radix = 16;
+  } else if (/^0[bB][01]+$/.test(value)) {
+    digits = value.slice(2);
+    radix = 2;
+  } else if (/^0o[0-7]+$/.test(value)) {
+    digits = value.slice(2);
+    radix = 8;
+  } else if (/^0[0-7]*$/.test(value)) {
+    digits = value.slice(1) || '0';
+    radix = 8;
+  } else if (/^[1-9][0-9]*$/.test(value)) {
+    digits = value;
+    radix = 10;
+  } else {
+    return { kind: 'invalid' };
+  }
+
+  const significantDigits = digits.replace(/^0+/, '') || '0';
+  const maxDigits = radix === 2 ? 31 : radix === 8 ? 11 : radix === 10 ? 10 : 8;
+  if (significantDigits.length > maxDigits) return { kind: 'overflow' };
+
+  const prefix = radix === 2 ? '0b' : radix === 8 ? '0o' : radix === 16 ? '0x' : '';
+  const parsed = BigInt(`${prefix}${significantDigits}`);
+  if (parsed > BigInt(MAX_EXECUTABLE_MEMORY_SIZE)) return { kind: 'overflow' };
+
+  return { kind: 'valid', value: Number(parsed) };
+}
+
+export const MAX_RESPONSE_FILE_EXPANSIONS = 4096;
+export const MAX_RESPONSE_FILE_TOKENS = 1024 * 1024;
+export const MAX_RESPONSE_FILE_CHARACTERS = 64 * 1024 * 1024;
+
+export interface ResponseFileContents {
+  contents: string;
+  /** Canonical identity used only while this file is active in the expansion stack. */
+  identity: string;
+}
+
+export type ResponseFileReader = (path: string) => ResponseFileContents | null;
+
+function isGnuResponseWhitespace(char: string): boolean {
+  return char === ' ' || char === '\t' || char === '\r' || char === '\n';
+}
+
+/** Match LLVM's POSIX TokenizeGNUCommandLine response-file grammar. */
+export function tokenizeGnuResponseFile(source: string): string[] {
+  if (source.startsWith('\uFEFF')) source = source.slice(1);
+
+  const tokens: string[] = [];
+  let token = '';
+
+  for (let i = 0; i < source.length; i++) {
+    if (token.length === 0) {
+      while (i < source.length && isGnuResponseWhitespace(source[i])) i++;
+      if (i === source.length) break;
+    }
+
+    const char = source[i];
+    if (char === '\\' && i + 1 < source.length) {
+      token += source[++i];
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      const quote = char;
+      i++;
+      while (i < source.length && source[i] !== quote) {
+        if (source[i] === '\\' && i + 1 < source.length) i++;
+        token += source[i++];
+      }
+      if (i === source.length) break;
+      continue;
+    }
+
+    if (isGnuResponseWhitespace(char)) {
+      if (token.length > 0) tokens.push(token);
+      token = '';
+      continue;
+    }
+
+    token += char;
+  }
+
+  if (token.length > 0) tokens.push(token);
+  return tokens;
+}
+
+export function expandResponseFiles(
+  args: string[],
+  readResponseFile: ResponseFileReader,
+): string[] {
+  const expanded: string[] = [];
+  const activeFiles = new Set<string>();
+  type WorkItem =
+    | { kind: 'argument'; value: string }
+    | { kind: 'leave'; identity: string };
+  const work: WorkItem[] = [];
+  for (let index = args.length - 1; index >= 0; index--) {
+    work.push({ kind: 'argument', value: args[index] });
+  }
+
+  let fileExpansions = 0;
+  let examinedTokens = args.length;
+  let decodedCharacters = 0;
+  if (examinedTokens > MAX_RESPONSE_FILE_TOKENS) {
+    throw new Error(
+      `response-file expansion exceeds the ${MAX_RESPONSE_FILE_TOKENS}-token safety limit`,
+    );
+  }
+
+  while (work.length > 0) {
+    const item = work.pop() as WorkItem;
+    if (item.kind === 'leave') {
+      activeFiles.delete(item.identity);
+      continue;
+    }
+
+    const arg = item.value;
+    if (!arg.startsWith('@') || arg.length === 1) {
+      expanded.push(arg);
+      continue;
+    }
+    const path = arg.slice(1);
+    const responseFile = readResponseFile(path);
+    if (responseFile === null) {
+      throw new Error(`cannot inspect response file ${JSON.stringify(path)} before linking`);
+    }
+    if (responseFile.identity.length === 0) {
+      throw new Error(`response file ${JSON.stringify(path)} has no canonical identity`);
+    }
+    if (activeFiles.has(responseFile.identity)) {
+      throw new Error(`recursive response file ${JSON.stringify(path)} cannot be inspected safely`);
+    }
+
+    fileExpansions++;
+    if (fileExpansions > MAX_RESPONSE_FILE_EXPANSIONS) {
+      throw new Error(
+        `response-file expansion exceeds the ${MAX_RESPONSE_FILE_EXPANSIONS}-file safety limit`,
+      );
+    }
+    decodedCharacters += responseFile.contents.length;
+    if (decodedCharacters > MAX_RESPONSE_FILE_CHARACTERS) {
+      throw new Error(
+        `response-file expansion exceeds the ${MAX_RESPONSE_FILE_CHARACTERS}-character safety limit`,
+      );
+    }
+
+    const nestedTokens = tokenizeGnuResponseFile(responseFile.contents);
+    examinedTokens += nestedTokens.length;
+    if (examinedTokens > MAX_RESPONSE_FILE_TOKENS) {
+      throw new Error(
+        `response-file expansion exceeds the ${MAX_RESPONSE_FILE_TOKENS}-token safety limit`,
+      );
+    }
+
+    activeFiles.add(responseFile.identity);
+    work.push({ kind: 'leave', identity: responseFile.identity });
+    for (let index = nestedTokens.length - 1; index >= 0; index--) {
+      work.push({ kind: 'argument', value: nestedTokens[index] });
+    }
+  }
+
+  return expanded;
+}
+
+/**
+ * Apply the SDK's stack-size floor while retaining explicit larger requests.
+ * Callers pass the exact argv emitted for wasm-ld by Clang's `-###` trace. That
+ * keeps Clang's option classification and ordering in Clang itself instead of
+ * duplicating its driver option table here.
+ */
+export function mainThreadStackSize(
+  linkerArgs: string[],
+  readResponseFile?: ResponseFileReader,
+): number {
+  let result = DEFAULT_MAIN_THREAD_STACK_SIZE;
+
+  const consider = (value: string): void => {
+    const requested = parseLldStackSize(value);
+    if (requested.kind === 'overflow') {
+      throw new Error(
+        `stack-size=${value} exceeds the SDK's ${MAX_EXECUTABLE_MEMORY_SIZE}-byte executable memory limit`,
+      );
+    }
+    if (requested.kind === 'valid' && requested.value > result) result = requested.value;
+  };
+
+  const lldArgs = readResponseFile
+    ? expandResponseFiles(linkerArgs, readResponseFile)
+    : linkerArgs;
+  for (let i = 0; i < lldArgs.length; i++) {
+    const arg = lldArgs[i];
+    if (arg === '--') break;
+
+    if (arg === '-z') {
+      const value = lldArgs[++i];
+      if (value?.startsWith('stack-size=')) {
+        consider(value.slice('stack-size='.length));
+      }
+      continue;
+    }
+
+    if (arg.startsWith('-zstack-size=')) {
+      consider(arg.slice('-zstack-size='.length));
+    }
+  }
+
+  return result;
+}
+
+export function linkFlags(
+  arch: WasmArch,
+  mainThreadStackSizeBytes = DEFAULT_MAIN_THREAD_STACK_SIZE,
+): string[] {
   return [
     '-nostdlib',
     '-Wl,--entry=_start',
@@ -28,8 +257,22 @@ export function linkFlags(arch: WasmArch): string[] {
     '-Wl,--export=__heap_base',
     '-Wl,--import-memory',
     '-Wl,--shared-memory',
-    '-Wl,--max-memory=1073741824',
+    `-Wl,--max-memory=${MAX_EXECUTABLE_MEMORY_SIZE}`,
     '-Wl,--allow-undefined',
+    // Reserve an 8 MiB main-thread shadow stack. wasm-ld's default is only
+    // ~64 KiB, and WebAssembly has no stack guard page, so a deep call chain
+    // silently overflows past __data_end into .bss and corrupts the pthread/TLS
+    // globals that live there (__wasm_tp_storage, __pthread_tsd_main), which
+    // then surfaces as a spurious "memory access out of bounds" far from the
+    // real fault. POSIX leaves the default stack size implementation-defined,
+    // but 8 MiB is the de-facto Linux/glibc RLIMIT_STACK default that mainstream
+    // C software (GTK, etc.) is written and tested against, so matching it
+    // maximizes portability. Treat it as a floor: callers retain explicit larger
+    // requests. This sizes only the main thread; pthreads get their own stacks
+    // from musl's __default_stacksize. Cost: at least ~8 MiB of initial linear
+    // memory per process (it raises __heap_base 1:1). Keep in sync with the bash
+    // wasm32posix-cc. See docs/sdk-guide.md.
+    `-Wl,-z,stack-size=${mainThreadStackSizeBytes}`,
     '-Wl,--global-base=1114112',
     '-Wl,--table-base=3',
     '-Wl,--export-table',
@@ -62,7 +305,7 @@ export const SHARED_LINK_FLAGS: string[] = [
 ];
 
 const IGNORED_EXACT = new Set([
-  '-pthread', '-lpthread',
+  '-lpthread',
   '-fPIE', '-pie',
   '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
   '-rdynamic', '-Wl,-Bsymbolic',

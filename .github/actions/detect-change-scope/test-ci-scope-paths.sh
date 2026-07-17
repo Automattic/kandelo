@@ -40,6 +40,9 @@ assert_not_matches() {
 assert_matches package_archive_changed_files \
   "tools/xtask/src/build_deps.rs" \
   "tools/xtask/src/build_deps.rs"
+assert_matches package_archive_changed_files \
+  "tools/xtask/src/package_archive_name.rs" \
+  "tools/xtask/src/package_archive_name.rs"
 assert_not_matches package_archive_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
@@ -93,6 +96,9 @@ assert_matches binary_materialization_changed_files \
   "scripts/test-wasm-artifact-guards.sh" \
   "scripts/test-wasm-artifact-guards.sh"
 assert_matches binary_materialization_changed_files \
+  "scripts/vfs-has-stale-abi.mjs" \
+  "scripts/vfs-has-stale-abi.mjs"
+assert_matches binary_materialization_changed_files \
   "tests/package-system/fetch-binaries-allow-stale.test.ts" \
   "tests/package-system/fetch-binaries-allow-stale.test.ts"
 
@@ -105,6 +111,9 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   "tools/xtask/src/index_candidate.rs" \
   "tools/xtask/src/index_candidate.rs"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/package_archive_name.rs" \
+  "tools/xtask/src/package_archive_name.rs"
 assert_matches package_publish_flow_changed_files \
   "tests/scripts/index-update.sh" \
   "tests/scripts/index-update.sh"
@@ -296,5 +305,8 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/reusable-package-source-publish.yml" \
   ".github/workflows/reusable-package-source-publish.yml"
+assert_matches ci_control_changed_files \
+  "tests/scripts/ci-run-test-suite-groups.test.sh" \
+  "tests/scripts/ci-run-test-suite-groups.test.sh"
 
 echo "ci-scope path classifier tests passed"

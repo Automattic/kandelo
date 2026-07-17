@@ -5,6 +5,7 @@ import { ABI_VERSION } from "../src/generated/abi";
 import {
   buildHomebrewVfs,
   type HomebrewVfsBuildResult,
+  type HomebrewVfsSelectionSource,
 } from "../src/homebrew-vfs-builder";
 import {
   planHomebrewVfs,
@@ -208,6 +209,7 @@ async function buildFixture(
     metadataOverrides?: Record<string, unknown>;
     linkOverrides?: Partial<HomebrewLinkManifest>;
     loadBytes?: Uint8Array;
+    selectionSource?: HomebrewVfsSelectionSource;
   } = {},
 ): Promise<HomebrewVfsBuildResult> {
   const manifest = linkManifest(bytes, opts.linkOverrides);
@@ -220,6 +222,7 @@ async function buildFixture(
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
   return buildHomebrewVfs(plan, {
     fs,
+    selectionSource: opts.selectionSource,
     loadBottleBytes: () => opts.loadBytes ?? bytes,
   });
 }
@@ -250,6 +253,94 @@ describe("Homebrew VFS builder", () => {
       staged_files: 3,
       links: ["bin/hello"],
     });
+    expect(result.report.selection).toMatchObject({
+      kind: "packages",
+      requested_packages: ["hello"],
+    });
+  });
+
+  it("records bounded Brewfile and requested-root provenance", async () => {
+    const bytes = bottleTar(standardEntries());
+    const brewfile = utf8(
+      'tap "automattic/kandelo-homebrew"\nbrew "hello"\n',
+    );
+    const result = await buildFixture(bytes, {
+      selectionSource: {
+        kind: "brewfile",
+        parser: "kandelo-static-brewfile-v1",
+        sha256: sha256(brewfile),
+        bytes: brewfile.byteLength,
+        requestedPackages: ["hello"],
+      },
+    });
+    const expectedRootsSha = sha256(utf8(JSON.stringify(["hello"])));
+
+    expect(result.report.selection).toEqual({
+      kind: "brewfile",
+      requested_packages: ["hello"],
+      requested_packages_sha256: expectedRootsSha,
+      brewfile: {
+        parser: "kandelo-static-brewfile-v1",
+        sha256: sha256(brewfile),
+        bytes: brewfile.byteLength,
+      },
+    });
+    expect(JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    ).selection).toEqual(result.report.selection);
+  });
+
+  it("rejects invalid Brewfile provenance before loading bottle bytes", async () => {
+    const bytes = bottleTar(standardEntries());
+    let loaded = false;
+    const manifest = linkManifest(bytes);
+    const plan = await planHomebrewVfs(metadataForBottle(bytes), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: () => manifest,
+    });
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    await expect(buildHomebrewVfs(plan, {
+      fs,
+      selectionSource: {
+        kind: "brewfile",
+        parser: "kandelo-static-brewfile-v1",
+        sha256: "not-a-sha",
+        bytes: 10,
+        requestedPackages: ["hello"],
+      } as HomebrewVfsSelectionSource,
+      loadBottleBytes() {
+        loaded = true;
+        return bytes;
+      },
+    })).rejects.toThrow("selection provenance is invalid");
+    expect(loaded).toBe(false);
+  });
+
+  it("rejects Brewfile roots that differ from the plan before loading bottle bytes", async () => {
+    const bytes = bottleTar(standardEntries());
+    let loaded = false;
+    const plan = await planHomebrewVfs(metadataForBottle(bytes), {
+      packages: ["hello"],
+      arch: "wasm32",
+      loadLinkManifest: () => linkManifest(bytes),
+    });
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    await expect(buildHomebrewVfs(plan, {
+      fs,
+      selectionSource: {
+        kind: "brewfile",
+        parser: "kandelo-static-brewfile-v1",
+        sha256: sha256(utf8('brew "other"\n')),
+        bytes: 13,
+        requestedPackages: ["other"],
+      },
+      loadBottleBytes() {
+        loaded = true;
+        return bytes;
+      },
+    })).rejects.toThrow("requested packages do not match the plan roots");
+    expect(loaded).toBe(false);
   });
 
   it("supports keg-relative link sources and receipts", async () => {

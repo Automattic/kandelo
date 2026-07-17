@@ -100,15 +100,18 @@ describe("OpfsChannel", () => {
   it("writes and reads stat results", () => {
     const ch = makeChannel();
     const stat = {
-      dev: 1, ino: 42, mode: 0o100644, nlink: 1,
+      dev: 0xffff_ffff_ffff_fffen,
+      ino: (1n << 60n) + 42n,
+      mode: 0o100644,
+      nlink: 1,
       uid: 1000, gid: 1000, size: 4096,
       atimeMs: 1700000000000, mtimeMs: 1700000001000, ctimeMs: 1700000002000,
     };
     ch.writeStatResult(stat);
 
     const result = ch.readStatResult();
-    expect(result.dev).toBe(1);
-    expect(result.ino).toBe(42);
+    expect(result.dev).toBe(0xffff_ffff_ffff_fffen);
+    expect(result.ino).toBe((1n << 60n) + 42n);
     expect(result.mode).toBe(0o100644);
     expect(result.nlink).toBe(1);
     expect(result.uid).toBe(1000);
@@ -117,6 +120,32 @@ describe("OpfsChannel", () => {
     expect(result.atimeMs).toBe(1700000000000);
     expect(result.mtimeMs).toBe(1700000001000);
     expect(result.ctimeMs).toBe(1700000002000);
+  });
+
+  it("rejects lossy or out-of-range stat identities", () => {
+    const ch = makeChannel();
+    const stat = {
+      dev: 0,
+      ino: 1,
+      mode: 0o100644,
+      nlink: 1,
+      uid: 0,
+      gid: 0,
+      size: 0,
+      atimeMs: 0,
+      mtimeMs: 0,
+      ctimeMs: 0,
+    };
+
+    expect(() => ch.writeStatResult({ ...stat, ino: 2 ** 53 })).toThrow(
+      RangeError,
+    );
+    expect(() => ch.writeStatResult({ ...stat, dev: -1n })).toThrow(
+      RangeError,
+    );
+    expect(() => ch.writeStatResult({ ...stat, ino: 1n << 64n })).toThrow(
+      RangeError,
+    );
   });
 
   it("notifyComplete sets status to Complete", () => {

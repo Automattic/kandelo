@@ -783,6 +783,31 @@ describe("VFS image save/restore", () => {
       // Non-growable SABs have maxByteLength === byteLength
       expect(buf.maxByteLength).toBe(buf.byteLength);
     });
+
+    it("can restore the growth ceiling declared by the image", async () => {
+      const initialBytes = 1 * 1024 * 1024;
+      const maxBytes = 8 * 1024 * 1024;
+      const sab = new SharedArrayBuffer(initialBytes, {
+        maxByteLength: maxBytes,
+      });
+      const mfs = MemoryFileSystem.create(sab, maxBytes);
+      writeFile(mfs, "/test.txt", new TextEncoder().encode("hello"));
+      const image = await mfs.saveImage();
+
+      expect(MemoryFileSystem.readImageCapacity(image)).toEqual({
+        byteLength: initialBytes,
+        maxByteLength: maxBytes,
+      });
+
+      const restored = MemoryFileSystem.fromImagePreservingCapacity(image);
+      expect(restored.sharedBuffer.byteLength).toBe(initialBytes);
+      expect(restored.sharedBuffer.maxByteLength).toBe(maxBytes);
+      const stats = restored.statfs("/");
+      expect(stats.blocks * stats.bsize).toBe(maxBytes);
+
+      writeFile(restored, "/grown.bin", new Uint8Array(2 * 1024 * 1024));
+      expect(restored.sharedBuffer.byteLength).toBeGreaterThan(initialBytes);
+    });
   });
 
   describe("rebaseToNewFileSystem", () => {

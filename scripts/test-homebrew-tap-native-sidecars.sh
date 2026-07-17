@@ -150,10 +150,11 @@ write_dependency_provenance() {
   jq -nS \
     --arg formula "$formula" --arg arch "$arch" --arg tap_commit "$tap_commit" \
     --arg bottle_tag "${arch}_kandelo" --argjson dependencies "$dependencies" '{
-      schema: 1,
+      schema: 2,
       formula: $formula,
       arch: $arch,
       tap_repository: "Automattic/kandelo-homebrew",
+      tap_name: "automattic/kandelo-homebrew",
       tap_commit: $tap_commit,
       bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
       bottle_tag: $bottle_tag,
@@ -317,6 +318,7 @@ make_tool_bottle() {
 (module
   (memory 1)
   (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION))
+  (func (export "_start"))
   (func (export "wpk_fork_unwind_begin"))
   (func (export "wpk_fork_unwind_end"))
   (func (export "wpk_fork_rewind_begin"))
@@ -487,12 +489,13 @@ generate_sidecars() {
     --arg version "$version" \
     --arg provenance_sha "$provenance_sha" \
     --slurpfile provenance "$dependency_provenance" '{
-      schema: 1,
+      schema: 2,
       formula: $formula,
       arch: $arch,
       abi: $abi,
       tap: {
         repository: "Automattic/kandelo-homebrew",
+        name: "automattic/kandelo-homebrew",
         commit: $tap_commit
       },
       bottle: {
@@ -557,6 +560,7 @@ generate_sidecars() {
   KANDELO_HOMEBREW_ARCH="$arch" \
   KANDELO_HOMEBREW_RELEASE_TAG="bottles-abi-v${ABI_VERSION}" \
   KANDELO_HOMEBREW_TAP_REPOSITORY=Automattic/kandelo-homebrew \
+  KANDELO_HOMEBREW_TAP_NAME=automattic/kandelo-homebrew \
   KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$archive" \
   KANDELO_HOMEBREW_BOTTLE_JSON="$canonical_json" \
   KANDELO_HOMEBREW_BOTTLE_ROOT_URL=https://ghcr.io/v2/automattic/kandelo-homebrew \
@@ -892,6 +896,179 @@ jq -e '
 
 cp "${dep_bottle[0]}" "$BOTTLE_CACHE/${dep_bottle[2]}.tar.gz"
 cp "${tool_bottle[0]}" "$BOTTLE_CACHE/${tool_bottle[2]}.tar.gz"
+BREWFILE="$TMPDIR/Brewfile"
+cat > "$BREWFILE" <<'EOF'
+tap "automattic/kandelo-homebrew"
+brew "automattic/kandelo-homebrew/sidecar-tool"
+EOF
+BREWFILE_SHA256="$(sha256_file "$BREWFILE")"
+BREWFILE_BYTES="$(wc -c < "$BREWFILE" | tr -d ' ')"
+BASE_ROOT="$TMPDIR/base-root"
+BASE_MANIFEST="$TMPDIR/base.MANIFEST"
+BASE_IMAGE="$TMPDIR/base.vfs"
+BAD_BASE_IMAGE="$TMPDIR/bad-base.vfs"
+UNLABELED_BASE_IMAGE="$TMPDIR/unlabeled-base.vfs"
+COMPOSED_MARKER_BASE_IMAGE="$TMPDIR/composed-marker-base.vfs"
+BASE_RECORDED_MAX_BYTES=33554432
+BASE_REQUESTED_MAX_BYTES=134217728
+mkdir -p "$BASE_ROOT/etc"
+printf '%s\n' 'base-image-marker' > "$BASE_ROOT/etc/base-image-marker"
+cat > "$BASE_MANIFEST" <<'EOF'
+/etc d 0755 0 0
+/etc/base-image-marker f 0644 0 0
+EOF
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" build \
+  "$BASE_MANIFEST" "$BASE_ROOT" \
+  --sab-size 16777216 \
+  --max-size "$BASE_RECORDED_MAX_BYTES" \
+  --kernel-abi "$ABI_VERSION" \
+  -o "$BASE_IMAGE" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" build \
+  "$BASE_MANIFEST" "$BASE_ROOT" \
+  --sab-size 16777216 \
+  --max-size 134217728 \
+  --kernel-abi "$((ABI_VERSION + 1))" \
+  -o "$BAD_BASE_IMAGE" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" build \
+  "$BASE_MANIFEST" "$BASE_ROOT" \
+  --sab-size 16777216 \
+  --max-size 134217728 \
+  -o "$UNLABELED_BASE_IMAGE" >/dev/null
+npx tsx -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+import { MemoryFileSystem } from '$REPO_ROOT/host/src/vfs/memory-fs.ts';
+(async () => {
+  const fs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync('$BASE_IMAGE')));
+  const metadata = fs.getImageMetadata();
+  if (!metadata) throw new Error('expected base metadata');
+  const image = await fs.saveImage({
+    metadata: {
+      ...metadata,
+      platformBase: { source: 'sidecar-test' },
+      signature: 's'.repeat(55_000),
+      provenance: { issuer: 'fixture-builder', subject: 'base-only' },
+    },
+  });
+  writeFileSync('$BASE_IMAGE', image);
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+" >/dev/null
+BASE_IMAGE_SHA256="$(sha256_file "$BASE_IMAGE")"
+BASE_IMAGE_BYTES="$(wc -c < "$BASE_IMAGE" | tr -d ' ')"
+cp "$BASE_IMAGE" "$TMPDIR/base-image.bin"
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --base-image "$TMPDIR/base-image.bin" \
+  --out "$TMPDIR/bad-extension.vfs.zst" \
+  --report "$TMPDIR/bad-extension-report.json" \
+  > /dev/null 2>"$TMPDIR/bad-extension.err"; then
+  echo "Homebrew VFS builder accepted an ambiguous base-image extension" >&2
+  exit 1
+fi
+grep -F -- "--base-image must end in .vfs or .vfs.zst" \
+  "$TMPDIR/bad-extension.err" >/dev/null
+cp "$BASE_IMAGE" "$COMPOSED_MARKER_BASE_IMAGE"
+printf '%s\n' '{"schema":1}' > "$TMPDIR/homebrew-vfs.json"
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" add \
+  "$COMPOSED_MARKER_BASE_IMAGE" /etc/kandelo --dir >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" add \
+  "$COMPOSED_MARKER_BASE_IMAGE" /etc/kandelo/homebrew-vfs.json \
+  --file "$TMPDIR/homebrew-vfs.json" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$UNLABELED_BASE_IMAGE" \
+  --out "$TMPDIR/unlabeled-base-output.vfs.zst" \
+  --report "$TMPDIR/unlabeled-base-report.json" \
+  > /dev/null 2>"$TMPDIR/unlabeled-base.err"; then
+  echo "Homebrew VFS builder accepted an unlabeled base image" >&2
+  exit 1
+fi
+grep -F "does not declare its required kernel ABI" \
+  "$TMPDIR/unlabeled-base.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$COMPOSED_MARKER_BASE_IMAGE" \
+  --out "$TMPDIR/composed-marker-output.vfs.zst" \
+  --report "$TMPDIR/composed-marker-report.json" \
+  > /dev/null 2>"$TMPDIR/composed-marker.err"; then
+  echo "Homebrew VFS builder accepted a base composition marker" >&2
+  exit 1
+fi
+grep -F "already contains a Homebrew composition" \
+  "$TMPDIR/composed-marker.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --max-bytes "$((BASE_RECORDED_MAX_BYTES + 1))" \
+  --out "$TMPDIR/unaligned-output.vfs.zst" \
+  --report "$TMPDIR/unaligned-report.json" \
+  > /dev/null 2>"$TMPDIR/unaligned.err"; then
+  echo "Homebrew VFS builder accepted an unaligned filesystem maximum" >&2
+  exit 1
+fi
+grep -F -- "--max-bytes must be a multiple of 4096 bytes" \
+  "$TMPDIR/unaligned.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BAD_BASE_IMAGE" \
+  --out "$TMPDIR/bad-base-output.vfs.zst" \
+  --report "$TMPDIR/bad-base-report.json" \
+  > /dev/null 2>"$TMPDIR/bad-base.err"; then
+  echo "Homebrew VFS builder accepted an ABI-mismatched base image" >&2
+  exit 1
+fi
+grep -F "but bottle metadata requires ABI $ABI_VERSION" \
+  "$TMPDIR/bad-base.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --brewfile "$BREWFILE" \
+  --package sidecar-tool \
+  --out "$TMPDIR/mixed-selection.vfs.zst" \
+  --report "$TMPDIR/mixed-selection-report.json" \
+  > /dev/null 2>"$TMPDIR/mixed-selection.err"; then
+  echo "Homebrew VFS builder accepted mixed package selection modes" >&2
+  exit 1
+fi
+grep -F -- "--brewfile cannot be combined with --package" \
+  "$TMPDIR/mixed-selection.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --brewfile "$BREWFILE" \
+  --brewfile "$BREWFILE" \
+  --out "$TMPDIR/repeated-brewfile.vfs.zst" \
+  --report "$TMPDIR/repeated-brewfile-report.json" \
+  > /dev/null 2>"$TMPDIR/repeated-brewfile.err"; then
+  echo "Homebrew VFS builder accepted more than one --brewfile" >&2
+  exit 1
+fi
+grep -F -- "--brewfile may be provided only once" \
+  "$TMPDIR/repeated-brewfile.err" >/dev/null
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$TAP/Kandelo/metadata.json" \
   --tap-root "$TAP" \
@@ -899,18 +1076,389 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --arch wasm32 \
   --runtime node \
   --bottle-cache "$BOTTLE_CACHE" \
+  --out "$TMPDIR/sidecar-tool-clean.vfs.zst" \
+  --report "$TMPDIR/sidecar-tool-clean-report.json" >/dev/null
+jq -e 'has("base_image") | not' \
+  "$TMPDIR/sidecar-tool-clean-report.json" >/dev/null
+npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --out "$TMPDIR/sidecar-tool-base-default.vfs.zst" \
+  --report "$TMPDIR/sidecar-tool-base-default-report.json" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --package sidecar-tool \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$TMPDIR/sidecar-tool-base-default.vfs.zst" \
+  --out "$TMPDIR/recomposed-output.vfs.zst" \
+  --report "$TMPDIR/recomposed-report.json" \
+  > /dev/null 2>"$TMPDIR/recomposed.err"; then
+  echo "Homebrew VFS builder accepted composed image metadata" >&2
+  exit 1
+fi
+grep -F "already contains a Homebrew composition" \
+  "$TMPDIR/recomposed.err" >/dev/null
+npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --brewfile "$BREWFILE" \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --max-bytes "$BASE_REQUESTED_MAX_BYTES" \
   --out "$TMPDIR/sidecar-tool.vfs.zst" \
   --report "$TMPDIR/sidecar-tool-report.json" >/dev/null
 
 jq -e '
   [.packages[].name] == ["sidecar-dep", "sidecar-tool"] and
+  .selection.kind == "brewfile" and
+  .selection.requested_packages == ["sidecar-tool"] and
+  (.selection.requested_packages_sha256 | test("^[0-9a-f]{64}$")) and
+  .selection.brewfile == {
+    "parser":"kandelo-static-brewfile-v1",
+    "sha256":$brewfile_sha,
+    "bytes":$brewfile_bytes
+  } and
   (.packages[] | select(.name == "sidecar-tool") | .links) == [
     "bin/sidecar-tool",
     "bin/sidecar-tool-helper",
     "include/sidecar-tool.h",
     "lib/libsidecar-tool.a",
     "share/man/man1/sidecar-tool.1"
-  ]
-' "$TMPDIR/sidecar-tool-report.json" >/dev/null
+  ] and
+  .base_image.sha256 == $base_sha and
+  .base_image.bytes == $base_bytes and
+  .base_image.kernelAbi == $abi and
+  .base_image.metadata.platformBase == {"source":"sidecar-test"} and
+  (.base_image.metadata.signature | length) == 55000 and
+  .base_image.metadata.provenance == {
+    "issuer":"fixture-builder",
+    "subject":"base-only"
+  }
+' --arg base_sha "$BASE_IMAGE_SHA256" --argjson base_bytes "$BASE_IMAGE_BYTES" \
+  --arg brewfile_sha "$BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$BREWFILE_BYTES" \
+  --argjson abi "$ABI_VERSION" \
+  "$TMPDIR/sidecar-tool-report.json" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
+  "$TMPDIR/sidecar-tool-clean.vfs.zst" "$TMPDIR/sidecar-tool-clean-root" >/dev/null
+if [ -e "$TMPDIR/sidecar-tool-clean-root/etc/base-image-marker" ]; then
+  echo "Homebrew VFS builder added the base marker without --base-image" >&2
+  exit 1
+fi
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
+  "$TMPDIR/sidecar-tool.vfs.zst" "$TMPDIR/sidecar-tool-root" >/dev/null
+grep -Fx 'base-image-marker' \
+  "$TMPDIR/sidecar-tool-root/etc/base-image-marker" >/dev/null
+jq -e '
+  .selection.kind == "brewfile" and
+  .selection.requested_packages == ["sidecar-tool"] and
+  .selection.brewfile.sha256 == $brewfile_sha and
+  .selection.brewfile.bytes == $brewfile_bytes
+' --arg brewfile_sha "$BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$BREWFILE_BYTES" \
+  "$TMPDIR/sidecar-tool-root/etc/kandelo/homebrew-vfs.json" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
+  "$TMPDIR/sidecar-tool.vfs.zst" --format json --metadata \
+  > "$TMPDIR/sidecar-tool-inspect.json"
+jq -e '
+  .metadata.baseImage == {
+    "sha256":$base_sha,
+    "bytes":$base_bytes,
+    "kernelAbi":$abi
+  } and
+  .metadata.homebrew.tapRepository == "Automattic/kandelo-homebrew" and
+  .metadata.homebrew.tapName == "automattic/kandelo-homebrew" and
+  .metadata.homebrew.selection == {
+    "kind":"brewfile",
+    "requestedPackageCount":1,
+    "requestedPackagesSha256":$requested_sha,
+    "brewfile":{
+      "parser":"kandelo-static-brewfile-v1",
+      "sha256":$brewfile_sha,
+      "bytes":$brewfile_bytes
+    }
+  } and
+  ($requested_sha | test("^[0-9a-f]{64}$")) and
+  (.metadata.baseImage | has("metadata") | not) and
+  (.metadata | has("platformBase") | not) and
+  (.metadata | has("signature") | not) and
+  (.metadata | has("provenance") | not) and
+  .metadata.kernelAbi == $abi and
+  .metadata.createdBy == "images/vfs/scripts/build-homebrew-vfs-image.ts"
+' --arg base_sha "$BASE_IMAGE_SHA256" \
+  --arg requested_sha "$(jq -r '.selection.requested_packages_sha256' \
+    "$TMPDIR/sidecar-tool-report.json")" \
+  --arg brewfile_sha "$BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$BREWFILE_BYTES" \
+  --argjson base_bytes "$BASE_IMAGE_BYTES" \
+  --argjson abi "$ABI_VERSION" "$TMPDIR/sidecar-tool-inspect.json" >/dev/null
+
+# Exercise the acceptance verifier against the dependency-bearing fixture.
+# This test checks the artifact/provenance contract only. Real Node and Chromium
+# boot evidence is produced by the trusted publisher from public bottles and a
+# real kernel.
+ACCEPTANCE_TAP="$TMPDIR/acceptance-tap"
+cp -a "$TAP" "$ACCEPTANCE_TAP"
+cat >"$TMPDIR/acceptance-kernel.wat" <<WAT
+(module
+  (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION)))
+WAT
+wat2wasm "$TMPDIR/acceptance-kernel.wat" -o "$TMPDIR/acceptance-kernel.wasm"
+cat >"$TMPDIR/validate-homebrew-vfs-acceptance.ts" <<EOF
+import { writeFileSync } from "node:fs";
+import { validateHomebrewVfsAcceptance } from "$REPO_ROOT/scripts/homebrew-vfs-acceptance-smoke.ts";
+
+const [metadataPath, tapRoot, brewfilePath, expectedRootPackage, executablePath, evidencePath] = process.argv.slice(2);
+validateHomebrewVfsAcceptance({
+  metadataPath,
+  tapRoot,
+  brewfilePath,
+  baseImagePath: "$BASE_IMAGE",
+  baseOrigin: "kandelo-package-registry",
+  imagePath: "$TMPDIR/sidecar-tool.vfs.zst",
+  reportPath: "$TMPDIR/sidecar-tool-report.json",
+  kernelPath: "$TMPDIR/acceptance-kernel.wasm",
+  kernelOrigin: "worktree-build",
+  expectedRootPackage,
+  executablePath,
+  argv: [expectedRootPackage, "--version"],
+  expectedStdout: expectedRootPackage,
+  timeoutMs: 120000,
+}).then((validated) => {
+  writeFileSync(evidencePath, JSON.stringify(validated.evidence));
+}).catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+EOF
+ACCEPTANCE_EVIDENCE="$TMPDIR/acceptance-evidence.json"
+npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
+  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$ACCEPTANCE_EVIDENCE"
+jq -e '
+  .status == "validated" and
+  .dependency_edges == [{"from":"sidecar-tool","to":"sidecar-dep","version":"1.0"}] and
+  .browser_plan == {
+    "compatibility_basis":"pending-exact-image-runtime-test",
+    "packages":["sidecar-dep", "sidecar-tool"]
+  } and
+  [.homebrew_bottles[].name] == ["sidecar-dep", "sidecar-tool"] and
+  all(.homebrew_bottles[];
+    .url == ("https://ghcr.io/v2/automattic/kandelo-homebrew/" + .name +
+      "/blobs/sha256:" + .sha256) and
+    .declared_runtime_support == ["node"] and
+    .declared_browser_compatible == false) and
+  .platform_inputs[0].role == "base-vfs" and
+  .platform_inputs[0].origin == "kandelo-package-registry" and
+  .platform_inputs[1].role == "kernel" and
+  .platform_inputs[1].origin == "worktree-build" and
+  (.image.sha256 | test("^[0-9a-f]{64}$"))
+' "$ACCEPTANCE_EVIDENCE" >/dev/null
+
+DEP_ONLY_BREWFILE="$TMPDIR/dependency-only.Brewfile"
+cat >"$DEP_ONLY_BREWFILE" <<'EOF'
+tap "automattic/kandelo-homebrew"
+brew "sidecar-dep"
+EOF
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
+  "$DEP_ONLY_BREWFILE" sidecar-dep \
+  /home/linuxbrew/.linuxbrew/bin/sidecar-dep "$TMPDIR/no-edge-evidence.json" \
+  > /dev/null 2>"$TMPDIR/no-edge.err"; then
+  echo "Homebrew VFS acceptance accepted a Brewfile without a dependency edge" >&2
+  exit 1
+fi
+grep -F "selected acceptance formula must resolve at least one real package dependency edge" \
+  "$TMPDIR/no-edge.err" >/dev/null
+
+UNRELATED_EDGE_BREWFILE="$TMPDIR/unrelated-edge.Brewfile"
+cat >"$UNRELATED_EDGE_BREWFILE" <<'EOF'
+tap "automattic/kandelo-homebrew"
+brew "sidecar-dep"
+brew "sidecar-tool"
+EOF
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
+  "$UNRELATED_EDGE_BREWFILE" sidecar-dep \
+  /home/linuxbrew/.linuxbrew/bin/sidecar-dep \
+  "$TMPDIR/unrelated-edge-evidence.json" \
+  > /dev/null 2>"$TMPDIR/unrelated-edge.err"; then
+  echo "Homebrew VFS acceptance credited an unrelated root's dependency edge" >&2
+  exit 1
+fi
+grep -F "selected acceptance formula must resolve at least one real package dependency edge" \
+  "$TMPDIR/unrelated-edge.err" >/dev/null
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
+  sidecar-dep /home/linuxbrew/.linuxbrew/bin/sidecar-dep \
+  "$TMPDIR/non-root-evidence.json" > /dev/null 2>"$TMPDIR/non-root.err"; then
+  echo "Homebrew VFS acceptance accepted a transitive package as its selected root" >&2
+  exit 1
+fi
+grep -F "acceptance formula sidecar-dep is not a Brewfile root" \
+  "$TMPDIR/non-root.err" >/dev/null
+
+SYMLINK_BREWFILE="$TMPDIR/symlink.Brewfile"
+ln -s "$BREWFILE" "$SYMLINK_BREWFILE"
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
+  "$SYMLINK_BREWFILE" sidecar-tool \
+  /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$TMPDIR/symlink-evidence.json" > /dev/null 2>"$TMPDIR/symlink.err"; then
+  echo "Homebrew VFS acceptance accepted a symlink Brewfile" >&2
+  exit 1
+fi
+grep -F "Brewfile must be a non-empty regular file" "$TMPDIR/symlink.err" >/dev/null
+
+NON_GHCR_TAP="$TMPDIR/non-ghcr-tap"
+cp -a "$ACCEPTANCE_TAP" "$NON_GHCR_TAP"
+jq '
+  .packages |= map(
+    .name as $name |
+    .bottles |= map(
+      if .arch == "wasm32"
+      then .url = ("https://example.invalid/" + $name)
+      else .
+      end
+    )
+  )
+' "$ACCEPTANCE_TAP/Kandelo/metadata.json" \
+  >"$NON_GHCR_TAP/Kandelo/metadata.json"
+for link in "$NON_GHCR_TAP"/Kandelo/link/*-wasm32.json; do
+  jq '.package as $name | .bottle.url = ("https://example.invalid/" + $name)' \
+    "$link" >"$link.tmp"
+  mv "$link.tmp" "$link"
+done
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$NON_GHCR_TAP/Kandelo/metadata.json" "$NON_GHCR_TAP" "$BREWFILE" \
+  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$TMPDIR/non-ghcr-evidence.json" > /dev/null 2>"$TMPDIR/non-ghcr.err"; then
+  echo "Homebrew VFS acceptance accepted non-GHCR package sources" >&2
+  exit 1
+fi
+grep -F "bottle URL is not the tap GHCR blob" "$TMPDIR/non-ghcr.err" >/dev/null
+npx tsx -e "
+import { readFileSync } from 'node:fs';
+import { MemoryFileSystem } from '$REPO_ROOT/host/src/vfs/memory-fs.ts';
+for (const [path, expected] of [
+  ['$TMPDIR/sidecar-tool-base-default.vfs.zst', $BASE_RECORDED_MAX_BYTES],
+  ['$TMPDIR/sidecar-tool.vfs.zst', $BASE_REQUESTED_MAX_BYTES],
+]) {
+  const bytes = new Uint8Array(readFileSync(path));
+  const capacity = MemoryFileSystem.readImageCapacity(bytes);
+  if (capacity.maxByteLength !== expected) {
+    throw new Error(path + ': configured maximum does not match ' + expected);
+  }
+  const fs = MemoryFileSystem.fromImagePreservingCapacity(bytes);
+  const stats = fs.statfs('/');
+  const statfsCapacity = stats.blocks * stats.bsize;
+  if (statfsCapacity !== expected) {
+    throw new Error(path + ': expected capacity ' + expected + ', got ' + statfsCapacity);
+  }
+}
+
+const base = MemoryFileSystem.fromImagePreservingCapacity(
+  new Uint8Array(readFileSync('$BASE_IMAGE')),
+);
+const composed = MemoryFileSystem.fromImagePreservingCapacity(
+  new Uint8Array(readFileSync('$TMPDIR/sidecar-tool-base-default.vfs.zst')),
+);
+const rebased = MemoryFileSystem.fromImagePreservingCapacity(
+  new Uint8Array(readFileSync('$TMPDIR/sidecar-tool.vfs.zst')),
+);
+const marker = '/etc/base-image-marker';
+const baseCtimeMs = base.stat(marker).ctimeMs;
+const composedCtimeMs = composed.stat(marker).ctimeMs;
+const rebasedCtimeMs = rebased.stat(marker).ctimeMs;
+if (
+  !Number.isFinite(baseCtimeMs) ||
+  !Number.isFinite(composedCtimeMs) ||
+  !Number.isFinite(rebasedCtimeMs)
+) {
+  throw new Error('base marker ctime is unavailable');
+}
+if (baseCtimeMs !== composedCtimeMs) {
+  throw new Error('default composition rebuilt an unchanged base inode');
+}
+if (baseCtimeMs === rebasedCtimeMs) {
+  throw new Error('explicit rebase did not exercise fresh-inode copying');
+}
+" >/dev/null
+
+THIRD_PARTY_TAP="$TMPDIR/third-party-tap"
+mkdir -p "$THIRD_PARTY_TAP/Kandelo"
+cp -R "$TAP/Kandelo/link" "$THIRD_PARTY_TAP/Kandelo/link"
+jq '
+  .tap_repository = "Example/homebrew-kandelo-tools" |
+  .tap_name = "example/kandelo-tools" |
+  (.packages[].full_name |= sub("^automattic/kandelo-homebrew/"; "example/kandelo-tools/")) |
+  (.packages[].bottles[].built_from.tap_repository? = "Example/homebrew-kandelo-tools")
+' "$TAP/Kandelo/metadata.json" > "$THIRD_PARTY_TAP/Kandelo/metadata.json"
+THIRD_PARTY_BREWFILE="$TMPDIR/third-party.Brewfile"
+cat > "$THIRD_PARTY_BREWFILE" <<'EOF'
+tap "example/kandelo-tools"
+brew "sidecar-tool"
+EOF
+THIRD_PARTY_BREWFILE_SHA256="$(sha256_file "$THIRD_PARTY_BREWFILE")"
+THIRD_PARTY_BREWFILE_BYTES="$(wc -c < "$THIRD_PARTY_BREWFILE" | tr -d ' ')"
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$THIRD_PARTY_TAP/Kandelo/metadata.json" \
+  --tap-root "$THIRD_PARTY_TAP" \
+  --brewfile "$BREWFILE" \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --out "$TMPDIR/wrong-tap.vfs.zst" \
+  --report "$TMPDIR/wrong-tap-report.json" \
+  > /dev/null 2>"$TMPDIR/wrong-tap.err"; then
+  echo "Homebrew VFS builder accepted a Brewfile for a different tap" >&2
+  exit 1
+fi
+grep -F 'metadata tap "example/kandelo-tools" does not match requested tap "automattic/kandelo-homebrew"' \
+  "$TMPDIR/wrong-tap.err" >/dev/null
+npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$THIRD_PARTY_TAP/Kandelo/metadata.json" \
+  --tap-root "$THIRD_PARTY_TAP" \
+  --brewfile "$THIRD_PARTY_BREWFILE" \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --out "$TMPDIR/third-party.vfs.zst" \
+  --report "$TMPDIR/third-party-report.json" >/dev/null
+npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
+  "$TMPDIR/third-party.vfs.zst" --format json --metadata \
+  > "$TMPDIR/third-party-inspect.json"
+jq -e '
+  .metadata.homebrew.tapRepository == "Example/homebrew-kandelo-tools" and
+  .metadata.homebrew.tapName == "example/kandelo-tools" and
+  .metadata.homebrew.selection.kind == "brewfile" and
+  .metadata.homebrew.selection.brewfile.sha256 == $brewfile_sha and
+  .metadata.homebrew.selection.brewfile.bytes == $brewfile_bytes
+' --arg brewfile_sha "$THIRD_PARTY_BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$THIRD_PARTY_BREWFILE_BYTES" \
+  "$TMPDIR/third-party-inspect.json" >/dev/null
+jq -e '
+  .metadata.tap_repository == "Example/homebrew-kandelo-tools" and
+  .metadata.tap_name == "example/kandelo-tools" and
+  .selection.kind == "brewfile" and
+  .selection.requested_packages == ["sidecar-tool"] and
+  .selection.brewfile.sha256 == $brewfile_sha and
+  .selection.brewfile.bytes == $brewfile_bytes
+' --arg brewfile_sha "$THIRD_PARTY_BREWFILE_SHA256" \
+  --argjson brewfile_bytes "$THIRD_PARTY_BREWFILE_BYTES" \
+  "$TMPDIR/third-party-report.json" >/dev/null
 
 echo "test-homebrew-tap-native-sidecars.sh: ok"

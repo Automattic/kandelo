@@ -7,6 +7,7 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  VfsImageCapacity,
   VfsImageMetadata,
   VfsImageOptions,
 } from "./memory-fs";
@@ -27,3 +28,4 @@ export {
 } from "./default-mounts";
 export type { MountSpec, BrowserResolverOptions } from "./default-mounts";
 export { resolveForNode } from "./default-mounts-node";
+export { overlayEtcFromRootfs } from "./rootfs-overlay";

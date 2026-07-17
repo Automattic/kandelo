@@ -4,6 +4,7 @@ set -euo pipefail
 
 TAP_ROOT=""
 TAP_REPOSITORY=""
+TAP_NAME_INPUT=""
 TAP_COMMIT=""
 FORMULA=""
 ARCH=""
@@ -22,7 +23,7 @@ SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> --tap-commit <sha> --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --out <runtime-evidence.json>
+usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --out <runtime-evidence.json>
 
 The tap must already contain the reconstructed target bottle block. In CI all
 Homebrew and Formula execution runs as the dedicated isolated workflow user.
@@ -37,6 +38,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
@@ -97,6 +99,9 @@ case "$ARCH" in wasm32|wasm64) ;; *) echo "homebrew-verify-poured-bottle.sh: inv
 
 TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 for file in "$BOTTLE" "$BOTTLE_JSON" "$DEPENDENCY_PROVENANCE" "$SELECTION_RECEIPT"; do
   [ -f "$file" ] && [ ! -L "$file" ] || {
     echo "homebrew-verify-poured-bottle.sh: required input is not a regular file: $file" >&2
@@ -120,6 +125,7 @@ BREW_BIN="${HOMEBREW_BREW_FILE:-}"
   exit 2
 }
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+PUBLISHER_TRUST_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-publisher-skip-redundant-item-trust.patch"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 
@@ -155,10 +161,10 @@ trap cleanup EXIT
 export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
 chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
-homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
+homebrew_patched_launcher_prepare \
+  "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_TRUST_PATCH_FILE"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
-TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 BOTTLE_TAG="${ARCH}_kandelo"
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
@@ -175,6 +181,8 @@ export HOMEBREW_KANDELO_ABI="$ABI"
 export HOMEBREW_KANDELO_NODE_RECEIPT_PATH="$WORK_DIR/node-execution-receipt.json"
 rm -f "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH"
 
+homebrew_patched_launcher_seed_bundler_groups bottle formula_test
+
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 "$BREW_BIN" trust --tap "$TAP_NAME"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
@@ -185,9 +193,8 @@ TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 
 if [ -n "$BUILD_USER" ]; then
   rm -rf "$KANDELO_ROOT/host/dist"
-  homebrew_patched_launcher_isolate "$BUILD_USER" "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT"
-  homebrew_assert_tree_not_writable_by_user "$BUILD_USER" "$OUT_PARENT"
-  homebrew_assert_tree_not_replaceable_by_user "$BUILD_USER" "$OUT_PARENT"
+  homebrew_patched_launcher_isolate "$BUILD_USER" \
+    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_PARENT"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-verify-poured-bottle.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
@@ -340,6 +347,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
   --brew-bin "$BREW_BIN" \
   --tap-root "$TAP_ROOT" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --formula "$FORMULA" \
   --arch "$ARCH" \
@@ -365,6 +373,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
   --arch "$ARCH" \
   --abi "$ABI" \
   --tap-repository "$TAP_REPOSITORY" \
+  --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --tap-root "$TAP_ROOT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \

@@ -6,59 +6,9 @@
  * instance, process spawning (fork/exec/clone), and the HTTP connection pump.
  */
 
-// Polyfill setImmediate for the web worker context.
-// CentralizedKernelWorker uses setImmediate for yielding between syscall
-// batches and waking blocked retries. In a dedicated worker there's no UI
-// to starve, so we can use a simple MessageChannel polyfill.
-if (typeof globalThis.setImmediate === "undefined") {
-  const _immQueue: Array<{ id: number; fn: (...args: any[]) => void; args: any[] }> = [];
-  let _immNextId = 0;
-  let _immScheduled = false;
-  let _immFlushing = false;
-  const _immCancelled = new Set<number>();
+import { installBrowserSetImmediatePolyfill } from "./browser-immediate-polyfill";
 
-  const _immChannel = new MessageChannel();
-  _immChannel.port1.onmessage = _immFlush;
-
-  function _immFlush() {
-    _immScheduled = false;
-    _immFlushing = true;
-    // Process only items queued at flush start — items added during the flush
-    // are deferred to a new macrotask so onmessage handlers can interleave.
-    const count = _immQueue.length;
-    for (let i = 0; i < count && _immQueue.length > 0; i++) {
-      const entry = _immQueue.shift()!;
-      if (_immCancelled.has(entry.id)) {
-        _immCancelled.delete(entry.id);
-        continue;
-      }
-      try {
-        entry.fn(...entry.args);
-      } catch (e) {
-        console.error("[setImmediate] callback threw:", e);
-      }
-    }
-    _immFlushing = false;
-    // Schedule another flush if new items were added during processing
-    if (_immQueue.length > 0 && !_immScheduled) {
-      _immScheduled = true;
-      _immChannel.port2.postMessage(null);
-    }
-  }
-
-  (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) => {
-    const id = ++_immNextId;
-    _immQueue.push({ id, fn, args });
-    if (!_immScheduled && !_immFlushing) {
-      _immScheduled = true;
-      _immChannel.port2.postMessage(null);
-    }
-    return id;
-  };
-  (globalThis as any).clearImmediate = (id: number) => {
-    _immCancelled.add(id);
-  };
-}
+installBrowserSetImmediatePolyfill();
 
 import {
   CAPTURED_STDIO,
@@ -249,7 +199,6 @@ interface ThreadWorkerInfo {
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
-const reportedNonzeroProcessExits = new Set<number>();
 
 function handleVmInterruptTimer(msg: {
   pid: number;
@@ -280,28 +229,6 @@ function processWorkerTerminationSettleMs(argv: readonly string[] | undefined): 
     : 0;
 }
 
-function reportNonzeroProcessExitDiagnostic(
-  pid: number,
-  status: number,
-  source: string,
-): void {
-  if (status === 0 || reportedNonzeroProcessExits.has(pid)) return;
-  reportedNonzeroProcessExits.add(pid);
-  const info = processes.get(pid);
-  const syscalls = kernelWorker.dumpLastSyscalls(pid) || "<none>";
-  const serviceLog = readServiceLogForProcess(info?.argv);
-  const diagnostic =
-    `[kernel-worker] nonzero process exit pid=${pid} status=${status} source=${source} argv=${JSON.stringify(info?.argv ?? [])}` +
-    (serviceLog ? `\n${serviceLog}` : "") +
-    `\n${syscalls}`;
-  reportHostDiagnostic({
-    pid,
-    status,
-    source,
-    message: diagnostic,
-  }, "warn");
-}
-
 function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {
   const name = basename(argv?.[0] ?? "");
   const logPath = name === "nginx" ? "/var/log/nginx.log" : null;
@@ -310,6 +237,17 @@ function readServiceLogForProcess(argv: readonly string[] | undefined): string |
   if (!bytes || bytes.byteLength === 0) return `${logPath}: <empty>`;
   const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trimEnd();
   return `${logPath}:\n${text || "<empty>"}`;
+}
+
+function formatProcessFailureContext(pid: number): string {
+  const info = processes.get(pid);
+  const serviceLog = readServiceLogForProcess(info?.argv);
+  const syscalls = kernelWorker.dumpLastSyscalls(pid) || "<none>";
+  return [
+    `argv=${JSON.stringify(info?.argv ?? [])}`,
+    serviceLog,
+    `last syscalls:\n${syscalls}`,
+  ].filter((line): line is string => line !== null).join("\n");
 }
 
 async function waitForProcessTeardowns(): Promise<void> {
@@ -969,17 +907,27 @@ function installProcessWorkerListeners(
   pid: number,
 ): void {
   let exited = false;
-  const finalize = (status: number, source: string, crashSignum?: number) => {
+  const finalize = (
+    status: number,
+    crashSignum?: number,
+    failure?: Pick<HostDiagnostic, "source" | "message">,
+  ) => {
     if (exited) return;
     if (intentionallyTerminated.has(worker as object)) return;
     if (processes.get(pid)?.worker !== worker) return; // already replaced (e.g. by exec)
     exited = true;
-    const message = `[kernel-worker] pid=${pid} ${source} -> forcing exit ${status}`;
-    if (status === 0 && source === "worker-main exit message") {
-      console.debug(message);
+    try {
+      if (failure !== undefined) {
+        reportHostDiagnostic({
+          pid,
+          status,
+          source: failure.source,
+          message: `${failure.message}\n${formatProcessFailureContext(pid)}`,
+        });
+      }
+    } finally {
+      handleExit(pid, status, crashSignum, worker);
     }
-    reportNonzeroProcessExitDiagnostic(pid, status, source);
-    handleExit(pid, status, crashSignum, worker);
   };
 
   // Status conventions match the Node host:
@@ -992,13 +940,14 @@ function installProcessWorkerListeners(
     if (intentionallyTerminated.has(worker as object)) return;
     const signum = classifiedSignalOrFallback(err);
     const status = signalExitStatus(signum);
-    reportHostDiagnostic({
-      pid,
+    finalize(
       status,
-      source: "worker.onerror",
-      message: `[kernel-worker] worker error pid=${pid}: ${err.message}`,
-    });
-    finalize(status, "worker.onerror", signum);
+      signum,
+      {
+        source: "worker.onerror",
+        message: `[kernel-worker] worker error pid=${pid}: ${err.message}`,
+      },
+    );
   });
   worker.on("exit", (code: number) => {
     // BrowserWorkerHandle synthesizes an "exit" event when the underlying
@@ -1012,7 +961,18 @@ function installProcessWorkerListeners(
     // finalized via the "error" handler above, so this is a no-op there.
     // If "exit" fires without a prior "error" (worker died via some path
     // we don't yet model), still treat it as a crash.
-    finalize(signalExitStatus(SIGSEGV), "worker exit event", SIGSEGV);
+    if (exited) return;
+    const status = signalExitStatus(SIGSEGV);
+    finalize(
+      status,
+      SIGSEGV,
+      {
+        source: "worker exit event",
+        message:
+          `[process-worker] pid=${pid} crashed ` +
+          `(worker exit code=${code}, no exit message from wasm)`,
+      },
+    );
   });
   worker.on("message", (msg: unknown) => {
     if (intentionallyTerminated.has(worker as object)) return;
@@ -1022,15 +982,16 @@ function installProcessWorkerListeners(
     if (m.type === "error") {
       const signum = classifiedSignalOrFallback(m.message);
       const status = classifiedTrapExitStatus(m.message) ?? -1;
-      reportHostDiagnostic({
-        pid,
+      finalize(
         status,
-        source: "worker-main error message",
-        message: `[process-worker] ${m.message ?? "unknown error"}`,
-      });
-      finalize(status, "worker-main error message", signum);
+        signum,
+        {
+          source: "worker-main error message",
+          message: `[process-worker] ${m.message ?? "unknown error"}`,
+        },
+      );
     } else if (m.type === "exit") {
-      finalize(m.status ?? 0, "worker-main exit message");
+      finalize(m.status ?? 0);
     } else if (m.type === "vm_interrupt_timer") {
       handleVmInterruptTimer(m, pid, process);
     }
@@ -1688,7 +1649,6 @@ async function finishProcessExit(
   if (processTeardowns.has(expectedWorker)) return;
   vmInterruptTimers.clear(pid);
 
-  reportNonzeroProcessExitDiagnostic(pid, exitStatus, "kernel process exit");
   const threadedSettleMs = threadedProcessPids.has(pid)
     ? THREADED_WORKER_TERMINATION_SETTLE_MS
     : 0;

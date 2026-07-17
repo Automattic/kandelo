@@ -15,7 +15,10 @@ use wasm_posix_shared::seek::*;
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::fd::OpenFileDescRef;
-use crate::lock::{FileLock, LockTable};
+use crate::lock::{
+    AdvisoryLockManager, AdvisoryLockType, FileId, KernelFileKind, LockMutation, LockOwner,
+    LockRange, OfdId,
+};
 use crate::ofd::FileType;
 use crate::pipe::{DEFAULT_PIPE_CAPACITY, PipeBuffer};
 use crate::process::{HostIO, Process};
@@ -29,6 +32,12 @@ use wasm_posix_shared::signal::{
 const CREATION_FLAGS: u32 =
     O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_CLOFORK | O_DIRECTORY | O_NOFOLLOW;
 
+// Linux fstatat/statx flags mirrored by the guest's <fcntl.h>.
+const AT_NO_AUTOMOUNT: u32 = 0x800;
+const AT_EMPTY_PATH: u32 = 0x1000;
+const AT_STATX_SYNC_TYPE: u32 = 0x6000;
+const FSTATAT_VALID_FLAGS: u32 = AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH;
+
 /// Convert O_CLOEXEC / O_CLOFORK open flags to FD_CLOEXEC / FD_CLOFORK fd flags.
 #[inline]
 fn oflags_to_fd_flags(oflags: u32) -> u32 {
@@ -40,6 +49,19 @@ fn oflags_to_fd_flags(oflags: u32) -> u32 {
         fd_flags |= FD_CLOFORK;
     }
     fd_flags
+}
+
+/// Reject operations that require an I/O-capable open file description.
+/// Metadata queries, descriptor duplication/flags, `fchdir`, and `*at`
+/// pathname resolution deliberately do not call this helper.
+fn require_io_fd(proc: &Process, fd: i32) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.is_path_only() {
+        Err(Errno::EBADF)
+    } else {
+        Ok(())
+    }
 }
 
 /// Parse a byte slice as an ASCII unsigned integer.
@@ -140,14 +162,6 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
     }
 }
 
-/// Sentinel host_handle for synthetic in-kernel files.
-const SYNTHETIC_FILE_HANDLE: i64 = -100;
-
-#[inline]
-fn fallback_lock_table(_proc: &mut Process) -> &mut LockTable {
-    unsafe { crate::lock::global_fallback_lock_table() }
-}
-
 /// Return content for dynamic files that cannot be owned by rootfs.vfs.
 ///
 /// Static `/etc` policy and data, including OpenSSL configuration and trust
@@ -156,6 +170,15 @@ fn fallback_lock_table(_proc: &mut Process) -> &mut LockTable {
 fn synthetic_file_content(path: &[u8]) -> Option<&'static [u8]> {
     match path {
         b"/etc/mtab" => Some(crate::procfs::MOUNTS_CONTENT),
+        _ => None,
+    }
+}
+
+fn synthetic_file_object_id(path: &[u8]) -> Option<u64> {
+    match path {
+        // Stable explicit identity for the running machine's synthetic mount
+        // table. This is a tagged kernel object, never a pathname hash.
+        b"/etc/mtab" => Some(1),
         _ => None,
     }
 }
@@ -675,6 +698,24 @@ pub(crate) fn commit_exec_state(
     host: &mut dyn HostIO,
     caller_tid: u32,
 ) -> Result<(), Errno> {
+    commit_exec_state_impl(proc, None, host, caller_tid)
+}
+
+pub(crate) fn commit_exec_state_with_locks(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    caller_tid: u32,
+) -> Result<(), Errno> {
+    commit_exec_state_impl(proc, Some(locks), host, caller_tid)
+}
+
+fn commit_exec_state_impl(
+    proc: &mut Process,
+    mut locks: Option<&mut AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    caller_tid: u32,
+) -> Result<(), Errno> {
     if matches!(
         proc.state,
         crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
@@ -695,6 +736,7 @@ pub(crate) fn commit_exec_state(
         proc.signals.blocked = caller.signals.blocked;
         proc.main_thread_signals = caller.signals;
     }
+    cancel_fifo_opens_for_process(proc);
 
     let cloexec_fds: Vec<i32> = proc
         .fd_table
@@ -703,7 +745,10 @@ pub(crate) fn commit_exec_state(
         .map(|(fd, _)| fd)
         .collect();
     for fd in cloexec_fds {
-        let _ = sys_close(proc, host, fd);
+        let _ = match locks.as_deref_mut() {
+            Some(locks) => sys_close_with_locks(proc, locks, host, fd),
+            None => sys_close(proc, host, fd),
+        };
     }
     for stream in proc.dir_streams.iter_mut().filter_map(Option::take) {
         let _ = host.host_closedir(stream.host_handle);
@@ -1846,6 +1891,9 @@ fn namespace_lstat_raw(
     if is_devfs_namespace_path(path) && !is_host_backed_devfs_path(path) {
         return Err(Errno::ENOENT);
     }
+    if let Some(st) = fifo_path_stat_raw(host, path, false)? {
+        return Ok(st);
+    }
     host.host_lstat(path)
 }
 
@@ -1879,6 +1927,12 @@ fn append_path_component(path: &mut Vec<u8>, component: &[u8]) {
         path.push(b'/');
     }
     path.extend_from_slice(component);
+}
+
+fn directory_entry_path(directory: &[u8], name: &[u8]) -> Vec<u8> {
+    let mut path = directory.to_vec();
+    append_path_component(&mut path, name);
+    path
 }
 
 fn pop_path_component(path: &mut Vec<u8>) {
@@ -2185,6 +2239,13 @@ fn check_sticky_child(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Res
 }
 
 fn open_access_mask(oflags: u32, st: &WasmStat) -> u32 {
+    if oflags & O_PATH != 0 {
+        return if st.st_mode & S_IFMT == S_IFDIR {
+            X_OK
+        } else {
+            0
+        };
+    }
     let mut amode = match oflags & O_ACCMODE {
         O_WRONLY => W_OK,
         O_RDWR => R_OK | W_OK,
@@ -2245,6 +2306,289 @@ fn requested_id_allowed(current_real: u32, current_effective: u32, requested: u3
     requested == 0xFFFFFFFF || requested == current_real || requested == current_effective
 }
 
+fn fifo_open_owner(proc: &Process) -> u64 {
+    let tid = crate::process_table::current_tid();
+    let guest_tid = if tid == 0 { proc.pid } else { tid };
+    ((proc.pid as u64) << 32) | guest_tid as u64
+}
+
+pub(crate) fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool {
+    let cancelled = unsafe { crate::pipe::global_pipe_table().cancel_fifo_open(owner) };
+    let Some(waiter) = cancelled else {
+        return false;
+    };
+    let released = proc.fd_table.release_reserved(waiter.reserved_fd);
+    debug_assert!(released, "FIFO waiter lost its reserved descriptor");
+    true
+}
+
+fn cancel_fifo_opens_for_process(proc: &mut Process) {
+    let waiters =
+        unsafe { crate::pipe::global_pipe_table().cancel_fifo_opens_for_process(proc.pid) };
+    for waiter in waiters {
+        let released = proc.fd_table.release_reserved(waiter.reserved_fd);
+        debug_assert!(released, "FIFO waiter lost its reserved descriptor");
+    }
+}
+
+fn has_caught_signal_for_current_thread(proc: &Process) -> bool {
+    let tid = crate::process_table::current_tid();
+    let guest_tid = if tid == 0 { proc.pid } else { tid };
+    let mut deliverable = proc.deliverable_for(guest_tid);
+    while deliverable != 0 {
+        let signum = deliverable.trailing_zeros() + 1;
+        if matches!(
+            proc.signals.get_handler(signum),
+            crate::signal::SignalHandler::Handler(_)
+        ) {
+            return true;
+        }
+        deliverable &= !(1u64 << (signum - 1));
+    }
+    false
+}
+
+fn close_fifo_open_endpoint(pipe_idx: usize, side: crate::pipe::FifoOpenSide) {
+    let pipes = unsafe { crate::pipe::global_pipe_table() };
+    if let Some(pipe) = pipes.get_mut(pipe_idx) {
+        let kind = match side {
+            crate::pipe::FifoOpenSide::Reader => crate::pipe::InFlightPipeRefKind::Read {
+                // A failed install never joined the read-only cohort.
+                fifo_read_only: false,
+            },
+            crate::pipe::FifoOpenSide::Writer => crate::pipe::InFlightPipeRefKind::Write,
+        };
+        pipe.close_reference(kind);
+    }
+    pipes.free_if_closed(pipe_idx);
+}
+
+fn install_fifo_open(
+    proc: &mut Process,
+    pipe_idx: usize,
+    path: Vec<u8>,
+    status_flags: u32,
+    fd_flags: u32,
+    side: crate::pipe::FifoOpenSide,
+    reserved_fd: Option<i32>,
+) -> Result<i32, Errno> {
+    let pipe_handle = -((pipe_idx as i64) + 1);
+    let ofd_idx = proc
+        .ofd_table
+        .create(FileType::Pipe, status_flags, pipe_handle, path);
+    let installed_fd = match reserved_fd {
+        Some(fd) => proc
+            .fd_table
+            .install_reserved(fd, OpenFileDescRef(ofd_idx), fd_flags)
+            .map(|()| fd),
+        None => proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags),
+    };
+    match installed_fd {
+        Ok(fd) => {
+            let Some(pipe) = (unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }) else {
+                let _ = proc.fd_table.free(fd);
+                proc.ofd_table.dec_ref(ofd_idx);
+                return Err(Errno::EIO);
+            };
+            pipe.publish_fifo_open(side);
+            Ok(fd)
+        }
+        Err(error) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            if let Some(fd) = reserved_fd {
+                proc.fd_table.release_reserved(fd);
+            }
+            close_fifo_open_endpoint(pipe_idx, side);
+            Err(error)
+        }
+    }
+}
+
+/// Continue one logical blocking FIFO open before resolving its original
+/// pathname again. The marker may have been renamed or unlinked while the
+/// thread slept; its reserved endpoint, not the old spelling, owns the wait.
+fn resume_fifo_open(proc: &mut Process) -> Result<Option<i32>, Errno> {
+    let owner = fifo_open_owner(proc);
+    if unsafe { crate::pipe::global_pipe_table() }
+        .find_fifo_open(owner)
+        .is_none()
+    {
+        return Ok(None);
+    }
+    if has_caught_signal_for_current_thread(proc) {
+        cancel_fifo_open_for_owner(proc, owner);
+        return Err(Errno::EINTR);
+    }
+    let ready = unsafe { crate::pipe::global_pipe_table().take_ready_fifo_open(owner) };
+    let Some((pipe_idx, waiter)) = ready else {
+        return Err(Errno::EAGAIN);
+    };
+    install_fifo_open(
+        proc,
+        pipe_idx,
+        waiter.path,
+        waiter.status_flags,
+        waiter.fd_flags,
+        waiter.side,
+        Some(waiter.reserved_fd),
+    )
+    .map(Some)
+}
+
+fn try_open_fifo(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    oflags: u32,
+    exclusive_create: bool,
+) -> Result<Option<i32>, Errno> {
+    let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(resolved) else {
+        return Ok(None);
+    };
+    if exclusive_create {
+        return Err(Errno::EEXIST);
+    }
+    if oflags & O_DIRECTORY != 0 {
+        return Err(Errno::ENOTDIR);
+    }
+    if oflags & O_PATH != 0 {
+        check_search_path(proc, host, resolved)?;
+        let status_flags = oflags & !CREATION_FLAGS;
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let pipe_handle = -((pipe_idx as i64) + 1);
+        let kind = crate::pipe::InFlightPipeRefKind::Path;
+        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+            .ok_or(Errno::EIO)?
+            .add_reference(kind);
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            status_flags,
+            pipe_handle,
+            resolved.to_vec(),
+        );
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => Ok(Some(fd)),
+            Err(error) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                if let Some(pipe) = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) } {
+                    pipe.close_reference(kind);
+                }
+                unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
+                Err(error)
+            }
+        };
+    }
+    check_open_permissions(proc, host, resolved, oflags)?;
+
+    let access_mode = oflags & O_ACCMODE;
+    if !matches!(access_mode, O_RDONLY | O_WRONLY | O_RDWR) {
+        return Err(Errno::EINVAL);
+    }
+    let nonblocking = oflags & O_NONBLOCK != 0;
+    let owner = fifo_open_owner(proc);
+    let status_flags = oflags & !CREATION_FLAGS;
+    let fd_flags = oflags_to_fd_flags(oflags);
+    let mut reserved_side = None;
+    {
+        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+            .ok_or(Errno::EIO)?;
+        let ready = match access_mode {
+            O_RDONLY if nonblocking => true,
+            O_RDONLY => pipe.is_write_end_open(),
+            O_WRONLY if nonblocking => {
+                if !pipe.has_readers() {
+                    return Err(Errno::ENXIO);
+                }
+                true
+            }
+            O_WRONLY => pipe.has_readers(),
+            O_RDWR => true,
+            _ => unreachable!(),
+        };
+        if !ready {
+            if has_caught_signal_for_current_thread(proc) {
+                return Err(Errno::EINTR);
+            }
+            let side = if access_mode == O_RDONLY {
+                crate::pipe::FifoOpenSide::Reader
+            } else {
+                crate::pipe::FifoOpenSide::Writer
+            };
+            let reserved_fd = proc.fd_table.reserve()?;
+            if !pipe.reserve_fifo_open(
+                owner,
+                side,
+                resolved.to_vec(),
+                status_flags,
+                fd_flags,
+                reserved_fd,
+            ) {
+                proc.fd_table.release_reserved(reserved_fd);
+                return Err(Errno::EIO);
+            }
+            return Err(Errno::EAGAIN);
+        }
+
+        match access_mode {
+            O_RDONLY => {
+                pipe.add_reference(crate::pipe::InFlightPipeRefKind::Read {
+                    // publish_fifo_open joins the cohort after fd allocation.
+                    fifo_read_only: false,
+                });
+                reserved_side = Some(crate::pipe::FifoOpenSide::Reader);
+            }
+            O_WRONLY => {
+                pipe.add_reference(crate::pipe::InFlightPipeRefKind::Write);
+                reserved_side = Some(crate::pipe::FifoOpenSide::Writer);
+            }
+            O_RDWR => {
+                pipe.add_reference(crate::pipe::InFlightPipeRefKind::ReadWrite);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    if access_mode == O_RDWR {
+        let pipe_handle = -((pipe_idx as i64) + 1);
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            status_flags,
+            pipe_handle,
+            resolved.to_vec(),
+        );
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => {
+                let Some(pipe) = (unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) })
+                else {
+                    let _ = proc.fd_table.free(fd);
+                    proc.ofd_table.dec_ref(ofd_idx);
+                    return Err(Errno::EIO);
+                };
+                pipe.publish_fifo_read_write_open();
+                Ok(Some(fd))
+            }
+            Err(error) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                if let Some(pipe) = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) } {
+                    pipe.close_reference(crate::pipe::InFlightPipeRefKind::ReadWrite);
+                }
+                unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
+                Err(error)
+            }
+        };
+    }
+    install_fifo_open(
+        proc,
+        pipe_idx,
+        resolved.to_vec(),
+        status_flags,
+        fd_flags,
+        reserved_side.expect("single-ended FIFO open records its side"),
+        None,
+    )
+    .map(Some)
+}
+
 /// Open a file, returning the new file descriptor number.
 pub fn sys_open(
     proc: &mut Process,
@@ -2253,6 +2597,9 @@ pub fn sys_open(
     oflags: u32,
     mode: u32,
 ) -> Result<i32, Errno> {
+    if let Some(fd) = resume_fifo_open(proc)? {
+        return Ok(fd);
+    }
     let effective_mode = if oflags & O_CREAT != 0 {
         mode & !proc.umask
     } else {
@@ -2374,6 +2721,10 @@ pub fn sys_open(
         return Err(Errno::ENXIO);
     }
 
+    if let Some(fd) = try_open_fifo(proc, host, &resolved, oflags, exclusive_create)? {
+        return Ok(fd);
+    }
+
     // Procfs (/proc/...) — in-kernel virtual filesystem
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
@@ -2396,15 +2747,27 @@ pub fn sys_open(
             return Err(Errno::EACCES);
         }
         let status_flags = oflags & !CREATION_FLAGS;
+        let object_id = synthetic_file_object_id(&resolved).ok_or(Errno::EINVAL)?;
+        let host_handle = crate::descriptor_backing::alloc_synthetic_regular();
         let ofd_idx = proc.ofd_table.create(
             FileType::Regular,
             status_flags,
-            SYNTHETIC_FILE_HANDLE,
+            host_handle,
             resolved,
         );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Kernel {
+            kind: KernelFileKind::SyntheticRegular,
+            object_id,
+        });
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => Ok(fd),
+            Err(err) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
+                Err(err)
+            }
+        };
     }
 
     let created = check_open_permissions(proc, host, &resolved, oflags)?;
@@ -2414,14 +2777,25 @@ pub fn sys_open(
         host.host_chown(&resolved, proc.euid, proc.egid)?;
     }
 
+    // Cache lock identity from fstat on the live handle. Path-based stat is
+    // intentionally not authoritative across hard links, rename, or unlink.
+    // Every successfully opened host descriptor must complete this query so
+    // close(2) can later remove process locks even when this descriptor never
+    // performs a lock operation itself. An inode of zero remains the explicit
+    // unsupported-locking boundary, but an fstat failure makes the open fail.
+    let live_stat = match host.host_fstat(host_handle) {
+        Ok(stat) => stat,
+        Err(err) => {
+            let _ = host.host_close(host_handle);
+            return Err(err);
+        }
+    };
     let file_type = if oflags & O_DIRECTORY != 0 {
         FileType::Directory
-    } else if let Ok(st) = host.host_stat(&resolved) {
-        if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
-            FileType::Directory
-        } else {
-            FileType::Regular
-        }
+    } else if live_stat.st_mode & wasm_posix_shared::mode::S_IFMT
+        == wasm_posix_shared::mode::S_IFDIR
+    {
+        FileType::Directory
     } else {
         FileType::Regular
     };
@@ -2432,6 +2806,12 @@ pub fn sys_open(
     let ofd_idx = proc
         .ofd_table
         .create(file_type, status_flags, host_handle, resolved);
+    if matches!(file_type, FileType::Regular | FileType::Directory) && live_stat.st_ino != 0 {
+        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Host {
+            dev: live_stat.st_dev,
+            ino: live_stat.st_ino,
+        });
+    }
 
     let fd_flags = oflags_to_fd_flags(oflags);
 
@@ -2439,23 +2819,176 @@ pub fn sys_open(
     Ok(fd)
 }
 
-/// Close a file descriptor.
+fn publish_advisory_lock_mutation(mutation: LockMutation) {
+    if mutation.may_unblock {
+        crate::wakeup::push_advisory_lock();
+    }
+}
+
+/// Finish resource cleanup queued by dropped SCM_RIGHTS payloads. The payload
+/// destructor itself never re-enters global backing/pipe tables because it may
+/// run while one of those tables is already mutably borrowed.
+pub(crate) fn drain_deferred_scm_rights_releases(
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+) {
+    while let Some(release) = crate::pipe::pop_deferred_in_flight_release() {
+        let released = crate::pipe::release_deferred_in_flight_resource(release);
+        if released.final_ofd_reference {
+            publish_advisory_lock_mutation(locks.remove_ofd(released.ofd_id));
+        }
+        if let Some(handle) = released.host_close {
+            let _ = host.host_close(handle);
+        }
+    }
+}
+
+/// Install queued SCM_RIGHTS descriptors in a receiver while transferring,
+/// rather than recreating, each machine-wide open-file-description identity.
+/// This is kernel logic rather than a Wasm binding concern so native runtimes
+/// get the same ownership and final-close behavior.
+pub(crate) fn install_scm_rights_fds(
+    proc: &mut Process,
+    in_flight: Vec<crate::pipe::InFlightFd>,
+) -> Vec<i32> {
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+
+    let mut new_fds = Vec::new();
+    for mut entry in in_flight {
+        let mut installed_socket_idx = None;
+        let receiver_host_handle = match entry.file_type {
+            FileType::Socket => {
+                // Socket state is process-local, while its retained global
+                // pipe references and OfdId transfer without duplication.
+                let Some(ref socket_data) = entry.socket else {
+                    continue;
+                };
+                let domain = match socket_data.domain {
+                    0 => SocketDomain::Unix,
+                    1 => SocketDomain::Inet,
+                    _ => SocketDomain::Inet6,
+                };
+                let socket_type = match socket_data.sock_type {
+                    0 => SocketType::Stream,
+                    _ => SocketType::Dgram,
+                };
+                let state = match socket_data.state {
+                    0 => SocketState::Unbound,
+                    1 => SocketState::Bound,
+                    2 => SocketState::Listening,
+                    3 => SocketState::Connected,
+                    _ => SocketState::Closed,
+                };
+
+                let mut socket = SocketInfo::new(domain, socket_type, socket_data.protocol);
+                socket.state = state;
+                socket.send_buf_idx = socket_data.send_buf_idx;
+                socket.recv_buf_idx = socket_data.recv_buf_idx;
+                socket.global_pipes = socket_data.global_pipes;
+                socket.shut_rd = socket_data.shut_rd;
+                socket.shut_wr = socket_data.shut_wr;
+                socket.bind_addr = socket_data.bind_addr;
+                socket.bind_port = socket_data.bind_port;
+                socket.peer_addr = socket_data.peer_addr;
+                socket.peer_port = socket_data.peer_port;
+
+                let socket_idx = proc.sockets.alloc(socket);
+                installed_socket_idx = Some(socket_idx);
+                -((socket_idx as i64) + 1)
+            }
+            _ => entry.host_handle,
+        };
+
+        let ofd_idx = proc.ofd_table.create_transferred(
+            entry.ofd_id,
+            entry.file_id,
+            entry.file_type,
+            entry.status_flags,
+            receiver_host_handle,
+            entry.offset,
+            entry.path.clone(),
+        );
+        match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0) {
+            Ok(new_fd) => {
+                entry.transfer_reference();
+                new_fds.push(new_fd);
+            }
+            Err(_) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                if let Some(socket_idx) = installed_socket_idx {
+                    proc.sockets.free(socket_idx);
+                }
+                // `entry` still owns the queued resource reference; Drop
+                // releases it through the deferred cleanup path.
+            }
+        }
+    }
+    new_fds
+}
+
+fn release_final_ofd_locks(locks: Option<&mut AdvisoryLockManager>, ofd_id: OfdId) {
+    if let Some(locks) = locks {
+        publish_advisory_lock_mutation(locks.remove_ofd(ofd_id));
+    }
+}
+
+/// Compatibility close entry point for isolated syscall tests and descriptor
+/// kinds that cannot carry advisory locks. Machine execution uses
+/// [`sys_close_with_locks`].
 pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(), Errno> {
+    sys_close_impl(proc, None, host, fd)
+}
+
+/// Close a descriptor while applying process-lock and final-OFD cleanup.
+pub fn sys_close_with_locks(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Result<(), Errno> {
+    let result = sys_close_impl(proc, Some(&mut *locks), host, fd);
+    drain_deferred_scm_rights_releases(locks, host);
+    result
+}
+
+fn sys_close_impl(
+    proc: &mut Process,
+    mut locks: Option<&mut AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Result<(), Errno> {
     let ofd_ref = proc.fd_table.free(fd)?;
     let idx = ofd_ref.0;
 
-    // Read host_handle, file_type, status_flags, dir_host_handle, and path BEFORE dec_ref
-    // (since dec_ref may free the OFD slot).
-    let (host_handle, file_type, status_flags, dir_host_handle, path) = {
+    // Snapshot OFD state before dec_ref, which may free the slot.
+    let (host_handle, file_type, status_flags, dir_host_handle, ofd_id, mut file_id) = {
         let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
         (
             ofd.host_handle,
             ofd.file_type,
             ofd.status_flags,
             ofd.dir_host_handle,
-            ofd.path.clone(),
+            ofd.ofd_id,
+            ofd.file_id,
         )
     };
+
+    // Most regular-file OFDs receive their lock identity during open, but a
+    // backend may have returned a transient fstat error there.  Closing this
+    // descriptor must still release this PID's locks acquired through another
+    // descriptor for the same file, so make one final live-handle identity
+    // query before the handle is closed.  Never substitute a remembered path.
+    if file_id.is_none()
+        && matches!(file_type, FileType::Regular | FileType::Directory)
+        && host_handle >= 0
+    {
+        file_id = host.host_fstat(host_handle).ok().and_then(|stat| {
+            (stat.st_ino != 0).then_some(FileId::Host {
+                dev: stat.st_dev,
+                ino: stat.st_ino,
+            })
+        });
+    }
 
     // Snapshot the DRI sidecar so we can release it (decref bos, drop
     // prime-bo cookies) once `dec_ref` actually frees the OFD on the
@@ -2472,19 +3005,10 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         }
     };
 
-    // POSIX: closing any fd for a file releases all advisory locks on that file
-    // held by this process, regardless of which fd acquired the lock.
-    let pid = proc.pid;
-    fallback_lock_table(proc).remove_for_handle(host_handle, pid);
-    let host_lock_cleanup = host_handle >= 0
-        && file_type != FileType::Pipe
-        && file_type != FileType::Socket
-        && file_type != FileType::PtyMaster
-        && file_type != FileType::PtySlave
-        && !path.is_empty();
-    if host_lock_cleanup {
-        let mut dummy = [0u8; 24];
-        let _ = host.host_fcntl_lock(&path, pid, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
+    // Closing any descriptor for a file releases every POSIX process lock
+    // owned by this PID on that file, even if another descriptor remains.
+    if let (Some(locks), Some(file_id)) = (locks.as_deref_mut(), file_id) {
+        publish_advisory_lock_mutation(locks.remove_process_file(proc.pid, file_id));
     }
 
     let freed = proc.ofd_table.dec_ref(idx);
@@ -2494,12 +3018,6 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         // KMS master, and prime-bo cookies so close-time bo destroy is
         // observed before any FileType-specific release path runs.
         dri_release_ofd_state(proc.pid as i32, host, idx, dri_state_for_release);
-        let ofd_lock_owner = (idx as u32) | 0x80000000;
-        fallback_lock_table(proc).remove_for_handle(host_handle, ofd_lock_owner);
-        if host_lock_cleanup {
-            let mut dummy = [0u8; 24];
-            let _ = host.host_fcntl_lock(&path, ofd_lock_owner, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
-        }
         match file_type {
             FileType::Pipe => {
                 if host_handle >= 0 {
@@ -2512,11 +3030,8 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                     let pipe_idx = (-(host_handle + 1)) as usize;
                     let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) };
                     if let Some(pipe) = pipe {
-                        let access_mode = status_flags & O_ACCMODE;
-                        if access_mode == O_RDONLY {
-                            pipe.close_read_end();
-                        } else {
-                            pipe.close_write_end();
+                        if let Some(kind) = pipe.reference_kind(status_flags) {
+                            pipe.close_reference(kind);
                         }
                         // Free pipe slot if both endpoints are closed
                         unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
@@ -2638,7 +3153,9 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                 crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::MemFd => {
-                crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+                if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
+                    release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
+                }
             }
             FileType::PtyMaster => {
                 let pty_idx = host_handle as usize;
@@ -2667,24 +3184,27 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                 if dir_host_handle >= 0 {
                     let _ = host.host_closedir(dir_host_handle);
                 }
-                // Procfs buffers: free the content buffer
+                // Kernel regular-file backings own the cross-process OFD
+                // lifetime used by procfs and read-only synthetic files.
                 if file_type == FileType::Regular
-                    && crate::procfs::is_procfs_buf_handle(host_handle)
+                    && (crate::procfs::is_procfs_buf_handle(host_handle)
+                        || crate::descriptor_backing::is_synthetic_regular_handle(host_handle))
                 {
-                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+                    if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
+                        release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
+                    }
                 } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
                 {
                     // Procfs/devfs directory: nothing to clean up
-                } else if host_handle == SYNTHETIC_FILE_HANDLE {
-                    // Synthetic read-only file: no host handle to close
-                    // Virtual char devices have no host handle to close
                 } else if file_type == FileType::CharDevice && host_handle < 0 {
+                    // Virtual char devices have no host handle to close.
                     // Nothing to clean up on host side
                 } else if crate::ofd::host_handle_close_ref(host_handle) {
                     // Cross-process refcount reached 0 — safe to close the host handle.
                     // If the handle was never shared (not in the refcount table),
                     // host_handle_close_ref returns true immediately.
+                    release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
                     host.host_close(host_handle)?;
                 }
             }
@@ -2739,7 +3259,7 @@ pub fn sys_read(
 
     // Check that the fd is open for reading (access mode != O_WRONLY).
     let access_mode = ofd.status_flags & O_ACCMODE;
-    if access_mode == O_WRONLY {
+    if ofd.is_path_only() || access_mode == O_WRONLY {
         return Err(Errno::EBADF);
     }
 
@@ -2762,8 +3282,8 @@ pub fn sys_read(
                     if n > 0 {
                         return Ok(n);
                     }
-                    if !pipe.is_write_end_open() {
-                        return Ok(0); // EOF — write end closed
+                    if pipe.read_end_has_eof() {
+                        return Ok(0);
                     }
                 }
                 return Err(Errno::EAGAIN);
@@ -3060,17 +3580,25 @@ pub fn sys_read(
                 });
             }
 
-            if host_handle == SYNTHETIC_FILE_HANDLE {
+            if crate::descriptor_backing::is_synthetic_regular_handle(host_handle) {
                 let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-                let offset = ofd.offset as usize;
+                let current = crate::descriptor_backing::current_offset(
+                    ofd.file_type,
+                    ofd.host_handle,
+                    ofd.offset,
+                )?;
+                let offset = usize::try_from(current).map_err(|_| Errno::EOVERFLOW)?;
                 let data = synthetic_file_content(&ofd.path).ok_or(Errno::EBADF)?;
                 if offset >= data.len() {
                     return Ok(0);
                 }
                 let n = buf.len().min(data.len() - offset);
                 buf[..n].copy_from_slice(&data[offset..offset + n]);
-                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
-                ofd.offset += n as i64;
+                crate::descriptor_backing::set_current_offset(
+                    ofd.file_type,
+                    ofd.host_handle,
+                    current.checked_add(n as i64).ok_or(Errno::EOVERFLOW)?,
+                )?;
                 return Ok(n);
             }
 
@@ -3097,7 +3625,7 @@ pub fn sys_write(
 
     // Check that the fd is open for writing (access mode != O_RDONLY).
     let access_mode = ofd.status_flags & O_ACCMODE;
-    if access_mode == O_RDONLY {
+    if ofd.is_path_only() || access_mode == O_RDONLY {
         return Err(Errno::EBADF);
     }
 
@@ -3367,6 +3895,7 @@ pub fn sys_lseek(
     offset: i64,
     whence: u32,
 ) -> Result<i64, Errno> {
+    require_io_fd(proc, fd)?;
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
 
@@ -3505,18 +4034,24 @@ pub fn sys_lseek(
         return Ok(new_pos);
     }
 
-    if ofd.host_handle == SYNTHETIC_FILE_HANDLE {
+    if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
         let size = synthetic_file_content(&ofd.path).map_or(0, |d| d.len() as i64);
+        let current =
+            crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)?;
         let new_pos = match whence {
             SEEK_SET => offset,
-            SEEK_CUR => ofd.offset.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
+            SEEK_CUR => current.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
             SEEK_END => size.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
             _ => return Err(Errno::EINVAL),
         };
         if new_pos < 0 {
             return Err(Errno::EINVAL);
         }
-        ofd.offset = new_pos;
+        crate::descriptor_backing::set_current_offset(
+            ofd.file_type,
+            ofd.host_handle,
+            new_pos,
+        )?;
         return Ok(new_pos);
     }
 
@@ -3580,6 +4115,7 @@ pub fn sys_pread(
     buf: &mut [u8],
     offset: i64,
 ) -> Result<usize, Errno> {
+    require_io_fd(proc, fd)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
@@ -3610,7 +4146,7 @@ pub fn sys_pread(
     let host_handle = ofd.host_handle;
     let saved_offset = ofd.offset;
 
-    if host_handle == SYNTHETIC_FILE_HANDLE {
+    if crate::descriptor_backing::is_synthetic_regular_handle(host_handle) {
         let data = synthetic_file_content(&ofd.path).ok_or(Errno::EBADF)?;
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         if start >= data.len() {
@@ -3719,17 +4255,18 @@ pub(crate) fn write_operation_budget(
 ) -> Result<usize, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
-    let (file_type, status_flags, host_handle, current_offset) = {
+    let (file_type, status_flags, host_handle, current_offset, path_only) = {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         (
             ofd.file_type,
             ofd.status_flags,
             ofd.host_handle,
             ofd.offset,
+            ofd.is_path_only(),
         )
     };
 
-    if status_flags & O_ACCMODE == O_RDONLY {
+    if path_only || status_flags & O_ACCMODE == O_RDONLY {
         return Err(Errno::EBADF);
     }
     if requested_len == 0 {
@@ -3770,7 +4307,7 @@ fn validate_transfer_input(proc: &Process, fd: i32, offset: Option<i64>) -> Resu
         .ofd_table
         .get(entry.ofd_ref.0)
         .ok_or(Errno::EBADF)?;
-    if ofd.status_flags & O_ACCMODE == O_WRONLY {
+    if ofd.is_path_only() || ofd.status_flags & O_ACCMODE == O_WRONLY {
         return Err(Errno::EBADF);
     }
     if matches!(offset, Some(value) if value < 0) {
@@ -3802,6 +4339,7 @@ pub fn sys_pwrite(
     buf: &[u8],
     offset: i64,
 ) -> Result<usize, Errno> {
+    require_io_fd(proc, fd)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
@@ -3864,6 +4402,7 @@ pub fn sys_preadv(
     iovecs: &mut [&mut [u8]],
     offset: i64,
 ) -> Result<usize, Errno> {
+    require_io_fd(proc, fd)?;
     let mut total = 0usize;
     let mut cur_offset = offset;
     for buf in iovecs.iter_mut() {
@@ -3945,11 +4484,11 @@ pub fn sys_sendfile(
     offset: i64,
     count: usize,
 ) -> Result<usize, Errno> {
+    validate_transfer_input(proc, in_fd, (offset >= 0).then_some(offset))?;
+    let writable_len = write_operation_budget(proc, host, out_fd, None, count)?;
     if count == 0 {
         return Ok(0);
     }
-    validate_transfer_input(proc, in_fd, (offset >= 0).then_some(offset))?;
-    let writable_len = write_operation_budget(proc, host, out_fd, None, count)?;
     let mut total = 0usize;
     let mut buf = [0u8; 4096];
     let mut cur_offset = offset;
@@ -4016,11 +4555,11 @@ pub fn sys_copy_file_range(
     off_out: Option<i64>,
     len: usize,
 ) -> Result<usize, Errno> {
+    validate_transfer_input(proc, fd_in, off_in)?;
+    let writable_len = write_operation_budget(proc, host, fd_out, off_out, len)?;
     if len == 0 {
         return Ok(0);
     }
-    validate_transfer_input(proc, fd_in, off_in)?;
-    let writable_len = write_operation_budget(proc, host, fd_out, off_out, len)?;
     let mut total = 0usize;
     let mut buf = [0u8; 4096];
     let mut cur_off_in = off_in.unwrap_or(-1);
@@ -4114,8 +4653,12 @@ pub fn sys_statx(
     flags: u32,
     _mask: u32,
 ) -> Result<WasmStat, Errno> {
-    // statx is essentially fstatat with extra fields we don't track
-    sys_fstatat(proc, host, dirfd, path, flags)
+    // The two statx synchronization modes are accepted but have no observable
+    // effect for Kandelo's local VFS. Linux rejects selecting both modes.
+    if flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE {
+        return Err(Errno::EINVAL);
+    }
+    sys_fstatat(proc, host, dirfd, path, flags & !AT_STATX_SYNC_TYPE)
 }
 
 /// Duplicate a file descriptor, returning the new fd number.
@@ -4142,6 +4685,26 @@ pub fn sys_dup2(
     oldfd: i32,
     newfd: i32,
 ) -> Result<i32, Errno> {
+    sys_dup2_impl(proc, None, host, oldfd, newfd)
+}
+
+pub fn sys_dup2_with_locks(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    oldfd: i32,
+    newfd: i32,
+) -> Result<i32, Errno> {
+    sys_dup2_impl(proc, Some(locks), host, oldfd, newfd)
+}
+
+fn sys_dup2_impl(
+    proc: &mut Process,
+    mut locks: Option<&mut AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    oldfd: i32,
+    newfd: i32,
+) -> Result<i32, Errno> {
     // Validate oldfd.
     let _ = proc.fd_table.get(oldfd)?;
 
@@ -4151,7 +4714,10 @@ pub fn sys_dup2(
     }
 
     // Close newfd if it's open (ignore errors).
-    let _ = sys_close(proc, host, newfd);
+    let _ = match locks.as_deref_mut() {
+        Some(locks) => sys_close_with_locks(proc, locks, host, newfd),
+        None => sys_close(proc, host, newfd),
+    };
 
     // Re-read oldfd entry since sys_close may have mutated tables
     // (only if newfd happened to share an OFD with oldfd).
@@ -4179,12 +4745,37 @@ pub fn sys_dup3(
     newfd: i32,
     flags: u32,
 ) -> Result<i32, Errno> {
+    sys_dup3_impl(proc, None, host, oldfd, newfd, flags)
+}
+
+pub fn sys_dup3_with_locks(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    oldfd: i32,
+    newfd: i32,
+    flags: u32,
+) -> Result<i32, Errno> {
+    sys_dup3_impl(proc, Some(locks), host, oldfd, newfd, flags)
+}
+
+fn sys_dup3_impl(
+    proc: &mut Process,
+    locks: Option<&mut AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    oldfd: i32,
+    newfd: i32,
+    flags: u32,
+) -> Result<i32, Errno> {
+    if flags & !(O_CLOEXEC | O_CLOFORK) != 0 {
+        return Err(Errno::EINVAL);
+    }
     if oldfd == newfd {
         return Err(Errno::EINVAL);
     }
 
     // Reuse dup2 logic: close newfd if open, then dup oldfd to newfd.
-    let result = sys_dup2(proc, host, oldfd, newfd)?;
+    let result = sys_dup2_impl(proc, locks, host, oldfd, newfd)?;
 
     // Apply O_CLOEXEC / O_CLOFORK flags to the new fd.
     let new_fd_flags = oflags_to_fd_flags(flags);
@@ -4275,11 +4866,28 @@ pub fn sys_pipe2(proc: &mut Process, flags: u32) -> Result<(i32, i32), Errno> {
 }
 
 /// Get file status information.
-pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmStat, Errno> {
+pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmStat, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
 
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+
+    if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
+        let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+        let is_fifo = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
+            .is_some_and(crate::pipe::PipeBuffer::is_fifo);
+        if is_fifo {
+            let live_path = unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx);
+            if let Some(live_path) = live_path {
+                if let Ok(Some(st)) = fifo_path_stat_raw(host, &live_path, true) {
+                    return Ok(st);
+                }
+            }
+            return unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
+                .and_then(crate::pipe::PipeBuffer::fifo_metadata)
+                .ok_or(Errno::EIO);
+        }
+    }
 
     if matches!(
         ofd.file_type,
@@ -4380,7 +4988,7 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
             st_ctime_nsec: 0,
             _pad: 0,
         })
-    } else if ofd.host_handle == SYNTHETIC_FILE_HANDLE {
+    } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
         synthetic_file_stat(&ofd.path, proc.euid, proc.egid).ok_or(Errno::EBADF)
     } else if ofd.file_type == FileType::Regular
         && crate::procfs::is_procfs_buf_handle(ofd.host_handle)
@@ -4437,6 +5045,23 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
     }
 }
 
+/// Return the same live OFD metadata through a procfs fd link as `fstat(fd)`.
+/// A numeric procfs fd name that is not open is absent, not an EBADF syscall
+/// argument owned by the caller.
+pub(crate) fn procfs_fd_target_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Result<WasmStat, Errno> {
+    sys_fstat(proc, host, fd).map_err(|error| {
+        if error == Errno::EBADF {
+            Errno::ENOENT
+        } else {
+            error
+        }
+    })
+}
+
 /// fcntl operations on a file descriptor.
 pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32, Errno> {
     match cmd {
@@ -4483,6 +5108,10 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
         F_SETFL => {
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
+            let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+            if ofd.is_path_only() {
+                return Err(Errno::EBADF);
+            }
             proc.ofd_table.set_status_flags(ofd_idx, arg);
             Ok(0)
         }
@@ -4490,6 +5119,9 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
             let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+            if ofd.is_path_only() {
+                return Err(Errno::EBADF);
+            }
             ofd.owner_pid = arg;
             Ok(0)
         }
@@ -4497,6 +5129,9 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
             let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+            if ofd.is_path_only() {
+                return Err(Errno::EBADF);
+            }
             Ok(ofd.owner_pid as i32)
         }
         F_GETLK | F_SETLK | F_SETLKW => {
@@ -4507,35 +5142,125 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
     }
 }
 
+fn advisory_file_id(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+) -> Result<FileId, Errno> {
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    if let Some(file_id) = ofd.file_id {
+        return Ok(file_id);
+    }
+
+    let file_id = match ofd.file_type {
+        FileType::Regular
+            if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) =>
+        {
+            FileId::Kernel {
+                kind: KernelFileKind::SyntheticRegular,
+                object_id: synthetic_file_object_id(&ofd.path).ok_or(Errno::ENOLCK)?,
+            }
+        }
+        FileType::Regular if crate::procfs::is_procfs_buf_handle(ofd.host_handle) => {
+            let entry = crate::procfs::match_procfs(&ofd.path, proc.pid).ok_or(Errno::ENOLCK)?;
+            FileId::Kernel {
+                kind: KernelFileKind::ProcFsRegular,
+                object_id: crate::procfs::regular_file_object_id(&entry).ok_or(Errno::ENOLCK)?,
+            }
+        }
+        FileType::Regular | FileType::Directory if ofd.host_handle >= 0 => {
+            // Host EAGAIN is not a lock conflict. In particular, it must not
+            // enter the host's F_SETLKW parking path. Treat a transiently
+            // unavailable identity as an unavailable locking resource.
+            let stat = host.host_fstat(ofd.host_handle).map_err(|err| {
+                if err == Errno::EAGAIN {
+                    Errno::ENOLCK
+                } else {
+                    err
+                }
+            })?;
+            // Inode zero is the explicit unsupported-identity boundary.  A
+            // pathname or host-handle fallback would alias rename/recreate or
+            // independently opened descriptions and is therefore forbidden.
+            if stat.st_ino == 0 {
+                return Err(Errno::ENOLCK);
+            }
+            FileId::Host {
+                dev: stat.st_dev,
+                ino: stat.st_ino,
+            }
+        }
+        FileType::MemFd => FileId::Kernel {
+            kind: KernelFileKind::MemFd,
+            object_id: ofd.ofd_id.0,
+        },
+        _ => return Err(Errno::EINVAL),
+    };
+    proc.ofd_table
+        .get_mut(ofd_idx)
+        .ok_or(Errno::EBADF)?
+        .file_id = Some(file_id);
+    Ok(file_id)
+}
+
+fn advisory_lock_type(lock_type: u32) -> Result<Option<AdvisoryLockType>, Errno> {
+    match lock_type {
+        F_RDLCK => Ok(Some(AdvisoryLockType::Read)),
+        F_WRLCK => Ok(Some(AdvisoryLockType::Write)),
+        F_UNLCK => Ok(None),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 /// fcntl lock operations (F_GETLK, F_SETLK, F_SETLKW, F_OFD_*).
 pub fn sys_fcntl_lock(
     proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
     fd: i32,
     cmd: u32,
     flock: &mut WasmFlock,
     host: &mut dyn HostIO,
 ) -> Result<(), Errno> {
+    sys_fcntl_lock_with_owner(proc, locks, fd, cmd, flock, host, false)
+}
+
+fn sys_fcntl_lock_with_owner(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    fd: i32,
+    cmd: u32,
+    flock: &mut WasmFlock,
+    host: &mut dyn HostIO,
+    force_ofd_owner: bool,
+) -> Result<(), Errno> {
     use wasm_posix_shared::fcntl_cmd::{F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW};
 
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
-    let (host_handle, file_type, status_flags, local_offset, path) = {
+    let (host_handle, file_type, status_flags, local_offset, ofd_id) = {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.is_path_only() {
+            return Err(Errno::EBADF);
+        }
         (
             ofd.host_handle,
             ofd.file_type,
             ofd.status_flags,
             ofd.offset,
-            ofd.path.clone(),
+            ofd.ofd_id,
         )
     };
     let offset = crate::descriptor_backing::current_offset(file_type, host_handle, local_offset)?;
 
-    // OFD locks use the OFD index as lock owner (not PID).
-    // Map OFD and POSIX (5/6/7) commands to the internal lock constants (12/13/14).
-    // On LP64 targets (wasm64posix), musl defines F_GETLK=5, F_SETLK=6, F_SETLKW=7.
-    // On ILP32 targets (wasm32posix), musl defines F_GETLK=12, F_SETLK=13, F_SETLKW=14.
-    let is_ofd = matches!(cmd, F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW);
+    // On LP64 targets commands are 5/6/7; ILP32 uses 12/13/14.  OFD
+    // commands share the same manager operation after owner selection.
+    let is_ofd_cmd = matches!(cmd, F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW);
+    if is_ofd_cmd && flock.l_pid != 0 {
+        // Linux's OFD-lock ABI requires callers to clear l_pid.  Enforcing the
+        // invariant also prevents a process-local PID value from being
+        // mistaken for ownership metadata on a machine-wide OfdId lock.
+        return Err(Errno::EINVAL);
+    }
     let base_cmd = match cmd {
         5 => F_GETLK,
         6 => F_SETLK,
@@ -4545,137 +5270,109 @@ pub fn sys_fcntl_lock(
         F_OFD_SETLKW => F_SETLKW,
         other => other,
     };
-    // OFD lock owners use high bit to avoid colliding with PIDs
-    let lock_owner = if is_ofd {
-        (ofd_idx as u32) | 0x80000000
+    if !matches!(base_cmd, F_GETLK | F_SETLK | F_SETLKW) {
+        return Err(Errno::EINVAL);
+    }
+
+    let owner = if force_ofd_owner {
+        LockOwner::Flock(ofd_id)
+    } else if is_ofd_cmd {
+        LockOwner::OpenFileDescription(ofd_id)
     } else {
-        proc.pid
+        LockOwner::Process(proc.pid)
     };
 
-    // Resolve start offset based on whence
-    let start = match flock.l_whence {
-        0 => flock.l_start,                                              // SEEK_SET
-        1 => offset.checked_add(flock.l_start).ok_or(Errno::EOVERFLOW)?, // SEEK_CUR
-        2 => {
-            // SEEK_END: resolve relative to file size
-            if host_handle >= 0 {
-                let stat = host.host_fstat(host_handle)?;
-                (stat.st_size as i64) + flock.l_start
-            } else {
-                // Non-host files (pipes, etc.) — SEEK_END not meaningful
-                return Err(Errno::EINVAL);
-            }
+    let start = match flock.l_whence as i32 {
+        value if value == SEEK_SET as i32 => flock.l_start,
+        value if value == SEEK_CUR as i32 => {
+            offset.checked_add(flock.l_start).ok_or(Errno::EOVERFLOW)?
+        }
+        value if value == SEEK_END as i32 => {
+            let size = match file_type {
+                FileType::Regular if host_handle >= 0 => host
+                    .host_fstat(host_handle)
+                    .map_err(|err| {
+                        // Reserve EAGAIN from a blocking lock request for an
+                        // actual manager conflict; setup failures complete.
+                        if err == Errno::EAGAIN {
+                            Errno::EIO
+                        } else {
+                            err
+                        }
+                    })?
+                    .st_size,
+                // Synthetic and procfs regular files have stable kernel
+                // identities and a truthful fstat size despite using a
+                // negative backing handle. Resolve SEEK_END through the same
+                // fd path as memfd rather than rejecting those files.
+                FileType::Regular | FileType::MemFd => sys_fstat(proc, host, fd)?.st_size,
+                _ => return Err(Errno::EINVAL),
+            };
+            let size = i64::try_from(size).map_err(|_| Errno::EOVERFLOW)?;
+            size.checked_add(flock.l_start).ok_or(Errno::EOVERFLOW)?
         }
         _ => return Err(Errno::EINVAL),
     };
+    let range = LockRange::normalize(start, flock.l_len)?;
+    let requested_type = advisory_lock_type(flock.l_type as u32)?;
+    let file = advisory_file_id(proc, host, ofd_idx)?;
 
-    // l_type as u32 for comparison with F_RDLCK/F_WRLCK/F_UNLCK constants
-    let lock_type = flock.l_type as u32;
-
-    // For host-backed files, delegate to the shared lock table via host import
-    if host_handle >= 0 && !path.is_empty() {
-        // Access mode check
-        if base_cmd == F_SETLK || base_cmd == F_SETLKW {
-            let access_mode = status_flags & O_ACCMODE;
-            if lock_type == F_RDLCK && access_mode == O_WRONLY {
-                return Err(Errno::EBADF);
-            }
-            if lock_type == F_WRLCK && access_mode == O_RDONLY {
-                return Err(Errno::EBADF);
-            }
-        }
-        let mut result_buf = [0u8; 24];
-        host.host_fcntl_lock(
-            &path,
-            lock_owner,
-            base_cmd,
-            lock_type,
-            start,
-            flock.l_len,
-            &mut result_buf,
-        )?;
-        // For GETLK variants, parse result_buf back into flock
-        if base_cmd == F_GETLK {
-            let result_type = u32::from_le_bytes(result_buf[0..4].try_into().unwrap());
-            flock.l_type = result_type as i16;
-            if result_type != F_UNLCK {
-                // OFD locks: POSIX says l_pid should be -1
-                flock.l_pid = if is_ofd {
-                    0xFFFFFFFF
-                } else {
-                    u32::from_le_bytes(result_buf[4..8].try_into().unwrap())
-                };
-                flock.l_start = i64::from_le_bytes(result_buf[8..16].try_into().unwrap());
-                flock.l_len = i64::from_le_bytes(result_buf[16..24].try_into().unwrap());
-                flock.l_whence = 0;
-            }
+    if base_cmd == F_GETLK {
+        // F_UNLCK is itself a valid record-lock type.  Testing whether an
+        // unlock would be blocked is deterministic: it never would be, so
+        // report F_UNLCK without consulting or changing the table.
+        let Some(requested_type) = requested_type else {
+            flock.l_type = F_UNLCK as i16;
+            return Ok(());
+        };
+        if let Some(blocker) = locks.get_blocking_lock(file, owner, requested_type, range) {
+            flock.l_type = match blocker.lock_type {
+                AdvisoryLockType::Read => F_RDLCK as i16,
+                AdvisoryLockType::Write => F_WRLCK as i16,
+            };
+            flock.l_start = blocker.range.start;
+            flock.l_len = blocker.range.len();
+            flock.l_pid = match blocker.owner {
+                LockOwner::Process(pid) => pid,
+                LockOwner::OpenFileDescription(_) | LockOwner::Flock(_) => u32::MAX,
+            };
+            flock.l_whence = SEEK_SET as i16;
+        } else {
+            flock.l_type = F_UNLCK as i16;
         }
         return Ok(());
     }
 
-    // Fallback: kernel-managed lock table for non-host files (pipes, etc.).
-    // The kernel-wide table lets different Process objects coordinate.
-    match base_cmd {
-        F_GETLK => {
-            match fallback_lock_table(proc).get_blocking_lock(
-                host_handle,
-                lock_type,
-                start,
-                flock.l_len,
-                lock_owner,
-            ) {
-                Some(blocking) => {
-                    flock.l_type = blocking.lock_type as i16;
-                    flock.l_start = blocking.start;
-                    flock.l_len = blocking.len;
-                    // OFD locks: POSIX says l_pid should be -1
-                    flock.l_pid = if is_ofd { 0xFFFFFFFF } else { blocking.pid };
-                    flock.l_whence = 0;
-                }
-                None => {
-                    flock.l_type = F_UNLCK as i16;
-                }
-            }
-            Ok(())
+    if let Some(lock_type) = requested_type.filter(|_| !force_ofd_owner) {
+        let access_mode = status_flags & O_ACCMODE;
+        if lock_type == AdvisoryLockType::Read && access_mode == O_WRONLY {
+            return Err(Errno::EBADF);
         }
-        F_SETLK | F_SETLKW => {
-            let access_mode = status_flags & O_ACCMODE;
-            if lock_type == F_RDLCK && access_mode == O_WRONLY {
-                return Err(Errno::EBADF);
-            }
-            if lock_type == F_WRLCK && access_mode == O_RDONLY {
-                return Err(Errno::EBADF);
-            }
+        if lock_type == AdvisoryLockType::Write && access_mode == O_RDONLY {
+            return Err(Errno::EBADF);
+        }
+    }
 
-            if lock_type == F_UNLCK {
-                let lock = FileLock {
-                    pid: lock_owner,
-                    lock_type: F_UNLCK,
-                    start,
-                    len: flock.l_len,
-                };
-                fallback_lock_table(proc).set_lock(host_handle, lock);
+    if force_ofd_owner {
+        if let Some(requested_type) = requested_type {
+            // Linux/BSD flock conversion is deliberately non-atomic: an OFD
+            // drops its old mode before attempting the new one. Without this,
+            // two shared holders that both block upgrading to exclusive keep
+            // their shared locks forever and deadlock each other. Preserve an
+            // already-effective mode as a no-op, but publish the removal wake
+            // before a real conversion can return EAGAIN and park.
+            if locks.flock_type(file, ofd_id) == Some(requested_type) {
                 return Ok(());
             }
-
-            if fallback_lock_table(proc)
-                .get_blocking_lock(host_handle, lock_type, start, flock.l_len, lock_owner)
-                .is_some()
-            {
-                return Err(Errno::EAGAIN);
-            }
-
-            let lock = FileLock {
-                pid: lock_owner,
-                lock_type,
-                start,
-                len: flock.l_len,
-            };
-            fallback_lock_table(proc).set_lock(host_handle, lock);
-            Ok(())
+            publish_advisory_lock_mutation(locks.remove_file_owner(file, owner));
         }
-        _ => Err(Errno::EINVAL),
     }
+
+    let mutation = locks.set_lock(file, owner, requested_type, range)?;
+    if mutation.may_unblock {
+        crate::wakeup::push_advisory_lock();
+    }
+    Ok(())
 }
 
 /// BSD flock() — whole-file locking mapped to fcntl advisory locks.
@@ -4684,6 +5381,7 @@ pub fn sys_fcntl_lock(
 /// LOCK_NB flag switches from F_SETLKW (blocking) to F_SETLK (non-blocking).
 pub fn sys_flock(
     proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
     fd: i32,
     operation: u32,
     host: &mut dyn HostIO,
@@ -4714,7 +5412,9 @@ pub fn sys_flock(
         _pad2: 0,
     };
 
-    sys_fcntl_lock(proc, fd, cmd, &mut flock, host)
+    // flock ownership follows the open file description: dup/fork share it,
+    // independent opens do not, and the final machine-wide close releases it.
+    sys_fcntl_lock_with_owner(proc, locks, fd, cmd, &mut flock, host, true)
 }
 
 use crate::process::{DirStream, ProcessState};
@@ -4770,6 +5470,106 @@ fn unix_socket_path_stat(
     Ok(Some(st))
 }
 
+fn fifo_path_stat_raw(
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    follow: bool,
+) -> Result<Option<WasmStat>, Errno> {
+    let pipe_idx = match unsafe { crate::fifo::global_fifo_table() }.lookup(resolved) {
+        Some(pipe_idx) => pipe_idx,
+        None => return Ok(None),
+    };
+    let mut st = if follow {
+        host.host_stat(resolved)?
+    } else {
+        host.host_lstat(resolved)?
+    };
+    st.st_mode = wasm_posix_shared::mode::S_IFIFO | (st.st_mode & 0o7777);
+    st.st_size = 0;
+    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+        .ok_or(Errno::EIO)?;
+    st.st_nlink = pipe.fifo_name_count();
+    pipe.update_fifo_metadata(st);
+    Ok(Some(st))
+}
+
+fn fifo_path_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    follow: bool,
+) -> Result<Option<WasmStat>, Errno> {
+    if unsafe { crate::fifo::global_fifo_table() }
+        .lookup(resolved)
+        .is_none()
+    {
+        return Ok(None);
+    }
+    check_search_path(proc, host, resolved)?;
+    fifo_path_stat_raw(host, resolved, follow)
+}
+
+fn named_fifo_pipe_idx(proc: &Process, fd: i32) -> Result<Option<usize>, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Pipe || ofd.host_handle >= 0 {
+        return Ok(None);
+    }
+    let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+    let is_fifo = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
+        .is_some_and(crate::pipe::PipeBuffer::is_fifo);
+    Ok(is_fifo.then_some(pipe_idx))
+}
+
+fn update_fifo_metadata(
+    pipe_idx: usize,
+    update: impl FnOnce(&mut WasmStat) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+        .ok_or(Errno::EIO)?;
+    let mut metadata = pipe.fifo_metadata().ok_or(Errno::EIO)?;
+    update(&mut metadata)?;
+    metadata.st_mode = S_IFIFO | (metadata.st_mode & 0o7777);
+    metadata.st_nlink = pipe.fifo_name_count();
+    metadata.st_size = 0;
+    pipe.update_fifo_metadata(metadata);
+    Ok(())
+}
+
+fn realtime_timestamp(host: &mut dyn HostIO) -> Result<(u64, u32), Errno> {
+    let (sec, nsec) =
+        host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
+    Ok((
+        u64::try_from(sec).map_err(|_| Errno::EINVAL)?,
+        u32::try_from(nsec).map_err(|_| Errno::EINVAL)?,
+    ))
+}
+
+fn procfs_entry_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    entry: &crate::procfs::ProcfsEntry,
+    follow: bool,
+) -> Result<WasmStat, Errno> {
+    crate::procfs::validate_entry(proc, entry)?;
+    if follow {
+        if let crate::procfs::ProcfsEntry::FdLink(pid, fd) = entry {
+            if *pid == proc.pid {
+                return procfs_fd_target_stat(proc, host, *fd);
+            }
+            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+            {
+                return crate::wasm_api::procfs_fstat_for_pid(*pid, *fd, host);
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+            {
+                return Err(Errno::ENOENT);
+            }
+        }
+    }
+    Ok(crate::procfs::procfs_stat(entry, 0, follow))
+}
+
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
@@ -4798,8 +5598,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
-        return Ok(crate::procfs::procfs_stat(&entry, 0, true));
+        return procfs_entry_stat(proc, host, &entry, true);
     }
     if !is_host_backed_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
@@ -4807,6 +5606,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         }
     }
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
+    }
+    if let Some(st) = fifo_path_stat(proc, host, &resolved, true)? {
         return Ok(st);
     }
     if let Some(st) = unix_socket_path_stat(proc, host, &resolved, true)? {
@@ -4850,8 +5652,7 @@ pub fn sys_lstat(
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
-        return Ok(crate::procfs::procfs_stat(&entry, 0, false));
+        return procfs_entry_stat(proc, host, &entry, false);
     }
     if !is_host_backed_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
@@ -4859,6 +5660,9 @@ pub fn sys_lstat(
         }
     }
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
+    }
+    if let Some(st) = fifo_path_stat(proc, host, &resolved, false)? {
         return Ok(st);
     }
     if let Some(st) = unix_socket_path_stat(proc, host, &resolved, false)? {
@@ -4893,11 +5697,190 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     host.host_rmdir(&resolved)
 }
 
+/// Create a named FIFO (`mkfifo` / `mknod(S_IFIFO)`). A FIFO is a named kernel
+/// pipe: registered by canonical path so a later `open()` connects a read or
+/// write end with real pipe semantics (block/EAGAIN/EOF). See `crate::fifo`.
+pub fn sys_mkfifo(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    mode: u32,
+) -> Result<(), Errno> {
+    let resolved =
+        resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_ENTRY)?;
+    make_fifo(proc, host, resolved, mode)
+}
+
+/// `mkfifoat` / `mknodat(S_IFIFO)`: like [`sys_mkfifo`] but relative to `dirfd`.
+pub fn sys_mkfifoat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    mode: u32,
+) -> Result<(), Errno> {
+    let resolved = resolve_at_path(
+        proc,
+        host,
+        dirfd,
+        path,
+        PathResolveOptions::CREATE_ENTRY,
+    )?;
+    make_fifo(proc, host, resolved, mode)
+}
+
+fn make_fifo(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: ResolvedNamespacePath,
+    mode: u32,
+) -> Result<(), Errno> {
+    if resolved.stat.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    ensure_host_mutable_namespace_path(&resolved.path)?;
+    check_parent_writable(proc, host, &resolved.path)?;
+
+    let effective_mode = mode & !proc.umask;
+    let flags = O_CREAT | O_EXCL | O_WRONLY;
+    let handle = host.host_open(&resolved.path, flags, effective_mode)?;
+    if let Err(error) = host.host_chown(&resolved.path, proc.euid, proc.egid) {
+        let _ = host.host_close(handle);
+        let _ = host.host_unlink(&resolved.path);
+        return Err(error);
+    }
+    if let Err(error) = host.host_close(handle) {
+        let _ = host.host_unlink(&resolved.path);
+        return Err(error);
+    }
+
+    let mut metadata = match host.host_stat(&resolved.path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let _ = host.host_unlink(&resolved.path);
+            return Err(error);
+        }
+    };
+    metadata.st_mode = wasm_posix_shared::mode::S_IFIFO | (metadata.st_mode & 0o7777);
+    metadata.st_size = 0;
+    let pipe = crate::pipe::PipeBuffer::new_fifo(
+        crate::pipe::DEFAULT_PIPE_CAPACITY,
+        metadata,
+    );
+    let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
+    if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
+        unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
+        let _ = host.host_unlink(&resolved.path);
+        return Err(Errno::EEXIST);
+    }
+    Ok(())
+}
+
+fn unlink_host_entry(host: &mut dyn HostIO, resolved: &[u8]) -> Result<(), Errno> {
+    match host.host_unlink(resolved) {
+        Err(Errno::EPERM) => {
+            // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
+            // musl's remove() depends on EISDIR to fall through to rmdir().
+            if let Ok(st) = host.host_stat(resolved) {
+                if st.st_mode & wasm_posix_shared::mode::S_IFMT
+                    == wasm_posix_shared::mode::S_IFDIR
+                {
+                    return Err(Errno::EISDIR);
+                }
+            }
+            Err(Errno::EPERM)
+        }
+        other => other,
+    }
+}
+
+fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(), Errno>> {
+    let pipe_idx = unsafe { crate::fifo::global_fifo_table() }.lookup(resolved)?;
+    let result = (|| {
+        fifo_path_stat_raw(host, resolved, false)?.ok_or(Errno::EIO)?;
+        let (ctime_sec, ctime_nsec) = realtime_timestamp(host)?;
+        unlink_host_entry(host, resolved)?;
+
+        let removed = unsafe { crate::fifo::global_fifo_table() }.remove(resolved);
+        if removed != Some(pipe_idx) {
+            return Err(Errno::EIO);
+        }
+        unsafe { crate::pipe::global_pipe_table() }
+            .remove_fifo_name_at(pipe_idx, ctime_sec, ctime_nsec);
+        Ok(())
+    })();
+    Some(result)
+}
+
+fn rekey_fifo_names_after_rename(
+    oldpath: &[u8],
+    newpath: &[u8],
+    displaced_ctime: Option<(u64, u32)>,
+) {
+    let registry = unsafe { crate::fifo::global_fifo_table() };
+    let old_pipe = registry.lookup(oldpath);
+    let new_pipe = registry.lookup(newpath);
+    // rename(old, new) is a no-op when both names are hard links to the same
+    // inode. Preserve both aliases and their namespace reference counts.
+    if old_pipe.is_some() && old_pipe == new_pipe {
+        return;
+    }
+    let replaced = registry.rename_path(oldpath, newpath);
+    debug_assert!(replaced.is_empty() || displaced_ctime.is_some());
+    let pipes = unsafe { crate::pipe::global_pipe_table() };
+    for pipe_idx in replaced {
+        if let Some((ctime_sec, ctime_nsec)) = displaced_ctime {
+            pipes.remove_fifo_name_at(pipe_idx, ctime_sec, ctime_nsec);
+        } else {
+            pipes.remove_fifo_name(pipe_idx);
+        }
+    }
+}
+
+fn refresh_displaced_fifo_before_rename(
+    host: &mut dyn HostIO,
+    oldpath: &[u8],
+    newpath: &[u8],
+) -> Result<Option<(u64, u32)>, Errno> {
+    let registry = unsafe { crate::fifo::global_fifo_table() };
+    let old_pipe = registry.lookup(oldpath);
+    let new_pipe = registry.lookup(newpath);
+    if new_pipe.is_some() && new_pipe != old_pipe {
+        fifo_path_stat_raw(host, newpath, false)?.ok_or(Errno::EIO)?;
+        return realtime_timestamp(host).map(Some);
+    }
+    Ok(None)
+}
+
+fn register_fifo_hardlink(
+    host: &mut dyn HostIO,
+    oldpath: &[u8],
+    newpath: &[u8],
+) -> Result<(), Errno> {
+    let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(oldpath) else {
+        return Ok(());
+    };
+    if !unsafe { crate::fifo::global_fifo_table() }.register(newpath.to_vec(), pipe_idx) {
+        let _ = host.host_unlink(newpath);
+        return Err(Errno::EIO);
+    }
+    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.ok_or_else(|| {
+        unsafe { crate::fifo::global_fifo_table() }.remove(newpath);
+        let _ = host.host_unlink(newpath);
+        Errno::EIO
+    })?;
+    pipe.add_fifo_name();
+    Ok(())
+}
+
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
     ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
+    if let Some(result) = unlink_fifo_marker(host, &resolved) {
+        return result;
+    }
     // AF_UNIX bind() creates a real host inode, so unlink must remove both the
     // registry entry and the inode. ENOENT from host_unlink is tolerated because
     // some hosts (test mocks) don't track the inode.
@@ -4914,20 +5897,7 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
             }
         }
     }
-    match host.host_unlink(&resolved) {
-        Err(Errno::EPERM) => {
-            // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
-            // musl's remove() depends on EISDIR to fall through to rmdir().
-            if let Ok(st) = host.host_stat(&resolved) {
-                if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR
-                {
-                    return Err(Errno::EISDIR);
-                }
-            }
-            Err(Errno::EPERM)
-        }
-        other => other,
-    }
+    unlink_host_entry(host, &resolved)
 }
 
 pub fn sys_rename(
@@ -4955,7 +5925,9 @@ pub fn sys_rename(
     if host.host_lstat(&new).is_ok() {
         check_sticky_child(proc, host, &new)?;
     }
+    let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
     host.host_rename(&old, &new)?;
+    rekey_fifo_names_after_rename(&old, &new, displaced_ctime);
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     if registry.rename_path(&old, &new) {
         crate::wakeup::push_datagram_writable();
@@ -4975,7 +5947,8 @@ pub fn sys_link(
     ensure_host_mutable_namespace_path(&new)?;
     check_search_path(proc, host, &old)?;
     check_parent_writable(proc, host, &new)?;
-    host.host_link(&old, &new)
+    host.host_link(&old, &new)?;
+    register_fifo_hardlink(host, &old, &new)
 }
 
 pub fn sys_symlink(
@@ -5218,6 +6191,7 @@ pub fn sys_readdir(
         .ok_or(Errno::EBADF)?;
     let host_handle = stream.host_handle;
     let synth_state = stream.synth_dot_state;
+    let stream_path = stream.path.clone();
 
     // Synthesize "." and ".." entries before host entries
     if synth_state < 2 {
@@ -5249,7 +6223,7 @@ pub fn sys_readdir(
     }
 
     match host.host_readdir(host_handle, name_buf)? {
-        Some((d_ino, d_type, name_len)) => {
+        Some((d_ino, host_d_type, name_len)) => {
             // Skip host "." and ".." entries (we already synthesized them)
             if name_len == 1 && name_buf[0] == b'.' {
                 // Recurse to get the next entry
@@ -5260,6 +6234,15 @@ pub fn sys_readdir(
             }
 
             // Write WasmDirent to dirent_buf if it fits
+            let entry_path = directory_entry_path(&stream_path, &name_buf[..name_len]);
+            let d_type = if unsafe { crate::fifo::global_fifo_table() }
+                .lookup(&entry_path)
+                .is_some()
+            {
+                1 // DT_FIFO
+            } else {
+                host_d_type
+            };
             let dirent = WasmDirent {
                 d_ino,
                 d_type,
@@ -5398,6 +6381,10 @@ pub fn sys_getdents64(
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+
+    if ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
 
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
@@ -5629,7 +6616,7 @@ pub fn sys_getdents64(
 
     loop {
         match host.host_readdir(dir_handle, &mut name_buf)? {
-            Some((d_ino, d_type, name_len)) => {
+            Some((d_ino, host_d_type, name_len)) => {
                 // Skip host "." and ".." entries (we already synthesized them)
                 if (name_len == 1 && name_buf[0] == b'.')
                     || (name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.')
@@ -5637,13 +6624,22 @@ pub fn sys_getdents64(
                     continue;
                 }
 
+                let entry_path = directory_entry_path(&path, &name_buf[..name_len]);
+                let d_type = if unsafe { crate::fifo::global_fifo_table() }
+                    .lookup(&entry_path)
+                    .is_some()
+                {
+                    1 // DT_FIFO
+                } else {
+                    host_d_type as u8
+                };
                 entry_offset += 1;
                 let written = write_dirent64(
                     buf,
                     pos,
                     d_ino,
                     entry_offset,
-                    d_type as u8,
+                    d_type,
                     &name_buf[..name_len],
                 );
                 if written == 0 {
@@ -6221,14 +7217,21 @@ pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Er
 }
 
 /// Release process-owned resources before recording an exit cause.
-fn cleanup_process_for_exit(proc: &mut Process, host: &mut dyn HostIO) {
+fn cleanup_process_for_exit(
+    proc: &mut Process,
+    mut locks: Option<&mut AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+) {
     release_process_dri_mappings(proc, host);
 
     // Snapshot the sparse table because sys_close mutates it. RLIMIT_NOFILE
     // and F_DUPFD can place live descriptors above the default 1024 slots.
     let open_fds: Vec<i32> = proc.fd_table.iter().map(|(fd, _)| fd).collect();
     for fd in open_fds {
-        let _ = sys_close(proc, host, fd);
+        let _ = match locks.as_deref_mut() {
+            Some(locks) => sys_close_with_locks(proc, locks, host, fd),
+            None => sys_close(proc, host, fd),
+        };
     }
 
     // Close all directory streams
@@ -6240,27 +7243,65 @@ fn cleanup_process_for_exit(proc: &mut Process, host: &mut dyn HostIO) {
         }
     }
 
-    // POSIX: all advisory locks held by the process are released on exit.
-    let pid = proc.pid;
-    fallback_lock_table(proc).remove_all_for_pid(pid);
+    // A process can retain process-owned records even after its last lockable
+    // descriptor was replaced. Exit is the final unconditional cleanup point.
+    if let Some(locks) = locks {
+        publish_advisory_lock_mutation(locks.remove_process(proc.pid));
+    }
 }
 
 /// Exit normally, publishing the parent-visible status after cleanup.
 pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
+    sys_exit_impl(proc, None, host, status);
+}
+
+pub fn sys_exit_with_locks(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    status: i32,
+) {
+    sys_exit_impl(proc, Some(locks), host, status);
+}
+
+fn sys_exit_impl(
+    proc: &mut Process,
+    locks: Option<&mut AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    status: i32,
+) {
     if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
         return;
     }
-    cleanup_process_for_exit(proc, host);
+    cleanup_process_for_exit(proc, locks, host);
     proc.record_normal_exit(status);
 }
 
 /// Exit for a signal's terminating default action, publishing status after
 /// cleanup completes.
 pub fn sys_exit_by_signal(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
+    sys_exit_by_signal_impl(proc, None, host, signum);
+}
+
+pub fn sys_exit_by_signal_with_locks(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    signum: u32,
+) {
+    sys_exit_by_signal_impl(proc, Some(locks), host, signum);
+}
+
+fn sys_exit_by_signal_impl(
+    proc: &mut Process,
+    locks: Option<&mut AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    signum: u32,
+) {
     if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
         return;
     }
-    cleanup_process_for_exit(proc, host);
+    cleanup_process_for_exit(proc, locks, host);
     proc.record_signal_exit(signum);
 }
 
@@ -6388,6 +7429,38 @@ pub fn sys_clock_nanosleep(
     }
 }
 
+const UTIME_NOW: i64 = 0x3fff_ffff;
+const UTIME_OMIT: i64 = 0x3fff_fffe;
+
+/// Check the two POSIX timestamp authorization modes and report whether the
+/// request can change either timestamp. An all-UTIME_OMIT request is a no-op
+/// after descriptor/path validation and requires no ownership or write access.
+fn check_utimens_permissions(
+    proc: &Process,
+    st: &WasmStat,
+    times: Option<&[WasmTimespec; 2]>,
+) -> Result<bool, Errno> {
+    let both_omit = times.is_some_and(|ts| {
+        ts[0].tv_nsec == UTIME_OMIT && ts[1].tv_nsec == UTIME_OMIT
+    });
+    if both_omit {
+        return Ok(false);
+    }
+
+    let both_now = times.is_some_and(|ts| {
+        ts[0].tv_nsec == UTIME_NOW && ts[1].tv_nsec == UTIME_NOW
+    });
+    if times.is_none() || both_now {
+        if proc.euid == 0 || proc.euid == st.st_uid || has_access(proc, st, W_OK) {
+            return Ok(true);
+        }
+        return Err(Errno::EACCES);
+    }
+
+    check_owner_or_root(proc, st)?;
+    Ok(true)
+}
+
 /// Set file timestamps. Delegates to host.
 pub fn sys_utimensat(
     proc: &mut Process,
@@ -6397,17 +7470,6 @@ pub fn sys_utimensat(
     times: Option<&[WasmTimespec; 2]>,
     _flags: u32,
 ) -> Result<(), Errno> {
-    // When path is empty (NULL from userspace), operate on dirfd directly.
-    // This is how futimens(fd, times) works: utimensat(fd, NULL, times, 0).
-    let resolved = if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
-        let entry = proc.fd_table.get(dirfd)?;
-        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-        ofd.path.clone()
-    } else {
-        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
-    };
-    ensure_host_mutable_namespace_path(&resolved)?;
-
     // Default: set both to current time
     let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = if let Some(ts) = times {
         (ts[0].tv_sec, ts[0].tv_nsec, ts[1].tv_sec, ts[1].tv_nsec)
@@ -6417,9 +7479,109 @@ pub fn sys_utimensat(
         (sec, nsec, sec, nsec)
     };
 
+    // When path is empty (NULL from userspace), operate on dirfd directly.
+    // This is how futimens(fd, times) works: utimensat(fd, NULL, times, 0).
+    if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
+        let entry = proc.fd_table.get(dirfd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.is_path_only() {
+            return Err(Errno::EBADF);
+        }
+        if let Some(pipe_idx) = named_fifo_pipe_idx(proc, dirfd)? {
+            let st = sys_fstat(proc, host, dirfd)?;
+            if !check_utimens_permissions(proc, &st, times)? {
+                return Ok(());
+            }
+            if let Some(live_path) =
+                unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+            {
+                host.host_utimensat(
+                    &live_path,
+                    atime_sec,
+                    atime_nsec,
+                    mtime_sec,
+                    mtime_nsec,
+                )?;
+                let refreshed = host.host_stat(&live_path)?;
+                return update_fifo_metadata(pipe_idx, |metadata| {
+                    metadata.st_atime_sec = refreshed.st_atime_sec;
+                    metadata.st_atime_nsec = refreshed.st_atime_nsec;
+                    metadata.st_mtime_sec = refreshed.st_mtime_sec;
+                    metadata.st_mtime_nsec = refreshed.st_mtime_nsec;
+                    metadata.st_ctime_sec = refreshed.st_ctime_sec;
+                    metadata.st_ctime_nsec = refreshed.st_ctime_nsec;
+                    Ok(())
+                });
+            }
+
+            let changes_atime = atime_nsec != UTIME_OMIT;
+            let changes_mtime = mtime_nsec != UTIME_OMIT;
+            let now = if changes_atime || changes_mtime {
+                Some(host.host_clock_gettime(0)?)
+            } else {
+                None
+            };
+            return update_fifo_metadata(pipe_idx, |metadata| {
+                let normalize = |current_sec: u64,
+                                 current_nsec: u32,
+                                 requested_sec: i64,
+                                 requested_nsec: i64|
+                 -> Result<(u64, u32), Errno> {
+                    match requested_nsec {
+                        UTIME_OMIT => Ok((current_sec, current_nsec)),
+                        UTIME_NOW => {
+                            let (sec, nsec) = now.ok_or(Errno::EINVAL)?;
+                            Ok((
+                                u64::try_from(sec).map_err(|_| Errno::EINVAL)?,
+                                u32::try_from(nsec).map_err(|_| Errno::EINVAL)?,
+                            ))
+                        }
+                        0..=999_999_999 => Ok((
+                            u64::try_from(requested_sec).map_err(|_| Errno::EINVAL)?,
+                            u32::try_from(requested_nsec).map_err(|_| Errno::EINVAL)?,
+                        )),
+                        _ => Err(Errno::EINVAL),
+                    }
+                };
+                let (new_atime_sec, new_atime_nsec) = normalize(
+                    metadata.st_atime_sec,
+                    metadata.st_atime_nsec,
+                    atime_sec,
+                    atime_nsec,
+                )?;
+                let (new_mtime_sec, new_mtime_nsec) = normalize(
+                    metadata.st_mtime_sec,
+                    metadata.st_mtime_nsec,
+                    mtime_sec,
+                    mtime_nsec,
+                )?;
+                metadata.st_atime_sec = new_atime_sec;
+                metadata.st_atime_nsec = new_atime_nsec;
+                metadata.st_mtime_sec = new_mtime_sec;
+                metadata.st_mtime_nsec = new_mtime_nsec;
+                if let Some((sec, nsec)) = now {
+                    metadata.st_ctime_sec = u64::try_from(sec).map_err(|_| Errno::EINVAL)?;
+                    metadata.st_ctime_nsec = u32::try_from(nsec).map_err(|_| Errno::EINVAL)?;
+                }
+                Ok(())
+            });
+        }
+    }
+
+    let resolved = if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
+        let entry = proc.fd_table.get(dirfd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        ofd.path.clone()
+    } else {
+        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
+    };
+    ensure_host_mutable_namespace_path(&resolved)?;
+
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
-    check_owner_or_root(proc, &st)?;
+    if !check_utimens_permissions(proc, &st, times)? {
+        return Ok(());
+    }
     host.host_utimensat(&resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
 }
 
@@ -6471,9 +7633,13 @@ pub fn sys_mremap(
     let extra = aligned_new - aligned_old;
     let grow_start = old_addr + aligned_old;
     if proc.memory.can_grow_at(grow_start, extra) {
-        proc.memory
-            .extend_mapping(old_addr, aligned_old, aligned_new);
-        return Ok(old_addr);
+        if proc
+            .memory
+            .extend_mapping(old_addr, aligned_old, aligned_new)
+        {
+            return Ok(old_addr);
+        }
+        return Err(Errno::EFAULT);
     }
 
     // MREMAP_MAYMOVE: allocate a new mapping and free the old one.
@@ -6629,6 +7795,9 @@ pub fn sys_mmap(
         // must request exactly that length.
         let entry = proc.fd_table.get(fd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.is_path_only() {
+            return Err(Errno::EBADF);
+        }
         if ofd.file_type == FileType::CharDevice
             && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Fb0)
         {
@@ -10243,6 +11412,12 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
             }
         };
 
+        if ofd.is_path_only() {
+            pollfd.revents = POLLNVAL;
+            ready_count += 1;
+            continue;
+        }
+
         let mut revents: i16 = 0;
 
         match ofd.file_type {
@@ -10361,14 +11536,33 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
                     let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) };
                     if let Some(pipe) = pipe {
-                        if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
-                            revents |= POLLIN;
-                        }
-                        if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
-                            revents |= POLLOUT;
-                        }
-                        if !pipe.is_write_end_open() {
-                            revents |= POLLHUP;
+                        match ofd.status_flags & O_ACCMODE {
+                            O_RDONLY => {
+                                if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
+                                    revents |= POLLIN;
+                                }
+                                if pipe.read_end_has_hangup() {
+                                    revents |= POLLHUP;
+                                }
+                            }
+                            O_WRONLY => {
+                                if !pipe.has_readers() {
+                                    revents |= POLLERR;
+                                } else if pollfd.events & POLLOUT != 0
+                                    && pipe.free_space() > 0
+                                {
+                                    revents |= POLLOUT;
+                                }
+                            }
+                            O_RDWR => {
+                                if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
+                                    revents |= POLLIN;
+                                }
+                                if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
+                                    revents |= POLLOUT;
+                                }
+                            }
+                            _ => revents |= POLLERR,
                         }
                     }
                 }
@@ -10611,6 +11805,9 @@ pub fn sys_openat(
     oflags: u32,
     mode: u32,
 ) -> Result<i32, Errno> {
+    if let Some(fd) = resume_fifo_open(proc)? {
+        return Ok(fd);
+    }
     let exclusive_create = oflags & O_CREAT != 0 && oflags & O_EXCL != 0;
     let resolve_options = PathResolveOptions {
         follow_final_symlink: oflags & O_NOFOLLOW == 0 && !exclusive_create,
@@ -10722,6 +11919,10 @@ pub fn sys_openat(
         return Err(Errno::ENXIO);
     }
 
+    if let Some(fd) = try_open_fifo(proc, host, &resolved, oflags, exclusive_create)? {
+        return Ok(fd);
+    }
+
     // Procfs (/proc/...) — in-kernel virtual filesystem
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
@@ -10744,15 +11945,27 @@ pub fn sys_openat(
             return Err(Errno::EACCES);
         }
         let status_flags = oflags & !CREATION_FLAGS;
+        let object_id = synthetic_file_object_id(&resolved).ok_or(Errno::EINVAL)?;
+        let host_handle = crate::descriptor_backing::alloc_synthetic_regular();
         let ofd_idx = proc.ofd_table.create(
             FileType::Regular,
             status_flags,
-            SYNTHETIC_FILE_HANDLE,
+            host_handle,
             resolved,
         );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Kernel {
+            kind: KernelFileKind::SyntheticRegular,
+            object_id,
+        });
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => Ok(fd),
+            Err(err) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
+                Err(err)
+            }
+        };
     }
 
     let effective_mode = if oflags & O_CREAT != 0 {
@@ -10768,14 +11981,22 @@ pub fn sys_openat(
         host.host_chown(&resolved, proc.euid, proc.egid)?;
     }
 
+    // Keep openat(2) on the same live-handle identity contract as open(2).
+    // A descriptor without this cached identity could later evade POSIX's
+    // close-any-fd lock cleanup if a second fstat also failed during close.
+    let live_stat = match host.host_fstat(host_handle) {
+        Ok(stat) => stat,
+        Err(err) => {
+            let _ = host.host_close(host_handle);
+            return Err(err);
+        }
+    };
     let file_type = if oflags & O_DIRECTORY != 0 {
         FileType::Directory
-    } else if let Ok(st) = host.host_stat(&resolved) {
-        if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
-            FileType::Directory
-        } else {
-            FileType::Regular
-        }
+    } else if live_stat.st_mode & wasm_posix_shared::mode::S_IFMT
+        == wasm_posix_shared::mode::S_IFDIR
+    {
+        FileType::Directory
     } else {
         FileType::Regular
     };
@@ -10784,6 +12005,12 @@ pub fn sys_openat(
     let ofd_idx = proc
         .ofd_table
         .create(file_type, status_flags, host_handle, resolved);
+    if matches!(file_type, FileType::Regular | FileType::Directory) && live_stat.st_ino != 0 {
+        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Host {
+            dev: live_stat.st_dev,
+            ino: live_stat.st_ino,
+        });
+    }
 
     let fd_flags = oflags_to_fd_flags(oflags);
 
@@ -10794,7 +12021,8 @@ pub fn sys_openat(
 /// fstatat -- stat relative to directory fd.
 ///
 /// Resolves the path relative to dirfd, then stats the file.
-/// When AT_SYMLINK_NOFOLLOW is set, uses lstat instead of stat.
+/// When AT_SYMLINK_NOFOLLOW is set, uses lstat instead of stat. An empty path
+/// with AT_EMPTY_PATH stats dirfd itself, or the cwd when dirfd is AT_FDCWD.
 pub fn sys_fstatat(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -10802,7 +12030,20 @@ pub fn sys_fstatat(
     path: &[u8],
     flags: u32,
 ) -> Result<WasmStat, Errno> {
-    use wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW;
+    if flags & !FSTATAT_VALID_FLAGS != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    if path.is_empty() {
+        if flags & AT_EMPTY_PATH == 0 {
+            return Err(Errno::ENOENT);
+        }
+        if dirfd == AT_FDCWD {
+            let cwd = proc.cwd.clone();
+            return sys_stat(proc, host, &cwd);
+        }
+        return sys_fstat(proc, host, dirfd);
+    }
 
     let options = if flags & AT_SYMLINK_NOFOLLOW != 0 {
         PathResolveOptions::NOFOLLOW
@@ -10833,9 +12074,8 @@ pub fn sys_fstatat(
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
-        return Ok(crate::procfs::procfs_stat(&entry, 0, follow));
+        return procfs_entry_stat(proc, host, &entry, follow);
     }
     if !is_host_backed_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
@@ -10843,6 +12083,14 @@ pub fn sys_fstatat(
         }
     }
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
+    }
+    if let Some(st) = fifo_path_stat(
+        proc,
+        host,
+        &resolved,
+        flags & AT_SYMLINK_NOFOLLOW == 0,
+    )? {
         return Ok(st);
     }
     if let Some(st) =
@@ -10881,6 +12129,9 @@ pub fn sys_unlinkat(
         host.host_rmdir(&resolved)
     } else {
         check_sticky_child(proc, host, &resolved)?;
+        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+            return result;
+        }
         // AF_UNIX bind() creates a host inode; remove both the registry
         // entry and the inode. (Same as sys_unlink.)
         {
@@ -10893,20 +12144,7 @@ pub fn sys_unlinkat(
                 }
             }
         }
-        match host.host_unlink(&resolved) {
-            Err(Errno::EPERM) => {
-                // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
-                if let Ok(st) = host.host_stat(&resolved) {
-                    if st.st_mode & wasm_posix_shared::mode::S_IFMT
-                        == wasm_posix_shared::mode::S_IFDIR
-                    {
-                        return Err(Errno::EISDIR);
-                    }
-                }
-                Err(Errno::EPERM)
-            }
-            other => other,
-        }
+        unlink_host_entry(host, &resolved)
     }
 }
 
@@ -10956,7 +12194,10 @@ pub fn sys_renameat(
     if host.host_lstat(&new_resolved).is_ok() {
         check_sticky_child(proc, host, &new_resolved)?;
     }
+    let displaced_ctime =
+        refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
     host.host_rename(&old_resolved, &new_resolved)?;
+    rekey_fifo_names_after_rename(&old_resolved, &new_resolved, displaced_ctime);
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     if registry.rename_path(&old_resolved, &new_resolved) {
         crate::wakeup::push_datagram_writable();
@@ -11062,6 +12303,10 @@ pub fn sys_ioctl(
 
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    if ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
 
     // FIONBIO — toggle O_NONBLOCK on the OFD status_flags
     if request == 0x5421 {
@@ -12621,6 +13866,7 @@ pub fn sys_ftruncate(
     fd: i32,
     length: i64,
 ) -> Result<(), Errno> {
+    require_io_fd(proc, fd)?;
     if length < 0 {
         return Err(Errno::EINVAL);
     }
@@ -12687,6 +13933,7 @@ pub fn sys_fallocate(
     offset: i64,
     len: i64,
 ) -> Result<(), Errno> {
+    require_io_fd(proc, fd)?;
     if offset < 0 || len <= 0 {
         return Err(Errno::EINVAL);
     }
@@ -12705,16 +13952,15 @@ pub fn sys_fallocate(
 
 /// fsync -- synchronize file state to storage.
 pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(), Errno> {
+    require_io_fd(proc, fd)?;
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    // Must be a regular file
-    if ofd.file_type != FileType::Regular {
-        return Err(Errno::EINVAL);
+    match ofd.file_type {
+        FileType::Regular | FileType::Directory => host.host_fsync(ofd.host_handle),
+        _ => Err(Errno::EINVAL),
     }
-
-    host.host_fsync(ofd.host_handle)
 }
 
 /// truncate -- truncate a file to a specified length (path-based).
@@ -12725,6 +13971,13 @@ pub fn sys_truncate(
     path: &[u8],
     length: i64,
 ) -> Result<(), Errno> {
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?;
+    if resolved
+        .stat
+        .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFIFO)
+    {
+        return Err(Errno::EINVAL);
+    }
     let fd = sys_open(proc, host, path, O_WRONLY, 0)?;
     let result = sys_ftruncate(proc, host, fd, length);
     let _ = sys_close(proc, host, fd);
@@ -12744,6 +13997,31 @@ pub fn sys_fchmod(
     fd: i32,
     mode: u32,
 ) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
+    if let Some(pipe_idx) = named_fifo_pipe_idx(proc, fd)? {
+        let st = sys_fstat(proc, host, fd)?;
+        check_owner_or_root(proc, &st)?;
+        let ctime = if let Some(live_path) =
+            unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+        {
+            host.host_chmod(&live_path, mode)?;
+            None
+        } else {
+            Some(realtime_timestamp(host)?)
+        };
+        return update_fifo_metadata(pipe_idx, |metadata| {
+            metadata.st_mode = S_IFIFO | (mode & 0o7777);
+            if let Some((ctime_sec, ctime_nsec)) = ctime {
+                metadata.st_ctime_sec = ctime_sec;
+                metadata.st_ctime_nsec = ctime_nsec;
+            }
+            Ok(())
+        });
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -12772,6 +14050,32 @@ pub fn sys_fchown(
     uid: u32,
     gid: u32,
 ) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
+    if let Some(pipe_idx) = named_fifo_pipe_idx(proc, fd)? {
+        let st = sys_fstat(proc, host, fd)?;
+        let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+        let ctime = if let Some(live_path) =
+            unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+        {
+            host.host_chown(&live_path, uid, gid)?;
+            None
+        } else {
+            Some(realtime_timestamp(host)?)
+        };
+        return update_fifo_metadata(pipe_idx, |metadata| {
+            metadata.st_uid = uid;
+            metadata.st_gid = gid;
+            if let Some((ctime_sec, ctime_nsec)) = ctime {
+                metadata.st_ctime_sec = ctime_sec;
+                metadata.st_ctime_nsec = ctime_nsec;
+            }
+            Ok(())
+        });
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -12836,6 +14140,7 @@ pub fn sys_readv(
     fd: i32,
     buffers: &mut [&mut [u8]],
 ) -> Result<usize, Errno> {
+    require_io_fd(proc, fd)?;
     let mut total = 0usize;
     for buf in buffers.iter_mut() {
         if buf.is_empty() {
@@ -13016,7 +14321,8 @@ pub fn sys_linkat(
     ensure_host_mutable_namespace_path(&new_resolved)?;
     check_search_path(proc, host, &old_resolved)?;
     check_parent_writable(proc, host, &new_resolved)?;
-    host.host_link(&old_resolved, &new_resolved)
+    host.host_link(&old_resolved, &new_resolved)?;
+    register_fifo_hardlink(host, &old_resolved, &new_resolved)
 }
 
 /// symlinkat -- create symbolic link relative to directory fd.
@@ -13645,7 +14951,7 @@ mod tests {
     use super::*;
     use crate::process::ProcessState;
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
-    use wasm_posix_shared::poll::{POLLIN, POLLOUT};
+    use wasm_posix_shared::poll::{POLLHUP, POLLIN, POLLOUT};
 
     fn terminal_process(pid: u32) -> Process {
         Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
@@ -13655,7 +14961,9 @@ mod tests {
     /// The registry uses UnsafeCell internally and is not thread-safe, so tests
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static FIFO_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static THREAD_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static SCM_RIGHTS_LIFETIME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn socket_timeout_options_accept_time64_and_long64_numbers() {
@@ -13808,18 +15116,23 @@ mod tests {
         sigsuspend_error: bool,
         clock_time: (i64, i64),
         clock_error: Option<Errno>,
+        clock_gettime_calls: usize,
         /// Per-path owner overrides for host_stat / host_lstat. Mirrors how a real
         /// host-side VFS owns ownership; tests use `set_file_with_owner` to seed.
         file_owners: std::collections::HashMap<Vec<u8>, (u32, u32)>,
         file_modes: std::collections::HashMap<Vec<u8>, u32>,
+        file_times: std::collections::HashMap<Vec<u8>, (u64, u32, u64, u32)>,
         /// Per-handle owner mapping captured at host_open time so host_fstat
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
+        path_inodes: std::collections::HashMap<Vec<u8>, u64>,
+        next_inode: u64,
         missing_paths: std::collections::HashSet<Vec<u8>>,
         symlink_targets: std::collections::HashMap<Vec<u8>, Vec<u8>>,
         lstat_paths: Vec<Vec<u8>>,
         statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
+        fsync_calls: Vec<i64>,
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_bind` call so
         /// the DRI mmap path can be asserted against.
         gbm_bo_bind_calls: Vec<(i32, u32, usize, usize)>,
@@ -13843,6 +15156,7 @@ mod tests {
         fchown_calls: Vec<(i64, u32, u32)>,
         closed_handles: Vec<i64>,
         closed_dir_handles: Vec<i64>,
+        fstat_error: Option<Errno>,
         seek_end: i64,
         seek_calls: Vec<(i64, i64, u32)>,
         stat_size: u64,
@@ -13863,14 +15177,19 @@ mod tests {
                 sigsuspend_error: false,
                 clock_time: (1234567890, 123456789),
                 clock_error: None,
+                clock_gettime_calls: 0,
                 file_owners: std::collections::HashMap::new(),
                 file_modes: std::collections::HashMap::new(),
+                file_times: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
                 handle_paths: std::collections::HashMap::new(),
+                path_inodes: std::collections::HashMap::new(),
+                next_inode: 1,
                 missing_paths: std::collections::HashSet::new(),
                 symlink_targets: std::collections::HashMap::new(),
                 lstat_paths: Vec::new(),
                 statfs_by_path: std::collections::HashMap::new(),
+                fsync_calls: Vec::new(),
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
@@ -13886,6 +15205,7 @@ mod tests {
                 fchown_calls: Vec::new(),
                 closed_handles: Vec::new(),
                 closed_dir_handles: Vec::new(),
+                fstat_error: None,
                 seek_end: 0,
                 seek_calls: Vec::new(),
                 stat_size: 1024,
@@ -13954,6 +15274,11 @@ mod tests {
             if let Some(&owner) = self.file_owners.get(path) {
                 self.handle_owners.insert(handle, owner);
             }
+            if !self.path_inodes.contains_key(path) {
+                let inode = self.next_inode;
+                self.next_inode += 1;
+                self.path_inodes.insert(path.to_vec(), inode);
+            }
             self.handle_paths.insert(handle, path.to_vec());
             Ok(handle)
         }
@@ -13984,6 +15309,9 @@ mod tests {
         }
 
         fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
+            if let Some(err) = self.fstat_error {
+                return Err(err);
+            }
             let (uid, gid) = self.handle_owners.get(&handle).copied().unwrap_or((0, 0));
             let mode = self
                 .handle_paths
@@ -13995,18 +15323,30 @@ mod tests {
                         .unwrap_or_else(|| test_default_mode(path))
                 })
                 .unwrap_or(S_IFREG | 0o644);
+            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = self
+                .handle_paths
+                .get(&handle)
+                .and_then(|path| self.file_times.get(path))
+                .copied()
+                .unwrap_or((0, 0, 0, 0));
+            let inode = self
+                .handle_paths
+                .get(&handle)
+                .and_then(|path| self.path_inodes.get(path))
+                .copied()
+                .unwrap_or(1);
             Ok(WasmStat {
-                st_dev: 0,
-                st_ino: 0,
+                st_dev: 1,
+                st_ino: inode,
                 st_mode: mode,
                 st_nlink: 1,
                 st_uid: uid,
                 st_gid: gid,
                 st_size: self.stat_size,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
+                st_atime_sec: atime_sec,
+                st_atime_nsec: atime_nsec,
+                st_mtime_sec: mtime_sec,
+                st_mtime_nsec: mtime_nsec,
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
@@ -14023,6 +15363,11 @@ mod tests {
                 .copied()
                 .unwrap_or_else(|| test_default_mode(path));
             let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
+            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = self
+                .file_times
+                .get(path)
+                .copied()
+                .unwrap_or((0, 0, 0, 0));
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 1,
@@ -14031,10 +15376,10 @@ mod tests {
                 st_uid: uid,
                 st_gid: gid,
                 st_size: 1024,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
+                st_atime_sec: atime_sec,
+                st_atime_nsec: atime_nsec,
+                st_mtime_sec: mtime_sec,
+                st_mtime_nsec: mtime_nsec,
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
@@ -14054,6 +15399,11 @@ mod tests {
             };
             let mode = self.file_modes.get(path).copied().unwrap_or(mode);
             let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
+            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = self
+                .file_times
+                .get(path)
+                .copied()
+                .unwrap_or((0, 0, 0, 0));
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 2,
@@ -14062,10 +15412,10 @@ mod tests {
                 st_uid: uid,
                 st_gid: gid,
                 st_size: 1024,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
+                st_atime_sec: atime_sec,
+                st_atime_nsec: atime_nsec,
+                st_mtime_sec: mtime_sec,
+                st_mtime_nsec: mtime_nsec,
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
@@ -14106,13 +15456,92 @@ mod tests {
         fn host_rmdir(&mut self, _path: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_unlink(&mut self, _path: &[u8]) -> Result<(), Errno> {
+        fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            self.file_modes.remove(path);
+            self.file_owners.remove(path);
+            self.file_times.remove(path);
+            self.symlink_targets.remove(path);
+            self.missing_paths.insert(path.to_vec());
             Ok(())
         }
-        fn host_rename(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> {
+        fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(oldpath) {
+                return Err(Errno::ENOENT);
+            }
+
+            let old_mode = self
+                .file_modes
+                .get(oldpath)
+                .copied()
+                .unwrap_or_else(|| test_default_mode(oldpath));
+            let moved_modes: Vec<_> = self
+                .file_modes
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_modes {
+                self.file_modes.remove(&from);
+                self.file_modes.insert(to, value);
+            }
+            let moved_owners: Vec<_> = self
+                .file_owners
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_owners {
+                self.file_owners.remove(&from);
+                self.file_owners.insert(to, value);
+            }
+            let moved_times: Vec<_> = self
+                .file_times
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_times {
+                self.file_times.remove(&from);
+                self.file_times.insert(to, value);
+            }
+            if !self.file_modes.contains_key(newpath) {
+                self.file_modes.insert(newpath.to_vec(), old_mode);
+            }
+            self.missing_paths.insert(oldpath.to_vec());
+            self.missing_paths.remove(newpath);
+            for handle_path in self.handle_paths.values_mut() {
+                if let Some(rebased) = crate::fifo::rebase_path(handle_path, oldpath, newpath) {
+                    *handle_path = rebased;
+                }
+            }
             Ok(())
         }
-        fn host_link(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> {
+        fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(oldpath) {
+                return Err(Errno::ENOENT);
+            }
+            let mode = self
+                .file_modes
+                .get(oldpath)
+                .copied()
+                .unwrap_or_else(|| test_default_mode(oldpath));
+            self.file_modes.insert(newpath.to_vec(), mode);
+            if let Some(owner) = self.file_owners.get(oldpath).copied() {
+                self.file_owners.insert(newpath.to_vec(), owner);
+            }
+            if let Some(times) = self.file_times.get(oldpath).copied() {
+                self.file_times.insert(newpath.to_vec(), times);
+            }
+            self.missing_paths.remove(newpath);
             Ok(())
         }
         fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
@@ -14200,6 +15629,7 @@ mod tests {
         }
 
         fn host_clock_gettime(&mut self, _clock_id: u32) -> Result<(i64, i64), Errno> {
+            self.clock_gettime_calls += 1;
             if let Some(err) = self.clock_error {
                 return Err(err);
             }
@@ -14215,7 +15645,8 @@ mod tests {
             Ok(())
         }
 
-        fn host_fsync(&mut self, _handle: i64) -> Result<(), Errno> {
+        fn host_fsync(&mut self, handle: i64) -> Result<(), Errno> {
+            self.fsync_calls.push(handle);
             Ok(())
         }
 
@@ -14282,12 +15713,43 @@ mod tests {
         }
         fn host_utimensat(
             &mut self,
-            _path: &[u8],
-            _atime_sec: i64,
-            _atime_nsec: i64,
-            _mtime_sec: i64,
-            _mtime_nsec: i64,
+            path: &[u8],
+            atime_sec: i64,
+            atime_nsec: i64,
+            mtime_sec: i64,
+            mtime_nsec: i64,
         ) -> Result<(), Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            const UTIME_NOW: i64 = 0x3fff_ffff;
+            const UTIME_OMIT: i64 = 0x3fff_fffe;
+            let current = self.file_times.get(path).copied().unwrap_or((0, 0, 0, 0));
+            let now = self.clock_time;
+            let normalize = |current_sec: u64,
+                             current_nsec: u32,
+                             requested_sec: i64,
+                             requested_nsec: i64|
+             -> Result<(u64, u32), Errno> {
+                match requested_nsec {
+                    UTIME_OMIT => Ok((current_sec, current_nsec)),
+                    UTIME_NOW => Ok((
+                        u64::try_from(now.0).map_err(|_| Errno::EINVAL)?,
+                        u32::try_from(now.1).map_err(|_| Errno::EINVAL)?,
+                    )),
+                    0..=999_999_999 => Ok((
+                        u64::try_from(requested_sec).map_err(|_| Errno::EINVAL)?,
+                        u32::try_from(requested_nsec).map_err(|_| Errno::EINVAL)?,
+                    )),
+                    _ => Err(Errno::EINVAL),
+                }
+            };
+            let atime = normalize(current.0, current.1, atime_sec, atime_nsec)?;
+            let mtime = normalize(current.2, current.3, mtime_sec, mtime_nsec)?;
+            self.file_times.insert(
+                path.to_vec(),
+                (atime.0, atime.1, mtime.0, mtime.1),
+            );
             Ok(())
         }
         fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
@@ -14331,22 +15793,6 @@ mod tests {
         }
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
-        }
-        fn host_fcntl_lock(
-            &mut self,
-            _path: &[u8],
-            _pid: u32,
-            cmd: u32,
-            _lock_type: u32,
-            _start: i64,
-            _len: i64,
-            result_buf: &mut [u8],
-        ) -> Result<(), Errno> {
-            // For F_GETLK (12): write F_UNLCK (2) to indicate no conflict
-            if cmd == 12 && result_buf.len() >= 4 {
-                result_buf[0..4].copy_from_slice(&2u32.to_le_bytes()); // F_UNLCK
-            }
-            Ok(())
         }
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)
@@ -14763,10 +16209,11 @@ mod tests {
         );
         assert_eq!(proc.ofd_table.get(fb_ofd).unwrap().offset, 7);
 
+        let synthetic_handle = crate::descriptor_backing::alloc_synthetic_regular();
         let (synthetic_fd, synthetic_ofd) = install_fd(
             &mut proc,
             FileType::Regular,
-            SYNTHETIC_FILE_HANDLE,
+            synthetic_handle,
             b"/etc/mtab",
         );
         assert_eq!(
@@ -14783,7 +16230,15 @@ mod tests {
             ),
             Err(Errno::EOVERFLOW)
         );
-        assert_eq!(proc.ofd_table.get(synthetic_ofd).unwrap().offset, 2);
+        assert_eq!(
+            crate::descriptor_backing::current_offset(
+                FileType::Regular,
+                synthetic_handle,
+                proc.ofd_table.get(synthetic_ofd).unwrap().offset,
+            ),
+            Ok(2)
+        );
+        crate::descriptor_backing::release_for_ofd(FileType::Regular, synthetic_handle);
 
         let memfd = sys_memfd_create(&mut proc, b"seek-overflow", 0).unwrap();
         sys_write(&mut proc, &mut host, memfd, b"abcdef").unwrap();
@@ -14879,6 +16334,797 @@ mod tests {
         let n = sys_read(&mut proc, &mut host, read_fd, &mut buf).unwrap();
         assert_eq!(n, 5);
         assert_eq!(&buf[..5], b"hello");
+    }
+
+    fn create_test_fifo(proc: &mut Process, host: &mut MockHostIO, path: &[u8], mode: u32) {
+        host.set_missing_path(path);
+        sys_mkfifo(proc, host, path, mode).unwrap();
+    }
+
+    fn assert_path_only_io_rejected(proc: &mut Process, host: &mut MockHostIO, fd: i32) {
+        let mut locks = AdvisoryLockManager::new();
+        let mut byte = [0u8; 1];
+        assert_eq!(sys_read(proc, host, fd, &mut byte), Err(Errno::EBADF));
+        assert_eq!(sys_write(proc, host, fd, b"x"), Err(Errno::EBADF));
+        assert_eq!(sys_pread(proc, host, fd, &mut byte, 0), Err(Errno::EBADF));
+        assert_eq!(sys_pwrite(proc, host, fd, b"x", 0), Err(Errno::EBADF));
+        assert_eq!(sys_pread(proc, host, fd, &mut byte, -1), Err(Errno::EBADF));
+        assert_eq!(sys_pwrite(proc, host, fd, b"x", -1), Err(Errno::EBADF));
+        assert_eq!(sys_lseek(proc, host, fd, 0, SEEK_SET), Err(Errno::EBADF));
+
+        let mut read_iovecs: [&mut [u8]; 1] = [&mut byte];
+        assert_eq!(
+            sys_preadv(proc, host, fd, &mut read_iovecs, 0),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_readv(proc, host, fd, &mut read_iovecs),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(sys_pwritev(proc, host, fd, &[b"x"], 0), Err(Errno::EBADF));
+        assert_eq!(sys_writev(proc, host, fd, &[b"x"]), Err(Errno::EBADF));
+        assert_eq!(sys_getdents64(proc, host, fd, &mut [0u8; 64]), Err(Errno::EBADF));
+
+        let peer_fd = sys_open(proc, host, b"/tmp/path-only-io-peer", O_RDWR, 0).unwrap();
+        assert_eq!(sys_sendfile(proc, host, peer_fd, fd, 0, 1), Err(Errno::EBADF));
+        assert_eq!(sys_sendfile(proc, host, fd, peer_fd, -1, 1), Err(Errno::EBADF));
+        assert_eq!(
+            sys_copy_file_range(proc, host, fd, Some(0), peer_fd, Some(0), 1),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_copy_file_range(proc, host, peer_fd, Some(0), fd, Some(0), 1),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_splice(proc, host, fd, None, peer_fd, None, 1, 0),
+            Err(Errno::EBADF),
+        );
+        sys_close(proc, host, peer_fd).unwrap();
+
+        assert_eq!(sys_ftruncate(proc, host, fd, 0), Err(Errno::EBADF));
+        assert_eq!(sys_fallocate(proc, host, fd, 0, 1), Err(Errno::EBADF));
+        assert_eq!(sys_fsync(proc, host, fd), Err(Errno::EBADF));
+        assert_eq!(sys_fdatasync(proc, host, fd), Err(Errno::EBADF));
+        assert_eq!(
+            sys_mmap(proc, host, 0, 4096, 1, 0x02, fd, 0),
+            Err(Errno::EBADF),
+        );
+
+        assert_eq!(sys_fcntl(proc, fd, F_SETFL, O_NONBLOCK), Err(Errno::EBADF));
+        assert_eq!(sys_fcntl(proc, fd, F_SETOWN, 1), Err(Errno::EBADF));
+        assert_eq!(sys_fcntl(proc, fd, F_GETOWN, 0), Err(Errno::EBADF));
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 0,
+            l_pid: proc.pid,
+            _pad2: 0,
+        };
+        assert_eq!(
+            sys_fcntl_lock(proc, &mut locks, fd, F_SETLK, &mut flock, host),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_flock(proc, &mut locks, fd, LOCK_EX, host),
+            Err(Errno::EBADF),
+        );
+
+        let mut ioctl_value = 1i32.to_le_bytes();
+        assert_eq!(
+            sys_ioctl(proc, host, fd, 0x5421, &mut ioctl_value),
+            Err(Errno::EBADF),
+        );
+
+        assert_ne!(sys_fcntl(proc, fd, F_GETFL, 0).unwrap() as u32 & O_PATH, 0);
+        let fd_flags = sys_fcntl(proc, fd, F_GETFD, 0).unwrap() as u32;
+        assert_eq!(sys_fcntl(proc, fd, F_SETFD, fd_flags | FD_CLOEXEC), Ok(0));
+        let duplicate = sys_dup(proc, fd).unwrap();
+        sys_close(proc, host, duplicate).unwrap();
+    }
+
+    #[test]
+    fn fifo_nonblocking_read_reports_eof_before_hangup() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_001);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_nonblocking_eof";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o666);
+
+        let rfd = sys_open(&mut proc, &mut host, fifo, O_RDONLY | O_NONBLOCK, 0).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(sys_read(&mut proc, &mut host, rfd, &mut buf), Ok(0));
+        let mut pollfd = [WasmPollFd { fd: rfd, events: POLLIN, revents: 0 }];
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut pollfd, 0), Ok(0));
+        assert_eq!(pollfd[0].revents & POLLHUP, 0);
+
+        let wfd = sys_open(&mut proc, &mut host, fifo, O_WRONLY | O_NONBLOCK, 0).unwrap();
+        sys_close(&mut proc, &mut host, wfd).unwrap();
+        pollfd[0].revents = 0;
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut pollfd, 0), Ok(1));
+        assert_ne!(pollfd[0].revents & POLLHUP, 0);
+
+        sys_close(&mut proc, &mut host, rfd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_path_only_open_never_becomes_an_io_endpoint() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+        use wasm_posix_shared::poll::POLLNVAL;
+
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_005);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_path_only";
+        create_test_fifo(&mut proc, &mut host, fifo, 0);
+        let pipe_idx = unsafe { crate::fifo::global_fifo_table() }
+            .lookup(fifo)
+            .unwrap();
+
+        let fd = sys_open(&mut proc, &mut host, fifo, O_PATH, 0).unwrap();
+        let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap();
+        assert!(!pipe.has_readers());
+        assert!(!pipe.is_write_end_open());
+        assert_eq!(
+            sys_fstat(&mut proc, &mut host, fd).unwrap().st_mode & S_IFMT,
+            S_IFIFO,
+        );
+        assert_path_only_io_rejected(&mut proc, &mut host, fd);
+        let mut pollfd = [WasmPollFd { fd, events: POLLIN, revents: 0 }];
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut pollfd, 0), Ok(1));
+        assert_eq!(pollfd[0].revents, POLLNVAL);
+        let times = [
+            WasmTimespec { tv_sec: 1, tv_nsec: 2 },
+            WasmTimespec { tv_sec: 3, tv_nsec: 4 },
+        ];
+        assert_eq!(
+            sys_fchmod(&mut proc, &mut host, fd, 0o600),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_fchown(&mut proc, &mut host, fd, 1, 2),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, fd, b"", Some(&times), 0),
+            Err(Errno::EBADF),
+        );
+
+        host.clock_time = (1_500_000_000, 987_654_321);
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+        let unlinked = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(unlinked.st_nlink, 0);
+        assert_eq!(unlinked.st_ctime_sec, 1_500_000_000);
+        assert_eq!(unlinked.st_ctime_nsec, 987_654_321);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.is_none());
+
+        create_test_fifo(&mut proc, &mut host, fifo, 0);
+        let fd = sys_openat(&mut proc, &mut host, AT_FDCWD, fifo, O_PATH, 0).unwrap();
+        assert_eq!(
+            sys_fstat(&mut proc, &mut host, fd).unwrap().st_mode & S_IFMT,
+            S_IFIFO,
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn regular_path_only_fd_rejects_direct_operations() {
+        let mut proc = Process::new(81_006);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/path-only", O_PATH, 0).unwrap();
+        let times = [
+            WasmTimespec { tv_sec: 1, tv_nsec: 2 },
+            WasmTimespec { tv_sec: 3, tv_nsec: 4 },
+        ];
+
+        assert!(sys_fstat(&mut proc, &mut host, fd).is_ok());
+        assert_path_only_io_rejected(&mut proc, &mut host, fd);
+        assert_eq!(
+            sys_fchmod(&mut proc, &mut host, fd, 0o600),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_fchown(&mut proc, &mut host, fd, 1, 2),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, fd, b"", Some(&times), 0),
+            Err(Errno::EBADF),
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fifo_futimens_uses_posix_permission_modes() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_007);
+        proc.euid = 0;
+        proc.egid = 0;
+        proc.umask = 0;
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_futimens_permissions";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o666);
+        let fd = sys_open(&mut proc, &mut host, fifo, O_RDWR, 0).unwrap();
+
+        proc.euid = 1000;
+        proc.egid = 1000;
+        host.clock_time = (1_500_000_010, 123_456_789);
+        assert_eq!(sys_utimensat(&mut proc, &mut host, fd, b"", None, 0), Ok(()));
+        let updated = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(updated.st_atime_sec, 1_500_000_010);
+        assert_eq!(updated.st_mtime_sec, 1_500_000_010);
+
+        let explicit = [
+            WasmTimespec { tv_sec: 11, tv_nsec: 12 },
+            WasmTimespec { tv_sec: 21, tv_nsec: 22 },
+        ];
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, fd, b"", Some(&explicit), 0),
+            Err(Errno::EPERM),
+        );
+
+        let omitted = [
+            WasmTimespec { tv_sec: -1, tv_nsec: UTIME_OMIT },
+            WasmTimespec { tv_sec: -1, tv_nsec: UTIME_OMIT },
+        ];
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, fd, b"", Some(&omitted), 0),
+            Ok(()),
+        );
+        let unchanged = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            (
+                unchanged.st_atime_sec,
+                unchanged.st_atime_nsec,
+                unchanged.st_mtime_sec,
+                unchanged.st_mtime_nsec,
+                unchanged.st_ctime_sec,
+                unchanged.st_ctime_nsec,
+            ),
+            (
+                updated.st_atime_sec,
+                updated.st_atime_nsec,
+                updated.st_mtime_sec,
+                updated.st_mtime_nsec,
+                updated.st_ctime_sec,
+                updated.st_ctime_nsec,
+            ),
+        );
+
+        proc.euid = 0;
+        proc.egid = 0;
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_blocking_open_reserves_and_transfers_real_endpoints() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut creator = Process::new(81_010);
+        let mut reader = Process::new(81_011);
+        let mut writer = Process::new(81_012);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_blocking_reservation";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o660);
+
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EAGAIN),
+        );
+        let wfd = sys_open(&mut writer, &mut host, fifo, O_WRONLY, 0).unwrap();
+        // Retry is tied to the reserved inode, not a newly resolved pathname.
+        let rfd = sys_open(
+            &mut reader,
+            &mut host,
+            b"/this/path/does/not/exist",
+            O_RDONLY,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(sys_write(&mut writer, &mut host, wfd, b"hello"), Ok(5));
+        let mut buf = [0u8; 8];
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(5));
+        assert_eq!(&buf[..5], b"hello");
+
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+        assert_eq!(sys_fstat(&mut reader, &mut host, rfd).unwrap().st_nlink, 0);
+        assert_eq!(sys_write(&mut writer, &mut host, wfd, b"x"), Ok(1));
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(1));
+        sys_close(&mut writer, &mut host, wfd).unwrap();
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(0));
+        sys_close(&mut reader, &mut host, rfd).unwrap();
+    }
+
+    #[test]
+    fn fifo_blocking_open_reserves_fd_before_rendezvous() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut creator = Process::new(81_020);
+        let mut reader = Process::new(81_021);
+        let mut writer = Process::new(81_022);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_emfile_rendezvous";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o600);
+
+        reader.fd_table.set_max_fds(3);
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EMFILE),
+        );
+        assert_eq!(
+            sys_open(
+                &mut writer,
+                &mut host,
+                fifo,
+                O_WRONLY | O_NONBLOCK,
+                0,
+            ),
+            Err(Errno::ENXIO),
+        );
+
+        reader.fd_table.set_max_fds(5);
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EAGAIN),
+        );
+        set_test_current_tid(81_099);
+        let other_fd =
+            sys_open(&mut reader, &mut host, b"/tmp/other", O_RDONLY, 0).unwrap();
+        assert_eq!(other_fd, 4);
+        set_test_current_tid(0);
+
+        writer.fd_table.set_max_fds(4);
+        let wfd = sys_open(&mut writer, &mut host, fifo, O_WRONLY, 0).unwrap();
+        let rfd = sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0).unwrap();
+        assert_eq!(rfd, 3);
+        assert_eq!(sys_write(&mut writer, &mut host, wfd, b"x"), Ok(1));
+        let mut byte = [0u8; 1];
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut byte), Ok(1));
+        assert_eq!(byte, *b"x");
+
+        sys_close(&mut reader, &mut host, other_fd).unwrap();
+        sys_close(&mut reader, &mut host, rfd).unwrap();
+        sys_close(&mut writer, &mut host, wfd).unwrap();
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_fd_metadata_survives_rename_and_unlink() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_030);
+        proc.euid = 0;
+        proc.egid = 0;
+        let mut host = MockHostIO::new();
+        let old = b"/tmp/fifo_metadata_old";
+        let new = b"/tmp/fifo_metadata_new";
+        create_test_fifo(&mut proc, &mut host, old, 0o640);
+        host.set_missing_path(new);
+        let fd = sys_open(&mut proc, &mut host, old, O_RDWR | O_CLOEXEC, 0).unwrap();
+
+        sys_fchmod(&mut proc, &mut host, fd, 0o620).unwrap();
+        sys_fchown(&mut proc, &mut host, fd, 123, 456).unwrap();
+        let first_times = [
+            WasmTimespec { tv_sec: 11, tv_nsec: 12 },
+            WasmTimespec { tv_sec: 21, tv_nsec: 22 },
+        ];
+        sys_utimensat(&mut proc, &mut host, fd, b"", Some(&first_times), 0).unwrap();
+        sys_rename(&mut proc, &mut host, old, new).unwrap();
+
+        let renamed = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(renamed.st_mode & 0o7777, 0o620);
+        assert_eq!((renamed.st_uid, renamed.st_gid), (123, 456));
+        assert_eq!((renamed.st_atime_sec, renamed.st_mtime_sec), (11, 21));
+
+        sys_unlink(&mut proc, &mut host, new).unwrap();
+        host.clock_time = (1_500_000_001, 111_222_333);
+        let clock_calls = host.clock_gettime_calls;
+        sys_fchmod(&mut proc, &mut host, fd, 0o600).unwrap();
+        let chmodded = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(chmodded.st_ctime_sec, 1_500_000_001);
+        assert_eq!(chmodded.st_ctime_nsec, 111_222_333);
+
+        host.clock_time = (1_500_000_002, 444_555_666);
+        let clock_calls = host.clock_gettime_calls;
+        sys_fchown(&mut proc, &mut host, fd, 321, 654).unwrap();
+        let chowned = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(chowned.st_ctime_sec, 1_500_000_002);
+        assert_eq!(chowned.st_ctime_nsec, 444_555_666);
+
+        let second_times = [
+            WasmTimespec { tv_sec: 31, tv_nsec: 32 },
+            WasmTimespec { tv_sec: 41, tv_nsec: 42 },
+        ];
+        sys_utimensat(&mut proc, &mut host, fd, b"", Some(&second_times), 0).unwrap();
+        let unlinked = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(unlinked.st_nlink, 0);
+        assert_eq!(unlinked.st_mode & 0o7777, 0o600);
+        assert_eq!((unlinked.st_uid, unlinked.st_gid), (321, 654));
+        assert_eq!((unlinked.st_atime_sec, unlinked.st_mtime_sec), (31, 41));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fifo_displaced_by_rename_keeps_latest_path_metadata() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_035);
+        let mut host = MockHostIO::new();
+
+        let regular_source = b"/tmp/regular_source";
+        let fifo_destination = b"/tmp/fifo_destination";
+        host.set_missing_path(regular_source);
+        let regular_fd = sys_open(
+            &mut proc,
+            &mut host,
+            regular_source,
+            O_WRONLY | O_CREAT | O_EXCL,
+            0o600,
+        )
+        .unwrap();
+        sys_close(&mut proc, &mut host, regular_fd).unwrap();
+        create_test_fifo(&mut proc, &mut host, fifo_destination, 0o600);
+        let displaced_fd = sys_open(
+            &mut proc,
+            &mut host,
+            fifo_destination,
+            O_RDWR,
+            0,
+        )
+        .unwrap();
+        sys_chmod(&mut proc, &mut host, fifo_destination, 0o612).unwrap();
+
+        host.clock_time = (1_600_000_001, 123_456_789);
+        let clock_calls = host.clock_gettime_calls;
+        sys_rename(
+            &mut proc,
+            &mut host,
+            regular_source,
+            fifo_destination,
+        )
+        .unwrap();
+        let displaced = sys_fstat(&mut proc, &mut host, displaced_fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(displaced.st_mode & 0o7777, 0o612);
+        assert_eq!(displaced.st_nlink, 0);
+        assert_eq!(displaced.st_ctime_sec, 1_600_000_001);
+        assert_eq!(displaced.st_ctime_nsec, 123_456_789);
+        sys_close(&mut proc, &mut host, displaced_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo_destination).unwrap();
+
+        let fifo_source = b"/tmp/fifo_source";
+        create_test_fifo(&mut proc, &mut host, fifo_source, 0o600);
+        create_test_fifo(&mut proc, &mut host, fifo_destination, 0o600);
+        let displaced_fd = sys_open(
+            &mut proc,
+            &mut host,
+            fifo_destination,
+            O_RDWR,
+            0,
+        )
+        .unwrap();
+        sys_chmod(&mut proc, &mut host, fifo_destination, 0o624).unwrap();
+
+        host.clock_time = (1_600_000_002, 234_567_890);
+        let clock_calls = host.clock_gettime_calls;
+        sys_rename(&mut proc, &mut host, fifo_source, fifo_destination).unwrap();
+        let displaced = sys_fstat(&mut proc, &mut host, displaced_fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(displaced.st_mode & 0o7777, 0o624);
+        assert_eq!(displaced.st_nlink, 0);
+        assert_eq!(displaced.st_ctime_sec, 1_600_000_002);
+        assert_eq!(displaced.st_ctime_nsec, 234_567_890);
+        sys_close(&mut proc, &mut host, displaced_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo_destination).unwrap();
+
+        let regular_source_at = b"/tmp/regular_source_at";
+        let fifo_destination_at = b"/tmp/fifo_destination_at";
+        host.set_missing_path(regular_source_at);
+        let regular_fd = sys_open(
+            &mut proc,
+            &mut host,
+            regular_source_at,
+            O_WRONLY | O_CREAT | O_EXCL,
+            0o600,
+        )
+        .unwrap();
+        sys_close(&mut proc, &mut host, regular_fd).unwrap();
+        create_test_fifo(&mut proc, &mut host, fifo_destination_at, 0o600);
+        let displaced_fd = sys_open(
+            &mut proc,
+            &mut host,
+            fifo_destination_at,
+            O_RDWR,
+            0,
+        )
+        .unwrap();
+        sys_chmod(&mut proc, &mut host, fifo_destination_at, 0o642).unwrap();
+
+        host.clock_time = (1_600_000_003, 345_678_901);
+        let clock_calls = host.clock_gettime_calls;
+        sys_renameat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            regular_source_at,
+            AT_FDCWD,
+            fifo_destination_at,
+        )
+        .unwrap();
+        let displaced = sys_fstat(&mut proc, &mut host, displaced_fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(displaced.st_mode & 0o7777, 0o642);
+        assert_eq!(displaced.st_nlink, 0);
+        assert_eq!(displaced.st_ctime_sec, 1_600_000_003);
+        assert_eq!(displaced.st_ctime_nsec, 345_678_901);
+        sys_close(&mut proc, &mut host, displaced_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo_destination_at).unwrap();
+    }
+
+    #[test]
+    fn fifo_writer_first_open_wakes_all_waiting_writers() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        let mut creator = Process::new(81_040);
+        let mut writers = Process::new(81_041);
+        let mut reader = Process::new(81_042);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_writer_first";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o660);
+
+        for tid in [81_101, 81_102] {
+            set_test_current_tid(tid);
+            assert_eq!(
+                sys_open(&mut writers, &mut host, fifo, O_WRONLY, 0),
+                Err(Errno::EAGAIN),
+            );
+        }
+
+        set_test_current_tid(0);
+        let rfd = sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0).unwrap();
+        let mut writer_fds = Vec::new();
+        for tid in [81_101, 81_102] {
+            set_test_current_tid(tid);
+            writer_fds.push(
+                sys_open(
+                    &mut writers,
+                    &mut host,
+                    b"/renamed/while/waiting",
+                    O_WRONLY,
+                    0,
+                )
+                .unwrap(),
+            );
+        }
+        set_test_current_tid(0);
+
+        for (fd, byte) in writer_fds.iter().copied().zip([b'a', b'b']) {
+            assert_eq!(sys_write(&mut writers, &mut host, fd, &[byte]), Ok(1));
+        }
+        let mut buf = [0u8; 2];
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(2));
+        assert_eq!(&buf, b"ab");
+
+        for fd in writer_fds {
+            sys_close(&mut writers, &mut host, fd).unwrap();
+        }
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(0));
+        sys_close(&mut reader, &mut host, rfd).unwrap();
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_caught_signal_cancels_blocked_open_reservation() {
+        use wasm_posix_shared::signal::SIGUSR1;
+
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut creator = Process::new(81_050);
+        let mut reader = Process::new(81_051);
+        let mut writer = Process::new(81_052);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_signal_cancel";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o600);
+
+        reader
+            .signals
+            .set_handler(SIGUSR1, crate::signal::SignalHandler::Handler(42))
+            .unwrap();
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EAGAIN),
+        );
+        reader.signals.raise(SIGUSR1);
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EINTR),
+        );
+        let released_fd = reader.fd_table.reserve().unwrap();
+        assert_eq!(released_fd, 3);
+        assert!(reader.fd_table.release_reserved(released_fd));
+        assert_eq!(
+            sys_open(&mut writer, &mut host, fifo, O_WRONLY | O_NONBLOCK, 0),
+            Err(Errno::ENXIO),
+        );
+
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_exec_cancels_blocked_open_and_releases_reserved_fd() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut creator = Process::new(81_055);
+        let mut opener = Process::new(81_056);
+        let mut peer = Process::new(81_057);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_exec_cancel";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o600);
+
+        assert_eq!(
+            sys_open(&mut opener, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EAGAIN),
+        );
+        commit_exec_state(&mut opener, &mut host, 0).unwrap();
+        let released_fd = opener.fd_table.reserve().unwrap();
+        assert_eq!(released_fd, 3);
+        assert!(opener.fd_table.release_reserved(released_fd));
+        assert_eq!(
+            sys_open(&mut peer, &mut host, fifo, O_WRONLY | O_NONBLOCK, 0),
+            Err(Errno::ENXIO),
+        );
+
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_hardlink_and_recreated_name_keep_distinct_pipe_identities() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_060);
+        let mut host = MockHostIO::new();
+        let original = b"/tmp/fifo_original";
+        let alias = b"/tmp/fifo_alias";
+        create_test_fifo(&mut proc, &mut host, original, 0o640);
+        host.set_missing_path(alias);
+        sys_link(&mut proc, &mut host, original, alias).unwrap();
+        assert_eq!(sys_stat(&mut proc, &mut host, original).unwrap().st_nlink, 2);
+        assert_eq!(sys_stat(&mut proc, &mut host, alias).unwrap().st_nlink, 2);
+
+        sys_unlink(&mut proc, &mut host, original).unwrap();
+        assert_eq!(sys_stat(&mut proc, &mut host, alias).unwrap().st_nlink, 1);
+        create_test_fifo(&mut proc, &mut host, original, 0o600);
+
+        let old_fd = sys_open(&mut proc, &mut host, alias, O_RDWR | O_NONBLOCK, 0).unwrap();
+        let new_fd = sys_open(
+            &mut proc,
+            &mut host,
+            original,
+            O_RDWR | O_NONBLOCK,
+            0,
+        )
+        .unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, old_fd, b"old"), Ok(3));
+        let mut buf = [0u8; 3];
+        assert_eq!(
+            sys_read(&mut proc, &mut host, new_fd, &mut buf),
+            Err(Errno::EAGAIN),
+        );
+        assert_eq!(sys_read(&mut proc, &mut host, old_fd, &mut buf), Ok(3));
+        assert_eq!(&buf, b"old");
+
+        sys_close(&mut proc, &mut host, old_fd).unwrap();
+        sys_close(&mut proc, &mut host, new_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, alias).unwrap();
+        sys_unlink(&mut proc, &mut host, original).unwrap();
+    }
+
+    #[test]
+    fn fifo_directory_entries_report_dt_fifo() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_070);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/test.txt";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o600);
+
+        let dir = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+        let mut dirent_buf = [0u8; core::mem::size_of::<WasmDirent>()];
+        let mut name_buf = [0u8; 256];
+        for _ in 0..2 {
+            assert_eq!(
+                sys_readdir(&mut proc, &mut host, dir, &mut dirent_buf, &mut name_buf),
+                Ok(1),
+            );
+        }
+        assert_eq!(
+            sys_readdir(&mut proc, &mut host, dir, &mut dirent_buf, &mut name_buf),
+            Ok(1),
+        );
+        assert_eq!(&name_buf[..8], b"test.txt");
+        assert_eq!(
+            u32::from_le_bytes(dirent_buf[8..12].try_into().unwrap()),
+            1,
+        );
+        sys_closedir(&mut proc, &mut host, dir).unwrap();
+
+        host.dir_entry_index = 0;
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+        let mut entries = [0u8; 512];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut entries).unwrap();
+        let mut pos = 0usize;
+        let mut found_fifo = false;
+        while pos < len {
+            let reclen = u16::from_le_bytes(entries[pos + 16..pos + 18].try_into().unwrap())
+                as usize;
+            assert!(reclen >= 20 && pos + reclen <= len);
+            let name_end = entries[pos + 19..pos + reclen]
+                .iter()
+                .position(|byte| *byte == 0)
+                .map(|offset| pos + 19 + offset)
+                .unwrap_or(pos + reclen);
+            if &entries[pos + 19..name_end] == b"test.txt" {
+                assert_eq!(entries[pos + 18], 1);
+                found_fifo = true;
+            }
+            pos += reclen;
+        }
+        assert!(found_fifo);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_truncate_fails_without_starting_an_open_rendezvous() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_080);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_truncate";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o600);
+
+        assert_eq!(
+            sys_truncate(&mut proc, &mut host, fifo, 0),
+            Err(Errno::EINVAL),
+        );
+        assert!(unsafe { crate::pipe::global_pipe_table() }
+            .find_fifo_open(fifo_open_owner(&proc))
+            .is_none());
+
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
     }
 
     #[test]
@@ -16110,6 +18356,7 @@ mod tests {
     #[test]
     fn test_fcntl_setlk_and_getlk() {
         let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
 
@@ -16123,7 +18370,7 @@ mod tests {
             l_pid: 0,
             _pad2: 0,
         };
-        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host).unwrap();
+        sys_fcntl_lock(&mut proc, &mut locks, fd, F_SETLK, &mut flock, &mut host).unwrap();
 
         // F_GETLK should report no conflict (same pid)
         let mut query = WasmFlock {
@@ -16135,13 +18382,220 @@ mod tests {
             l_pid: 0,
             _pad2: 0,
         };
-        sys_fcntl_lock(&mut proc, fd, F_GETLK, &mut query, &mut host).unwrap();
+        sys_fcntl_lock(&mut proc, &mut locks, fd, F_GETLK, &mut query, &mut host).unwrap();
         assert_eq!(query.l_type as u32, F_UNLCK); // No conflict with self
+    }
+
+    #[test]
+    fn host_open_requires_a_live_handle_fstat() {
+        let mut proc = Process::new(1);
+        let fd_count = proc.fd_table.iter().count();
+        let ofd_count = proc.ofd_table.iter().count();
+        let mut host = MockHostIO::new();
+        host.fstat_error = Some(Errno::EIO);
+
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/tmp/identity", O_RDWR | O_CREAT, 0o644),
+            Err(Errno::EIO)
+        );
+        assert_eq!(host.closed_handles, vec![100]);
+        assert_eq!(proc.fd_table.iter().count(), fd_count);
+        assert_eq!(proc.ofd_table.iter().count(), ofd_count);
+    }
+
+    #[test]
+    fn host_openat_requires_a_live_handle_fstat() {
+        let mut proc = Process::new(1);
+        let fd_count = proc.fd_table.iter().count();
+        let ofd_count = proc.ofd_table.iter().count();
+        let mut host = MockHostIO::new();
+        host.fstat_error = Some(Errno::EIO);
+
+        assert_eq!(
+            sys_openat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                b"/tmp/identity-at",
+                O_RDWR | O_CREAT,
+                0o644,
+            ),
+            Err(Errno::EIO)
+        );
+        assert_eq!(host.closed_handles, vec![100]);
+        assert_eq!(proc.fd_table.iter().count(), fd_count);
+        assert_eq!(proc.ofd_table.iter().count(), ofd_count);
+    }
+
+    #[test]
+    fn blocking_lock_setup_does_not_report_host_eagain_as_a_conflict() {
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let fd =
+            sys_open(&mut proc, &mut host, b"/tmp/identity", O_RDWR | O_CREAT, 0o644).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = None;
+        host.fstat_error = Some(Errno::EAGAIN);
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 1,
+            l_pid: 0,
+            _pad2: 0,
+        };
+
+        assert_eq!(
+            sys_fcntl_lock(&mut proc, &mut locks, fd, F_SETLKW, &mut flock, &mut host),
+            Err(Errno::ENOLCK)
+        );
+        assert!(locks.is_empty());
+    }
+
+    #[test]
+    fn blocking_seek_end_setup_does_not_report_host_eagain_as_a_conflict() {
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let fd =
+            sys_open(&mut proc, &mut host, b"/tmp/identity", O_RDWR | O_CREAT, 0o644).unwrap();
+        host.fstat_error = Some(Errno::EAGAIN);
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_END as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 1,
+            l_pid: 0,
+            _pad2: 0,
+        };
+
+        assert_eq!(
+            sys_fcntl_lock(&mut proc, &mut locks, fd, F_SETLKW, &mut flock, &mut host),
+            Err(Errno::EIO)
+        );
+        assert!(locks.is_empty());
+    }
+
+    #[test]
+    fn flock_conversion_drops_the_old_mode_before_blocking_or_nonblocking_conflict() {
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let first =
+            sys_open(&mut proc, &mut host, b"/tmp/flock-convert", O_RDWR | O_CREAT, 0o644)
+                .unwrap();
+        let second =
+            sys_open(&mut proc, &mut host, b"/tmp/flock-convert", O_RDWR, 0).unwrap();
+        let first_ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(first).unwrap().ofd_ref.0)
+            .unwrap()
+            .ofd_id;
+        let second_ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(second).unwrap().ofd_ref.0)
+            .unwrap()
+            .ofd_id;
+        let file = proc
+            .ofd_table
+            .get(proc.fd_table.get(first).unwrap().ofd_ref.0)
+            .unwrap()
+            .file_id
+            .unwrap();
+
+        sys_flock(&mut proc, &mut locks, first, LOCK_SH, &mut host).unwrap();
+        sys_flock(&mut proc, &mut locks, second, LOCK_SH, &mut host).unwrap();
+
+        // A blocking conversion reports the conflict to the host scheduler,
+        // but its former shared lock is already gone while it waits.
+        assert_eq!(
+            sys_flock(&mut proc, &mut locks, first, LOCK_EX, &mut host),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(locks.flock_type(file, first_ofd), None);
+        assert_eq!(
+            locks.flock_type(file, second_ofd),
+            Some(AdvisoryLockType::Read)
+        );
+
+        // Recreate two shared holders and verify LOCK_NB follows the same
+        // non-atomic conversion rule without entering the retry path.
+        sys_flock(&mut proc, &mut locks, first, LOCK_SH, &mut host).unwrap();
+        assert_eq!(
+            sys_flock(
+                &mut proc,
+                &mut locks,
+                first,
+                LOCK_EX | LOCK_NB,
+                &mut host,
+            ),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(locks.flock_type(file, first_ofd), None);
+        sys_flock(
+            &mut proc,
+            &mut locks,
+            second,
+            LOCK_EX | LOCK_NB,
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(
+            locks.flock_type(file, second_ofd),
+            Some(AdvisoryLockType::Write)
+        );
+
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, first).unwrap();
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, second).unwrap();
+    }
+
+    #[test]
+    fn seek_end_negative_locks_work_on_synthetic_and_procfs_regular_files() {
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+
+        for path in [b"/etc/mtab".as_slice(), b"/proc/self/stat".as_slice()] {
+            let fd = sys_open(&mut proc, &mut host, path, O_RDONLY, 0).unwrap();
+            let size = i64::try_from(sys_fstat(&mut proc, &mut host, fd).unwrap().st_size)
+                .unwrap();
+            assert!(size > 0);
+            let file = proc
+                .ofd_table
+                .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+                .unwrap()
+                .file_id
+                .unwrap();
+            let mut lock = WasmFlock {
+                l_type: F_RDLCK as i16,
+                l_whence: SEEK_END as i16,
+                _pad1: 0,
+                l_start: 0,
+                l_len: -1,
+                l_pid: 0,
+                _pad2: 0,
+            };
+
+            sys_fcntl_lock(&mut proc, &mut locks, fd, F_SETLK, &mut lock, &mut host).unwrap();
+            assert!(locks.records().iter().any(|record| {
+                record.file == file
+                    && record.range
+                        == LockRange {
+                            start: size - 1,
+                            end: crate::lock::LockRangeEnd::Offset(size),
+                        }
+            }));
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        }
     }
 
     #[test]
     fn test_fcntl_unlock() {
         let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
 
@@ -16155,7 +18609,7 @@ mod tests {
             l_pid: 0,
             _pad2: 0,
         };
-        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host).unwrap();
+        sys_fcntl_lock(&mut proc, &mut locks, fd, F_SETLK, &mut flock, &mut host).unwrap();
 
         let mut unlock = WasmFlock {
             l_type: F_UNLCK as i16,
@@ -16166,12 +18620,13 @@ mod tests {
             l_pid: 0,
             _pad2: 0,
         };
-        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut unlock, &mut host).unwrap();
+        sys_fcntl_lock(&mut proc, &mut locks, fd, F_SETLK, &mut unlock, &mut host).unwrap();
     }
 
     #[test]
     fn test_fcntl_rdlck_requires_read_access() {
         let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
         let mut host = MockHostIO::new();
         let fd = sys_open(
             &mut proc,
@@ -16191,7 +18646,14 @@ mod tests {
             l_pid: 0,
             _pad2: 0,
         };
-        let result = sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host);
+        let result = sys_fcntl_lock(
+            &mut proc,
+            &mut locks,
+            fd,
+            F_SETLK,
+            &mut flock,
+            &mut host,
+        );
         assert_eq!(result, Err(Errno::EBADF));
     }
 
@@ -16642,7 +19104,6 @@ mod tests {
     fn inherited_memfd_seek_cur_lock_and_fdinfo_use_peer_advanced_cursor() {
         use crate::process_table::ProcessTable;
 
-        let _locks = enter_fallback_lock_test();
         const PARENT: u32 = 970_450;
         const CHILD: u32 = 970_451;
         let mut table = ProcessTable::new();
@@ -16671,14 +19132,18 @@ mod tests {
             l_pid: 0,
             _pad2: 0,
         };
-        sys_fcntl_lock(
-            table.get_mut(PARENT).unwrap(),
-            fd,
-            F_SETLK,
-            &mut parent_lock,
-            &mut host,
-        )
-        .unwrap();
+        {
+            let (parent, locks) = table.process_and_advisory_locks(PARENT).unwrap();
+            sys_fcntl_lock(
+                parent,
+                locks,
+                fd,
+                F_SETLK,
+                &mut parent_lock,
+                &mut host,
+            )
+            .unwrap();
+        }
 
         let mut query = WasmFlock {
             l_type: F_WRLCK as i16,
@@ -16689,14 +19154,10 @@ mod tests {
             l_pid: 0,
             _pad2: 0,
         };
-        sys_fcntl_lock(
-            table.get_mut(CHILD).unwrap(),
-            fd,
-            F_GETLK,
-            &mut query,
-            &mut host,
-        )
-        .unwrap();
+        {
+            let (child, locks) = table.process_and_advisory_locks(CHILD).unwrap();
+            sys_fcntl_lock(child, locks, fd, F_GETLK, &mut query, &mut host).unwrap();
+        }
         assert_eq!(query.l_type as u32, F_WRLCK);
         assert_eq!(query.l_start, 5);
         assert_eq!(query.l_pid, PARENT);
@@ -17006,6 +19467,138 @@ mod tests {
     }
 
     #[test]
+    fn legacy_exec_decrements_shared_host_ofd_before_peer_final_close() {
+        use crate::process_table::ProcessTable;
+
+        const PARENT: u32 = 970_805;
+        const CHILD: u32 = 970_806;
+        const HOST_HANDLE: i64 = 9_708_050;
+        let file = FileId::Host { dev: 97, ino: 805 };
+
+        let mut parent = Process::new(PARENT);
+        let ofd_idx = parent.ofd_table.create(
+            FileType::Regular,
+            O_RDWR,
+            HOST_HANDLE,
+            b"/legacy-exec-shared-lock".to_vec(),
+        );
+        parent.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(file);
+        let ofd_id = parent.ofd_table.get(ofd_idx).unwrap().ofd_id;
+        let fd = parent
+            .fd_table
+            .alloc(OpenFileDescRef(ofd_idx), FD_CLOEXEC)
+            .unwrap();
+
+        let mut table = ProcessTable::new();
+        table.processes.insert(PARENT, parent);
+        table
+            .advisory_locks_mut()
+            .set_lock(
+                file,
+                LockOwner::OpenFileDescription(ofd_id),
+                Some(AdvisoryLockType::Write),
+                LockRange::normalize(0, 1).unwrap(),
+            )
+            .unwrap();
+        table.fork_process(PARENT, CHILD).unwrap();
+        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 2);
+
+        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(
+            table.get(PARENT).unwrap(),
+        )
+        .unwrap();
+        let replacement = crate::fork::deserialize_exec_state(&serialized, PARENT).unwrap();
+
+        let cleanup = table
+            .replace_legacy_exec_process(PARENT, replacement)
+            .unwrap();
+        assert!(cleanup.host_closes.is_empty());
+        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 1);
+        assert!(!table.advisory_locks().is_empty());
+
+        let mut host = MockHostIO::new();
+        let (child, locks) = table.process_and_advisory_locks(CHILD).unwrap();
+        sys_close_with_locks(child, locks, &mut host, fd).unwrap();
+        assert_eq!(host.closed_handles, vec![HOST_HANDLE]);
+        assert!(table.advisory_locks().is_empty());
+        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 0);
+
+        table.remove_process(CHILD).unwrap();
+        table.remove_process(PARENT).unwrap();
+    }
+
+    #[test]
+    fn legacy_exec_counts_self_transferred_ofd_entries_independently() {
+        use crate::process_table::ProcessTable;
+
+        const PID: u32 = 970_807;
+        const HOST_HANDLE: i64 = 9_708_070;
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let file = FileId::Host { dev: 97, ino: 807 };
+
+        let mut old = Process::new(PID);
+        let original_ofd = old.ofd_table.create(
+            FileType::Regular,
+            O_RDWR,
+            HOST_HANDLE,
+            b"/legacy-exec-self-transfer".to_vec(),
+        );
+        old.ofd_table.get_mut(original_ofd).unwrap().file_id = Some(file);
+        let ofd_id = old.ofd_table.get(original_ofd).unwrap().ofd_id;
+        let original_fd = old
+            .fd_table
+            .alloc(OpenFileDescRef(original_ofd), 0)
+            .unwrap();
+
+        // Receiving our own SCM_RIGHTS payload creates another local OFD
+        // entry with the same global OfdId and one additional host-resource
+        // ownership reference.
+        let queued = retain_fd_for_scm_rights(&old, original_fd);
+        let received = install_scm_rights_fds(&mut old, vec![queued]);
+        assert_eq!(received.len(), 1);
+        let received_fd = received[0];
+        let received_ofd = old.fd_table.get(received_fd).unwrap().ofd_ref.0;
+        assert_ne!(received_ofd, original_ofd);
+        assert_eq!(old.ofd_table.get(received_ofd).unwrap().ofd_id, ofd_id);
+        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 2);
+
+        old.fd_table.get_mut(original_fd).unwrap().fd_flags |= FD_CLOEXEC;
+        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(&old).unwrap();
+        let replacement = crate::fork::deserialize_exec_state(&serialized, PID).unwrap();
+        assert!(replacement.ofd_table.get(original_ofd).is_none());
+        assert_eq!(replacement.ofd_table.get(received_ofd).unwrap().ofd_id, ofd_id);
+
+        let mut table = ProcessTable::new();
+        table.processes.insert(PID, old);
+        table
+            .advisory_locks_mut()
+            .set_lock(
+                file,
+                LockOwner::OpenFileDescription(ofd_id),
+                Some(AdvisoryLockType::Write),
+                LockRange::normalize(0, 1).unwrap(),
+            )
+            .unwrap();
+
+        let cleanup = table
+            .replace_legacy_exec_process(PID, replacement)
+            .unwrap();
+        assert!(cleanup.host_closes.is_empty());
+        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 1);
+        assert_eq!(table.advisory_locks().len(), 1);
+
+        let mut host = MockHostIO::new();
+        let (process, locks) = table.process_and_advisory_locks(PID).unwrap();
+        sys_close_with_locks(process, locks, &mut host, received_fd).unwrap();
+        assert_eq!(host.closed_handles, vec![HOST_HANDLE]);
+        assert!(table.advisory_locks().is_empty());
+        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 0);
+        table.remove_process(PID).unwrap();
+    }
+
+    #[test]
     fn legacy_fork_into_fresh_table_keeps_host_handle_single_owned() {
         use crate::process_table::ProcessTable;
 
@@ -17132,363 +19725,469 @@ mod tests {
     }
 
     #[test]
-    fn test_fcntl_setlk_fallback_conflict_reports_would_block() {
-        let _guard = enter_fallback_lock_test();
+    fn process_lock_close_and_exit_cleanup_use_machine_manager() {
         let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
         let mut host = MockHostIO::new();
-        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-        let host_handle = fd_host_handle(&proc, write_fd);
-
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            FileLock {
-                pid: 2,
-                lock_type: F_WRLCK,
-                start: 0,
-                len: 100,
-            },
-        );
-
-        let mut flock = WasmFlock {
+        let fd = sys_memfd_create(&mut proc, b"locks", 0).unwrap();
+        let duplicate = sys_dup(&mut proc, fd).unwrap();
+        let mut lock = WasmFlock {
             l_type: F_WRLCK as i16,
-            l_whence: 0,
+            l_whence: SEEK_SET as i16,
             _pad1: 0,
             l_start: 0,
             l_len: 100,
             l_pid: 0,
             _pad2: 0,
         };
-        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLK, &mut flock, &mut host);
-        assert_eq!(result, Err(Errno::EAGAIN));
-    }
 
-    #[test]
-    fn test_fcntl_setlkw_fallback_conflict_uses_cooperative_retry() {
-        let _guard = enter_fallback_lock_test();
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-        let host_handle = fd_host_handle(&proc, write_fd);
+        sys_fcntl_lock(&mut proc, &mut locks, fd, F_SETLK, &mut lock, &mut host).unwrap();
+        assert_eq!(locks.len(), 1);
 
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            FileLock {
-                pid: 2,
-                lock_type: F_WRLCK,
-                start: 0,
-                len: 100,
-            },
-        );
+        // POSIX process locks disappear when any descriptor for the file closes.
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, duplicate).unwrap();
+        assert!(locks.is_empty());
 
-        let mut flock = WasmFlock {
-            l_type: F_WRLCK as i16,
-            l_whence: 0,
-            _pad1: 0,
-            l_start: 0,
-            l_len: 100,
-            l_pid: 0,
-            _pad2: 0,
-        };
-        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
-        assert_eq!(result, Err(Errno::EAGAIN));
-    }
-
-    struct FallbackLockTestGuard {
-        _guard: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl Drop for FallbackLockTestGuard {
-        fn drop(&mut self) {
-            unsafe { crate::lock::global_fallback_lock_table().clear() };
-        }
-    }
-
-    fn enter_fallback_lock_test() -> FallbackLockTestGuard {
-        let guard = crate::lock::FALLBACK_LOCK_TEST_LOCK.lock().unwrap();
-        unsafe { crate::lock::global_fallback_lock_table().clear() };
-        FallbackLockTestGuard { _guard: guard }
-    }
-
-    fn add_fallback_pipe_fd(proc: &mut Process, host_handle: i64, status_flags: u32) -> i32 {
-        let ofd_idx = proc.ofd_table.create(
-            FileType::Pipe,
-            status_flags,
-            host_handle,
-            b"/dev/pipe".to_vec(),
-        );
-        proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
-    }
-
-    fn write_lock(start: i64, len: i64) -> WasmFlock {
-        WasmFlock {
-            l_type: F_WRLCK as i16,
-            l_whence: 0,
-            _pad1: 0,
-            l_start: start,
-            l_len: len,
-            l_pid: 0,
-            _pad2: 0,
-        }
-    }
-
-    #[test]
-    fn test_fcntl_getlk_fallback_conflict_reports_blocking_owner() {
-        let _guard = enter_fallback_lock_test();
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-        let host_handle = fd_host_handle(&proc, write_fd);
-
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            FileLock {
-                pid: 7,
-                lock_type: F_WRLCK,
-                start: 10,
-                len: 25,
-            },
-        );
-
-        let mut query = WasmFlock {
-            l_type: F_RDLCK as i16,
-            l_whence: 0,
-            _pad1: 0,
-            l_start: 20,
-            l_len: 5,
-            l_pid: 0,
-            _pad2: 0,
-        };
-        sys_fcntl_lock(&mut proc, write_fd, F_GETLK, &mut query, &mut host).unwrap();
-
-        assert_eq!(query.l_type as u32, F_WRLCK);
-        assert_eq!(query.l_pid, 7);
-        assert_eq!(query.l_start, 10);
-        assert_eq!(query.l_len, 25);
-        assert_eq!(query.l_whence, 0);
-    }
-
-    #[test]
-    fn test_fallback_locks_are_kernel_wide() {
-        let _guard = enter_fallback_lock_test();
-        let mut proc1 = Process::new(1);
-        let mut proc2 = Process::new(2);
-        let mut host = MockHostIO::new();
-        let shared_handle = -700;
-        let fd1 = add_fallback_pipe_fd(&mut proc1, shared_handle, O_RDWR);
-        let fd2 = add_fallback_pipe_fd(&mut proc2, shared_handle, O_RDWR);
-
-        let mut flock = write_lock(0, 100);
-        sys_fcntl_lock(&mut proc1, fd1, F_SETLK, &mut flock, &mut host).unwrap();
-
-        assert!(
-            proc1
-                .lock_table
-                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 2)
-                .is_none(),
-            "kernel fallback locks must not be stored on proc1"
-        );
-        assert!(
-            proc2
-                .lock_table
-                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 1)
-                .is_none(),
-            "kernel fallback locks must not be stored on proc2"
-        );
-
-        let mut conflict = write_lock(0, 100);
-        assert_eq!(
-            sys_fcntl_lock(&mut proc2, fd2, F_SETLK, &mut conflict, &mut host),
-            Err(Errno::EAGAIN)
-        );
-
-        let mut query = WasmFlock {
-            l_type: F_RDLCK as i16,
-            l_whence: 0,
-            _pad1: 0,
-            l_start: 50,
-            l_len: 10,
-            l_pid: 0,
-            _pad2: 0,
-        };
-        sys_fcntl_lock(&mut proc2, fd2, F_GETLK, &mut query, &mut host).unwrap();
-        assert_eq!(query.l_type as u32, F_WRLCK);
-        assert_eq!(query.l_pid, 1);
-        assert_eq!(query.l_start, 0);
-        assert_eq!(query.l_len, 100);
-
-        let mut unlock = WasmFlock {
-            l_type: F_UNLCK as i16,
-            l_whence: 0,
-            _pad1: 0,
-            l_start: 0,
-            l_len: 100,
-            l_pid: 0,
-            _pad2: 0,
-        };
-        sys_fcntl_lock(&mut proc1, fd1, F_SETLK, &mut unlock, &mut host).unwrap();
-        sys_fcntl_lock(&mut proc2, fd2, F_SETLK, &mut conflict, &mut host).unwrap();
-
-        assert!(
-            unsafe { crate::lock::global_fallback_lock_table() }
-                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 1)
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn test_flock_fallback_nonblocking_conflict_reports_would_block() {
-        let _guard = enter_fallback_lock_test();
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-        let host_handle = fd_host_handle(&proc, write_fd);
-
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            FileLock {
-                pid: 2,
-                lock_type: F_WRLCK,
-                start: 0,
-                len: 0,
-            },
-        );
-
-        assert_eq!(
-            sys_flock(&mut proc, write_fd, LOCK_EX | LOCK_NB, &mut host),
-            Err(Errno::EAGAIN)
-        );
-    }
-
-    #[test]
-    fn test_flock_blocking_fallback_conflict_uses_cooperative_retry() {
-        let _guard = enter_fallback_lock_test();
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let host_handle = -701;
-        let write_fd = add_fallback_pipe_fd(&mut proc, host_handle, O_RDWR);
-
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            FileLock {
-                pid: 2,
-                lock_type: F_WRLCK,
-                start: 0,
-                len: 0,
-            },
-        );
-
-        let result = sys_flock(&mut proc, write_fd, LOCK_EX, &mut host);
-        assert_eq!(result, Err(Errno::EAGAIN));
-    }
-
-    #[test]
-    fn test_fcntl_setlkw_fallback_succeeds_after_unlock() {
-        let _guard = enter_fallback_lock_test();
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let host_handle = -702;
-        let write_fd = add_fallback_pipe_fd(&mut proc, host_handle, O_RDWR);
-
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            FileLock {
-                pid: 2,
-                lock_type: F_WRLCK,
-                start: 0,
-                len: 100,
-            },
-        );
-
-        let mut flock = write_lock(0, 100);
-        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
-        assert_eq!(result, Err(Errno::EAGAIN));
-
-        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
-            host_handle,
-            FileLock {
-                pid: 2,
-                lock_type: F_UNLCK,
-                start: 0,
-                len: 100,
-            },
-        );
-
-        sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host).unwrap();
-        assert!(
-            unsafe { crate::lock::global_fallback_lock_table() }
-                .get_blocking_lock(host_handle, F_WRLCK, 0, 100, 2)
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn test_close_releases_fcntl_locks() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let fd = sys_open(
-            &mut proc,
-            &mut host,
-            b"/tmp/lockfile",
-            O_RDWR | O_CREAT,
-            0o644,
-        )
-        .unwrap();
-
-        // Acquire a write lock (delegates to host for host-backed files)
-        let mut flock = WasmFlock {
-            l_type: F_WRLCK as i16,
-            l_whence: 0,
-            _pad1: 0,
-            l_start: 0,
-            l_len: 100,
-            l_pid: 0,
-            _pad2: 0,
-        };
-        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host).unwrap();
-
-        // Close the fd — should release all locks on this file (delegates unlock to host)
-        sys_close(&mut proc, &mut host, fd).unwrap();
-
-        // Verify the fd was actually closed
-        assert!(proc.fd_table.get(fd).is_err());
-    }
-
-    #[test]
-    fn test_exit_releases_fcntl_locks() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let fd = sys_open(
-            &mut proc,
-            &mut host,
-            b"/tmp/lockfile",
-            O_RDWR | O_CREAT,
-            0o644,
-        )
-        .unwrap();
-
-        // Acquire a write lock (delegates to host for host-backed files)
-        let mut flock = WasmFlock {
-            l_type: F_WRLCK as i16,
-            l_whence: 0,
-            _pad1: 0,
-            l_start: 0,
-            l_len: 100,
-            l_pid: 0,
-            _pad2: 0,
-        };
-        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host).unwrap();
-
-        // Exit the process — should release all locks (both local and via host)
-        sys_exit(&mut proc, &mut host, 0);
-
-        // Process should be in Exited state
+        sys_fcntl_lock(&mut proc, &mut locks, fd, F_SETLK, &mut lock, &mut host).unwrap();
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        assert!(locks.is_empty());
         assert_eq!(proc.state, ProcessState::Exited);
-        // Local lock table should also be cleaned
-        assert!(
-            proc.lock_table
-                .get_blocking_lock(0, F_WRLCK as u32, 0, 100, 999)
-                .is_none()
+    }
+
+    #[test]
+    fn ofd_lock_survives_dup_until_final_close() {
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"locks", 0).unwrap();
+        let duplicate = sys_dup(&mut proc, fd).unwrap();
+        let mut lock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            _pad2: 0,
+        };
+
+        sys_fcntl_lock(
+            &mut proc,
+            &mut locks,
+            fd,
+            wasm_posix_shared::fcntl_cmd::F_OFD_SETLK,
+            &mut lock,
+            &mut host,
+        )
+        .unwrap();
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        assert_eq!(locks.len(), 1);
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, duplicate).unwrap();
+        assert!(locks.is_empty());
+    }
+
+    fn retain_fd_for_scm_rights(proc: &Process, fd: i32) -> crate::pipe::InFlightFd {
+        let fd_entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(fd_entry.ofd_ref.0).unwrap();
+        let mut in_flight = crate::pipe::InFlightFd::new(
+            ofd.ofd_id,
+            ofd.file_id,
+            ofd.file_type,
+            ofd.status_flags,
+            ofd.host_handle,
+            ofd.offset,
+            ofd.path.clone(),
         );
+        in_flight.retain_reference().unwrap();
+        in_flight
+    }
+
+    fn set_whole_file_ofd_lock(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut dyn HostIO,
+        fd: i32,
+    ) {
+        let mut lock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(
+            proc,
+            locks,
+            fd,
+            wasm_posix_shared::fcntl_cmd::F_OFD_SETLK,
+            &mut lock,
+            host,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn scm_rights_transfer_preserves_memfd_ofd_identity_and_lock_lifetime() {
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut sender = Process::new(71);
+        let mut receiver = Process::new(72);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let sender_fd = sys_memfd_create(&mut sender, b"scm-ofd", 0).unwrap();
+        set_whole_file_ofd_lock(&mut sender, &mut locks, &mut host, sender_fd);
+
+        let (expected_ofd_id, expected_file_id) = {
+            let fd_entry = sender.fd_table.get(sender_fd).unwrap();
+            let ofd = sender.ofd_table.get(fd_entry.ofd_ref.0).unwrap();
+            assert_eq!(ofd.file_type, FileType::MemFd);
+            (ofd.ofd_id, ofd.file_id)
+        };
+        let deferred_before = crate::pipe::deferred_in_flight_release_state();
+        let queued = retain_fd_for_scm_rights(&sender, sender_fd);
+        assert!(queued.owns_reference());
+        assert!(crate::ofd::has_in_flight_ofd(expected_ofd_id));
+        let deferred_retained = crate::pipe::deferred_in_flight_release_state();
+        assert_eq!(deferred_retained.0, deferred_before.0);
+        assert_eq!(deferred_retained.1, deferred_before.1 + 1);
+
+        // Closing the sender is not the final machine reference while the
+        // descriptor is queued, so OFD/flock ownership must remain live.
+        sys_close_with_locks(&mut sender, &mut locks, &mut host, sender_fd).unwrap();
+        assert_eq!(locks.len(), 1);
+        assert!(crate::ofd::has_in_flight_ofd(expected_ofd_id));
+
+        let received = install_scm_rights_fds(&mut receiver, vec![queued]);
+        assert_eq!(received.len(), 1);
+        assert!(!crate::ofd::has_in_flight_ofd(expected_ofd_id));
+        let deferred_transferred = crate::pipe::deferred_in_flight_release_state();
+        assert_eq!(deferred_transferred.0, deferred_before.0);
+        assert_eq!(deferred_transferred.1, deferred_before.1);
+        assert!(deferred_transferred.2 >= deferred_retained.2);
+        let received_entry = receiver.fd_table.get(received[0]).unwrap();
+        let received_ofd = receiver
+            .ofd_table
+            .get(received_entry.ofd_ref.0)
+            .unwrap();
+        assert_eq!(received_ofd.ofd_id, expected_ofd_id);
+        assert_eq!(received_ofd.file_id, expected_file_id);
+        assert_eq!(received_ofd.file_type, FileType::MemFd);
+
+        sys_close_with_locks(&mut receiver, &mut locks, &mut host, received[0]).unwrap();
+        assert!(locks.is_empty());
+    }
+
+    #[test]
+    fn discarded_scm_rights_reference_releases_final_ofd_lock_when_drained() {
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut sender = Process::new(73);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let sender_fd = sys_memfd_create(&mut sender, b"scm-discard", 0).unwrap();
+        set_whole_file_ofd_lock(&mut sender, &mut locks, &mut host, sender_fd);
+        let deferred_before = crate::pipe::deferred_in_flight_release_state();
+        let queued = retain_fd_for_scm_rights(&sender, sender_fd);
+        let ofd_id = queued.ofd_id;
+
+        sys_close_with_locks(&mut sender, &mut locks, &mut host, sender_fd).unwrap();
+        assert_eq!(locks.len(), 1);
+        drop(queued);
+        // Drop only enqueues fixed cleanup metadata; the manager mutation is
+        // deliberately deferred until no resource table is borrowed.
+        assert_eq!(locks.len(), 1);
+        assert!(!crate::ofd::has_in_flight_ofd(ofd_id));
+        let deferred_dropped = crate::pipe::deferred_in_flight_release_state();
+        assert_eq!(deferred_dropped.0, deferred_before.0 + 1);
+        assert_eq!(deferred_dropped.1, deferred_before.1);
+        drain_deferred_scm_rights_releases(&mut locks, &mut host);
+        assert!(locks.is_empty());
+        let deferred_drained = crate::pipe::deferred_in_flight_release_state();
+        assert_eq!(deferred_drained.0, deferred_before.0);
+        assert_eq!(deferred_drained.1, deferred_before.1);
+        assert!(deferred_drained.2 >= deferred_dropped.2);
+    }
+
+    #[test]
+    fn failed_scm_rights_install_rolls_back_reference_and_final_ofd_lock() {
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut sender = Process::new(74);
+        let mut receiver = Process::new(75);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let sender_fd = sys_memfd_create(&mut sender, b"scm-emfile", 0).unwrap();
+        set_whole_file_ofd_lock(&mut sender, &mut locks, &mut host, sender_fd);
+        let deferred_before = crate::pipe::deferred_in_flight_release_state();
+        let queued = retain_fd_for_scm_rights(&sender, sender_fd);
+        let ofd_id = queued.ofd_id;
+
+        sys_close_with_locks(&mut sender, &mut locks, &mut host, sender_fd).unwrap();
+        let existing_ofd_count = receiver.ofd_table.iter().count();
+        receiver.fd_table.set_max_fds(0);
+        assert!(install_scm_rights_fds(&mut receiver, vec![queued]).is_empty());
+        assert_eq!(receiver.ofd_table.iter().count(), existing_ofd_count);
+        assert!(
+            receiver
+                .ofd_table
+                .iter()
+                .all(|(_, ofd)| ofd.ofd_id != ofd_id)
+        );
+        assert!(!crate::ofd::has_in_flight_ofd(ofd_id));
+        assert_eq!(locks.len(), 1);
+        let deferred_failed = crate::pipe::deferred_in_flight_release_state();
+        assert_eq!(deferred_failed.0, deferred_before.0 + 1);
+        assert_eq!(deferred_failed.1, deferred_before.1);
+
+        drain_deferred_scm_rights_releases(&mut locks, &mut host);
+        assert!(locks.is_empty());
+        let deferred_drained = crate::pipe::deferred_in_flight_release_state();
+        assert_eq!(deferred_drained.0, deferred_before.0);
+        assert_eq!(deferred_drained.1, deferred_before.1);
+        assert!(deferred_drained.2 >= deferred_failed.2);
+    }
+
+    #[test]
+    fn scm_rights_in_flight_reference_survives_sender_crash_removal() {
+        const SENDER_PID: u32 = 76;
+
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut table = crate::process_table::ProcessTable::new();
+        table.create_process(SENDER_PID).unwrap();
+        let mut host = MockHostIO::new();
+        let sender_fd =
+            sys_memfd_create(table.get_mut(SENDER_PID).unwrap(), b"scm-crash", 0).unwrap();
+        {
+            let (sender, locks) = table
+                .process_and_advisory_locks(SENDER_PID)
+                .unwrap();
+            set_whole_file_ofd_lock(sender, locks, &mut host, sender_fd);
+        }
+        let queued = retain_fd_for_scm_rights(table.get(SENDER_PID).unwrap(), sender_fd);
+        let ofd_id = queued.ofd_id;
+
+        // Host-observed worker removal bypasses close(2), but the queued
+        // descriptor still owns both its backing and its advisory-lock owner.
+        table.remove_process(SENDER_PID).unwrap();
+        assert_eq!(table.advisory_locks().len(), 1);
+        assert!(crate::ofd::has_in_flight_ofd(ofd_id));
+
+        drop(queued);
+        assert!(!crate::ofd::has_in_flight_ofd(ofd_id));
+        drain_deferred_scm_rights_releases(table.advisory_locks_mut(), &mut host);
+        assert!(table.advisory_locks().is_empty());
+    }
+
+    #[test]
+    fn synthetic_regular_ofd_lock_survives_fork_until_final_close() {
+        let mut parent = Process::new(86);
+        let mut host = MockHostIO::new();
+        let first = sys_open(&mut parent, &mut host, b"/etc/mtab", O_RDONLY, 0).unwrap();
+        let independent =
+            sys_open(&mut parent, &mut host, b"/etc/mtab", O_RDONLY, 0).unwrap();
+        let (first_ofd_id, first_file_id, independent_ofd_id, independent_file_id) = {
+            let first_entry = parent.fd_table.get(first).unwrap();
+            let first_ofd = parent.ofd_table.get(first_entry.ofd_ref.0).unwrap();
+            let independent_entry = parent.fd_table.get(independent).unwrap();
+            let independent_ofd = parent
+                .ofd_table
+                .get(independent_entry.ofd_ref.0)
+                .unwrap();
+            (
+                first_ofd.ofd_id,
+                first_ofd.file_id,
+                independent_ofd.ofd_id,
+                independent_ofd.file_id,
+            )
+        };
+        assert_ne!(first_ofd_id, independent_ofd_id);
+        assert_eq!(first_file_id, independent_file_id);
+        assert!(matches!(
+            first_file_id,
+            Some(FileId::Kernel {
+                kind: KernelFileKind::SyntheticRegular,
+                object_id: 1,
+            })
+        ));
+
+        let mut locks = AdvisoryLockManager::new();
+        let mut flock = WasmFlock {
+            l_type: F_RDLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(
+            &mut parent,
+            &mut locks,
+            first,
+            wasm_posix_shared::fcntl_cmd::F_OFD_SETLK,
+            &mut flock,
+            &mut host,
+        )
+        .unwrap();
+
+        let mut fork_state = vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&parent, &mut fork_state).unwrap();
+        let mut child = crate::fork::deserialize_fork_state(&fork_state[..written], 87).unwrap();
+        crate::process_table::bump_inherited_resource_refcounts(parent.pid, &child).unwrap();
+
+        sys_close_with_locks(&mut parent, &mut locks, &mut host, first).unwrap();
+        assert_eq!(locks.len(), 1);
+        sys_close_with_locks(&mut child, &mut locks, &mut host, first).unwrap();
+        assert!(locks.is_empty());
+
+        sys_close_with_locks(&mut parent, &mut locks, &mut host, independent).unwrap();
+        sys_close_with_locks(&mut child, &mut locks, &mut host, independent).unwrap();
+    }
+
+    #[test]
+    fn procfs_regular_file_ids_are_tagged_and_distinguish_fdinfo_objects() {
+        let mut proc = Process::new(88);
+        let mut host = MockHostIO::new();
+        let first = sys_memfd_create(&mut proc, b"first", 0).unwrap();
+        let second = sys_memfd_create(&mut proc, b"second", 0).unwrap();
+        let first_info = crate::procfs::procfs_open(
+            &mut proc,
+            &crate::procfs::ProcfsEntry::FdInfo(88, first),
+            alloc::format!("/proc/88/fdinfo/{first}").into_bytes(),
+            O_RDONLY,
+        )
+        .unwrap();
+        let second_info = crate::procfs::procfs_open(
+            &mut proc,
+            &crate::procfs::ProcfsEntry::FdInfo(88, second),
+            alloc::format!("/proc/88/fdinfo/{second}").into_bytes(),
+            O_RDONLY,
+        )
+        .unwrap();
+        let file_id = |proc: &Process, fd| {
+            let entry = proc.fd_table.get(fd).unwrap();
+            proc.ofd_table.get(entry.ofd_ref.0).unwrap().file_id
+        };
+        assert_ne!(file_id(&proc, first_info), file_id(&proc, second_info));
+        assert!(matches!(
+            file_id(&proc, first_info),
+            Some(FileId::Kernel {
+                kind: KernelFileKind::ProcFsRegular,
+                ..
+            })
+        ));
+
+        let mut locks = AdvisoryLockManager::new();
+        for fd in [first_info, second_info, first, second] {
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        }
+    }
+
+    #[test]
+    fn getlk_unlock_request_reports_unlocked() {
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"locks", 0).unwrap();
+        let mut query = WasmFlock {
+            l_type: F_UNLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            _pad2: 0,
+        };
+
+        sys_fcntl_lock(
+            &mut proc,
+            &mut locks,
+            fd,
+            wasm_posix_shared::fcntl_cmd::F_OFD_GETLK,
+            &mut query,
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(query.l_type, F_UNLCK as i16);
+        assert!(locks.is_empty());
+    }
+
+    #[test]
+    fn equal_local_ofd_indices_do_not_alias_ofd_owners() {
+        let file = FileId::Host { dev: 9, ino: 17 };
+        let mut first = Process::new(1);
+        let mut second = Process::new(2);
+        let first_idx = first
+            .ofd_table
+            .create(FileType::Regular, O_RDWR, 101, b"/first".to_vec());
+        let second_idx = second
+            .ofd_table
+            .create(FileType::Regular, O_RDWR, 202, b"/second".to_vec());
+        assert_eq!(first_idx, second_idx);
+        first.ofd_table.get_mut(first_idx).unwrap().file_id = Some(file);
+        second.ofd_table.get_mut(second_idx).unwrap().file_id = Some(file);
+        let first_fd = first
+            .fd_table
+            .alloc(OpenFileDescRef(first_idx), 0)
+            .unwrap();
+        let second_fd = second
+            .fd_table
+            .alloc(OpenFileDescRef(second_idx), 0)
+            .unwrap();
+        let first_id = first.ofd_table.get(first_idx).unwrap().ofd_id;
+        let second_id = second.ofd_table.get(second_idx).unwrap().ofd_id;
+        assert_ne!(first_id, second_id);
+
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let mut lock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 1,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(
+            &mut first,
+            &mut locks,
+            first_fd,
+            wasm_posix_shared::fcntl_cmd::F_OFD_SETLK,
+            &mut lock,
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_fcntl_lock(
+                &mut second,
+                &mut locks,
+                second_fd,
+                wasm_posix_shared::fcntl_cmd::F_OFD_SETLK,
+                &mut lock,
+                &mut host,
+            ),
+            Err(Errno::EAGAIN)
+        );
+
+        let mut query = lock;
+        sys_fcntl_lock(
+            &mut second,
+            &mut locks,
+            second_fd,
+            wasm_posix_shared::fcntl_cmd::F_OFD_GETLK,
+            &mut query,
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(query.l_pid, u32::MAX);
     }
 
     #[test]
@@ -19646,6 +22345,85 @@ mod tests {
     }
 
     #[test]
+    fn test_fstatat_empty_path_targets_fd_and_cwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/file", 123, 456, 0o640, b"data");
+
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDONLY, 0).unwrap();
+        let via_empty =
+            sys_fstatat(&mut proc, &mut host, fd, b"", AT_EMPTY_PATH).unwrap();
+        let via_fstat = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(via_empty.st_ino, via_fstat.st_ino);
+        assert_eq!(via_empty.st_mode, via_fstat.st_mode);
+        assert_eq!(via_empty.st_uid, via_fstat.st_uid);
+        assert_eq!(via_empty.st_gid, via_fstat.st_gid);
+        assert_eq!(via_empty.st_size, via_fstat.st_size);
+
+        let (pipe_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let pipe =
+            sys_fstatat(&mut proc, &mut host, pipe_fd, b"", AT_EMPTY_PATH).unwrap();
+        assert_eq!(pipe.st_mode & S_IFMT, S_IFIFO);
+
+        proc.cwd = b"/home/user".to_vec();
+        let cwd = sys_fstatat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"",
+            AT_EMPTY_PATH | AT_NO_AUTOMOUNT,
+        )
+        .unwrap();
+        assert_eq!(cwd.st_mode & S_IFMT, S_IFDIR);
+        let via_dot = sys_stat(&mut proc, &mut host, b".").unwrap();
+        assert_eq!(cwd.st_ino, via_dot.st_ino);
+        assert_eq!(cwd.st_mode, via_dot.st_mode);
+    }
+
+    #[test]
+    fn test_fstatat_empty_path_preserves_linux_errors() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDONLY, 0).unwrap();
+
+        assert!(matches!(
+            sys_fstatat(&mut proc, &mut host, fd, b"", 0),
+            Err(Errno::ENOENT)
+        ));
+        assert!(matches!(
+            sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"", 0),
+            Err(Errno::ENOENT)
+        ));
+        assert!(matches!(
+            sys_fstatat(&mut proc, &mut host, 9999, b"", AT_EMPTY_PATH),
+            Err(Errno::EBADF)
+        ));
+        assert!(matches!(
+            sys_fstatat(&mut proc, &mut host, fd, b"", AT_EMPTY_PATH | 0x400),
+            Err(Errno::EINVAL)
+        ));
+    }
+
+    #[test]
+    fn test_statx_preserves_sync_flag_validation() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert!(
+            sys_statx(&mut proc, &mut host, AT_FDCWD, b"/tmp/file", 0x2000, 0)
+                .is_ok()
+        );
+        assert!(
+            sys_statx(&mut proc, &mut host, AT_FDCWD, b"/tmp/file", 0x4000, 0)
+                .is_ok()
+        );
+        assert!(matches!(
+            sys_statx(&mut proc, &mut host, AT_FDCWD, b"/tmp/file", 0x6000, 0),
+            Err(Errno::EINVAL)
+        ));
+    }
+
+    #[test]
     fn test_fstatat_absolute_path() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -20694,6 +23472,19 @@ mod tests {
         .unwrap();
         let result = sys_fsync(&mut proc, &mut host, fd);
         assert!(result.is_ok());
+        assert_eq!(host.fsync_calls, vec![100]);
+    }
+
+    #[test]
+    fn test_fsync_directory_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+
+        let result = sys_fsync(&mut proc, &mut host, fd);
+
+        assert!(result.is_ok());
+        assert_eq!(host.fsync_calls, vec![100]);
     }
 
     #[test]
@@ -22309,18 +25100,6 @@ mod tests {
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
         }
-        fn host_fcntl_lock(
-            &mut self,
-            _path: &[u8],
-            _pid: u32,
-            _cmd: u32,
-            _lock_type: u32,
-            _start: i64,
-            _len: i64,
-            _result_buf: &mut [u8],
-        ) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)
         }
@@ -23227,18 +26006,6 @@ mod tests {
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Err(Errno::ENOENT)
-            }
-            fn host_fcntl_lock(
-                &mut self,
-                _p: &[u8],
-                _pid: u32,
-                _cmd: u32,
-                _lt: u32,
-                _s: i64,
-                _l: i64,
-                _r: &mut [u8],
-            ) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_fork(&self) -> i32 {
                 -(Errno::ENOSYS as i32)
@@ -27036,23 +29803,11 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
             }
-            fn host_fcntl_lock(
-                &mut self,
-                _p: &[u8],
-                _pid: u32,
-                _c: u32,
-                _t: u32,
-                _s: i64,
-                _l: i64,
-                _r: &mut [u8],
-            ) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_fork(&self) -> i32 {
-                -1
+                -(Errno::ENOSYS as i32)
             }
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
-                Ok(0)
+                Err(Errno::EAGAIN)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
@@ -27281,20 +30036,8 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
             }
-            fn host_fcntl_lock(
-                &mut self,
-                _p: &[u8],
-                _pid: u32,
-                _c: u32,
-                _t: u32,
-                _s: i64,
-                _l: i64,
-                _r: &mut [u8],
-            ) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_fork(&self) -> i32 {
-                -1
+                -(Errno::ENOSYS as i32)
             }
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Ok(0)
@@ -27523,18 +30266,6 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
             }
-            fn host_fcntl_lock(
-                &mut self,
-                _p: &[u8],
-                _pid: u32,
-                _c: u32,
-                _t: u32,
-                _s: i64,
-                _l: i64,
-                _r: &mut [u8],
-            ) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_fork(&self) -> i32 {
                 -1
             }
@@ -27704,6 +30435,7 @@ mod tests {
     #[test]
     fn test_fcntl_lock_seek_end_non_host() {
         let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
         let mut host = MockHostIO::new();
         let (_fd0, fd1) = sys_pipe(&mut proc).unwrap();
 
@@ -27717,7 +30449,14 @@ mod tests {
             l_pid: 0,
             _pad2: 0,
         };
-        let result = sys_fcntl_lock(&mut proc, fd1, F_GETLK, &mut flock, &mut host);
+        let result = sys_fcntl_lock(
+            &mut proc,
+            &mut locks,
+            fd1,
+            F_GETLK,
+            &mut flock,
+            &mut host,
+        );
         assert_eq!(result.unwrap_err(), Errno::EINVAL);
     }
 
@@ -27877,6 +30616,35 @@ mod tests {
         let new_addr = sys_mremap(&mut proc, addr, 0x10000, 0x20000, 0).unwrap();
         assert_eq!(new_addr, addr);
         assert!(proc.memory.is_mapped(addr + 0x10000));
+    }
+
+    #[test]
+    fn test_mremap_grow_requires_matching_mapping_metadata() {
+        let mut proc = Process::new(1);
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+        let addr = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+
+        // The claimed two-page old range does not match the one-page mapping.
+        // A free third page must not turn the missing metadata update into a
+        // successful in-place grow.
+        assert_eq!(
+            sys_mremap(&mut proc, addr, 0x20000, 0x30000, 0).unwrap_err(),
+            Errno::EFAULT
+        );
+        assert_eq!(proc.memory.mappings()[0].len, 0x10000);
+
+        let next = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(next, addr + 0x10000);
     }
 
     #[test]
@@ -28277,6 +31045,63 @@ mod tests {
         let mut host = MockHostIO::new();
         let st = sys_lstat(&mut proc, &mut host, b"/proc/self").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFLNK);
+    }
+
+    #[test]
+    fn procfs_fd_stat_follows_the_live_ofd() {
+        fn assert_same_stat(actual: &WasmStat, expected: &WasmStat) {
+            assert_eq!(actual.st_dev, expected.st_dev);
+            assert_eq!(actual.st_ino, expected.st_ino);
+            assert_eq!(actual.st_mode, expected.st_mode);
+            assert_eq!(actual.st_nlink, expected.st_nlink);
+            assert_eq!(actual.st_uid, expected.st_uid);
+            assert_eq!(actual.st_gid, expected.st_gid);
+            assert_eq!(actual.st_size, expected.st_size);
+            assert_eq!(actual.st_atime_sec, expected.st_atime_sec);
+            assert_eq!(actual.st_atime_nsec, expected.st_atime_nsec);
+            assert_eq!(actual.st_mtime_sec, expected.st_mtime_sec);
+            assert_eq!(actual.st_mtime_nsec, expected.st_mtime_nsec);
+            assert_eq!(actual.st_ctime_sec, expected.st_ctime_sec);
+            assert_eq!(actual.st_ctime_nsec, expected.st_ctime_nsec);
+        }
+
+        let mut proc = Process::new(42);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"procfs-stat", 0).unwrap();
+        sys_write(&mut proc, &mut host, fd, b"live-ofd").unwrap();
+        let expected = sys_fstat(&proc, &mut host, fd).unwrap();
+        let path = alloc::format!("/proc/self/fd/{fd}");
+
+        let followed = sys_stat(&mut proc, &mut host, path.as_bytes()).unwrap();
+        assert_same_stat(&followed, &expected);
+        let followed_at =
+            sys_fstatat(&mut proc, &mut host, AT_FDCWD, path.as_bytes(), 0).unwrap();
+        assert_same_stat(&followed_at, &expected);
+        let followed_statx =
+            sys_statx(&mut proc, &mut host, AT_FDCWD, path.as_bytes(), 0, 0).unwrap();
+        assert_same_stat(&followed_statx, &expected);
+
+        let link = sys_lstat(&mut proc, &mut host, path.as_bytes()).unwrap();
+        assert_eq!(link.st_mode & S_IFMT, S_IFLNK);
+        let link_at = sys_fstatat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            path.as_bytes(),
+            AT_SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+        assert_eq!(link_at.st_mode & S_IFMT, S_IFLNK);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            sys_stat(&mut proc, &mut host, path.as_bytes()).unwrap_err(),
+            Errno::ENOENT,
+        );
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, path.as_bytes()).unwrap_err(),
+            Errno::ENOENT,
+        );
     }
 
     #[test]

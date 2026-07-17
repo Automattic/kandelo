@@ -35,7 +35,7 @@ describe.skipIf(!READY)("curl CLI package", () => {
     expect(stderr).toBe("");
     expect(exitCode).toBe(0);
     expect(stdout).toContain(
-      "curl 8.11.1 (wasm32-unknown-none) libcurl/8.11.1 OpenSSL/3.3.2 zlib/1.3.1",
+      "curl 8.11.1 (wasm32-unknown-linux-musl) libcurl/8.11.1 OpenSSL/3.3.2 zlib/1.3.1",
     );
     expect(stdout).toContain("Protocols: file ftp ftps http https");
   }, 60_000);

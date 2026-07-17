@@ -87,11 +87,32 @@ pub(crate) fn terminate_process_by_signal(
     host: &mut dyn HostIO,
     signum: u32,
 ) {
+    terminate_process_by_signal_impl(proc, None, host, signum);
+}
+
+pub(crate) fn terminate_process_by_signal_with_locks(
+    proc: &mut Process,
+    locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    signum: u32,
+) {
+    terminate_process_by_signal_impl(proc, Some(locks), host, signum);
+}
+
+fn terminate_process_by_signal_impl(
+    proc: &mut Process,
+    locks: Option<&mut crate::lock::AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    signum: u32,
+) {
     proc.sigsuspend_saved_mask = None;
     for thread in &mut proc.threads {
         thread.signals.sigsuspend_saved_mask = None;
     }
-    crate::syscalls::sys_exit_by_signal(proc, host, signum);
+    match locks {
+        Some(locks) => crate::syscalls::sys_exit_by_signal_with_locks(proc, locks, host, signum),
+        None => crate::syscalls::sys_exit_by_signal(proc, host, signum),
+    }
 }
 
 /// Apply a signal's default action after its pending instance has been
@@ -101,9 +122,27 @@ pub(crate) fn apply_default_signal_action(
     host: &mut dyn HostIO,
     signum: u32,
 ) -> DefaultSignalOutcome {
+    apply_default_signal_action_impl(proc, None, host, signum)
+}
+
+pub(crate) fn apply_default_signal_action_with_locks(
+    proc: &mut Process,
+    locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> DefaultSignalOutcome {
+    apply_default_signal_action_impl(proc, Some(locks), host, signum)
+}
+
+fn apply_default_signal_action_impl(
+    proc: &mut Process,
+    locks: Option<&mut crate::lock::AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> DefaultSignalOutcome {
     match default_action(signum) {
         DefaultAction::Terminate | DefaultAction::CoreDump => {
-            terminate_process_by_signal(proc, host, signum);
+            terminate_process_by_signal_impl(proc, locks, host, signum);
             DefaultSignalOutcome::Exited
         }
         DefaultAction::Stop => {
@@ -142,6 +181,22 @@ pub(crate) fn dequeue_signal_for(
 /// signals stay queued for the guest glue. While stopped, Process selection
 /// exposes only SIGKILL; SIGCONT has already resumed at generation time.
 pub(crate) fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO) {
+    deliver_pending_signals_impl(proc, None, host);
+}
+
+pub(crate) fn deliver_pending_signals_with_locks(
+    proc: &mut Process,
+    locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+) {
+    deliver_pending_signals_impl(proc, Some(locks), host);
+}
+
+fn deliver_pending_signals_impl(
+    proc: &mut Process,
+    mut locks: Option<&mut crate::lock::AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+) {
     let tid = crate::process_table::current_tid();
     loop {
         let Some(signum) = proc.next_deliverable_signal(tid) else {
@@ -152,7 +207,7 @@ pub(crate) fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO)
             SignalHandler::Handler(_) => break,
             SignalHandler::Default => {
                 let _ = dequeue_signal_for(proc, tid, signum);
-                if apply_default_signal_action(proc, host, signum)
+                if apply_default_signal_action_impl(proc, locks.as_deref_mut(), host, signum)
                     != DefaultSignalOutcome::Continue
                 {
                     break;

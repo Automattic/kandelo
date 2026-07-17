@@ -544,7 +544,7 @@ library dep) for canonical references; the schema reference is in
 kind = "program"           # or "library" or "source"
 name = "myprog"
 version = "1.2.3"
-kernel_abi = 39            # current ABI_VERSION; required for packages with a [build] block
+kernel_abi = 41            # current ABI_VERSION; required for packages with a [build] block
 depends_on = ["zlib@1.3.1"]   # transitive deps the resolver will pull first
 
 [source]
@@ -725,9 +725,9 @@ Formulae should use normal Homebrew DSL and call the normal Kandelo build path:
 
 - build through the worktree-local SDK, usually by invoking the package's
   existing `packages/registry/<name>/build-*.sh` script;
-- keep cross-compile truth in the package build script with explicit
-  `ac_cv_*` cache variables when upstream `configure` would otherwise detect
-  host features;
+- keep shared sysroot availability facts in `sdk/config.site`; use explicit
+  package `ac_cv_*` values only for package-specific runtime or semantic probes
+  that cross-compilation cannot execute;
 - install the produced Wasm files into the Homebrew keg, not into Kandelo's
   resolver cache;
 - put `test do` coverage through Kandelo, for example by running the produced
@@ -788,6 +788,14 @@ Build the Tcl and SQLite testfixture prerequisites first:
 bash packages/registry/tcl/build-tcl.sh
 bash packages/registry/sqlite/build-testfixture.sh
 ```
+
+Kandelo builds both the shipped SQLite library and the official testfixture
+with compound-select, expression, JSON, and trigger recursion limits that fit
+current browser and Node WebAssembly host stacks. The testfixture patch set
+reads those compiled limits and omits only upstream stress cases that
+deliberately exceed them; it does not turn platform failures into successful
+SQLite results. The `sqllimits1.test` SQL-length filler stays comment-only so
+the length-limit check does not hit the lower expression-depth limit first.
 
 Then run the harness:
 

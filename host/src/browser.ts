@@ -37,6 +37,7 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  VfsImageCapacity,
 } from "./vfs/memory-fs";
 export { DeviceFileSystem } from "./vfs/device-fs";
 export { OpfsFileSystem } from "./vfs/opfs";

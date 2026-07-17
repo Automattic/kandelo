@@ -31,7 +31,9 @@ import type { StatResult, StatfsResult } from "../src/types";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function createMockBackend(): FileSystemBackend & { calls: string[] } {
+function createMockBackend(
+  statOverrides: Partial<StatResult> = {},
+): FileSystemBackend & { calls: string[] } {
   const calls: string[] = [];
   const dummyStat: StatResult = {
     dev: 0,
@@ -44,6 +46,7 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
     atimeMs: 0,
     mtimeMs: 0,
     ctimeMs: 0,
+    ...statOverrides,
   };
   const dummyStatfs: StatfsResult = {
     type: 0,
@@ -273,6 +276,83 @@ describe("VirtualPlatformIO mount resolution", () => {
 });
 
 describe("VirtualPlatformIO file identity", () => {
+  it("qualifies stat, lstat, and fstat device IDs by backend object", () => {
+    const localDevice = (1n << 60n) + 17n;
+    const root = createMockBackend();
+    const first = createMockBackend({ dev: localDevice, ino: 2n });
+    const second = createMockBackend({ dev: localDevice, ino: 2n });
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/first", backend: first },
+        { mountPoint: "/second", backend: second },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    const firstStat = vfs.stat("/first/file");
+    const secondStat = vfs.stat("/second/file");
+    expect(typeof firstStat.dev).toBe("bigint");
+    expect(firstStat.dev).not.toBe(secondStat.dev);
+    expect(vfs.lstat("/first/file").dev).toBe(firstStat.dev);
+
+    const handle = vfs.open("/first/file", O_RDONLY, 0);
+    expect(vfs.fstat(handle).dev).toBe(firstStat.dev);
+    vfs.close(handle);
+  });
+
+  it("shares qualified device IDs across alias mounts of one backend", () => {
+    const root = createMockBackend();
+    const shared = createMockBackend({
+      dev: (1n << 60n) + 23n,
+      ino: 9n,
+    });
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/one", backend: shared },
+        { mountPoint: "/two", backend: shared },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.stat("/one/alias").dev).toBe(vfs.stat("/two/alias").dev);
+  });
+
+  it("keeps distinct backend-local devices distinct within one backend", () => {
+    const root = createMockBackend();
+    const shared = createMockBackend();
+    const stat = shared.stat.bind(shared);
+    shared.stat = (path) => ({
+      ...stat(path),
+      dev: path === "/first" ? (1n << 60n) + 31n : (1n << 60n) + 32n,
+    });
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/shared", backend: shared },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.stat("/shared/first").dev).not.toBe(
+      vfs.stat("/shared/second").dev,
+    );
+  });
+
+  it("rejects imprecise numeric inode identities", () => {
+    const backend = createMockBackend({
+      dev: 1,
+      ino: Number.MAX_SAFE_INTEGER + 1,
+    });
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend }],
+      new NodeTimeProvider(),
+    );
+
+    expect(() => vfs.stat("/unsafe-inode")).toThrow(/EOVERFLOW: st_ino/);
+  });
+
   it("qualifies colliding inode numbers by backend", () => {
     const root = createMockBackend();
     const first = createMockBackend();

@@ -12,7 +12,6 @@ import {
 } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
-import { SharedLockTable } from "../src/shared-lock-table";
 import {
   computeProcessMemoryLayout,
   createProcessMemory as createLayoutMemory,
@@ -72,41 +71,6 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(shouldDeliverPosixTimerSignal(0)).toBe(false);
     expect(shouldDeliverPosixTimerSignal(14)).toBe(true);
     expect(shouldDeliverPosixTimerSignal(65)).toBe(false);
-  });
-
-  it("releases host-backed advisory locks when deactivating an exited process", () => {
-    const pid = 126;
-    const peerPid = 127;
-    const pathHash = SharedLockTable.hashPath("/tmp/locked.db");
-    const lockTable = SharedLockTable.create();
-
-    expect(lockTable.setLock(pathHash, pid, 1, 0n, 0n)).toBe(true);
-    expect(lockTable.setLock(pathHash, peerPid, 1, 0n, 0n)).toBe(false);
-
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      activeChannels: [{ pid }, { pid: peerPid }],
-      processes: new Map([[pid, {}], [peerPid, {}]]),
-      stdinFinite: new Set([pid]),
-      stdinBuffers: new Map([[pid, new Uint8Array()]]),
-      alarmTimers: new Map(),
-      posixTimers: new Map(),
-      pendingSleeps: new Map(),
-      pendingSignalWaits: new Map(),
-      signalWaitDeadlines: new Map(),
-      lockTable,
-      cleanupPendingPollRetries: vi.fn(),
-      cleanupPendingSelectRetries: vi.fn(),
-      cleanupUdpBindings: vi.fn(),
-      cleanupTcpListeners: vi.fn(),
-      hostReaped: new Set([pid]),
-    }) as CentralizedKernelWorker;
-
-    kw.deactivateProcess(pid);
-
-    expect(lockTable.setLock(pathHash, peerPid, 1, 0n, 0n)).toBe(true);
-    expect((kw as any).processes.has(pid)).toBe(false);
-    expect((kw as any).activeChannels).toEqual([{ pid: peerPid }]);
-    expect((kw as any).hostReaped.has(pid)).toBe(false);
   });
 
   it("retries fork allocation when the kernel still owns a zombie pid", async () => {

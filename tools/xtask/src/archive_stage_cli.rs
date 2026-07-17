@@ -122,7 +122,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     fs::create_dir_all(&parsed.out_dir)
         .map_err(|e| format!("mkdir {}: {e}", parsed.out_dir.display()))?;
 
-    // Filename convention (single source of truth for archive naming):
+    // Filename convention (rendered by package_archive_name):
     //   <name>-<v>-rev<N>-abi<N>-<arch>-<short8>.tar.zst
     // The `<short8>` suffix is the first 8 hex chars of the cache_key
     // sha so a freshly-published archive is content-addressable from
@@ -190,11 +190,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 /// Compute the canonical archive filename + path for a (manifest, arch,
-/// abi) triple under `out_dir`. The shape (`<name>-<version>-rev<N>-
-/// abi<N>-<arch>-<short8>.tar.zst`) is parsed by `build_index` to
-/// recover `(name, version, revision, abi, arch, short_sha)` when
-/// regenerating `index.toml`, so the formatter and parser MUST stay
-/// aligned.
+/// abi) triple under `out_dir`. `build_index` recovers identity from the
+/// archive's structured manifest and validates the transport filename with
+/// the same renderer; it never reverses an ambiguous `<name>-<version>` string.
 fn archive_path_for_sha(
     out_dir: &Path,
     manifest: &DepsManifest,
@@ -202,17 +200,9 @@ fn archive_path_for_sha(
     abi: u32,
     sha_hex: &str,
 ) -> PathBuf {
-    let short = &sha_hex[..8];
-    let archive_name = format!(
-        "{}-{}-rev{}-abi{}-{}-{}.tar.zst",
-        manifest.name,
-        manifest.version,
-        manifest.revision,
-        abi,
-        arch.as_str(),
-        short,
-    );
-    out_dir.join(archive_name)
+    out_dir.join(crate::package_archive_name::render(
+        manifest, arch, abi, sha_hex,
+    ))
 }
 
 /// Compute the cache-key sha for a manifest as a 64-char lowercase hex
@@ -626,6 +616,34 @@ index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
         assert!(short
             .chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+
+        let index_path = dir.join("index.toml");
+        crate::build_index::run(vec![
+            "--abi".into(),
+            shared::ABI_VERSION.to_string(),
+            "--generator".into(),
+            "archive-stage integration test".into(),
+            "--archives-dir".into(),
+            out_dir.display().to_string(),
+            "--out".into(),
+            index_path.display().to_string(),
+            "--generated-at".into(),
+            "2026-05-05T00:00:00Z".into(),
+        ])
+        .expect("build-index must accept archive-stage's canonical filename");
+        let index = crate::index_toml::IndexToml::parse(
+            &fs::read_to_string(index_path).expect("read composed index"),
+        )
+        .expect("parse composed index");
+        assert_eq!(index.packages.len(), 1);
+        assert_eq!(index.packages[0].name, "z");
+        assert_eq!(index.packages[0].version, "1.0.0");
+        assert_eq!(
+            index.packages[0].binary[&TargetArch::Wasm32]
+                .archive_url
+                .as_deref(),
+            Some(name.as_str())
+        );
     }
 
     #[test]

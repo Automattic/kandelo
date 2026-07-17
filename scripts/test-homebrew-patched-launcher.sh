@@ -30,6 +30,7 @@ fail() {
 
 prefix="$TMPDIR/prefix"
 patch_file="$TMPDIR/marker.patch"
+publisher_patch_file="$TMPDIR/publisher-marker.patch"
 work_dir="$TMPDIR/work"
 mkdir -p "$prefix/bin" "$work_dir"
 
@@ -87,6 +88,55 @@ case "${1:-}" in
   assert-working-directory)
     [ "$(pwd -P)" = "$2" ]
     ;;
+  assert-immutable-trust)
+    trust_file="${XDG_CONFIG_HOME:?}/homebrew/trust.json"
+    trust_lock="${trust_file}.lock"
+    [ -r "$trust_file" ]
+    [ "$(cat "$trust_file")" = "$2" ]
+    [ ! -w "$trust_file" ]
+    [ "$(stat -c '%u:%a:%h' "$trust_file")" = "0:444:1" ]
+    [ "$(stat -c '%u:%g:%a:%h' "$trust_lock")" = "0:0:444:1" ]
+    [ "$(stat -c '%u:%g:%a' "$XDG_CONFIG_HOME")" = "0:0:555" ]
+    [ "$(stat -c '%u:%g:%a' "$XDG_CONFIG_HOME/homebrew")" = "0:0:555" ]
+    [ -r "$trust_lock" ] && [ ! -w "$trust_lock" ]
+    [ ! -w "$XDG_CONFIG_HOME" ] && [ ! -w "$XDG_CONFIG_HOME/homebrew" ]
+    if (exec 9<>"$trust_lock") 2>/dev/null; then exit 1; fi
+    if (printf 'mutated\n' >>"$trust_file") 2>/dev/null; then exit 1; fi
+    if (printf 'mutated\n' >>"$trust_lock") 2>/dev/null; then exit 1; fi
+    if (: >"$XDG_CONFIG_HOME/homebrew/formula-write") 2>/dev/null; then exit 1; fi
+    ;;
+  assert-publisher-patch)
+    [ "$(cat "$repository/publisher-marker.txt")" = "publisher-patched" ]
+    ;;
+  install-bundler-gems)
+    [ "$*" = "install-bundler-gems --groups=bottle,formula_test" ]
+    vendor_root="$repository/Library/Homebrew/vendor/bundle/ruby"
+    mkdir -p "$vendor_root/4.0.0"
+    printf 'bottle\nformula_test\n' >"$vendor_root/.homebrew_gem_groups"
+    printf '7\n' >"$vendor_root/4.0.0/.homebrew_vendor_version"
+    ;;
+  assert-bundler-seed)
+    vendor_root="$repository/Library/Homebrew/vendor/bundle/ruby"
+    [ "$(cat "$vendor_root/.homebrew_gem_groups")" = $'bottle\nformula_test' ]
+    [ "$(cat "$vendor_root/4.0.0/.homebrew_vendor_version")" = "7" ]
+    [ ! -w "$vendor_root/.homebrew_gem_groups" ]
+    [ ! -w "$vendor_root/4.0.0/.homebrew_vendor_version" ]
+    ;;
+  trust)
+    printf 'mutation\n' >>"${XDG_CONFIG_HOME:?}/homebrew/trust.json"
+    ;;
+  assert-source-aliases)
+    [ "$#" -eq 6 ]
+    [ "${HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
+    [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
+    [ -r "$2/source-marker" ]
+    [ -r "$3/tap-marker" ]
+    [ ! -e "$4" ]
+    [ ! -e "$5" ]
+    [ ! -e "$6" ]
+    if ( : >"$2/write-probe" ) 2>/dev/null; then exit 1; fi
+    if ( : >"$3/write-probe" ) 2>/dev/null; then exit 1; fi
+    ;;
   assert-argv)
     [ "$#" -eq 6 ]
     [ "$2" = "" ]
@@ -104,6 +154,7 @@ esac
 EOF
 chmod +x "$prefix/bin/brew"
 printf 'unpatched\n' >"$prefix/marker.txt"
+printf 'publisher-unpatched\n' >"$prefix/publisher-marker.txt"
 
 git -C "$prefix" init -q
 git -C "$prefix" config user.name "Kandelo Test"
@@ -121,7 +172,22 @@ index 5742de9..a95d2c7 100644
 +patched
 EOF
 
-homebrew_patched_launcher_prepare "$prefix/bin/brew" "$patch_file" "$work_dir"
+cat >"$publisher_patch_file" <<'EOF'
+diff --git a/publisher-marker.txt b/publisher-marker.txt
+index c9bb6f9..8728fa5 100644
+--- a/publisher-marker.txt
++++ b/publisher-marker.txt
+@@ -1 +1 @@
+-publisher-unpatched
++publisher-patched
+EOF
+
+homebrew_patched_launcher_prepare \
+  "$prefix/bin/brew" "$patch_file" "$work_dir" "$publisher_patch_file"
+if homebrew_patched_launcher_seed_bundler_groups 'bad/group' >/dev/null 2>&1; then
+  fail "invalid Bundler group unexpectedly succeeded"
+fi
+homebrew_patched_launcher_seed_bundler_groups bottle formula_test
 
 [ "$HOMEBREW_PATCHED_PREFIX" = "$prefix" ] || fail "selected prefix changed"
 [ "$($HOMEBREW_PATCHED_BREW_BIN --prefix)" = "$prefix" ] || fail "launcher reports the wrong prefix"
@@ -131,7 +197,13 @@ homebrew_patched_launcher_prepare "$prefix/bin/brew" "$patch_file" "$work_dir"
 [ "$($HOMEBREW_PATCHED_BREW_BIN --repository)" = "$HOMEBREW_PATCHED_OVERLAY" ] ||
   fail "launcher reports the wrong repository"
 [ "$(cat "$prefix/marker.txt")" = "unpatched" ] || fail "original repository was modified"
+[ "$(cat "$prefix/publisher-marker.txt")" = "publisher-unpatched" ] ||
+  fail "publisher patch modified the original repository"
 [ "$(cat "$HOMEBREW_PATCHED_OVERLAY/marker.txt")" = "patched" ] || fail "overlay patch was not applied"
+[ "$(cat "$HOMEBREW_PATCHED_OVERLAY/publisher-marker.txt")" = "publisher-patched" ] ||
+  fail "extra publisher patch was not applied"
+[ "$(cat "$HOMEBREW_PATCHED_OVERLAY/Library/Homebrew/vendor/bundle/ruby/.homebrew_gem_groups")" = \
+  $'bottle\nformula_test' ] || fail "publisher Bundler groups were not seeded"
 [ -L "$HOMEBREW_PATCHED_LAUNCHER" ] || fail "launcher symlink was not created"
 
 launcher="$HOMEBREW_PATCHED_LAUNCHER"
@@ -140,6 +212,15 @@ homebrew_patched_launcher_cleanup
 [ ! -e "$launcher" ] || fail "launcher symlink was not removed"
 [ ! -e "$overlay" ] || fail "overlay worktree was not removed"
 
+base_only_work_dir="$TMPDIR/base-only-work"
+mkdir -p "$base_only_work_dir"
+homebrew_patched_launcher_prepare "$prefix/bin/brew" "$patch_file" "$base_only_work_dir"
+[ "$(cat "$HOMEBREW_PATCHED_OVERLAY/marker.txt")" = "patched" ] ||
+  fail "base-only overlay did not apply the platform patch"
+[ "$(cat "$HOMEBREW_PATCHED_OVERLAY/publisher-marker.txt")" = "publisher-unpatched" ] ||
+  fail "publisher patch leaked into a base-only overlay"
+homebrew_patched_launcher_cleanup
+
 failure_work_dir="$TMPDIR/failure-work"
 mkdir -p "$failure_work_dir"
 set +e
@@ -147,7 +228,8 @@ set +e
   set -e
   trap homebrew_patched_launcher_cleanup EXIT
   export FAKE_BREW_BAD_PREFIX=1
-  homebrew_patched_launcher_prepare "$prefix/bin/brew" "$patch_file" "$failure_work_dir"
+  homebrew_patched_launcher_prepare \
+    "$prefix/bin/brew" "$patch_file" "$failure_work_dir" "$publisher_patch_file"
 )
 failure_status=$?
 set -e
@@ -190,6 +272,27 @@ HOMEBREW_PATCHED_SUDO_BIN=""
 HOMEBREW_PATCHED_PGREP_BIN=""
 HOMEBREW_PATCHED_BUILD_UID=""
 
+audit_probe_dir="$TMPDIR/audit-probe"
+mkdir -p "$audit_probe_dir/tree"
+cat >"$audit_probe_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "fixture traversal denied" >&2
+exit 13
+EOF
+chmod +x "$audit_probe_dir/sudo"
+HOMEBREW_PATCHED_SUDO_BIN="$audit_probe_dir/sudo"
+set +e
+audit_error="$(homebrew_assert_tree_not_writable_by_user \
+  fixture-user "$audit_probe_dir/tree" 2>&1)"
+audit_status="$?"
+set -e
+[ "$audit_status" -eq 2 ] || fail "failed source audit did not return its contract error"
+[[ "$audit_error" == *"fixture traversal denied"* ]] ||
+  fail "failed source audit suppressed the underlying traversal error"
+[[ "$audit_error" == *"could not inspect protected source"* ]] ||
+  fail "failed source audit did not identify the rejected tree"
+HOMEBREW_PATCHED_SUDO_BIN=""
+
 if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
    [ -x /usr/bin/systemd-run ] && [ -x /usr/bin/systemctl ] && \
    [ -x /usr/bin/getent ] && [ -x /usr/bin/pgrep ] && [ -x /usr/bin/pkill ] && \
@@ -204,18 +307,25 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_work="$ISOLATION_ROOT/work"
   isolated_cache="$ISOLATION_ROOT/cache"
   isolated_temp="$ISOLATION_ROOT/temp"
-  isolated_kandelo="$ISOLATION_ROOT/kandelo"
-  isolated_tap="$ISOLATION_ROOT/tap"
+  isolated_source_parent="$ISOLATION_ROOT/private-runner-home"
+  isolated_kandelo="$isolated_source_parent/kandelo"
+  isolated_tap="$isolated_source_parent/tap"
+  isolated_output="$isolated_source_parent/output"
   isolated_home="/home/$ISOLATION_BUILD_USER"
   daemon_marker="$isolated_work/detached-process-survived"
   daemon_started="$isolated_work/detached-process-started"
   mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
-    "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap"
+    "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
+    "$isolated_output"
+  printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
+  printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   mkdir "$isolated_kandelo/runner-control"
   chmod 0700 "$isolated_kandelo/runner-control"
+  chmod 0700 "$isolated_source_parent"
   cp "$prefix/bin/brew" "$isolated_repo/bin/brew"
   chmod +x "$isolated_repo/bin/brew"
   printf 'unpatched\n' >"$isolated_repo/marker.txt"
+  printf 'publisher-unpatched\n' >"$isolated_repo/publisher-marker.txt"
   git -C "$isolated_repo" init -q
   git -C "$isolated_repo" config user.name "Kandelo Test"
   git -C "$isolated_repo" config user.email "kandelo-test@example.invalid"
@@ -235,14 +345,31 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   export KANDELO_HOMEBREW_PGREP_BIN=/usr/bin/pgrep
   export KANDELO_HOMEBREW_PKILL_BIN=/usr/bin/pkill
   mkdir -p "$XDG_CONFIG_HOME/homebrew"
+  printf 'reviewed-trust\n' >"$XDG_CONFIG_HOME/homebrew/trust.json"
+  : >"$XDG_CONFIG_HOME/homebrew/trust.json.lock"
+  chmod 0600 "$XDG_CONFIG_HOME/homebrew/trust.json" \
+    "$XDG_CONFIG_HOME/homebrew/trust.json.lock"
 
   homebrew_patched_launcher_prepare \
-    "$isolated_prefix/bin/brew" "$patch_file" "$isolated_work"
+    "$isolated_prefix/bin/brew" "$patch_file" "$isolated_work" \
+    "$publisher_patch_file"
+  homebrew_patched_launcher_seed_bundler_groups bottle formula_test
   homebrew_patched_launcher_isolate \
-    "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap"
+    "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+    "$isolated_output"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-identity \
     "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-immutable-trust reviewed-trust
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-publisher-patch
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-bundler-seed
+  if "$HOMEBREW_PATCHED_BREW_BIN" trust >/dev/null 2>&1; then
+    fail "explicit trust mutation succeeded against the sealed store"
+  fi
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-source-aliases \
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo" \
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/tap" \
+    "$isolated_kandelo" "$isolated_tap" "$isolated_output"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-argv \
     "" "with spaces" '$dollar' '%percent' $'line one\nline two'
   "$HOMEBREW_PATCHED_BREW_BIN" assert-bottle-tags "" ""

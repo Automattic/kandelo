@@ -16,8 +16,12 @@ procfs snapshots/cursors. Those fixes preserve the underlying object state but
 do not make the ordinary OFD record itself global.
 
 Regular-file seek positions, status flags, and owners are therefore still
-deep-copied at fork/spawn. A program that forks and coordinates writes through
-one inherited regular fd can observe divergent positions or flag changes.
+deep-copied at fork/spawn and when `SCM_RIGHTS` installs a transferred regular
+file in another process. The ancillary queue already preserves the stable
+`OfdId`, `FileId`, backing lifetime, and OFD/`flock()` ownership; the remaining
+gap is the mutable ordinary-file OFD metadata itself. A program that forks or
+passes a regular fd and coordinates writes through it can observe divergent
+positions or flag changes.
 
 The cleanest redesign is still to move OFDs to a kernel-global `OfdTable` and
 have `Process` hold `FdTable<OfdRef>`, where `OfdRef` is a stable index. Fork's
@@ -70,22 +74,23 @@ application benchmarks on both hosts.
 ### Close the remaining regular-file `MAP_SHARED` gaps
 
 The mapping cache deliberately rejects objects it cannot identify or keep
-alive safely. Current OPFS stats use inode zero, so OPFS `MAP_SHARED` returns
-`ENOTSUP`; in-kernel memfds also return `ENOTSUP` because they do not expose the
-host handle used by the file page cache. An initial mapping also needs to reopen
-the descriptor's current pathname, so mapping an already renamed/unlinked fd
-can fail even though an established mapping survives later close, rename, or
-unlink through its stable handle.
+alive safely. Node, mounted VFS backends, and supported OPFS browsers now
+provide exact live-handle identity; OPFS uses session-scoped inode tokens and
+preserves an open object across rename and unlink. Initial mappings retain the
+descriptor's live handle rather than reopening its remembered pathname.
+In-kernel memfds still return `ENOTSUP` because they do not expose the host
+handle used by the file page cache, and any backend unable to prove exact,
+stable identity remains an explicit unsupported boundary.
 
 Further gaps are observable VM semantics rather than cache bookkeeping. Stores
 beyond the current file size are zero-filled or discarded on refresh/writeback
 instead of raising Linux `SIGBUS`, and writers outside Kandelo's direct file
-syscall paths do not invalidate cached pages. Complete support needs stable
-OPFS identity, a kernel-owned memfd mapping bridge, external invalidation (or a
-documented ownership boundary), and a Wasm mechanism or instrumentation for
-faulting beyond EOF.
+syscall paths do not invalidate cached pages. Complete support needs a
+kernel-owned memfd mapping bridge, external invalidation (or a documented
+ownership boundary), and a Wasm mechanism or instrumentation for faulting
+beyond EOF.
 
-**Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs.ts`,
+**Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
 `host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
 
 ## Browser
@@ -229,13 +234,18 @@ the protocol layer.
 
 ## User-space programs
 
-### Replace per-program `-Wl,-z,stack-size` workarounds with a real shadow-stack overflow guard
-`wasm-ld` reserves a default 64 KiB shadow stack (the linear-memory region the
-compiler uses for spilled locals, `alloca`, and address-taken locals). The
-shadow stack grows **downward** from `__stack_high`, and `wasm-ld` places it
+### Add a real shadow-stack overflow guard beyond the SDK's 8 MiB floor
+Upstream `wasm-ld` reserves a default 64 KiB shadow stack (the linear-memory
+region the compiler uses for spilled locals, `alloca`, and address-taken
+locals). Kandelo's SDK raises executable links to an 8 MiB floor while
+preserving larger explicit requests. That floor covers the mainstream
+workloads that exposed the 64 KiB default, but it is a capacity policy rather
+than an overflow guard.
+
+The shadow stack grows **downward** from `__stack_high`, and `wasm-ld` places it
 *immediately below* the `.data` / `.bss` segments in the same linear memory.
 There is no guard page, no stack-pointer bounds check, and no trap: a function
-that consumes more than the remaining shadow-stack budget silently writes
+that consumes more than the effective shadow-stack budget silently writes
 through `__stack_pointer` into whatever data segment happens to be just below
 it, corrupting unrelated globals.
 
@@ -245,12 +255,11 @@ shadow-stack frame underflowed by ~108 KiB into PHP's `alloc_globals` data
 segment, silently corrupting `AG(mm_heap)`. The next `_efree` call dereferenced
 the now-bogus heap pointer and trapped — surfacing as "memory access out of
 bounds" inside the optimizer, with no indication that the actual cause was
-stack overflow ~thousands of frames earlier. The PR's workaround is
-`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB) in `packages/registry/php/build-php.sh`.
-That sidesteps the underflow for PHP's observed workload but doesn't *prevent*
-the failure mode — a deeper recursion or a larger `alloca` will silently
-corrupt data again, and every other large port we ship today (vim, nginx,
-mariadb, etc.) has the same latent bug.
+stack overflow ~thousands of frames earlier. The PHP recipe still requests
+`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB), which the SDK raises to its 8 MiB
+floor. The larger reserve covers PHP's observed workload but doesn't *prevent*
+the failure mode: a deeper recursion or a larger `alloca` can still silently
+corrupt data, and every linked program has the same undetected-overflow risk.
 
 A real fix needs runtime detection so the failure surfaces as an obvious
 crash, not silent corruption. Possible approaches:
@@ -280,10 +289,11 @@ crash, not silent corruption. Possible approaches:
 Once a real guard is in place, the per-program `-Wl,-z,stack-size=...`
 overrides should be audited: programs that genuinely need a larger shadow
 stack (PHP optimizer, deep parser stacks) keep the explicit override and
-document why; everything else can drop the flag and rely on the default
-+ guard.
+document why; everything else can drop the package-local flag and rely on the
+SDK floor plus the guard.
 
-**Files:** `packages/registry/php/build-php.sh` (current 4 MiB workaround),
+**Files:** `sdk/src/lib/flags.ts` and `sdk/kandelo/bin/wasm32posix-cc` (current
+8 MiB floor), `packages/registry/php/build-php.sh` (current 4 MiB request),
 `libc/glue/channel_syscall.c` (likely site for a syscall-entry bounds check),
 `host/src/worker-main.ts` (instantiation-time wiring for stack bounds),
 plus any other `build-*.sh` that hits the same wall in the meantime.

@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -43,12 +43,12 @@ function buildSharedLib(source: string, name: string): string {
 }
 
 /** Build a main program with dlopen support. */
-function buildMainProgram(source: string, name: string): string {
+function buildMainProgram(source: string, name: string, extraArgs: string[] = []): string {
   const srcPath = join(BUILD_DIR, `${name}.c`);
   const wasmPath = join(BUILD_DIR, `${name}.wasm`);
   writeFileSync(srcPath, source);
   execFileSync("wasm32posix-cc",
-    ["-O2", "-ldl", srcPath, "-o", wasmPath],
+    ["-O2", "-ldl", ...extraArgs, srcPath, "-o", wasmPath],
     { stdio: "pipe" });
   return wasmPath;
 }
@@ -65,6 +65,25 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
   // `NodePlatformIO`, since this test exercises the dlopen plumbing rather
   // than the VFS layer.
   const io = () => new NodePlatformIO();
+
+  it("opens and resolves the main program symbol scope", async () => {
+    const wasmPath = buildMainProgram(
+      readFileSync(join(__dirname, "fixtures", "dlopen-main-scope.c"), "utf8"),
+      "test-dlopen-main",
+      ["-Wl,--export-dynamic"],
+    );
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["test-dlopen-main"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
+    });
+
+    expect(result.exitCode, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+    expect(result.stdout).toBe("self=42 default=8 data=35\n");
+    expect(result.stderr).toBe("");
+  });
 
   it("loads a shared library and calls its functions via dlopen/dlsym", { timeout: 30_000 }, async () => {
     // Build the shared library

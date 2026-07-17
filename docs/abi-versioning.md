@@ -76,6 +76,13 @@ host-scheduled POSIX timer expiration so the kernel can preserve exact
 selection. A kernel without it must fail manifest validation rather than fall
 back to process-wide delivery.
 
+ABI 40 moves advisory file-lock authority into the Rust kernel. It removes the
+required `host_fcntl_lock` import and the public host-package `SharedLockTable`
+API, distinguishes lock conflicts (`EAGAIN`) from bounded-manager exhaustion
+(`ENOLCK`), and adds exact `FileId` plus machine-wide `OfdId` state to fork/exec
+serialization version 12. Kernels, hosts, libc, guest programs, packages, and
+VFS images from ABI 39 must be rebuilt rather than mixed with ABI 40 artifacts.
+
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI
 changes and do not require a bump.
@@ -101,6 +108,22 @@ These additions still require regenerating and committing
 `abi/snapshot.json`. They do not permit older kernels to run newer
 programs that require the new surface; they only permit older programs
 to keep running on newer kernels in the same `ABI_VERSION` epoch.
+
+### ABI 41 fork-continuation reserve
+
+ABI 41 increases each fork-continuation save buffer from 16 KiB to 60 KiB.
+The reserve occupies the upper part of an existing 64 KiB scratch page and
+leaves a 4 KiB prefix for host-owned control metadata. It covers the measured
+49,232-byte Homebrew Bash continuation with 12,208 bytes of headroom while
+retaining truthful post-unwind detection for continuations above the fixed
+bound.
+
+The host passes the buffer's absolute address to every instrumented main
+module, pthread worker, and fork-capable side module; neither that address nor
+the capacity is baked into instrumented code. ABI 39 and 40 programs still need
+rebuilding because the public process-memory layout belongs to ABI 41. ABI 41
+candidate programs created before publication remain mechanically valid when
+only this host-supplied reserve grows and the frame format stays unchanged.
 
 ## The snapshot
 

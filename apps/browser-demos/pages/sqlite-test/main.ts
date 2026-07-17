@@ -7,6 +7,10 @@ import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { writeVfsFile } from "@host/vfs/image-helpers";
 import { finalizeKernelOwnedImage, settleWebKitReclaim } from "../../lib/kernel-owned-boot";
+import {
+  patchTestrunnerForKandelo,
+  testrunnerPlatformShim,
+} from "./testrunner-patch";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 declare global {
@@ -91,6 +95,20 @@ async function collectArtifactsFromKernel(
   return artifacts.length > 0 ? artifacts : undefined;
 }
 
+function installTestrunnerPatches(fs: MemoryFileSystem): void {
+  const runnerPath = "/sqlite/test/testrunner.tcl";
+  const decoder = new TextDecoder();
+  const runner = decoder.decode(readVfsFile(fs, runnerPath));
+  writeVfsFile(fs, runnerPath, patchTestrunnerForKandelo(runner), 0o644);
+
+  writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [
+    testrunnerPlatformShim,
+    "set argv0 test/testrunner.tcl",
+    "source $argv0",
+    "",
+  ].join("\n"), 0o644);
+}
+
 function createFs(): MemoryFileSystem {
   if (!vfsImageBytes) throw new Error("SQLite test VFS image not loaded");
   const fs = MemoryFileSystem.fromImage(vfsImageBytes, {
@@ -153,13 +171,7 @@ async function init() {
     // SharedArrayBuffer across the per-test loop (Safari OOM fix).
     const buildFs = createFs();
     if (argv[1] === "kandelo-testrunner.tcl") {
-      writeVfsFile(buildFs, "/sqlite/kandelo-testrunner.tcl", [
-        "set ::tcl_platform(os) OpenBSD",
-        "set ::tcl_platform(platform) unix",
-        "set argv0 test/testrunner.tcl",
-        "source $argv0",
-        "",
-      ].join("\n"), 0o644);
+      installTestrunnerPatches(buildFs);
     }
     const vfsImage = await finalizeKernelOwnedImage(buildFs);
     const kernel = new BrowserKernel({
