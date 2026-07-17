@@ -181,6 +181,8 @@ export HOMEBREW_KANDELO_ABI="$ABI"
 export HOMEBREW_KANDELO_NODE_RECEIPT_PATH="$WORK_DIR/node-execution-receipt.json"
 rm -f "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH"
 
+homebrew_patched_launcher_seed_bundler_groups bottle formula_test
+
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 "$BREW_BIN" trust --tap "$TAP_NAME"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"

@@ -168,6 +168,88 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_TEARDOWN_COMPLETE=0
 }
 
+# Materialize the exact Homebrew developer-command gem groups while the
+# workflow identity still owns the temporary overlay. Formula execution sees
+# the resulting gem code and state only after the whole overlay is sealed.
+homebrew_patched_launcher_seed_bundler_groups() {
+  if [ "$#" -eq 0 ]; then
+    echo "homebrew_patched_launcher_seed_bundler_groups: expected at least one group" >&2
+    return 2
+  fi
+  if [ -z "$HOMEBREW_PATCHED_OVERLAY" ]; then
+    return 0
+  fi
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    echo "homebrew-patched-launcher: cannot seed Bundler groups after isolation" >&2
+    return 2
+  fi
+
+  local group groups groups_csv group_count
+  local vendor_root groups_file expected_groups actual_groups unsafe_entry
+  local unsafe_marker marker_count marker_path marker_value
+  for group in "$@"; do
+    if ! [[ "$group" =~ ^[a-z][a-z0-9_]*$ ]]; then
+      echo "homebrew-patched-launcher: invalid Bundler group: $group" >&2
+      return 2
+    fi
+  done
+  groups="$(printf '%s\n' "$@" | LC_ALL=C sort -u)"
+  group_count="$(printf '%s\n' "$groups" | awk 'NF { count++ } END { print count + 0 }')"
+  if [ "$group_count" -ne "$#" ]; then
+    echo "homebrew-patched-launcher: Bundler groups must be unique" >&2
+    return 2
+  fi
+  if [ "$group_count" -gt 32 ]; then
+    echo "homebrew-patched-launcher: too many Bundler groups" >&2
+    return 2
+  fi
+  groups_csv="$(printf '%s\n' "$groups" | paste -sd, -)"
+
+  "$HOMEBREW_PATCHED_BREW_BIN" install-bundler-gems --groups="$groups_csv"
+
+  vendor_root="$HOMEBREW_PATCHED_OVERLAY/Library/Homebrew/vendor/bundle/ruby"
+  if [ ! -d "$vendor_root" ] || [ -L "$vendor_root" ]; then
+    echo "homebrew-patched-launcher: Bundler vendor root is not a real directory" >&2
+    return 1
+  fi
+  unsafe_entry="$(find "$vendor_root" -mindepth 1 ! \( -type d -o -type f \) -print -quit)"
+  if [ -n "$unsafe_entry" ]; then
+    echo "homebrew-patched-launcher: Bundler vendor tree contains a non-regular entry" >&2
+    return 1
+  fi
+  groups_file="$vendor_root/.homebrew_gem_groups"
+  if [ ! -f "$groups_file" ] || [ -L "$groups_file" ]; then
+    echo "homebrew-patched-launcher: Bundler group state is not a regular file" >&2
+    return 1
+  fi
+  expected_groups="$groups"
+  actual_groups="$(LC_ALL=C sort "$groups_file")"
+  if [ "$actual_groups" != "$expected_groups" ]; then
+    echo "homebrew-patched-launcher: Bundler group state differs from the requested groups" >&2
+    return 1
+  fi
+
+  unsafe_marker="$(find "$vendor_root" -mindepth 2 -maxdepth 2 \
+    -name .homebrew_vendor_version ! -type f -print -quit)"
+  if [ -n "$unsafe_marker" ]; then
+    echo "homebrew-patched-launcher: Bundler vendor version is not a regular file" >&2
+    return 1
+  fi
+  marker_count="$(find "$vendor_root" -mindepth 2 -maxdepth 2 \
+    -type f -name .homebrew_vendor_version -print | awk 'END { print NR + 0 }')"
+  if [ "$marker_count" -ne 1 ]; then
+    echo "homebrew-patched-launcher: expected one Bundler vendor version, found $marker_count" >&2
+    return 1
+  fi
+  marker_path="$(find "$vendor_root" -mindepth 2 -maxdepth 2 \
+    -type f -name .homebrew_vendor_version -print)"
+  marker_value="$(cat "$marker_path")"
+  if ! [[ "$marker_value" =~ ^[0-9]+$ ]]; then
+    echo "homebrew-patched-launcher: invalid Bundler vendor version" >&2
+    return 1
+  fi
+}
+
 # Move all Formula-evaluating Brew calls behind a fixed wrapper that switches
 # to a dedicated user inside a transient systemd service. KillMode=control-group
 # makes double-forked or session-detached descendants part of the call lifecycle.

@@ -117,14 +117,23 @@ temporary publisher worktrees:
 homebrew/patches/0002-publisher-skip-redundant-item-trust.patch
 ```
 
-They trust the reviewed tap before isolation, then seal the build-local XDG
-configuration as root-owned directories with mode `0555` and readable regular
-files with mode `0444`. Pinned Homebrew normally tries to persist a redundant
-Formula entry for every fully qualified install even when that tap is already
-trusted. The publisher-only patch skips that automatic persistence. It does
-not change explicit `brew trust`, which still fails under the isolated identity
-because the trust store is immutable. The bootstrap and guest Homebrew apply
-only the platform patch above, so their trust behavior is unchanged.
+They trust the reviewed tap before isolation, then seal the patched Homebrew
+repository and build-local XDG configuration against Formula writes. The
+configuration uses root-owned directories with mode `0555` and readable
+regular files with mode `0444`. Pinned Homebrew normally requires its repository
+to be writable and tries to persist a redundant Formula entry for every fully
+qualified install even when that tap is already trusted. The publisher-only
+patch excludes only the protected repository from Homebrew's preinstall
+writability diagnostic and skips that automatic trust persistence. Every other
+required Homebrew path keeps the normal writability check. Explicit `brew trust`
+still fails under the isolated identity because the trust store is immutable.
+Before that identity starts, the trusted workflow installs Homebrew's locked
+`formula_test` and `bottle` Bundler groups into the temporary overlay and
+verifies their state files. The complete overlay is then sealed, so later
+`brew test` and `brew bottle` commands use the reviewed gem set without writing
+Homebrew source or downloading executable code during Formula evaluation.
+The bootstrap and guest Homebrew apply only the platform patch above, so their
+repository and trust behaviors are unchanged.
 
 The transient-service containment above is the current official publisher's
 Linux security backend, not a Kandelo bottle target requirement. Local
@@ -394,8 +403,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    Kandelo bottles before native dependencies are resolved. Homebrew then
    completes the remaining declared build and test closure with normal host
    semantics, so native tools do not inherit a Kandelo target tag and no
-   same-tap dependency can fall back to a source build. Before Formula
-   execution, the workflow uses the repository's Nix dev shell and declared Node
+   same-tap dependency can fall back to a source build. The workflow also
+   materializes the exact `formula_test` and `bottle` groups from pinned
+   Homebrew's frozen Gemfile into the temporary overlay, validates their group
+   and vendor-version state, and seals those bytes before Formula evaluation.
+   Missing gems therefore fail during trusted preparation instead of causing a
+   later `brew test` or `brew bottle` process to mutate protected source. Before
+   Formula execution, the workflow uses the repository's Nix dev shell and declared Node
    to install Playwright Chromium into the location Formula test helpers derive
    from `HOMEBREW_CACHE`, then makes that browser tree root-owned, read-only, and
    executable by the isolated Formula identity. Browser tests therefore use the
