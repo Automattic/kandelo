@@ -3600,6 +3600,11 @@ pub(crate) fn drain_deferred_scm_rights_releases(
         if let Some(handle) = released.host_close {
             let _ = host.host_close(handle);
         }
+        if let Some(bo_id) = released.bo_destroy {
+            // The host bo registry keys by bo_id; the pid argument only
+            // reaches diagnostics listeners, and no owning process remains.
+            host.gbm_bo_destroy(0, bo_id);
+        }
     }
 }
 
@@ -3836,11 +3841,11 @@ pub(crate) fn install_scm_rights_fds_with_flags(
         );
         match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
             Ok(new_fd) => {
-                // Take a bo refcount for the receiver's new fd; its close
-                // drops it (dri_release_ofd_state). The sender's own
-                // reference keeps the bo alive across the hop.
+                // The queued entry's in-flight bo reference (taken at send
+                // retain) transfers to the receiver's new fd; its close drops
+                // it (dri_release_ofd_state). No incref here — the sender's
+                // own reference may already be gone.
                 if let Some(pb) = entry.prime_bo.clone() {
-                    crate::dri::with_registry(|r| r.incref(pb.bo_id));
                     if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                         ofd.dri_state = Some(alloc::boxed::Box::new(
                             crate::ofd::DriOfdState::PrimeBo(pb),
@@ -4122,6 +4127,7 @@ fn release_ofd_reference_impl(
                             }
                             unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
                         }
+                        unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
                     }
                 }
                 // peer_idx is a process-local socket-table identity used by

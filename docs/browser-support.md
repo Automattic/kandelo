@@ -321,7 +321,7 @@ Located in `apps/browser-demos/pages/`:
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package and is baked into the image with its shader presets before boot. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
-| hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm | `kernel.boot` + spawn | Hyprland-class tiling desktop — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
+| hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm (+ wlpaint via keybind) | `kernel.boot` + spawn | Hyprland-class tiling desktop; `Ctrl+Return`/`Ctrl+K`/`Ctrl+P` open new terminal/clock/paint panes — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -450,9 +450,10 @@ real clients — one `wlclock` and two `wlterm` terminals:
   tiling requires the *client* to resize. On each retile the compositor
   sends `xdg_toplevel.configure(w,h)`; the libkwl clients rebuild their
   `wl_shm` buffers to match and redraw (`wlclock` recomputes its dial,
-  `wlterm` reflows its VT100 grid via `TIOCSWINSZ` + `SIGWINCH`). Floating
-  clients ignore the initial `configure(0,0)`, so `/?demo=wayland` is
-  unchanged.
+  `wlterm` reflows its VT100 grid via `TIOCSWINSZ` + `SIGWINCH`, `wlpaint`
+  reallocates its canvas so the toolbar + drawing area fill the whole tile
+  instead of a fixed 640×420 corner). Floating clients ignore the initial
+  `configure(0,0)`, so `/?demo=wayland` is unchanged.
 - **Server-side decorations.** Under `dwindle` the compositor negotiates
   `SERVER_SIDE` decorations, so tiled windows have no titlebar (a floating
   layout keeps client-side CSD).
@@ -464,6 +465,20 @@ real clients — one `wlclock` and two `wlterm` terminals:
   `Ctrl+…` does. The compositor also supports move-to-workspace, focus
   cycling, and a `kwlctl` control socket (the `hyprctl` analog), which this
   demo doesn't bind — see architecture.md.
+- **New-pane launch keybinds.** Opening a new pane is done Hyprland-style —
+  each app has its own `exec` bind rather than a launcher/`rofi` UI:
+  `Return`→`wlterm`, `K`→`wlclock` (K as in clo**K** — see the caveat),
+  `P`→`wlpaint` (again on both `SUPER` and `CTRL`). Pressing the combo makes
+  the compositor `posix_spawnp` the binary from `/usr/local/bin`, and the new
+  client tiles into the layout. `wlpaint` is staged solely for this path —
+  unlike `/?demo=wayland` it is not auto-spawned into the initial layout, so
+  `Ctrl+P` is how you summon it.
+  **Caveat:** the compositor grabs a bound combo before the focused client,
+  so a `CTRL`+letter launch bind shadows the terminal's like-named control key.
+  The clock is bound to `K` (not `C`) precisely to leave `Ctrl+C` (SIGINT) to
+  the terminal; `Ctrl+W` (killactive) does still shadow `wlterm`'s werase.
+  That is the cost of using `CTRL` as the WM modifier in-browser; a real
+  Hyprland session on `SUPER` has no such clash.
 
 See
 [architecture.md](architecture.md#tiling-window-manager-wlc_layout-workspaces-kwlctl-keybinds).

@@ -215,10 +215,23 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Reap the shell. */
+    /* Tear the surface down FIRST so the compositor removes and retiles the
+     * pane immediately — otherwise a window-close (killactive) request would
+     * leave the tile on screen until the shell reap below returns. */
+    kwl_window_destroy(win);
+
+    /* Reap the shell. The loop may have ended on a window-close request
+     * (KWL_CLOSE) with the shell still running: closing the pty master is
+     * meant to hang up the slave's foreground group, but we also SIGHUP the
+     * child explicitly so the pane closes even when that hangup doesn't
+     * propagate — a wedged shell must not keep waitpid (and the window)
+     * blocked forever. SIGHUP on an already-exited pid is a harmless ESRCH. */
     close(master);
     int status = 0;
-    if (pid > 0) waitpid(pid, &status, 0);
+    if (pid > 0) {
+        kill(pid, SIGHUP);
+        waitpid(pid, &status, 0);
+    }
     int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 0;
 
     printf("WLTERM_EXIT code=%d\n", exit_code);
@@ -226,6 +239,5 @@ int main(int argc, char **argv) {
 
     vt100_destroy(term);
     wpk_font_destroy(font);
-    kwl_window_destroy(win);
     return 0;
 }

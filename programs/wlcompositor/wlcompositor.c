@@ -1384,6 +1384,13 @@ static void kbd_set_focus(struct surface *s) {
     wl_array_release(&keys);
     schedule_repaint();   /* focus border moved */
     kwlctl_emit("activewindow>>%s", s->app_id);
+    /* Observable focus marker: keyboard focus only moves to a window once its
+     * first commit maps it (surface_commit), so this is the authoritative
+     * "the window is now closeable by killactive" signal — distinct from a
+     * client's own READY print, which fires when it *queues* its first commit,
+     * before the compositor has processed the map and moved focus here. */
+    printf("KBD_FOCUS app_id=%s\n", s->app_id);
+    fflush(stdout);
 }
 
 /* Pointer focus follows the surface under the cursor. */

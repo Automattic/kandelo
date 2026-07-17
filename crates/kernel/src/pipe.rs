@@ -128,6 +128,7 @@ impl InFlightFd {
             file_type: self.file_type,
             host_handle: self.host_handle,
             pipe_ref_kind: self.pipe_ref_kind,
+            prime_bo_id: self.prime_bo.as_ref().map(|pb| pb.bo_id),
         }
     }
 
@@ -227,6 +228,7 @@ pub(crate) struct DeferredInFlightFdRelease {
     file_type: FileType,
     host_handle: i64,
     pipe_ref_kind: Option<InFlightPipeRefKind>,
+    prime_bo_id: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +236,10 @@ pub(crate) struct ReleasedInFlightFd {
     pub ofd_id: OfdId,
     pub final_ofd_reference: bool,
     pub host_close: Option<i64>,
+    /// A queued prime-bo reference whose release drove the bo refcount to
+    /// zero. The caller must forward it to `host_io.gbm_bo_destroy` so the
+    /// backing SAB/texture is dropped.
+    pub bo_destroy: Option<u32>,
 }
 
 /// One SCM_RIGHTS batch attached to an exact byte range in a stream pipe.
@@ -331,6 +337,26 @@ pub(crate) fn deferred_in_flight_release_state() -> (usize, usize, usize) {
 }
 
 fn retain_in_flight_resource(release: DeferredInFlightFdRelease) -> Result<(), Errno> {
+    // A queued prime-bo fd owns a registry reference for the whole hop:
+    // libwayland closes the pool fd right after wl_shm.create_pool, so the
+    // sender's own reference can vanish before the receiver drains the
+    // socket. The reference transfers to the receiver's OFD on install and
+    // is dropped through the deferred queue otherwise. Rollback below never
+    // reaches refcount zero because the snapshot's source OFD (or, for a
+    // MSG_PEEK clone, the original queued entry) still holds a reference.
+    if let Some(bo_id) = release.prime_bo_id {
+        crate::dri::with_registry(|r| r.incref(bo_id)).ok_or(Errno::EBADF)?;
+    }
+    if let Err(err) = retain_in_flight_backing(release) {
+        if let Some(bo_id) = release.prime_bo_id {
+            crate::dri::with_registry(|r| r.decref(bo_id));
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn retain_in_flight_backing(release: DeferredInFlightFdRelease) -> Result<(), Errno> {
     if crate::descriptor_backing::add_ref_for_ofd(release.file_type, release.host_handle)? {
         return Ok(());
     }
@@ -437,10 +463,18 @@ pub(crate) fn release_deferred_in_flight_resource(
         }
     }
 
+    let mut bo_destroy = None;
+    if let Some(bo_id) = release.prime_bo_id {
+        if crate::dri::with_registry(|r| r.decref(bo_id)) == Some(0) {
+            bo_destroy = Some(bo_id);
+        }
+    }
+
     ReleasedInFlightFd {
         ofd_id: release.ofd_id,
         final_ofd_reference,
         host_close,
+        bo_destroy,
     }
 }
 
@@ -1280,6 +1314,7 @@ impl PipeBuffer {
     pub fn has_ancillary(&self) -> bool {
         !self.ancillary_fds.is_empty()
     }
+
 }
 
 /// Table of pipe buffers shared across all processes.
@@ -1984,6 +2019,39 @@ mod tests {
         assert!(!pipe.is_fully_closed());
         pipe.close_write_end();
         assert!(pipe.is_fully_closed());
+    }
+
+    #[test]
+    fn test_in_flight_prime_bo_reference_lifecycle() {
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo_id =
+            crate::dri::with_registry(|r| r.try_alloc(4, 4, 32).map(|bo| bo.id)).unwrap();
+
+        let release = DeferredInFlightFdRelease {
+            ofd_id: crate::lock::OfdId(u64::MAX),
+            file_type: FileType::CharDevice,
+            host_handle: crate::ofd::PRIME_FD_HOST_HANDLE,
+            pipe_ref_kind: None,
+            prime_bo_id: Some(bo_id),
+        };
+        retain_in_flight_resource(release).unwrap();
+
+        // The sender closes its prime fd while the batch is still queued.
+        // The queued reference keeps the bo alive.
+        crate::dri::with_registry(|r| r.decref(bo_id));
+        assert!(crate::dri::with_registry(|r| r.get(bo_id).map(|_| ())).is_some());
+
+        // Discarding the queued batch releases the last reference and
+        // reports the bo for host-side destruction.
+        let released = release_deferred_in_flight_resource(release);
+        assert_eq!(released.bo_destroy, Some(bo_id));
+        assert!(crate::dri::with_registry(|r| r.get(bo_id).map(|_| ())).is_none());
+
+        // A retain against an evicted bo fails instead of resurrecting it.
+        assert_eq!(retain_in_flight_resource(release), Err(Errno::EBADF));
     }
 
     #[test]
