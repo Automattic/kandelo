@@ -15,7 +15,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/prepare-homebrew-bootstrap-source.sh [options]
 
-Fetch one exact upstream Homebrew revision, apply Kandelo's reviewed bottle-tag
+Fetch one exact upstream Homebrew revision, apply Kandelo's reviewed platform
 patch to a temporary Git index, and write deterministic bootstrap inputs.
 
 Options:
@@ -162,6 +162,7 @@ EXPECTED_PATHS=(
     "Library/Homebrew/extend/os/mac/utils/bottles.rb"
     "Library/Homebrew/hardware.rb"
     "Library/Homebrew/utils/bottles.rb"
+    "bin/brew"
 )
 if [ "${CHANGED_PATHS[*]}" != "${EXPECTED_PATHS[*]}" ]; then
     printf 'prepare-homebrew-bootstrap-source: patch changed unexpected paths:\n' >&2

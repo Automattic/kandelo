@@ -78,14 +78,16 @@ underscore as a CPU architecture only when it is listed in
 `x86_64` bottle for a synthetic `wasm32_kandelo` system and serializes back as
 `x86_64_wasm32_kandelo`.
 
-The carried patch is:
+The carried platform patch is:
 
 ```text
 homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch
 ```
 
 It teaches Homebrew's parser that `wasm32` and `wasm64` are CPU architectures
-for `system: :kandelo` and maps the supported prefix and cellar to:
+for `system: :kandelo`, maps the supported prefix and cellar, and makes the
+exact `/usr/bin/brew` guest alias retain the canonical prefix after resolving
+its direct symlink:
 
 ```text
 /home/linuxbrew/.linuxbrew
@@ -572,7 +574,7 @@ not from Formula Ruby.
 
 The guest Homebrew bootstrap image is a separate diagnostic and integration
 artifact. Build it from the pinned upstream Homebrew revision, Kandelo's
-reviewed bottle-tag patch, and ABI-current Kandelo package artifacts with:
+reviewed platform patch, and ABI-current Kandelo package artifacts with:
 
 ```bash
 ./scripts/dev-shell.sh scripts/build-homebrew-bootstrap.sh
@@ -583,7 +585,7 @@ the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 `scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. Source
 preparation verifies the reviewed patch SHA-256, refuses an upstream revision
-where the patch does not apply, limits the patch to its three declared Homebrew
+where the patch does not apply, limits the patch to its four declared Homebrew
 files, and archives the patched Git tree with a fixed timestamp and UTC
 timezone.
 
@@ -595,8 +597,9 @@ selects `wasm32_kandelo` for the current wasm32 bootstrap and sets
 select a bottle for a different guest architecture. Homebrew's own `bin/brew`
 reads that supported system environment file; `/usr/bin/brew` stays a direct
 symlink to `/home/linuxbrew/.linuxbrew/bin/brew`, with no Kandelo launcher or
-install fallback. The same source preparer emits `wasm64_kandelo` when a future
-bootstrap builder selects wasm64.
+install fallback. The patch recognizes that exact alias/repository pair so
+Homebrew does not derive the forbidden `/usr` prefix from `$0`. The same source
+preparer emits `wasm64_kandelo` when a future bootstrap builder selects wasm64.
 
 The default 768 MiB VFS capacity leaves writable space for real guest Homebrew
 operations; use `--sab-size` and `--max-size` when a specific integration test
@@ -616,12 +619,13 @@ Run the focused source and selection contract with:
 That test prepares the source under multiple builder timezones, compares
 archive and tree identities, checks wasm32 and wasm64 environment selection,
 and proves the system architecture tag overrides conflicting prefix and user
-configuration. It exercises both tag parser round-trips through archived
-Homebrew and loads a pinned real tap formula to verify that Homebrew selects its
-exact `wasm32_kandelo` bottle digest. It also proves that changed upstream patch
-context fails closed. Formula selection is not evidence that the GHCR manifest
-exists or that a bottle downloaded, poured, or ran; those remain trusted
-publisher and guest integration claims.
+configuration. It executes archived Homebrew through a real symlink and proves
+that the guest alias retains the canonical prefix. It also exercises both tag
+parser round-trips and loads a pinned real tap formula to verify that Homebrew
+selects its exact `wasm32_kandelo` bottle digest. It proves that changed upstream
+patch context fails closed. Formula selection is not evidence that the GHCR
+manifest exists or that a bottle downloaded, poured, or ran; those remain
+trusted publisher and guest integration claims.
 
 After building the bootstrap image, verify that Homebrew's canonical archived
 `bin/brew` reads the system environment file rather than relying on a launcher

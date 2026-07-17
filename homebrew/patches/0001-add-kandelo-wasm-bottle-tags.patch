@@ -1,19 +1,25 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Kandelo <noreply@kandelo.invalid>
 Date: Thu, 25 Jun 2026 00:00:00 +0000
-Subject: [PATCH] Add Kandelo Wasm bottle tags
+Subject: [PATCH] Support Kandelo Wasm bottles and the guest brew alias
 
-Teach Homebrew's bottle tag parser about wasm32 and wasm64 as CPU
-architectures, let trusted Kandelo bottle jobs select a wasm bottle tag through
-HOMEBREW_KANDELO_BOTTLE_TAG, and give the Kandelo pseudo-system the Linuxbrew
-prefix and cellar defaults. This lets formula bottle blocks, bottle JSON merge,
-and install-time tag selection round-trip tags such as :wasm32_kandelo and
-:wasm64_kandelo without treating "wasm32_kandelo" as an x86_64 system name.
+Homebrew does not recognize Kandelo's Wasm bottle tags, and invoking the
+canonical Linuxbrew installation through Kandelo's /usr/bin/brew symlink makes
+Homebrew derive the forbidden /usr prefix even after it resolves the real
+repository.
+
+Teach the bottle tag parser about wasm32 and wasm64, select trusted Kandelo
+bottle tags through HOMEBREW_KANDELO_BOTTLE_TAG, give the Kandelo pseudo-system
+the Linuxbrew defaults, and keep the prefix bound to the resolved repository
+for the exact guest alias. Formula bottle metadata can then round-trip tags
+such as :wasm32_kandelo, and both supported brew entry points use the same
+prefix without a wrapper.
 ---
  Library/Homebrew/extend/os/mac/utils/bottles.rb | 4 ++++
  Library/Homebrew/hardware.rb                    | 4 ++++
  Library/Homebrew/utils/bottles.rb               | 15 +++++++++++++--
- 3 files changed, 23 insertions(+), 2 deletions(-)
+ bin/brew                                         | 8 ++++++++
+ 4 files changed, 31 insertions(+), 2 deletions(-)
 
 diff --git a/Library/Homebrew/extend/os/mac/utils/bottles.rb b/Library/Homebrew/extend/os/mac/utils/bottles.rb
 index 0000000000..0000000000 100644
@@ -96,3 +102,19 @@ index 0000000000..0000000000 100644
 +          "/home/linuxbrew/.linuxbrew/Cellar"
 +        elsif linux?
            Homebrew::DEFAULT_LINUX_CELLAR
+diff --git a/bin/brew b/bin/brew
+index 0000000000..0000000000 100755
+--- a/bin/brew
++++ b/bin/brew
+@@ -92,3 +92,11 @@
++# Kandelo exposes the canonical Linuxbrew installation through /usr/bin/brew.
++# Keep the prefix bound to the resolved repository for that exact alias.
++if [[ "${HOMEBREW_BREW_FILE}" = "/usr/bin/brew" &&
++      "${HOMEBREW_REPOSITORY}" = "/home/linuxbrew/.linuxbrew" ]]
++then
++  HOMEBREW_PREFIX="${HOMEBREW_REPOSITORY}"
++fi
++
+ # Try to find a /usr/local HOMEBREW_PREFIX where possible (for macOS x86_64 bottles)
+ if [[ -L "/usr/local/bin/brew" && ! -L "${HOMEBREW_PREFIX}/Cellar" ]]
+ then

@@ -82,7 +82,7 @@ const metadata = {
   prefix: "/home/linuxbrew/.linuxbrew",
   kandelo_abi: abi,
   notes: [
-    "The pinned upstream Homebrew tree carries the provenance-bound Kandelo bottle-tag patch.",
+    "The pinned upstream Homebrew tree carries the provenance-bound Kandelo platform patch.",
     "The selected bottle tag is loaded by Homebrew itself from /etc/homebrew/brew.env.",
     "Kandelo programs match the current ABI and package output contracts.",
   ],

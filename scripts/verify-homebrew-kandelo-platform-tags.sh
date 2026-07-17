@@ -14,6 +14,7 @@ OVERLAY_ROOT="$RUN_ROOT/homebrew-overlay"
 
 mkdir -p "$OVERLAY_ROOT/Library/Homebrew/extend/os/mac/utils"
 mkdir -p "$OVERLAY_ROOT/Library/Homebrew/utils"
+mkdir -p "$OVERLAY_ROOT/bin"
 
 if git -C "$BREW_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git -C "$BREW_REPO" apply --check "$PATCH_FILE"
@@ -25,6 +26,7 @@ cp "$BREW_REPO/Library/Homebrew/hardware.rb" "$OVERLAY_ROOT/Library/Homebrew/har
 cp "$BREW_REPO/Library/Homebrew/extend/os/mac/utils/bottles.rb" \
   "$OVERLAY_ROOT/Library/Homebrew/extend/os/mac/utils/bottles.rb"
 cp "$BREW_REPO/Library/Homebrew/utils/bottles.rb" "$OVERLAY_ROOT/Library/Homebrew/utils/bottles.rb"
+cp "$BREW_REPO/bin/brew" "$OVERLAY_ROOT/bin/brew"
 
 (cd "$OVERLAY_ROOT" && git apply --whitespace=nowarn "$PATCH_FILE")
 

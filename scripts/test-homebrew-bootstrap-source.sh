@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PREPARE="$ROOT/scripts/prepare-homebrew-bootstrap-source.sh"
 PATCH_FILE="$ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
-PATCH_SHA256="38e23e9ca020dbfcd9903e63c3660ce8a93758c51859b2fb112bc8e477528eba"
+PATCH_SHA256="288602a306b7a045b53f57aa83d7da6eecff407a16b0c3f3840e51cd3a91be5e"
 BREW_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_BREW_REPOSITORY:-https://github.com/Homebrew/brew.git}"
 BREW_REVISION="21aba0bc7080a75753f01c06d2358ca27706bfeb"
 TAP_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_TAP_REPOSITORY:-https://github.com/Automattic/kandelo-homebrew.git}"
@@ -20,6 +20,7 @@ for tool in git node sha256sum unzip; do
 done
 
 RUN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-homebrew-bootstrap-source.XXXXXX")"
+RUN_ROOT="$(cd "$RUN_ROOT" && pwd -P)"
 cleanup() {
     rm -rf "$RUN_ROOT"
 }
@@ -196,17 +197,58 @@ cat >"$RUN_ROOT/home/.homebrew/brew.env" <<'EOF'
 HOMEBREW_KANDELO_BOTTLE_TAG=wasm64_kandelo
 EOF
 
-# Redirect only the canonical system-file literal in this extracted test copy.
-# The real guest uses /etc/homebrew/brew.env at the same two call sites.
-node --input-type=module - "$EXTRACT_ROOT/bin/brew" "$SYSTEM_ENV_ROOT/brew.env" <<'NODE'
+# Redirect the guest-only absolute paths in this extracted test copy. The real
+# guest uses the same system environment file, alias, and canonical prefix.
+ALIAS_BREW="$RUN_ROOT/alias/usr/bin/brew"
+node --input-type=module - \
+    "$EXTRACT_ROOT/bin/brew" "$SYSTEM_ENV_ROOT/brew.env" \
+    "$ALIAS_BREW" "$EXTRACT_ROOT" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
-const [brewPath, systemEnvPath] = process.argv.slice(2);
+const [brewPath, systemEnvPath, aliasPath, prefixPath] = process.argv.slice(2);
 const source = readFileSync(brewPath, "utf8");
-const literal = '"/etc/homebrew/brew.env"';
-const callSites = source.split(literal).length - 1;
-if (callSites !== 2) throw new Error(`expected two system brew.env call sites, got ${callSites}`);
-writeFileSync(brewPath, source.replaceAll(literal, JSON.stringify(systemEnvPath)));
+const replacements = [
+  ['"/etc/homebrew/brew.env"', JSON.stringify(systemEnvPath), 2, "system brew.env"],
+  ['"/usr/bin/brew"', JSON.stringify(aliasPath), 1, "guest brew alias"],
+  ['"/home/linuxbrew/.linuxbrew"', JSON.stringify(prefixPath), 1, "guest Homebrew prefix"],
+];
+let patched = source;
+for (const [literal, replacement, expected, label] of replacements) {
+  const callSites = patched.split(literal).length - 1;
+  if (callSites !== expected) throw new Error(`expected ${expected} ${label} call sites, got ${callSites}`);
+  patched = patched.replaceAll(literal, replacement);
+}
+writeFileSync(brewPath, patched);
 NODE
+
+mkdir -p "$(dirname "$ALIAS_BREW")"
+ln -s "$EXTRACT_ROOT/bin/brew" "$ALIAS_BREW"
+ALIAS_PREFIX="$(
+    HOME="$RUN_ROOT/home" HOMEBREW_TEMP="$RUN_ROOT/homebrew-temp" \
+        "$ALIAS_BREW" --prefix
+)"
+if [ "$ALIAS_PREFIX" != "$EXTRACT_ROOT" ]; then
+    echo "test-homebrew-bootstrap-source: alias resolved prefix $ALIAS_PREFIX, expected $EXTRACT_ROOT" >&2
+    exit 1
+fi
+ALIAS_REPOSITORY="$(
+    HOME="$RUN_ROOT/home" HOMEBREW_TEMP="$RUN_ROOT/homebrew-temp" \
+        "$ALIAS_BREW" --repository
+)"
+if [ "$ALIAS_REPOSITORY" != "$EXTRACT_ROOT" ]; then
+    echo "test-homebrew-bootstrap-source: alias resolved repository $ALIAS_REPOSITORY, expected $EXTRACT_ROOT" >&2
+    exit 1
+fi
+ALIAS_VERSION="$(
+    HOME="$RUN_ROOT/home" HOMEBREW_TEMP="$RUN_ROOT/homebrew-temp" \
+        "$ALIAS_BREW" --version
+)"
+case "$ALIAS_VERSION" in
+    Homebrew*) ;;
+    *)
+        echo "test-homebrew-bootstrap-source: alias did not start Homebrew: $ALIAS_VERSION" >&2
+        exit 1
+        ;;
+esac
 
 TAP_ROOT="$EXTRACT_ROOT/Library/Taps/automattic/homebrew-kandelo-homebrew"
 git init -q "$TAP_ROOT"

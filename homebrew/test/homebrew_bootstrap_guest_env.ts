@@ -131,6 +131,17 @@ async function main(): Promise<void> {
       `Homebrew did not load the system bottle tag: stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`,
     );
   }
+  const canonicalPrefix = "/home/linuxbrew/.linuxbrew";
+  if (
+    !stderr.includes(`HOMEBREW_BREW_FILE=${options.brewScript}`) ||
+    !stderr.includes(`HOMEBREW_PREFIX=${canonicalPrefix}`) ||
+    !stderr.includes(`HOMEBREW_REPOSITORY=${canonicalPrefix}`)
+  ) {
+    throw new Error(
+      `Homebrew did not retain its canonical path identities: ` +
+        `brewScript=${options.brewScript}; stderr=${JSON.stringify(stderr)}`,
+    );
+  }
   const hasVersion = /^Homebrew [^\r\n]+$/m.test(stdout);
   const reserveFailure = hostDiagnostics.find((message) =>
     message.includes("(FORK_SAVE_BUFFER_SIZE) are reserved"),
