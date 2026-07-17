@@ -635,8 +635,11 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    private GHCR package fails at the explicit visibility boundary; automation
    never changes package visibility.
 4. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
-   revalidates the build handoff and receipt, fetches the full Kandelo ABI
-   runtime graph, builds the VFS image, and runs the runtime and browser gates.
+   revalidates the build handoff and receipt, fetches only the declared Kandelo
+   platform runtime for Formula tests, builds the VFS image, and runs the
+   runtime and browser gates. The `hello` browser-gallery smoke separately
+   prepares the supported interactive-demo graph; packages supplied by the
+   external software gallery are not verifier prerequisites.
    Its isolated Homebrew process receives the same selected-tap trust as the
    build process, sealed into a readable, immutable build-local XDG store and
    using the same publisher-only redundant-persistence exception.
@@ -1068,7 +1071,13 @@ The `hello` package bytes in this smoke come from the current Homebrew bottle:
 from the local build in dry-run mode, or from the anonymously fetched GHCR blob
 in write mode. The browser demo still resolves Kandelo-owned ABI platform
 prerequisites such as `node.wasm` and `node-vfs.vfs.zst` through Kandelo's normal
-binary release. Those platform assets are not the migrated package under test.
+binary release. Generic Formula and dependency-bearing VFS verification fetches
+only the base command set and `rootfs`; its focused Vite input does not scan the
+interactive demo. The `hello` gallery smoke additionally materializes the
+supported interactive graph through `./run.sh --fetch-only prepare-browser`,
+which excludes packages whose demos are provided by the external software
+gallery. Those platform assets are not the migrated package under test, and
+unrelated gallery packages are not bottle verification prerequisites.
 
 ## Browser Gallery Assets
 

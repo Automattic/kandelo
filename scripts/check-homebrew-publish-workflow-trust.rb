@@ -18,10 +18,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "82af04e56e14d7f442936ad969398dd9e7e7f3e6107337d2eb5d043346eebab8"
-PUBLISHER_BUILD_DIGEST = "5f21b972ae4f3c4f815b86cf742f263dbde440237872c6ee895bccce5075e79b"
+PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
 PUBLISHER_INDEX_DIGEST = "143ba3916705d3c76ef337ddf89def07ff3515400a95827eb14042a12ab31cd8"
-PUBLISHER_VERIFY_DIGEST = "b4b3f97cd701941a372555fcc8f0e6b73a63c62766d679cf27c4622817192d11"
+PUBLISHER_VERIFY_DIGEST = "bcfa7ac97f98094084c80c026e1adff3ffdb7fbb41830f923b50f6fb3e4e28c4"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
@@ -1543,13 +1543,13 @@ def check_publisher(workflow)
   artifact_index = bottle_builder.index("mapfile -t bottle_jsons")
   check(teardown_index && artifact_index && teardown_index < artifact_index,
         "reviewed bottle builder reads artifacts before Formula process teardown")
-  runtime_step = named_step(build_steps, "Materialize shell-script runtime for Formula tests")
+  runtime_step = named_step(build_steps, "Materialize Formula test platform runtime")
   check(runtime_step.keys.sort == %w[name run shell] && runtime_step["shell"] == "bash",
         "publisher Formula test runtime mapping changed")
   runtime_run = runtime_step.fetch("run")
   [
     "bash scripts/dev-shell.sh bash -c", 'host="$(rustc -vV | sed -n "s/^host: //p")"',
-    "for package in dash coreutils grep sed", 'cargo run --release -p xtask --target "$host" --quiet --',
+    "for package in dash coreutils grep sed rootfs", 'cargo run --release -p xtask --target "$host" --quiet --',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"', '--fetch-only resolve "$package"',
     'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
   ].each do |fragment|
@@ -1982,10 +1982,34 @@ def check_publisher(workflow)
     check(index_verify_run.include?(fragment),
           "publisher exact public Homebrew index verification lacks #{fragment}")
   end
-  full_fetch_run = named_step(verify_steps,
-                              "Fetch the complete ABI browser runtime graph").fetch("run")
-  check(full_fetch_run.include?("bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only"),
-        "publisher browser verification does not fetch the complete ABI runtime graph")
+  browser_demo_step = named_step(verify_steps,
+                                 "Prepare the supported interactive browser demo graph")
+  check(browser_demo_step.keys.sort == %w[if name run shell] &&
+        browser_demo_step["shell"] == "bash" &&
+        browser_demo_step["if"] == "${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}",
+        "publisher interactive browser graph is not scoped to hello/wasm32")
+  browser_demo_run = browser_demo_step.fetch("run")
+  check(browser_demo_run.include?("bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser"),
+        "publisher hello verification does not prepare the supported fetch-only browser graph")
+  check(!browser_demo_run.include?("scripts/fetch-binaries.sh"),
+        "publisher hello verification bypasses the supported browser package selection")
+  verifier_runtime_step = named_step(verify_steps,
+                                     "Materialize Formula verification platform runtime")
+  check(verifier_runtime_step.keys.sort == %w[name run shell] &&
+        verifier_runtime_step["shell"] == "bash",
+        "publisher Formula verification runtime mapping changed")
+  verifier_runtime_run = verifier_runtime_step.fetch("run")
+  [
+    "bash scripts/dev-shell.sh bash -c", 'host="$(rustc -vV | sed -n "s/^host: //p")"',
+    "for package in dash coreutils grep sed rootfs",
+    'cargo run --release -p xtask --target "$host" --quiet --',
+    "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"',
+    '--fetch-only resolve "$package"',
+    'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
+  ].each do |fragment|
+    check(verifier_runtime_run.include?(fragment),
+          "publisher Formula verification runtime lacks #{fragment}")
+  end
   sidecar_run = named_step(verify_steps,
                            "Generate sidecars from the selected bottle").fetch("run")
   check(sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"') &&
@@ -2081,7 +2105,7 @@ def check_publisher(workflow)
     'brewfile_candidate="$GITHUB_WORKSPACE/tap-postverify/$brewfile_rel"',
     '[ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ]',
     'brewfile="$(realpath "$brewfile_candidate")"',
-    'base_image="$(bash scripts/resolve-binary.sh rootfs.vfs)"',
+    'base_image="$(bash scripts/resolve-binary.sh programs/rootfs.vfs)"',
     'platform base did not resolve from the Kandelo package registry tree',
     'kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"',
     'verification kernel did not resolve from the exact worktree build',
@@ -2091,6 +2115,8 @@ def check_publisher(workflow)
     '--base-origin kandelo-package-registry', '--kernel-origin worktree-build',
     '--formula "$selected_formula"',
     '[ "$(jq -er \'.image.sha256\' "$node_evidence")" = "$image_sha256" ]',
+    'export KANDELO_BROWSER_DEMO_INPUTS="homebrew-vfs-test"',
+    'KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS"',
     'bash ../../scripts/dev-shell.sh env',
     'test/homebrew-brewfile-vfs.spec.ts',
     '.stats.expected == 1', '.stats.unexpected == 0',
@@ -2568,12 +2594,12 @@ def self_test(publisher, maintenance)
     },
     "Formula test runtime source fallback" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
-                               "Materialize shell-script runtime for Formula tests")
+                               "Materialize Formula test platform runtime")
       step["run"] = step.fetch("run").sub("--fetch-only resolve", "resolve")
     },
     "Formula test runtime cache-link materialization bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
-                               "Materialize shell-script runtime for Formula tests")
+                               "Materialize Formula test platform runtime")
       step["run"] = step.fetch("run").sub(
         'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"', "true"
       )
@@ -2598,18 +2624,18 @@ def self_test(publisher, maintenance)
     },
     "Formula test runtime architecture drift" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
-                               "Materialize shell-script runtime for Formula tests")
+                               "Materialize Formula test platform runtime")
       step["run"] = step.fetch("run").sub("--arch wasm32", "--arch wasm64")
     },
     "Formula test runtime package drift" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
-                               "Materialize shell-script runtime for Formula tests")
-      step["run"] = step.fetch("run").sub("dash coreutils grep sed", "dash")
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub("dash coreutils grep sed rootfs", "dash")
     },
     "Formula test runtime ordering bypass" => lambda { |w|
       steps = w.fetch("jobs").fetch("build-and-test").fetch("steps")
       runtime_index = steps.index do |step|
-        step["name"] == "Materialize shell-script runtime for Formula tests"
+        step["name"] == "Materialize Formula test platform runtime"
       end
       formula_index = steps.index do |step|
         step["name"] == "Build and test Homebrew bottle without publisher credentials"
@@ -2802,9 +2828,13 @@ def self_test(publisher, maintenance)
       )
       step["run"] = step.fetch("run").sub("validate-publication-receipt", "true")
     },
-    "partial browser runtime fetch" => lambda { |w|
-      step = mutate_named_step(w, "verify-bottle", "Fetch the complete ABI browser runtime graph")
-      step["run"] = step.fetch("run").sub("scripts/fetch-binaries.sh --fetch-only", "scripts/fetch-node.sh")
+    "unbounded browser registry fetch" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
+      )
+      step["run"] = step.fetch("run").sub(
+        "./run.sh --fetch-only prepare-browser", "bash scripts/fetch-binaries.sh --fetch-only"
+      )
     },
     "sidecar forbidden roots dropped at dev-shell boundary" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle", "Generate sidecars from the selected bottle")
@@ -2865,6 +2895,14 @@ def self_test(publisher, maintenance)
         w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
       )
       step["run"] = step.fetch("run").sub(".image.sha256", ".image.artifact")
+    },
+    "dependency-bearing VFS scans interactive demo inputs" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").gsub(
+        /^\s*(?:export )?KANDELO_BROWSER_DEMO_INPUTS=.*\n/, ""
+      )
     },
     "unvalidated publication handoff" => lambda { |w|
       step = mutate_named_step(w, "finalize-tap",

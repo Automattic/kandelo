@@ -542,7 +542,7 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
 
-      - name: Materialize shell-script runtime for Formula tests
+      - name: Materialize Formula test platform runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -554,7 +554,7 @@ jobs:
               echo "unable to resolve the Rust host target" >&2
               exit 2
             }
-            for package in dash coreutils grep sed; do
+            for package in dash coreutils grep sed rootfs; do
               cargo run --release -p xtask --target "$host" --quiet -- \
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
@@ -1753,11 +1753,32 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
-      - name: Fetch the complete ABI browser runtime graph
+      - name: Prepare the supported interactive browser demo graph
+        if: ${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}
         shell: bash
         run: |
           cd kandelo
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
+          bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
+
+      - name: Materialize Formula verification platform runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kandelo
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            host="$(rustc -vV | sed -n "s/^host: //p")"
+            [ -n "$host" ] || {
+              echo "unable to resolve the Rust host target" >&2
+              exit 2
+            }
+            for package in dash coreutils grep sed rootfs; do
+              cargo run --release -p xtask --target "$host" --quiet -- \
+                build-deps --arch wasm32 \
+                --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
+            done
+            bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"
+          '
 
       - name: Compose only reconstructed bottle metadata into the fresh tap
         shell: bash
@@ -2392,7 +2413,7 @@ jobs:
             *) echo "::error::Brewfile resolved outside the exact tap checkout"; exit 2 ;;
           esac
 
-          base_image="$(bash scripts/resolve-binary.sh rootfs.vfs)"
+          base_image="$(bash scripts/resolve-binary.sh programs/rootfs.vfs)"
           kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"
           case "$base_image" in
             "$PWD/binaries"/*) ;;
@@ -2458,6 +2479,7 @@ jobs:
             export KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$executable"
             export KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$argv_json"
             export KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$expected_stdout"
+            export KANDELO_BROWSER_DEMO_INPUTS="homebrew-vfs-test"
             bash ../../scripts/dev-shell.sh env \
               KANDELO_PLAYWRIGHT_PORT="$KANDELO_PLAYWRIGHT_PORT" \
               KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL" \
@@ -2466,6 +2488,7 @@ jobs:
               KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE" \
               KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON" \
               KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT" \
+              KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS" \
               npx playwright test test/homebrew-brewfile-vfs.spec.ts \
                 --project=chromium --reporter=json >"$playwright_report"
           )
