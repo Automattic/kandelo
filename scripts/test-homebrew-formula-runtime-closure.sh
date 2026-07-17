@@ -53,6 +53,102 @@ jq -e '
   ]
 ' <<<"$declarations" >/dev/null
 
+cat >"$TAP_ROOT/Formula/host-plan.rb" <<'RUBY'
+class HostPlan < Formula
+  depends_on "python@3.14" => :build
+  depends_on "automattic/kandelo-homebrew/required"
+  depends_on "wabt" => [:build, :test]
+  depends_on "automattic/kandelo-homebrew/same-build" => :build
+  depends_on "check" => :test
+  depends_on "automattic/kandelo-homebrew/recommended" => :recommended
+  depends_on "third-party/tools/optional-tool" => :optional
+  depends_on "external-optional" => :optional
+  depends_on "automattic/kandelo-homebrew/optional" => :optional
+end
+RUBY
+host_plan="$(ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew host-plan --host-dependencies-json)"
+jq -e '
+  keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap"] and
+  .schema == 2 and
+  .tap == "automattic/kandelo-homebrew" and
+  .formula == "host-plan" and
+  .full_name == "automattic/kandelo-homebrew/host-plan" and
+  .build == ["python@3.14", "wabt"] and
+  .build_and_test == ["check", "python@3.14", "wabt"] and
+  .runtime_and_test == ["check", "wabt"]
+' <<<"$host_plan" >/dev/null
+[ "$host_plan" = "$(ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew host-plan --host-dependencies-json)" ]
+
+cat >"$TAP_ROOT/Formula/third-party-plan.rb" <<'RUBY'
+class ThirdPartyPlan < Formula
+  depends_on "acme/tools/required"
+  depends_on "wabt" => [:build, :test]
+end
+RUBY
+third_party_plan="$(ruby "$resolver" "$TAP_ROOT" Acme/tools third-party-plan --host-dependencies-json)"
+jq -e '
+  .tap == "acme/tools" and
+  .full_name == "acme/tools/third-party-plan" and
+  .build == ["wabt"] and
+  .build_and_test == ["wabt"] and
+  .runtime_and_test == ["wabt"]
+' <<<"$third_party_plan" >/dev/null
+
+cat >"$TAP_ROOT/Formula/external-runtime.rb" <<'RUBY'
+class ExternalRuntime < Formula
+  depends_on "zstd"
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew external-runtime \
+  --host-dependencies-json >"$TMP_ROOT/external-runtime.out" 2>"$TMP_ROOT/external-runtime.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: treated external runtime dependency as a host dependency" >&2
+  exit 1
+fi
+grep -F 'external runtime dependency must be same-tap, not a host Formula: "zstd"' \
+  "$TMP_ROOT/external-runtime.err" >/dev/null
+
+cat >"$TAP_ROOT/Formula/external-recommended.rb" <<'RUBY'
+class ExternalRecommended < Formula
+  depends_on "pkgconf" => :recommended
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew external-recommended \
+  --host-dependencies-json >"$TMP_ROOT/external-recommended.out" \
+  2>"$TMP_ROOT/external-recommended.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: treated recommended runtime dependency as a host dependency" >&2
+  exit 1
+fi
+grep -F 'external runtime dependency must be same-tap, not a host Formula: "pkgconf"' \
+  "$TMP_ROOT/external-recommended.err" >/dev/null
+
+cat >"$TAP_ROOT/Formula/external-tap.rb" <<'RUBY'
+class ExternalTap < Formula
+  depends_on "third-party/tools/cmake" => :build
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew external-tap \
+  --host-dependencies-json >"$TMP_ROOT/external-tap.out" 2>"$TMP_ROOT/external-tap.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted external tap-qualified host dependency" >&2
+  exit 1
+fi
+grep -F 'external tap-qualified host dependency is unsupported: "third-party/tools/cmake"' \
+  "$TMP_ROOT/external-tap.err" >/dev/null
+ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew external-tap \
+  --declarations-json >/dev/null
+
+cat >"$TAP_ROOT/Formula/invalid-host.rb" <<'RUBY'
+class InvalidHost < Formula
+  depends_on "InvalidHost" => :test
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew invalid-host \
+  --host-dependencies-json >"$TMP_ROOT/invalid-host.out" 2>"$TMP_ROOT/invalid-host.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted malformed host dependency" >&2
+  exit 1
+fi
+grep -F 'invalid host Formula dependency: "InvalidHost"' \
+  "$TMP_ROOT/invalid-host.err" >/dev/null
+
 if ruby "$resolver" "$TAP_ROOT" Automattic/kandelo-homebrew root \
   >"$TMP_ROOT/external.out" 2>"$TMP_ROOT/external.err"; then
   echo "test-homebrew-formula-runtime-closure.sh: accepted selected external dependency" >&2

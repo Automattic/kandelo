@@ -369,7 +369,10 @@ def capture(args: argparse.Namespace) -> None:
             dependency.get("full_name"), f"runtime_dependencies[{index}].full_name"
         ).lower()
         if not full_name.startswith(prefix):
-            continue
+            fail(
+                f"target receipt runtime dependency {full_name!r} is outside "
+                f"selected tap {normalized_tap}"
+            )
         name = full_name.removeprefix(prefix)
         require_string(name, f"runtime dependency name {name!r}", FORMULA_NAME)
         if full_name in selected:

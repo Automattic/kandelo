@@ -1,0 +1,222 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kandelo <noreply@kandelo.invalid>
+Date: Fri, 17 Jul 2026 00:00:00 +0000
+Subject: [PATCH] Support the isolated Kandelo bottle publisher
+
+Kandelo's bottle publisher gives Formula evaluation root-owned, read-only
+Homebrew source and trust state. Homebrew normally requires its repository to
+be writable and persists a redundant per-item trust entry for every fully
+qualified install, even when the containing tap is already trusted. Both
+behaviors reject the publisher's intentionally immutable state before a
+Formula can run.
+
+The publisher also preinstalls reviewed dependencies before asking Homebrew to
+build the selected Formula with `--ignore-dependencies`. That flag must prevent
+Homebrew from recursively installing native packages into the target Cellar,
+but the build child currently interprets it by dropping every dependency from
+Superenv. Direct build tools such as WABT and Binaryen then disappear from the
+Formula PATH even though their sealed proxy kegs are installed.
+
+Homebrew on Linux also injects native sandbox dependencies such as Bubblewrap
+into every Formula. Those host dependencies must remain available to native
+Homebrew, but recording them in a Kandelo target bottle would make guest
+Homebrew treat Linux executables as WebAssembly runtime dependencies.
+
+Exclude only the Homebrew repository from the preinstall writability diagnostic
+and skip automatic per-item persistence when the tap already grants the same
+authority. When the isolated publisher supplies its protected static plan,
+populate the build child's environment with only the matching direct native
+build dependencies. Do not recursively expand them. Every selected dependency
+must already be present as a proxy keg, so a missing proxy still fails closed.
+Use that same protected plan to suppress Linux global dependencies only for the
+identified Kandelo target Formula. Other Formulae and the separate native
+Homebrew prefix retain normal Linux dependency resolution.
+While that plan is active, also prevent `brew test` from automatically pouring
+Bubblewrap into the target Cellar. A usable host Bubblewrap can still be used,
+but an unavailable sandbox cannot bypass the publisher's reviewed native plan.
+Every other required Homebrew path remains subject to the normal writability
+check, and explicit `brew trust` operations still use the normal mutation path and fail
+against an immutable publisher store.
+
+This patch is applied only to the publisher's temporary Homebrew overlay. Guest
+Homebrew keeps its normal repository, trust, and dependency behavior.
+---
+ Library/Homebrew/build.rb                   | 24 +++++++++++++++++++++++-
+ Library/Homebrew/diagnostic.rb              |  1 +
+ Library/Homebrew/extend/os/linux/formula.rb |  4 ++++
+ Library/Homebrew/extend/os/linux/sandbox.rb |  4 +++-
+ Library/Homebrew/kandelo_publisher.rb       | 61 +++++++++++++++++++++++++++++
+ Library/Homebrew/trust.rb                   |  1 +
+ 6 files changed, 93 insertions(+), 2 deletions(-)
+
+diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb
+index be833176c0..465cf63438 100644
+--- a/Library/Homebrew/build.rb
++++ b/Library/Homebrew/build.rb
+@@ -10,6 +10,7 @@ old_trap = trap("INT") { exit! 130 }
+
+ require_relative "global"
+ require "build_options"
++require "kandelo_publisher"
+ require "keg"
+ require "extend/ENV"
+ require "fcntl"
+@@ -43,12 +44,33 @@ class Build
+     @deps = T.let([], T::Array[Dependency])
+     @reqs = T.let(Requirements.new, Requirements)
+
+-    return if args.ignore_dependencies?
++    if args.ignore_dependencies?
++      @deps = publisher_build_dependencies if args.build_bottle?
++      return
++    end
+
+     @deps = expand_deps
+     @reqs = expand_reqs
+   end
+
++  sig { returns(T::Array[Dependency]) }
++  def publisher_build_dependencies
++    plan = KandeloPublisher.dependency_plan(formula)
++    return [] if plan.nil?
++
++    tap_prefix = "#{plan.fetch("tap")}/"
++    direct_native_build_dependencies = formula.deps.select do |dependency|
++      dependency.build? && !dependency.implicit? && !dependency.name.start_with?(tap_prefix)
++    end
++    expected_names = plan.fetch("build")
++    actual_names = direct_native_build_dependencies.map(&:name).sort
++    if actual_names != expected_names
++      raise "Kandelo publisher dependency plan differs from direct native build dependencies"
++    end
++
++    direct_native_build_dependencies.sort_by(&:name)
++  end
++
+   sig { params(dependent: Formula).returns(BuildOptions) }
+   def effective_build_options_for(dependent)
+     args  = dependent.build.used_options
+diff --git a/Library/Homebrew/diagnostic.rb b/Library/Homebrew/diagnostic.rb
+index f493938c3a..66926e07ea 100644
+--- a/Library/Homebrew/diagnostic.rb
++++ b/Library/Homebrew/diagnostic.rb
+@@ -408,6 +408,7 @@ module Homebrew
+       def check_access_directories
+         not_writable_dirs =
+           Keg.must_be_writable_directories.select(&:exist?)
++             .reject { |dir| dir == HOMEBREW_REPOSITORY }
+              .reject(&:writable?)
+         return if not_writable_dirs.empty?
+
+diff --git a/Library/Homebrew/extend/os/linux/formula.rb b/Library/Homebrew/extend/os/linux/formula.rb
+index dbe848ba51..ea87cff22e 100644
+--- a/Library/Homebrew/extend/os/linux/formula.rb
++++ b/Library/Homebrew/extend/os/linux/formula.rb
+@@ -1,6 +1,8 @@
+ # typed: strict
+ # frozen_string_literal: true
+
++require "kandelo_publisher"
++
+ module OS
+   module Linux
+     module Formula
+@@ -28,6 +30,8 @@ module OS
+
+       sig { params(spec: SoftwareSpec).void }
+       def add_global_deps_to_spec(spec)
++        return if KandeloPublisher.dependency_plan(self, require_match: false)
++
+         @global_deps ||= T.let(nil, T.nilable(T::Array[Dependency]))
+         @global_deps ||= begin
+           dependency_collector = spec.dependency_collector
+diff --git a/Library/Homebrew/extend/os/linux/sandbox.rb b/Library/Homebrew/extend/os/linux/sandbox.rb
+index ba803bc756..06d1671285 100644
+--- a/Library/Homebrew/extend/os/linux/sandbox.rb
++++ b/Library/Homebrew/extend/os/linux/sandbox.rb
+@@ -5,2 +5,3 @@ require "fileutils"
+ require "env_config"
++require "kandelo_publisher"
+ require "system_command"
+@@ -170,3 +171,4 @@ module OS
+           return if bubblewrap_executable
+-
++          return if KandeloPublisher.active?
++
+           begin
+diff --git a/Library/Homebrew/kandelo_publisher.rb b/Library/Homebrew/kandelo_publisher.rb
+new file mode 100644
+index 0000000000..86f9dec415
+--- /dev/null
++++ b/Library/Homebrew/kandelo_publisher.rb
+@@ -0,0 +1,61 @@
++# typed: false
++# frozen_string_literal: true
++
++require "json"
++
++# Publisher-only validation for the root-owned dependency plan. This file is
++# added only to Kandelo's temporary Homebrew overlay.
++module KandeloPublisher
++  PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"
++  MAX_PLAN_BYTES = 65_536
++  PLAN_KEYS = %w[build build_and_test formula full_name runtime_and_test schema tap].freeze
++  DEPENDENCY_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
++
++  def self.active?
++    !dependency_plan(nil).nil?
++  end
++
++  def self.dependency_plan(formula = nil, require_match: true)
++    plan_path = HOMEBREW_PREFIX/PLAN_FILENAME
++    return unless plan_path.exist?
++
++    stat = plan_path.stat
++    prefix_stat = HOMEBREW_PREFIX.stat
++    protected_plan = plan_path.file? && !plan_path.symlink? && stat.uid == prefix_stat.uid &&
++                     (stat.mode & 0777) == 0444 && stat.nlink == 1 && stat.size <= MAX_PLAN_BYTES
++    raise "Kandelo publisher dependency plan is not a protected regular file" unless protected_plan
++
++    contents = plan_path.binread
++    if contents.bytesize > MAX_PLAN_BYTES
++      raise "Kandelo publisher dependency plan exceeds the size limit"
++    end
++
++    plan = JSON.parse(contents)
++    identified_plan = plan.is_a?(Hash) && plan.keys.sort == PLAN_KEYS && plan["schema"] == 2 &&
++                      plan["tap"].is_a?(String) && plan["formula"].is_a?(String) &&
++                      plan["full_name"] == "#{plan["tap"]}/#{plan["formula"]}"
++    raise "Kandelo publisher dependency plan has an invalid identity" unless identified_plan
++
++    arrays = %w[build build_and_test runtime_and_test].to_h do |key|
++      value = plan[key]
++      valid_names = value.is_a?(Array) && value == value.sort.uniq &&
++                    value.all? { |name| name.is_a?(String) && DEPENDENCY_NAME.match?(name) }
++      raise "Kandelo publisher dependency plan contains invalid #{key} names" unless valid_names
++
++      [key, value]
++    end
++    consistent_subsets = (arrays.fetch("build") - arrays.fetch("build_and_test")).empty? &&
++                         (arrays.fetch("runtime_and_test") - arrays.fetch("build_and_test")).empty?
++    raise "Kandelo publisher dependency plan subsets are inconsistent" unless consistent_subsets
++
++    return plan if formula.nil?
++
++    matches_formula = plan["formula"] == formula.name && plan["full_name"] == formula.full_name
++    return plan if matches_formula
++    return unless require_match
++
++    raise "Kandelo publisher dependency plan does not identify this Formula"
++  rescue JSON::ParserError => e
++    raise "Kandelo publisher dependency plan is invalid JSON: #{e.message}"
++  end
++end
+diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb
+index 07c9edd42b..3de1d9be03 100644
+--- a/Library/Homebrew/trust.rb
++++ b/Library/Homebrew/trust.rb
+@@ -121,3 +121,4 @@ module Homebrew
+         item_name = ::Utils.name_from_full_name(name)
+         tap = Tap.fetch(tap_name)
++        next if trusted_tap?(tap)
+         next if tap.official?

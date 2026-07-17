@@ -7,13 +7,15 @@ require "ripper"
 require "set"
 
 unless ARGV.length.between?(3, 4)
-  abort "usage: homebrew-formula-runtime-closure.rb <tap-root> <owner/repo> <formula> [wasm32|wasm64|--direct|--declarations-json]"
+  abort "usage: homebrew-formula-runtime-closure.rb <tap-root> <owner/tap> <formula> " \
+        "[wasm32|wasm64|--direct|--declarations-json|--host-dependencies-json]"
 end
 
 MAX_FORMULA_BYTES = 1_048_576
 MAX_DEPENDENCIES = 128
 FORMULA_NAME = /\A[a-z0-9][a-z0-9._-]*\z/
-TAP_REPOSITORY = /\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
+HOST_FORMULA_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
+TAP_NAME = /\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
 DEPENDENCY_LINE = /\A  depends_on "([^"]+)"(?: => (:[a-z]+|\[(?::[a-z]+)(?:, :[a-z]+)*\]))?\n\z/
 ALLOWED_TAGS = Set[:build, :test, :optional, :recommended].freeze
 ALLOWED_CLASS_COMMANDS = Set[
@@ -50,14 +52,15 @@ EXCLUDED_TAG_SETS = Set[
   Set[:build, :test],
 ].freeze
 
-tap_input, repository, target, output_mode = ARGV
-abort "invalid tap repository: #{repository}" unless TAP_REPOSITORY.match?(repository)
+tap_input, requested_tap_name, target, output_mode = ARGV
+abort "invalid tap name: #{requested_tap_name}" unless TAP_NAME.match?(requested_tap_name)
 abort "invalid target Formula: #{target}" unless FORMULA_NAME.match?(target)
-abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[wasm32 wasm64 --direct --declarations-json].include?(output_mode)
+abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[wasm32 wasm64 --direct --declarations-json --host-dependencies-json].include?(output_mode)
 direct_only = output_mode == "--direct"
 declarations_only = output_mode == "--declarations-json"
-output_arch = direct_only || declarations_only ? nil : output_mode
-tap_name = repository.downcase
+host_dependencies_only = output_mode == "--host-dependencies-json"
+output_arch = direct_only || declarations_only || host_dependencies_only ? nil : output_mode
+tap_name = requested_tap_name.downcase
 tap_owner, tap_repository = tap_name.split("/", 2)
 support_require_line = %(require (Tap.fetch("#{tap_owner}", "#{tap_repository}").path/"Kandelo/formula_support/kandelo_formula_support").to_s\n)
 allowed_top_level_requires = Set[
@@ -613,6 +616,7 @@ end
 
 formula_bottles = {}
 formula_runtime_declarations = {}
+formula_dependency_declarations = {}
 parse_formula = lambda do |name|
   abort "invalid dependency Formula: #{name}" unless FORMULA_NAME.match?(name)
   path = tap_root/"Formula"/"#{name}.rb"
@@ -793,6 +797,9 @@ parse_formula = lambda do |name|
   end
   formula_bottles[name] = bottle
   formula_runtime_declarations[name] = runtime_declarations
+  formula_dependency_declarations[name] = declarations.map do |_line_number, dependency, tags|
+    {"name" => dependency, "tags" => tags}
+  end
   dependencies
 end
 
@@ -824,7 +831,7 @@ visit_formula = lambda do |name|
 end
 
 visit_formula.call(target)
-unless declarations_only
+unless declarations_only || host_dependencies_only
   unsupported_external = formula_runtime_declarations.flat_map do |formula, declarations|
     declarations.filter_map do |declaration|
       next if declaration.fetch("same_tap") || declaration.fetch("kind") == "optional"
@@ -846,6 +853,50 @@ if declarations_only
     "formula" => target,
     "full_name" => "#{tap_name}/#{target}",
     "dependencies" => records,
+  })
+elsif host_dependencies_only
+  build = Set.new
+  build_and_test = Set.new
+  runtime_and_test = Set.new
+  prefix = "#{tap_name}/"
+  formula_dependency_declarations.fetch(target).each do |declaration|
+    dependency = declaration.fetch("name")
+    tags = declaration.fetch("tags")
+    next if tags == Set[:optional]
+
+    if dependency.downcase.start_with?(prefix) && dependency != dependency.downcase
+      abort "same-tap dependency must be normalized lowercase: #{dependency.inspect}"
+    end
+    if dependency.start_with?(prefix)
+      child = dependency.delete_prefix(prefix)
+      abort "invalid same-tap dependency: #{dependency.inspect}" unless FORMULA_NAME.match?(child)
+      next
+    end
+    if dependency.include?("/")
+      abort "external tap-qualified host dependency is unsupported: #{dependency.inspect}"
+    end
+    unless HOST_FORMULA_NAME.match?(dependency)
+      abort "invalid host Formula dependency: #{dependency.inspect}"
+    end
+    if tags.empty? || tags == Set[:recommended]
+      abort "external runtime dependency must be same-tap, not a host Formula: #{dependency.inspect}"
+    end
+
+    build.add(dependency) if tags.include?(:build)
+    build_and_test.add(dependency)
+    runtime_and_test.add(dependency) unless tags == Set[:build]
+    if build_and_test.length > MAX_DEPENDENCIES
+      abort "host Formula dependency plan exceeds #{MAX_DEPENDENCIES} entries"
+    end
+  end
+  puts JSON.generate({
+    "schema" => 2,
+    "tap" => tap_name,
+    "formula" => target,
+    "full_name" => "#{tap_name}/#{target}",
+    "build" => build.sort,
+    "build_and_test" => build_and_test.sort,
+    "runtime_and_test" => runtime_and_test.sort,
   })
 elsif direct_only
   puts target_direct_dependencies.map { |name| "#{tap_name}/#{name}" }.sort

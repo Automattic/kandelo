@@ -95,7 +95,7 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
-PUBLISHER_TRUST_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-publisher-skip-redundant-item-trust.patch"
+PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 mkdir -p "$OUT_DIR/bottles"
 if [ -n "$BUILD_USER" ]; then
@@ -108,19 +108,48 @@ if [ -n "$BUILD_USER" ]; then
 else
   WORK_DIR="$(mktemp -d)"
 fi
+NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"
+NATIVE_BASE="$(cd "$NATIVE_BASE" && pwd -P)"
+NATIVE_BUILD_ROOT="$NATIVE_BASE"
+if [ -n "$BUILD_USER" ]; then
+  chmod 0711 "$NATIVE_BASE"
+fi
 CONTROL_DIR="$(mktemp -d "$OUT_DIR/.control.XXXXXX")"
 chmod 0700 "$CONTROL_DIR"
 
 cleanup() {
-  homebrew_patched_launcher_cleanup
-  rm -rf "$CONTROL_DIR"
-  if [ -n "$BUILD_USER" ] && [ -n "${KANDELO_HOMEBREW_SUDO_BIN:-}" ]; then
-    "$KANDELO_HOMEBREW_SUDO_BIN" rm -rf "$WORK_DIR" >/dev/null 2>&1 || true
+  local original_status="${1:-0}" launcher_status=0
+  if homebrew_patched_launcher_cleanup; then
+    :
   else
-    rm -rf "$WORK_DIR"
+    launcher_status="$?"
   fi
+  rm -rf "$CONTROL_DIR"
+  if [ "$launcher_status" -ne 0 ]; then
+    echo "homebrew-bottle-build.sh: preserving temporary Homebrew realms after cleanup failure" >&2
+  elif [ -n "$BUILD_USER" ] && [ -n "${KANDELO_HOMEBREW_SUDO_BIN:-}" ]; then
+    "$KANDELO_HOMEBREW_SUDO_BIN" rm -rf "$NATIVE_BASE" "$WORK_DIR" >/dev/null 2>&1 || true
+  else
+    rm -rf "$NATIVE_BASE" "$WORK_DIR"
+  fi
+  [ "$original_status" -eq 0 ] || return "$original_status"
+  return "$launcher_status"
 }
-trap cleanup EXIT
+
+cleanup_and_exit() {
+  local original_status="$1" cleanup_status=0
+  trap - EXIT
+  if cleanup "$original_status"; then
+    :
+  else
+    cleanup_status="$?"
+  fi
+  if [ "$original_status" -ne 0 ]; then
+    exit "$original_status"
+  fi
+  exit "$cleanup_status"
+}
+trap 'cleanup_and_exit $?' EXIT
 
 # Formula dependencies are evaluated separately from the formula named on the
 # command line. Trust the reviewed tap as a whole, but keep every Brew call in
@@ -130,10 +159,19 @@ trap cleanup EXIT
 export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
 chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
+unset HOMEBREW_RELOCATE_BUILD_PREFIX
 
 homebrew_patched_launcher_prepare \
-  "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_TRUST_PATCH_FILE"
+  "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_ISOLATION_PATCH_FILE"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
+NATIVE_PREFIX="$NATIVE_BASE/p"
+NATIVE_CACHE="$NATIVE_BASE/c"
+NATIVE_TEMP="$NATIVE_BASE/t"
+NATIVE_CONFIG="$NATIVE_BASE/g"
+NATIVE_HOME="$NATIVE_BASE/h"
+homebrew_patched_launcher_prepare_native_prefix \
+  "$NATIVE_PREFIX" "$NATIVE_CACHE" "$NATIVE_TEMP" "$NATIVE_CONFIG" \
+  "$NATIVE_HOME"
 
 BOTTLE_TAG="${ARCH}_kandelo"
 
@@ -159,20 +197,78 @@ run_brew_for_kandelo_bottles() {
 }
 
 INSTALL_LOG="$CONTROL_DIR/brew-install.log"
+NATIVE_INSTALL_LOG="$CONTROL_DIR/native-brew-install.log"
+HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"
+HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"
 DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"
 BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"
 DEPENDENCY_POUR_LIST="$CONTROL_DIR/same-tap-pour-dependencies.txt"
+TARGET_CELLAR_BEFORE_TEST="$CONTROL_DIR/target-cellar-before-test.txt"
+TARGET_CELLAR_AFTER_TEST="$CONTROL_DIR/target-cellar-after-test.txt"
 DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
 : >"$INSTALL_LOG"
+: >"$NATIVE_INSTALL_LOG"
+: >"$HOST_DEPENDENCY_PLAN"
+: >"$HOST_DEPENDENCY_LIST"
 : >"$DEPENDENCY_LIST"
 : >"$BUILD_TEST_DEPENDENCY_LIST"
 : >"$DEPENDENCY_POUR_LIST"
+: >"$TARGET_CELLAR_BEFORE_TEST"
+: >"$TARGET_CELLAR_AFTER_TEST"
 for attempt in 1 2 3; do
   : >"$CONTROL_DIR/brew-install-attempt-${attempt}.log"
 done
-chmod 0600 "$INSTALL_LOG" "$DEPENDENCY_LIST" \
+chmod 0600 "$INSTALL_LOG" "$NATIVE_INSTALL_LOG" \
+  "$HOST_DEPENDENCY_PLAN" "$HOST_DEPENDENCY_LIST" "$DEPENDENCY_LIST" \
   "$BUILD_TEST_DEPENDENCY_LIST" "$DEPENDENCY_POUR_LIST" \
+  "$TARGET_CELLAR_BEFORE_TEST" "$TARGET_CELLAR_AFTER_TEST" \
   "$CONTROL_DIR"/brew-install-attempt-*.log
+
+validate_dependency_list() {
+  local path="$1" label="$2" bytes count
+  bytes="$(wc -c <"$path" | tr -d '[:space:]')"
+  count="$(awk 'NF { count++ } END { print count + 0 }' "$path")"
+  if [ "$bytes" -gt 65536 ] || [ "$count" -gt 128 ]; then
+    echo "homebrew-bottle-build.sh: $label exceeds the dependency limit" >&2
+    exit 2
+  fi
+}
+
+# Derive the native host plan without executing Formula Ruby. This root-owned,
+# bounded list is the only input allowed to select core Formulae later under the
+# isolated native launcher.
+EXPECTED_PLAN_TAP="$TAP_NAME"
+ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+  "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json \
+  >"$HOST_DEPENDENCY_PLAN"
+[ "$(wc -c <"$HOST_DEPENDENCY_PLAN" | tr -d '[:space:]')" -le 65536 ] || {
+  echo "homebrew-bottle-build.sh: host dependency plan exceeds the size limit" >&2
+  exit 2
+}
+jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" '
+  keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap"] and
+  .schema == 2 and
+  .tap == $tap and
+  .formula == $formula and
+  .full_name == ($tap + "/" + $formula) and
+  (.build | type == "array") and
+  (.build_and_test | type == "array") and
+  (.runtime_and_test | type == "array") and
+  (.build == (.build | sort | unique)) and
+  (.build_and_test == (.build_and_test | sort | unique)) and
+  (.runtime_and_test == (.runtime_and_test | sort | unique)) and
+  ((.build - .build_and_test) | length) == 0 and
+  ((.runtime_and_test - .build_and_test) | length) == 0 and
+  all(.build[]; type == "string" and test("^[a-z0-9][a-z0-9@+_.-]*$")) and
+  all(.build_and_test[]; type == "string" and test("^[a-z0-9][a-z0-9@+_.-]*$")) and
+  all(.runtime_and_test[]; type == "string" and test("^[a-z0-9][a-z0-9@+_.-]*$"))
+' "$HOST_DEPENDENCY_PLAN" >/dev/null || {
+  echo "homebrew-bottle-build.sh: invalid static host dependency plan" >&2
+  exit 2
+}
+jq -r '.build_and_test[]' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"
+validate_dependency_list "$HOST_DEPENDENCY_LIST" "host dependency list"
+homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 
@@ -206,13 +302,62 @@ elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   exit 2
 fi
 
+run_brew_logged() {
+  local status
+  set +e
+  "$@" 2>&1 | tee -a "$INSTALL_LOG"
+  status="${PIPESTATUS[0]}"
+  set -e
+  return "$status"
+}
+
+run_native_brew_logged() {
+  local status
+  set +e
+  homebrew_patched_launcher_run_native "$@" 2>&1 | tee -a "$NATIVE_INSTALL_LOG"
+  status="${PIPESTATUS[0]}"
+  set -e
+  return "$status"
+}
+
+# Install each reviewed direct core tool in its own dependency-resolving command.
+# A combined command can hold a top-level lock for a tool such as pkgconf while
+# resolving another Formula whose dependency closure needs the same tool.
+# Separate commands let each full closure finish before the next top-level lock
+# is taken.
+# Only the reviewed direct names are exposed to target Homebrew after the native
+# tree has been sealed read-only.
+mapfile -t native_dependencies <"$HOST_DEPENDENCY_LIST"
+for dependency in "${native_dependencies[@]}"; do
+  run_native_brew_logged install --as-dependency --formula \
+    "homebrew/core/$dependency"
+done
+for dependency in "${native_dependencies[@]}"; do
+  native_info="$CONTROL_DIR/native-info-$dependency.json"
+  : >"$native_info"
+  chmod 0600 "$native_info"
+  homebrew_patched_launcher_run_native info --json=v2 \
+    "homebrew/core/$dependency" >"$native_info" 2>>"$NATIVE_INSTALL_LOG"
+  jq -e --arg name "$dependency" '
+    (.formulae | length) == 1 and
+    .formulae[0].name == $name and
+    .formulae[0].full_name == $name and
+    .formulae[0].tap == "homebrew/core" and
+    (.formulae[0].installed | type == "array" and length > 0)
+  ' "$native_info" >/dev/null || {
+    echo "homebrew-bottle-build.sh: native Homebrew selected a non-canonical core Formula: $dependency" >&2
+    exit 1
+  }
+done
+run_native_brew_logged missing
+
+# Finish every native Homebrew command before target Formula Ruby is evaluated.
+# The later dependency query sees the native tree read-only and cannot plant
+# configuration or state for a subsequent native invocation.
 # `brew install --build-bottle` forces only the selected formula to build from
-# source. Homebrew otherwise permits each dependency to fall back to a source
-# build when its bottle is missing. Preserve the runtime-only same-tap closure
-# for published provenance, but separately resolve build and test dependencies
-# so every same-tap Formula is force-poured before Homebrew resolves native host
-# tools. Topological order plus --ignore-dependencies prevents those explicit
-# installs from recursively taking Homebrew's source fallback path.
+# source. Preserve the runtime-only same-tap closure for published provenance,
+# but separately resolve build and test dependencies so every same-tap Formula
+# is force-poured before the selected target is built.
 "$BREW_BIN" deps --topological --full-name --formula "$FORMULA_REF" |
   awk -v prefix="$TAP_NAME/" '
     index(tolower($0), prefix) == 1 && !seen[tolower($0)]++ { print tolower($0) }
@@ -225,29 +370,30 @@ fi
 awk 'NF && !seen[$0]++ { print }' \
   "$DEPENDENCY_LIST" "$BUILD_TEST_DEPENDENCY_LIST" >"$DEPENDENCY_POUR_LIST"
 
-validate_same_tap_dependency_list() {
-  local path="$1" label="$2" bytes count
-  bytes="$(wc -c <"$path" | tr -d '[:space:]')"
-  count="$(awk 'NF { count++ } END { print count + 0 }' "$path")"
-  if [ "$bytes" -gt 65536 ] || [ "$count" -gt 128 ]; then
-    echo "homebrew-bottle-build.sh: $label exceeds the same-tap dependency limit" >&2
+validate_dependency_list "$DEPENDENCY_LIST" "runtime dependency list"
+validate_dependency_list \
+  "$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"
+validate_dependency_list "$DEPENDENCY_POUR_LIST" "dependency pour list"
+
+while IFS= read -r dependency; do
+  [ -n "$dependency" ] || continue
+  if [ "$dependency" = "$FORMULA" ] || \
+     grep -Fx "$TAP_NAME/$dependency" "$DEPENDENCY_POUR_LIST" >/dev/null; then
+    echo "homebrew-bottle-build.sh: native dependency collides with a target Formula: $dependency" >&2
     exit 2
   fi
-}
+done <"$HOST_DEPENDENCY_LIST"
 
-validate_same_tap_dependency_list "$DEPENDENCY_LIST" "runtime dependency list"
-validate_same_tap_dependency_list \
-  "$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"
-validate_same_tap_dependency_list "$DEPENDENCY_POUR_LIST" "dependency pour list"
-
-run_brew_logged() {
-  local status
-  set +e
-  "$@" 2>&1 | tee -a "$INSTALL_LOG"
-  status="${PIPESTATUS[0]}"
-  set -e
-  return "$status"
-}
+homebrew_patched_launcher_seal_native_prefix
+for dependency in "${native_dependencies[@]}"; do
+  homebrew_patched_launcher_bridge_native_formula "$dependency"
+  # Plain `list` constructs a Keg; `list --versions` only enumerates rack
+  # entries and would accept the invalid rack-symlink shape this guards.
+  if ! "$BREW_BIN" list --formula "$dependency" >/dev/null; then
+    echo "homebrew-bottle-build.sh: target Homebrew rejected the native Formula proxy keg: $dependency" >&2
+    exit 1
+  fi
+done
 
 while IFS= read -r dependency; do
   [ -n "$dependency" ] || continue
@@ -264,23 +410,14 @@ while IFS= read -r dependency; do
     --formula "$dependency"
 done <"$DEPENDENCY_POUR_LIST"
 
-# The exact same-tap build and test closure is now installed, so ask Homebrew to
-# complete the selected Formula's remaining declared dependency closure normally.
-# Keep the Kandelo bottle tag unset here: native tools such as Binaryen, WABT,
-# and certificate bundles must resolve as host packages, while the already
-# installed same-tap Formulae remain the reviewed Kandelo bottles above.
-run_brew_logged "$BREW_BIN" install \
-  --only-dependencies \
-  --include-test \
-  --formula "$FORMULA_REF"
-
 brew_install_build_bottle() {
   local attempt status log
   status=1
   for attempt in 1 2 3; do
     log="$CONTROL_DIR/brew-install-attempt-${attempt}.log"
     set +e
-    "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF" 2>&1 |
+    "$BREW_BIN" install --build-bottle --ignore-dependencies \
+      --formula "$FORMULA_REF" 2>&1 |
       tee "$log" |
       tee -a "$INSTALL_LOG"
     status="${PIPESTATUS[0]}"
@@ -301,9 +438,18 @@ brew_install_build_bottle() {
 (
   cd "$WORK_DIR"
   brew_install_build_bottle
+  homebrew_patched_launcher_snapshot_target_cellar_layout \
+    >"$TARGET_CELLAR_BEFORE_TEST"
   "$BREW_BIN" test "$FORMULA_REF"
   run_brew_for_kandelo_bottles "$BREW_BIN" bottle \
     --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+  homebrew_patched_launcher_snapshot_target_cellar_layout \
+    >"$TARGET_CELLAR_AFTER_TEST"
+  if ! cmp -s "$TARGET_CELLAR_BEFORE_TEST" "$TARGET_CELLAR_AFTER_TEST"; then
+    echo "homebrew-bottle-build.sh: Formula test or bottle creation changed the planned target Cellar" >&2
+    diff -u "$TARGET_CELLAR_BEFORE_TEST" "$TARGET_CELLAR_AFTER_TEST" >&2 || true
+    exit 1
+  fi
 )
 
 TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
@@ -352,6 +498,7 @@ BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
   printf 'BOTTLE_ARCHIVE=%q\n' "$BOTTLE_ARCHIVE"
   printf 'DEPENDENCY_PROVENANCE=%q\n' "$DEPENDENCY_PROVENANCE"
   printf 'BOTTLE_ROOT_URL=%q\n' "$BOTTLE_ROOT_URL"
+  printf 'NATIVE_BUILD_ROOT=%q\n' "$NATIVE_BUILD_ROOT"
 } >"$OUT_DIR/build.env"
 
 echo "homebrew-bottle-build.sh: built $BOTTLE_ARCHIVE"

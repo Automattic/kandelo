@@ -18,7 +18,7 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "82af04e56e14d7f442936ad969398dd9e7e7f3e6107337d2eb5d043346eebab8"
-PUBLISHER_BUILD_DIGEST = "f873732408b33ab5c412a0a297e543021eb8bb1c2ab6a5c97644fc1fd320c78c"
+PUBLISHER_BUILD_DIGEST = "5f21b972ae4f3c4f815b86cf742f263dbde440237872c6ee895bccce5075e79b"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
 PUBLISHER_INDEX_DIGEST = "143ba3916705d3c76ef337ddf89def07ff3515400a95827eb14042a12ab31cd8"
 PUBLISHER_VERIFY_DIGEST = "b4b3f97cd701941a372555fcc8f0e6b73a63c62766d679cf27c4622817192d11"
@@ -1006,9 +1006,15 @@ def check_publisher(workflow)
     '"$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR"',
     "CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER",
     'mktemp -d "$SHARED_TEMP/homebrew-build.XXXXXX"',
+    'NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"',
+    'NATIVE_BASE="$(cd "$NATIVE_BASE" && pwd -P)"',
+    'NATIVE_BUILD_ROOT="$NATIVE_BASE"',
     'CONTROL_DIR="$(mktemp -d "$OUT_DIR/.control.XXXXXX")"',
     'chmod 0700 "$CONTROL_DIR"',
     'INSTALL_LOG="$CONTROL_DIR/brew-install.log"',
+    'NATIVE_INSTALL_LOG="$CONTROL_DIR/native-brew-install.log"',
+    'HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"',
+    'HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"',
     'DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"',
     'BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"',
     'DEPENDENCY_POUR_LIST="$CONTROL_DIR/same-tap-pour-dependencies.txt"',
@@ -1019,53 +1025,85 @@ def check_publisher(workflow)
     'HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG"',
     'KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG"',
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install',
-    'run_brew_logged "$BREW_BIN" install',
     "--include-build --include-test",
-    'validate_same_tap_dependency_list "$DEPENDENCY_LIST"',
+    'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
+    'validate_dependency_list "$HOST_DEPENDENCY_LIST" "host dependency list"',
+    'validate_dependency_list "$DEPENDENCY_LIST"',
     '"$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"',
-    'validate_same_tap_dependency_list "$DEPENDENCY_POUR_LIST"',
+    'validate_dependency_list "$DEPENDENCY_POUR_LIST"',
     'done <"$DEPENDENCY_POUR_LIST"',
+    '"$BREW_BIN" list --formula "$dependency" >/dev/null',
+    'target Homebrew rejected the native Formula proxy keg',
     '--expected-dependencies "$DEPENDENCY_LIST"',
-    "--only-dependencies",
-    "--include-test",
+    '"$BREW_BIN" install --build-bottle --ignore-dependencies',
+    'homebrew_patched_launcher_snapshot_target_cellar_layout',
+    'Formula test or bottle creation changed the planned target Cellar',
     'run_brew_for_kandelo_bottles "$BREW_BIN" bottle',
+    "printf 'NATIVE_BUILD_ROOT=%q\\n' \"$NATIVE_BUILD_ROOT\"",
   ].each do |fragment|
     check(bottle_builder.include?(fragment), "reviewed bottle builder lacks #{fragment}")
   end
-  dependency_pour_index = bottle_builder.index(
-    'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install'
+  host_plan_index = bottle_builder.index("--host-dependencies-json")
+  native_install_index = bottle_builder.index(
+    "run_native_brew_logged install --as-dependency --formula"
   )
+  native_info_index = bottle_builder.index(
+    "homebrew_patched_launcher_run_native info --json=v2"
+  )
+  native_missing_index = bottle_builder.index("run_native_brew_logged missing")
   runtime_dependency_index = bottle_builder.index(
     'deps --topological --full-name --formula "$FORMULA_REF"'
   )
   build_test_dependency_index = bottle_builder.index(
     'deps --topological --full-name --include-build --include-test'
   )
-  test_dependency_index = bottle_builder.index('run_brew_logged "$BREW_BIN" install')
-  target_build_index = bottle_builder.index("brew_install_build_bottle")
-  check(runtime_dependency_index && build_test_dependency_index && dependency_pour_index &&
-        test_dependency_index && target_build_index &&
+  native_seal_index = bottle_builder.index("homebrew_patched_launcher_seal_native_prefix")
+  native_bridge_index = bottle_builder.index("homebrew_patched_launcher_bridge_native_formula")
+  native_proxy_index = bottle_builder.index(
+    '"$BREW_BIN" list --formula "$dependency"'
+  )
+  dependency_pour_index = bottle_builder.index(
+    'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install'
+  )
+  target_build_index = bottle_builder.index("  brew_install_build_bottle")
+  check(host_plan_index && native_install_index && native_info_index &&
+        native_missing_index && runtime_dependency_index && build_test_dependency_index &&
+        native_seal_index && native_bridge_index && native_proxy_index &&
+        dependency_pour_index &&
+        target_build_index &&
+        host_plan_index < native_install_index &&
+        native_install_index < native_info_index &&
+        native_info_index < native_missing_index &&
+        native_missing_index < runtime_dependency_index &&
         runtime_dependency_index < build_test_dependency_index &&
-        build_test_dependency_index < dependency_pour_index &&
-        dependency_pour_index < test_dependency_index &&
-        test_dependency_index < target_build_index,
-        "reviewed bottle builder installs same-tap or host dependencies outside their phases")
+        build_test_dependency_index < native_seal_index &&
+        native_seal_index < native_bridge_index &&
+        native_bridge_index < native_proxy_index &&
+        native_proxy_index < dependency_pour_index &&
+        dependency_pour_index < target_build_index,
+        "reviewed bottle builder mixes native and target dependency phases")
+  check(!bottle_builder.include?("--only-dependencies"),
+        "reviewed bottle builder lets target Homebrew resolve dependencies recursively")
+  check(bottle_builder.include?("--force-bottle \\\n    --as-dependency \\\n    --ignore-dependencies") &&
+        bottle_builder.include?(
+          '"$BREW_BIN" install --build-bottle --ignore-dependencies'
+        ), "reviewed bottle builder permits target dependency recursion")
   bottle_verifier = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-verify-poured-bottle.sh")
   )
-  publisher_trust_patch_path =
-    "homebrew/patches/0002-publisher-skip-redundant-item-trust.patch"
-  publisher_trust_patch = File.read(File.join(REPO_ROOT, publisher_trust_patch_path))
+  publisher_isolation_patch_path =
+    "homebrew/patches/0002-support-isolated-publisher.patch"
+  publisher_isolation_patch = File.read(File.join(REPO_ROOT, publisher_isolation_patch_path))
   platform_patch = File.read(
     File.join(REPO_ROOT, "homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch")
   )
   [bottle_builder, bottle_verifier].each do |formula_runner|
     check(formula_runner.include?(
-      "PUBLISHER_TRUST_PATCH_FILE=\"$KANDELO_ROOT/#{publisher_trust_patch_path}\""
+      "PUBLISHER_ISOLATION_PATCH_FILE=\"$KANDELO_ROOT/#{publisher_isolation_patch_path}\""
     ) &&
           formula_runner.include?(
-            '"$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_TRUST_PATCH_FILE"'
-          ), "Formula runner does not apply the publisher-only trust patch")
+            '"$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_ISOLATION_PATCH_FILE"'
+          ), "Formula runner does not apply the publisher-only isolation patch")
     check(formula_runner.include?('"$BREW_BIN" trust --tap "$TAP_NAME"'),
           "Formula runner does not trust the reviewed tap")
     check(!formula_runner.include?("trust --formula") &&
@@ -1077,38 +1115,129 @@ def check_publisher(workflow)
     isolate_index = formula_runner.index("homebrew_patched_launcher_isolate")
     check(seed_index && isolate_index && seed_index < isolate_index,
           "Formula runner does not seed locked Bundler groups before isolation")
+    [
+      'NATIVE_PREFIX="$NATIVE_BASE/p"',
+      'NATIVE_CACHE="$NATIVE_BASE/c"',
+      'NATIVE_TEMP="$NATIVE_BASE/t"',
+      'NATIVE_CONFIG="$NATIVE_BASE/g"',
+      'NATIVE_HOME="$NATIVE_BASE/h"',
+      'unset HOMEBREW_RELOCATE_BUILD_PREFIX',
+      "homebrew_patched_launcher_prepare_native_prefix",
+      'NATIVE_INSTALL_LOG="$CONTROL_DIR/',
+      'HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"',
+      'HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"',
+      'EXPECTED_PLAN_TAP="$TAP_NAME"',
+      '"$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json',
+      '"homebrew/core/$dependency"',
+      "run_native_brew_logged install --as-dependency --formula",
+      'homebrew_patched_launcher_run_native info --json=v2',
+      '.formulae[0].name == $name',
+      '.formulae[0].full_name == $name',
+      '.formulae[0].tap == "homebrew/core"',
+      '(.formulae[0].installed | type == "array" and length > 0)',
+      "run_native_brew_logged missing",
+      "homebrew_patched_launcher_seal_native_prefix",
+      'homebrew_patched_launcher_bridge_native_formula "$dependency"',
+      '"$BREW_BIN" list --formula "$dependency" >/dev/null',
+      'homebrew_patched_launcher_run_native "$@" 2>&1 | tee -a "$NATIVE_INSTALL_LOG"',
+      '>"$native_info" 2>>"$NATIVE_INSTALL_LOG"',
+      '--install-log "$INSTALL_LOG"',
+      'rm -rf "$NATIVE_BASE" "$WORK_DIR"',
+      'cleanup_and_exit() {',
+      'trap \'cleanup_and_exit $?\' EXIT',
+      'if homebrew_patched_launcher_cleanup; then',
+      'preserving temporary Homebrew realms after cleanup failure',
+      '[ "$original_status" -eq 0 ] || return "$original_status"',
+      'exit "$cleanup_status"',
+    ].each do |fragment|
+      check(formula_runner.include?(fragment),
+            "Formula runner native/target realm contract lacks #{fragment}")
+    end
+    sequential_native_install = <<~'SHELL'.chomp
+      for dependency in "${native_dependencies[@]}"; do
+        run_native_brew_logged install --as-dependency --formula \
+          "homebrew/core/$dependency"
+      done
+    SHELL
+    check(formula_runner.include?(sequential_native_install) &&
+          !formula_runner.include?("native_formula_refs"),
+          "Formula runner combines native tools under conflicting top-level locks")
+    check(formula_runner.scan(/>\s*"\$HOST_DEPENDENCY_LIST"/).length == 2,
+          "Formula runner has more than one authority for its native dependency plan")
+    check(!formula_runner.include?(
+            "run_native_brew_logged install --as-dependency --ignore-dependencies"
+          ), "Formula runner suppresses native Homebrew's transitive dependency closure")
+    check(!formula_runner.include?(
+            '"$TAP_ROOT" "$TAP_REPOSITORY" "$FORMULA" --host-dependencies-json'
+          ), "Formula runner conflates a third-party repository with its canonical tap name")
+    check(!formula_runner.include?('--install-log "$NATIVE_INSTALL_LOG"'),
+          "Formula runner includes native Homebrew output in target provenance")
+    check(!formula_runner.match?(/run_brew_logged[^\n]*homebrew\/core/),
+          "Formula runner installs native core Formulae in the target realm")
+    check(formula_runner.scan('chmod 0711 "$NATIVE_BASE"').length == 1 &&
+          formula_runner.include?("if [ -n \"\$BUILD_USER\" ]; then\n" \
+                                  "  chmod 0711 \"\$NATIVE_BASE\"\nfi"),
+          "Formula runner exposes its native parent outside isolated CI")
+    check(formula_runner.scan('NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"').length == 1,
+          "Formula runner does not use exactly one bounded native prefix")
   end
   [
+    "diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb",
+    'require "kandelo_publisher"',
+    "diff --git a/Library/Homebrew/kandelo_publisher.rb b/Library/Homebrew/kandelo_publisher.rb",
+    "module KandeloPublisher",
+    "def self.active?",
+    "def self.dependency_plan(formula = nil, require_match: true)",
+    'PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"',
+    "plan_path = HOMEBREW_PREFIX/PLAN_FILENAME",
+    "plan = KandeloPublisher.dependency_plan(formula)",
+    "@deps = publisher_build_dependencies if args.build_bottle?",
+    "dependency.build? && !dependency.implicit?",
+    "direct_native_build_dependencies.sort_by(&:name)",
+    "diff --git a/Library/Homebrew/extend/os/linux/formula.rb b/Library/Homebrew/extend/os/linux/formula.rb",
+    "return if KandeloPublisher.dependency_plan(self, require_match: false)",
+    "diff --git a/Library/Homebrew/extend/os/linux/sandbox.rb b/Library/Homebrew/extend/os/linux/sandbox.rb",
+    "return if KandeloPublisher.active?",
     "diff --git a/Library/Homebrew/diagnostic.rb b/Library/Homebrew/diagnostic.rb",
     ".reject { |dir| dir == HOMEBREW_REPOSITORY }",
     "diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb",
     "next if trusted_tap?(tap)",
-    "Explicit `brew trust` operations still use the normal mutation path",
-    "applied only to\nthe publisher's temporary Homebrew overlay",
+    "explicit `brew trust` operations still use the normal mutation path",
+    "applied only to the publisher's temporary Homebrew overlay",
   ].each do |fragment|
-    check(publisher_trust_patch.include?(fragment),
-          "publisher-only trust patch lacks #{fragment}")
+    check(publisher_isolation_patch.include?(fragment),
+          "publisher-only isolation patch lacks #{fragment}")
   end
   check(!platform_patch.include?("dir == HOMEBREW_REPOSITORY"),
         "guest Homebrew platform patch skips repository writability")
   check(!platform_patch.include?("trusted_tap?(tap)"),
         "guest Homebrew platform patch includes publisher trust behavior")
+  check(!platform_patch.include?("KandeloPublisher") &&
+        !platform_patch.include?("add_global_deps_to_spec"),
+        "guest Homebrew platform patch suppresses Linux global dependencies")
   bootstrap_builder = File.read(File.join(REPO_ROOT, "scripts/build-homebrew-bootstrap.sh"))
-  check(!bootstrap_builder.include?(publisher_trust_patch_path),
-        "guest Homebrew bootstrap applies the publisher-only trust patch")
+  check(!bootstrap_builder.include?(publisher_isolation_patch_path),
+        "guest Homebrew bootstrap applies the publisher-only isolation patch")
   [
+    'NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"',
     'DEPENDENCY_LIST="$CONTROL_DIR/dependencies.txt"',
     'TEST_DEPENDENCY_LIST="$CONTROL_DIR/test-dependencies.txt"',
     'SAME_TAP_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-test-dependencies.txt"',
     'HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"',
+    'HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"',
+    'NATIVE_INSTALL_LOG="$CONTROL_DIR/native-install.log"',
     'DEPENDENCY_POUR_LIST="$CONTROL_DIR/pour-dependencies.txt"',
     "--include-test",
     'validate_dependency_list "$DEPENDENCY_LIST"',
     '"$SAME_TAP_TEST_DEPENDENCY_LIST" "test dependency list"',
     'validate_dependency_list "$DEPENDENCY_POUR_LIST"',
     'validate_dependency_list "$HOST_DEPENDENCY_LIST"',
+    'jq -r \'.runtime_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
+    'homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"',
     'done <"$DEPENDENCY_POUR_LIST"',
     'done <"$HOST_DEPENDENCY_LIST"',
+    '"$BREW_BIN" list --formula "$dependency" >/dev/null',
+    'target Homebrew rejected the native Formula proxy keg',
     'unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG',
     '--expected-dependencies "$DEPENDENCY_LIST"',
   ].each do |fragment|
@@ -1122,11 +1251,28 @@ def check_publisher(workflow)
   verifier_test_dependency_index = bottle_verifier.index(
     'deps --topological --full-name --include-test'
   )
+  verifier_host_plan_index = bottle_verifier.index("--host-dependencies-json")
+  verifier_plan_stage_index = bottle_verifier.index(
+    'homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"'
+  )
+  verifier_native_install_index = bottle_verifier.index(
+    "run_native_brew_logged install --as-dependency --formula"
+  )
+  verifier_native_info_index = bottle_verifier.index(
+    "homebrew_patched_launcher_run_native info --json=v2"
+  )
+  verifier_native_missing_index = bottle_verifier.index("run_native_brew_logged missing")
+  verifier_native_seal_index = bottle_verifier.index(
+    "homebrew_patched_launcher_seal_native_prefix"
+  )
+  verifier_native_bridge_index = bottle_verifier.index(
+    "homebrew_patched_launcher_bridge_native_formula"
+  )
+  verifier_native_proxy_index = bottle_verifier.index(
+    '"$BREW_BIN" list --formula "$dependency"'
+  )
   verifier_dependency_pour_index = bottle_verifier.index(
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install'
-  )
-  verifier_host_dependency_index = bottle_verifier.index(
-    'run_brew_logged "$BREW_BIN" install'
   )
   verifier_cache_clear_index = bottle_verifier.index(
     'find "$HOMEBREW_CACHE" -mindepth 1 -delete'
@@ -1138,24 +1284,49 @@ def check_publisher(workflow)
   verifier_formula_test_index = bottle_verifier.index(
     'run_brew_logged "$BREW_BIN" test "$FORMULA_REF"'
   )
-  check(verifier_runtime_dependency_index && verifier_test_dependency_index &&
-        verifier_dependency_pour_index && verifier_host_dependency_index &&
+  check(verifier_host_plan_index && verifier_plan_stage_index && verifier_native_install_index &&
+        verifier_native_info_index && verifier_native_missing_index &&
+        verifier_runtime_dependency_index && verifier_test_dependency_index &&
+        verifier_native_seal_index && verifier_native_bridge_index &&
+        verifier_native_proxy_index &&
+        verifier_dependency_pour_index &&
         verifier_cache_clear_index && verifier_target_install_index &&
         verifier_formula_test_index &&
+        verifier_host_plan_index < verifier_plan_stage_index &&
+        verifier_plan_stage_index < verifier_native_install_index &&
+        verifier_native_install_index < verifier_native_info_index &&
+        verifier_native_info_index < verifier_native_missing_index &&
+        verifier_native_missing_index < verifier_runtime_dependency_index &&
         verifier_runtime_dependency_index < verifier_test_dependency_index &&
-        verifier_test_dependency_index < verifier_dependency_pour_index &&
-        verifier_dependency_pour_index < verifier_host_dependency_index &&
-        verifier_host_dependency_index < verifier_cache_clear_index &&
+        verifier_test_dependency_index < verifier_native_seal_index &&
+        verifier_native_seal_index < verifier_native_bridge_index &&
+        verifier_native_bridge_index < verifier_native_proxy_index &&
+        verifier_native_proxy_index < verifier_dependency_pour_index &&
+        verifier_dependency_pour_index < verifier_cache_clear_index &&
         verifier_cache_clear_index < verifier_target_install_index &&
         verifier_target_install_index < verifier_formula_test_index,
-        "reviewed bottle verifier installs test dependencies, target, or test out of order")
+        "reviewed bottle verifier mixes native, target, or test phases")
+  check(bottle_verifier.include?(
+          '--force-bottle --as-dependency --ignore-dependencies --formula "$dependency"'
+        ) && bottle_verifier.include?(
+          '--force-bottle --ignore-dependencies --formula "$FORMULA_REF"'
+        ) && bottle_verifier.include?(
+          'install --force-bottle --ignore-dependencies "$BOTTLE"'
+        ), "reviewed bottle verifier permits target dependency recursion")
   check(!bottle_builder.include?('$WORK_DIR/brew-install'),
         "reviewed bottle builder writes runner control logs through the Formula work directory")
   check(!bottle_builder.match?(/brew[^\n]*bottle[^\n]*(?:--merge|--write)/),
         "reviewed bottle builder lets Formula execution rewrite tap source")
+  check(bottle_verifier.include?("homebrew_patched_launcher_snapshot_target_cellar_layout") &&
+        bottle_verifier.include?("Formula test changed the planned target Cellar"),
+        "reviewed bottle verifier does not reject implicit target Cellar changes")
   launcher = File.read(File.join(REPO_ROOT, "scripts/homebrew-patched-launcher.sh"))
   [
     "systemd-run", "--wait", "--collect", "--pipe",
+    "homebrew_patched_launcher_snapshot_target_cellar_layout",
+    "homebrew-patched-launcher: target Cellar is unavailable",
+    "target Cellar rack is not a real directory",
+    "target Cellar keg is not a real directory",
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
     '"--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo"',
@@ -1188,6 +1359,24 @@ def check_publisher(workflow)
     '.homebrew_gem_groups', '.homebrew_vendor_version',
     'Bundler groups must be unique',
     'cannot seed Bundler groups after isolation',
+    'homebrew_patched_launcher_seal_overlay',
+    'homebrew_patched_launcher_assert_overlay_symlinks_contained',
+    'overlay symlink crosses its worktree',
+    'overlay symlink escapes its worktree',
+    '/usr/bin/realpath -m -s -- "$lexical_input"',
+    '/usr/bin/realpath -- "$link"',
+    'HOMEBREW_PATCHED_OVERLAY_SEAL_STATE="sealing"',
+    'HOMEBREW_PATCHED_OVERLAY_SEAL_STATE="sealed"',
+    'homebrew_patched_launcher_verify_overlay_seal',
+    'homebrew_patched_launcher_restore_overlay_for_cleanup',
+    'homebrew_patched_launcher_worktree_registration_status',
+    'worktree list --porcelain',
+    'HOMEBREW_PATCHED_OVERLAY_SEAL_STATE="cleanup-ready"',
+    '"$HOMEBREW_PATCHED_OVERLAY" -xdev -type f -perm /0111',
+    '-exec /usr/bin/chmod 0444 {} +',
+    'refusing to restore the overlay before Formula process teardown',
+    'Homebrew overlay registration could not be verified; preserving launcher state for retry',
+    'Homebrew overlay removal failed; preserving launcher state for retry',
     'EXTRA_PATCH_FILE',
     'git -C "$HOMEBREW_PATCHED_OVERLAY" apply --check "$extra_patch_file"',
     "-writable -print -quit", "! -readable -o ! -executable", "-prune",
@@ -1196,12 +1385,160 @@ def check_publisher(workflow)
     '-KILL -u "$HOMEBREW_PATCHED_BUILD_UID"',
     "could not inspect Formula build identity processes",
     "Formula build identity still owns live processes",
+    "homebrew_patched_launcher_prepare_native_prefix",
+    "expected PREFIX CACHE TEMP CONFIG HOME",
+    'native_inputs=("$native_prefix" "$native_cache" "$native_temp" "$native_config" "$native_home")',
+    'chmod 0700 "$path"',
+    'HOME="$HOMEBREW_PATCHED_NATIVE_HOME"',
+    '/home/linuxbrew/.linuxbrew/Cellar',
+    'too long for fixed-prefix Linuxbrew bottle relocation',
+    'HOMEBREW_RELOCATE_BUILD_PREFIX=1',
+    '"--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX"',
+    '"--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_CACHE"',
+    '"--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_TEMP"',
+    '"--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_CONFIG"',
+    '"--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_HOME"',
+    '"--property=BindReadOnlyPaths=$work_dir"',
+    '"--property=InaccessiblePaths=$HOMEBREW_PATCHED_PREFIX"',
+    '"--property=InaccessiblePaths=$HOMEBREW_CACHE"',
+    '"--property=InaccessiblePaths=$HOMEBREW_TEMP"',
+    '"--property=InaccessiblePaths=$XDG_CONFIG_HOME"',
+    '"--property=InaccessiblePaths=$build_home"',
+    '"$sudo_bin" /usr/bin/install -o root -g root -m 0500',
+    '/usr/bin/realpath -- "$current"',
+    'homebrew_patched_launcher_seal_native_prefix',
+    '/usr/bin/chown -hR root:root',
+    '-type d -exec /usr/bin/chmod 0555 {} +',
+    "-type f \\\n      -exec /usr/bin/chmod a-w,u-s,g-s {} +",
+    'homebrew_patched_launcher_bridge_native_formula',
+    'homebrew_patched_launcher_remove_native_bridges',
+    'HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES+=("$formula")',
+    'native Formula bridge creation failed; rolling back',
+    'native Formula bridge rollback failed; preserving launcher state for retry',
+    'Formula process teardown failed; preserving launcher state for retry',
+    'return "$teardown_status"',
+    'for protected_bin in chmod chown cp id install ln ls readlink rm stat test; do',
+    '"$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775',
+    '"$(/usr/bin/stat -c \'%u:%g:%a\' "$target_state_root")" = "0:$build_gid:1775"',
+    'target_opt_target="../Cellar/$formula/$native_version"',
+    '"$native_opt_target/." "$target_keg/"',
+    '"$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/cp -R -p',
+    '"$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chown -hR root:root',
+    '"$target_rack" -xdev -type d -exec /usr/bin/chmod 0555 {} +',
+    '[ ! -d "$target_keg" ] || [ -L "$target_keg" ]',
+    'native Formula has a symlink that cannot be safely relocated',
+    '"$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/ln -s',
   ].each do |fragment|
     check(launcher.include?(fragment), "isolated Brew launcher lacks #{fragment}")
   end
+  check(launcher.scan("HOMEBREW_RELOCATE_BUILD_PREFIX=1").length == 2,
+        "isolated Brew launcher does not own both native relocation paths")
+  bridge_registration_index = launcher.index(
+    'HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES+=("$formula")'
+  )
+  bridge_first_mutation_index = launcher.index(
+    '"$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/install -d',
+    bridge_registration_index
+  )
+  bridge_rollback_index = launcher.index(
+    'native Formula bridge creation failed; rolling back',
+    bridge_registration_index
+  )
+  check(bridge_registration_index && bridge_first_mutation_index && bridge_rollback_index &&
+        bridge_registration_index < bridge_first_mutation_index &&
+        bridge_first_mutation_index < bridge_rollback_index,
+        "native Formula proxies are not registered before their first mutation")
+  bridge_cleanup_index = launcher.index("homebrew_patched_launcher_remove_native_bridges()")
+  bridge_cleanup_opt_index = launcher.index('/usr/bin/rm -f --',
+                                             bridge_cleanup_index)
+  bridge_cleanup_rack_index = launcher.index('/usr/bin/rm -rf --',
+                                              bridge_cleanup_index)
+  check(bridge_cleanup_index && bridge_cleanup_opt_index && bridge_cleanup_rack_index &&
+        bridge_cleanup_opt_index < bridge_cleanup_rack_index,
+        "native Formula proxy cleanup does not remove opt before its rack")
+  check(!launcher.include?('ln -s "$native_rack"') &&
+        !launcher.include?('ln -s "$native_opt"'),
+        "native Formula proxy uses a rack symlink that Homebrew rejects as a keg")
+  cleanup_index = launcher.index("homebrew_patched_launcher_cleanup()")
+  teardown_preserve_index = launcher.index(
+    "Formula process teardown failed; preserving launcher state for retry",
+    cleanup_index
+  )
+  cleanup_bridge_index = launcher.index(
+    "if ! homebrew_patched_launcher_remove_native_bridges; then",
+    cleanup_index
+  )
+  cleanup_state_clear_index = launcher.index(
+    'HOMEBREW_PATCHED_SUDO_BIN=""',
+    cleanup_index
+  )
+  check(cleanup_index && teardown_preserve_index && cleanup_bridge_index &&
+        cleanup_state_clear_index && teardown_preserve_index < cleanup_bridge_index &&
+        cleanup_bridge_index < cleanup_state_clear_index,
+        "Formula teardown failure does not preserve launcher state before cleanup")
+  seal_function_index = launcher.index("homebrew_patched_launcher_seal_overlay()")
+  seal_state_index = launcher.index(
+    'HOMEBREW_PATCHED_OVERLAY_SEAL_STATE="sealing"', seal_function_index
+  )
+  seal_mode_index = launcher.index(
+    '-exec /usr/bin/chmod 0555 {} +', seal_state_index
+  )
+  sealed_state_index = launcher.index(
+    'HOMEBREW_PATCHED_OVERLAY_SEAL_STATE="sealed"', seal_mode_index
+  )
+  isolate_index = launcher.index("homebrew_patched_launcher_isolate()")
+  isolate_seal_index = launcher.index(
+    'homebrew_patched_launcher_seal_overlay "$build_user"', isolate_index
+  )
+  isolate_integrity_index = launcher.index(
+    'HOMEBREW_PATCHED_INTEGRITY_SHA256=', isolate_seal_index
+  )
+  check(seal_function_index && seal_state_index && seal_mode_index &&
+        sealed_state_index && isolate_seal_index && isolate_integrity_index &&
+        seal_state_index < seal_mode_index && seal_mode_index < sealed_state_index &&
+        isolate_seal_index < isolate_integrity_index,
+        "Homebrew overlay sealing is not registered before mode changes and integrity capture")
+  cleanup_restore_index = launcher.index(
+    "homebrew_patched_launcher_restore_overlay_for_cleanup", cleanup_index
+  )
+  cleanup_worktree_remove_index = launcher.index(
+    "worktree remove --force", cleanup_restore_index
+  )
+  cleanup_overlay_state_clear_index = launcher.index(
+    'HOMEBREW_PATCHED_OVERLAY_SEAL_STATE=""', cleanup_worktree_remove_index
+  )
+  check(cleanup_restore_index && cleanup_worktree_remove_index &&
+        cleanup_overlay_state_clear_index &&
+        teardown_preserve_index < cleanup_restore_index &&
+        cleanup_restore_index < cleanup_worktree_remove_index &&
+        cleanup_worktree_remove_index < cleanup_overlay_state_clear_index,
+        "Homebrew overlay cleanup does not restore only after teardown and clear after removal")
   check(!launcher.include?('chmod 0660 "$trust_lock"') &&
         !launcher.include?('chown "root:$build_group" "$trust_lock"'),
         "isolated Brew launcher leaves the trust lock writable")
+  native_environment = launcher[/native_preserved_variables=\((.*?)\n  \)/m, 1]
+  check(native_environment &&
+        !native_environment.match?(/KANDELO|HOMEBREW_CACHE|HOMEBREW_TEMP|XDG_CONFIG_HOME|LLVM/),
+        "isolated native Homebrew inherits target-only state or Kandelo controls")
+  native_validation_index = launcher.index('native_inputs=("$native_prefix"')
+  native_overlap_index = launcher.index(
+    "Homebrew state roots must not contain one another"
+  )
+  native_create_index = launcher.index('for path in "${native_roots[@]}"; do')
+  check(native_validation_index && native_overlap_index && native_create_index &&
+        native_validation_index < native_overlap_index &&
+        native_overlap_index < native_create_index,
+        "native Homebrew mutates roots before validating realm separation")
+  [
+    "remaining_bridges=()",
+    'remaining_bridges+=("$formula")',
+    'HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=("${remaining_bridges[@]}")',
+    "if ! homebrew_patched_launcher_remove_native_bridges; then",
+    "native Formula bridges remain; preserving launcher state for retry",
+  ].each do |fragment|
+    check(launcher.include?(fragment),
+          "native bridge cleanup retry contract lacks #{fragment}")
+  end
   teardown_index = bottle_builder.index('homebrew_patched_launcher_teardown "$BUILD_USER"')
   artifact_index = bottle_builder.index("mapfile -t bottle_jsons")
   check(teardown_index && artifact_index && teardown_index < artifact_index,
@@ -1214,8 +1551,23 @@ def check_publisher(workflow)
     "bash scripts/dev-shell.sh bash -c", 'host="$(rustc -vV | sed -n "s/^host: //p")"',
     "for package in dash coreutils grep sed", 'cargo run --release -p xtask --target "$host" --quiet --',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"', '--fetch-only resolve "$package"',
+    'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
   ].each do |fragment|
     check(runtime_run.include?(fragment), "publisher Formula test runtime lacks #{fragment}")
+  end
+  materializer = File.read(File.join(REPO_ROOT, "scripts/materialize-resolver-binaries.sh"))
+  [
+    'cp -aLx -- "$source_dir" "$staged"',
+    '! \\( -type d -o -type f \\)',
+    'find "$source_dir" -xdev -type d -exec chmod 0555 {} +',
+    'find "$source_dir" -xdev -type f -exec chmod 0444 {} +',
+    'original_move_started=1',
+    'mv "$source_dir" "$backup"',
+    'mv "$staged" "$source_dir"',
+    'rollback failed; preserving $transaction',
+  ].each do |fragment|
+    check(materializer.include?(fragment),
+          "publisher Formula runtime materialization lacks #{fragment}")
   end
   check_architecture_aware_sysroot_step(
     named_step(build_steps, "Build Kandelo sysroot"), "publisher build"
@@ -1359,6 +1711,7 @@ def check_publisher(workflow)
         "publisher creates the bottle handoff before revalidating Formula sources")
   [
     'cd "$GITHUB_WORKSPACE/kandelo-postbuild"',
+    '. "$RUNNER_TEMP/homebrew-bottle/build.env"',
     "scripts/homebrew-create-build-handoff.sh", '--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"',
     '--tap-name "$KANDELO_HOMEBREW_TAP_NAME"',
     '--bottle "$BOTTLE_ARCHIVE"', '--bottle-json "$BOTTLE_JSON"',
@@ -1373,6 +1726,7 @@ def check_publisher(workflow)
     '--forbidden-root "$RUNNER_TEMP"',
     '--forbidden-root "$KANDELO_HOMEBREW_SHARED_TEMP"',
     '--forbidden-root "$HOMEBREW_TEMP"',
+    '--forbidden-root "$NATIVE_BUILD_ROOT"',
     '--forbidden-root "/home/$KANDELO_HOMEBREW_BUILD_USER"',
   ])
   compose_child = named_step(
@@ -1437,8 +1791,22 @@ def check_publisher(workflow)
         build_handoff_validator.include?('--expected-abi "$EXPECTED_ABI"') &&
         build_handoff_validator.include?('--expected-arch "$ARCH"') &&
         build_handoff_validator.include?('inspection_args+=(--forbidden-root "$forbidden_root")') &&
+        build_handoff_validator.include?(
+          "bottle receipt runtime dependencies do not match validated dependency provenance"
+        ) &&
         build_handoff_validator.index(inspector_call) < build_handoff_validator.index(output_start),
         "publisher handoff validation does not inspect bottle archives before producing uploader data")
+  dependency_provenance = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-dependency-provenance.py")
+  )
+  [
+    "if not full_name.startswith(prefix):",
+    'f"target receipt runtime dependency {full_name!r} is outside "',
+    'f"selected tap {normalized_tap}"',
+  ].each do |fragment|
+    check(dependency_provenance.include?(fragment),
+          "publisher dependency provenance allows external target receipts: #{fragment}")
+  end
   check(upload_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") } &&
         upload_steps.count { |step| step["uses"] == UPLOAD_ACTION } == 1,
         "credentialed uploader publishes diagnostics")
@@ -1818,7 +2186,7 @@ def check_publisher(workflow)
       stripped if stripped.start_with?("--forbidden-root ")
     end
   end
-  check(forbidden_root_lines.length == 34,
+  check(forbidden_root_lines.length == 35,
         "publisher does not pass the exact trusted forbidden-root set at every archive boundary")
   check(forbidden_root_lines.none? { |line| line.include?("linuxbrew") || line.include?("/opt/") },
         "publisher forbids canonical Homebrew prefix or opt metadata")
@@ -2203,6 +2571,13 @@ def self_test(publisher, maintenance)
                                "Materialize shell-script runtime for Formula tests")
       step["run"] = step.fetch("run").sub("--fetch-only resolve", "resolve")
     },
+    "Formula test runtime cache-link materialization bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize shell-script runtime for Formula tests")
+      step["run"] = step.fetch("run").sub(
+        'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"', "true"
+      )
+    },
     "fork-instrument host tool build bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Build fork-instrument host tool")
       step["run"] = "true"
@@ -2317,6 +2692,12 @@ def self_test(publisher, maintenance)
     "handoff mutable validator reuse" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Create strict bottle data handoff")
       step["run"] = step.fetch("run").sub("kandelo-postbuild", "kandelo")
+    },
+    "native build root handoff scan bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Create strict bottle data handoff")
+      step["run"] = step.fetch("run").sub(
+        '--forbidden-root "$NATIVE_BUILD_ROOT"', '--forbidden-root "/tmp/ignored-native-root"'
+      )
     },
     "OCI child composition before source revalidation" => lambda { |w|
       steps = w.fetch("jobs").fetch("build-and-test").fetch("steps")

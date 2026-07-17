@@ -14,6 +14,103 @@ fail() {
   exit 1
 }
 
+FORMULA_RUNNER_FIXTURE_ROOT="$TMPDIR/formula-runner-root"
+
+make_formula_runner_fixture() {
+  mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/scripts" \
+    "$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches"
+  cp "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+    "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
+    "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$REPO_ROOT/scripts/homebrew-tap-identity.sh" \
+    "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/"
+  : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+  : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-patched-launcher.sh" <<'EOF'
+HOMEBREW_PATCHED_BREW_BIN=""
+HOMEBREW_PATCHED_PREFIX=""
+HOMEBREW_PATCHED_NATIVE_PREFIX=""
+HOMEBREW_PATCHED_NATIVE_HOME=""
+
+homebrew_patched_launcher_prepare() {
+  HOMEBREW_PATCHED_BREW_BIN="$1"
+  HOMEBREW_PATCHED_PREFIX="${FAKE_BREW_PREFIX:?}"
+  mkdir -p "$HOMEBREW_PATCHED_PREFIX/Cellar"
+}
+
+homebrew_patched_launcher_snapshot_target_cellar_layout() {
+  local rack rack_name keg
+  for rack in "$HOMEBREW_PATCHED_PREFIX/Cellar"/*; do
+    [ -e "$rack" ] || [ -L "$rack" ] || continue
+    rack_name="${rack##*/}"
+    printf 'rack:%s\n' "$rack_name"
+    if [ -d "$rack" ] && [ ! -L "$rack" ]; then
+      for keg in "$rack"/*; do
+        [ -e "$keg" ] || [ -L "$keg" ] || continue
+        printf 'keg:%s/%s\n' "$rack_name" "${keg##*/}"
+      done
+    fi
+  done | LC_ALL=C sort
+}
+
+homebrew_patched_launcher_prepare_native_prefix() {
+  HOMEBREW_PATCHED_NATIVE_PREFIX="$1"
+  HOMEBREW_PATCHED_NATIVE_HOME="$5"
+  mkdir -p "$@"
+  if [ -n "${FAKE_NATIVE_PREFIX_CAPTURE:-}" ]; then
+    printf '%s\n' "$HOMEBREW_PATCHED_NATIVE_PREFIX" >"$FAKE_NATIVE_PREFIX_CAPTURE"
+  fi
+  printf 'prepare-native\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+}
+
+homebrew_patched_launcher_stage_dependency_plan() {
+  printf 'stage-dependency-plan\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+}
+
+homebrew_patched_launcher_seed_bundler_groups() {
+  printf 'seed-bundler:%s\n' "$*" >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+}
+
+homebrew_patched_launcher_isolate() {
+  printf 'isolate\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+}
+
+homebrew_patched_launcher_run_native() {
+  HOME="$HOMEBREW_PATCHED_NATIVE_HOME" FAKE_HOMEBREW_REALM=native \
+    FAKE_NATIVE_PREFIX="$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+    HOMEBREW_RELOCATE_BUILD_PREFIX=1 \
+    "$HOMEBREW_PATCHED_BREW_BIN" "$@"
+}
+
+homebrew_patched_launcher_seal_native_prefix() {
+  printf 'seal-native\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+  if [ -n "${FAKE_REALM_COMMAND_LOG:-}" ]; then
+    printf 'lifecycle|seal-native\n' >>"$FAKE_REALM_COMMAND_LOG"
+  fi
+}
+
+homebrew_patched_launcher_bridge_native_formula() {
+  printf 'bridge-native:%s\n' "$1" >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+  if [ -n "${FAKE_REALM_COMMAND_LOG:-}" ]; then
+    printf 'lifecycle|bridge-native:%s\n' "$1" >>"$FAKE_REALM_COMMAND_LOG"
+  fi
+}
+
+homebrew_patched_launcher_teardown() {
+  printf 'teardown\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+}
+
+homebrew_patched_launcher_verify_isolation() {
+  printf 'verify-isolation\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+}
+
+homebrew_patched_launcher_cleanup() {
+  printf 'cleanup\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+  return "${FAKE_LAUNCHER_CLEANUP_STATUS:-0}"
+}
+EOF
+}
+
 make_tap() {
   local tap="$1"
   mkdir -p "$tap/Formula" "$tap/Kandelo"
@@ -324,7 +421,15 @@ class Hello < Formula
 end
 EOF
   fi
-  printf '{"runtime_dependencies":[]}\n' >"$bottle_stage/INSTALL_RECEIPT.json"
+  if [ -n "$dependency_provenance_source" ]; then
+    jq -S '{
+      runtime_dependencies: [
+        .dependencies[] | {declared_directly, full_name, version}
+      ]
+    }' "$dependency_provenance_source" >"$bottle_stage/INSTALL_RECEIPT.json"
+  else
+    printf '{"runtime_dependencies":[]}\n' >"$bottle_stage/INSTALL_RECEIPT.json"
+  fi
   printf '#!/bin/sh\necho hello\n' >"$bottle_stage/bin/hello"
   chmod +x "$bottle_stage/bin/hello"
   cat >"$source_dir/hello.wat" <<'EOF'
@@ -338,7 +443,8 @@ EOF
   tar -czf "$bottle" -C "$source_dir/stage" hello
   sha256="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
   jq -n --arg sha256 "$sha256" --arg formula_key "$formula_key" \
-    --arg formula_path "$formula_path" --arg bottle_root "$bottle_root" '{
+    --arg formula_path "$formula_path" --arg bottle_root "$bottle_root" \
+    --slurpfile receipt "$bottle_stage/INSTALL_RECEIPT.json" '{
     ($formula_key): {
       formula: {
         name: "hello",
@@ -356,7 +462,7 @@ EOF
           wasm32_kandelo: {
             local_filename: "hello--2.12.1.wasm32_kandelo.bottle.tar.gz",
             sha256: $sha256,
-            tab: {runtime_dependencies: []},
+            tab: $receipt[0],
             path_exec_files: ["bin/hello"],
             all_files: [".brew/hello.rb", "INSTALL_RECEIPT.json", "bin/hello", "bin/hello.wasm"]
           }
@@ -753,6 +859,31 @@ assert_build_handoff_rejects_untrusted_content() {
     fail "build handoff validator did not explain the installed build-root leak"
   [ ! -e "$out_env" ] ||
     fail "build handoff validator produced uploader data for a build-root leak"
+
+  handoff="$TMPDIR/build-handoff-hidden-receipt-dependency"
+  make_build_handoff "$handoff"
+  archive_stage="$TMPDIR/build-handoff-hidden-receipt-dependency.stage"
+  mkdir -p "$archive_stage"
+  tar -xzf "$handoff/bottle.tar.gz" -C "$archive_stage"
+  tmp="$TMPDIR/build-handoff-hidden-receipt-dependency.json"
+  jq '.runtime_dependencies = [{
+    full_name: "bubblewrap",
+    version: "0.11.2",
+    declared_directly: true
+  }]' "$archive_stage/hello/2.12.1/INSTALL_RECEIPT.json" >"$tmp"
+  mv "$tmp" "$archive_stage/hello/2.12.1/INSTALL_RECEIPT.json"
+  tar -czf "$handoff/bottle.tar.gz" -C "$archive_stage" hello
+  refresh_build_handoff_bottle_identity "$handoff"
+  out_env="$TMPDIR/build-handoff-hidden-receipt-dependency.env"
+  err="$TMPDIR/build-handoff-hidden-receipt-dependency.err"
+  if validate_build_handoff "$handoff" --out-env "$out_env" >/dev/null 2>"$err"; then
+    fail "build handoff validator accepted receipt dependencies omitted from provenance"
+  fi
+  grep -F "bottle receipt runtime dependencies do not match validated dependency provenance" \
+    "$err" >/dev/null ||
+    fail "build handoff validator did not explain the receipt/provenance mismatch"
+  [ ! -e "$out_env" ] ||
+    fail "build handoff validator produced uploader data for mismatched dependency provenance"
 
   handoff="$TMPDIR/build-handoff-stale-abi"
   make_build_handoff "$handoff"
@@ -1654,6 +1785,7 @@ assert_bottle_build_trusts_selected_tap() {
   local fake_brew="$TMPDIR/bottle-trust-brew"
   local out="$TMPDIR/bottle-trust-out"
   local log="$TMPDIR/bottle-trust.log"
+  local lifecycle_log="$TMPDIR/bottle-trust-lifecycle.log"
   local ci_err="$TMPDIR/bottle-trust-ci.err"
   local caller_config="$TMPDIR/caller-homebrew-config"
   local symlink_target="$TMPDIR/runner-write-target"
@@ -1703,13 +1835,11 @@ case "${1:-}" in
     ln -sfn "$FAKE_SYMLINK_TARGET" "$work_dir/brew-install.log"
     ln -sfn "$FAKE_SYMLINK_TARGET" "$work_dir/brew-install-attempt-1.log"
     ;;
+  missing)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 44
+    ;;
   install)
-    if [ "$*" = 'install --only-dependencies --include-test --formula automattic/kandelo-homebrew/hello' ]; then
-      printf 'test-dependency-bottle-tags=%s|%s\n' \
-        "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
-        >>"$FAKE_BREW_LOG"
-      exit 0
-    fi
+    [ "$*" = 'install --build-bottle --ignore-dependencies --formula automattic/kandelo-homebrew/hello' ] || exit 43
     printf 'target-bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -1725,6 +1855,7 @@ EOF
   chmod +x "$fake_brew"
 
   if FAKE_BREW_LOG="$log" \
+    FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
@@ -1734,7 +1865,7 @@ EOF
     KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
     XDG_CONFIG_HOME="$caller_config" \
     GITHUB_ACTIONS=true \
-    bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
       --tap-root "$tap" \
       --tap-repository Automattic/kandelo-homebrew \
       --formula hello \
@@ -1750,6 +1881,7 @@ EOF
   : >"$log"
 
   if FAKE_BREW_LOG="$log" \
+    FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
@@ -1757,7 +1889,7 @@ EOF
     HOMEBREW_BREW_FILE="$fake_brew" \
     XDG_CONFIG_HOME="$caller_config" \
     GITHUB_ACTIONS= \
-    bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
       --tap-root "$tap" \
       --tap-repository Automattic/kandelo-homebrew \
       --formula hello \
@@ -1772,7 +1904,7 @@ EOF
   local trust_config first_config
   tap_line="$(grep -n '|tap automattic/kandelo-homebrew ' "$log" | cut -d: -f1)"
   tap_trust_line="$(grep -n '|trust --tap automattic/kandelo-homebrew$' "$log" | cut -d: -f1)"
-  install_line="$(grep -n '|install --build-bottle --formula automattic/kandelo-homebrew/hello$' "$log" | cut -d: -f1)"
+  install_line="$(grep -n '|install --build-bottle --ignore-dependencies --formula automattic/kandelo-homebrew/hello$' "$log" | cut -d: -f1)"
   [ -n "$tap_line" ] && [ -n "$tap_trust_line" ] && \
     [ -n "$install_line" ] ||
     fail "bottle build did not trust the selected tap before install"
@@ -1781,8 +1913,6 @@ EOF
   fi
   grep -Fx 'target-bottle-tags=|' "$log" >/dev/null ||
     fail "target source build inherited the Kandelo bottle tag intended for bottle selection"
-  grep -Fx 'test-dependency-bottle-tags=|' "$log" >/dev/null ||
-    fail "native test dependency install inherited the Kandelo bottle tag"
   [ "$tap_line" -lt "$tap_trust_line" ] && \
     [ "$tap_trust_line" -lt "$install_line" ] ||
     fail "bottle build did not freeze selected-tap trust before Formula evaluation"
@@ -1808,6 +1938,7 @@ assert_bottle_build_forces_same_tap_dependencies() {
   local fake_brew="$TMPDIR/bottle-dependency-brew"
   local out="$TMPDIR/bottle-dependency-out"
   local log="$TMPDIR/bottle-dependency.log"
+  local lifecycle_log="$TMPDIR/bottle-dependency-lifecycle.log"
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix"
   cat >"$tap/Formula/zlib.rb" <<'EOF'
@@ -1832,6 +1963,9 @@ case "${1:-}" in
   deps)
     printf '%s\n' 'cmake' 'automattic/kandelo-homebrew/zlib'
     ;;
+  missing)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 44
+    ;;
   install)
     if [ "$*" = 'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib' ]; then
       printf 'dependency-bottle-tags=%s|%s\n' \
@@ -1847,6 +1981,7 @@ EOF
   chmod +x "$fake_brew"
 
   if FAKE_BREW_LOG="$log" \
+    FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
@@ -1854,7 +1989,7 @@ EOF
     HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
     KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
     GITHUB_ACTIONS= \
-    bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
       --tap-root "$tap" \
       --tap-repository Automattic/kandelo-homebrew \
       --formula hello \
@@ -1885,10 +2020,20 @@ assert_bottle_build_installs_test_dependencies() {
   local fake_brew="$TMPDIR/bottle-test-dependency-brew"
   local out="$TMPDIR/bottle-test-dependency-out"
   local log="$TMPDIR/bottle-test-dependency.log"
+  local realm_log="$TMPDIR/bottle-test-dependency-realms.log"
+  local lifecycle_log="$TMPDIR/bottle-test-dependency-lifecycle.log"
   local provenance_capture="$TMPDIR/bottle-test-dependency-provenance.txt"
-  local real_python3
+  local provenance_log_capture="$TMPDIR/bottle-test-dependency-install.log"
+  local native_prefix_capture="$TMPDIR/bottle-test-dependency-native-prefix.txt"
+  local native_prefix real_python3
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
+  cat >"$tap/Formula/hello.rb" <<'EOF'
+class Hello < Formula
+  depends_on "cmake" => [:build, :test]
+  depends_on "ninja" => :build
+end
+EOF
   cat >"$tap/Formula/zlib.rb" <<'EOF'
 class Zlib < Formula
 end
@@ -1902,8 +2047,20 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_BREW_LOG"
+printf '%s|%s\n' "${FAKE_HOMEBREW_REALM:-target}" "$*" >>"$FAKE_REALM_COMMAND_LOG"
+if [ "${FAKE_HOMEBREW_REALM:-target}" = native ]; then
+  [ "${HOMEBREW_RELOCATE_BUILD_PREFIX:-}" = 1 ] || exit 52
+else
+  [ -z "${HOMEBREW_RELOCATE_BUILD_PREFIX+x}" ] || exit 53
+fi
 case "${1:-}" in
-  --prefix) printf '%s\n' "$FAKE_BREW_PREFIX" ;;
+  --prefix)
+    if [ "${FAKE_HOMEBREW_REALM:-target}" = native ]; then
+      printf '%s\n' "$FAKE_NATIVE_PREFIX"
+    else
+      printf '%s\n' "$FAKE_BREW_PREFIX"
+    fi
+    ;;
   --repository)
     if [ "$#" -eq 1 ]; then
       printf '%s\n' "$FAKE_BREW_REPOSITORY"
@@ -1915,11 +2072,11 @@ case "${1:-}" in
   deps)
     case "$*" in
       'deps --topological --full-name --formula automattic/kandelo-homebrew/hello')
-        printf '%s\n' 'cmake' 'automattic/kandelo-homebrew/zlib'
+        printf '%s\n' 'dynamic-runtime-host' 'automattic/kandelo-homebrew/zlib'
         ;;
       'deps --topological --full-name --include-build --include-test --formula automattic/kandelo-homebrew/hello')
         printf '%s\n' \
-          'cmake' \
+          'dynamic-build-host' \
           'automattic/kandelo-homebrew/zlib' \
           'automattic/kandelo-homebrew/test-helper'
         ;;
@@ -1928,6 +2085,14 @@ case "${1:-}" in
     ;;
   install)
     case "$*" in
+      'install --as-dependency --formula homebrew/core/cmake'|\
+      'install --as-dependency --formula homebrew/core/ninja')
+        [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 42
+        printf 'native-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        printf 'native-provenance-sentinel\n'
+        ;;
       'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib')
         printf 'zlib-tags=%s|%s\n' \
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
@@ -1938,12 +2103,7 @@ case "${1:-}" in
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
           >>"$FAKE_BREW_LOG"
         ;;
-      'install --only-dependencies --include-test --formula automattic/kandelo-homebrew/hello')
-        printf 'host-dependency-tags=%s|%s\n' \
-          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
-          >>"$FAKE_BREW_LOG"
-        ;;
-      'install --build-bottle --formula automattic/kandelo-homebrew/hello')
+      'install --build-bottle --ignore-dependencies --formula automattic/kandelo-homebrew/hello')
         printf 'target-tags=%s|%s\n' \
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
           >>"$FAKE_BREW_LOG"
@@ -1951,8 +2111,31 @@ case "${1:-}" in
       *) exit 43 ;;
     esac
     ;;
+  info)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 47
+    case "$*" in
+      'info --json=v2 homebrew/core/cmake') dependency=cmake ;;
+      'info --json=v2 homebrew/core/ninja') dependency=ninja ;;
+      *) exit 47 ;;
+    esac
+    printf '{"formulae":[{"name":"%s","full_name":"%s","tap":"homebrew/core","installed":[{"version":"1"}]}]}\n' \
+      "$dependency" "$dependency"
+    ;;
+  missing)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] && [ "$*" = missing ] || exit 48
+    ;;
+  list)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = target ] || exit 49
+    case "$*" in
+      'list --formula cmake'|'list --formula ninja') ;;
+      *) exit 49 ;;
+    esac
+    ;;
   test)
     [ "$*" = 'test automattic/kandelo-homebrew/hello' ] || exit 46
+    if [ "${FAKE_INSTALL_IMPLICIT_NATIVE:-}" = "1" ]; then
+      mkdir -p "$FAKE_BREW_PREFIX/Cellar/bubblewrap/0.11.2"
+    fi
     ;;
   bottle)
     printf 'bottle-tags=%s|%s\n' \
@@ -1978,15 +2161,18 @@ shift
 shift
 expected=""
 out=""
+install_log=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-dependencies) expected="${2:-}"; shift 2 ;;
+    --install-log) install_log="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
 done
-[ -n "$expected" ] && [ -n "$out" ] || exit 48
+[ -n "$expected" ] && [ -n "$install_log" ] && [ -n "$out" ] || exit 48
 cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
+cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
 printf '{"schema":1}\n' >"$out"
 EOF
   chmod +x "$fake_bin/python3"
@@ -1994,15 +2180,20 @@ EOF
   if ! PATH="$fake_bin:$PATH" \
     REAL_PYTHON3="$real_python3" \
     FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
     FAKE_BREW_LOG="$log" \
+    FAKE_REALM_COMMAND_LOG="$realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
     KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
+    HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
     GITHUB_ACTIONS= \
-    bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
       --tap-root "$tap" \
       --tap-repository Automattic/kandelo-homebrew \
       --formula hello \
@@ -2012,29 +2203,72 @@ EOF
       >/dev/null 2>&1; then
     fail "test dependency fixture did not complete"
   fi
+  native_prefix="$(cat "$native_prefix_capture")"
+  case "$native_prefix" in
+    /tmp/k.??????/p|/private/tmp/k.??????/p) ;;
+    *) fail "bottle build did not use the bounded native prefix: $native_prefix" ;;
+  esac
+  (
+    # shellcheck disable=SC1090
+    . "$out/build.env"
+    [ "$NATIVE_BUILD_ROOT" = "${native_prefix%/p}" ] ||
+      fail "bottle build did not export its exact native root for archive scanning"
+  )
+  [ ! -e "${native_prefix%/p}" ] ||
+    fail "bottle build retained its native prefix after successful cleanup"
 
-  local runtime_query_line build_test_query_line zlib_line test_helper_line host_line target_line
-  runtime_query_line="$(grep -n '^deps --topological --full-name --formula ' "$log" | cut -d: -f1)"
-  build_test_query_line="$(grep -n '^deps --topological --full-name --include-build --include-test ' "$log" | cut -d: -f1)"
-  zlib_line="$(grep -n '^install --force-bottle .*zlib$' "$log" | cut -d: -f1)"
-  test_helper_line="$(grep -n '^install --force-bottle .*test-helper$' "$log" | cut -d: -f1)"
-  host_line="$(grep -n '^install --only-dependencies --include-test ' "$log" | cut -d: -f1)"
-  target_line="$(grep -n '^install --build-bottle ' "$log" | cut -d: -f1)"
+  local runtime_query_line build_test_query_line native_cmake_line native_ninja_line
+  local native_cmake_info_line native_ninja_info_line native_missing_line seal_line
+  local cmake_bridge_line cmake_proxy_line ninja_bridge_line ninja_proxy_line
+  local zlib_line test_helper_line target_line
+  runtime_query_line="$(grep -n '^target|deps --topological --full-name --formula ' "$realm_log" | cut -d: -f1)"
+  build_test_query_line="$(grep -n '^target|deps --topological --full-name --include-build --include-test ' "$realm_log" | cut -d: -f1)"
+  native_cmake_line="$(grep -n '^native|install --as-dependency --formula homebrew/core/cmake$' "$realm_log" | cut -d: -f1)"
+  native_ninja_line="$(grep -n '^native|install --as-dependency --formula homebrew/core/ninja$' "$realm_log" | cut -d: -f1)"
+  native_cmake_info_line="$(grep -n '^native|info --json=v2 homebrew/core/cmake$' "$realm_log" | cut -d: -f1)"
+  native_ninja_info_line="$(grep -n '^native|info --json=v2 homebrew/core/ninja$' "$realm_log" | cut -d: -f1)"
+  native_missing_line="$(grep -n '^native|missing$' "$realm_log" | cut -d: -f1)"
+  seal_line="$(grep -n '^lifecycle|seal-native$' "$realm_log" | cut -d: -f1)"
+  cmake_bridge_line="$(grep -n '^lifecycle|bridge-native:cmake$' "$realm_log" | cut -d: -f1)"
+  cmake_proxy_line="$(grep -n '^target|list --formula cmake$' "$realm_log" | cut -d: -f1)"
+  ninja_bridge_line="$(grep -n '^lifecycle|bridge-native:ninja$' "$realm_log" | cut -d: -f1)"
+  ninja_proxy_line="$(grep -n '^target|list --formula ninja$' "$realm_log" | cut -d: -f1)"
+  zlib_line="$(grep -n '^target|install --force-bottle .*zlib$' "$realm_log" | cut -d: -f1)"
+  test_helper_line="$(grep -n '^target|install --force-bottle .*test-helper$' "$realm_log" | cut -d: -f1)"
+  target_line="$(grep -n '^target|install --build-bottle --ignore-dependencies ' "$realm_log" | cut -d: -f1)"
   [ -n "$runtime_query_line" ] && [ -n "$build_test_query_line" ] && \
+    [ -n "$native_cmake_line" ] && [ -n "$native_ninja_line" ] && \
+    [ -n "$native_cmake_info_line" ] && [ -n "$native_ninja_info_line" ] && \
+    [ -n "$native_missing_line" ] && [ -n "$seal_line" ] && \
+    [ -n "$cmake_bridge_line" ] && [ -n "$cmake_proxy_line" ] && \
+    [ -n "$ninja_bridge_line" ] && [ -n "$ninja_proxy_line" ] && \
     [ -n "$zlib_line" ] && [ -n "$test_helper_line" ] && \
-    [ -n "$host_line" ] && [ -n "$target_line" ] ||
+    [ -n "$target_line" ] ||
     fail "bottle build omitted a dependency resolution or installation phase"
-  [ "$runtime_query_line" -lt "$build_test_query_line" ] && \
-    [ "$build_test_query_line" -lt "$zlib_line" ] && \
+  [ "$native_cmake_line" -lt "$native_ninja_line" ] && \
+    [ "$native_ninja_line" -lt "$native_cmake_info_line" ] && \
+    [ "$native_cmake_info_line" -lt "$native_ninja_info_line" ] && \
+    [ "$native_ninja_info_line" -lt "$native_missing_line" ] && \
+    [ "$native_missing_line" -lt "$runtime_query_line" ] && \
+    [ "$runtime_query_line" -lt "$build_test_query_line" ] && \
+    [ "$build_test_query_line" -lt "$seal_line" ] && \
+    [ "$seal_line" -lt "$cmake_bridge_line" ] && \
+    [ "$cmake_bridge_line" -lt "$cmake_proxy_line" ] && \
+    [ "$cmake_proxy_line" -lt "$ninja_bridge_line" ] && \
+    [ "$ninja_bridge_line" -lt "$ninja_proxy_line" ] && \
+    [ "$ninja_proxy_line" -lt "$zlib_line" ] && \
     [ "$zlib_line" -lt "$test_helper_line" ] && \
-    [ "$test_helper_line" -lt "$host_line" ] && \
-    [ "$host_line" -lt "$target_line" ] ||
+    [ "$test_helper_line" -lt "$target_line" ] ||
     fail "bottle build installed same-tap, host, or target dependencies out of order"
+  ! grep -F 'homebrew/core/dynamic-' "$realm_log" >/dev/null ||
+    fail "bottle build selected its native plan from evaluated Formula output"
+  [ "$(cat "$lifecycle_log")" = $'prepare-native\nseed-bundler:bottle formula_test\nstage-dependency-plan\nseal-native\nbridge-native:cmake\nbridge-native:ninja\ncleanup' ] ||
+    fail "bottle build did not prepare, seal, bridge, and clean up the native realm"
   grep -Fx 'zlib-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
     fail "same-tap runtime dependency lost the Kandelo bottle tag"
   grep -Fx 'test-helper-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
     fail "same-tap build/test dependency was not force-poured as a Kandelo bottle"
-  grep -Fx 'host-dependency-tags=|' "$log" >/dev/null ||
+  grep -Fx 'native-tags=|' "$log" >/dev/null ||
     fail "native test dependency install inherited the Kandelo bottle tag"
   grep -Fx 'target-tags=|' "$log" >/dev/null ||
     fail "target source build inherited the Kandelo bottle tag"
@@ -2042,6 +2276,94 @@ EOF
     fail "bottle creation lost the Kandelo bottle tag"
   [ "$(cat "$provenance_capture")" = 'automattic/kandelo-homebrew/zlib' ] ||
     fail "runtime provenance included the build/test-only same-tap dependency"
+  ! grep -F 'native-provenance-sentinel' "$provenance_log_capture" >/dev/null ||
+    fail "native Homebrew output contaminated target dependency provenance"
+
+  local cellar_leak_out="$TMPDIR/bottle-cellar-leak-out"
+  local cellar_leak_temp="$TMPDIR/bottle-cellar-leak-temp"
+  local cellar_leak_prefix="$TMPDIR/bottle-cellar-leak-prefix"
+  local cellar_leak_err="$TMPDIR/bottle-cellar-leak.err"
+  local cellar_leak_lifecycle="$TMPDIR/bottle-cellar-leak-lifecycle.log"
+  local cellar_leak_capture="$TMPDIR/bottle-cellar-leak-native-prefix.txt"
+  local cellar_leak_native_prefix cellar_leak_status
+  mkdir -p "$cellar_leak_temp" "$cellar_leak_prefix"
+  set +e
+  PATH="$fake_bin:$PATH" \
+    TMPDIR="$cellar_leak_temp" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
+    FAKE_BREW_LOG="$log" \
+    FAKE_REALM_COMMAND_LOG="$realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$cellar_leak_lifecycle" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$cellar_leak_capture" \
+    FAKE_INSTALL_IMPLICIT_NATIVE=1 \
+    FAKE_BREW_PREFIX="$cellar_leak_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
+    GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello \
+      --arch wasm32 \
+      --out "$cellar_leak_out" \
+      --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+      >/dev/null 2>"$cellar_leak_err"
+  cellar_leak_status="$?"
+  set -e
+  [ "$cellar_leak_status" -eq 1 ] ||
+    fail "bottle build accepted an implicit native target-Cellar install: $cellar_leak_status"
+  grep -F 'Formula test or bottle creation changed the planned target Cellar' \
+    "$cellar_leak_err" >/dev/null ||
+    fail "bottle build did not explain the changed target Cellar"
+  grep -F '+keg:bubblewrap/0.11.2' "$cellar_leak_err" >/dev/null ||
+    fail "target Cellar audit did not identify the implicit native keg"
+  cellar_leak_native_prefix="$(cat "$cellar_leak_capture")"
+  [ ! -e "${cellar_leak_native_prefix%/p}" ] ||
+    fail "target Cellar rejection retained the native Homebrew realm"
+
+  local cleanup_failure_out="$TMPDIR/bottle-cleanup-failure-out"
+  local cleanup_failure_temp="$TMPDIR/bottle-cleanup-failure-temp"
+  local cleanup_failure_lifecycle="$TMPDIR/bottle-cleanup-failure-lifecycle.log"
+  local cleanup_failure_capture="$TMPDIR/bottle-cleanup-failure-native-prefix.txt"
+  local cleanup_failure_prefix cleanup_failure_status
+  mkdir -p "$cleanup_failure_temp"
+  set +e
+  PATH="$fake_bin:$PATH" \
+    TMPDIR="$cleanup_failure_temp" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
+    FAKE_BREW_LOG="$log" \
+    FAKE_REALM_COMMAND_LOG="$realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$cleanup_failure_lifecycle" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$cleanup_failure_capture" \
+    FAKE_LAUNCHER_CLEANUP_STATUS=7 \
+    FAKE_BREW_PREFIX="$brew_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
+    GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello \
+      --arch wasm32 \
+      --out "$cleanup_failure_out" \
+      --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+      >/dev/null 2>&1
+  cleanup_failure_status="$?"
+  set -e
+  [ "$cleanup_failure_status" -eq 7 ] ||
+    fail "successful bottle work hid its cleanup-only failure: $cleanup_failure_status"
+  cleanup_failure_prefix="$(cat "$cleanup_failure_capture")"
+  [ -d "${cleanup_failure_prefix%/p}" ] ||
+    fail "cleanup failure did not preserve the native Homebrew realm"
+  rm -rf "${cleanup_failure_prefix%/p}"
 }
 
 assert_bottle_verifier_installs_test_dependencies() {
@@ -2060,11 +2382,21 @@ assert_bottle_verifier_installs_test_dependencies() {
   local cache="$root/cache"
   local brew_temp="$root/tmp"
   local log="$root/brew.log"
+  local realm_log="$root/realms.log"
+  local lifecycle_log="$root/lifecycle.log"
   local state="$root/state"
   local provenance_capture="$root/provenance.txt"
-  local bottle_sha bottle_bytes tap_commit real_python3
+  local provenance_log_capture="$root/provenance-install.log"
+  local native_prefix_capture="$root/native-prefix.txt"
+  local bottle_sha bottle_bytes tap_commit native_prefix real_python3
 
   make_tap "$tap"
+  cat >"$tap/Formula/hello.rb" <<'EOF'
+class Hello < Formula
+  depends_on "cmake" => :test
+  depends_on "ninja" => :test
+end
+EOF
   cat >"$tap/Formula/zlib.rb" <<'EOF'
 class Zlib < Formula
 end
@@ -2092,9 +2424,17 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_BREW_LOG"
+printf '%s|%s\n' "${FAKE_HOMEBREW_REALM:-target}" "$*" >>"$FAKE_REALM_COMMAND_LOG"
+if [ "${FAKE_HOMEBREW_REALM:-target}" = native ]; then
+  [ "${HOMEBREW_RELOCATE_BUILD_PREFIX:-}" = 1 ] || exit 52
+else
+  [ -z "${HOMEBREW_RELOCATE_BUILD_PREFIX+x}" ] || exit 53
+fi
 case "${1:-}" in
   --prefix)
-    if [ "$#" -eq 1 ]; then
+    if [ "${FAKE_HOMEBREW_REALM:-target}" = native ]; then
+      printf '%s\n' "$FAKE_NATIVE_PREFIX"
+    elif [ "$#" -eq 1 ]; then
       printf '%s\n' "$FAKE_BREW_PREFIX"
     else
       printf '%s\n' "$FAKE_TARGET_PREFIX"
@@ -2118,10 +2458,10 @@ case "${1:-}" in
   deps)
     case "$*" in
       'deps --topological --full-name --formula automattic/kandelo-homebrew/hello')
-        printf '%s\n' cmake automattic/kandelo-homebrew/zlib
+        printf '%s\n' dynamic-runtime-host automattic/kandelo-homebrew/zlib
         ;;
       'deps --topological --full-name --include-test --formula automattic/kandelo-homebrew/hello')
-        printf '%s\n' cmake automattic/kandelo-homebrew/zlib \
+        printf '%s\n' dynamic-test-host automattic/kandelo-homebrew/zlib \
           automattic/kandelo-homebrew/test-helper
         ;;
       *) exit 41 ;;
@@ -2129,8 +2469,17 @@ case "${1:-}" in
     ;;
   install)
     case "$*" in
+      'install --as-dependency --formula homebrew/core/cmake'|\
+      'install --as-dependency --formula homebrew/core/ninja')
+        [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 42
+        printf 'native-tags=%s|%s\n' \
+          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+          >>"$FAKE_BREW_LOG"
+        printf 'native-provenance-sentinel\n'
+        : >"$FAKE_STATE/native"
+        ;;
       'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib')
-        [ -f "$HOMEBREW_CACHE/stale" ] || exit 42
+        [ -f "$FAKE_STATE/native" ] && [ -f "$HOMEBREW_CACHE/stale" ] || exit 43
         printf 'zlib-tags=%s|%s\n' \
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
           >>"$FAKE_BREW_LOG"
@@ -2143,15 +2492,9 @@ case "${1:-}" in
           >>"$FAKE_BREW_LOG"
         : >"$FAKE_STATE/test-helper"
         ;;
-      'install --as-dependency --ignore-dependencies --formula cmake')
-        [ -f "$FAKE_STATE/test-helper" ] && [ -f "$HOMEBREW_CACHE/stale" ] || exit 44
-        printf 'host-tags=%s|%s\n' \
-          "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
-          >>"$FAKE_BREW_LOG"
-        : >"$FAKE_STATE/host"
-        ;;
       'install --force-bottle --ignore-dependencies --formula automattic/kandelo-homebrew/hello')
-        [ -f "$FAKE_STATE/host" ] && [ ! -e "$HOMEBREW_CACHE/stale" ] || exit 45
+        [ -f "$FAKE_STATE/native" ] && [ -f "$FAKE_STATE/test-helper" ] && \
+          [ ! -e "$HOMEBREW_CACHE/stale" ] || exit 45
         [ -z "$(find "$HOMEBREW_CACHE" -mindepth 1 -print -quit)" ] || exit 46
         printf 'target-tags=%s|%s\n' \
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
@@ -2163,11 +2506,28 @@ case "${1:-}" in
     esac
     ;;
   list)
-    [ "$*" = 'list --versions --formula automattic/kandelo-homebrew/hello' ] || exit 48
+    case "$*" in
+      'list --formula cmake'|'list --formula ninja') ;;
+      'list --versions --formula automattic/kandelo-homebrew/hello') ;;
+      *) exit 48 ;;
+    esac
     ;;
   info)
-    [ "$*" = 'info --json=v2 automattic/kandelo-homebrew/hello' ] || exit 49
-    printf '{}\n'
+    if [ "${FAKE_HOMEBREW_REALM:-target}" = native ]; then
+      case "$*" in
+        'info --json=v2 homebrew/core/cmake') dependency=cmake ;;
+        'info --json=v2 homebrew/core/ninja') dependency=ninja ;;
+        *) exit 49 ;;
+      esac
+      printf '{"formulae":[{"name":"%s","full_name":"%s","tap":"homebrew/core","installed":[{"version":"1"}]}]}\n' \
+        "$dependency" "$dependency"
+    else
+      [ "$*" = 'info --json=v2 automattic/kandelo-homebrew/hello' ] || exit 49
+      printf '{}\n'
+    fi
+    ;;
+  missing)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] && [ "$*" = missing ] || exit 50
     ;;
   test)
     [ "$*" = 'test automattic/kandelo-homebrew/hello' ] && \
@@ -2196,14 +2556,17 @@ shift
 shift
 expected=""
 out=""
+install_log=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-dependencies) expected="${2:-}"; shift 2 ;;
+    --install-log) install_log="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
 done
-[ -n "$out" ] || exit 61
+[ -n "$install_log" ] && [ -n "$out" ] || exit 61
+cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
 if [ "$tool" = homebrew-dependency-provenance.py ]; then
   [ -n "$expected" ] || exit 62
   cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
@@ -2215,6 +2578,9 @@ EOF
   PATH="$fake_bin:$PATH" \
     REAL_PYTHON3="$real_python3" \
     FAKE_BREW_LOG="$log" \
+    FAKE_REALM_COMMAND_LOG="$realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
@@ -2222,13 +2588,15 @@ EOF
     FAKE_STATE="$state" \
     FAKE_BOTTLE="$bottle" \
     FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     HOMEBREW_CACHE="$cache" \
     HOMEBREW_TEMP="$brew_temp" \
     HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
     KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
+    HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
     GITHUB_ACTIONS= \
-    bash "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
       --tap-root "$tap" \
       --tap-repository Automattic/kandelo-homebrew \
       --tap-commit "$tap_commit" \
@@ -2245,24 +2613,57 @@ EOF
       --selection-receipt "$selection_receipt" \
       --out "$runtime_evidence" >/dev/null
 
-  local tap_trust_line runtime_line test_query_line
-  local zlib_line helper_line host_line target_line formula_test_line
-  tap_trust_line="$(grep -n '^trust --tap automattic/kandelo-homebrew$' "$log" | cut -d: -f1)"
-  runtime_line="$(grep -n '^deps --topological --full-name --formula ' "$log" | cut -d: -f1)"
-  test_query_line="$(grep -n '^deps --topological --full-name --include-test ' "$log" | cut -d: -f1)"
-  zlib_line="$(grep -n '^install --force-bottle .*zlib$' "$log" | cut -d: -f1)"
-  helper_line="$(grep -n '^install --force-bottle .*test-helper$' "$log" | cut -d: -f1)"
-  host_line="$(grep -n '^install --as-dependency --ignore-dependencies --formula cmake$' "$log" | cut -d: -f1)"
-  target_line="$(grep -n '^install --force-bottle --ignore-dependencies --formula .*hello$' "$log" | cut -d: -f1)"
-  formula_test_line="$(grep -n '^test automattic/kandelo-homebrew/hello$' "$log" | cut -d: -f1)"
-  [ "$tap_trust_line" -lt "$runtime_line" ] && \
+  native_prefix="$(cat "$native_prefix_capture")"
+  case "$native_prefix" in
+    /tmp/k.??????/p) ;;
+    *) fail "bottle verifier did not use the bounded native prefix: $native_prefix" ;;
+  esac
+  [ ! -e "${native_prefix%/p}" ] ||
+    fail "bottle verifier retained its native prefix after successful cleanup"
+
+  local tap_trust_line native_cmake_line native_ninja_line
+  local native_cmake_info_line native_ninja_info_line native_missing_line
+  local runtime_line test_query_line seal_line cmake_bridge_line cmake_proxy_line
+  local ninja_bridge_line ninja_proxy_line
+  local zlib_line helper_line target_line formula_test_line
+  tap_trust_line="$(grep -n '^target|trust --tap automattic/kandelo-homebrew$' "$realm_log" | cut -d: -f1)"
+  native_cmake_line="$(grep -n '^native|install --as-dependency --formula homebrew/core/cmake$' "$realm_log" | cut -d: -f1)"
+  native_ninja_line="$(grep -n '^native|install --as-dependency --formula homebrew/core/ninja$' "$realm_log" | cut -d: -f1)"
+  native_cmake_info_line="$(grep -n '^native|info --json=v2 homebrew/core/cmake$' "$realm_log" | cut -d: -f1)"
+  native_ninja_info_line="$(grep -n '^native|info --json=v2 homebrew/core/ninja$' "$realm_log" | cut -d: -f1)"
+  native_missing_line="$(grep -n '^native|missing$' "$realm_log" | cut -d: -f1)"
+  runtime_line="$(grep -n '^target|deps --topological --full-name --formula ' "$realm_log" | cut -d: -f1)"
+  test_query_line="$(grep -n '^target|deps --topological --full-name --include-test ' "$realm_log" | cut -d: -f1)"
+  seal_line="$(grep -n '^lifecycle|seal-native$' "$realm_log" | cut -d: -f1)"
+  cmake_bridge_line="$(grep -n '^lifecycle|bridge-native:cmake$' "$realm_log" | cut -d: -f1)"
+  cmake_proxy_line="$(grep -n '^target|list --formula cmake$' "$realm_log" | cut -d: -f1)"
+  ninja_bridge_line="$(grep -n '^lifecycle|bridge-native:ninja$' "$realm_log" | cut -d: -f1)"
+  ninja_proxy_line="$(grep -n '^target|list --formula ninja$' "$realm_log" | cut -d: -f1)"
+  zlib_line="$(grep -n '^target|install --force-bottle .*zlib$' "$realm_log" | cut -d: -f1)"
+  helper_line="$(grep -n '^target|install --force-bottle .*test-helper$' "$realm_log" | cut -d: -f1)"
+  target_line="$(grep -n '^target|install --force-bottle --ignore-dependencies --formula .*hello$' "$realm_log" | cut -d: -f1)"
+  formula_test_line="$(grep -n '^target|test automattic/kandelo-homebrew/hello$' "$realm_log" | cut -d: -f1)"
+  [ "$tap_trust_line" -lt "$native_cmake_line" ] && \
+    [ "$native_cmake_line" -lt "$native_ninja_line" ] && \
+    [ "$native_ninja_line" -lt "$native_cmake_info_line" ] && \
+    [ "$native_cmake_info_line" -lt "$native_ninja_info_line" ] && \
+    [ "$native_ninja_info_line" -lt "$native_missing_line" ] && \
+    [ "$native_missing_line" -lt "$runtime_line" ] && \
     [ "$runtime_line" -lt "$test_query_line" ] && \
-    [ "$test_query_line" -lt "$zlib_line" ] && \
+    [ "$test_query_line" -lt "$seal_line" ] && \
+    [ "$seal_line" -lt "$cmake_bridge_line" ] && \
+    [ "$cmake_bridge_line" -lt "$cmake_proxy_line" ] && \
+    [ "$cmake_proxy_line" -lt "$ninja_bridge_line" ] && \
+    [ "$ninja_bridge_line" -lt "$ninja_proxy_line" ] && \
+    [ "$ninja_proxy_line" -lt "$zlib_line" ] && \
     [ "$zlib_line" -lt "$helper_line" ] && \
-    [ "$helper_line" -lt "$host_line" ] && \
-    [ "$host_line" -lt "$target_line" ] && \
+    [ "$helper_line" -lt "$target_line" ] && \
     [ "$target_line" -lt "$formula_test_line" ] ||
     fail "bottle verifier installed dependencies, target, or test out of order"
+  ! grep -F 'homebrew/core/dynamic-' "$realm_log" >/dev/null ||
+    fail "bottle verifier selected its native plan from evaluated Formula output"
+  [ "$(cat "$lifecycle_log")" = $'prepare-native\nseed-bundler:bottle formula_test\nstage-dependency-plan\nseal-native\nbridge-native:cmake\nbridge-native:ninja\ncleanup' ] ||
+    fail "bottle verifier did not prepare, seal, bridge, and clean up the native realm"
   if grep -q '^trust --formula ' "$log"; then
     fail "bottle verifier persisted redundant Formula trust"
   fi
@@ -2270,7 +2671,7 @@ EOF
     fail "verifier runtime dependency lost the Kandelo bottle tag"
   grep -Fx 'test-helper-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
     fail "verifier test dependency was not force-poured as a Kandelo bottle"
-  grep -Fx 'host-tags=|' "$log" >/dev/null ||
+  grep -Fx 'native-tags=|' "$log" >/dev/null ||
     fail "verifier host test dependencies inherited a Kandelo bottle tag"
   grep -Fx 'target-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
     fail "verifier public target pour lost the Kandelo bottle tag"
@@ -2278,6 +2679,8 @@ EOF
     fail "Formula test inherited a Kandelo bottle tag"
   [ "$(cat "$provenance_capture")" = 'automattic/kandelo-homebrew/zlib' ] ||
     fail "verifier runtime provenance included its test-only dependency"
+  ! grep -F 'native-provenance-sentinel' "$provenance_log_capture" >/dev/null ||
+    fail "native Homebrew output contaminated verifier provenance"
   [ -f "$runtime_evidence" ] || fail "bottle verifier did not emit runtime evidence"
 }
 
@@ -2293,6 +2696,7 @@ assert_dependency_pour_provenance_is_bounded() {
   local info="$root/zlib-info.json"
   local output="$root/provenance.json"
   local bad="$root/bad.json"
+  local err="$root/external-dependency.err"
   local formula_sha
   local bottle_sha="1111111111111111111111111111111111111111111111111111111111111111"
   local tap_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -2451,6 +2855,31 @@ EOF
       >/dev/null 2>&1; then
     fail "dependency provenance accepted a target receipt missing a resolved dependency"
   fi
+
+  jq '.runtime_dependencies += [{
+    full_name: "bubblewrap",
+    version: "0.11.2",
+    pkg_version: "0.11.2",
+    revision: 0,
+    bottle_rebuild: 0,
+    declared_directly: true
+  }]' "$target_receipt" >"$bad"
+  if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+      --target-receipt "$bad" --expected-dependencies "$expected_dependencies" \
+      --install-log "$install_log" --out "$root/external-dependency.json" \
+      >/dev/null 2>"$err"; then
+    fail "dependency provenance silently filtered an external target receipt dependency"
+  fi
+  grep -F "target receipt runtime dependency 'bubblewrap' is outside selected tap automattic/kandelo-homebrew" \
+    "$err" >/dev/null ||
+    fail "dependency provenance did not explain the external target receipt dependency"
+  [ ! -e "$root/external-dependency.json" ] ||
+    fail "dependency provenance emitted output after rejecting an external dependency"
 
   jq '.poured_from_bottle = false' "$cellar/INSTALL_RECEIPT.json" >"$bad"
   mv "$bad" "$cellar/INSTALL_RECEIPT.json"
@@ -3781,10 +4210,11 @@ EOF
     fail "under-lock publisher does not revalidate the Formula source closure"
 }
 
+make_formula_runner_fixture
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
-bash "$REPO_ROOT/scripts/test-homebrew-publisher-trust-patch.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-publisher-overlay-patch.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_sysroot_fingerprint_is_arch_specific
 assert_bottle_build_trusts_selected_tap
@@ -3792,6 +4222,7 @@ assert_bottle_build_forces_same_tap_dependencies
 assert_bottle_build_installs_test_dependencies
 assert_bottle_verifier_installs_test_dependencies
 bash "$REPO_ROOT/scripts/test-homebrew-provision-formula-browser.sh"
+bash "$REPO_ROOT/scripts/test-materialize-resolver-binaries.sh"
 assert_dependency_pour_provenance_is_bounded
 assert_static_formula_closure_is_fail_closed
 assert_generator_validates_homebrew_commit_as_data

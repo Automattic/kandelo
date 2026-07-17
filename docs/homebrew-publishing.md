@@ -96,9 +96,11 @@ its direct symlink:
 
 Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
 root-owned launcher under the selected Homebrew prefix loads that worktree
-while preserving the selected prefix and Cellar, so ordinary host
-build-dependency bottles remain usable. Formulae execute as a dedicated
-unprivileged OS identity in one transient systemd service per Brew invocation.
+while preserving the selected Kandelo prefix and Cellar. Native host tools use
+a separate ephemeral Homebrew prefix, as described in
+[Native And Target Dependency Realms](#native-and-target-dependency-realms).
+Formulae execute as a dedicated unprivileged OS identity in one transient
+systemd service per Brew invocation.
 `KillMode=control-group` binds double-forked and session-detached descendants to
 that invocation, while `NoNewPrivileges=yes` prevents Formula processes from
 using set-user-ID or set-group-ID helpers to delegate later execution. The
@@ -114,7 +116,7 @@ The bottle builder and verifier also apply a second patch only to their
 temporary publisher worktrees:
 
 ```text
-homebrew/patches/0002-publisher-skip-redundant-item-trust.patch
+homebrew/patches/0002-support-isolated-publisher.patch
 ```
 
 They trust the reviewed tap before isolation, then seal the patched Homebrew
@@ -124,12 +126,23 @@ regular files with mode `0444`. Pinned Homebrew normally requires its repository
 to be writable and tries to persist a redundant Formula entry for every fully
 qualified install even when that tap is already trusted. The publisher-only
 patch excludes only the protected repository from Homebrew's preinstall
-writability diagnostic and skips that automatic trust persistence. Every other
-required Homebrew path keeps the normal writability check. Explicit `brew trust`
-still fails under the isolated identity because the trust store is immutable.
+writability diagnostic and skips that automatic trust persistence. It also
+lets a `--ignore-dependencies` source build activate only the direct native
+build dependencies authorized by the root-owned static plan. Homebrew still
+does not fetch or install their recursive native closure into the target
+Cellar. On Linux, the patch also suppresses Homebrew's implicit global host
+dependencies only when that protected plan identifies the selected Kandelo
+target Formula. Native Homebrew and every unrelated Formula retain normal Linux
+global dependency resolution. Every other required Homebrew path keeps the
+normal writability check.
+Explicit `brew trust` still fails under the isolated identity because the trust
+store is immutable.
 Before that identity starts, the trusted workflow installs Homebrew's locked
 `formula_test` and `bottle` Bundler groups into the temporary overlay and
-verifies their state files. The complete overlay is then sealed, so later
+verifies their state files. Gem archives can carry writable filesystem modes,
+so the launcher normalizes every overlay directory and regular file to a
+read-only mode before it activates the Formula identity. The complete overlay
+is then verified as sealed, so later
 `brew test` and `brew bottle` commands use the reviewed gem set without writing
 Homebrew source or downloading executable code during Formula evaluation.
 The bootstrap and guest Homebrew apply only the platform patch above, so their
@@ -143,11 +156,12 @@ the build host. Publishing from macOS, another POSIX host, or WSL is not yet a
 validated release path; it requires an isolation backend with the same source,
 process, account, and credential boundaries rather than a weaker fallback.
 
-Verify the patch against a Homebrew checkout with:
+Verify the platform patch against a Homebrew checkout and exercise the
+publisher-overlay semantics with:
 
 ```bash
 scripts/dev-shell.sh bash scripts/verify-homebrew-kandelo-platform-tags.sh
-scripts/dev-shell.sh bash scripts/test-homebrew-publisher-trust-patch.sh
+scripts/dev-shell.sh bash scripts/test-homebrew-publisher-overlay-patch.sh
 ```
 
 ## Formula Authoring
@@ -198,6 +212,95 @@ each dependency separately with `--force-bottle --as-dependency
 consumer source build; Homebrew is not allowed to silently replace a prior
 library bottle with a dependency source build.
 
+### Native And Target Dependency Realms
+
+A Kandelo target Formula and a package in its native host-tool closure can have
+the same short Homebrew name. For example, the Kandelo `bzip2` build can require
+native WABT, whose host-side dependency closure can itself contain native `bzip2`.
+Putting both packages in `/home/linuxbrew/.linuxbrew/Cellar/bzip2` makes
+Homebrew treat the host package as a recursive dependency of the target
+Formula. Dependency ordering cannot fix that namespace collision.
+
+The publisher therefore gives the target and native realms separate Homebrew
+prefixes (installation roots), caches, temporary directories, configuration
+stores, and home directories. The two services cannot access each other's
+mutable cache, temporary, configuration, or home state. The native service also
+cannot access the target prefix; the target service sees the native prefix only
+through a read-only mount. Both use the same reviewed Homebrew overlay as
+read-only source. Before any Formula Ruby executes, the static Formula parser
+derives a bounded plan from the selected Formula's direct `depends_on`
+declarations. An unqualified external dependency must be explicitly tagged
+`:build`, `:test`, or both. Untagged and `:recommended` external runtime
+dependencies fail because portable runtime dependencies must come from the
+selected Kandelo tap; `:optional` dependencies are not selected. Same-tap
+dependencies remain in the target plan. The resulting control data has three
+lists:
+
+- `build` contains only direct native dependencies tagged `:build` (including
+  `[:build, :test]`). The isolated Homebrew overlay uses this root-owned list
+  to populate the selected Formula's build environment without resolving or
+  installing a recursive dependency closure in the target prefix.
+- `build_and_test` is used by the bottle builder and includes native tools
+  needed to build or test the Formula.
+- `runtime_and_test` is used by the bottle verifier and excludes dependencies
+  that are only tagged `:build`.
+
+The native launcher installs each selected direct dependency as an explicit
+`homebrew/core/<name>` reference under an ephemeral native prefix. Each install
+uses Homebrew's normal dependency resolution and completes its full transitive
+closure before the next direct dependency starts. Separate invocations avoid a
+combined install holding a top-level lock for a tool while another selected
+Formula's dependency closure needs that same tool. The publisher then uses the
+isolated native Homebrew to verify that each planned direct name resolves to
+exactly one installed `homebrew/core` Formula with the expected canonical name.
+`brew missing` must also report no missing dependencies before the native tree
+can be used.
+
+The native prefix is deliberately short enough to fit in the fixed
+`/home/linuxbrew/.linuxbrew` strings stored in official host-tool bottles.
+Native Brew alone receives `HOMEBREW_RELOCATE_BUILD_PREFIX=1`, so Homebrew can
+pour those bottles and rewrite their build prefix into the isolated native
+realm. The target Brew and target Formula never receive that setting. These
+Linuxbrew bottles provide CI executables such as CMake or WABT; they are not
+Kandelo package dependencies, target bottle contents, or VFS inputs. Kandelo
+bottles are still built from the upstream sources declared by the tap Formulae.
+
+After those checks, the publisher makes the complete native prefix root-owned
+and read-only. The target build can read that sealed prefix, but only each
+planned direct dependency's selected keg is copied into a root-owned, read-only
+proxy under the canonical target Cellar. Its target `opt` link points to that
+real target keg. Homebrew requires a keg's grandparent to resolve to the active
+Cellar, so a rack symlink into the native prefix is not a valid substitute.
+Unselected keg versions and native transitive dependencies stay in the native
+prefix and cannot claim target Cellar names. Native install logs remain
+separate from Kandelo bottle dependency provenance.
+
+Pinned Homebrew normally tries to install Bubblewrap into its active prefix
+before `brew test`. The publisher overlay suppresses that automatic install
+while a protected Kandelo target plan is active. A usable Bubblewrap already
+provided by the host can still be detected and used, but Homebrew cannot fetch
+unplanned native code into the target Cellar after isolation begins. Native
+Homebrew has no target plan and retains its normal sandbox dependency behavior.
+The dedicated build identity, transient systemd service, `NoNewPrivileges`,
+immutable inputs, and teardown checks remain the publisher's primary process
+boundary when the host cannot create a rootless Bubblewrap sandbox. The builder
+also snapshots the planned target Cellar after installation and rejects any
+Formula test or bottle command that adds or removes a rack or keg.
+
+The publisher force-pours the planned same-tap Kandelo bottles into the target
+prefix. It then runs the selected target install with
+`--ignore-dependencies`: the builder combines that flag with `--build-bottle`,
+while the verifier combines it with `--force-bottle`. Homebrew therefore uses
+the already provisioned target bottles and exact native proxy kegs instead of
+resolving both package realms into one Cellar. The verifier still runs the
+Formula's `test do` block after pouring the target bottle.
+
+This separation changes publisher orchestration, not Kandelo's process ABI or
+a package's target build inputs. By itself it does not require an ABI version
+bump, a `build.toml` package revision change, or a rebuild of existing package
+archives or bottle outputs. Those artifacts change only when their actual
+output inputs change.
+
 After building the consumer, the builder checks every same-tap dependency in
 its `INSTALL_RECEIPT.json`. The installed dependency receipt must say
 `built_as_bottle: true`, `poured_from_bottle: true`, and
@@ -217,7 +320,10 @@ dependency graph.
 
 The exact same-tap closure resolved before installation must equal the closure
 recorded in the target receipt. A missing or unexpected receipt entry fails the
-build before any publication handoff is created.
+build before any publication handoff is created. A target receipt entry outside
+the selected tap is rejected rather than omitted from provenance: native tools
+belong only to the sealed host realm, and a Linux executable must never become a
+Kandelo bottle's declared runtime dependency.
 
 Fresh verifier and finalizer validation independently derive that closure from
 the exact tap without evaluating Formula Ruby. Same-tap dependencies must use
@@ -352,9 +458,10 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
    through a root-owned launcher under the canonical
-   `/home/linuxbrew/.linuxbrew` prefix. This preserves the selected prefix and
-   Cellar so ordinary host build-dependency bottles remain usable. Within that
-   read-only build, all Formula-evaluating Homebrew commands run as a distinct
+   `/home/linuxbrew/.linuxbrew` target prefix. Native host dependencies use a
+   separate ephemeral prefix, preventing their Cellar racks from colliding
+   with Kandelo target Formulae. Within that read-only build, all
+   Formula-evaluating Homebrew commands run as a distinct
    unprivileged user. The original Kandelo and tap checkouts remain hidden from
    that identity. Each transient service receives root-created, read-only bind
    aliases for those exact trees, and the Kandelo SDK environment points only
@@ -399,14 +506,27 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    Formula build and test without publisher credentials. The Kandelo bottle tag
    is scoped to same-tap dependency pours and final bottle creation. Homebrew
    resolves both the runtime-only same-tap closure used for provenance and the
-   complete same-tap build/test closure; their bounded union is force-poured as
-   Kandelo bottles before native dependencies are resolved. Homebrew then
-   completes the remaining declared build and test closure with normal host
-   semantics, so native tools do not inherit a Kandelo target tag and no
+   complete same-tap build/test closure. A static direct-host plan separately
+   selects native build and test tools. Native Homebrew installs their full
+   closure in its own state realm, the publisher validates their canonical
+   `homebrew/core` identities, and each sealed direct tool receives a canonical
+   read-only proxy keg in the target prefix. Plain-name `brew list` must
+   recognize every proxy before the target build starts. The bounded same-tap
+   union is then force-poured as Kandelo
+   bottles, and the target Formula is built with dependency resolution
+   disabled. Native tools therefore do not inherit a Kandelo target tag, and no
    same-tap dependency can fall back to a source build. The workflow also
+   fetches the Dash, coreutils, grep, and sed test-runtime archives without
+   source fallback. The resolver normally links those outputs to its
+   workflow-user cache, which the isolated Formula identity cannot access, so
+   the publisher transactionally replaces that link tree with self-contained
+   regular files before it exposes the Kandelo checkout through a read-only
+   source alias.
+   The workflow also
    materializes the exact `formula_test` and `bottle` groups from pinned
    Homebrew's frozen Gemfile into the temporary overlay, validates their group
-   and vendor-version state, and seals those bytes before Formula evaluation.
+   and vendor-version state, normalizes archive-provided modes, and seals those
+   bytes before Formula evaluation.
    Missing gems therefore fail during trusted preparation instead of causing a
    later `brew test` or `brew bottle` process to mutate protected source. Before
    Formula execution, the workflow uses the repository's Nix dev shell and declared Node
@@ -447,9 +567,12 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    The archive inspector also streams every byte of every regular member and
    rejects any exact local build root supplied by the trusted workflow. The
    build job supplies its GitHub workspace, runner-workspace parent, runner
-   temp, isolated shared/Homebrew temp roots, and dedicated build home while
-   those randomized paths are still known. Fresh uploader, verifier, and
-   finalizer jobs repeat the check with their trusted workspace, runner temp,
+   temp, isolated shared/Homebrew temp roots, exact ephemeral native Homebrew
+   root, and dedicated build home while those randomized paths are still known.
+   The reviewed builder records that canonical native root in its local
+   `build.env`; the post-build validator uses it as trusted control data and
+   never includes the environment file in the handoff. Fresh uploader, verifier,
+   and finalizer jobs repeat the check with their trusted workspace, runner temp,
    and build-home facts. Roots never come from the artifact handoff, and a
    missing, relative, non-normalized, duplicate, or excessive root list fails
    closed. Matching is streaming and includes chunk-boundary matches; it does
@@ -504,9 +627,14 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    reconstructed canonical metadata. In an isolated identity it then runs the
    reviewed pinned Homebrew implementation with the Kandelo platform patch. The
    verifier independently resolves the runtime-only same-tap closure and the
-   complete runtime/test closure. It force-pours the same-tap portion from prior
-   Kandelo bottles, then installs each remaining native runtime or test tool
-   explicitly without reintroducing the target's pure build closure. It also
+   complete runtime/test closure. Its static direct-host plan excludes pure
+   build tools, then native Homebrew installs the remaining runtime/test tools
+   and their complete closure under the separate native state realm. After
+   canonical core validation, only the sealed direct tools receive read-only
+   proxy kegs in the target prefix, and plain-name `brew list` must recognize
+   them there. The verifier then force-pours the same-tap portion from prior
+   Kandelo bottles and pours the target bottle with dependency resolution
+   disabled. It also
    provisions a separate protected Playwright Chromium
    tree for the verifier identity. Runtime provenance remains limited to the
    runtime-only closure. The target cache then starts empty, source fallback is

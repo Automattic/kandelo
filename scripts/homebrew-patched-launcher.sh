@@ -11,6 +11,11 @@ HOMEBREW_PATCHED_BREW_BIN=""
 HOMEBREW_PATCHED_PROTECTED_DIR=""
 HOMEBREW_PATCHED_SOURCE_ALIAS_DIR=""
 HOMEBREW_PATCHED_INTEGRITY_SHA256=""
+HOMEBREW_PATCHED_OVERLAY_OWNER_UID=""
+HOMEBREW_PATCHED_OVERLAY_SEAL_STATE=""
+HOMEBREW_PATCHED_DEPENDENCY_PLAN=""
+HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
+HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE=""
 HOMEBREW_PATCHED_SUDO_BIN=""
 HOMEBREW_PATCHED_SYSTEMD_RUN_BIN=""
 HOMEBREW_PATCHED_SYSTEMCTL_BIN=""
@@ -21,6 +26,15 @@ HOMEBREW_PATCHED_BUILD_USER=""
 HOMEBREW_PATCHED_BUILD_UID=""
 HOMEBREW_PATCHED_SYSTEMD_SLICE=""
 HOMEBREW_PATCHED_TEARDOWN_COMPLETE=0
+HOMEBREW_PATCHED_NATIVE_PREFIX=""
+HOMEBREW_PATCHED_NATIVE_CACHE=""
+HOMEBREW_PATCHED_NATIVE_TEMP=""
+HOMEBREW_PATCHED_NATIVE_CONFIG=""
+HOMEBREW_PATCHED_NATIVE_HOME=""
+HOMEBREW_PATCHED_NATIVE_BREW_BIN=""
+HOMEBREW_PATCHED_NATIVE_RUNNER=""
+HOMEBREW_PATCHED_NATIVE_SEALED=0
+HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=()
 
 homebrew_sha256_stream() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -35,6 +49,168 @@ homebrew_patched_launcher_integrity() {
     git -C "$HOMEBREW_PATCHED_OVERLAY" diff --binary HEAD
     git -C "$HOMEBREW_PATCHED_OVERLAY" status --porcelain=v1 --untracked-files=all
   } | homebrew_sha256_stream
+}
+
+homebrew_patched_launcher_snapshot_target_cellar_layout() {
+  if [ "$#" -ne 0 ]; then
+    echo "homebrew_patched_launcher_snapshot_target_cellar_layout: expected no arguments" >&2
+    return 2
+  fi
+  local cellar="$HOMEBREW_PATCHED_PREFIX/Cellar" rack rack_name keg
+  local -a entries=()
+  if [ -z "$HOMEBREW_PATCHED_PREFIX" ] || [ ! -d "$cellar" ] || [ -L "$cellar" ]; then
+    echo "homebrew-patched-launcher: target Cellar is unavailable" >&2
+    return 2
+  fi
+  for rack in "$cellar"/*; do
+    [ -e "$rack" ] || [ -L "$rack" ] || continue
+    if [ ! -d "$rack" ] || [ -L "$rack" ]; then
+      echo "homebrew-patched-launcher: target Cellar rack is not a real directory: $rack" >&2
+      return 1
+    fi
+    rack_name="${rack##*/}"
+    entries+=("rack:$rack_name")
+    for keg in "$rack"/*; do
+      [ -e "$keg" ] || [ -L "$keg" ] || continue
+      if [ ! -d "$keg" ] || [ -L "$keg" ]; then
+        echo "homebrew-patched-launcher: target Cellar keg is not a real directory: $keg" >&2
+        return 1
+      fi
+      entries+=("keg:$rack_name/${keg##*/}")
+    done
+  done
+  if [ "${#entries[@]}" -gt 0 ]; then
+    printf '%s\n' "${entries[@]}" | LC_ALL=C sort
+  fi
+}
+
+homebrew_patched_launcher_stage_dependency_plan() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_stage_dependency_plan: expected PLAN" >&2
+    return 2
+  fi
+  local source="$1" destination bytes plan_sha
+  if [ -z "$HOMEBREW_PATCHED_PREFIX" ] || [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    echo "homebrew-patched-launcher: stage the dependency plan after preparation and before isolation" >&2
+    return 2
+  fi
+  if [ ! -f "$source" ] || [ -L "$source" ] || \
+     [ "$(stat -c '%h' "$source" 2>/dev/null || stat -f '%l' "$source")" != "1" ]; then
+    echo "homebrew-patched-launcher: dependency plan is not a private regular file" >&2
+    return 2
+  fi
+  bytes="$(wc -c <"$source" | tr -d '[:space:]')"
+  if ! [[ "$bytes" =~ ^[0-9]+$ ]] || [ "$bytes" -gt 65536 ]; then
+    echo "homebrew-patched-launcher: dependency plan exceeds the size limit" >&2
+    return 2
+  fi
+  destination="$HOMEBREW_PATCHED_PREFIX/.kandelo-publisher-build-dependencies.json"
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
+    echo "homebrew-patched-launcher: dependency plan destination already exists" >&2
+    return 1
+  fi
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN="$destination"
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE="staging"
+  if ! cp "$source" "$destination" || ! chmod 0444 "$destination" ||
+     ! plan_sha="$(homebrew_sha256_stream <"$destination")"; then
+    echo "homebrew-patched-launcher: could not stage the dependency plan" >&2
+    homebrew_patched_launcher_remove_dependency_plan || true
+    return 1
+  fi
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256="$plan_sha"
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE="ready"
+  if ! homebrew_patched_launcher_verify_dependency_plan; then
+    HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE="staging"
+    homebrew_patched_launcher_remove_dependency_plan || true
+    return 1
+  fi
+}
+
+homebrew_patched_launcher_verify_dependency_plan() {
+  [ -n "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" ] || return 0
+  local expected="$HOMEBREW_PATCHED_PREFIX/.kandelo-publisher-build-dependencies.json"
+  local state prefix_uid actual_sha
+  if [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE" != "ready" ] || \
+     [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" != "$expected" ] || \
+     [ ! -f "$expected" ] || [ -L "$expected" ]; then
+    echo "homebrew-patched-launcher: protected dependency plan changed" >&2
+    return 1
+  fi
+  if state="$(stat -c '%u:%a:%h:%s' "$expected" 2>/dev/null)"; then
+    prefix_uid="$(stat -c '%u' "$HOMEBREW_PATCHED_PREFIX")"
+  else
+    state="$(stat -f '%u:%Lp:%l:%z' "$expected")"
+    prefix_uid="$(stat -f '%u' "$HOMEBREW_PATCHED_PREFIX")"
+  fi
+  case "$state" in
+    "$prefix_uid":444:1:*) ;;
+    *)
+      echo "homebrew-patched-launcher: protected dependency plan ownership or mode is unsafe" >&2
+      return 1
+      ;;
+  esac
+  actual_sha="$(homebrew_sha256_stream <"$expected")"
+  if [ -z "$HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256" ] || \
+     [ "$actual_sha" != "$HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256" ]; then
+    echo "homebrew-patched-launcher: protected dependency plan content changed" >&2
+    return 1
+  fi
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$HOMEBREW_PATCHED_BUILD_USER" -- \
+      /usr/bin/test -r "$expected" &&
+      ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$HOMEBREW_PATCHED_BUILD_USER" -- \
+        /usr/bin/test -w "$expected" || {
+        echo "homebrew-patched-launcher: Formula identity has unsafe dependency plan access" >&2
+        return 1
+      }
+  fi
+}
+
+homebrew_patched_launcher_remove_dependency_plan() {
+  [ -n "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" ] || return 0
+  if [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE" = "staging" ]; then
+    local expected="$HOMEBREW_PATCHED_PREFIX/.kandelo-publisher-build-dependencies.json"
+    local destination_uid prefix_uid destination_links
+    if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ] || \
+       [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" != "$expected" ]; then
+      echo "homebrew-patched-launcher: refusing to remove an unsafe partial dependency plan" >&2
+      return 1
+    fi
+    if [ -e "$expected" ] || [ -L "$expected" ]; then
+      if [ ! -f "$expected" ] || [ -L "$expected" ]; then
+        echo "homebrew-patched-launcher: partial dependency plan is not a regular file" >&2
+        return 1
+      fi
+      if destination_uid="$(stat -c '%u' "$expected" 2>/dev/null)"; then
+        prefix_uid="$(stat -c '%u' "$HOMEBREW_PATCHED_PREFIX")"
+        destination_links="$(stat -c '%h' "$expected")"
+      else
+        destination_uid="$(stat -f '%u' "$expected")"
+        prefix_uid="$(stat -f '%u' "$HOMEBREW_PATCHED_PREFIX")"
+        destination_links="$(stat -f '%l' "$expected")"
+      fi
+      if [ "$destination_uid" != "$prefix_uid" ] || [ "$destination_links" != "1" ]; then
+        echo "homebrew-patched-launcher: partial dependency plan ownership is unsafe" >&2
+        return 1
+      fi
+      rm -f -- "$expected" || return
+    fi
+    HOMEBREW_PATCHED_DEPENDENCY_PLAN=""
+    HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
+    HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE=""
+    return 0
+  fi
+  homebrew_patched_launcher_verify_dependency_plan || return
+  if [ -n "$HOMEBREW_PATCHED_SUDO_BIN" ]; then
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/rm -f -- \
+      "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" || return
+  else
+    rm -f -- "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" || return
+  fi
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN=""
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE=""
 }
 
 homebrew_assert_tree_not_writable_by_user() {
@@ -52,7 +228,7 @@ homebrew_assert_tree_not_writable_by_user() {
     return 2
   }
   if ! writable="$("$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- \
-    find "$tree" -xdev \
+    /usr/bin/find "$tree" -xdev \
       \( -writable -print -quit \) -o \
       \( -type d \( ! -readable -o ! -executable \) -prune \))"; then
     echo "homebrew-patched-launcher: could not inspect protected source as $user: $tree" >&2
@@ -71,13 +247,17 @@ homebrew_assert_tree_not_replaceable_by_user() {
   fi
   local user="$1" current="$2" parent mode current_uid parent_uid user_uid
   user_uid="$(id -u "$user")"
-  current="$(cd "$current" && pwd -P)"
+  current="$("$HOMEBREW_PATCHED_SUDO_BIN" -n -- \
+    /usr/bin/realpath -- "$current")" || {
+    echo "homebrew-patched-launcher: could not resolve protected source: $current" >&2
+    return 2
+  }
   while [ "$current" != "/" ]; do
     parent="$(dirname "$current")"
-    if "$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- test -w "$parent"; then
-      mode="$(stat -c '%a' "$parent")"
-      current_uid="$(stat -c '%u' "$current")"
-      parent_uid="$(stat -c '%u' "$parent")"
+    if "$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- /usr/bin/test -w "$parent"; then
+      mode="$(/usr/bin/stat -c '%a' "$parent")"
+      current_uid="$(/usr/bin/stat -c '%u' "$current")"
+      parent_uid="$(/usr/bin/stat -c '%u' "$parent")"
       if [ $((8#$mode & 01000)) -eq 0 ] || \
          [ "$current_uid" = "$user_uid" ] || [ "$parent_uid" = "$user_uid" ]; then
         echo "homebrew-patched-launcher: build user can replace protected source: $current" >&2
@@ -86,6 +266,197 @@ homebrew_assert_tree_not_replaceable_by_user() {
     fi
     current="$parent"
   done
+}
+
+homebrew_patched_launcher_verify_overlay_seal() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_verify_overlay_seal: expected BUILD_USER" >&2
+    return 2
+  fi
+  local build_user="$1" unsafe_entry
+  if [ "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" != "sealed" ] || \
+     [ -z "$HOMEBREW_PATCHED_OVERLAY_OWNER_UID" ] || \
+     [ ! -d "$HOMEBREW_PATCHED_OVERLAY" ] || \
+     [ -L "$HOMEBREW_PATCHED_OVERLAY" ]; then
+    echo "homebrew-patched-launcher: patched Homebrew overlay is not sealed" >&2
+    return 1
+  fi
+  unsafe_entry="$("$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+    "$HOMEBREW_PATCHED_OVERLAY" -xdev \
+    \( ! -uid "$HOMEBREW_PATCHED_OVERLAY_OWNER_UID" -o \
+       ! \( -type d -o -type f -o -type l \) -o \
+       \( -type f -links +1 \) -o \
+       \( -type d ! -perm 0555 \) -o \
+       \( -type f \( ! -perm -0444 -o -perm /0222 -o -perm /07000 \) \) \
+    \) -print -quit)" || {
+    echo "homebrew-patched-launcher: could not inspect the sealed Homebrew overlay" >&2
+    return 2
+  }
+  if [ -n "$unsafe_entry" ]; then
+    echo "homebrew-patched-launcher: sealed Homebrew overlay entry is unsafe: $unsafe_entry" >&2
+    return 1
+  fi
+  homebrew_patched_launcher_assert_overlay_symlinks_contained || return
+  homebrew_assert_tree_not_writable_by_user \
+    "$build_user" "$HOMEBREW_PATCHED_OVERLAY" || return
+  homebrew_assert_tree_not_replaceable_by_user \
+    "$build_user" "$HOMEBREW_PATCHED_OVERLAY" || return
+}
+
+homebrew_patched_launcher_assert_overlay_symlinks_contained() {
+  if [ "$#" -ne 0 ]; then
+    echo "homebrew_patched_launcher_assert_overlay_symlinks_contained: expected no arguments" >&2
+    return 2
+  fi
+  local physical_overlay
+  physical_overlay="$(cd "$HOMEBREW_PATCHED_OVERLAY" && pwd -P)" || {
+    echo "homebrew-patched-launcher: could not resolve the Homebrew overlay" >&2
+    return 2
+  }
+  if ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+       "$HOMEBREW_PATCHED_OVERLAY" -xdev -type l \
+       -exec /usr/bin/bash -c '
+         root="$1"
+         shift
+         for link in "$@"; do
+           raw_target="$(/usr/bin/readlink -- "$link")" || {
+             printf "homebrew-patched-launcher: overlay symlink cannot be read: %s\\n" "$link" >&2
+             exit 1
+           }
+           case "$raw_target" in
+             /*) lexical_input="$raw_target" ;;
+             *) lexical_input="${link%/*}/$raw_target" ;;
+           esac
+           lexical_target="$(/usr/bin/realpath -m -s -- "$lexical_input")" || {
+             printf "homebrew-patched-launcher: overlay symlink target cannot be normalized: %s\\n" "$link" >&2
+             exit 1
+           }
+           case "$lexical_target" in
+             "$root"|"$root"/*) ;;
+             *)
+               printf "homebrew-patched-launcher: overlay symlink crosses its worktree: %s\\n" "$link" >&2
+               exit 1
+               ;;
+           esac
+           resolved="$(/usr/bin/realpath -- "$link")" || {
+             printf "homebrew-patched-launcher: overlay symlink is unresolved: %s\\n" "$link" >&2
+             exit 1
+           }
+           case "$resolved" in
+             "$root"|"$root"/*) ;;
+             *)
+               printf "homebrew-patched-launcher: overlay symlink escapes its worktree: %s\\n" "$link" >&2
+               exit 1
+               ;;
+           esac
+         done
+       ' bash "$physical_overlay" {} +; then
+    echo "homebrew-patched-launcher: Homebrew overlay symlink validation failed" >&2
+    return 1
+  fi
+}
+
+homebrew_patched_launcher_seal_overlay() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_seal_overlay: expected BUILD_USER" >&2
+    return 2
+  fi
+  local build_user="$1" unsafe_entry
+  if [ -n "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" ] || \
+     [ -z "$HOMEBREW_PATCHED_SUDO_BIN" ] || \
+     [ ! -d "$HOMEBREW_PATCHED_OVERLAY" ] || \
+     [ -L "$HOMEBREW_PATCHED_OVERLAY" ]; then
+    echo "homebrew-patched-launcher: patched Homebrew overlay cannot be sealed" >&2
+    return 2
+  fi
+  HOMEBREW_PATCHED_OVERLAY_OWNER_UID="$(/usr/bin/id -u)"
+  if [ "$HOMEBREW_PATCHED_OVERLAY_OWNER_UID" = \
+       "$(/usr/bin/id -u "$build_user")" ]; then
+    echo "homebrew-patched-launcher: overlay owner must differ from the build user" >&2
+    return 2
+  fi
+  unsafe_entry="$("$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+    "$HOMEBREW_PATCHED_OVERLAY" -xdev \
+    \( ! -uid "$HOMEBREW_PATCHED_OVERLAY_OWNER_UID" -o \
+       ! \( -type d -o -type f -o -type l \) -o \
+       \( -type f -links +1 \) \) -print -quit)" || {
+    echo "homebrew-patched-launcher: could not inspect the Homebrew overlay before sealing" >&2
+    return 2
+  }
+  if [ -n "$unsafe_entry" ]; then
+    echo "homebrew-patched-launcher: Homebrew overlay entry cannot be sealed: $unsafe_entry" >&2
+    return 1
+  fi
+  homebrew_patched_launcher_assert_overlay_symlinks_contained || return
+
+  HOMEBREW_PATCHED_OVERLAY_SEAL_STATE="sealing"
+  if ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+       "$HOMEBREW_PATCHED_OVERLAY" -xdev -type d \
+       -exec /usr/bin/chmod 0555 {} + || \
+     ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+       "$HOMEBREW_PATCHED_OVERLAY" -xdev -type f -perm /0111 \
+       -exec /usr/bin/chmod 0555 {} + || \
+     ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+       "$HOMEBREW_PATCHED_OVERLAY" -xdev -type f ! -perm /0111 \
+       -exec /usr/bin/chmod 0444 {} +; then
+    echo "homebrew-patched-launcher: could not seal the Homebrew overlay" >&2
+    return 1
+  fi
+  HOMEBREW_PATCHED_OVERLAY_SEAL_STATE="sealed"
+  homebrew_patched_launcher_verify_overlay_seal "$build_user"
+}
+
+homebrew_patched_launcher_restore_overlay_for_cleanup() {
+  if [ "$#" -ne 0 ]; then
+    echo "homebrew_patched_launcher_restore_overlay_for_cleanup: expected no arguments" >&2
+    return 2
+  fi
+  case "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" in
+    "") return 0 ;;
+    cleanup-ready) return 0 ;;
+    sealing|sealed) ;;
+    *)
+      echo "homebrew-patched-launcher: Homebrew overlay seal state is invalid" >&2
+      return 2
+      ;;
+  esac
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ] && \
+     [ "$HOMEBREW_PATCHED_TEARDOWN_COMPLETE" != "1" ]; then
+    echo "homebrew-patched-launcher: refusing to restore the overlay before Formula process teardown" >&2
+    return 1
+  fi
+  if [ ! -d "$HOMEBREW_PATCHED_OVERLAY" ] || [ -L "$HOMEBREW_PATCHED_OVERLAY" ] || \
+     [ "$(/usr/bin/stat -c '%u' "$HOMEBREW_PATCHED_OVERLAY")" != \
+       "$HOMEBREW_PATCHED_OVERLAY_OWNER_UID" ]; then
+    echo "homebrew-patched-launcher: refusing to restore a changed Homebrew overlay" >&2
+    return 1
+  fi
+  if ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+       "$HOMEBREW_PATCHED_OVERLAY" -xdev -type d \
+       -exec /usr/bin/chmod u+rwx {} + || \
+     ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+       "$HOMEBREW_PATCHED_OVERLAY" -xdev -type f \
+       -exec /usr/bin/chmod u+rw {} +; then
+    echo "homebrew-patched-launcher: could not restore the Homebrew overlay for cleanup" >&2
+    return 1
+  fi
+  HOMEBREW_PATCHED_OVERLAY_SEAL_STATE="cleanup-ready"
+}
+
+homebrew_patched_launcher_worktree_registration_status() {
+  if [ "$#" -ne 2 ]; then
+    echo "homebrew_patched_launcher_worktree_registration_status: expected REPO WORKTREE" >&2
+    return 2
+  fi
+  local repo="$1" worktree="$2" listing line
+  listing="$(git -C "$repo" worktree list --porcelain)" || {
+    echo "homebrew-patched-launcher: could not inspect Homebrew worktree registrations" >&2
+    return 2
+  }
+  while IFS= read -r line; do
+    [ "$line" = "worktree $worktree" ] && return 0
+  done <<<"$listing"
+  return 1
 }
 
 homebrew_assert_protected_host_executable() {
@@ -99,16 +470,16 @@ homebrew_assert_protected_host_executable() {
     echo "homebrew-patched-launcher: $label must be the protected $expected" >&2
     return 2
   fi
-  resolved="$(readlink -f -- "$path" 2>/dev/null || true)"
+  resolved="$(/usr/bin/readlink -f -- "$path" 2>/dev/null || true)"
   if [ -L "$path" ]; then
-    parent="$(dirname "$path")"
-    parent_mode="$(stat -c '%a' "$parent" 2>/dev/null || true)"
+    parent="${path%/*}"
+    parent_mode="$(/usr/bin/stat -c '%a' "$parent" 2>/dev/null || true)"
     if [ -z "$symlink_target" ] || [ "$resolved" != "$symlink_target" ] || \
-       [ "$(stat -c '%u' "$path" 2>/dev/null || true)" != "0" ] || \
-       [ "$(stat -c '%u' "$parent" 2>/dev/null || true)" != "0" ] || \
+       [ "$(/usr/bin/stat -c '%u' "$path" 2>/dev/null || true)" != "0" ] || \
+       [ "$(/usr/bin/stat -c '%u' "$parent" 2>/dev/null || true)" != "0" ] || \
        ! [[ "$parent_mode" =~ ^[0-7]{3,4}$ ]] || \
        [ $((8#$parent_mode & 0022)) -ne 0 ] || \
-       "$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- test -w "$parent"; then
+       "$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- /usr/bin/test -w "$parent"; then
       echo "homebrew-patched-launcher: $label symlink is not protected" >&2
       return 2
     fi
@@ -116,24 +487,160 @@ homebrew_assert_protected_host_executable() {
     echo "homebrew-patched-launcher: $label resolves outside $expected" >&2
     return 2
   fi
-  mode="$(stat -Lc '%a' "$resolved" 2>/dev/null || true)"
+  mode="$(/usr/bin/stat -Lc '%a' "$resolved" 2>/dev/null || true)"
   if [ ! -f "$resolved" ] || [ ! -x "$resolved" ] || \
-     [ "$(stat -Lc '%u' "$resolved" 2>/dev/null || true)" != "0" ] || \
+     [ "$(/usr/bin/stat -Lc '%u' "$resolved" 2>/dev/null || true)" != "0" ] || \
      ! [[ "$mode" =~ ^[0-7]{3,4}$ ]] || [ $((8#$mode & 0022)) -ne 0 ]; then
     echo "homebrew-patched-launcher: $label must be the protected $expected" >&2
     return 2
   fi
-  if "$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- test -w "$path"; then
+  if "$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- /usr/bin/test -w "$path"; then
     echo "homebrew-patched-launcher: build user can replace $label" >&2
     return 2
   fi
 }
 
+homebrew_patched_launcher_remove_native_bridges() {
+  local formula target_cellar target_opt native_rack native_opt native_opt_target
+  local native_version target_rack target_keg target_opt_link expected_opt_target
+  local rack_present opt_present rack_state formula_status status=0
+  local -a remaining_bridges=()
+  [ -n "$HOMEBREW_PATCHED_PREFIX" ] || return 0
+  target_cellar="$HOMEBREW_PATCHED_PREFIX/Cellar"
+  target_opt="$HOMEBREW_PATCHED_PREFIX/opt"
+  for formula in "${HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES[@]}"; do
+    formula_status=0
+    rack_present=0
+    opt_present=0
+    native_rack="$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar/$formula"
+    native_opt="$HOMEBREW_PATCHED_NATIVE_PREFIX/opt/$formula"
+    native_opt_target="$(cd "$native_opt" && pwd -P)" || formula_status=1
+    if [ "$formula_status" -eq 0 ] && \
+       [ "${native_opt_target%/*}" != "$native_rack" ]; then
+      echo "homebrew-patched-launcher: native Formula opt link changed before bridge cleanup: $formula" >&2
+      formula_status=1
+    fi
+    native_version="${native_opt_target##*/}"
+    target_rack="$target_cellar/$formula"
+    target_keg="$target_rack/$native_version"
+    target_opt_link="$target_opt/$formula"
+    expected_opt_target="../Cellar/$formula/$native_version"
+
+    if [ -e "$target_rack" ] || [ -L "$target_rack" ]; then
+      if [ -d "$target_rack" ] && [ ! -L "$target_rack" ]; then
+        rack_present=1
+      else
+        echo "homebrew-patched-launcher: refusing to remove changed native Formula rack: $target_rack" >&2
+        formula_status=1
+      fi
+    fi
+    if [ -e "$target_opt_link" ] || [ -L "$target_opt_link" ]; then
+      if [ -L "$target_opt_link" ] && \
+         [ "$(/usr/bin/readlink "$target_opt_link")" = "$expected_opt_target" ]; then
+        opt_present=1
+      else
+        echo "homebrew-patched-launcher: refusing to remove changed native Formula opt bridge: $target_opt_link" >&2
+        formula_status=1
+      fi
+    fi
+    if [ "$rack_present" -eq 1 ] && [ "$opt_present" -eq 1 ] && \
+       { [ ! -d "$target_keg" ] || [ -L "$target_keg" ] || \
+         [ "$(cd "$target_keg" && pwd -P)" != "$target_keg" ]; }; then
+      echo "homebrew-patched-launcher: refusing to remove changed native Formula keg: $target_keg" >&2
+      formula_status=1
+    fi
+    if [ "$rack_present" -eq 1 ] && [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+      rack_state="$(/usr/bin/stat -c '%u:%g:%a' "$target_rack")"
+      case "$rack_state:$opt_present" in
+        0:0:700:0)
+          if "$HOMEBREW_PATCHED_SUDO_BIN" -n -H \
+               -u "$HOMEBREW_PATCHED_BUILD_USER" -- \
+               /usr/bin/test -r "$target_rack" || \
+             "$HOMEBREW_PATCHED_SUDO_BIN" -n -H \
+               -u "$HOMEBREW_PATCHED_BUILD_USER" -- \
+               /usr/bin/test -w "$target_rack" || \
+             "$HOMEBREW_PATCHED_SUDO_BIN" -n -H \
+               -u "$HOMEBREW_PATCHED_BUILD_USER" -- \
+               /usr/bin/test -x "$target_rack"; then
+            echo "homebrew-patched-launcher: build user can access partial native Formula proxy: $target_rack" >&2
+            formula_status=1
+          fi
+          ;;
+        0:0:555:0|0:0:555:1) ;;
+        *)
+          echo "homebrew-patched-launcher: refusing to remove changed native Formula proxy: $target_rack" >&2
+          formula_status=1
+          ;;
+      esac
+      if [ "$formula_status" -eq 0 ]; then
+        if [ "$rack_state" != "0:0:700" ]; then
+          homebrew_assert_tree_not_writable_by_user \
+            "$HOMEBREW_PATCHED_BUILD_USER" "$target_rack" || formula_status=1
+        fi
+        if [ "$formula_status" -eq 0 ]; then
+          homebrew_assert_tree_not_replaceable_by_user \
+            "$HOMEBREW_PATCHED_BUILD_USER" "$target_rack" || formula_status=1
+        fi
+      fi
+    fi
+
+    if [ "$formula_status" -eq 0 ] && [ "$opt_present" -eq 1 ]; then
+      if [ -n "$HOMEBREW_PATCHED_SUDO_BIN" ]; then
+        "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/rm -f -- \
+          "$target_opt_link" || formula_status=1
+      else
+        rm -f -- "$target_opt_link" || formula_status=1
+      fi
+    fi
+    if [ "$formula_status" -eq 0 ] && [ "$rack_present" -eq 1 ]; then
+      if [ -n "$HOMEBREW_PATCHED_SUDO_BIN" ]; then
+        "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/rm -rf -- \
+          "$target_rack" || formula_status=1
+      else
+        find "$target_rack" -type d -exec chmod u+w {} + && \
+          rm -rf -- "$target_rack" || formula_status=1
+      fi
+    fi
+    if [ "$formula_status" -ne 0 ]; then
+      remaining_bridges+=("$formula")
+      status=1
+    fi
+  done
+  HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=("${remaining_bridges[@]}")
+  return "$status"
+}
+
 homebrew_patched_launcher_cleanup() {
+  local teardown_status worktree_registration_status
   if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ] && \
      [ "$HOMEBREW_PATCHED_TEARDOWN_COMPLETE" != "1" ]; then
-    homebrew_patched_launcher_teardown "$HOMEBREW_PATCHED_BUILD_USER" \
-      >/dev/null 2>&1 || true
+    if homebrew_patched_launcher_teardown "$HOMEBREW_PATCHED_BUILD_USER" \
+      >/dev/null; then
+      :
+    else
+      teardown_status="$?"
+      echo "homebrew-patched-launcher: Formula process teardown failed; preserving launcher state for retry" >&2
+      return "$teardown_status"
+    fi
+  fi
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ] && \
+     [ "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" = "sealed" ]; then
+    if ! homebrew_patched_launcher_verify_overlay_seal \
+         "$HOMEBREW_PATCHED_BUILD_USER" || \
+       [ -z "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ] || \
+       [ "$(homebrew_patched_launcher_integrity)" != \
+         "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ]; then
+      echo "homebrew-patched-launcher: patched Homebrew overlay changed; preserving launcher state for inspection" >&2
+      return 1
+    fi
+  fi
+  if ! homebrew_patched_launcher_remove_native_bridges; then
+    echo "homebrew-patched-launcher: native Formula bridges remain; preserving launcher state for retry" >&2
+    return 1
+  fi
+  if ! homebrew_patched_launcher_remove_dependency_plan; then
+    echo "homebrew-patched-launcher: protected dependency plan changed; preserving launcher state for retry" >&2
+    return 1
   fi
   if [ -n "$HOMEBREW_PATCHED_PROTECTED_DIR" ]; then
     "$HOMEBREW_PATCHED_SUDO_BIN" rm -rf "$HOMEBREW_PATCHED_PROTECTED_DIR" \
@@ -150,11 +657,30 @@ homebrew_patched_launcher_cleanup() {
       "$HOMEBREW_PATCHED_SUDO_BIN" rm -f "$HOMEBREW_PATCHED_LAUNCHER" \
         >/dev/null 2>&1 || true
   fi
-  if [ -n "$HOMEBREW_PATCHED_REPO" ] &&
-     [ -n "$HOMEBREW_PATCHED_OVERLAY" ] &&
-     [ -d "$HOMEBREW_PATCHED_OVERLAY" ]; then
-    git -C "$HOMEBREW_PATCHED_REPO" worktree remove --force "$HOMEBREW_PATCHED_OVERLAY" \
-      >/dev/null 2>&1 || rm -rf "$HOMEBREW_PATCHED_OVERLAY"
+  if ! homebrew_patched_launcher_restore_overlay_for_cleanup; then
+    echo "homebrew-patched-launcher: sealed Homebrew overlay could not be restored; preserving launcher state for retry" >&2
+    return 1
+  fi
+  if [ -n "$HOMEBREW_PATCHED_REPO" ] && \
+     [ -n "$HOMEBREW_PATCHED_OVERLAY" ]; then
+    if homebrew_patched_launcher_worktree_registration_status \
+         "$HOMEBREW_PATCHED_REPO" "$HOMEBREW_PATCHED_OVERLAY"; then
+      worktree_registration_status=0
+    else
+      worktree_registration_status="$?"
+    fi
+    if [ "$worktree_registration_status" -eq 2 ]; then
+      echo "homebrew-patched-launcher: Homebrew overlay registration could not be verified; preserving launcher state for retry" >&2
+      return 1
+    fi
+    if [ -d "$HOMEBREW_PATCHED_OVERLAY" ] || \
+       [ "$worktree_registration_status" -eq 0 ]; then
+      if ! git -C "$HOMEBREW_PATCHED_REPO" worktree remove --force \
+           "$HOMEBREW_PATCHED_OVERLAY" >/dev/null 2>&1; then
+        echo "homebrew-patched-launcher: Homebrew overlay removal failed; preserving launcher state for retry" >&2
+        return 1
+      fi
+    fi
   fi
   HOMEBREW_PATCHED_SUDO_BIN=""
   HOMEBREW_PATCHED_SYSTEMD_RUN_BIN=""
@@ -166,6 +692,475 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_BUILD_UID=""
   HOMEBREW_PATCHED_SYSTEMD_SLICE=""
   HOMEBREW_PATCHED_TEARDOWN_COMPLETE=0
+  HOMEBREW_PATCHED_INTEGRITY_SHA256=""
+  HOMEBREW_PATCHED_OVERLAY_OWNER_UID=""
+  HOMEBREW_PATCHED_OVERLAY_SEAL_STATE=""
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN=""
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE=""
+  HOMEBREW_PATCHED_NATIVE_PREFIX=""
+  HOMEBREW_PATCHED_NATIVE_CACHE=""
+  HOMEBREW_PATCHED_NATIVE_TEMP=""
+  HOMEBREW_PATCHED_NATIVE_CONFIG=""
+  HOMEBREW_PATCHED_NATIVE_HOME=""
+  HOMEBREW_PATCHED_NATIVE_BREW_BIN=""
+  HOMEBREW_PATCHED_NATIVE_RUNNER=""
+  HOMEBREW_PATCHED_NATIVE_SEALED=0
+  HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=()
+  HOMEBREW_PATCHED_REPO=""
+  HOMEBREW_PATCHED_PREFIX=""
+  HOMEBREW_PATCHED_BREW_BIN=""
+  HOMEBREW_PATCHED_OVERLAY=""
+  HOMEBREW_PATCHED_LAUNCHER=""
+}
+
+# Give native Homebrew its own prefix while reusing the exact reviewed source
+# overlay. Host Formulae and their recursive closure never occupy the target
+# Cellar, so a native dependency may share a short name with the Kandelo target.
+homebrew_patched_launcher_prepare_native_prefix() {
+  if [ "$#" -ne 5 ]; then
+    echo "homebrew_patched_launcher_prepare_native_prefix: expected PREFIX CACHE TEMP CONFIG HOME" >&2
+    return 2
+  fi
+  if [ -z "$HOMEBREW_PATCHED_OVERLAY" ] || [ -z "$HOMEBREW_PATCHED_PREFIX" ]; then
+    echo "homebrew-patched-launcher: prepare the reviewed Homebrew overlay first" >&2
+    return 2
+  fi
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    echo "homebrew-patched-launcher: cannot prepare the native prefix after isolation" >&2
+    return 2
+  fi
+
+  local native_prefix="$1" native_cache="$2" native_temp="$3" native_config="$4"
+  local native_home="$5"
+  local path other native_brew reported_prefix reported_repo realpath_bin i j
+  local native_prefix_bytes native_cellar_bytes
+  local bottle_prefix_bytes bottle_cellar_bytes
+  local -a native_inputs native_roots target_inputs target_roots
+  realpath_bin="$(command -v realpath || true)"
+  [ -n "$realpath_bin" ] && [ -x "$realpath_bin" ] || {
+    echo "homebrew-patched-launcher: realpath is required to validate native roots" >&2
+    return 2
+  }
+  native_inputs=("$native_prefix" "$native_cache" "$native_temp" "$native_config" "$native_home")
+  for path in "${native_inputs[@]}"; do
+    if [ -e "$path" ] && { [ ! -d "$path" ] || [ -L "$path" ]; }; then
+      echo "homebrew-patched-launcher: native Homebrew root is not a real directory: $path" >&2
+      return 2
+    fi
+    case "$path" in
+      *:*)
+        echo "homebrew-patched-launcher: native Homebrew root cannot contain ':' for a systemd bind: $path" >&2
+        return 2
+        ;;
+    esac
+    path="$("$realpath_bin" -m -- "$path")" || return 2
+    [ "$path" != / ] || {
+      echo "homebrew-patched-launcher: native Homebrew root cannot be /" >&2
+      return 2
+    }
+    native_roots+=("$path")
+  done
+
+  target_inputs=(
+    "$HOMEBREW_PATCHED_PREFIX"
+    "$HOMEBREW_CACHE"
+    "$HOMEBREW_TEMP"
+    "$XDG_CONFIG_HOME"
+  )
+  for other in "${target_inputs[@]}"; do
+    [ -n "$other" ] || continue
+    target_roots+=("$("$realpath_bin" -m -- "$other")") || return 2
+  done
+  for ((i = 0; i < ${#native_roots[@]}; i++)); do
+    path="${native_roots[$i]}"
+    for ((j = i + 1; j < ${#native_roots[@]}; j++)); do
+      other="${native_roots[$j]}"
+      if [ "$path" = "$other" ]; then
+        echo "homebrew-patched-launcher: native Homebrew roots must differ: $path" >&2
+        return 2
+      fi
+      case "$path/" in
+        "$other/"*)
+          echo "homebrew-patched-launcher: Homebrew state roots must not contain one another: $other -> $path" >&2
+          return 2
+          ;;
+      esac
+      case "$other/" in
+        "$path/"*)
+          echo "homebrew-patched-launcher: Homebrew state roots must not contain one another: $path -> $other" >&2
+          return 2
+          ;;
+      esac
+    done
+    for other in "${target_roots[@]}"; do
+      [ -n "$other" ] || continue
+      if [ "$path" = "$other" ]; then
+        echo "homebrew-patched-launcher: native and target Homebrew roots must differ: $path" >&2
+        return 2
+      fi
+      case "$path/" in
+        "$other/"*)
+          echo "homebrew-patched-launcher: Homebrew state roots must not contain one another: $other -> $path" >&2
+          return 2
+          ;;
+      esac
+      case "$other/" in
+        "$path/"*)
+          echo "homebrew-patched-launcher: Homebrew state roots must not contain one another: $path -> $other" >&2
+          return 2
+          ;;
+      esac
+    done
+  done
+  # Linuxbrew bottles can rewrite their fixed build prefix only when the
+  # destination strings fit in the bytes already reserved by the bottle.
+  native_prefix_bytes="$(LC_ALL=C printf '%s' "${native_roots[0]}" | wc -c | tr -d '[:space:]')"
+  native_cellar_bytes="$(LC_ALL=C printf '%s' "${native_roots[0]}/Cellar" | wc -c | tr -d '[:space:]')"
+  bottle_prefix_bytes="$(LC_ALL=C printf '%s' /home/linuxbrew/.linuxbrew | wc -c | tr -d '[:space:]')"
+  bottle_cellar_bytes="$(LC_ALL=C printf '%s' /home/linuxbrew/.linuxbrew/Cellar | wc -c | tr -d '[:space:]')"
+  if [ "$native_prefix_bytes" -gt "$bottle_prefix_bytes" ] ||
+     [ "$native_cellar_bytes" -gt "$bottle_cellar_bytes" ]; then
+    echo "homebrew-patched-launcher: native prefix is too long for fixed-prefix Linuxbrew bottle relocation: ${native_roots[0]}" >&2
+    return 2
+  fi
+  for path in "${native_roots[@]}"; do
+    mkdir -p "$path"
+    [ -d "$path" ] && [ ! -L "$path" ] || {
+      echo "homebrew-patched-launcher: native Homebrew root changed during preparation: $path" >&2
+      return 2
+    }
+    chmod 0700 "$path"
+  done
+  HOMEBREW_PATCHED_NATIVE_PREFIX="${native_roots[0]}"
+  HOMEBREW_PATCHED_NATIVE_CACHE="${native_roots[1]}"
+  HOMEBREW_PATCHED_NATIVE_TEMP="${native_roots[2]}"
+  HOMEBREW_PATCHED_NATIVE_CONFIG="${native_roots[3]}"
+  HOMEBREW_PATCHED_NATIVE_HOME="${native_roots[4]}"
+  mkdir -p "$HOMEBREW_PATCHED_NATIVE_PREFIX/bin"
+  native_brew="$HOMEBREW_PATCHED_NATIVE_PREFIX/bin/brew"
+  [ ! -e "$native_brew" ] && [ ! -L "$native_brew" ] || {
+    echo "homebrew-patched-launcher: native Homebrew launcher already exists" >&2
+    return 2
+  }
+  ln -s "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$native_brew"
+  HOMEBREW_PATCHED_NATIVE_BREW_BIN="$native_brew"
+
+  reported_prefix="$(
+    unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
+    HOME="$HOMEBREW_PATCHED_NATIVE_HOME" \
+      XDG_CONFIG_HOME="$HOMEBREW_PATCHED_NATIVE_CONFIG" \
+      HOMEBREW_CACHE="$HOMEBREW_PATCHED_NATIVE_CACHE" \
+      HOMEBREW_TEMP="$HOMEBREW_PATCHED_NATIVE_TEMP" \
+      "$native_brew" --prefix
+  )" || return
+  reported_repo="$(
+    unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
+    HOME="$HOMEBREW_PATCHED_NATIVE_HOME" \
+      XDG_CONFIG_HOME="$HOMEBREW_PATCHED_NATIVE_CONFIG" \
+      HOMEBREW_CACHE="$HOMEBREW_PATCHED_NATIVE_CACHE" \
+      HOMEBREW_TEMP="$HOMEBREW_PATCHED_NATIVE_TEMP" \
+      "$native_brew" --repository
+  )" || return
+  if [ "$reported_prefix" != "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    echo "homebrew-patched-launcher: native Homebrew reported the wrong prefix" >&2
+    return 1
+  fi
+  if [ "$(cd "$reported_repo" && pwd -P)" != "$(cd "$HOMEBREW_PATCHED_OVERLAY" && pwd -P)" ]; then
+    echo "homebrew-patched-launcher: native Homebrew did not use the reviewed overlay" >&2
+    return 1
+  fi
+}
+
+homebrew_patched_launcher_run_native() {
+  if [ "$#" -eq 0 ]; then
+    echo "homebrew_patched_launcher_run_native: expected a Homebrew command" >&2
+    return 2
+  fi
+  if [ -z "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" ]; then
+    echo "homebrew-patched-launcher: native Homebrew is not prepared" >&2
+    return 2
+  fi
+  if [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ]; then
+    echo "homebrew-patched-launcher: native Homebrew is sealed" >&2
+    return 2
+  fi
+  if [ -z "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    [ "${GITHUB_ACTIONS:-}" != "true" ] || {
+      echo "homebrew-patched-launcher: CI native Formula execution requires isolation" >&2
+      return 2
+    }
+    unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
+    HOME="$HOMEBREW_PATCHED_NATIVE_HOME" \
+      XDG_CONFIG_HOME="$HOMEBREW_PATCHED_NATIVE_CONFIG" \
+      HOMEBREW_CACHE="$HOMEBREW_PATCHED_NATIVE_CACHE" \
+      HOMEBREW_TEMP="$HOMEBREW_PATCHED_NATIVE_TEMP" \
+      HOMEBREW_RELOCATE_BUILD_PREFIX=1 \
+      "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" "$@"
+    return
+  fi
+  [ -n "$HOMEBREW_PATCHED_NATIVE_RUNNER" ] || {
+    echo "homebrew-patched-launcher: isolated native Homebrew runner is unavailable" >&2
+    return 2
+  }
+  "$HOMEBREW_PATCHED_SUDO_BIN" -n -- "$HOMEBREW_PATCHED_NATIVE_RUNNER" "$@"
+}
+
+homebrew_patched_launcher_seal_native_prefix() {
+  if [ "$#" -ne 0 ]; then
+    echo "homebrew_patched_launcher_seal_native_prefix: expected no arguments" >&2
+    return 2
+  fi
+  if [ -z "$HOMEBREW_PATCHED_NATIVE_PREFIX" ] || [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ]; then
+    echo "homebrew-patched-launcher: native Homebrew is unavailable or already sealed" >&2
+    return 2
+  fi
+  local unsafe_entry status
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    if homebrew_patched_launcher_uid_has_processes; then
+      echo "homebrew-patched-launcher: native Formula process survived before sealing" >&2
+      return 1
+    else
+      status="$?"
+      [ "$status" -eq 1 ] || return "$status"
+    fi
+    unsafe_entry="$("$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev \
+      ! \( -type d -o -type f -o -type l \) -print -quit)" || return 2
+    [ -z "$unsafe_entry" ] || {
+      echo "homebrew-patched-launcher: native Homebrew contains a special entry: $unsafe_entry" >&2
+      return 1
+    }
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type l \
+      -exec /usr/bin/bash -c '
+        set -euo pipefail
+        native_prefix="$1"
+        native_brew="$2"
+        overlay_brew="$3"
+        shift 3
+        for link; do
+          target="$(/usr/bin/readlink "$link")"
+          if [ "$link" = "$native_brew" ] && [ "$target" = "$overlay_brew" ]; then
+            continue
+          fi
+          if [[ "$target" = /* ]]; then
+            resolved="$(/usr/bin/realpath -m -- "$target")"
+          else
+            resolved="$(/usr/bin/realpath -m -- "${link%/*}/$target")"
+          fi
+          case "$resolved" in
+            "$native_prefix"|"$native_prefix"/*|/bin/*|/etc/ssl/*|/lib/*|/lib64/*|/usr/*) ;;
+            *)
+              echo "homebrew-patched-launcher: native Homebrew symlink escapes protected roots: $link -> $target" >&2
+              exit 1
+              ;;
+          esac
+        done
+      ' kandelo-native-link-audit \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+      "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" \
+      "$HOMEBREW_PATCHED_OVERLAY/bin/brew" {} + || return 1
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chown -hR root:root \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type d -exec /usr/bin/chmod 0555 {} +
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type f \
+      -exec /usr/bin/chmod a-w,u-s,g-s {} +
+    homebrew_assert_tree_not_writable_by_user \
+      "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+    homebrew_assert_tree_not_replaceable_by_user \
+      "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+  fi
+  HOMEBREW_PATCHED_NATIVE_SEALED=1
+}
+
+# Surface only a direct native dependency to target Homebrew. Its selected keg
+# is copied into a canonical target rack; its recursive native closure remains
+# in the separate prefix for embedded absolute paths and cannot collide with a
+# target rack of the same short name.
+homebrew_patched_launcher_bridge_native_formula() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_bridge_native_formula: expected FORMULA" >&2
+    return 2
+  fi
+  local formula="$1" native_rack native_opt native_opt_target native_version
+  local target_cellar target_opt target_rack target_keg target_opt_target
+  local build_gid="" target_state_root unsafe_link bridge_status=0
+  local audit_bash audit_readlink audit_realpath
+  if ! [[ "$formula" =~ ^[a-z0-9][a-z0-9@+_.-]*$ ]]; then
+    echo "homebrew-patched-launcher: invalid native Formula name: $formula" >&2
+    return 2
+  fi
+  [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ] || {
+    echo "homebrew-patched-launcher: seal native Homebrew before bridging Formulae" >&2
+    return 2
+  }
+  if [[ " ${HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES[*]} " == *" $formula "* ]]; then
+    echo "homebrew-patched-launcher: duplicate native Formula bridge: $formula" >&2
+    return 2
+  fi
+  native_rack="$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar/$formula"
+  native_opt="$HOMEBREW_PATCHED_NATIVE_PREFIX/opt/$formula"
+  target_cellar="$HOMEBREW_PATCHED_PREFIX/Cellar"
+  target_opt="$HOMEBREW_PATCHED_PREFIX/opt"
+  [ -d "$native_rack" ] && [ ! -L "$native_rack" ] && \
+    [ -e "$native_opt" ] && [ -L "$native_opt" ] || {
+    echo "homebrew-patched-launcher: native Formula is not completely installed: $formula" >&2
+    return 1
+  }
+  native_opt_target="$(cd "$native_opt" && pwd -P)" || {
+    echo "homebrew-patched-launcher: native Formula opt link is unresolved: $formula" >&2
+    return 1
+  }
+  [ "${native_opt_target%/*}" = "$native_rack" ] || {
+    echo "homebrew-patched-launcher: native Formula opt link leaves its rack: $formula" >&2
+    return 1
+  }
+  native_version="${native_opt_target##*/}"
+  target_rack="$target_cellar/$formula"
+  target_keg="$target_rack/$native_version"
+  target_opt_target="../Cellar/$formula/$native_version"
+  [ ! -e "$target_rack" ] && [ ! -L "$target_rack" ] && \
+    [ ! -e "$target_opt/$formula" ] && [ ! -L "$target_opt/$formula" ] || {
+      echo "homebrew-patched-launcher: target prefix already contains native Formula name: $formula" >&2
+      return 1
+    }
+
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    audit_bash=/usr/bin/bash
+    audit_readlink=/usr/bin/readlink
+    audit_realpath=/usr/bin/realpath
+  else
+    audit_bash="$(command -v bash)"
+    audit_readlink="$(command -v readlink)"
+    audit_realpath="$(command -v realpath)"
+  fi
+  unsafe_link="$(/usr/bin/find "$native_opt_target" -xdev -type l \
+    -exec "$audit_bash" -c '
+      set -euo pipefail
+      readlink_bin="$1"
+      realpath_bin="$2"
+      native_keg="$3"
+      native_prefix="$4"
+      shift 4
+      for link; do
+        target="$("$readlink_bin" "$link")"
+        if [[ "$target" = /* ]]; then
+          resolved="$("$realpath_bin" -m -- "$target")"
+          case "$resolved" in
+            "$native_prefix"|"$native_prefix"/*|/bin/*|/etc/ssl/*|/lib/*|/lib64/*|/usr/*) ;;
+            *)
+              printf "%s -> %s\n" "$link" "$target"
+              exit 1
+              ;;
+          esac
+          continue
+        fi
+        resolved="$("$realpath_bin" -m -- "${link%/*}/$target")"
+        case "$resolved" in
+          "$native_keg"|"$native_keg"/*) ;;
+          *)
+            printf "%s -> %s\n" "$link" "$target"
+            exit 1
+            ;;
+        esac
+      done
+    ' kandelo-native-proxy-link-audit "$audit_readlink" "$audit_realpath" \
+      "$native_opt_target" "$HOMEBREW_PATCHED_NATIVE_PREFIX" {} +)" || {
+      echo "homebrew-patched-launcher: native Formula has a symlink that cannot be safely relocated: ${unsafe_link:-$formula}" >&2
+      return 1
+    }
+
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    build_gid="$(/usr/bin/id -g "$HOMEBREW_PATCHED_BUILD_USER")"
+    for target_state_root in "$target_cellar" "$target_opt"; do
+      [ -d "$target_state_root" ] && [ ! -L "$target_state_root" ] && \
+        [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_state_root")" = "0:$build_gid:1775" ] || {
+          echo "homebrew-patched-launcher: protected target Homebrew root changed: $target_state_root" >&2
+          return 1
+        }
+    done
+  else
+    for target_state_root in "$target_cellar" "$target_opt"; do
+      if [ -e "$target_state_root" ] || [ -L "$target_state_root" ]; then
+        [ -d "$target_state_root" ] && [ ! -L "$target_state_root" ] || {
+          echo "homebrew-patched-launcher: target Homebrew root is not a real directory: $target_state_root" >&2
+          return 1
+        }
+      else
+        mkdir -p "$target_state_root"
+      fi
+    done
+  fi
+
+  # Register the transaction before its first filesystem change. Cleanup then
+  # knows about a partially copied rack even if the opt link or verification
+  # fails.
+  HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES+=("$formula")
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/install -d \
+      -o root -g root -m 0700 "$target_rack" "$target_keg" || bridge_status=1
+    if [ "$bridge_status" -eq 0 ]; then
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/cp -R -p \
+        "$native_opt_target/." "$target_keg/" || bridge_status=1
+    fi
+    if [ "$bridge_status" -eq 0 ]; then
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chown -hR root:root \
+        "$target_rack" || bridge_status=1
+    fi
+    if [ "$bridge_status" -eq 0 ]; then
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+        "$target_rack" -xdev -type d -exec /usr/bin/chmod 0555 {} + || \
+        bridge_status=1
+    fi
+    if [ "$bridge_status" -eq 0 ]; then
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+        "$target_rack" -xdev -type f \
+        -exec /usr/bin/chmod a-w,u-s,g-s {} + || bridge_status=1
+    fi
+    if [ "$bridge_status" -eq 0 ]; then
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/ln -s \
+        "$target_opt_target" "$target_opt/$formula" || bridge_status=1
+    fi
+  else
+    if ! install -d -m 0755 "$target_rack" "$target_keg"; then
+      bridge_status=1
+    elif ! cp -R -p "$native_opt_target/." "$target_keg/"; then
+      bridge_status=1
+    elif ! find "$target_rack" -type d -exec chmod a-w {} +; then
+      bridge_status=1
+    elif ! find "$target_rack" -type f -exec chmod a-w,u-s,g-s {} +; then
+      bridge_status=1
+    elif ! ln -s "$target_opt_target" "$target_opt/$formula"; then
+      bridge_status=1
+    fi
+  fi
+  if [ "$bridge_status" -eq 0 ] && \
+     { [ ! -d "$target_rack" ] || [ -L "$target_rack" ] || \
+       [ ! -d "$target_keg" ] || [ -L "$target_keg" ] || \
+       [ "$(cd "$target_keg" && pwd -P)" != "$target_keg" ] || \
+       [ "$(/usr/bin/readlink "$target_opt/$formula")" != "$target_opt_target" ] || \
+       [ "$(cd "$target_opt/$formula" && pwd -P)" != "$target_keg" ]; }; then
+    echo "homebrew-patched-launcher: native Formula proxy is not a canonical target keg" >&2
+    bridge_status=1
+  fi
+  if [ "$bridge_status" -eq 0 ] && [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_rack")" = "0:0:555" ] && \
+      [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_keg")" = "0:0:555" ] && \
+      homebrew_assert_tree_not_writable_by_user \
+        "$HOMEBREW_PATCHED_BUILD_USER" "$target_rack" && \
+      homebrew_assert_tree_not_replaceable_by_user \
+        "$HOMEBREW_PATCHED_BUILD_USER" "$target_rack" || bridge_status=1
+  fi
+  if [ "$bridge_status" -ne 0 ]; then
+    echo "homebrew-patched-launcher: native Formula bridge creation failed; rolling back" >&2
+    if ! homebrew_patched_launcher_remove_native_bridges; then
+      echo "homebrew-patched-launcher: native Formula bridge rollback failed; preserving launcher state for retry" >&2
+    fi
+    return 1
+  fi
 }
 
 # Materialize the exact Homebrew developer-command gem groups while the
@@ -260,13 +1255,46 @@ homebrew_patched_launcher_isolate() {
   fi
   local build_user="$1" work_dir="$2" kandelo_root="$3" tap_root="$4" output_root="$5"
   local build_group build_home protected_brew protected_audit
-  local wrapper_source wrapper_path audit_source
-  local mutable_root protected_root
-  local sudo_bin sudo_mode env_bin variable value patched_prefix patched_repo
+  local wrapper_source wrapper_path audit_source native_runner_source native_runner_path
+  local mutable_root protected_root target_state_root native_reported_prefix native_reported_repo
+  local physical_repo physical_prefix
+  local sudo_bin sudo_mode env_bin variable value protected_bin patched_prefix patched_repo
   local systemd_run_bin systemctl_bin getent_bin pgrep_bin pkill_bin
   local build_uid systemd_slice unit_prefix source_alias_dir
   local config_root config_file unsafe_config_entry trust_file trust_lock
-  local -a preserved_variables
+  local -a preserved_variables native_preserved_variables mutable_roots
+
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    physical_repo="$(cd "$HOMEBREW_PATCHED_REPO" && pwd -P)" || return 2
+    physical_prefix="$(cd "$HOMEBREW_PATCHED_PREFIX" && pwd -P)" || return 2
+    case "$physical_repo/" in
+      "$physical_prefix/"*)
+        echo "homebrew-patched-launcher: Homebrew backing repository cannot be inside the hidden target prefix" >&2
+        return 2
+        ;;
+    esac
+    for mutable_root in "$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+      "$HOMEBREW_PATCHED_NATIVE_CACHE" "$HOMEBREW_PATCHED_NATIVE_TEMP" \
+      "$HOMEBREW_PATCHED_NATIVE_CONFIG" "$HOMEBREW_PATCHED_NATIVE_HOME"; do
+      if [ ! -d "$mutable_root" ] || [ -L "$mutable_root" ]; then
+        echo "homebrew-patched-launcher: native Homebrew root is not a real directory: $mutable_root" >&2
+        return 2
+      fi
+    done
+    [ -L "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" ] && \
+      [ "$(/usr/bin/readlink "$HOMEBREW_PATCHED_NATIVE_BREW_BIN")" = \
+        "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] || {
+        echo "homebrew-patched-launcher: native Homebrew launcher changed before isolation" >&2
+        return 2
+      }
+  elif [ -n "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" ] || \
+       [ -n "$HOMEBREW_PATCHED_NATIVE_CACHE" ] || \
+       [ -n "$HOMEBREW_PATCHED_NATIVE_TEMP" ] || \
+       [ -n "$HOMEBREW_PATCHED_NATIVE_CONFIG" ] || \
+       [ -n "$HOMEBREW_PATCHED_NATIVE_HOME" ]; then
+    echo "homebrew-patched-launcher: native Homebrew state is incomplete" >&2
+    return 2
+  fi
 
   [ "$(uname -s)" = "Linux" ] || {
     echo "homebrew-patched-launcher: isolated Formula execution requires Linux" >&2
@@ -314,6 +1342,14 @@ homebrew_patched_launcher_isolate() {
     "$build_user" /usr/bin/findmnt /usr/bin/findmnt findmnt
   homebrew_assert_protected_host_executable \
     "$build_user" /usr/bin/find /usr/bin/find find
+  homebrew_assert_protected_host_executable \
+    "$build_user" /usr/bin/realpath /usr/bin/realpath realpath
+  homebrew_assert_protected_host_executable \
+    "$build_user" /usr/bin/bash /usr/bin/bash bash
+  for protected_bin in chmod chown cp id install ln ls readlink rm stat test; do
+    homebrew_assert_protected_host_executable \
+      "$build_user" "/usr/bin/$protected_bin" "/usr/bin/$protected_bin" "$protected_bin"
+  done
   [ -d /run/systemd/system ] || {
     echo "homebrew-patched-launcher: systemd is not the active service manager" >&2
     return 2
@@ -323,7 +1359,7 @@ homebrew_patched_launcher_isolate() {
     return 2
   }
   env_bin="$(command -v env)"
-  build_group="$(id -gn "$build_user")"
+  build_group="$(/usr/bin/id -gn "$build_user")"
   build_uid="$(id -u "$build_user")"
   build_home="$("$getent_bin" passwd "$build_user" | awk -F: '{print $6}')"
   [ -n "$build_home" ] || {
@@ -344,17 +1380,93 @@ homebrew_patched_launcher_isolate() {
     esac
   done
 
-  for mutable_root in "$work_dir" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP"; do
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    for mutable_root in "$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+      "$HOMEBREW_PATCHED_NATIVE_CACHE" "$HOMEBREW_PATCHED_NATIVE_TEMP" \
+      "$HOMEBREW_PATCHED_NATIVE_CONFIG" "$HOMEBREW_PATCHED_NATIVE_HOME"; do
+      for protected_root in "$work_dir" "$kandelo_root" "$tap_root" "$output_root" \
+        "$build_home"; do
+        if [ "$mutable_root" = "$protected_root" ]; then
+          echo "homebrew-patched-launcher: native and target execution roots must differ: $mutable_root" >&2
+          return 2
+        fi
+        case "$mutable_root/" in
+          "$protected_root/"*)
+            echo "homebrew-patched-launcher: native state cannot be inside a target execution root: $mutable_root" >&2
+            return 2
+            ;;
+        esac
+        case "$protected_root/" in
+          "$mutable_root/"*)
+            echo "homebrew-patched-launcher: target execution root cannot be inside native state: $protected_root" >&2
+            return 2
+            ;;
+        esac
+      done
+    done
+  fi
+
+  mutable_roots=("$work_dir" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP")
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    mutable_roots+=(
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+      "$HOMEBREW_PATCHED_NATIVE_CACHE"
+      "$HOMEBREW_PATCHED_NATIVE_TEMP"
+      "$HOMEBREW_PATCHED_NATIVE_CONFIG"
+      "$HOMEBREW_PATCHED_NATIVE_HOME"
+    )
+  fi
+  for mutable_root in "${mutable_roots[@]}"; do
     if [ ! -d "$mutable_root" ] || [ -L "$mutable_root" ]; then
       echo "homebrew-patched-launcher: mutable build root is not a real directory: $mutable_root" >&2
       return 2
     fi
   done
+  for target_state_root in "$HOMEBREW_PATCHED_PREFIX/Cellar" \
+    "$HOMEBREW_PATCHED_PREFIX/opt"; do
+    if [ -e "$target_state_root" ] || [ -L "$target_state_root" ]; then
+      [ -d "$target_state_root" ] && [ ! -L "$target_state_root" ] || {
+        echo "homebrew-patched-launcher: target Homebrew root is not a real directory: $target_state_root" >&2
+        return 2
+      }
+    fi
+  done
   chmod 1777 "$work_dir"
   "$sudo_bin" chown -R "$build_user:$build_group" \
     "$HOMEBREW_PATCHED_PREFIX" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP"
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    "$sudo_bin" /usr/bin/chown -R "$build_user:$build_group" \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" "$HOMEBREW_PATCHED_NATIVE_CACHE" \
+      "$HOMEBREW_PATCHED_NATIVE_TEMP" "$HOMEBREW_PATCHED_NATIVE_CONFIG" \
+      "$HOMEBREW_PATCHED_NATIVE_HOME"
+    "$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775 \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" "$HOMEBREW_PATCHED_NATIVE_PREFIX/bin"
+    "$sudo_bin" /usr/bin/chown -h root:root "$HOMEBREW_PATCHED_NATIVE_BREW_BIN"
+    "$sudo_bin" /usr/bin/install -d -o "$build_user" -g "$build_group" -m 0755 \
+      "$HOMEBREW_PATCHED_NATIVE_CONFIG/homebrew"
+  fi
   "$sudo_bin" chown "root:$build_group" "$HOMEBREW_PATCHED_PREFIX"
   "$sudo_bin" chmod 1775 "$HOMEBREW_PATCHED_PREFIX"
+  "$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775 \
+    "$HOMEBREW_PATCHED_PREFIX/Cellar" "$HOMEBREW_PATCHED_PREFIX/opt"
+  if [ -n "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" ]; then
+    [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" = \
+      "$HOMEBREW_PATCHED_PREFIX/.kandelo-publisher-build-dependencies.json" ] || {
+      echo "homebrew-patched-launcher: dependency plan has an unexpected destination" >&2
+      return 2
+    }
+    "$sudo_bin" /usr/bin/chown root:root "$HOMEBREW_PATCHED_DEPENDENCY_PLAN"
+    "$sudo_bin" /usr/bin/chmod 0444 "$HOMEBREW_PATCHED_DEPENDENCY_PLAN"
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$HOMEBREW_PATCHED_DEPENDENCY_PLAN")" = \
+      "0:0:444:1" ] &&
+      "$sudo_bin" -n -H -u "$build_user" -- \
+        /usr/bin/test -r "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" &&
+      ! "$sudo_bin" -n -H -u "$build_user" -- \
+        /usr/bin/test -w "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" || {
+      echo "homebrew-patched-launcher: could not protect the dependency plan" >&2
+      return 1
+    }
+  fi
   "$sudo_bin" install -d -o root -g root -m 0755 \
     "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME/homebrew"
   for config_root in "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME"; do
@@ -405,7 +1517,17 @@ homebrew_patched_launcher_isolate() {
         return 2
       }
   done
-  for mutable_root in "$work_dir" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP" "$build_home"; do
+  mutable_roots=("$work_dir" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP" "$build_home")
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    mutable_roots+=(
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+      "$HOMEBREW_PATCHED_NATIVE_CACHE"
+      "$HOMEBREW_PATCHED_NATIVE_TEMP"
+      "$HOMEBREW_PATCHED_NATIVE_CONFIG"
+      "$HOMEBREW_PATCHED_NATIVE_HOME"
+    )
+  fi
+  for mutable_root in "${mutable_roots[@]}"; do
     if ! "$sudo_bin" -H -u "$build_user" -- test -r "$mutable_root" -a \
       -x "$mutable_root" -a -w "$mutable_root"; then
       echo "homebrew-patched-launcher: build user cannot access mutable build root: $mutable_root" >&2
@@ -445,9 +1567,23 @@ homebrew_patched_launcher_isolate() {
     printf '  esac\ndone\n'
     printf 'for hidden_root in %q %q %q; do\n' \
       "$kandelo_root" "$tap_root" "$output_root"
-    printf '  if [ -e "$hidden_root" ] || [ -r "$hidden_root" ] || [ -x "$hidden_root" ]; then\n'
-    printf '    echo "homebrew-patched-launcher: original protected root is visible to Formula execution: $hidden_root" >&2\n'
+    printf '  if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then\n'
+    printf '    echo "homebrew-patched-launcher: original protected root is usable by Formula execution: $hidden_root" >&2\n'
+    printf '    exit 1\n  fi\n'
+    printf '  if /usr/bin/ls "$hidden_root" >/dev/null 2>&1; then\n'
+    printf '    echo "homebrew-patched-launcher: Formula execution can list an original protected root: $hidden_root" >&2\n'
+    printf '    exit 1\n  fi\n'
+    printf '  if (: >"$hidden_root/.kandelo-write-probe") 2>/dev/null; then\n'
+    printf '    echo "homebrew-patched-launcher: Formula execution can modify an original protected root: $hidden_root" >&2\n'
     printf '    exit 1\n  fi\ndone\n'
+    if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+      printf 'native_prefix=%q\n' "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+      printf 'native_mount_options="$(/usr/bin/findmnt --noheadings --output VFS-OPTIONS --target "$native_prefix")" || {\n'
+      printf '  echo "homebrew-patched-launcher: could not inspect native Homebrew mount" >&2; exit 2;\n}\n'
+      printf 'case ",${native_mount_options// /}," in *,ro,*) ;; *) echo "homebrew-patched-launcher: native Homebrew prefix is writable" >&2; exit 1 ;; esac\n'
+      printf 'if (: >"$native_prefix/.kandelo-write-probe") 2>/dev/null; then\n'
+      printf '  echo "homebrew-patched-launcher: target Formula can modify native Homebrew" >&2; exit 1\nfi\n'
+    fi
   } >"$audit_source"
   "$sudo_bin" install -o root -g root -m 0555 "$audit_source" "$protected_audit"
   rm -f "$audit_source"
@@ -467,6 +1603,12 @@ homebrew_patched_launcher_isolate() {
     HOMEBREW_KANDELO_NODE_RECEIPT_PATH
     LLVM_BIN WASM_POSIX_LLVM_DIR
     NIX_SSL_CERT_FILE SSL_CERT_FILE PLAYWRIGHT_BROWSERS_PATH
+  )
+  native_preserved_variables=(
+    CI GITHUB_ACTIONS RUNNER_OS LANG LC_ALL TZ SOURCE_DATE_EPOCH PATH
+    HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALL_CLEANUP
+    HOMEBREW_NO_ANALYTICS HOMEBREW_DEVELOPER
+    NIX_SSL_CERT_FILE SSL_CERT_FILE
   )
   {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'
@@ -496,6 +1638,14 @@ homebrew_patched_launcher_isolate() {
       "--property=InaccessiblePaths=$output_root" \
       "--service-type=exec" \
       "--expand-environment=no"
+    if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+      printf ' %q' \
+        "--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+        "--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_CACHE" \
+        "--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_TEMP" \
+        "--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_CONFIG" \
+        "--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_HOME"
+    fi
     printf ' --working-directory="$working_directory" -- %q -i' "$env_bin"
     printf ' %q' "HOME=$build_home" "USER=$build_user" "LOGNAME=$build_user" \
       "TMPDIR=$HOMEBREW_TEMP"
@@ -511,14 +1661,63 @@ homebrew_patched_launcher_isolate() {
   } >"$wrapper_source"
   "$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"
   rm -f "$wrapper_source"
+
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    native_runner_source="$work_dir/run-isolated-native-brew"
+    native_runner_path="$HOMEBREW_PATCHED_PROTECTED_DIR/run-native-brew"
+    {
+      printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+      printf '[ "$#" -gt 0 ] || { echo "homebrew-patched-launcher: native Homebrew command is required" >&2; exit 2; }\n'
+      printf 'working_directory=%q\n' "$HOMEBREW_PATCHED_NATIVE_TEMP"
+      printf 'unit=%q-native-$$-${RANDOM}.service\n' "$unit_prefix"
+      printf 'exec %q --quiet --wait --collect --pipe' "$systemd_run_bin"
+      printf ' --unit="$unit"'
+      printf ' %q' "--slice=$systemd_slice" \
+        "--uid=$build_user" "--gid=$build_group" \
+        "--property=KillMode=control-group" "--property=SendSIGKILL=yes" \
+        "--property=TimeoutStopSec=10s" "--property=NoNewPrivileges=yes" \
+        "--property=BindReadOnlyPaths=$work_dir" \
+        "--property=InaccessiblePaths=$kandelo_root" \
+        "--property=InaccessiblePaths=$tap_root" \
+        "--property=InaccessiblePaths=$output_root" \
+        "--property=InaccessiblePaths=$HOMEBREW_PATCHED_PREFIX" \
+        "--property=InaccessiblePaths=$HOMEBREW_CACHE" \
+        "--property=InaccessiblePaths=$HOMEBREW_TEMP" \
+        "--property=InaccessiblePaths=$XDG_CONFIG_HOME" \
+        "--property=InaccessiblePaths=$build_home" \
+        "--service-type=exec" \
+        "--expand-environment=no"
+      printf ' --working-directory="$working_directory" -- %q -i' "$env_bin"
+      printf ' %q' "HOME=$HOMEBREW_PATCHED_NATIVE_HOME" \
+        "USER=$build_user" "LOGNAME=$build_user" \
+        "TMPDIR=$HOMEBREW_PATCHED_NATIVE_TEMP" \
+        "XDG_CONFIG_HOME=$HOMEBREW_PATCHED_NATIVE_CONFIG" \
+        "HOMEBREW_CACHE=$HOMEBREW_PATCHED_NATIVE_CACHE" \
+        "HOMEBREW_TEMP=$HOMEBREW_PATCHED_NATIVE_TEMP"
+      for variable in "${native_preserved_variables[@]}"; do
+        if [ -n "${!variable+x}" ]; then
+          value="${!variable}"
+          printf ' %q' "$variable=$value"
+        fi
+      done
+      printf ' %q' "HOMEBREW_RELOCATE_BUILD_PREFIX=1"
+      printf ' %q "$@"\n' "$HOMEBREW_PATCHED_NATIVE_BREW_BIN"
+    } >"$native_runner_source"
+    "$sudo_bin" /usr/bin/install -o root -g root -m 0500 \
+      "$native_runner_source" "$native_runner_path"
+    rm -f "$native_runner_source"
+    HOMEBREW_PATCHED_NATIVE_RUNNER="$native_runner_path"
+  fi
   "$sudo_bin" chmod 0555 "$HOMEBREW_PATCHED_PROTECTED_DIR"
 
-  # The overlay is a Git worktree, so its backing repository must remain
-  # traversable. Protect the Formula-executing overlay itself instead.
-  for protected_root in "$source_alias_dir" "$HOMEBREW_PATCHED_OVERLAY"; do
-    homebrew_assert_tree_not_writable_by_user "$build_user" "$protected_root"
-    homebrew_assert_tree_not_replaceable_by_user "$build_user" "$protected_root"
-  done
+  # Git still needs the workflow-owned backing repository. Normalize every
+  # trusted file materialized in the temporary worktree, including Bundler
+  # output whose archive modes are not part of the publisher boundary.
+  homebrew_patched_launcher_seal_overlay "$build_user" || return
+  homebrew_assert_tree_not_writable_by_user \
+    "$build_user" "$source_alias_dir" || return
+  homebrew_assert_tree_not_replaceable_by_user \
+    "$build_user" "$source_alias_dir" || return
   HOMEBREW_PATCHED_INTEGRITY_SHA256="$(homebrew_patched_launcher_integrity)"
   HOMEBREW_PATCHED_SYSTEMD_RUN_BIN="$systemd_run_bin"
   HOMEBREW_PATCHED_SYSTEMCTL_BIN="$systemctl_bin"
@@ -555,6 +1754,19 @@ homebrew_patched_launcher_isolate() {
     echo "homebrew-patched-launcher: isolated wrapper changed Homebrew repository" >&2
     return 1
   }
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    native_reported_prefix="$(homebrew_patched_launcher_run_native --prefix)" || return
+    native_reported_repo="$(homebrew_patched_launcher_run_native --repository)" || return
+    [ "$native_reported_prefix" = "$HOMEBREW_PATCHED_NATIVE_PREFIX" ] || {
+      echo "homebrew-patched-launcher: isolated native Homebrew changed its prefix" >&2
+      return 1
+    }
+    [ "$(cd "$native_reported_repo" && pwd -P)" = \
+      "$(cd "$HOMEBREW_PATCHED_OVERLAY" && pwd -P)" ] || {
+      echo "homebrew-patched-launcher: isolated native Homebrew changed its repository" >&2
+      return 1
+    }
+  fi
 }
 
 homebrew_patched_launcher_uid_has_processes() {
@@ -634,15 +1846,89 @@ homebrew_patched_launcher_verify_isolation() {
     echo "homebrew-patched-launcher: isolated execution was not initialized" >&2
     return 2
   fi
+  homebrew_patched_launcher_verify_overlay_seal \
+    "$HOMEBREW_PATCHED_BUILD_USER" || return
   [ "$(homebrew_patched_launcher_integrity)" = "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ] || {
     echo "homebrew-patched-launcher: patched Homebrew source changed during Formula execution" >&2
     return 1
   }
+  homebrew_patched_launcher_verify_dependency_plan || return
   [ -L "$HOMEBREW_PATCHED_LAUNCHER" ] && \
-    [ "$(readlink "$HOMEBREW_PATCHED_LAUNCHER")" = "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] || {
+    [ "$(/usr/bin/readlink "$HOMEBREW_PATCHED_LAUNCHER")" = "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] || {
     echo "homebrew-patched-launcher: protected Brew launcher changed during Formula execution" >&2
     return 1
   }
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ] || {
+      echo "homebrew-patched-launcher: native Homebrew was not sealed" >&2
+      return 1
+    }
+    [ -f "$HOMEBREW_PATCHED_NATIVE_RUNNER" ] && \
+      [ ! -L "$HOMEBREW_PATCHED_NATIVE_RUNNER" ] && \
+      [ "$(/usr/bin/stat -c '%u:%g:%a' "$HOMEBREW_PATCHED_NATIVE_RUNNER")" = "0:0:500" ] || {
+      echo "homebrew-patched-launcher: protected native Homebrew runner changed" >&2
+      return 1
+    }
+    [ -L "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" ] && \
+      [ "$(/usr/bin/readlink "$HOMEBREW_PATCHED_NATIVE_BREW_BIN")" = \
+        "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] && \
+      [ "$(/usr/bin/stat -c '%u:%g' "$HOMEBREW_PATCHED_NATIVE_BREW_BIN")" = "0:0" ] || {
+      echo "homebrew-patched-launcher: protected native Brew launcher changed" >&2
+      return 1
+    }
+    homebrew_assert_tree_not_writable_by_user \
+      "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+    homebrew_assert_tree_not_replaceable_by_user \
+      "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+
+    local formula native_rack native_opt native_opt_target native_version
+    local target_cellar target_opt target_rack target_keg target_opt_link
+    local expected_opt_target build_gid
+    build_gid="$(/usr/bin/id -g "$HOMEBREW_PATCHED_BUILD_USER")"
+    target_cellar="$HOMEBREW_PATCHED_PREFIX/Cellar"
+    target_opt="$HOMEBREW_PATCHED_PREFIX/opt"
+    for formula in "${HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES[@]}"; do
+      native_rack="$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar/$formula"
+      native_opt="$HOMEBREW_PATCHED_NATIVE_PREFIX/opt/$formula"
+      [ -d "$native_rack" ] && [ -L "$native_opt" ] || {
+        echo "homebrew-patched-launcher: sealed native Formula changed: $formula" >&2
+        return 1
+      }
+      native_opt_target="$(cd "$native_opt" && pwd -P)" || {
+        echo "homebrew-patched-launcher: sealed native Formula opt link is unresolved: $formula" >&2
+        return 1
+      }
+      [ "${native_opt_target%/*}" = "$native_rack" ] || {
+        echo "homebrew-patched-launcher: sealed native Formula opt link leaves its rack: $formula" >&2
+        return 1
+      }
+      native_version="${native_opt_target##*/}"
+      target_rack="$target_cellar/$formula"
+      target_keg="$target_rack/$native_version"
+      target_opt_link="$target_opt/$formula"
+      expected_opt_target="../Cellar/$formula/$native_version"
+      [ -d "$target_rack" ] && [ ! -L "$target_rack" ] && \
+        [ -d "$target_keg" ] && [ ! -L "$target_keg" ] && \
+        [ "$(cd "$target_keg" && pwd -P)" = "$target_keg" ] && \
+        [ -L "$target_opt_link" ] && \
+        [ "$(/usr/bin/readlink "$target_opt_link")" = "$expected_opt_target" ] && \
+        [ "$(cd "$target_opt_link" && pwd -P)" = "$target_keg" ] && \
+        [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_rack")" = "0:0:555" ] && \
+        [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_keg")" = "0:0:555" ] && \
+        [ "$(/usr/bin/stat -c '%u:%g' "$target_opt_link")" = "0:0" ] && \
+        [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_cellar")" = \
+          "0:$build_gid:1775" ] && \
+        [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_opt")" = \
+          "0:$build_gid:1775" ] || {
+        echo "homebrew-patched-launcher: native Formula proxy changed: $formula" >&2
+        return 1
+      }
+      homebrew_assert_tree_not_writable_by_user \
+        "$HOMEBREW_PATCHED_BUILD_USER" "$target_rack"
+      homebrew_assert_tree_not_replaceable_by_user \
+        "$HOMEBREW_PATCHED_BUILD_USER" "$target_rack"
+    done
+  fi
 }
 
 homebrew_patched_launcher_prepare() {
@@ -655,7 +1941,7 @@ homebrew_patched_launcher_prepare() {
   local patch_file="$2"
   local work_dir="$3"
   local extra_patch_file="${4:-}"
-  local attempt candidate patched_prefix patched_repo
+  local attempt candidate canonical_overlay patched_prefix patched_repo
 
   if [ -n "$extra_patch_file" ] && [ ! -f "$extra_patch_file" ]; then
     echo "homebrew-patched-launcher: extra patch is unavailable: $extra_patch_file" >&2
@@ -674,6 +1960,8 @@ homebrew_patched_launcher_prepare() {
   git -C "$HOMEBREW_PATCHED_REPO" apply --check "$patch_file" || return
   HOMEBREW_PATCHED_OVERLAY="$work_dir/homebrew-overlay"
   git -C "$HOMEBREW_PATCHED_REPO" worktree add --detach "$HOMEBREW_PATCHED_OVERLAY" HEAD >/dev/null || return
+  canonical_overlay="$(cd "$HOMEBREW_PATCHED_OVERLAY" && pwd -P)" || return
+  HOMEBREW_PATCHED_OVERLAY="$canonical_overlay"
   git -C "$HOMEBREW_PATCHED_OVERLAY" apply --whitespace=nowarn "$patch_file" || return
   if [ -n "$extra_patch_file" ]; then
     git -C "$HOMEBREW_PATCHED_OVERLAY" apply --check "$extra_patch_file" || return

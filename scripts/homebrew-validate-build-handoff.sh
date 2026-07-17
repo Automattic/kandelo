@@ -175,7 +175,8 @@ require_max_size "dependency-provenance.json" "$DEPENDENCY_PROVENANCE" "$HOMEBRE
 require_max_size "compressed bottle" "$BOTTLE_ARCHIVE" "$HOMEBREW_MAX_BOTTLE_BYTES"
 
 manifest_error="$(mktemp)"
-trap 'rm -f "$manifest_error"' EXIT
+inspection_json="$(mktemp)"
+trap 'rm -f "$manifest_error" "$inspection_json"' EXIT
 if ! jq -e \
   --arg formula "$FORMULA" \
   --arg arch "$ARCH" \
@@ -340,7 +341,22 @@ python3 "$SCRIPT_ROOT/homebrew-inspect-bottle.py" \
   --expected-abi "$EXPECTED_ABI" \
   --expected-arch "$ARCH" \
   "${inspection_args[@]}" \
-  >/dev/null
+  --out "$inspection_json"
+
+if ! jq -e -s '
+  def normalized_dependencies:
+    map({
+      declared_directly,
+      full_name: (.full_name | ascii_downcase),
+      version
+    }) |
+    sort_by(.full_name);
+  (.[0].runtime_dependencies | normalized_dependencies) ==
+  (.[1].dependencies | normalized_dependencies)
+' "$inspection_json" "$DEPENDENCY_PROVENANCE" >/dev/null; then
+  echo "homebrew-validate-build-handoff.sh: bottle receipt runtime dependencies do not match validated dependency provenance" >&2
+  exit 1
+fi
 
 CANONICAL_BOTTLE_JSON=""
 if [ -n "$OUT_BOTTLE_JSON" ]; then
