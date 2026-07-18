@@ -6,6 +6,19 @@ const appUrl = (path: string): string => {
   return baseUrl ? new URL(path, baseUrl).href : path;
 };
 
+test("Kandelo dock defaults to full width", async ({ page }) => {
+  await page.goto(appUrl("/?demo=shell"), {
+    waitUntil: "domcontentloaded",
+  });
+
+  await expect(page.getByRole("navigation", { name: "Kandelo tools" }))
+    .toHaveClass(/\bkdock-full-width\b/);
+  await expect(page.getByRole("button", { name: "Use compact dock" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".kdocked-app"))
+    .toHaveClass(/\bis-dock-full-width\b/);
+});
+
 test("Kandelo gallery launch updates the browser URL with a VFS image", async ({ page }) => {
   await page.goto(appUrl("/?demo=shell"), {
     waitUntil: "domcontentloaded",

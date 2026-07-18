@@ -152,7 +152,7 @@ export const Dock: React.FC<{
   } | null>(null);
   const suppressCenterClickRef = React.useRef(false);
   const [collapsed, setCollapsed] = React.useState(false);
-  const [fullWidth, setFullWidth] = React.useState(false);
+  const [fullWidth, setFullWidth] = React.useState(true);
   const [dockCenter, setDockCenter] = React.useState<number | null>(null);
   const [dragging, setDragging] = React.useState(false);
   const [viewportWidth, setViewportWidth] = React.useState(() => window.innerWidth);
