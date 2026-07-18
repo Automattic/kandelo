@@ -96,13 +96,20 @@ Rollback mode records a report under `Kandelo/reports/rollbacks/` while
 preserving last-green metadata; package deletion is exceptional and must be
 documented with both the deleted package URL and the operational reason.
 
+The never-live private `tap-core/zlib` and `tap-core/bzip2` controls are a
+one-time migration cleanup: keep them through the repository-rooted zlib and
+fresh-package bzip2 production pilots, then follow the exact inventory,
+deletion, verification, and restoration procedure in
+[Public Package Creation And Legacy Namespace Retirement](../../docs/homebrew-publishing.md#public-package-creation-and-legacy-namespace-retirement).
+
 Parallel peer and sibling-architecture publications compose against refreshed
 tap state under the shared lock, and Formula source drift after planning aborts
 publication. Older-ABI handoffs and lower bottle rebuilds for the same package
-identity are rejected under that lock. New packages created under the exact
-public tap-repository namespace inherit public access; the workflow does not
-change package visibility. A write publication cannot finalize until its
-bottle passes anonymous digest readback.
+identity are rejected under that lock. New packages use the exact public
+tap-repository namespace and carry the source-repository annotation before
+their first push; the workflow does not change package visibility. A write
+publication cannot finalize until the resulting package passes anonymous
+digest readback.
 
 Homebrew formula and bottle metadata remain the contract consumed by `brew`.
 Kandelo sidecar metadata is the bounded contract consumed by host VFS tooling,

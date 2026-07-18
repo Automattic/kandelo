@@ -1177,6 +1177,193 @@ gallery publication requires a separate immutable asset contract.
   workflow accepts no package PAT and performs no visibility mutation.
 - Do not bump `build.toml` revisions for docs-only changes.
 
+## Public Package Creation And Legacy Namespace Retirement
+
+### Normal public publication
+
+The canonical Homebrew tap name and the GitHub repository name are deliberately
+different identities:
+
+- Formula references, OCI titles, and sidecar tap fields use the canonical tap
+  name `kandelo-dev/tap-core`.
+- GHCR transport uses the exact public repository name, including its
+  `homebrew-` prefix:
+  `ghcr.io/kandelo-dev/homebrew-tap-core/<formula>`.
+
+GitHub's package page may render only the final component, such as `zlib`.
+That short display label does not change the API package name
+`homebrew-tap-core/zlib` or its registry path.
+
+Do not derive the GHCR path from the canonical tap name. The earlier
+`ghcr.io/kandelo-dev/tap-core/<formula>` destination created private packages
+even when the package was linked to the public `kandelo-dev/homebrew-tap-core`
+repository.
+
+Normal production publication has the following contract:
+
+1. The caller runs from `Kandelo-dev/homebrew-tap-core@main` with
+   `packages: write` and passes its built-in `GITHUB_TOKEN` to the reviewed
+   reusable publisher. A PAT is not a production input.
+2. The publisher derives, rather than accepts, the repository-rooted GHCR
+   destination.
+3. Before the first push, the OCI index records
+   `org.opencontainers.image.source=https://github.com/kandelo-dev/homebrew-tap-core`.
+   That connects the package to the source repository at creation time.
+4. The `Kandelo-dev` organization permits members to create public packages
+   and keeps **Inherit access from source repository** enabled. The separate
+   **Private** package-creation checkbox may remain enabled; it grants permission
+   to create private packages and does not force this publisher's packages to
+   be private.
+5. A write publication anonymously reads the exact uploaded digest and verifies
+   its SHA-256 and byte count before Formula or sidecar state can be finalized.
+   A private package therefore fails publication instead of becoming live tap
+   state.
+
+[GitHub documents repository inheritance](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#about-inheritance-of-access-permissions)
+primarily as an access-permission contract and does not promise that repository
+visibility is inherited in every GHCR creation path. Repository-rooted public
+creation is therefore an observed Kandelo transport dependency, not an
+unchecked assumption. The one-shot
+[canary run 29652866481](https://github.com/Kandelo-dev/homebrew-tap-core/actions/runs/29652866481)
+created public, repository-linked package `homebrew-tap-core/zlib`; earlier
+`tap-core/*` controls created with both a `GITHUB_TOKEN` and a package PAT
+remained private. The production anonymous readback is the continuing guard
+against a GitHub behavior or organization policy change.
+
+### One-time retirement of `tap-core/*`
+
+The two legacy private controls are not production bottle locations:
+
+| Package API name | State on 2026-07-18 | Purpose |
+|---|---|---|
+| `tap-core/zlib` | private; last updated `2026-07-18T03:46:46Z` | old-root creation control |
+| `tap-core/bzip2` | private; last updated `2026-07-18T05:20:07Z` | old-root creation control |
+| `homebrew-tap-core/zlib` | public; created by canary run `29652866481` | repository-rooted positive control and production destination |
+| `homebrew-tap-core/bzip2` | absent before the production pilot | fresh-package production proof |
+
+Do not delete the two private controls merely because the public zlib canary
+passed. Keep them until all of these cutover gates are satisfied:
+
+1. The repository-rooted publisher is merged to `Automattic/kandelo@main`, and
+   the matching caller and trust-generation changes are merged to
+   `Kandelo-dev/homebrew-tap-core@main`.
+2. A zlib production pilot completes the full path against the existing public
+   `homebrew-tap-core/zlib` package.
+3. A subsequent bzip2 production pilot creates
+   `homebrew-tap-core/bzip2` from an absent package and completes the full path.
+   This is the proof that normal production creates a new public package; zlib
+   alone proves only that production can reuse an existing public package.
+4. Both package records report `visibility: public` and repository
+   `kandelo-dev/homebrew-tap-core`, and both successful workflow receipts contain
+   the exact credential-free digest readback evidence.
+5. The live Formulae and generated sidecars validate and contain only the
+   repository-rooted GHCR destination. Historical failure and rollback reports
+   may retain old URLs as audit evidence.
+6. The two legacy package `updated_at` values still equal the baselines in the
+   table. A changed timestamp means some writer still targets the old namespace
+   and must be investigated before deletion.
+
+Dispatch the two production pilots through the reviewed tap caller, one at a
+time. Wait for the zlib run to finish successfully and inspect its evidence
+before dispatching bzip2:
+
+```bash
+gh api --method POST \
+  'repos/Kandelo-dev/homebrew-tap-core/dispatches' --input - <<'JSON'
+{
+  "event_type": "publish-kandelo-bottles",
+  "client_payload": {"formulae": "zlib", "arches": "wasm32"}
+}
+JSON
+
+# Run only after zlib has completed successfully.
+gh api --method POST \
+  'repos/Kandelo-dev/homebrew-tap-core/dispatches' --input - <<'JSON'
+{
+  "event_type": "publish-kandelo-bottles",
+  "client_payload": {"formulae": "bzip2", "arches": "wasm32"}
+}
+JSON
+```
+
+Inventory the four exact package objects with an organization/package-admin
+GitHub CLI identity. A slash inside a package name is `%2F`-encoded in the REST
+path:
+
+```bash
+gh api 'orgs/Kandelo-dev/packages/container/tap-core%2Fzlib' \
+  --jq '{name,visibility,repository:(.repository.full_name // null),created_at,updated_at,version_count}'
+gh api 'orgs/Kandelo-dev/packages/container/tap-core%2Fbzip2' \
+  --jq '{name,visibility,repository:(.repository.full_name // null),created_at,updated_at,version_count}'
+gh api 'orgs/Kandelo-dev/packages/container/homebrew-tap-core%2Fzlib' \
+  --jq '{name,visibility,repository:(.repository.full_name // null),created_at,updated_at,version_count}'
+gh api 'orgs/Kandelo-dev/packages/container/homebrew-tap-core%2Fbzip2' \
+  --jq '{name,visibility,repository:(.repository.full_name // null),created_at,updated_at,version_count}'
+```
+
+Before deletion, attach those records, the legacy version inventory, and the
+two successful production run URLs to the cleanup issue:
+
+```bash
+gh api --paginate \
+  'orgs/Kandelo-dev/packages/container/tap-core%2Fzlib/versions?per_page=100'
+gh api --paginate \
+  'orgs/Kandelo-dev/packages/container/tap-core%2Fbzip2/versions?per_page=100'
+```
+
+In a clean checkout of live tap `main`, require no active old-root matches and
+validate the repository-rooted Formula and sidecar state:
+
+```bash
+rg -n 'ghcr\.io(?:/v2)?/kandelo-dev/tap-core' \
+  Formula Kandelo .github -g '!Kandelo/reports/**'
+# Expected: no matches.
+
+rg -n 'https://ghcr\.io/v2/kandelo-dev/homebrew-tap-core' \
+  Formula Kandelo -g '!Kandelo/reports/**'
+# Expected: the successful zlib and bzip2 Formula/sidecar references.
+
+/path/to/kandelo/scripts/dev-shell.sh cargo xtask homebrew-validate \
+  --tap-root "$PWD"
+```
+
+Once every gate passes, delete only the two exact legacy package objects. This
+is destructive and requires package-admin access. A classic PAT used by `gh`
+needs `read:packages` and `delete:packages`; the package settings **Danger
+Zone** is the UI alternative.
+
+```bash
+gh api --method DELETE \
+  'orgs/Kandelo-dev/packages/container/tap-core%2Fzlib'
+gh api --method DELETE \
+  'orgs/Kandelo-dev/packages/container/tap-core%2Fbzip2'
+```
+
+Do not delete either `homebrew-tap-core/*` package. Re-run the inventory after
+deletion: both `tap-core/*` requests must return `404 Package not found`, both
+`homebrew-tap-core/*` records must still be public and repository-linked, and
+the live tap validator must still pass. Preserve historical tap reports; they
+are audit records and do not depend on the package objects remaining present.
+
+[GitHub permits restoration for 30 days](https://docs.github.com/en/packages/learn-github-packages/deleting-and-restoring-a-package#restoring-packages)
+only while the deleted package namespace and versions have not been reused. If
+cleanup was mistaken, first stop any stale old-root publisher and restore
+immediately with an organization/package admin identity. A classic PAT needs
+`read:packages` and `write:packages` for the
+[restore endpoint](https://docs.github.com/en/rest/packages/packages#restore-a-package-for-an-organization):
+
+```bash
+gh api --method POST \
+  'orgs/Kandelo-dev/packages/container/tap-core%2Fzlib/restore'
+gh api --method POST \
+  'orgs/Kandelo-dev/packages/container/tap-core%2Fbzip2/restore'
+```
+
+Deleting these never-live migration controls is a one-time namespace cleanup,
+not the normal rollback mechanism. For a package represented by current or
+last-green tap state, retain the immutable bottle and use the maintenance
+rollback path instead.
+
 ## Current Gaps
 
 The implemented path covers a trusted bottle build, public repository-rooted
@@ -1184,4 +1371,5 @@ GHCR package creation plus anonymous readback, sidecar validation, verified VFS
 image building, browser smoke, diagnostic gallery gating, and lossless
 under-lock tap composition with Formula source-closure drift rejection.
 Immutable gallery release publication, broader package coverage, general guest
-`brew install`, and full operator runbooks remain separate work.
+`brew install`, and broader release/gallery operator runbooks remain separate
+work.
