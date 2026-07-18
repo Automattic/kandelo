@@ -42,6 +42,15 @@ on:
       require-vfs-acceptance:
         type: boolean
         default: false
+      github-packages-user:
+        type: string
+        default: ""
+      require-github-packages-token:
+        type: boolean
+        default: false
+    secrets:
+      HOMEBREW_GITHUB_PACKAGES_TOKEN:
+        required: false
 
 jobs:
   plan:
@@ -1104,7 +1113,10 @@ jobs:
         if: ${{ steps.validate-build.outcome == 'success' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN || github.token }}
+          GHCR_AUTH_MODE: ${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN != '' && 'pat' || 'github-token' }}
+          GHCR_REQUIRE_PAT: ${{ inputs.require-github-packages-token }}
+          GHCR_USER: ${{ inputs.github-packages-user }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
@@ -1337,7 +1349,10 @@ jobs:
       - name: Publish the complete Homebrew version index in isolated ORAS auth state
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN || github.token }}
+          GHCR_AUTH_MODE: ${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN != '' && 'pat' || 'github-token' }}
+          GHCR_REQUIRE_PAT: ${{ inputs.require-github-packages-token }}
+          GHCR_USER: ${{ inputs.github-packages-user }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}

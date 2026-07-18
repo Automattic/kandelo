@@ -448,9 +448,25 @@ specific because its rollback and deletion paths own default-tap state. A
 third-party `maintain-bottles.yml` on the protected default branch may call the
 generic publisher for rebuilds, but generic rollback and deletion orchestration
 are not provided by this change. Third-party actions in the privileged path are
-pinned by commit. The reusable workflow uses the caller's scoped
+pinned by commit. By default, the reusable workflow uses the caller's scoped
 `github.token`; it cannot publish another repository's tap state or GHCR
 packages because caller and target repository identities must match.
+
+A direct write caller may instead pass the optional
+`HOMEBREW_GITHUB_PACKAGES_TOKEN` workflow secret and the corresponding
+`github-packages-user` input. It may also set
+`require-github-packages-token` so a missing secret or username fails closed
+instead of falling back. This supports a controlled classic-PAT publication
+experiment without changing bottle bytes or OCI metadata. The secret overrides
+`github.token` only in the isolated child and version-index ORAS transport
+steps; Formula execution, OCI composition, anonymous readback, and tap
+finalization do not receive it. The PAT owner must be the named user, and the
+PAT should carry only `write:packages`. A caller that does not pass the secret
+retains the existing `github.token` behavior. The first-party publish caller
+requires the PAT and maps it from the repository secret
+`HOMEBREW_GITHUB_PACKAGES_TOKEN`; its owner comes from the repository variable
+`HOMEBREW_GITHUB_PACKAGES_USER`. Maintenance rebuilds deliberately retain
+`github.token` during this experiment.
 
 After a read-only planning job resolves the immutable Kandelo commit, tap
 commit, ABI namespace, derived bottle root, and formula matrix, each
@@ -593,11 +609,11 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    directory, mode, and byte digest.
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
-   and deterministic OCI child against the plan before exposing the token to an
-   isolated ORAS transport. This includes bounded tar structure, link safety,
-   receipt identity, local-build-root
-   absence across all regular members, and every Wasm member's ABI, memory width,
-   object kind, and fork instrumentation. The credentialed step cannot evaluate
+   and deterministic OCI child against the plan before exposing the selected
+   package token to an isolated ORAS transport. This includes bounded tar
+   structure, link safety, receipt identity, local-build-root absence across all
+   regular members, and every Wasm member's ABI, memory width, object kind, and
+   fork instrumentation. The credentialed step cannot evaluate
    Formula Ruby or construct OCI metadata. GHCR returns the same anonymous
    authorization failure for a missing package namespace and an existing private
    reference. At that boundary, write mode uses the isolated credentials to fetch

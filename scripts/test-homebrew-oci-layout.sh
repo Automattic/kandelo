@@ -957,17 +957,56 @@ jq -nS --arg digest "$(jq -r '.oci.manifest.digest' "$TMP_ROOT/child32/receipt.j
   '{mediaType: "application/vnd.oci.image.manifest.v1+json", digest: $digest, size: 1}' \
   >"$TMP_ROOT/present-descriptor.json"
 : >"$ORAS_LOG"
+expect_failure required-pat-missing "required GitHub Packages PAT is unavailable" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=present \
+    ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=true \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --out-json "$TMP_ROOT/child32/required-pat-missing.json"
+[ ! -s "$ORAS_LOG" ] || {
+  echo "missing required PAT reached the public registry probe" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+expect_failure pat-owner-missing "GHCR registry user is invalid" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=present \
+    ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    GHCR_AUTH_MODE=pat GHCR_REQUIRE_PAT=true \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --out-json "$TMP_ROOT/child32/pat-owner-missing.json"
+[ ! -s "$ORAS_LOG" ] || {
+  echo "PAT without its owner identity reached the public registry probe" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
 ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
   ORAS_STATE="$TMP_ROOT/upload-oras-state" \
   ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
   KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
   PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+  GHCR_AUTH_MODE=pat GHCR_REQUIRE_PAT=true GHCR_USER=package-bot \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --out-json "$TMP_ROOT/child32/upload.json" >/dev/null
+grep -E '^login ghcr.io .* -u package-bot --password-stdin$' "$ORAS_LOG" >/dev/null || {
+  echo "explicit GHCR package user did not reach the isolated ORAS login" >&2
+  exit 1
+}
 jq -e '
   .publication.status == "uploaded" and
   .publication.public_readback_digest == .publication.digest
@@ -1016,6 +1055,29 @@ auth_config="$(awk '
   echo "registry credential appeared in ORAS arguments or logs" >&2
   exit 1
 }
+
+: >"$ORAS_LOG"
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
+  ORAS_STATE="$TMP_ROOT/github-token-upload-oras-state" \
+  ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+  KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
+  PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+  GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false GHCR_USER=package-bot \
+  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+    --layout "$TMP_ROOT/child32/layout" \
+    --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --out-json "$TMP_ROOT/child32/github-token-upload.json" >/dev/null
+grep -E '^login ghcr.io .* -u tester --password-stdin$' "$ORAS_LOG" >/dev/null || {
+  echo "GitHub-token mode did not couple registry login to the Actions actor" >&2
+  exit 1
+}
+! grep -E '^login ghcr.io .* -u package-bot --password-stdin$' "$ORAS_LOG" >/dev/null || {
+  echo "GitHub-token mode reused the PAT owner identity" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
 
 ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \

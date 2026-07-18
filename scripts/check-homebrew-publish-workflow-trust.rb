@@ -19,8 +19,8 @@ DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a54
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "994892064c7903c01a2584ecf42217a44c7fb4b877134a2b85628dbca0db1683"
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
-PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
-PUBLISHER_INDEX_DIGEST = "b3b2974ae56d7a4e2aff142145abc68fcc2034a6f5933b815bf62454ef1ed5c0"
+PUBLISHER_UPLOAD_DIGEST = "e245199d1a635c8a07f9e98dabf03213b3a29dc2cad2f3e729bd8ea903d1e62b"
+PUBLISHER_INDEX_DIGEST = "e9ff42e9d459565e2e57eacab9464451cb67783e03b800df80a22cf3246ec7e1"
 PUBLISHER_VERIFY_DIGEST = "a6077aa35c272afcc1e3670a9ef58cb999eb447d4ddd81b551a5b5848ef312df"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -278,7 +278,7 @@ def exact_permissions?(actual, expected)
   actual.is_a?(Hash) && actual.transform_keys(&:to_s) == expected
 end
 
-def check_common(workflow, label)
+def check_common(workflow, label, allowed_secret_nodes: [])
   mutable_actions = values_for_key(workflow, "uses").select do |value|
     value.is_a?(String) && !value.start_with?("./") &&
       !value.match?(%r{\A[^@\s]+@[0-9a-f]{40}\z})
@@ -295,10 +295,11 @@ def check_common(workflow, label)
     value.is_a?(String) && value.include?("${{")
   end
   check(unsafe_runs.empty?, "#{label} interpolates a GitHub expression into shell syntax")
-  check(values_for_key(workflow, "secrets").empty?, "#{label} passes repository secrets")
+  check(values_for_key(workflow, "secrets") == allowed_secret_nodes,
+        "#{label} secret contract changed")
 end
 
-def check_tap_caller(path, expected_name:, event_type:, job_name:, reusable:, inputs:)
+def check_tap_caller(path, expected_name:, event_type:, job_name:, reusable:, inputs:, secrets: {})
   workflow = load_workflow(path)
   top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
   check(top_keys == %w[jobs name on], "#{File.basename(path)} has unexpected top-level configuration")
@@ -309,16 +310,21 @@ def check_tap_caller(path, expected_name:, event_type:, job_name:, reusable:, in
   jobs = workflow_jobs(workflow)
   check(jobs.keys == [job_name], "#{File.basename(path)} has an unexpected job set")
   job = jobs.fetch(job_name)
-  check(job.keys.sort == %w[permissions uses with], "#{File.basename(path)} caller job changed")
+  expected_job_keys = %w[permissions uses with]
+  expected_job_keys << "secrets" unless secrets.empty?
+  check(job.keys.sort == expected_job_keys.sort,
+        "#{File.basename(path)} caller job changed")
   check(exact_permissions?(job["permissions"], {
     "actions" => "read", "contents" => "write", "packages" => "write",
   }), "#{File.basename(path)} permission ceiling changed")
   check(job["uses"] == reusable, "#{File.basename(path)} reusable workflow target changed")
   check(job["with"] == inputs, "#{File.basename(path)} caller inputs changed")
+  check(job.fetch("secrets", {}) == secrets, "#{File.basename(path)} caller secrets changed")
   check(values_for_key(workflow, "run").empty? && values_for_key(workflow, "steps").empty?,
         "#{File.basename(path)} may not execute caller-local steps")
-  check(values_for_key(workflow, "secrets").empty?,
-        "#{File.basename(path)} may not inherit or pass secrets")
+  expected_secret_nodes = secrets.empty? ? [] : [secrets]
+  check(values_for_key(workflow, "secrets") == expected_secret_nodes,
+        "#{File.basename(path)} may pass only its reviewed named secrets")
 end
 
 def check_tap_callers
@@ -341,7 +347,14 @@ def check_tap_callers
     event_type: "publish-kandelo-bottles",
     job_name: "publish",
     reusable: "Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main",
-    inputs: publish_inputs,
+    inputs: publish_inputs.merge({
+      "github-packages-user" => "${{ vars.HOMEBREW_GITHUB_PACKAGES_USER }}",
+      "require-github-packages-token" => true,
+    }),
+    secrets: {
+      "HOMEBREW_GITHUB_PACKAGES_TOKEN" =>
+        "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN }}",
+    },
   )
 
   check_tap_caller(
@@ -391,7 +404,8 @@ def check_publisher(workflow)
   events = workflow_events(workflow)
   check(events.keys == ["workflow_call"], "publisher must only expose workflow_call")
   workflow_call = events.fetch("workflow_call")
-  check(workflow_call.keys == ["inputs"], "publisher workflow_call contract changed")
+  check(workflow_call.keys.sort == %w[inputs secrets],
+        "publisher workflow_call contract changed")
   check(workflow_call["inputs"] == {
     "kandelo-repository" => { "type" => "string", "default" => "Automattic/kandelo" },
     "kandelo-ref" => { "type" => "string", "default" => "main" },
@@ -406,9 +420,18 @@ def check_publisher(workflow)
     "force" => { "type" => "boolean", "default" => false },
     "dry-run" => { "type" => "boolean", "default" => false },
     "require-vfs-acceptance" => { "type" => "boolean", "default" => false },
+    "github-packages-user" => { "type" => "string", "default" => "" },
+    "require-github-packages-token" => { "type" => "boolean", "default" => false },
   }, "publisher inputs changed")
+  packages_secret_contract = {
+    "HOMEBREW_GITHUB_PACKAGES_TOKEN" => { "required" => false },
+  }
+  check(workflow_call["secrets"] == packages_secret_contract,
+        "publisher package secret declaration changed")
   check(!workflow.key?("permissions"), "publisher requests workflow-wide permissions")
-  check_common(workflow, "reusable publisher")
+  check_common(workflow, "reusable publisher", allowed_secret_nodes: [packages_secret_contract])
+  check(JSON.generate(workflow).scan("secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN").length == 4,
+        "publisher package secret escaped the two registry transport steps")
 
   jobs = workflow_jobs(workflow)
   check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index upload-bottle verify-bottle],
@@ -848,7 +871,12 @@ def check_publisher(workflow)
   check(uploader_credential_steps.map { |step| step["name"] } ==
         ["Upload validated bottle in isolated ORAS auth state"] &&
         uploader_credential_steps.first["env"] == {
-          "GH_TOKEN" => "${{ github.token }}",
+          "GH_TOKEN" =>
+            "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN || github.token }}",
+          "GHCR_AUTH_MODE" =>
+            "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN != '' && 'pat' || 'github-token' }}",
+          "GHCR_REQUIRE_PAT" => "${{ inputs.require-github-packages-token }}",
+          "GHCR_USER" => "${{ inputs.github-packages-user }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
@@ -860,7 +888,12 @@ def check_publisher(workflow)
   check(index_credential_steps.map { |step| step["name"] } ==
         ["Publish the complete Homebrew version index in isolated ORAS auth state"] &&
         index_credential_steps.first["env"] == {
-          "GH_TOKEN" => "${{ github.token }}",
+          "GH_TOKEN" =>
+            "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN || github.token }}",
+          "GHCR_AUTH_MODE" =>
+            "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN != '' && 'pat' || 'github-token' }}",
+          "GHCR_REQUIRE_PAT" => "${{ inputs.require-github-packages-token }}",
+          "GHCR_USER" => "${{ inputs.github-packages-user }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
@@ -2801,6 +2834,18 @@ def self_test(publisher, maintenance)
       workflow_events(w).fetch("workflow_call").fetch("inputs")["command"] = {
         "type" => "string", "default" => "true",
       }
+    },
+    "extra publisher secret" => lambda { |w|
+      workflow_events(w).fetch("workflow_call").fetch("secrets")["UNREVIEWED_TOKEN"] = {
+        "required" => false,
+      }
+    },
+    "package PAT reaches finalizer" => lambda { |w|
+      step = mutate_named_step(
+        w, "finalize-tap", "Publish validated sidecars under the tap state lock"
+      )
+      step.fetch("env")["GH_TOKEN"] =
+        "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN || github.token }}"
     },
     "caller feature branch" => lambda { |w|
       step = mutate_named_step(w, "plan", "Validate caller trust boundary")

@@ -12,6 +12,7 @@ DRY_RUN=0
 AUTH_DIR=""
 AUTH_CONFIG=""
 WORK_DIR=""
+REGISTRY_USER=""
 
 cleanup() {
   [ -z "$AUTH_DIR" ] || rm -rf "$AUTH_DIR"
@@ -24,11 +25,12 @@ usage() {
 usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--dry-run]
 
 Validates an explicit local OCI layout, preflights the destination reference,
-and uses ORAS only to copy that immutable layout to GHCR. When GHCR hides an
-absent reference behind an anonymous authorization failure, write mode uses
-isolated ORAS credentials only to distinguish missing from present. It never
-evaluates Formula Ruby or constructs registry metadata while credentials are
-present.
+and uses ORAS only to copy that immutable layout to GHCR. In PAT mode,
+GHCR_USER must name the owner of GH_TOKEN. GitHub-token mode uses the Actions
+actor. When GHCR hides an absent reference behind an anonymous authorization
+failure, write mode uses isolated ORAS credentials only to distinguish missing
+from present. It never evaluates Formula Ruby or constructs registry metadata
+while credentials are present.
 EOF
 }
 
@@ -121,6 +123,56 @@ fi
 
 REMOTE="ghcr.io/${TAP_NAME}/${FORMULA}"
 auth_parent="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+
+validate_auth_contract() {
+  local auth_mode="${GHCR_AUTH_MODE:-automatic}"
+  local require_pat="${GHCR_REQUIRE_PAT:-false}"
+
+  case "$auth_mode" in
+    pat|github-token|automatic) ;;
+    *)
+      echo "homebrew-ghcr-upload.sh: GHCR auth mode is invalid" >&2
+      exit 2
+      ;;
+  esac
+  case "$require_pat" in
+    true)
+      if [ "$auth_mode" != pat ]; then
+        echo "homebrew-ghcr-upload.sh: required GitHub Packages PAT is unavailable" >&2
+        exit 2
+      fi
+      ;;
+    false) ;;
+    *)
+      echo "homebrew-ghcr-upload.sh: GHCR PAT requirement is invalid" >&2
+      exit 2
+      ;;
+  esac
+
+  case "$auth_mode" in
+    pat)
+      if [ -z "${GH_TOKEN:-}" ]; then
+        echo "homebrew-ghcr-upload.sh: selected GitHub Packages PAT is unavailable" >&2
+        exit 2
+      fi
+      REGISTRY_USER="${GHCR_USER:-}"
+      ;;
+    github-token)
+      REGISTRY_USER="${GITHUB_ACTOR:-github-actions}"
+      ;;
+    automatic)
+      REGISTRY_USER="${GHCR_USER:-${GITHUB_ACTOR:-github-actions}}"
+      ;;
+  esac
+  if [ -z "$REGISTRY_USER" ] || [ "${#REGISTRY_USER}" -gt 255 ] ||
+     [[ "$REGISTRY_USER" == *$'\n'* ]] || [[ "$REGISTRY_USER" == *$'\r'* ]]; then
+    echo "homebrew-ghcr-upload.sh: GHCR registry user is invalid" >&2
+    exit 2
+  fi
+}
+
+validate_auth_contract
+
 WORK_DIR="$(mktemp -d "$auth_parent/kandelo-homebrew-preflight.XXXXXX")"
 anonymous_config="$WORK_DIR/anonymous.json"
 printf '{"auths":{}}\n' >"$anonymous_config"
@@ -140,7 +192,7 @@ ensure_authenticated_config() {
     env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
       -u HOMEBREW_GITHUB_PACKAGES_TOKEN -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
       oras login ghcr.io --registry-config "$AUTH_CONFIG" \
-        -u "${GITHUB_ACTOR:-github-actions}" --password-stdin >/dev/null
+        -u "$REGISTRY_USER" --password-stdin >/dev/null
 }
 
 registry_probe() {
