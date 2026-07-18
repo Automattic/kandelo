@@ -45,6 +45,10 @@
         };
         devShellPackages = [
             rustToolchain
+            # Use the wrapped host compiler before the combined unwrapped
+            # LLVM tree. The wrapper supplies the declared host SDK and C++
+            # standard-library paths needed by native generator stages.
+            llvmPkg.clang
             llvmTree
             # Node 24, not 22: the host code constructs
             # WebAssembly.Memory with address: "i64" + BigInt
