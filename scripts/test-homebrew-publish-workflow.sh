@@ -1471,6 +1471,7 @@ EOF
 
 validate_publish_handoff() {
   local handoff="$1" tap_root="$2"
+  shift 2
   bash "$REPO_ROOT/scripts/homebrew-validate-publish-handoff.sh" \
     --handoff "$handoff" \
     --formula hello \
@@ -1481,7 +1482,8 @@ validate_publish_handoff() {
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
-    --tap-root "$tap_root"
+    --tap-root "$tap_root" \
+    "$@"
 }
 
 rebind_publish_handoff_tap_commit() {
@@ -1519,6 +1521,22 @@ assert_publish_handoff_is_exact_inert_data() {
   tap_root="$TMPDIR/publish-handoff-valid-tap"
   make_publish_handoff "$handoff" "$tap_root"
   validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+
+  handoff="$TMPDIR/publish-handoff-dry-run"
+  tap_root="$TMPDIR/publish-handoff-dry-run-tap"
+  make_publish_handoff "$handoff" "$tap_root"
+  make_dry_upload_receipt "$handoff/build" "$handoff/receipt.json"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
+    fail "publish handoff validator accepted a dry-run receipt in write mode"
+  fi
+  validate_publish_handoff "$handoff" "$tap_root" --allow-dry-run >/dev/null
+
+  handoff="$TMPDIR/publish-handoff-public-as-dry-run"
+  tap_root="$TMPDIR/publish-handoff-public-as-dry-run-tap"
+  make_publish_handoff "$handoff" "$tap_root"
+  if validate_publish_handoff "$handoff" "$tap_root" --allow-dry-run >/dev/null 2>&1; then
+    fail "publish handoff validator accepted a public receipt in dry-run mode"
+  fi
 
   handoff="$TMPDIR/publish-handoff-large-valid-sidecar"
   tap_root="$TMPDIR/publish-handoff-large-valid-sidecar-tap"

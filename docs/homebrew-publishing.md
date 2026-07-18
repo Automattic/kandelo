@@ -709,9 +709,12 @@ locally committed success attempt cannot enter a last-green failure commit.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
 tap commits. Dry runs still build bottles and validate the generated metadata
-shape. An anonymous GHCR authorization failure remains a non-public dry-run
-result; dry-run upload planning neither loads registry credentials nor attempts
-to distinguish a missing namespace from a private reference. Dry runs seed the
+shape. The verifier carries that trusted mode explicitly into final handoff
+validation; write-mode validation and the credentialed finalizer reject a
+non-public dry-run receipt. An anonymous GHCR authorization failure remains a
+non-public dry-run result; dry-run upload planning neither loads registry
+credentials nor attempts to distinguish a missing namespace from a private
+reference. Dry runs seed the
 VFS builder from the current local bottle. Non-dry runs seed it only with bytes
 returned by the anonymous GHCR readback. The publisher deliberately does not
 restore GitHub

@@ -12,11 +12,12 @@ TAP_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 TAP_ROOT=""
+ALLOW_DRY_RUN=0
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...]
+usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--allow-dry-run]
 
 Checks the exact build/receipt/composition artifact grammar and cross-validates
 all publication data without loading Formula Ruby or executing package code.
@@ -35,6 +36,7 @@ while [ "$#" -gt 0 ]; do
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
+    --allow-dry-run) ALLOW_DRY_RUN=1; shift ;;
     --forbidden-root)
       [ "$#" -ge 2 ] && [ -n "$2" ] || {
         echo "homebrew-validate-publish-handoff.sh: --forbidden-root requires a value" >&2
@@ -194,6 +196,9 @@ receipt_validation_args=()
 for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
   receipt_validation_args+=(--forbidden-root "$forbidden_root")
 done
+if [ "$ALLOW_DRY_RUN" -eq 1 ]; then
+  receipt_validation_args+=(--allow-dry-run)
+fi
 bash "$SCRIPT_ROOT/homebrew-validate-upload-receipt.sh" \
   --receipt "$RECEIPT" \
   --handoff "$BUILD_ROOT" \

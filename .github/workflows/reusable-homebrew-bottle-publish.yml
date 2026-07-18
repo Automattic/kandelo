@@ -2584,6 +2584,7 @@ jobs:
         env:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
+          KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
@@ -2629,6 +2630,9 @@ jobs:
             --forbidden-root "$RUNNER_TEMP"
             --forbidden-root "/home/kandelo-homebrew-build"
           )
+          if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
+            payload_args+=(--allow-dry-run)
+          fi
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
 
       - name: Upload validated publication handoff

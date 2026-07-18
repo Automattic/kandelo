@@ -21,7 +21,7 @@ PUBLISHER_PLAN_DIGEST = "994892064c7903c01a2584ecf42217a44c7fb4b877134a2b85628db
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
 PUBLISHER_UPLOAD_DIGEST = "016a5f370cb08dd615455348f3420a0d5fbda444fa13f4248eac5cdab0d7f3c9"
 PUBLISHER_INDEX_DIGEST = "b3b2974ae56d7a4e2aff142145abc68fcc2034a6f5933b815bf62454ef1ed5c0"
-PUBLISHER_VERIFY_DIGEST = "e688f625830f3d7f05ce5e2cb0649534dd092533af444369633a6ba7026fd2e2"
+PUBLISHER_VERIFY_DIGEST = "a6077aa35c272afcc1e3670a9ef58cb999eb447d4ddd81b551a5b5848ef312df"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -2499,8 +2499,11 @@ def check_publisher(workflow)
           "publisher verifier source recheck lacks #{fragment}")
   end
 
-  package_handoff_run = named_step(verify_steps,
-                                   "Package validated data-only publication handoff").fetch("run")
+  package_handoff = named_step(verify_steps,
+                               "Package validated data-only publication handoff")
+  package_handoff_run = package_handoff.fetch("run")
+  check(package_handoff.dig("env", "KANDELO_HOMEBREW_DRY_RUN") == "${{ inputs.dry-run }}",
+        "publisher publication handoff does not bind the trusted dry-run mode")
   [
     'mkdir -p "$publish_handoff/build" "$publish_handoff/composition"',
     'homebrew-build-handoff/manifest.json', 'homebrew-build-handoff/bottle.json',
@@ -2508,6 +2511,8 @@ def check_publisher(workflow)
     'cp "$RUNTIME_BOTTLE" "$publish_handoff/build/bottle.tar.gz"', "receipt.json",
     'homebrew-sidecars/sidecars-input.json',
     '.packages[0].bottles[0].bottle_file = "../build/bottle.tar.gz"',
+    'if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then',
+    'payload_args+=(--allow-dry-run)',
     "scripts/homebrew-validate-publish-handoff.sh",
   ].each do |fragment|
     check(package_handoff_run.include?(fragment), "publisher publication handoff lacks #{fragment}")
@@ -2527,8 +2532,9 @@ def check_publisher(workflow)
   check(payload_validation["id"] == "validate-payload" &&
         payload_validation["continue-on-error"] == true &&
         payload_validation.fetch("run").include?("scripts/homebrew-validate-publish-handoff.sh") &&
+        !payload_validation.fetch("run").include?("--allow-dry-run") &&
         finalize_steps.index(payload_validation) < finalize_steps.index(publish_checkout),
-        "publisher finalizer does not validate the strict handoff before credentialed checkout")
+        "publisher finalizer does not validate a write-only strict handoff before credentialed checkout")
   check_forbidden_root_args(payload_validation.fetch("run"),
                             "publisher final payload validation", trusted_runner_roots)
   forbidden_root_lines = values_for_key(workflow, "run").flat_map do |run|
@@ -3289,6 +3295,19 @@ def self_test(publisher, maintenance)
       step = mutate_named_step(w, "finalize-tap",
                                "Validate the complete data-only publication payload")
       step["run"] = step.fetch("run").sub("scripts/homebrew-validate-publish-handoff.sh", "true")
+    },
+    "dry-run publication handoff mode dropped" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle",
+                               "Package validated data-only publication handoff")
+      step["run"] = step.fetch("run").sub("payload_args+=(--allow-dry-run)", "true")
+    },
+    "write finalizer accepts dry-run receipt" => lambda { |w|
+      step = mutate_named_step(w, "finalize-tap",
+                               "Validate the complete data-only publication payload")
+      step["run"] = step.fetch("run").sub(
+        'bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh',
+        'bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh --allow-dry-run'
+      )
     },
     "credentialed checkout before validation" => lambda { |w|
       step = mutate_named_step(w, "finalize-tap",
