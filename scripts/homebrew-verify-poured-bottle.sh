@@ -17,13 +17,14 @@ BOTTLE_BYTES=""
 BOTTLE_ROOT_URL=""
 DEPENDENCY_PROVENANCE=""
 SELECTION_RECEIPT=""
+SYSROOT_BUILD_ROOT=""
 OUT=""
 BUILD_USER="${KANDELO_HOMEBREW_BUILD_USER:-}"
 SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --out <runtime-evidence.json>
+usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --sysroot-build-root <dir> --out <runtime-evidence.json>
 
 The tap must already contain the reconstructed target bottle block. In CI all
 Homebrew and Formula execution runs as the dedicated isolated workflow user.
@@ -51,6 +52,7 @@ while [ "$#" -gt 0 ]; do
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --selection-receipt) SELECTION_RECEIPT="${2:-}"; shift 2 ;;
+    --sysroot-build-root) SYSROOT_BUILD_ROOT="${2:-}"; shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-verify-poured-bottle.sh: unknown flag $1" >&2; usage; exit 2 ;;
@@ -58,7 +60,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 for name in TAP_ROOT TAP_REPOSITORY TAP_COMMIT FORMULA ARCH ABI BOTTLE BOTTLE_JSON \
-  BOTTLE_URL BOTTLE_SHA256 BOTTLE_BYTES BOTTLE_ROOT_URL DEPENDENCY_PROVENANCE OUT; do
+  BOTTLE_URL BOTTLE_SHA256 BOTTLE_BYTES BOTTLE_ROOT_URL DEPENDENCY_PROVENANCE \
+  SYSROOT_BUILD_ROOT OUT; do
   [ -n "${!name}" ] || {
     echo "homebrew-verify-poured-bottle.sh: $name is required" >&2
     exit 2
@@ -96,20 +99,71 @@ case "$ARCH" in wasm32|wasm64) ;; *) echo "homebrew-verify-poured-bottle.sh: inv
 [[ "$BOTTLE_BYTES" =~ ^[1-9][0-9]*$ ]] || {
   echo "homebrew-verify-poured-bottle.sh: invalid bottle byte count" >&2; exit 2;
 }
+[ -d "$SYSROOT_BUILD_ROOT" ] && [ ! -L "$SYSROOT_BUILD_ROOT" ] || {
+  echo "homebrew-verify-poured-bottle.sh: sysroot build root must be a real directory" >&2
+  exit 2
+}
+SYSROOT_BUILD_ROOT="$(cd "$SYSROOT_BUILD_ROOT" && pwd -P)"
 
 TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
+BOTTLE_TAG="${ARCH}_kandelo"
 for file in "$BOTTLE" "$BOTTLE_JSON" "$DEPENDENCY_PROVENANCE" "$SELECTION_RECEIPT"; do
   [ -f "$file" ] && [ ! -L "$file" ] || {
     echo "homebrew-verify-poured-bottle.sh: required input is not a regular file: $file" >&2
     exit 2
   }
 done
+if ! jq -e \
+  --arg formula "$FORMULA" \
+  --arg bottle_tag "$BOTTLE_TAG" \
+  --arg bottle_root_url "$BOTTLE_ROOT_URL" \
+  --arg sha256 "$BOTTLE_SHA256" '
+    type == "object" and keys == [$formula] and
+    (.[$formula].formula | type == "object") and
+    .[$formula].formula.name == $formula and
+    (.[$formula].formula.pkg_version |
+      type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")) and
+    (.[$formula].bottle | type == "object") and
+    .[$formula].bottle.root_url == $bottle_root_url and
+    (.[$formula].bottle.rebuild |
+      type == "number" and . >= 0 and floor == .) and
+    (.[$formula].bottle.tags | type == "object" and keys == [$bottle_tag]) and
+    .[$formula].bottle.tags[$bottle_tag].sha256 == $sha256
+  ' "$BOTTLE_JSON" >/dev/null; then
+  echo "homebrew-verify-poured-bottle.sh: canonical bottle JSON does not match the selected bottle" >&2
+  exit 2
+fi
+PKG_VERSION="$(jq -r --arg formula "$FORMULA" '.[$formula].formula.pkg_version' "$BOTTLE_JSON")"
+BOTTLE_REBUILD="$(jq -r --arg formula "$FORMULA" '.[$formula].bottle.rebuild' "$BOTTLE_JSON")"
+BOTTLE_REBUILD_SUFFIX=""
+if [ "$BOTTLE_REBUILD" != "0" ]; then
+  BOTTLE_REBUILD_SUFFIX=".$BOTTLE_REBUILD"
+fi
+EXPECTED_BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle${BOTTLE_REBUILD_SUFFIX}.tar.gz"
+if [ "$(basename "$BOTTLE")" != "$EXPECTED_BOTTLE_FILENAME" ]; then
+  echo "homebrew-verify-poured-bottle.sh: selected bottle must use Homebrew filename $EXPECTED_BOTTLE_FILENAME" >&2
+  exit 2
+fi
 [ "$(git -C "$TAP_ROOT" rev-parse HEAD)" = "$TAP_COMMIT" ] || {
   echo "homebrew-verify-poured-bottle.sh: tap HEAD differs from the planned commit" >&2
+  exit 2
+}
+RECONSTRUCTED_FORMULA_RELATIVE="Formula/$FORMULA.rb"
+[ -f "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ] && \
+  [ ! -L "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ] || {
+  echo "homebrew-verify-poured-bottle.sh: reconstructed Formula must be a regular file" >&2
+  exit 2
+}
+mapfile -t source_tap_changes < <(
+  git -C "$TAP_ROOT" status --short --untracked-files=all
+)
+[ "${#source_tap_changes[@]}" -eq 1 ] && \
+  [ "${source_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] || {
+  echo "homebrew-verify-poured-bottle.sh: reconstructed tap must change only $RECONSTRUCTED_FORMULA_RELATIVE" >&2
   exit 2
 }
 actual_sha="$(sha256sum "$BOTTLE" | awk '{print $1}')"
@@ -118,6 +172,11 @@ actual_bytes="$(wc -c <"$BOTTLE" | tr -d '[:space:]')"
   echo "homebrew-verify-poured-bottle.sh: selected bottle bytes differ from the receipt" >&2
   exit 1
 }
+SELECTION_MODE="$(jq -er '.bottle.mode' "$SELECTION_RECEIPT")"
+case "$SELECTION_MODE" in
+  anonymous-public-readback|local-dry-run) ;;
+  *) echo "homebrew-verify-poured-bottle.sh: invalid bottle selection mode" >&2; exit 2 ;;
+esac
 
 BREW_BIN="${HOMEBREW_BREW_FILE:-}"
 [ -n "$BREW_BIN" ] && [ -x "$BREW_BIN" ] || {
@@ -152,7 +211,7 @@ CONTROL_DIR="$(mktemp -d "$OUT_PARENT/.control.XXXXXX")"
 chmod 0700 "$CONTROL_DIR"
 
 cleanup() {
-  local original_status="${1:-0}" launcher_status=0
+  local original_status="${1:-0}" launcher_status=0 realm_cleanup_status=0
   if homebrew_patched_launcher_cleanup; then
     :
   else
@@ -162,12 +221,24 @@ cleanup() {
   if [ "$launcher_status" -ne 0 ]; then
     echo "homebrew-verify-poured-bottle.sh: preserving temporary Homebrew realms after cleanup failure" >&2
   elif [ -n "$BUILD_USER" ] && [ -n "${KANDELO_HOMEBREW_SUDO_BIN:-}" ]; then
-    "$KANDELO_HOMEBREW_SUDO_BIN" rm -rf "$NATIVE_BASE" "$WORK_DIR" >/dev/null 2>&1 || true
+    if "$KANDELO_HOMEBREW_SUDO_BIN" -n -- /usr/bin/rm -rf -- \
+      "$NATIVE_BASE" "$WORK_DIR" >/dev/null 2>&1; then
+      :
+    else
+      realm_cleanup_status="$?"
+      echo "homebrew-verify-poured-bottle.sh: could not remove temporary Homebrew realms" >&2
+    fi
   else
-    rm -rf "$NATIVE_BASE" "$WORK_DIR"
+    if rm -rf "$NATIVE_BASE" "$WORK_DIR"; then
+      :
+    else
+      realm_cleanup_status="$?"
+      echo "homebrew-verify-poured-bottle.sh: could not remove temporary Homebrew realms" >&2
+    fi
   fi
   [ "$original_status" -eq 0 ] || return "$original_status"
-  return "$launcher_status"
+  [ "$launcher_status" -eq 0 ] || return "$launcher_status"
+  return "$realm_cleanup_status"
 }
 
 cleanup_and_exit() {
@@ -202,7 +273,6 @@ homebrew_patched_launcher_prepare_native_prefix \
   "$NATIVE_HOME"
 
 FORMULA_REF="$TAP_NAME/$FORMULA"
-BOTTLE_TAG="${ARCH}_kandelo"
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
 export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
 export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
@@ -296,16 +366,48 @@ homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 "$BREW_BIN" trust --tap "$TAP_NAME"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
-[ "$TAPPED_TAP_ROOT/Formula/$FORMULA.rb" -ef "$TAP_ROOT/Formula/$FORMULA.rb" ] || {
-  echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the reconstructed Formula" >&2
+TAPPED_TAP_ROOT="$(cd "$TAPPED_TAP_ROOT" && pwd -P)"
+[ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ] && \
+  [ "$(git -C "$TAPPED_TAP_ROOT" rev-parse HEAD)" = "$TAP_COMMIT" ] && \
+  [ -z "$(git -C "$TAPPED_TAP_ROOT" status --short --untracked-files=all)" ] && \
+  [ -f "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ] && \
+  [ ! -L "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ] || {
+  echo "homebrew-verify-poured-bottle.sh: Homebrew did not clone the planned tap commit cleanly" >&2
+  exit 1
+}
+cp -- "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
+  "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"
+mapfile -t selected_tap_changes < <(
+  git -C "$TAPPED_TAP_ROOT" status --short --untracked-files=all
+)
+[ "${#selected_tap_changes[@]}" -eq 1 ] && \
+  [ "${selected_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] && \
+  cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
+    "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" || {
+  echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
   exit 1
 }
 
 if [ -n "$BUILD_USER" ]; then
   rm -rf "$KANDELO_ROOT/host/dist"
   homebrew_patched_launcher_isolate "$BUILD_USER" \
-    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_PARENT"
+    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_PARENT" "$SYSROOT_BUILD_ROOT"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
+
+  if [ "$SELECTION_MODE" = "local-dry-run" ]; then
+    # The workflow-owned RUNNER_TEMP tree is intentionally not part of the
+    # Formula execution realm. Give the isolated identity one immutable copy
+    # of the validated archive instead of weakening that boundary.
+    homebrew_patched_launcher_stage_protected_input \
+      "$BUILD_USER" "$SHARED_TEMP" "$BOTTLE" "$EXPECTED_BOTTLE_FILENAME"
+    PROTECTED_BOTTLE="$HOMEBREW_PATCHED_STAGED_INPUT_PATH"
+    [ "$(sha256sum "$PROTECTED_BOTTLE" | awk '{print $1}')" = "$BOTTLE_SHA256" ] &&
+      [ "$(wc -c <"$PROTECTED_BOTTLE" | tr -d '[:space:]')" = "$BOTTLE_BYTES" ] || {
+        echo "homebrew-verify-poured-bottle.sh: protected bottle input differs from the selected bytes" >&2
+        exit 1
+      }
+    BOTTLE="$PROTECTED_BOTTLE"
+  fi
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-verify-poured-bottle.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
   exit 2
@@ -417,12 +519,6 @@ while IFS= read -r dependency; do
     --force-bottle --as-dependency --ignore-dependencies --formula "$dependency"
 done <"$DEPENDENCY_POUR_LIST"
 
-SELECTION_MODE="$(jq -er '.bottle.mode' "$SELECTION_RECEIPT")"
-case "$SELECTION_MODE" in
-  anonymous-public-readback|local-dry-run) ;;
-  *) echo "homebrew-verify-poured-bottle.sh: invalid bottle selection mode" >&2; exit 2 ;;
-esac
-
 # Dependency downloads have already been proven independently. Remove every
 # cached object before the target selection so a public publication must make
 # Homebrew fetch the target selected by the reconstructed bottle block.
@@ -448,7 +544,38 @@ if [ "$SELECTION_MODE" = "anonymous-public-readback" ]; then
 else
   run_brew_logged "$BREW_BIN" install --force-bottle --ignore-dependencies "$BOTTLE"
 fi
-TARGET_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"
+TARGET_OPT_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"
+EXPECTED_TARGET_OPT_PREFIX="$HOMEBREW_PATCHED_PREFIX/opt/$FORMULA"
+[ "$TARGET_OPT_PREFIX" = "$EXPECTED_TARGET_OPT_PREFIX" ] || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula opt prefix is not canonical" >&2
+  exit 1
+}
+TARGET_PREFIX="$(cd "$TARGET_OPT_PREFIX" && pwd -P)" || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula opt prefix does not resolve" >&2
+  exit 1
+}
+TARGET_RACK="$HOMEBREW_PATCHED_PREFIX/Cellar/$FORMULA"
+[ -d "$TARGET_RACK" ] && [ ! -L "$TARGET_RACK" ] || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula Cellar rack is not a real directory" >&2
+  exit 1
+}
+TARGET_RACK="$(cd "$TARGET_RACK" && pwd -P)" || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula Cellar rack does not resolve" >&2
+  exit 1
+}
+EXPECTED_TARGET_PREFIX="$TARGET_RACK/$PKG_VERSION"
+[ -d "$EXPECTED_TARGET_PREFIX" ] && [ ! -L "$EXPECTED_TARGET_PREFIX" ] || {
+  echo "homebrew-verify-poured-bottle.sh: expected target Formula keg is not a real directory" >&2
+  exit 1
+}
+EXPECTED_TARGET_PREFIX="$(cd "$EXPECTED_TARGET_PREFIX" && pwd -P)" || {
+  echo "homebrew-verify-poured-bottle.sh: expected target Formula keg does not resolve" >&2
+  exit 1
+}
+[ "$TARGET_PREFIX" = "$EXPECTED_TARGET_PREFIX" ] || {
+  echo "homebrew-verify-poured-bottle.sh: target Formula opt prefix does not select the exact versioned keg" >&2
+  exit 1
+}
 TARGET_RECEIPT="$TARGET_PREFIX/INSTALL_RECEIPT.json"
 "$BREW_BIN" info --json=v2 "$FORMULA_REF" >"$FORMULA_INFO"
 homebrew_patched_launcher_snapshot_target_cellar_layout \

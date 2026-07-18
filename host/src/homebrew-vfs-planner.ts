@@ -167,7 +167,6 @@ interface SelectedBottle {
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const FIRST_PARTY_TAP = "automattic/kandelo-homebrew";
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SAFE_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
@@ -443,24 +442,14 @@ function validateExpectedTapName(
 
 function validateTapIdentity(tapRepository: string, tapName: string): void {
   const normalizedRepository = tapRepository.toLowerCase();
-  let expectedTapName: string;
-  if (normalizedRepository === FIRST_PARTY_TAP) {
-    expectedTapName = FIRST_PARTY_TAP;
-  } else {
-    const [owner, repositoryName] = normalizedRepository.split("/", 2);
-    const prefix = "homebrew-";
-    if (!repositoryName.startsWith(prefix) || repositoryName.length === prefix.length) {
-      fail(
-        `metadata tap repository ${quote(tapRepository)} must use the conventional owner/homebrew-name form`,
-      );
-    }
-    expectedTapName = `${owner}/${repositoryName.slice(prefix.length)}`;
-    if (expectedTapName === FIRST_PARTY_TAP) {
-      fail(
-        `metadata tap repository ${quote(tapRepository)} cannot claim protected first-party tap ${quote(FIRST_PARTY_TAP)}`,
-      );
-    }
+  const [owner, repositoryName] = normalizedRepository.split("/", 2);
+  const prefix = "homebrew-";
+  if (!repositoryName.startsWith(prefix) || repositoryName.length === prefix.length) {
+    fail(
+      `metadata tap repository ${quote(tapRepository)} must use the conventional owner/homebrew-name form`,
+    );
   }
+  const expectedTapName = `${owner}/${repositoryName.slice(prefix.length)}`;
   if (tapName !== expectedTapName) {
     fail(
       `metadata tap ${quote(tapName)} does not match repository ${quote(tapRepository)}; ` +

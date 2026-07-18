@@ -114,7 +114,7 @@ case "${1:-}" in
     esac
     ;;
   assert-native-isolation-runtime)
-    [ "$#" -eq 19 ]
+    [ "$#" -eq 20 ]
     shift
     native_prefix="$1"; shift
     native_cache="$1"; shift
@@ -133,7 +133,8 @@ case "${1:-}" in
     target_work="$1"; shift
     kandelo_root="$1"; shift
     tap_root="$1"; shift
-    output_root="$1"
+    output_root="$1"; shift
+    sysroot_owner="$1"
 
     [ "$prefix" = "$native_prefix" ]
     [ "$(pwd -P)" = "$native_temp" ]
@@ -151,7 +152,8 @@ case "${1:-}" in
     for target_only in KANDELO_HOMEBREW_ARCH KANDELO_HOMEBREW_KANDELO_ROOT \
       HOMEBREW_KANDELO_ABI HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_LLVM_BIN \
       HOMEBREW_KANDELO_NODE HOMEBREW_KANDELO_NODE_RECEIPT_PATH \
-      HOMEBREW_KANDELO_ROOT LLVM_BIN PLAYWRIGHT_BROWSERS_PATH WASM_POSIX_LLVM_DIR; do
+      HOMEBREW_KANDELO_ROOT HOMEBREW_KANDELO_SYSROOT LLVM_BIN \
+      PLAYWRIGHT_BROWSERS_PATH WASM_POSIX_LLVM_DIR WASM_POSIX_SYSROOT; do
       [ -z "${!target_only+x}" ] || exit 1
     done
     while IFS='=' read -r env_name _; do
@@ -181,7 +183,8 @@ case "${1:-}" in
     case ",${target_work_options// /}," in *,ro,*) ;; *) exit 1 ;; esac
     if (: >"$target_work/native-write-probe") 2>/dev/null; then exit 1; fi
     for hidden_root in "$target_prefix" "$target_cache" "$target_temp" \
-      "$target_config" "$target_home" "$kandelo_root" "$tap_root" "$output_root"; do
+      "$target_config" "$target_home" "$kandelo_root" "$tap_root" "$output_root" \
+      "$sysroot_owner"; do
       # systemd exposes InaccessiblePaths as mode-000 mount points. The path may
       # still stat successfully, but the Formula must not be able to use it.
       if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then
@@ -386,12 +389,15 @@ case "${1:-}" in
     printf 'mutation\n' >>"${XDG_CONFIG_HOME:?}/homebrew/trust.json"
     ;;
   assert-source-aliases)
-    [ "$#" -eq 6 ]
+    [ "$#" -eq 8 ]
     [ "${HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
     [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
+    [ "${HOMEBREW_KANDELO_SYSROOT:-}" = "$4" ]
+    [ "${WASM_POSIX_SYSROOT:-}" = "$4" ]
     [ -r "$2/source-marker" ]
     [ -r "$3/tap-marker" ]
-    for hidden_root in "$4" "$5" "$6"; do
+    [ "$(cat "$4/lib/libc.a")" = "reviewed sysroot" ]
+    for hidden_root in "$5" "$6" "$7" "$8"; do
       if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then
         exit 1
       fi
@@ -400,6 +406,7 @@ case "${1:-}" in
     done
     if ( : >"$2/write-probe" ) 2>/dev/null; then exit 1; fi
     if ( : >"$3/write-probe" ) 2>/dev/null; then exit 1; fi
+    if ( : >"$4/write-probe" ) 2>/dev/null; then exit 1; fi
     ;;
   assert-argv)
     [ "$#" -eq 6 ]
@@ -412,6 +419,29 @@ case "${1:-}" in
   assert-bottle-tags)
     [ "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" = "$2" ]
     [ "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" = "$3" ]
+    ;;
+  assert-protected-input)
+    [ "$#" -eq 6 ]
+    protected_path="$2"
+    expected_basename="$3"
+    shared_temp="$4"
+    expected_uid="$5"
+    expected_content="$6"
+    protected_dir="${protected_path%/*}"
+    [ "$(/usr/bin/id -u)" = "$expected_uid" ]
+    [ "${protected_path##*/}" = "$expected_basename" ]
+    case "$protected_dir" in
+      "$shared_temp"/homebrew-bottle-input.??????) ;;
+      *) exit 1 ;;
+    esac
+    [ "$(/usr/bin/stat -c '%u:%g:%a' "$protected_dir")" = "0:0:555" ]
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$protected_path")" = "0:0:444:1" ]
+    [ -r "$protected_path" ] && [ ! -w "$protected_path" ] && [ ! -w "$protected_dir" ]
+    [ "$(<"$protected_path")" = "$expected_content" ]
+    if printf 'changed\n' >>"$protected_path" 2>/dev/null; then exit 1; fi
+    if rm -f "$protected_path" 2>/dev/null; then exit 1; fi
+    if mv "$protected_path" "$protected_path-replaced" 2>/dev/null; then exit 1; fi
+    if (: >"$protected_dir/new-input") 2>/dev/null; then exit 1; fi
     ;;
   list)
     [ "$#" -eq 3 ] && [ "$2" = "--formula" ]
@@ -495,7 +525,7 @@ rm -rf "$prefix/Cellar"
 [ -L "$HOMEBREW_PATCHED_LAUNCHER" ] || fail "launcher symlink was not created"
 
 local_dependency_plan="$TMPDIR/local-dependency-plan.json"
-printf '%s\n' '{"build":[],"build_and_test":[],"formula":"hello","full_name":"automattic/kandelo-homebrew/hello","runtime_and_test":[],"schema":2,"tap":"automattic/kandelo-homebrew"}' \
+printf '%s\n' '{"build":[],"build_and_test":[],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":[],"schema":2,"tap":"kandelo-dev/tap-core"}' \
   >"$local_dependency_plan"
 chmod 0600 "$local_dependency_plan"
 real_cp="$(command -v cp)"
@@ -859,7 +889,12 @@ cat >"$process_probe_dir/sudo" <<'EOF'
 set -euo pipefail
 [ "${1:-}" = "-n" ] && shift
 [ "${1:-}" = "--" ] && shift
-exec "$@"
+command="$1"
+shift
+if [ "$command" = /usr/bin/rm ] && [ ! -x "$command" ]; then
+  command="$(command -v rm)"
+fi
+exec "$command" "$@"
 EOF
 cat >"$process_probe_dir/pgrep" <<'EOF'
 #!/usr/bin/env bash
@@ -940,6 +975,40 @@ set -e
   fail "failed source audit did not identify the rejected tree"
 HOMEBREW_PATCHED_SUDO_BIN=""
 
+sysroot_audit_script="$TMPDIR/sysroot-access-audit.sh"
+{
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+  homebrew_patched_launcher_emit_sysroot_access_audit
+} >"$sysroot_audit_script"
+bash -n "$sysroot_audit_script" ||
+  fail "generated protected sysroot audit is not valid Bash"
+
+staged_retry_shared="$TMPDIR/staged-input-retry"
+staged_retry_dir="$staged_retry_shared/homebrew-bottle-input.ABCDEF"
+staged_retry_path="$staged_retry_dir/fixture.bottle.tar.gz"
+mkdir -p "$staged_retry_dir"
+printf 'protected retry fixture\n' >"$staged_retry_path"
+HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP="$staged_retry_shared"
+HOMEBREW_PATCHED_STAGED_INPUT_DIR="$staged_retry_dir"
+HOMEBREW_PATCHED_STAGED_INPUT_PATH="$staged_retry_path"
+HOMEBREW_PATCHED_SUDO_BIN="$audit_probe_dir/sudo"
+if homebrew_patched_launcher_remove_staged_input >/dev/null 2>&1; then
+  fail "protected input cleanup ignored a privileged removal failure"
+fi
+[ -f "$staged_retry_path" ] && \
+  [ "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" = "$staged_retry_shared" ] && \
+  [ "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" = "$staged_retry_dir" ] && \
+  [ "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" = "$staged_retry_path" ] ||
+  fail "failed protected input cleanup discarded retry state"
+HOMEBREW_PATCHED_SUDO_BIN="$process_probe_dir/sudo"
+homebrew_patched_launcher_remove_staged_input
+[ ! -e "$staged_retry_dir" ] && \
+  [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \
+  [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] && \
+  [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ] ||
+  fail "protected input cleanup retry left staged state"
+HOMEBREW_PATCHED_SUDO_BIN=""
+
 if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
    [ -x /usr/bin/systemd-run ] && [ -x /usr/bin/systemctl ] && \
    [ -x /usr/bin/getent ] && [ -x /usr/bin/pgrep ] && [ -x /usr/bin/pkill ] && \
@@ -963,9 +1032,14 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_native_config="$isolated_native_base/g"
   isolated_native_home="$isolated_native_base/h"
   isolated_source_parent="$ISOLATION_ROOT/private-runner-home"
+  isolated_private_bottle_dir="$ISOLATION_ROOT/private-runner-cache"
+  isolated_shared_temp="$ISOLATION_ROOT/shared-temp"
   isolated_kandelo="$isolated_source_parent/kandelo"
   isolated_tap="$isolated_source_parent/tap"
   isolated_output="$isolated_source_parent/output"
+  isolated_sysroot_private_parent="$ISOLATION_ROOT/private-sysroot-owner"
+  isolated_sysroot_owner="$isolated_sysroot_private_parent/sysroot-build"
+  isolated_sysroot="$isolated_sysroot_owner/sysroot"
   isolated_dependency_plan="$isolated_output/host-dependencies.json"
   isolated_home="/home/$ISOLATION_BUILD_USER"
   daemon_marker="$isolated_work/detached-process-survived"
@@ -976,14 +1050,24 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   external_opt="$isolated_work/external-opt"
   mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
     "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
-    "$isolated_output" "$isolated_native_base" "$external_cellar" "$external_opt"
+    "$isolated_output" "$isolated_native_base" "$external_cellar" "$external_opt" \
+    "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib"
   chmod 0711 "$isolated_native_base"
+  chmod 0700 "$isolated_private_bottle_dir"
+  chmod 0700 "$isolated_sysroot_private_parent"
+  /usr/bin/sudo -n -- chown root:root "$isolated_shared_temp"
+  /usr/bin/sudo -n -- chmod 1777 "$isolated_shared_temp"
+  protected_bottle_basename="hello--1.0.wasm32_kandelo.bottle.tar.gz"
+  protected_bottle_content="canonical protected bottle bytes"
+  private_bottle="$isolated_private_bottle_dir/$protected_bottle_basename"
+  printf '%s\n' "$protected_bottle_content" >"$private_bottle"
   printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
+  printf 'reviewed sysroot\n' >"$isolated_sysroot/lib/libc.a"
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
   printf 'external target untouched\n' >"$external_opt/sentinel"
-  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"automattic/kandelo-homebrew/hello","runtime_and_test":["ninja"],"schema":2,"tap":"automattic/kandelo-homebrew"}'
+  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":["ninja"],"schema":2,"tap":"kandelo-dev/tap-core"}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
   mkdir "$isolated_kandelo/runner-control"
@@ -1007,6 +1091,14 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   /usr/bin/sudo -n -- chown -R \
     "$ISOLATION_BUILD_USER:$(id -gn "$ISOLATION_BUILD_USER")" \
     "$external_cellar" "$external_opt"
+  if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/test -r "$private_bottle"; then
+    fail "build identity can read the workflow-private bottle path"
+  fi
+  if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/test -x "$isolated_sysroot_owner"; then
+    fail "sysroot fixture does not model a workflow-private owner path"
+  fi
   export HOMEBREW_CACHE="$isolated_cache"
   export HOMEBREW_TEMP="$isolated_temp"
   export XDG_CONFIG_HOME="$isolated_work/xdg-config"
@@ -1056,9 +1148,55 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
       fail "prepared native child does not match the production private mode: $native_root"
   done
   printf 'native boundary marker\n' >"$isolated_native_prefix/boundary-marker"
+  export KANDELO_HOMEBREW_ARCH=wasm64
+  if homebrew_patched_launcher_isolate \
+      "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+      "$isolated_output" "$isolated_sysroot_owner" >/dev/null 2>&1; then
+    fail "Formula isolation accepted an absent architecture-specific sysroot"
+  fi
+  export KANDELO_HOMEBREW_ARCH=invalid
+  if homebrew_patched_launcher_isolate \
+      "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+      "$isolated_output" "$isolated_sysroot_owner" >/dev/null 2>&1; then
+    fail "Formula isolation accepted an invalid target architecture"
+  fi
+  export KANDELO_HOMEBREW_ARCH=wasm32
+  ln -s "$isolated_sysroot_owner" "$isolated_sysroot_owner-link"
+  if homebrew_patched_launcher_isolate \
+      "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+      "$isolated_output" "$isolated_sysroot_owner-link" >/dev/null 2>&1; then
+    fail "Formula isolation accepted a symlinked sysroot build root"
+  fi
+  rm "$isolated_sysroot_owner-link"
+  mv "$isolated_sysroot/lib/libc.a" "$isolated_sysroot/lib/libc-real.a"
+  ln -s libc-real.a "$isolated_sysroot/lib/libc.a"
+  if homebrew_patched_launcher_isolate \
+      "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+      "$isolated_output" "$isolated_sysroot_owner" >/dev/null 2>&1; then
+    fail "Formula isolation accepted a symlinked sysroot libc archive"
+  fi
+  rm "$isolated_sysroot/lib/libc.a"
+  mv "$isolated_sysroot/lib/libc-real.a" "$isolated_sysroot/lib/libc.a"
+  ln -s "$isolated_output" "$isolated_sysroot/escaping-link"
+  if homebrew_patched_launcher_isolate \
+      "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+      "$isolated_output" "$isolated_sysroot_owner" >/dev/null 2>&1; then
+    fail "Formula isolation accepted a sysroot symlink outside its protected tree"
+  fi
+  rm "$isolated_sysroot/escaping-link"
+  ln -s lib/libc.a "$isolated_sysroot/contained-link"
+  homebrew_assert_tree_symlinks_contained "$isolated_sysroot" sysroot
+  mkdir -p "$isolated_prefix/sysroot/lib"
+  printf 'overlapping sysroot\n' >"$isolated_prefix/sysroot/lib/libc.a"
+  if homebrew_patched_launcher_isolate \
+      "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+      "$isolated_output" "$isolated_prefix" >/dev/null 2>&1; then
+    fail "Formula isolation accepted a sysroot build root overlapping its mutable prefix"
+  fi
+  rm -rf "$isolated_prefix/sysroot"
   homebrew_patched_launcher_isolate \
     "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
-    "$isolated_output"
+    "$isolated_output" "$isolated_sysroot_owner"
   /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     test -x "$isolated_native_base" ||
     fail "build identity cannot traverse the workflow-owned native parent"
@@ -1084,6 +1222,37 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
       test -r "$native_root" -a -w "$native_root" -a -x "$native_root" ||
       fail "build identity cannot use a native child root: $native_root"
   done
+  if homebrew_patched_launcher_stage_protected_input \
+       "$ISOLATION_BUILD_USER" "$isolated_shared_temp" "$private_bottle" \
+       '../unsafe-bottle.tar.gz' >/dev/null 2>&1; then
+    fail "protected input staging accepted an unsafe basename"
+  fi
+  if homebrew_patched_launcher_stage_protected_input \
+       "$ISOLATION_BUILD_USER" "$isolated_shared_temp" "$private_bottle" \
+       "$(printf '%0513d' 0)" >/dev/null 2>&1; then
+    fail "protected input staging accepted an oversized basename"
+  fi
+  [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] ||
+    fail "rejected protected input staging left partial state"
+  homebrew_patched_launcher_stage_protected_input \
+    "$ISOLATION_BUILD_USER" "$isolated_shared_temp" "$private_bottle" \
+    "$protected_bottle_basename"
+  protected_bottle="$HOMEBREW_PATCHED_STAGED_INPUT_PATH"
+  protected_bottle_dir="$HOMEBREW_PATCHED_STAGED_INPUT_DIR"
+  case "$protected_bottle_dir" in
+    "$isolated_shared_temp"/homebrew-bottle-input.??????) ;;
+    *) fail "protected bottle used an unexpected directory: $protected_bottle_dir" ;;
+  esac
+  [ "${protected_bottle##*/}" = "$protected_bottle_basename" ] &&
+    [ "$(stat -c '%u:%g:%a' "$protected_bottle_dir")" = "0:0:555" ] &&
+    [ "$(stat -c '%u:%g:%a:%h' "$protected_bottle")" = "0:0:444:1" ] &&
+    cmp -s "$private_bottle" "$protected_bottle" ||
+    fail "protected bottle path, ownership, or content changed"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-protected-input \
+    "$protected_bottle" "$protected_bottle_basename" "$isolated_shared_temp" \
+    "$(id -u "$ISOLATION_BUILD_USER")" "$protected_bottle_content"
+  [ "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" = "$isolated_shared_temp" ] ||
+    fail "protected bottle lifecycle lost its shared temp root"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-identity \
     "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
@@ -1098,7 +1267,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   "$HOMEBREW_PATCHED_BREW_BIN" assert-source-aliases \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/tap" \
-    "$isolated_kandelo" "$isolated_tap" "$isolated_output"
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/sysroot" \
+    "$isolated_kandelo" "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-argv \
     "" "with spaces" '$dollar' '%percent' $'line one\nline two'
   "$HOMEBREW_PATCHED_BREW_BIN" assert-bottle-tags "" ""
@@ -1128,7 +1298,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
       "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")" \
       "$ISOLATION_BUILD_USER" "$isolated_prefix" "$isolated_cache" "$isolated_temp" \
       "$XDG_CONFIG_HOME" "$isolated_home" "$isolated_work" "$isolated_kandelo" \
-      "$isolated_tap" "$isolated_output"
+      "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner"
   homebrew_patched_launcher_run_native spawn-daemon \
     "$native_daemon_marker" "$native_daemon_started"
   /usr/bin/sudo -n -- test -e "$native_daemon_started" ||
@@ -1227,6 +1397,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   /usr/bin/sudo -n -- rm -f "$target_proxy_opt"
   /usr/bin/sudo -n -- ln -s ../Cellar/cmake/1.0 "$target_proxy_opt"
   homebrew_patched_launcher_verify_isolation
+  [ -r "$protected_bottle" ] ||
+    fail "protected bottle disappeared before launcher cleanup"
   homebrew_patched_launcher_cleanup
   [ ! -e "$isolated_overlay" ] && \
     [ -z "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" ] ||
@@ -1237,6 +1409,12 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "isolated cleanup left the native Formula proxy opt link"
   [ ! -e "$isolated_prefix/.kandelo-publisher-build-dependencies.json" ] ||
     fail "isolated cleanup left the publisher dependency plan"
+  [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
+    [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \
+    [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \
+    [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] && \
+    [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ] ||
+    fail "isolated cleanup left the protected bottle or lifecycle state"
   /usr/bin/sudo -n -- /usr/sbin/userdel -r "$ISOLATION_BUILD_USER"
   ! id "$ISOLATION_BUILD_USER" >/dev/null 2>&1 || fail "Formula build identity survived retirement"
   ISOLATION_BUILD_USER=""

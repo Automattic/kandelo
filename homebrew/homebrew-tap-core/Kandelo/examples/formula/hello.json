@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "tap_repository": "Automattic/kandelo-homebrew",
-  "tap_name": "automattic/kandelo-homebrew",
+  "tap_repository": "kandelo-dev/homebrew-tap-core",
+  "tap_name": "kandelo-dev/tap-core",
   "tap_commit": "1111111111111111111111111111111111111111",
   "kandelo_abi": 15,
   "source_metadata": "Kandelo/metadata.json",
   "name": "hello",
-  "full_name": "automattic/kandelo-homebrew/hello",
+  "full_name": "kandelo-dev/tap-core/hello",
   "version": "2.12.1",
   "formula_revision": 0,
   "bottle_rebuild": 0,
@@ -28,11 +28,11 @@
       "browser_compatible": false,
       "fork_instrumentation": "not-required",
       "status": "success",
-      "built_by": "https://example.invalid/Automattic/kandelo-homebrew/actions/runs/1",
+      "built_by": "https://example.invalid/kandelo-dev/homebrew-tap-core/actions/runs/1",
       "built_from": {
         "kandelo_repository": "Automattic/kandelo",
         "kandelo_commit": "2222222222222222222222222222222222222222",
-        "tap_repository": "Automattic/kandelo-homebrew",
+        "tap_repository": "kandelo-dev/homebrew-tap-core",
         "tap_commit": "1111111111111111111111111111111111111111",
         "formula_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }

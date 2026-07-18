@@ -98,6 +98,11 @@ fi
 # shellcheck source=/dev/null
 . "$SCRIPT_ROOT/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
+EXPECTED_BOTTLE_ROOT_URL="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
+if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
+  echo "homebrew-validate-build-handoff.sh: bottle root URL does not match Homebrew tap name" >&2
+  exit 2
+fi
 case "$ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-validate-build-handoff.sh: invalid arch: $ARCH" >&2; exit 2 ;;
@@ -321,6 +326,7 @@ if ! jq -e \
     (to_entries[0].value.bottle.tags[$bottle_tag] | type == "object") and
     ((to_entries[0].value.bottle.tags[$bottle_tag].cellar //
       to_entries[0].value.bottle.cellar) == $bottle_relocation_cellar) and
+    (to_entries[0].value.bottle.tags[$bottle_tag].local_filename | type == "string") and
     to_entries[0].value.bottle.tags[$bottle_tag].sha256 == $sha256
   ' "$BOTTLE_JSON" >/dev/null; then
   echo "homebrew-validate-build-handoff.sh: bottle.json identity, root URL, selected tag, or SHA-256 is invalid" >&2
@@ -329,6 +335,17 @@ fi
 
 PKG_VERSION="$(jq -r --arg key "$FORMULA_KEY" '.[$key].formula.pkg_version' "$BOTTLE_JSON")"
 BOTTLE_REBUILD="$(jq -r --arg key "$FORMULA_KEY" '.[$key].bottle.rebuild' "$BOTTLE_JSON")"
+BOTTLE_LOCAL_FILENAME="$(jq -r --arg key "$FORMULA_KEY" --arg tag "$BOTTLE_TAG" \
+  '.[$key].bottle.tags[$tag].local_filename' "$BOTTLE_JSON")"
+BOTTLE_REBUILD_SUFFIX=""
+if [ "$BOTTLE_REBUILD" != "0" ]; then
+  BOTTLE_REBUILD_SUFFIX=".$BOTTLE_REBUILD"
+fi
+BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle${BOTTLE_REBUILD_SUFFIX}.tar.gz"
+if [ "$BOTTLE_LOCAL_FILENAME" != "$BOTTLE_FILENAME" ]; then
+  echo "homebrew-validate-build-handoff.sh: bottle local filename does not match Homebrew bottle metadata: $BOTTLE_FILENAME" >&2
+  exit 1
+fi
 EXPECTED_ABI="${RELEASE_TAG#bottles-abi-v}"
 inspection_args=()
 for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
@@ -437,6 +454,7 @@ if [ -n "$OUT_ENV" ]; then
     printf 'KANDELO_COMMIT=%q\n' "$KANDELO_COMMIT"
     printf 'BOTTLE_ROOT_URL=%q\n' "$BOTTLE_ROOT_URL"
     printf 'BOTTLE_ARCHIVE=%q\n' "$BOTTLE_ARCHIVE"
+    printf 'BOTTLE_FILENAME=%q\n' "$BOTTLE_FILENAME"
     if [ -n "$CANONICAL_BOTTLE_JSON" ]; then
       printf 'BOTTLE_JSON=%q\n' "$CANONICAL_BOTTLE_JSON"
     fi

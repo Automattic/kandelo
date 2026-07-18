@@ -3,7 +3,7 @@
 set -euo pipefail
 
 TAP_ROOT=""
-TAP_REPOSITORY="${KANDELO_HOMEBREW_TAP_REPOSITORY:-Automattic/kandelo-homebrew}"
+TAP_REPOSITORY="${KANDELO_HOMEBREW_TAP_REPOSITORY:-kandelo-dev/homebrew-tap-core}"
 TAP_NAME_INPUT="${KANDELO_HOMEBREW_TAP_NAME:-}"
 FORMULA=""
 ARCH=""
@@ -94,6 +94,11 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
+EXPECTED_BOTTLE_ROOT_URL="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
+if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
+  echo "homebrew-bottle-build.sh: bottle root URL does not match Homebrew tap name" >&2
+  exit 2
+fi
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
@@ -295,7 +300,7 @@ if [ -n "$BUILD_USER" ]; then
   # the checkout; the isolated build identity receives no source write access.
   rm -rf "$KANDELO_ROOT/host/dist"
   homebrew_patched_launcher_isolate "$BUILD_USER" \
-    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR"
+    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR" "$KANDELO_ROOT"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-bottle-build.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
@@ -474,21 +479,69 @@ if [ -n "$BUILD_USER" ]; then
 fi
 
 mapfile -t bottle_jsons < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort)
-mapfile -t bottle_archives < <(find "$WORK_DIR" -maxdepth 1 -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.tar.zst' \) -print | sort)
 
 if [ "${#bottle_jsons[@]}" -ne 1 ]; then
   echo "homebrew-bottle-build.sh: expected exactly one .bottle.json, found ${#bottle_jsons[@]}" >&2
   exit 1
 fi
+
+BOTTLE_SOURCE_JSON="${bottle_jsons[0]}"
+FORMULA_KEY="${TAP_NAME}/${FORMULA}"
+if ! jq -e \
+  --arg formula_key "$FORMULA_KEY" \
+  --arg formula "$FORMULA" \
+  --arg bottle_tag "$BOTTLE_TAG" '
+    type == "object" and length == 1 and
+    to_entries[0].key == $formula_key and
+    (to_entries[0].value.formula | type == "object") and
+    to_entries[0].value.formula.name == $formula and
+    (to_entries[0].value.formula.pkg_version |
+      type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")) and
+    (to_entries[0].value.bottle | type == "object") and
+    (to_entries[0].value.bottle.rebuild |
+      type == "number" and . >= 0 and floor == .) and
+    (to_entries[0].value.bottle.tags | type == "object" and keys == [$bottle_tag]) and
+    (to_entries[0].value.bottle.tags[$bottle_tag].local_filename | type == "string")
+  ' "$BOTTLE_SOURCE_JSON" >/dev/null; then
+  echo "homebrew-bottle-build.sh: bottle JSON does not identify one canonical Formula bottle output" >&2
+  exit 1
+fi
+
+PKG_VERSION="$(jq -r --arg key "$FORMULA_KEY" '.[$key].formula.pkg_version' "$BOTTLE_SOURCE_JSON")"
+BOTTLE_REBUILD="$(jq -r --arg key "$FORMULA_KEY" '.[$key].bottle.rebuild' "$BOTTLE_SOURCE_JSON")"
+BOTTLE_REBUILD_SUFFIX=""
+if [ "$BOTTLE_REBUILD" != "0" ]; then
+  BOTTLE_REBUILD_SUFFIX=".$BOTTLE_REBUILD"
+fi
+EXPECTED_BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle${BOTTLE_REBUILD_SUFFIX}.tar.gz"
+if ! jq -e \
+  --arg key "$FORMULA_KEY" \
+  --arg tag "$BOTTLE_TAG" \
+  --arg expected "$EXPECTED_BOTTLE_FILENAME" \
+  '.[$key].bottle.tags[$tag].local_filename == $expected' \
+  "$BOTTLE_SOURCE_JSON" >/dev/null; then
+  echo "homebrew-bottle-build.sh: bottle JSON local filename does not match $EXPECTED_BOTTLE_FILENAME" >&2
+  exit 1
+fi
+BOTTLE_LOCAL_FILENAME="$EXPECTED_BOTTLE_FILENAME"
+
+# Rebuild bottles insert their rebuild number between `.bottle` and `.tar.gz`.
+# Discover that bounded family, then let the raw JSON's canonical filename pick
+# the only archive that may leave the build realm.
+mapfile -t bottle_archives < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle*.tar.gz' -print | sort)
 if [ "${#bottle_archives[@]}" -ne 1 ]; then
   echo "homebrew-bottle-build.sh: expected exactly one bottle archive, found ${#bottle_archives[@]}" >&2
   exit 1
 fi
+if [ "$(basename "${bottle_archives[0]}")" != "$BOTTLE_LOCAL_FILENAME" ]; then
+  echo "homebrew-bottle-build.sh: bottle archive does not match JSON local filename $BOTTLE_LOCAL_FILENAME" >&2
+  exit 1
+fi
 
-cp "${bottle_jsons[0]}" "$OUT_DIR/bottles/"
+cp "$BOTTLE_SOURCE_JSON" "$OUT_DIR/bottles/"
 cp "${bottle_archives[0]}" "$OUT_DIR/bottles/"
 
-BOTTLE_JSON="$OUT_DIR/bottles/$(basename "${bottle_jsons[0]}")"
+BOTTLE_JSON="$OUT_DIR/bottles/$(basename "$BOTTLE_SOURCE_JSON")"
 BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
 
 {

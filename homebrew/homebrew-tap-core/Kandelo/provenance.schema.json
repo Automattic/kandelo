@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/kandelo-homebrew/Kandelo/provenance.schema.json",
+  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/homebrew-tap-core/Kandelo/provenance.schema.json",
   "title": "Kandelo Homebrew bottle provenance",
   "description": "Durable build, validation, and metadata evidence for one published Homebrew bottle.",
   "type": "object",

@@ -1,25 +1,25 @@
-name: Publish Kandelo bottles
+name: Dry run Kandelo bottles
 
 on:
   repository_dispatch:
-    types: [publish-kandelo-bottles]
+    types: [dry-run-kandelo-bottles]
 
 jobs:
-  publish:
+  dry-run:
     permissions:
       actions: read
       contents: write
       packages: write
     uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main
     with:
-      kandelo-repository: Automattic/kandelo
-      kandelo-ref: main
-      tap-repository: Automattic/kandelo-homebrew
-      tap-name: Automattic/kandelo-homebrew
-      tap-ref: main
+      kandelo-repository: ${{ github.event.client_payload.kandelo_repository || 'Automattic/kandelo' }}
+      kandelo-ref: ${{ github.event.client_payload.kandelo_ref || 'main' }}
+      tap-repository: ${{ github.event.client_payload.tap_repository || 'kandelo-dev/homebrew-tap-core' }}
+      tap-name: ${{ github.event.client_payload.tap_name || 'kandelo-dev/tap-core' }}
+      tap-ref: ${{ github.event.client_payload.tap_ref || 'main' }}
       formulae: ${{ github.event.client_payload.formulae }}
       arches: ${{ github.event.client_payload.arches || 'wasm32' }}
       release-tag: ${{ github.event.client_payload.release_tag || '' }}
       expected-cache-keys: ${{ github.event.client_payload.expected_cache_keys || '' }}
       force: ${{ github.event.client_payload.force || false }}
-      dry-run: false
+      dry-run: true

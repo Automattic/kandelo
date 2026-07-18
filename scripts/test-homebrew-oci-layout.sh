@@ -24,10 +24,10 @@ make_fixture() {
   local support_payload="${4:-fixture support v1}"
   local archived_formula_mode="${5:-0644}"
   local formula_extra="${6:-}"
-  local tap_repository="${7:-Automattic/kandelo-homebrew}"
-  local tap_name="${8:-Automattic/kandelo-homebrew}"
+  local tap_repository="${7:-kandelo-dev/homebrew-tap-core}"
+  local tap_name="${8:-kandelo-dev/tap-core}"
   local tap_owner="${tap_name%%/*}" tap_short_name="${tap_name#*/}"
-  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
+  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_name" | tr '[:upper:]' '[:lower:]')"
   local root="$TMP_ROOT/$label"
   local stage="$root/stage/hello/1.0"
   local bottle="$root/hello--1.0.${arch}_kandelo.bottle.tar.gz"
@@ -91,9 +91,9 @@ build_child() {
   local support_payload="${4:-fixture support v1}"
   local archived_formula_mode="${5:-0644}"
   local formula_extra="${6:-}"
-  local tap_repository="${7:-Automattic/kandelo-homebrew}"
-  local tap_name="${8:-Automattic/kandelo-homebrew}"
-  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
+  local tap_repository="${7:-kandelo-dev/homebrew-tap-core}"
+  local tap_name="${8:-kandelo-dev/tap-core}"
+  local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_name" | tr '[:upper:]' '[:lower:]')"
   local paths bottle bottle_json
   mapfile -t paths < <(
     make_fixture "$label" "$arch" "$payload" "$support_payload" \
@@ -222,7 +222,7 @@ for source in no-blank two-blanks; do
   ruby "$FORMULA_COMPOSER" \
     "$TMP_ROOT/source-identity/$source.rb" \
     "$TMP_ROOT/source-identity/$source.rb" \
-    https://ghcr.io/v2/automattic/kandelo-homebrew 0 wasm32_kandelo \
+    https://ghcr.io/v2/kandelo-dev/tap-core 0 wasm32_kandelo \
     any_skip_relocation "$(printf '0%.0s' {1..64})" discard \
     "$TMP_ROOT/source-identity/$source-composed.rb"
   original_identity="$(ruby "$SOURCE_IDENTITY_TOOL" --identity-excluding-bottle \
@@ -239,10 +239,6 @@ build_child child32 wasm32
 build_child child64 wasm64
 build_child generic32 wasm32 "hello fixture" "fixture support v1" 0644 "" \
   Acme/homebrew-tools Acme/tools
-expect_failure protected-first-party-alias \
-  "protected first-party tap name cannot be derived from another repository" \
-  build_child protected-first-party-alias wasm32 "hello fixture" "fixture support v1" \
-  0644 "" Automattic/homebrew-kandelo-homebrew Automattic/kandelo-homebrew
 python3 - "$TMP_ROOT/generic32/layout" "$TMP_ROOT/generic32/receipt.json" <<'PY'
 import json
 import pathlib
@@ -607,7 +603,7 @@ run_import() {
     IMPORT_SLOW_OVERRUN="${IMPORT_SLOW_OVERRUN:-}" \
     IMPORT_STATE="$TMP_ROOT/import-$label-state" \
     PATH="$IMPORT_MOCK_BIN:$PATH" python3 "$TOOL" import-public-index \
-      --remote ghcr.io/automattic/kandelo-homebrew/hello --reference 1.0 \
+      --remote ghcr.io/kandelo-dev/tap-core/hello --reference 1.0 \
       --registry-config "$TMP_ROOT/anonymous-oras.json" \
       --out-layout "$TMP_ROOT/import-$label-output/layout" \
       --out-result "$TMP_ROOT/import-$label-result.json"
@@ -624,15 +620,15 @@ python3 "$TOOL" validate-index \
   --layout "$TMP_ROOT/import-valid-output/layout" \
   --receipt "$TMP_ROOT/combined/receipt.json"
 grep -F "manifest fetch --descriptor" "$TMP_ROOT/import-valid.log" >/dev/null
-grep -F "ghcr.io/automattic/kandelo-homebrew/hello@sha256:" \
+grep -F "ghcr.io/kandelo-dev/tap-core/hello@sha256:" \
   "$TMP_ROOT/import-valid.log" >/dev/null
 grep -F "blob fetch --descriptor" "$TMP_ROOT/import-valid.log" >/dev/null
-grep -E '^cp .*ghcr\.io/automattic/kandelo-homebrew/hello@sha256:' \
+grep -E '^cp .*ghcr\.io/kandelo-dev/tap-core/hello@sha256:' \
   "$TMP_ROOT/import-valid.log" >/dev/null || {
   echo "public index copy was not pinned to the validated digest" >&2
   exit 1
 }
-! grep -E '^cp .*ghcr\.io/automattic/kandelo-homebrew/hello:1\.0([[:space:]]|$)' \
+! grep -E '^cp .*ghcr\.io/kandelo-dev/tap-core/hello:1\.0([[:space:]]|$)' \
   "$TMP_ROOT/import-valid.log" >/dev/null || {
   echo "public index copy reused a mutable tag" >&2
   exit 1
@@ -916,7 +912,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-denied-dry GH_TOKEN=test-token \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --out-json "$TMP_ROOT/child32/dry-upload.json" \
     --dry-run >/dev/null
@@ -930,21 +926,21 @@ python3 "$TOOL" validate-publication-receipt \
   --receipt "$TMP_ROOT/child32/dry-upload.json" \
   --layout-receipt "$TMP_ROOT/child32/receipt.json" \
   --kind child --formula hello \
-  --tap-repository Automattic/kandelo-homebrew --allow-dry-run
+  --tap-repository kandelo-dev/homebrew-tap-core --allow-dry-run
 expect_failure dry-publication-as-public \
   "publication receipt lacks exact anonymous public readback evidence" \
   python3 "$TOOL" validate-publication-receipt \
     --receipt "$TMP_ROOT/child32/dry-upload.json" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --kind child --formula hello \
-    --tap-repository Automattic/kandelo-homebrew
+    --tap-repository kandelo-dev/homebrew-tap-core
 
 : >"$ORAS_LOG"
 ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=observed_missing PATH="$MOCK_BIN:$PATH" \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --out-json "$TMP_ROOT/child32/observed-missing-dry-upload.json" \
     --dry-run >/dev/null
@@ -969,7 +965,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --out-json "$TMP_ROOT/child32/upload.json" >/dev/null
 jq -e '
@@ -980,7 +976,7 @@ python3 "$TOOL" validate-publication-receipt \
   --receipt "$TMP_ROOT/child32/upload.json" \
   --layout-receipt "$TMP_ROOT/child32/receipt.json" \
   --kind child --formula hello \
-  --tap-repository Automattic/kandelo-homebrew
+  --tap-repository kandelo-dev/homebrew-tap-core
 jq '.unreviewed = true' "$TMP_ROOT/child32/upload.json" \
   >"$TMP_ROOT/child32/extra-publication-field.json"
 expect_failure publication-extra-field "OCI publication receipt must contain exactly" \
@@ -988,7 +984,7 @@ expect_failure publication-extra-field "OCI publication receipt must contain exa
     --receipt "$TMP_ROOT/child32/extra-publication-field.json" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --kind child --formula hello \
-    --tap-repository Automattic/kandelo-homebrew
+    --tap-repository kandelo-dev/homebrew-tap-core
 jq '.layout_receipt_sha256 = ("0" * 64)' "$TMP_ROOT/child32/upload.json" \
   >"$TMP_ROOT/child32/bad-publication-layout-hash.json"
 expect_failure publication-layout-hash "layout hash does not match" \
@@ -996,7 +992,7 @@ expect_failure publication-layout-hash "layout hash does not match" \
     --receipt "$TMP_ROOT/child32/bad-publication-layout-hash.json" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --kind child --formula hello \
-    --tap-repository Automattic/kandelo-homebrew
+    --tap-repository kandelo-dev/homebrew-tap-core
 grep -F "cp --from-oci-layout --to-registry-config" "$ORAS_LOG" >/dev/null || {
   echo "OCI transport did not copy from the explicit local layout" >&2
   exit 1
@@ -1025,7 +1021,7 @@ ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/combined/layout" \
     --layout-receipt "$TMP_ROOT/combined/receipt.json" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --out-json "$TMP_ROOT/combined/dry-upload.json" \
     --dry-run >/dev/null
@@ -1033,7 +1029,7 @@ python3 "$TOOL" validate-publication-receipt \
   --receipt "$TMP_ROOT/combined/dry-upload.json" \
   --layout-receipt "$TMP_ROOT/combined/receipt.json" \
   --kind index --formula hello \
-  --tap-repository Automattic/kandelo-homebrew --allow-dry-run
+  --tap-repository kandelo-dev/homebrew-tap-core --allow-dry-run
 
 : >"$ORAS_LOG"
 expect_failure dry-index-auth-required \
@@ -1043,7 +1039,7 @@ expect_failure dry-index-auth-required \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/combined/layout" \
       --layout-receipt "$TMP_ROOT/combined/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/combined/denied-dry-upload.json" \
       --dry-run
 ! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
@@ -1057,7 +1053,7 @@ python3 "$TOOL" validate-publication-receipt \
   --receipt "$TMP_ROOT/combined/public-upload.json" \
   --layout-receipt "$TMP_ROOT/combined/receipt.json" \
   --kind index --formula hello \
-  --tap-repository Automattic/kandelo-homebrew
+  --tap-repository kandelo-dev/homebrew-tap-core
 
 : >"$ORAS_LOG"
 ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=present \
@@ -1065,7 +1061,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=present \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-    --tap-repository Automattic/kandelo-homebrew \
+    --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --out-json "$TMP_ROOT/child32/retry-upload.json" >/dev/null
 jq -e '.publication.status == "already-present"' \
@@ -1083,14 +1079,14 @@ expect_failure transport-conflict "content-derived child tag resolves to differe
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/conflict-upload.json"
 expect_failure transport-unclassified "could not classify manifest registry probe" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=broken PATH="$MOCK_BIN:$PATH" \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/broken-upload.json"
 
 : >"$ORAS_LOG"
@@ -1099,7 +1095,7 @@ expect_failure transport-classifier-name-spoof "could not classify manifest regi
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/spoofed-upload.json"
 ! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
   echo "spoofed anonymous error reached authenticated transport" >&2
@@ -1113,7 +1109,7 @@ expect_failure transport-classifier-truncated-spoof \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/truncated-spoofed-upload.json"
 ! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
   echo "truncated spoofed error reached authenticated transport" >&2
@@ -1127,7 +1123,7 @@ expect_failure transport-missing-token "GH_TOKEN is required for GHCR transport"
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/missing-token-upload.json"
 ! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
   echo "missing-token preflight reached authenticated transport" >&2
@@ -1143,7 +1139,7 @@ expect_failure transport-existing-private "authorized owner must make the GHCR p
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/existing-private-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "existing private reference reached OCI transport" >&2
@@ -1159,7 +1155,7 @@ expect_failure transport-auth-classifier-spoof "could not classify manifest regi
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/auth-spoof-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "spoofed authenticated manifest error reached OCI transport" >&2
@@ -1178,7 +1174,7 @@ expect_failure transport-auth-invalid-descriptor \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/auth-invalid-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "invalid authenticated descriptor reached OCI transport" >&2
@@ -1195,7 +1191,7 @@ expect_failure transport-repository-classifier-spoof \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/repo-spoof-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "spoofed authenticated repository error reached OCI transport" >&2
@@ -1212,7 +1208,7 @@ expect_failure transport-existing-private-missing-tag \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/existing-private-missing-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "missing tag in a private repository reached OCI transport" >&2
@@ -1235,7 +1231,7 @@ expect_failure transport-repository-error-oversized \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/repo-error-large-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "oversized authenticated repository error reached OCI transport" >&2
@@ -1252,7 +1248,7 @@ expect_failure transport-repository-invalid \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/repo-invalid-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "invalid authenticated repository response reached OCI transport" >&2
@@ -1270,7 +1266,7 @@ expect_failure transport-repository-oversized \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/repo-large-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "oversized authenticated repository response reached OCI transport" >&2
@@ -1287,7 +1283,7 @@ expect_failure transport-auth-denied \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/auth-denied-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "uninspectable authenticated reference reached OCI transport" >&2
@@ -1304,7 +1300,7 @@ expect_failure transport-repository-auth-denied \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/repo-denied-upload.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "uninspectable authenticated repository reached OCI transport" >&2
@@ -1321,7 +1317,7 @@ expect_failure transport-race "different digest after upload" \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/race-upload.json"
 : >"$ORAS_LOG"
 expect_failure transport-private-after-upload "authorized owner must make the GHCR package public" \
@@ -1332,7 +1328,7 @@ expect_failure transport-private-after-upload "authorized owner must make the GH
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/private-upload.json"
 grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "first private GHCR package did not upload before the visibility boundary" >&2
@@ -1347,7 +1343,7 @@ expect_failure transport-not-public "did not become anonymously readable" \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
-      --tap-repository Automattic/kandelo-homebrew \
+      --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --out-json "$TMP_ROOT/not-public-upload.json"
 
 echo "test-homebrew-oci-layout.sh: ok"

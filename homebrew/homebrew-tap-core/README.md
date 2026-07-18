@@ -1,11 +1,11 @@
 # Kandelo Homebrew Tap Template
 
 This directory is a reviewable template and test fixture for the
-`Automattic/kandelo-homebrew` tap. It lives in the main Kandelo repository so
+`kandelo-dev/homebrew-tap-core` tap. It lives in the main Kandelo repository so
 schema, validator, workflow, sidecar, and VFS-builder changes can be reviewed
 with the implementation that consumes them.
 
-The live generated tap state belongs in `Automattic/kandelo-homebrew`, not in
+The live generated tap state belongs in `kandelo-dev/homebrew-tap-core`, not in
 this checked-in fixture. Do not document user-facing `brew tap` or
 `brew install` commands from this scaffold until guest Homebrew install has
 been validated through Kandelo.
@@ -49,11 +49,12 @@ The protected dispatch events are `publish-kandelo-bottles`,
 requests must include nonempty Formula and architecture selections.
 
 The publisher keeps GitHub repository identity separate from canonical
-Homebrew tap identity. Conventional third-party repository
-`<owner>/homebrew-<name>` must pass tap name `<owner>/<name>` and must call from
-that same repository's reviewed `main` workflow. This first-party repository is
-an explicit naming exception: both values are
-`Automattic/kandelo-homebrew`.
+Homebrew tap identity. Every repository uses the conventional
+`<owner>/homebrew-<name>` shape and canonical tap name `<owner>/<name>`. The
+default repository is `kandelo-dev/homebrew-tap-core`, so its tap name is
+`kandelo-dev/tap-core` and its bottle root is
+`https://ghcr.io/v2/kandelo-dev/tap-core`. A caller must run from that
+same repository's reviewed `main` workflow.
 
 The caller grants the maximum permission ceiling. Four fresh runner roles then
 downgrade it: a read-only build/test job, a `packages: write` uploader without
@@ -70,11 +71,12 @@ contract; relocatable Wasm objects are not bottle process payloads.
 The build job produces the local Homebrew bottle. A dry verifier consumes those
 local bytes, while a write verifier anonymously reads back the exact GHCR
 digest and verifies its SHA-256 and byte count before using it. The verifier
-fetches Kandelo's complete ABI release graph only as kernel, host-runtime, and
-VFS platform prerequisites; the migrated package payload comes from the
-Homebrew bottle, not the package registry archive. The workflow retains browser
-gallery output as run-scoped diagnostics and does not publish sidecars or
-gallery assets to a GitHub Release.
+fetches only the declared base commands and rootfs as Kandelo platform
+prerequisites; the migrated package payload comes from the Homebrew bottle, not
+the package registry archive. The Hello gallery smoke separately prepares the
+supported interactive browser graph. The workflow retains browser gallery
+output as run-scoped diagnostics and does not publish sidecars or gallery
+assets to a GitHub Release.
 
 Only after the complete package-scoped publication handoff is validated as
 inert data does the finalizer acquire the tap lock, refresh tap state, compose
@@ -82,7 +84,7 @@ the selected static Formula bottle tag, and regenerate `Kandelo/` state. It
 does not execute Formula Ruby or Homebrew with tap write credentials. Failed attempts go
 under `Kandelo/reports/failures/` without replacing last-green
 `Kandelo/metadata.json`. The bottle root is always derived from the lowercase
-tap repository identity; callers cannot override it.
+Homebrew tap name; callers cannot override it.
 
 Manual rebuilds and rollback reporting are
 handled by `.github/workflows/reusable-homebrew-bottle-maintenance.yml`.

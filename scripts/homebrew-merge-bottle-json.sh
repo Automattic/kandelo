@@ -51,9 +51,9 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
-EXPECTED_REPOSITORY_ROOT="https://ghcr.io/v2/$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-if [ "$EXPECTED_ROOT_URL" != "$EXPECTED_REPOSITORY_ROOT" ]; then
-  echo "homebrew-merge-bottle-json.sh: expected bottle root does not match tap repository" >&2
+EXPECTED_TAP_ROOT="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
+if [ "$EXPECTED_ROOT_URL" != "$EXPECTED_TAP_ROOT" ]; then
+  echo "homebrew-merge-bottle-json.sh: expected bottle root does not match Homebrew tap name" >&2
   exit 2
 fi
 case "$EXPECTED_CELLAR" in

@@ -45,7 +45,7 @@ root = "tool/1.0"
 receipt = json.dumps({
     "runtime_dependencies": [
         {
-            "full_name": "automattic/kandelo-homebrew/dep",
+            "full_name": "kandelo-dev/tap-core/dep",
             "declared_directly": True,
             "pkg_version": "2.0_1",
         },
@@ -197,8 +197,8 @@ jq -e --arg formula_sha "$formula_sha" '
   ] and
   .path_exec_files == ["bin/tool", "bin/tool-hard"] and
   .runtime_dependencies == [
-    {declared_directly: true, full_name: "automattic/kandelo-homebrew/dep", version: "2.0_1"},
-    {declared_directly: false, full_name: "bubblewrap", version: "0.11.0"}
+    {declared_directly: false, full_name: "bubblewrap", version: "0.11.0"},
+    {declared_directly: true, full_name: "kandelo-dev/tap-core/dep", version: "2.0_1"}
   ]
 ' --argjson abi "$ABI_VERSION" "$VALID_JSON" >/dev/null
 

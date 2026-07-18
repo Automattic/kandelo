@@ -18,9 +18,9 @@ expect_failure() {
 VALID="$TMP_ROOT/valid.Brewfile"
 printf '%s\r\n' \
   '# A static Kandelo image selection.' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   "brew 'sqlite'" \
-  'brew "automattic/kandelo-homebrew/xz" # fully qualified is equivalent' \
+  'brew "kandelo-dev/tap-core/xz" # fully qualified is equivalent' \
   >"$VALID"
 VALID_JSON="$(ruby "$PARSER" "$VALID")"
 VALID_SHA="$(ruby -rdigest -e 'print Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$VALID")"
@@ -31,7 +31,7 @@ jq -e \
     keys == ["bytes", "kind", "packages", "schema", "sha256", "tap_name"] and
     .schema == 1 and
     .kind == "kandelo-static-brewfile-v1" and
-    .tap_name == "automattic/kandelo-homebrew" and
+    .tap_name == "kandelo-dev/tap-core" and
     .sha256 == $sha and
     .bytes == $bytes and
     .packages == ["sqlite", "xz"]
@@ -42,50 +42,50 @@ printf '%s\n' 'brew "sqlite"' >"$NO_TAP"
 expect_failure no-tap "exactly one literal tap entry" "$NO_TAP"
 
 NO_BREW="$TMP_ROOT/no-brew.Brewfile"
-printf '%s\n' 'tap "automattic/kandelo-homebrew"' >"$NO_BREW"
+printf '%s\n' 'tap "kandelo-dev/tap-core"' >"$NO_BREW"
 expect_failure no-brew "at least one literal brew entry" "$NO_BREW"
 
 MULTI_TAP="$TMP_ROOT/multi-tap.Brewfile"
 printf '%s\n' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   'tap "example/tools"' \
   'brew "sqlite"' >"$MULTI_TAP"
 expect_failure multi-tap "exactly one literal tap entry" "$MULTI_TAP"
 
 FOREIGN="$TMP_ROOT/foreign.Brewfile"
 printf '%s\n' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   'brew "example/tools/sqlite"' >"$FOREIGN"
 expect_failure foreign "must belong to tap" "$FOREIGN"
 
 DUPLICATE="$TMP_ROOT/duplicate.Brewfile"
 printf '%s\n' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   'brew "sqlite"' \
-  'brew "automattic/kandelo-homebrew/sqlite"' >"$DUPLICATE"
+  'brew "kandelo-dev/tap-core/sqlite"' >"$DUPLICATE"
 expect_failure duplicate "duplicates requested package" "$DUPLICATE"
 
 OPTIONS="$TMP_ROOT/options.Brewfile"
 printf '%s\n' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   'brew "sqlite", link: false' >"$OPTIONS"
 expect_failure options "outside the static subset" "$OPTIONS"
 
 CONDITIONAL="$TMP_ROOT/conditional.Brewfile"
 printf '%s\n' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   'brew "sqlite" if OS.linux?' >"$CONDITIONAL"
 expect_failure conditional "outside the static subset" "$CONDITIONAL"
 
 INTERPOLATED="$TMP_ROOT/interpolated.Brewfile"
 printf '%s\n' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   'brew "#{ENV.fetch("PACKAGE")}"' >"$INTERPOLATED"
 expect_failure interpolated "outside the static subset" "$INTERPOLATED"
 
 CASK="$TMP_ROOT/cask.Brewfile"
 printf '%s\n' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   'cask "firefox"' >"$CASK"
 expect_failure cask "outside the static subset" "$CASK"
 
@@ -93,7 +93,7 @@ MARKER="$TMP_ROOT/executed"
 EXECUTABLE="$TMP_ROOT/executable.Brewfile"
 printf 'File.write(%q, "executed")\n' "\"$MARKER\"" >"$EXECUTABLE"
 printf '%s\n' \
-  'tap "automattic/kandelo-homebrew"' \
+  'tap "kandelo-dev/tap-core"' \
   'brew "sqlite"' >>"$EXECUTABLE"
 expect_failure executable "outside the static subset" "$EXECUTABLE"
 if [ -e "$MARKER" ]; then
@@ -102,7 +102,7 @@ if [ -e "$MARKER" ]; then
 fi
 
 TOO_MANY="$TMP_ROOT/too-many.Brewfile"
-printf '%s\n' 'tap "automattic/kandelo-homebrew"' >"$TOO_MANY"
+printf '%s\n' 'tap "kandelo-dev/tap-core"' >"$TOO_MANY"
 for index in $(seq 1 129); do
   printf 'brew "package-%s"\n' "$index" >>"$TOO_MANY"
 done
@@ -117,11 +117,11 @@ ln -s "$VALID" "$SYMLINK"
 expect_failure symlink "regular non-symlink file" "$SYMLINK"
 
 NUL="$TMP_ROOT/nul.Brewfile"
-printf 'tap "automattic/kandelo-homebrew"\0\nbrew "sqlite"\n' >"$NUL"
+printf 'tap "kandelo-dev/tap-core"\0\nbrew "sqlite"\n' >"$NUL"
 expect_failure nul "contains a NUL byte" "$NUL"
 
 INVALID_UTF8="$TMP_ROOT/invalid-utf8.Brewfile"
-printf 'tap "automattic/kandelo-homebrew"\nbrew "sqlite"\n\377' >"$INVALID_UTF8"
+printf 'tap "kandelo-dev/tap-core"\nbrew "sqlite"\n\377' >"$INVALID_UTF8"
 expect_failure invalid-utf8 "not valid UTF-8" "$INVALID_UTF8"
 
 echo "test-homebrew-brewfile-selection.sh: ok"

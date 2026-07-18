@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/kandelo-homebrew/Kandelo/formula.schema.json",
+  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/homebrew-tap-core/Kandelo/formula.schema.json",
   "title": "Kandelo Homebrew formula metadata",
   "description": "Per-formula Kandelo sidecar metadata for one formula in the Homebrew tap.",
   "type": "object",

@@ -1252,7 +1252,7 @@ mod tests {
     const FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Fixture\"\nend\n";
     const CURRENT_ARCHIVED_FORMULA_TEXT: &str =
         "class Hello < Formula\n  desc \"Current fixture\"\nend\n";
-    const CURRENT_TAP_FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Current fixture\"\n\n  bottle do\n    root_url \"https://ghcr.io/v2/automattic/kandelo-homebrew\"\n    sha256 cellar: :any_skip_relocation, wasm64_kandelo: \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"\n  end\nend\n";
+    const CURRENT_TAP_FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Current fixture\"\n\n  bottle do\n    root_url \"https://ghcr.io/v2/kandelo-dev/tap-core\"\n    sha256 cellar: :any_skip_relocation, wasm64_kandelo: \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"\n  end\nend\n";
 
     fn write_text(path: &Path, text: &str) {
         if let Some(parent) = path.parent() {
@@ -1332,7 +1332,7 @@ mod tests {
 
         let mut formula = source.strip_suffix("end\n").unwrap().to_string();
         formula.push_str("\n  bottle do\n");
-        formula.push_str("    root_url \"https://ghcr.io/v2/automattic/kandelo-homebrew\"\n");
+        formula.push_str("    root_url \"https://ghcr.io/v2/kandelo-dev/tap-core\"\n");
         let rebuild = package["bottle_rebuild"].as_u64().unwrap();
         if rebuild != 0 {
             formula.push_str(&format!("    rebuild {rebuild}\n"));
@@ -1355,7 +1355,7 @@ mod tests {
             "browser_compatible": false,
             "fork_instrumentation": "not-required",
             "status": status,
-            "built_by": "https://example.invalid/Automattic/kandelo-homebrew/actions/runs/42",
+            "built_by": "https://example.invalid/kandelo-dev/homebrew-tap-core/actions/runs/42",
             "built_at": "2026-06-27T00:00:00Z",
         });
         if status == "success" {
@@ -1377,7 +1377,7 @@ mod tests {
             bottle["receipts"] = json!([".brew/hello.rb", "INSTALL_RECEIPT.json"]);
             bottle["env"] = json!({ "PATH_prepend": ["bin"] });
             bottle["build"] = json!({
-                "github_run": "https://example.invalid/Automattic/kandelo-homebrew/actions/runs/42",
+                "github_run": "https://example.invalid/kandelo-dev/homebrew-tap-core/actions/runs/42",
                 "job": "publish-bottles",
                 "runner_os": "ubuntu-24.04",
                 "brew_version": "Homebrew 4.6.0",
@@ -1400,13 +1400,13 @@ mod tests {
             bottle["error"] = json!("build failed");
             bottle["last_attempt"] = json!("2026-06-28T00:00:00Z");
             bottle["last_attempt_by"] =
-                json!("https://example.invalid/Automattic/kandelo-homebrew/actions/runs/43");
+                json!("https://example.invalid/kandelo-dev/homebrew-tap-core/actions/runs/43");
         }
 
         json!({
             "schema": 1,
-            "tap_repository": "Automattic/kandelo-homebrew",
-            "tap_name": "automattic/kandelo-homebrew",
+            "tap_repository": "kandelo-dev/homebrew-tap-core",
+            "tap_name": "kandelo-dev/tap-core",
             "tap_commit": "1111111111111111111111111111111111111111",
             "kandelo_repository": "Automattic/kandelo",
             "kandelo_commit": "2222222222222222222222222222222222222222",
@@ -1417,7 +1417,7 @@ mod tests {
             "packages": [
                 {
                     "name": "hello",
-                    "full_name": "automattic/kandelo-homebrew/hello",
+                    "full_name": "kandelo-dev/tap-core/hello",
                     "version": "2.12.1",
                     "formula_revision": 0,
                     "bottle_rebuild": 0,

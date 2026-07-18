@@ -97,19 +97,14 @@ def normalized_tap_repository(args: argparse.Namespace) -> str:
 def normalized_tap_name(args: argparse.Namespace) -> str:
     repository = normalized_tap_repository(args)
     owner, repository_name = repository.split("/", 1)
-    if repository == "automattic/kandelo-homebrew":
-        expected = repository
-    else:
-        if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
-            fail("third-party tap repositories must use owner/homebrew-name")
-        expected = f"{owner}/{repository_name.removeprefix('homebrew-')}"
-        if expected == "automattic/kandelo-homebrew":
-            fail("the protected first-party tap name cannot be derived from another repository")
+    if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
+        fail("tap repositories must use owner/homebrew-name")
+    expected = f"{owner}/{repository_name.removeprefix('homebrew-')}"
     requested = args.tap_name
     if requested is None:
-        if repository != "automattic/kandelo-homebrew":
-            fail("tap name is required when repository and Homebrew identities may differ")
-        requested = args.tap_repository
+        if repository != "kandelo-dev/homebrew-tap-core":
+            fail("tap name is required outside the protected default tap")
+        requested = expected
     selected = normalized_identity(requested, "tap name")
     if selected != expected:
         fail("tap name does not match the tap repository")
@@ -123,9 +118,9 @@ def validate_arguments(args: argparse.Namespace) -> None:
     if isinstance(args.abi, bool) or not isinstance(args.abi, int) or args.abi <= 0:
         fail("ABI must be a positive integer")
     require_string(args.tap_commit, "tap commit", COMMIT)
-    repository = normalized_tap_repository(args)
-    normalized_tap_name(args)
-    expected_root = f"https://ghcr.io/v2/{repository}"
+    normalized_tap_repository(args)
+    tap_name = normalized_tap_name(args)
+    expected_root = f"https://ghcr.io/v2/{tap_name}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL does not match {expected_root}")
     require_string(args.bottle_sha256, "bottle sha256", SHA256)
@@ -193,7 +188,7 @@ def validate_dependency_provenance(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def canonical_bottle(args: argparse.Namespace) -> tuple[str, str]:
+def canonical_bottle(args: argparse.Namespace) -> tuple[str, str, int, str]:
     document = load_json(pathlib.Path(args.bottle_json), "canonical bottle JSON")
     if not isinstance(document, dict) or len(document) != 1:
         fail("canonical bottle JSON must contain one Formula")
@@ -210,6 +205,9 @@ def canonical_bottle(args: argparse.Namespace) -> tuple[str, str]:
     version = require_string(formula["pkg_version"], "canonical Formula version", PKG_VERSION)
     if formula["name"] != args.formula:
         fail("canonical Formula name does not match")
+    rebuild = bottle["rebuild"]
+    if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
+        fail("canonical bottle rebuild must be a non-negative integer")
     tag_name = f"{args.arch}_kandelo"
     tags = bottle["tags"]
     if not isinstance(tags, dict) or set(tags) != {tag_name}:
@@ -219,11 +217,13 @@ def canonical_bottle(args: argparse.Namespace) -> tuple[str, str]:
         fail("canonical bottle digest does not match the selected bytes")
     if bottle["root_url"] != args.bottle_root_url:
         fail("canonical bottle root URL does not match")
-    return version, tag_name
+    rebuild_suffix = f".{rebuild}" if rebuild else ""
+    filename = f"{args.formula}--{version}.{tag_name}.bottle{rebuild_suffix}.tar.gz"
+    return version, tag_name, rebuild, filename
 
 
 def validate_formula_info(
-    args: argparse.Namespace, version: str, tag_name: str
+    args: argparse.Namespace, version: str, tag_name: str, rebuild: int
 ) -> None:
     document = exact_keys(
         load_json(pathlib.Path(args.formula_info), "Homebrew Formula info"),
@@ -256,6 +256,15 @@ def validate_formula_info(
         fail("Homebrew Formula info digest does not match the reconstructed Formula")
     bottle = formula.get("bottle")
     stable = bottle.get("stable") if isinstance(bottle, dict) else None
+    info_rebuild = stable.get("rebuild") if isinstance(stable, dict) else None
+    if (
+        not isinstance(info_rebuild, int)
+        or isinstance(info_rebuild, bool)
+        or info_rebuild < 0
+    ):
+        fail("Homebrew Formula info has an invalid bottle rebuild")
+    if info_rebuild != rebuild:
+        fail("Homebrew Formula info bottle rebuild does not match the selected bottle")
     files = stable.get("files") if isinstance(stable, dict) else None
     tag = files.get(tag_name) if isinstance(files, dict) else None
     if not isinstance(tag, dict):
@@ -283,23 +292,25 @@ def read_log(path: pathlib.Path) -> list[str]:
     return lines
 
 
+def line_names_bottle(line: str, filename: str) -> bool:
+    match = re.fullmatch(r"(?:==>\s+)?Pouring\s+(\S+)", line)
+    return match is not None and match.group(1) == filename
+
+
 def target_install_evidence(
-    args: argparse.Namespace, tag_name: str, selection: dict[str, Any]
+    args: argparse.Namespace, bottle_filename: str, selection: dict[str, Any]
 ) -> dict[str, Any]:
     lines = read_log(pathlib.Path(args.install_log))
     source_lines = [line for line in lines if SOURCE_BUILD.search(line)]
     if source_lines:
         fail(f"target install reported a source build: {source_lines[0]}")
-    marker = f".{tag_name}.bottle.tar."
     pour = [
         line
         for line in lines
-        if "pouring" in line.lower()
-        and args.formula in line.lower()
-        and marker in line.lower()
+        if line_names_bottle(line, bottle_filename)
     ]
     if not pour:
-        fail(f"target install lacks pour evidence for {tag_name}")
+        fail(f"target install lacks pour evidence for {bottle_filename}")
     mode = selection["bottle"]["mode"]
     if mode == "anonymous-public-readback":
         fetch = [
@@ -429,8 +440,8 @@ def selection_evidence(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_document(args: argparse.Namespace) -> dict[str, Any]:
     validate_arguments(args)
-    version, tag_name = canonical_bottle(args)
-    validate_formula_info(args, version, tag_name)
+    version, tag_name, rebuild, bottle_filename = canonical_bottle(args)
+    validate_formula_info(args, version, tag_name, rebuild)
     dependencies = validate_dependency_provenance(args)
     selection = selection_evidence(args)
     return {
@@ -454,7 +465,7 @@ def build_document(args: argparse.Namespace) -> dict[str, Any]:
             "repository": args.tap_repository,
         },
         "target": {
-            "install_log": target_install_evidence(args, tag_name, selection),
+            "install_log": target_install_evidence(args, bottle_filename, selection),
             "receipt": target_receipt(args, version),
         },
     }
@@ -478,7 +489,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         "repository": args.tap_repository,
     }:
         fail("runtime evidence tap identity does not match")
-    version, tag_name = canonical_bottle(args)
+    version, tag_name, _, bottle_filename = canonical_bottle(args)
     bottle = exact_keys(
         root["bottle"], {"bytes", "sha256", "tag", "url", "version"}, "runtime evidence bottle"
     )
@@ -551,13 +562,12 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     pour = install_log["pour"]
     if not isinstance(pour, list) or not pour or len(pour) > MAX_EVIDENCE_LINES:
         fail("runtime target evidence lacks bounded pour evidence")
-    marker = f".{tag_name}.bottle.tar."
     for index, line in enumerate(pour):
         line = require_string(line, f"runtime target pour[{index}]")
         if len(line.encode("utf-8")) > MAX_EVIDENCE_LINE_BYTES:
             fail(f"runtime target pour[{index}] exceeds its byte limit")
-        if args.formula not in line.lower() or marker not in line.lower():
-            fail("runtime target pour evidence does not identify the exact bottle tag")
+        if not line_names_bottle(line, bottle_filename):
+            fail("runtime target pour evidence does not identify the exact bottle filename")
     target_fetch = install_log["fetch"]
     if not isinstance(target_fetch, list) or not target_fetch or len(target_fetch) > MAX_EVIDENCE_LINES:
         fail("runtime target evidence lacks bounded fetch evidence")

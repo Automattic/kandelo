@@ -9,7 +9,7 @@ use std::process::Command;
 use crate::repo_root;
 
 const DEFAULT_METADATA_REL: &str = "Kandelo/metadata.json";
-const SCHEMA_ROOT_REL: &str = "homebrew/kandelo-homebrew/Kandelo";
+const SCHEMA_ROOT_REL: &str = "homebrew/homebrew-tap-core/Kandelo";
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let options = Options::parse(args)?;
@@ -140,6 +140,8 @@ impl Validator<'_> {
         let schema_errors = collect_schema_errors(&self.schemas.metadata, &metadata);
         self.add_schema_errors("metadata", schema_errors);
 
+        self.validate_tap_identity(&metadata);
+
         let release_abi = parse_release_abi(string_at(&metadata, "/release_tag"));
         let top_abi = u64_at(&metadata, "/kandelo_abi");
         match (release_abi, top_abi) {
@@ -166,6 +168,37 @@ impl Validator<'_> {
         }
 
         Ok(())
+    }
+
+    fn validate_tap_identity(&mut self, metadata: &Value) {
+        let (Some(repository), Some(tap_name)) = (
+            string_at(metadata, "/tap_repository"),
+            string_at(metadata, "/tap_name"),
+        ) else {
+            return;
+        };
+        let normalized_repository = repository.to_ascii_lowercase();
+        let Some((owner, repository_name)) = normalized_repository.split_once('/') else {
+            return;
+        };
+        let Some(name) = repository_name.strip_prefix("homebrew-") else {
+            self.err(format!(
+                "metadata: tap repository {repository:?} must use the conventional owner/homebrew-name form"
+            ));
+            return;
+        };
+        if name.is_empty() || name.contains('/') {
+            self.err(format!(
+                "metadata: tap repository {repository:?} must use the conventional owner/homebrew-name form"
+            ));
+            return;
+        }
+        let expected_tap_name = format!("{owner}/{name}");
+        if tap_name != expected_tap_name {
+            self.err(format!(
+                "metadata: tap name {tap_name:?} does not match repository {repository:?}; expected {expected_tap_name:?}"
+            ));
+        }
     }
 
     fn package_index<'a>(&mut self, packages: &'a [Value]) -> BTreeMap<String, &'a Value> {
@@ -359,12 +392,12 @@ impl Validator<'_> {
                 "package {package_name}: Formula bottle tags are absent but metadata advertises {expected_tags:?}"
             )),
             Some(block) => {
-                let expected_root = string_at(metadata, "/tap_repository").map(|repository| {
-                    format!("https://ghcr.io/v2/{}", repository.to_ascii_lowercase())
+                let expected_root = string_at(metadata, "/tap_name").map(|tap_name| {
+                    format!("https://ghcr.io/v2/{tap_name}")
                 });
                 if expected_root.as_deref() != Some(block.root_url.as_str()) {
                     self.err(format!(
-                        "package {package_name}: Formula bottle root_url {:?} does not match tap repository root {expected_root:?}",
+                        "package {package_name}: Formula bottle root_url {:?} does not match Homebrew tap root {expected_root:?}",
                         block.root_url
                     ));
                 }
@@ -1024,7 +1057,7 @@ mod tests {
                 "  desc \"Fixture\"\n",
                 "\n",
                 "  bottle do\n",
-                "    root_url \"https://ghcr.io/v2/automattic/kandelo-homebrew\"\n",
+                "    root_url \"https://ghcr.io/v2/kandelo-dev/tap-core\"\n",
                 "    sha256 cellar: :any_skip_relocation, wasm32_kandelo: ",
                 "\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n",
                 "  end\n",
@@ -1039,14 +1072,14 @@ mod tests {
             write_text(&tap_root.join("Formula/hello.rb"), formula_text);
 
             let mut metadata =
-                load_repo_json("homebrew/kandelo-homebrew/Kandelo/examples/metadata.json");
+                load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/metadata.json");
             let mut formula =
-                load_repo_json("homebrew/kandelo-homebrew/Kandelo/examples/formula/hello.json");
+                load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/formula/hello.json");
             let link = load_repo_json(
-                "homebrew/kandelo-homebrew/Kandelo/examples/link/hello-2.12.1-rebuild0-wasm32.json",
+                "homebrew/homebrew-tap-core/Kandelo/examples/link/hello-2.12.1-rebuild0-wasm32.json",
             );
             let provenance = load_repo_json(
-                "homebrew/kandelo-homebrew/Kandelo/examples/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
+                "homebrew/homebrew-tap-core/Kandelo/examples/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
             );
 
             set(
@@ -1174,6 +1207,32 @@ mod tests {
         fixture.write();
         let report = fixture.validate();
         assert!(report.errors.join("\n").contains("release_tag ABI 16"));
+    }
+
+    #[test]
+    fn rejects_tap_name_that_does_not_match_repository() {
+        let mut fixture = Fixture::new();
+        set(&mut fixture.metadata, "/tap_name", json!("attacker/core"));
+        set(&mut fixture.formula, "/tap_name", json!("attacker/core"));
+        let formula_path = fixture.tap_root.join("Formula/hello.rb");
+        let source = fs::read_to_string(&formula_path).unwrap();
+        write_text(
+            &formula_path,
+            &source.replace(
+                "https://ghcr.io/v2/kandelo-dev/tap-core",
+                "https://ghcr.io/v2/attacker/core",
+            ),
+        );
+        fixture.write();
+
+        let report = fixture.validate();
+        assert!(
+            report.errors.join("\n").contains(
+                "tap name \"attacker/core\" does not match repository \"kandelo-dev/homebrew-tap-core\""
+            ),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
     }
 
     #[test]
@@ -1328,7 +1387,7 @@ mod tests {
         write_text(
             &path,
             &source.replace(
-                "https://ghcr.io/v2/automattic/kandelo-homebrew",
+                "https://ghcr.io/v2/kandelo-dev/tap-core",
                 "https://ghcr.io/v2/attacker/wrong-tap",
             ),
         );
@@ -1338,7 +1397,7 @@ mod tests {
             report
                 .errors
                 .join("\n")
-                .contains("does not match tap repository root")
+                .contains("does not match Homebrew tap root")
         );
     }
 

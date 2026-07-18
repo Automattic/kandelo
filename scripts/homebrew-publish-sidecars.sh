@@ -9,7 +9,7 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-sibling-bottle-policy.sh"
 TAP_ROOT=""
-TAP_REPOSITORY="Automattic/kandelo-homebrew"
+TAP_REPOSITORY="kandelo-dev/homebrew-tap-core"
 TAP_NAME_INPUT=""
 SIDECAR_ROOT=""
 PUBLICATION_HANDOFF=""

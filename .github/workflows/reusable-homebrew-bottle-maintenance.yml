@@ -35,7 +35,7 @@ on:
         default: ""
 
 concurrency:
-  group: kandelo-homebrew-bottle-maintenance-Automattic-kandelo-homebrew-${{ inputs.release-tag || github.run_id }}
+  group: kandelo-homebrew-bottle-maintenance-kandelo-dev-homebrew-tap-core-${{ inputs.release-tag || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -53,8 +53,9 @@ jobs:
           MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
-          [ "$CALLER_REPOSITORY" = "Automattic/kandelo-homebrew" ] || {
-            echo "::error::maintenance requires the first-party tap caller"; exit 2;
+          normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          [ "$normalized_caller_repository" = "kandelo-dev/homebrew-tap-core" ] || {
+            echo "::error::maintenance requires the protected default tap caller"; exit 2;
           }
           [ "$CALLER_REF" = "refs/heads/main" ] || {
             echo "::error::maintenance requires the tap main branch"; exit 2;
@@ -62,7 +63,7 @@ jobs:
           [ "$CALLER_EVENT_NAME" = "repository_dispatch" ] || {
             echo "::error::maintenance requires the reviewed repository_dispatch caller"; exit 2;
           }
-          [ "$CALLER_WORKFLOW_REF" = "Automattic/kandelo-homebrew/.github/workflows/maintain-bottles.yml@refs/heads/main" ] || {
+          [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main" ] || {
             echo "::error::maintenance requires the reviewed tap maintenance workflow"; exit 2;
           }
           case "$MODE" in
@@ -81,8 +82,8 @@ jobs:
     with:
       kandelo-repository: Automattic/kandelo
       kandelo-ref: main
-      tap-repository: Automattic/kandelo-homebrew
-      tap-name: Automattic/kandelo-homebrew
+      tap-repository: kandelo-dev/homebrew-tap-core
+      tap-name: kandelo-dev/tap-core
       tap-ref: main
       formulae: ${{ inputs.formulae }}
       arches: ${{ inputs.arches }}
@@ -104,7 +105,7 @@ jobs:
       - name: Checkout tap
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: Automattic/kandelo-homebrew
+          repository: kandelo-dev/homebrew-tap-core
           ref: main
           path: tap
           fetch-depth: 0

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/kandelo-homebrew/Kandelo/metadata.schema.json",
+  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/homebrew-tap-core/Kandelo/metadata.schema.json",
   "title": "Kandelo Homebrew tap metadata",
   "description": "Top-level Kandelo sidecar index for one generated Homebrew tap commit and ABI namespace.",
   "type": "object",

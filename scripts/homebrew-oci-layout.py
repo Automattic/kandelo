@@ -225,10 +225,10 @@ def validate_arguments(args: argparse.Namespace) -> None:
         fail(f"unsupported architecture: {args.arch}")
     require_int(args.abi, "ABI", 1)
     require_string(args.tap_repository, "tap repository", TAP_REPOSITORY)
-    selected_tap_name(args)
+    tap_name = selected_tap_name(args)
     require_string(args.tap_commit, "tap commit", COMMIT)
     require_string(args.kandelo_commit, "Kandelo commit", COMMIT)
-    expected_root = f"https://ghcr.io/v2/{args.tap_repository.lower()}"
+    expected_root = f"https://ghcr.io/v2/{tap_name}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
 
@@ -241,14 +241,9 @@ def tap_name_for_repository(repository_value: str) -> str:
     repository = normalized_identity(repository_value)
     require_string(repository, "tap repository", TAP_REPOSITORY)
     owner, repository_name = repository.split("/", 1)
-    if repository == "automattic/kandelo-homebrew":
-        return repository
     if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
-        fail("third-party tap repositories must use owner/homebrew-name")
-    tap_name = f"{owner}/{repository_name.removeprefix('homebrew-')}"
-    if tap_name == "automattic/kandelo-homebrew":
-        fail("the protected first-party tap name cannot be derived from another repository")
-    return tap_name
+        fail("tap repositories must use owner/homebrew-name")
+    return f"{owner}/{repository_name.removeprefix('homebrew-')}"
 
 
 def selected_tap_name(args: argparse.Namespace) -> str:
@@ -256,9 +251,9 @@ def selected_tap_name(args: argparse.Namespace) -> str:
     expected = tap_name_for_repository(repository)
     requested = getattr(args, "tap_name", None)
     if requested is None:
-        if repository != "automattic/kandelo-homebrew":
-            fail("tap name is required when repository and Homebrew identities may differ")
-        requested = args.tap_repository
+        if repository != "kandelo-dev/homebrew-tap-core":
+            fail("tap name is required outside the protected default tap")
+        requested = expected
     require_string(requested, "tap name", TAP_REPOSITORY)
     selected = normalized_identity(requested)
     if selected != expected:
@@ -1072,11 +1067,11 @@ def load_receipt(path: pathlib.Path) -> dict[str, Any]:
     require_int(bottle["bytes"], "receipt bottle bytes", 1)
     require_string(bottle["sha256"], "receipt bottle sha256", SHA256)
     expected_url = (
-        f"https://ghcr.io/v2/{root['tap_repository'].lower()}/"
+        f"https://ghcr.io/v2/{normalized_identity(receipt_tap_name)}/"
         f"{root['formula']}/blobs/sha256:{bottle['sha256']}"
     )
     if bottle["url"] != expected_url:
-        fail("receipt bottle URL does not match its repository and digest")
+        fail("receipt bottle URL does not match its Homebrew tap name and digest")
     oci = exact_keys(
         root["oci"],
         {"config", "diff_id", "homebrew_ref", "manifest", "platform", "transport_tag"},
@@ -1663,7 +1658,17 @@ def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        pass
+        process.wait(timeout=1)
+        return
+    except PermissionError as error:
+        # Darwin can report EPERM after a short-lived session leader exits and
+        # its process-group ID is no longer ours. Preserve the original bounded
+        # command failure only after wait() proves that child is already gone.
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            raise error
+        return
     process.wait()
 
 
@@ -2261,7 +2266,7 @@ def validate_publication_receipt_command(args: argparse.Namespace) -> None:
         },
         "OCI publication result",
     )
-    expected_remote = f"ghcr.io/{normalized_identity(tap_repository)}/{formula}"
+    expected_remote = f"ghcr.io/{tap_name}/{formula}"
     if publication["remote"] != expected_remote:
         fail("OCI publication receipt remote is invalid")
     if publication["reference"] != expected_reference:

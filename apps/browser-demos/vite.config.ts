@@ -469,6 +469,10 @@ const defaultDemoInputs = {
 
 const demoInputs = {
   ...defaultDemoInputs,
+  "homebrew-vfs-test": path.resolve(
+    __dirname,
+    "pages/homebrew-vfs-test/index.html",
+  ),
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
   benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   "php-test": path.resolve(__dirname, "pages/php-test/index.html"),

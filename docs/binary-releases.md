@@ -24,7 +24,7 @@ For third-party repositories that publish their own package archives,
 see [docs/package-sources.md](package-sources.md).
 
 Homebrew bottles use a separate publication model. Bottle tarballs are
-Homebrew-native artifacts published through the `Automattic/kandelo-homebrew`
+Homebrew-native artifacts published through the `kandelo-dev/homebrew-tap-core`
 tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and
 provenance publish as tap git state. Browser gallery output is currently
 run-scoped diagnostic evidence, not a durable release asset. These artifacts
@@ -36,9 +36,11 @@ The unprivileged Homebrew build job fetch-only materializes the wasm32 Dash,
 Coreutils, Grep, and Sed artifacts from `binaries-abi-v<N>` so Formula tests can
 execute installed shell scripts on Kandelo. These unqualified host-resolver
 paths intentionally remain wasm32 when the bottle matrix target is wasm64.
-Homebrew runtime verification also fetches the complete ABI graph needed to
-boot Kandelo in Node and the browser. These base tools, kernel, host-runtime,
-and VFS artifacts are platform prerequisites. The
+Generic Homebrew runtime verification fetches only that base command set and
+the declared rootfs needed to exercise a Formula or dependency-bearing VFS.
+The Hello gallery smoke separately prepares Kandelo's supported interactive
+browser graph. These base tools, kernel, host-runtime, and VFS artifacts are
+platform prerequisites. The
 migrated package being verified is poured from the Homebrew bottle: the local
 bottle in a dry run, or the anonymously read-back GHCR bottle in a write run.
 It is not selected from Kandelo's package registry archive ledger.

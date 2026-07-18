@@ -3,7 +3,7 @@
 Kandelo's Homebrew publishing path is a bottle publication and validation
 pipeline shared by the first-party tap and conventional third-party taps. The
 implementation lives in the main `Automattic/kandelo` repository; the
-first-party live tap repository is `Automattic/kandelo-homebrew`.
+first-party live tap repository is `kandelo-dev/homebrew-tap-core`.
 
 This is not a general user-facing Homebrew install guide yet. Do not document
 `brew tap` or guest `brew install` commands until guest Homebrew install has
@@ -28,22 +28,25 @@ Homebrew's `bottle do` block.
 | Repository | Owns |
 |---|---|
 | `Automattic/kandelo` | Schemas, validators, reusable workflows, package build scripts, VFS planner/builder, Node/browser smoke tests, and this documentation. |
-| `Automattic/kandelo-homebrew` | Tap state: `Formula/`, generated `Kandelo/` sidecars, bottle blocks, and provenance reports. |
+| `kandelo-dev/homebrew-tap-core` | Tap state: `Formula/`, generated `Kandelo/` sidecars, bottle blocks, and provenance reports. |
 | `<owner>/homebrew-<name>` | A third-party tap's Formulae, generated state, GHCR bottle packages, and caller-scoped publication authority. |
 
-The checked-in `homebrew/kandelo-homebrew/` directory is a reviewable template
+The checked-in `homebrew/homebrew-tap-core/` directory is a reviewable template
 and test fixture for the tap shape. Live generated tap state belongs in
-`Automattic/kandelo-homebrew`, not in the main repository template.
+`kandelo-dev/homebrew-tap-core`, not in the main repository template.
 
-Repository identity and Homebrew tap identity are separate inputs. A
+Repository identity and Homebrew tap identity are separate inputs. Every tap,
+including Kandelo's default tap, uses the conventional repository shape. A
 conventional repository `<owner>/homebrew-<name>` has canonical Homebrew tap
-name `<owner>/<name>`. Repository identity owns GitHub checkout, GHCR paths,
-and the caller token; tap identity owns `brew` references, installed Formula
-paths, receipts, OCI titles, and Kandelo sidecars. The first-party repository
-is an explicit exception: both its repository identity and tap name are
-`Automattic/kandelo-homebrew`. No conventional repository may derive that
-protected first-party tap name, so repository and tap identities remain a
-one-to-one publication boundary.
+name `<owner>/<name>`. Repository identity owns GitHub checkout, source links,
+and the caller token; tap identity owns the GHCR bottle namespace, `brew`
+references, installed Formula paths, receipts, OCI titles, and Kandelo sidecars. Therefore the default
+repository `kandelo-dev/homebrew-tap-core` is the canonical tap
+`kandelo-dev/tap-core`; its GitHub Container Registry (GHCR) root remains
+`https://ghcr.io/v2/kandelo-dev/tap-core`. Tooling may omit the tap
+name only for this protected default, and derives `kandelo-dev/tap-core` through
+the same conventional rule. Other repositories must state the derived tap name
+explicitly so an omitted input cannot silently change publication identity.
 
 ## Artifact Model
 
@@ -328,7 +331,7 @@ Kandelo bottle's declared runtime dependency.
 Fresh verifier and finalizer validation independently derive that closure from
 the exact tap without evaluating Formula Ruby. Same-tap dependencies must use
 direct Formula class-body literal declarations such as `depends_on
-"automattic/kandelo-homebrew/zlib"`. The static resolver includes untagged and
+"kandelo-dev/tap-core/zlib"`. The static resolver includes untagged and
 `:recommended` dependencies, excludes the canonical `:build`, `:test`, and
 `:optional` forms, and recursively resolves explicit same-tap references.
 Conditional, interpolated, helper-hidden, unknown-tag, duplicate, and cyclic
@@ -395,8 +398,8 @@ jobs:
       actions: read
     uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@<trusted-ref>
     with:
-      tap-repository: Automattic/kandelo-homebrew
-      tap-name: Automattic/kandelo-homebrew
+      tap-repository: kandelo-dev/homebrew-tap-core
+      tap-name: kandelo-dev/tap-core
       formulae: hello
       arches: wasm32
 ```
@@ -439,8 +442,8 @@ data passed to the already-reviewed caller and reusable workflow definitions;
 they do not select either workflow definition. The bottle root is never
 caller-selected:
 the workflow rejects a non-empty `bottle-root-url` and derives
-`https://ghcr.io/v2/<lowercase-owner>/<lowercase-repository>` from the tap
-repository. The separate reusable maintenance workflow remains first-party
+`https://ghcr.io/v2/<lowercase-owner>/<lowercase-name>` from the canonical
+Homebrew tap name. The separate reusable maintenance workflow remains first-party
 specific because its rollback and deletion paths own default-tap state. A
 third-party `maintain-bottles.yml` on the protected default branch may call the
 generic publisher for rebuilds, but generic rollback and deletion orchestration
@@ -635,8 +638,11 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    private GHCR package fails at the explicit visibility boundary; automation
    never changes package visibility.
 4. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
-   revalidates the build handoff and receipt, fetches the full Kandelo ABI
-   runtime graph, builds the VFS image, and runs the runtime and browser gates.
+   revalidates the build handoff and receipt, fetches only the declared Kandelo
+   platform runtime for Formula tests, builds the VFS image, and runs the
+   runtime and browser gates. The `hello` browser-gallery smoke separately
+   prepares the supported interactive-demo graph; packages supplied by the
+   external software gallery are not verifier prerequisites.
    Its isolated Homebrew process receives the same selected-tap trust as the
    build process, sealed into a readable, immutable build-local XDG store and
    using the same publisher-only redundant-persistence exception.
@@ -703,9 +709,12 @@ locally committed success attempt cannot enter a last-green failure commit.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
 tap commits. Dry runs still build bottles and validate the generated metadata
-shape. An anonymous GHCR authorization failure remains a non-public dry-run
-result; dry-run upload planning neither loads registry credentials nor attempts
-to distinguish a missing namespace from a private reference. Dry runs seed the
+shape. The verifier carries that trusted mode explicitly into final handoff
+validation; write-mode validation and the credentialed finalizer reject a
+non-public dry-run receipt. An anonymous GHCR authorization failure remains a
+non-public dry-run result; dry-run upload planning neither loads registry
+credentials nor attempts to distinguish a missing namespace from a private
+reference. Dry runs seed the
 VFS builder from the current local bottle. Non-dry runs seed it only with bytes
 returned by the anonymous GHCR readback. The publisher deliberately does not
 restore GitHub
@@ -906,9 +915,9 @@ For reproducible image composition, use the builder's static Brewfile subset.
 For example:
 
 ```ruby
-tap "automattic/kandelo-homebrew"
+tap "kandelo-dev/tap-core"
 brew "sqlite"
-brew "automattic/kandelo-homebrew/xz"
+brew "kandelo-dev/tap-core/xz"
 ```
 
 The subset accepts blank lines, comments, exactly one literal canonical
@@ -981,7 +990,7 @@ The acceptance gate parses the static Brewfile, requires at least one real
 dependency edge reachable from the selected Formula, and resolves the same
 dependency-first plan for Node and browser. Every package must select a current
 `success` bottle at the exact public URL
-`https://ghcr.io/v2/<tap-owner>/<tap-repository>/<formula>/blobs/sha256:<digest>`.
+`https://ghcr.io/v2/<tap-owner>/<tap-name>/<formula>/blobs/sha256:<digest>`.
 Last-green fallback, source builds, local bottle substitutions, and Kandelo
 package-registry archives are not accepted as package evidence.
 
@@ -1044,7 +1053,7 @@ The Node smoke for the published `hello` bottle:
 ```bash
 scripts/dev-shell.sh npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
   --result-dir test-runs/homebrew-node-smoke \
-  --tap-repository Automattic/kandelo-homebrew
+  --tap-repository kandelo-dev/homebrew-tap-core
 ```
 
 It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
@@ -1068,7 +1077,13 @@ The `hello` package bytes in this smoke come from the current Homebrew bottle:
 from the local build in dry-run mode, or from the anonymously fetched GHCR blob
 in write mode. The browser demo still resolves Kandelo-owned ABI platform
 prerequisites such as `node.wasm` and `node-vfs.vfs.zst` through Kandelo's normal
-binary release. Those platform assets are not the migrated package under test.
+binary release. Generic Formula and dependency-bearing VFS verification fetches
+only the base command set and `rootfs`; its focused Vite input does not scan the
+interactive demo. The `hello` gallery smoke additionally materializes the
+supported interactive graph through `./run.sh --fetch-only prepare-browser`,
+which excludes packages whose demos are provided by the external software
+gallery. Those platform assets are not the migrated package under test, and
+unrelated gallery packages are not bottle verification prerequisites.
 
 ## Browser Gallery Assets
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/kandelo-homebrew/Kandelo/link-manifest.schema.json",
+  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/homebrew-tap-core/Kandelo/link-manifest.schema.json",
   "title": "Kandelo Homebrew link manifest",
   "description": "Structured pour/link instructions for one verified Homebrew bottle.",
   "type": "object",

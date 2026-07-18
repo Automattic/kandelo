@@ -1,8 +1,9 @@
 # Kandelo Sidecar Metadata
 
 Trusted publish workflows generate this directory in the
-`Automattic/kandelo-homebrew` tap. Checked-in files make metadata reviewable in
-the tap commit. `bottles-abi-v<N>` is the sidecar ABI namespace; the
+`kandelo-dev/tap-core` tap in the `kandelo-dev/homebrew-tap-core` repository.
+Checked-in files make metadata reviewable in the tap commit.
+`bottles-abi-v<N>` is the sidecar ABI namespace; the
 current workflow does not duplicate this payload into a GitHub Release.
 
 ## Files
@@ -122,9 +123,9 @@ the package is not plannable for a VFS image.
 Write a static Brewfile that names one tap and the formula roots for the image:
 
 ```ruby
-tap "automattic/kandelo-homebrew"
+tap "kandelo-dev/tap-core"
 brew "sqlite"
-brew "automattic/kandelo-homebrew/xz"
+brew "kandelo-dev/tap-core/xz"
 ```
 
 Then build a precomposed Homebrew-prefix image from generated sidecars and
@@ -186,9 +187,10 @@ tests before publishing gallery or user-facing claims.
 
 In publisher validation, the package payload is the current Homebrew bottle:
 the local bottle for a dry run, or the exact anonymously read-back GHCR digest
-for a write run. Kandelo's complete ABI release graph is fetched separately as
-the kernel, host-runtime, and VFS platform prerequisite; it is not the source of
-the migrated package payload.
+for a write run. Generic verification fetches only the declared base commands
+and rootfs as Kandelo platform prerequisites. The Hello gallery smoke
+separately prepares the supported interactive browser graph. None of those
+platform inputs is the source of the migrated package payload.
 
 ## Dependency-Bearing Runtime Acceptance
 

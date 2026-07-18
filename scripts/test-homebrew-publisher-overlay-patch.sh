@@ -397,7 +397,7 @@ class FixtureFormula
   def initialize(deps)
     @deps = deps
     @name = "hello"
-    @full_name = "automattic/kandelo-homebrew/hello"
+    @full_name = "kandelo-dev/tap-core/hello"
     @options = []
   end
 end
@@ -414,9 +414,9 @@ end
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
   "schema" => 2,
-  "tap" => "automattic/kandelo-homebrew",
+  "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
-  "full_name" => "automattic/kandelo-homebrew/hello",
+  "full_name" => "kandelo-dev/tap-core/hello",
   "build" => ["binaryen", "wabt"],
   "build_and_test" => ["binaryen", "pkgconf", "wabt"],
   "runtime_and_test" => ["pkgconf"],
@@ -430,7 +430,7 @@ deps = [
   FixtureDependency.new("pkgconf"),
   FixtureDependency.new("binaryen", build: true),
   FixtureDependency.new("bubblewrap", build: true, implicit: true),
-  FixtureDependency.new("automattic/kandelo-homebrew/zlib", build: true),
+  FixtureDependency.new("kandelo-dev/tap-core/zlib", build: true),
 ]
 build = Build.new(FixtureFormula.new(deps), [], args: FixtureArgs.new)
 unless build.deps.map(&:name) == ["binaryen", "wabt"]
@@ -532,9 +532,9 @@ end
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
   "schema" => 2,
-  "tap" => "automattic/kandelo-homebrew",
+  "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
-  "full_name" => "automattic/kandelo-homebrew/hello",
+  "full_name" => "kandelo-dev/tap-core/hello",
   "build" => ["wabt"],
   "build_and_test" => ["wabt"],
   "runtime_and_test" => [],
@@ -544,7 +544,7 @@ plan_path.chmod(0o444)
 
 target = Formula.new(
   name: "hello",
-  full_name: "automattic/kandelo-homebrew/hello",
+  full_name: "kandelo-dev/tap-core/hello",
 )
 unless global_dependencies(target).empty?
   raise "selected Kandelo target Formula retained native Linux global dependencies"
@@ -552,7 +552,7 @@ end
 
 nonmatching = Formula.new(
   name: "zlib",
-  full_name: "automattic/kandelo-homebrew/zlib",
+  full_name: "kandelo-dev/tap-core/zlib",
 )
 unless global_dependencies(nonmatching) == [:bubblewrap]
   raise "protected target plan changed Linux global dependencies for another Formula"
@@ -593,9 +593,9 @@ HOMEBREW_PREFIX.mkpath
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
   "schema" => 2,
-  "tap" => "automattic/kandelo-homebrew",
+  "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
-  "full_name" => "automattic/kandelo-homebrew/hello",
+  "full_name" => "kandelo-dev/tap-core/hello",
   "build" => [],
   "build_and_test" => [],
   "runtime_and_test" => [],

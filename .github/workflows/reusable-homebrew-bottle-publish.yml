@@ -11,10 +11,10 @@ on:
         default: main
       tap-repository:
         type: string
-        default: Automattic/kandelo-homebrew
+        default: kandelo-dev/homebrew-tap-core
       tap-name:
         type: string
-        default: Automattic/kandelo-homebrew
+        default: kandelo-dev/tap-core
       tap-ref:
         type: string
         default: main
@@ -94,7 +94,10 @@ jobs:
             return 2
           }
 
-          [ "$CALLER_REPOSITORY" = "$TAP_REPOSITORY" ] || {
+          normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
+          [ "$normalized_caller_repository" = "$normalized_tap_repository" ] || {
             echo "::error::the caller repository must own the target tap repository"; exit 2;
           }
           [ "$CALLER_REF" = "refs/heads/main" ] || {
@@ -104,33 +107,19 @@ jobs:
             echo "::error::publication requires the reviewed repository_dispatch caller"; exit 2;
           }
           [ -z "$BOTTLE_ROOT_URL" ] || {
-            echo "::error::the publisher derives the bottle root from the tap repository"; exit 2;
+            echo "::error::the publisher derives the bottle root from the Homebrew tap name"; exit 2;
           }
           [ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ] || {
             echo "::error::publication requires Automattic/kandelo"; exit 2;
           }
-          case "$TAP_REPOSITORY" in
-            Automattic/kandelo-homebrew)
-              [ "$TAP_NAME" = "Automattic/kandelo-homebrew" ] || {
-                echo "::error::the first-party tap name must remain Automattic/kandelo-homebrew"; exit 2;
-              }
-              ;;
-            *)
-              [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+$ ]] || {
-                echo "::error::third-party tap repositories must use owner/homebrew-name"; exit 2;
-              }
-              tap_owner="${TAP_REPOSITORY%%/*}"
-              tap_short_name="${TAP_REPOSITORY#*/homebrew-}"
-              derived_tap_name="${tap_owner}/${tap_short_name}"
-              normalized_derived_tap_name="$(printf '%s' "$derived_tap_name" | tr '[:upper:]' '[:lower:]')"
-              [ "$normalized_derived_tap_name" != "automattic/kandelo-homebrew" ] || {
-                echo "::error::the protected first-party tap name cannot be derived from another repository"; exit 2;
-              }
-              [ "$TAP_NAME" = "${tap_owner}/${tap_short_name}" ] || {
-                echo "::error::tap-name must be owner/name derived from the conventional repository"; exit 2;
-              }
-              ;;
-          esac
+          [[ "$normalized_tap_repository" =~ ^[a-z0-9_.-]+/homebrew-[a-z0-9_.-]+$ ]] || {
+            echo "::error::tap repositories must use owner/homebrew-name"; exit 2;
+          }
+          tap_owner="${normalized_tap_repository%%/*}"
+          tap_short_name="${normalized_tap_repository#*/homebrew-}"
+          [ "$normalized_tap_name" = "${tap_owner}/${tap_short_name}" ] || {
+            echo "::error::tap-name must be owner/name derived from the conventional repository"; exit 2;
+          }
           if [ "$DRY_RUN" = "true" ]; then
             [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
               echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
@@ -198,6 +187,7 @@ jobs:
         env:
           REQUESTED_BOTTLE_ROOT_URL: ${{ inputs.bottle-root-url }}
           REQUESTED_RELEASE_TAG: ${{ inputs.release-tag }}
+          TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
         run: |
           set -euo pipefail
@@ -214,12 +204,11 @@ jobs:
           fi
           root_prefix="$REQUESTED_BOTTLE_ROOT_URL"
           if [ -z "$root_prefix" ]; then
-            tap_repo="$TAP_REPOSITORY"
-            owner="${tap_repo%%/*}"
-            repo="${tap_repo#*/}"
-            owner="$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')"
-            repo="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
-            root_prefix="https://ghcr.io/v2/${owner}/${repo}"
+            # Homebrew maps owner/name to the GitHub owner/homebrew-name repository,
+            # but its GHCR bottle namespace remains owner/name.
+            # shellcheck source=/dev/null
+            . kandelo/scripts/homebrew-tap-identity.sh
+            root_prefix="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
           fi
           {
             echo "abi=$abi"
@@ -542,7 +531,7 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
 
-      - name: Materialize shell-script runtime for Formula tests
+      - name: Materialize Formula test platform runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -554,7 +543,7 @@ jobs:
               echo "unable to resolve the Rust host target" >&2
               exit 2
             }
-            for package in dash coreutils grep sed; do
+            for package in dash coreutils grep sed rootfs; do
               cargo run --release -p xtask --target "$host" --quiet -- \
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
@@ -1290,8 +1279,8 @@ jobs:
             -name receipt.json -type f -print -quit)"
           [ -n "$first_receipt" ] || { echo "::error::missing first child receipt"; exit 1; }
           top_ref="$(jq -er '.top_ref' "$first_receipt")"
-          owner_repo="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          remote="ghcr.io/${owner_repo}/${KANDELO_HOMEBREW_FORMULA}"
+          tap_name="$(printf '%s' "$KANDELO_HOMEBREW_TAP_NAME" | tr '[:upper:]' '[:lower:]')"
+          remote="ghcr.io/${tap_name}/${KANDELO_HOMEBREW_FORMULA}"
           anonymous_config="$RUNNER_TEMP/homebrew-anonymous-oras.json"
           printf '{"auths":{}}\n' >"$anonymous_config"
           existing="$RUNNER_TEMP/homebrew-existing-index"
@@ -1394,6 +1383,15 @@ jobs:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ needs.plan.outputs.kandelo-sha }}
           path: kandelo
+          submodules: false
+
+      - name: Checkout exact Kandelo sysroot build source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.kandelo-sha }}
+          path: kandelo-sysroot-build
           submodules: false
 
       - name: Checkout exact tap source
@@ -1661,8 +1659,8 @@ jobs:
             --formula "$KANDELO_HOMEBREW_FORMULA" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
-          owner_repo="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          remote="ghcr.io/${owner_repo}/${KANDELO_HOMEBREW_FORMULA}"
+          tap_name="$(printf '%s' "$KANDELO_HOMEBREW_TAP_NAME" | tr '[:upper:]' '[:lower:]')"
+          remote="ghcr.io/${tap_name}/${KANDELO_HOMEBREW_FORMULA}"
           jq -e \
             --slurpfile layout "$layout_receipt" \
             --slurpfile child "$RUNNER_TEMP/homebrew-oci-child/receipt.json" \
@@ -1699,7 +1697,14 @@ jobs:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          cd kandelo
+          expected_sha="$(git -C kandelo rev-parse HEAD)"
+          [ "$(git -C kandelo-sysroot-build rev-parse HEAD)" = "$expected_sha" ] || {
+            echo "::error::Kandelo sysroot build source differs from the verifier source"; exit 2;
+          }
+          [ -z "$(git -C kandelo-sysroot-build status --short)" ] || {
+            echo "::error::Kandelo sysroot build source is dirty before the build"; exit 2;
+          }
+          cd kandelo-sysroot-build
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git config submodule.musl.url "https://github.com/ifduyue/musl.git"
           fetched=0
@@ -1753,11 +1758,32 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
-      - name: Fetch the complete ABI browser runtime graph
+      - name: Prepare the supported interactive browser demo graph
+        if: ${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}
         shell: bash
         run: |
           cd kandelo
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
+          bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
+
+      - name: Materialize Formula verification platform runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kandelo
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            host="$(rustc -vV | sed -n "s/^host: //p")"
+            [ -n "$host" ] || {
+              echo "unable to resolve the Rust host target" >&2
+              exit 2
+            }
+            for package in dash coreutils grep sed rootfs; do
+              cargo run --release -p xtask --target "$host" --quiet -- \
+                build-deps --arch wasm32 \
+                --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
+            done
+            bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"
+          '
 
       - name: Compose only reconstructed bottle metadata into the fresh tap
         shell: bash
@@ -1800,7 +1826,7 @@ jobs:
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
           bottle_cache="$RUNNER_TEMP/homebrew-bottle-cache"
-          runtime_bottle="$bottle_cache/$(basename "$BOTTLE_ARCHIVE")"
+          runtime_bottle="$bottle_cache/$BOTTLE_FILENAME"
           selection_receipt="$RUNNER_TEMP/homebrew-verified-input/selection-receipt.json"
           mkdir -p "$bottle_cache"
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
@@ -2018,6 +2044,7 @@ jobs:
             --bottle-root-url "$BOTTLE_ROOT_URL" \
             --dependency-provenance "$DEPENDENCY_PROVENANCE" \
             --selection-receipt "$SELECTION_RECEIPT" \
+            --sysroot-build-root "$GITHUB_WORKSPACE/kandelo-sysroot-build" \
             --out "$runtime_evidence"
           resume_workflow_commands
           trap - EXIT
@@ -2148,7 +2175,7 @@ jobs:
           . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
           export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap-postverify"
           export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap-postverify"
-          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo"
+          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo-sysroot-build"
           export KANDELO_HOMEBREW_SIDECAR_ROOT="$RUNNER_TEMP/homebrew-sidecars"
           export KANDELO_HOMEBREW_FORMULA="$FORMULA"
           export KANDELO_HOMEBREW_ARCH="$ARCH"
@@ -2188,7 +2215,7 @@ jobs:
           . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
           export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap-postverify"
           export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap-postverify"
-          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo"
+          export KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo-sysroot-build"
           export KANDELO_HOMEBREW_SIDECAR_ROOT="$RUNNER_TEMP/homebrew-sidecars"
           export KANDELO_HOMEBREW_FORMULA="$FORMULA"
           export KANDELO_HOMEBREW_ARCH="$ARCH"
@@ -2392,7 +2419,7 @@ jobs:
             *) echo "::error::Brewfile resolved outside the exact tap checkout"; exit 2 ;;
           esac
 
-          base_image="$(bash scripts/resolve-binary.sh rootfs.vfs)"
+          base_image="$(bash scripts/resolve-binary.sh programs/rootfs.vfs)"
           kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"
           case "$base_image" in
             "$PWD/binaries"/*) ;;
@@ -2458,6 +2485,7 @@ jobs:
             export KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$executable"
             export KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$argv_json"
             export KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$expected_stdout"
+            export KANDELO_BROWSER_DEMO_INPUTS="homebrew-vfs-test"
             bash ../../scripts/dev-shell.sh env \
               KANDELO_PLAYWRIGHT_PORT="$KANDELO_PLAYWRIGHT_PORT" \
               KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL" \
@@ -2466,6 +2494,7 @@ jobs:
               KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE" \
               KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON" \
               KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT" \
+              KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS" \
               npx playwright test test/homebrew-brewfile-vfs.spec.ts \
                 --project=chromium --reporter=json >"$playwright_report"
           )
@@ -2514,6 +2543,16 @@ jobs:
           [ -z "$(git -C kandelo status --short --untracked-files=no)" ] || {
             echo "::error::runtime validation modified reviewed Kandelo tracked files"; exit 1;
           }
+          [ "$(git -C kandelo-sysroot-build rev-parse HEAD)" = "$KANDELO_SHA" ] || {
+            echo "::error::Kandelo sysroot build source moved during runtime validation"; exit 1;
+          }
+          [ -z "$(git -C kandelo-sysroot-build status --short --untracked-files=no --ignore-submodules=all)" ] || {
+            echo "::error::runtime validation modified Kandelo sysroot build files outside musl"; exit 1;
+          }
+          expected_musl_sha="$(git -C kandelo-sysroot-build rev-parse HEAD:libc/musl)"
+          [ "$(git -C kandelo-sysroot-build/libc/musl rev-parse HEAD)" = "$expected_musl_sha" ] || {
+            echo "::error::Kandelo sysroot build moved the reviewed musl commit"; exit 1;
+          }
           [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap verifier source moved during runtime validation"; exit 1;
           }
@@ -2545,6 +2584,7 @@ jobs:
         env:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
+          KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
@@ -2590,6 +2630,9 @@ jobs:
             --forbidden-root "$RUNNER_TEMP"
             --forbidden-root "/home/kandelo-homebrew-build"
           )
+          if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
+            payload_args+=(--allow-dry-run)
+          fi
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
 
       - name: Upload validated publication handoff

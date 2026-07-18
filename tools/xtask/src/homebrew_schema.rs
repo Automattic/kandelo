@@ -52,11 +52,11 @@ mod tests {
     }
 
     fn schema_rel(name: &str) -> String {
-        format!("homebrew/kandelo-homebrew/Kandelo/{name}.schema.json")
+        format!("homebrew/homebrew-tap-core/Kandelo/{name}.schema.json")
     }
 
     fn example_rel(path: &str) -> String {
-        format!("homebrew/kandelo-homebrew/Kandelo/examples/{path}")
+        format!("homebrew/homebrew-tap-core/Kandelo/examples/{path}")
     }
 
     #[test]
@@ -122,10 +122,10 @@ mod tests {
     #[test]
     fn scaffold_paths_exist_for_semantic_validator_handoff() {
         let expected = [
-            "homebrew/kandelo-homebrew/Formula",
-            "homebrew/kandelo-homebrew/Kandelo/examples/formula",
-            "homebrew/kandelo-homebrew/Kandelo/examples/link",
-            "homebrew/kandelo-homebrew/Kandelo/examples/reports",
+            "homebrew/homebrew-tap-core/Formula",
+            "homebrew/homebrew-tap-core/Kandelo/examples/formula",
+            "homebrew/homebrew-tap-core/Kandelo/examples/link",
+            "homebrew/homebrew-tap-core/Kandelo/examples/reports",
         ];
 
         for rel in expected {
