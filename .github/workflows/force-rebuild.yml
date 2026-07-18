@@ -200,7 +200,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -387,7 +387,7 @@ jobs:
           echo "toolchain-cache key: $KEY"
 
       - name: Cache musl sysroot + libc++
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@v6.1.0
         id: cache
         with:
           path: |
