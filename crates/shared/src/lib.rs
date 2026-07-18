@@ -2231,8 +2231,10 @@ pub mod dri {
     /// (re)uploads the bo's current pixels into the texture from host-side
     /// storage, so callers refresh a texture by re-issuing the ioctl after
     /// the producer commits new content. The returned `gl_texture_id` is
-    /// stable across rebinds of the same bo. GPU-tier bos
-    /// (`WPK_CREATE_GPU_BO`) remain unimplemented.
+    /// stable across rebinds of the same bo. On a GPU-tier bo
+    /// (`WPK_CREATE_GPU_BO`) the bind is zero-copy: the pixels already live
+    /// as a `WebGLTexture` on the shared context, so it returns that
+    /// texture id directly with no upload.
     pub const DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: u32 = 0xc010_64e1;
 
     /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and

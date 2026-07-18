@@ -1,7 +1,7 @@
 script_path = "packages/registry/sdl2/build-sdl2.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "9312b390f9c3a91eec4ea562e6863a022f9c2d90"
-revision    = 4
+revision    = 5
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

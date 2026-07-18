@@ -150,4 +150,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 612,
   },
+  {
+    id: "hyprland",
+    title: "Hyprland tiling WM",
+    summary: "wlcompositor in dwindle mode — a Hyprland-class tiling window manager on /dev/dri/card0. Two wlterm terminals and a wlclock tile into gapped, borderless (server-side-decorated) frames; each client honors the compositor's xdg configure to resize into its tile. Open new panes Hyprland-style with per-app launch keybinds: CTRL+Return spawns a terminal, CTRL+K a clock, CTRL+P a paint canvas; CTRL+W kills the focused window and CTRL+1..9 switch workspaces. Every bind is mirrored on SUPER (real Hyprland) and CTRL, which a browser (unlike SUPER=Cmd/Win) doesn't reserve. Bindings from /etc/kandelo/wlcompositor.conf.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#00aaff",
+    glyph: "H",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
 ];

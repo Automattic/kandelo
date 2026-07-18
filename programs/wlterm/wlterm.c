@@ -14,9 +14,13 @@
  * forkpty() forks, so this binary MUST be run through
  * scripts/run-wasm-fork-instrument.sh at build time (see build-programs.sh).
  *
+ * Under a tiling compositor the window is resized to its slot; wlterm
+ * recomputes the grid from the new pixel size and re-sizes the PTY.
+ *
  * Markers on stdout drive host/test/wlterm-smoke.test.ts:
  *   WLTERM_READY            — window mapped + first frame committed
  *   WLTERM_GRID "<needle>"  — <needle> is now visible in the cell grid
+ *   WLTERM_RESIZE cols=.. rows=.. — the compositor dictated a new size
  *   WLTERM_EXIT code=<n>    — shell exited, clean shutdown
  */
 #include <errno.h>
@@ -27,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -154,6 +159,28 @@ int main(int argc, char **argv) {
                 }
             } else if (ev.type == KWL_CLOSE) {
                 running = 0;
+            } else if (ev.type == KWL_RESIZE) {
+                /* Re-derive the grid from the new pixel size and tell the PTY,
+                 * so the shell reflows to the tile. */
+                int ncols = ev.x / cell_w, nrows = ev.y / cell_h;
+                if (ncols < 4) ncols = 4;
+                if (nrows < 4) nrows = 4;
+                if (vt100_resize(term, ncols, nrows)) {
+                    cols = ncols;
+                    rows = nrows;
+                    struct winsize nws = {
+                        .ws_row = (unsigned short)rows,
+                        .ws_col = (unsigned short)cols,
+                        .ws_xpixel = (unsigned short)ev.x,
+                        .ws_ypixel = (unsigned short)ev.y,
+                    };
+                    ioctl(master, TIOCSWINSZ, &nws);
+                    if (pid > 0) kill(pid, SIGWINCH);
+                    vt100_render(term, s, font, 0, 0);
+                    kwl_window_commit(win);
+                    printf("WLTERM_RESIZE cols=%d rows=%d\n", cols, rows);
+                    fflush(stdout);
+                }
             }
         }
 
@@ -188,10 +215,23 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Reap the shell. */
+    /* Tear the surface down FIRST so the compositor removes and retiles the
+     * pane immediately — otherwise a window-close (killactive) request would
+     * leave the tile on screen until the shell reap below returns. */
+    kwl_window_destroy(win);
+
+    /* Reap the shell. The loop may have ended on a window-close request
+     * (KWL_CLOSE) with the shell still running: closing the pty master is
+     * meant to hang up the slave's foreground group, but we also SIGHUP the
+     * child explicitly so the pane closes even when that hangup doesn't
+     * propagate — a wedged shell must not keep waitpid (and the window)
+     * blocked forever. SIGHUP on an already-exited pid is a harmless ESRCH. */
     close(master);
     int status = 0;
-    if (pid > 0) waitpid(pid, &status, 0);
+    if (pid > 0) {
+        kill(pid, SIGHUP);
+        waitpid(pid, &status, 0);
+    }
     int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 0;
 
     printf("WLTERM_EXIT code=%d\n", exit_code);
@@ -199,6 +239,5 @@ int main(int argc, char **argv) {
 
     vt100_destroy(term);
     wpk_font_destroy(font);
-    kwl_window_destroy(win);
     return 0;
 }

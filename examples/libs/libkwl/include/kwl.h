@@ -8,16 +8,24 @@
  * commit, and pump input events. See
  * docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §4.
  *
- * Scope: a single fixed-size toplevel per connection, software rendering
- * into a wl_shm buffer the compositor imports via gbm, keyboard (keysym +
- * UTF-8) and pointer (motion + button) input. No surface resize.
+ * Scope: a single toplevel per connection, software rendering into a wl_shm
+ * buffer the compositor imports via gbm, keyboard (keysym + UTF-8) and
+ * pointer (motion + button) input.
  *
- * Decoration is client-side (CSD): libkwl draws a KWL_TITLEBAR_H-px
- * titlebar (title text + close box) above the app's content. The app draws
- * only the content area — kwl_window_surface() is w×h as requested — and
- * receives pointer coordinates content-local. Pressing the close box emits
- * KWL_CLOSE; dragging the titlebar hands the interaction to the compositor
- * via xdg_toplevel.move (the window moves; the app sees nothing).
+ * Decoration follows the compositor's zxdg_decoration negotiation. When it
+ * grants CLIENT_SIDE (the floating desktop) libkwl draws its own
+ * KWL_TITLEBAR_H-px titlebar — title text + close box — above the content;
+ * pressing the close box emits KWL_CLOSE and dragging the titlebar hands the
+ * interaction to the compositor via xdg_toplevel.move. When it grants
+ * SERVER_SIDE (a tiling WM) libkwl drops the titlebar entirely: the whole
+ * surface is content and the compositor draws the border/focus ring.
+ *
+ * Resize: a tiling compositor dictates each window's geometry through the
+ * xdg configure path. libkwl reallocates its buffers to the new size and
+ * delivers a KWL_RESIZE event carrying the new content dimensions; the app
+ * re-lays-out and redraws. A floating compositor sends a 0×0 "you decide"
+ * configure, so a floating window keeps the size it asked for and never
+ * sees KWL_RESIZE.
  */
 #ifndef KWL_H
 #define KWL_H
@@ -40,6 +48,7 @@ enum kwl_event_type {
     KWL_POINTER_BUTTON,  /* pointer button transition at (x, y) */
     KWL_CLOSE,           /* the toplevel was asked to close */
     KWL_FRAME,           /* a committed frame was presented */
+    KWL_RESIZE,          /* content size changed to (x, y) — realloc'd buffer */
 };
 
 /* Modifier bitmask for kwl_event.mods (effective state at the event). */
@@ -53,16 +62,17 @@ struct kwl_event {
     uint32_t mods;     /* KWL_KEY/KWL_TEXT: KWL_MOD_* bitmask */
     uint32_t button;   /* KWL_POINTER_BUTTON: a linux BTN_* code */
     uint32_t state;    /* KWL_KEY/KWL_POINTER_BUTTON: 1 = down, 0 = up */
-    int x, y;          /* KWL_POINTER_*: surface-local pointer position */
+    int x, y;          /* KWL_POINTER_*: pointer pos; KWL_RESIZE: new w, h */
     char utf8[8];      /* KWL_TEXT: NUL-terminated UTF-8 */
 };
 
-/* Connect to the compositor (/tmp/wayland-0) and map a single CSD toplevel
- * with a w×h CONTENT area (the surface is KWL_TITLEBAR_H taller). `title`
- * is drawn in the titlebar and doubles as the xdg app_id, which the
- * compositor's placement rules key on. Blocks until the initial xdg
- * configure is acked and the wl_shm buffers are ready. Returns NULL on
- * failure. */
+/* Connect to the compositor (/tmp/wayland-0) and map a toplevel with a w×h
+ * CONTENT area (the surface is taller by the titlebar the compositor grants,
+ * 0 under server-side decoration). `title` is drawn in the titlebar and
+ * doubles as the xdg app_id, which the compositor's placement rules key on.
+ * Blocks until the initial xdg configure is acked and the wl_shm buffers are
+ * ready. A tiling compositor may then resize the window (KWL_RESIZE). Returns
+ * NULL on failure. */
 struct kwl_window *kwl_window_create(const char *title, int w, int h);
 
 void kwl_window_destroy(struct kwl_window *win);

@@ -65,6 +65,34 @@ void vt100_destroy(struct vt100 *t) {
     free(t);
 }
 
+int vt100_resize(struct vt100 *t, int cols, int rows) {
+    if (cols < 4 || cols > 512 || rows < 4 || rows > 256) return 0;
+    if (cols == t->cols && rows == t->rows) return 0;
+
+    struct cell *grid = calloc((size_t)cols * rows, sizeof(struct cell));
+    uint8_t *dirty = calloc((rows + 7) / 8, 1);
+    if (!grid || !dirty) { free(grid); free(dirty); return 0; }
+
+    /* Preserve the overlapping top-left block so visible output survives a
+     * retile. */
+    int cpy_rows = rows < t->rows ? rows : t->rows;
+    int cpy_cols = cols < t->cols ? cols : t->cols;
+    for (int y = 0; y < cpy_rows; y++)
+        memcpy(&grid[(size_t)y * cols], &t->grid[(size_t)y * t->cols],
+               (size_t)cpy_cols * sizeof(struct cell));
+
+    free(t->grid);
+    free(t->dirty);
+    t->grid = grid;
+    t->dirty = dirty;
+    t->cols = cols;
+    t->rows = rows;
+    if (t->cx >= cols) t->cx = cols - 1;
+    if (t->cy >= rows) t->cy = rows - 1;
+    vt100_mark_dirty_all(t);
+    return 1;
+}
+
 static void scroll_up(struct vt100 *t) {
     memmove(&t->grid[0], &t->grid[t->cols],
             (size_t)(t->rows - 1) * t->cols * sizeof(struct cell));

@@ -40,8 +40,9 @@ gen() {
     wayland-scanner private-code  "$xml" "$WORK/${base}-protocol.c"
 }
 
-gen wayland   "$XML_DIR/wayland.xml"
-gen xdg-shell "$XML_DIR/xdg-shell.xml"
+gen wayland         "$XML_DIR/wayland.xml"
+gen xdg-shell       "$XML_DIR/xdg-shell.xml"
+gen linux-dmabuf-v1 "$XML_DIR/linux-dmabuf-v1.xml"
 
 # --- completeness: every v1 interface must appear in the generated code ---
 failures=0
@@ -66,12 +67,17 @@ for i in xdg_wm_base xdg_surface xdg_toplevel; do
     check_iface xdg-shell-protocol.c "$i"
 done
 
+echo "wayland-protocols: linux-dmabuf-v1 interfaces:"
+for i in zwp_linux_dmabuf_v1 zwp_linux_buffer_params_v1; do
+    check_iface linux-dmabuf-v1-protocol.c "$i"
+done
+
 # --- optional wasm32 compile of the generated glue ------------------------
 if command -v wasm32posix-cc >/dev/null 2>&1 && [ -n "${WAYLAND_UTIL_H:-}" ] \
    && [ -f "${WAYLAND_UTIL_H:-/nonexistent}" ]; then
     echo "wayland-protocols: wasm32-compiling generated glue (wayland-util.h=$WAYLAND_UTIL_H)"
     inc="$WORK/inc"; mkdir -p "$inc"; cp "$WAYLAND_UTIL_H" "$inc/wayland-util.h"
-    for base in wayland xdg-shell; do
+    for base in wayland xdg-shell linux-dmabuf-v1; do
         if wasm32posix-cc -c -O2 -fPIC -I"$inc" \
                "$WORK/${base}-protocol.c" -o "$WORK/${base}-protocol.o"; then
             echo "  OK   wasm32 ${base}-protocol.o ($(wc -c < "$WORK/${base}-protocol.o") bytes)"

@@ -172,6 +172,14 @@ unsafe extern "C" {
         height: u32,
         stride: u32,
     ) -> i32;
+    fn host_gbm_gpu_bo_create(
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32;
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
@@ -937,6 +945,18 @@ impl HostIO for WasmHostIO {
         stride: u32,
     ) -> i32 {
         unsafe { host_gbm_bo_create(pid, bo_id, size, width, height, stride) }
+    }
+
+    fn gbm_gpu_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32 {
+        unsafe { host_gbm_gpu_bo_create(pid, bo_id, width, height, format, usage) }
     }
 
     fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
@@ -6413,6 +6433,20 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
                     }
                 }
             }
+            // A DRM prime-bo FD sits in the channel between send and receive.
+            // Take a channel refcount on its bo now so the bo survives even if
+            // the sender closes the FD and destroys its own handle before the
+            // receiver drains the socket (libwayland closes the pool FD right
+            // after wl_shm.create_pool, and a rapidly-resized client frees the
+            // old bo before the compositor imports it). The receiver releases
+            // this ref on install; a never-received FD releases it on pipe free
+            // (see take_pending_prime_bo_ids). Without it, the bo tombstones and
+            // the compositor's gbm_bo_map / gbm_bo_import fails with EINVAL.
+            if let Some(ref pb) = in_flight.prime_bo {
+                crate::dri::with_registry(|r| {
+                    r.incref(pb.bo_id);
+                });
+            }
         }
 
         // Now push ancillary data to the socket's send pipe
@@ -6425,7 +6459,13 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
                             let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                             if let Some(pipe) = pipe {
-                                pipe.push_ancillary(ancillary_fds);
+                                // Attach the FDs to the first data byte of this
+                                // send (Linux SCM_RIGHTS semantics): the send just
+                                // wrote `result` bytes, so its first byte sits at
+                                // `total_written - result` in the byte stream.
+                                let stream_offset =
+                                    pipe.total_written().saturating_sub(result as u64);
+                                pipe.push_ancillary(stream_offset, ancillary_fds);
                             }
                         }
                     }
@@ -6602,7 +6642,61 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let base = u32::from_le_bytes([iov[0], iov[1], iov[2], iov[3]]) as usize;
     let len = u32::from_le_bytes([iov[4], iov[5], iov[6], iov[7]]) as usize;
 
-    let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, len) };
+    // Resolve the socket's recv pipe up front. On the stream path we use it to
+    // align SCM_RIGHTS FD delivery to the byte stream (Linux semantics): each
+    // send's FDs attach to the first data byte of that send, so a single recvmsg
+    // must never read across two sends' FD boundaries — otherwise the coalesced
+    // bytes deliver only the first send's FDs and libwayland demarshals later
+    // messages (e.g. wl_shm.create_pool) with a missing FD and kills the client.
+    let recv_idx: Option<usize> = 'ri: {
+        let fd_entry = match proc.fd_table.get(fd) {
+            Ok(e) => e,
+            _ => break 'ri None,
+        };
+        let ofd = match proc.ofd_table.get(fd_entry.ofd_ref.0) {
+            Some(o) if o.file_type == crate::ofd::FileType::Socket => o,
+            _ => break 'ri None,
+        };
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        match proc.sockets.get(sock_idx) {
+            Some(s) => s.recv_buf_idx,
+            None => break 'ri None,
+        }
+    };
+
+    // Cap the read at the next ancillary boundary (stream path only; MSG_PEEK
+    // does not consume bytes so it must not shift boundaries or claim FDs).
+    let is_peek = flags & wasm_posix_shared::socket::MSG_PEEK != 0;
+    let mut read_len = len;
+    let mut deliver_front = false;
+    if name_ptr == 0 && !is_peek {
+        if let Some(ridx) = recv_idx {
+            let pt = unsafe { crate::pipe::global_pipe_table() };
+            if let Some(p) = pt.get(ridx) {
+                if let Some(front_off) = p.front_ancillary_offset() {
+                    let read_pos = p.total_read();
+                    if front_off <= read_pos {
+                        // The FDs attach to the next byte to be read: deliver them,
+                        // but stop before the following send's data so its FDs are
+                        // not stranded (guarantees <= 1 send's FDs per recvmsg).
+                        deliver_front = true;
+                        if let Some(next_off) = p.next_ancillary_offset() {
+                            let cap = next_off.saturating_sub(read_pos) as usize;
+                            read_len = read_len.min(cap.max(1));
+                        }
+                    } else {
+                        // Plain data precedes the boundary: read up to it and
+                        // deliver nothing; the next recvmsg starts exactly at the
+                        // boundary with front_off == read_pos.
+                        let cap = front_off.saturating_sub(read_pos) as usize;
+                        read_len = read_len.min(cap);
+                    }
+                }
+            }
+        }
+    }
+
+    let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, read_len) };
 
     // Use recvfrom if msg_name is provided (to fill source address)
     let result = if name_ptr != 0 && name_len > 0 {
@@ -6623,40 +6717,41 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
         }
     };
 
-    // Check for SCM_RIGHTS ancillary data on the recv pipe.
-    // Pop ancillary data in a limited scope to avoid holding &mut pipe across
+    // Deliver SCM_RIGHTS ancillary data. On the stream path deliver the front
+    // group only when the read consumed the byte its FDs attach to
+    // (`deliver_front`); the datagram/recvfrom path keeps legacy single-group
+    // delivery. Pop in a limited scope so we don't hold &mut pipe across
     // install_scm_rights_fds (which modifies proc).
     let mut ancillary_delivered = false;
     if result > 0 {
-        let popped = 'pop: {
-            let recv_idx = {
-                let fd_entry = match proc.fd_table.get(fd) {
-                    Ok(e) => e,
-                    _ => break 'pop None,
-                };
-                let ofd = match proc.ofd_table.get(fd_entry.ofd_ref.0) {
-                    Some(o) if o.file_type == crate::ofd::FileType::Socket => o,
-                    _ => break 'pop None,
-                };
-                let sock_idx = (-(ofd.host_handle + 1)) as usize;
-                match proc.sockets.get(sock_idx) {
-                    Some(s) => s.recv_buf_idx,
-                    None => break 'pop None,
-                }
-            };
-            let recv_idx = match recv_idx {
-                Some(i) => i,
-                None => break 'pop None,
-            };
-            let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
-            match pipe {
-                Some(p) => p.pop_ancillary(),
-                None => None,
-            }
+        let should_pop = if name_ptr == 0 { deliver_front } else { true };
+        let popped = if should_pop {
+            recv_idx.and_then(|ridx| {
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(ridx) };
+                pipe.and_then(|p| p.pop_ancillary())
+            })
+        } else {
+            None
         };
 
         if let Some(in_flight) = popped {
+            // The channel held a refcount on each in-flight prime bo (taken in
+            // kernel_sendmsg). install_scm_rights_fds takes the receiver's OWN
+            // refcount for the new FD, so release the channel's ref now that the
+            // FD has been delivered. For a delivered bo the receiver's ref keeps
+            // it alive, so this decref never reaches 0; the gbm_bo_destroy guard
+            // is just correctness insurance.
+            let channel_bo_ids: Vec<u32> = in_flight
+                .iter()
+                .filter_map(|e| e.prime_bo.as_ref().map(|p| p.bo_id))
+                .collect();
             let new_fds = install_scm_rights_fds(proc, in_flight);
+            for bo_id in channel_bo_ids {
+                let rc = crate::dri::with_registry(|r| r.decref(bo_id));
+                if rc == Some(0) {
+                    host.gbm_bo_destroy(proc.pid as i32, bo_id);
+                }
+            }
             // Build cmsg response in msg_control buffer
             if control_ptr != 0 && control_len > 0 && !new_fds.is_empty() {
                 let cmsg_data_len = new_fds.len() * 4;
