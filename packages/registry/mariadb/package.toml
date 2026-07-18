@@ -17,6 +17,20 @@ url = "https://github.com/MariaDB/server/blob/10.5/COPYING"
 [build]
 script_path = "packages/registry/mariadb/build-mariadb.sh"
 
+# The first CMake stage builds native C/C++ generators. Use the Nix-aware
+# wrapper names rather than accepting raw LLVM binaries without host headers.
+[[host_tools]]
+name = "cc"
+version_constraint = ">=21.0"
+probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "c++"
+version_constraint = ">=21.0"
+probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
 [[outputs]]
 name = "mariadbd"
 wasm = "mariadbd.wasm"

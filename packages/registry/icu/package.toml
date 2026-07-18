@@ -41,13 +41,13 @@ script_path = "packages/registry/icu/build-icu.sh"
 # fallback also need the declared network/Rust tools. Keep these probes aligned
 # with the repository dev shell instead of accepting ambient host state.
 [[host_tools]]
-name = "clang"
+name = "cc"
 version_constraint = ">=21.0"
 probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]
-name = "clang++"
+name = "c++"
 version_constraint = ">=21.0"
 probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

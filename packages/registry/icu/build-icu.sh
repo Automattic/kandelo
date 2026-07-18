@@ -125,9 +125,12 @@ run_logged() {
 # ============================================================
 # Stage 1 — HOST build (native tools + data)
 # ============================================================
-# Uses the host compiler (clang/clang++ from the dev shell), NOT the wasm
-# wrappers. sdk/activate.sh only prepends SDK bin to PATH; it does not export
-# CC/CXX, so an explicit host CC/CXX keeps this stage native.
+# Uses the host compiler wrappers (`cc`/`c++` from the dev shell), NOT the wasm
+# wrappers. The wrapper names matter in Nix: they add the declared host SDK and
+# C++ standard-library paths, while a raw `clang++` earlier on PATH may not be
+# able to find headers such as `<memory>`. sdk/activate.sh only prepends SDK bin
+# to PATH; it does not export CC/CXX, so an explicit host CC/CXX keeps this
+# stage native.
 #
 # On Linux, statically fold the GNU C++/GCC runtime into the data tools: the Nix
 # CI runner has no libstdc++.so.6 on its loader path, so a dynamically linked
@@ -143,7 +146,7 @@ if [ ! -x "$HOST_BUILD/bin/icupkg" ] && [ ! -x "$HOST_BUILD/bin/genccode" ]; the
     rm -rf "$HOST_BUILD"
     mkdir -p "$HOST_BUILD"
     ( cd "$HOST_BUILD"
-      CC="${HOST_CC:-clang}" CXX="${HOST_CXX:-clang++}" \
+      CC="${HOST_CC:-cc}" CXX="${HOST_CXX:-c++}" \
       LDFLAGS="$HOST_LDFLAGS" \
         "$ICU_SRC/runConfigureICU" MacOSX \
             --enable-static --disable-shared \
