@@ -91,7 +91,20 @@ homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch
 It teaches Homebrew's parser that `wasm32` and `wasm64` are CPU architectures
 for `system: :kandelo`, maps the supported prefix and cellar, and makes the
 exact `/usr/bin/brew` guest alias retain the canonical prefix after resolving
-its direct symlink:
+its direct symlink. It also preserves an explicitly supplied GHCR repository
+path. Upstream Homebrew normally removes a repository's conventional
+`homebrew-` prefix even from an explicit `root_url`; that would silently turn
+the public `homebrew-tap-core/*` transport back into the private legacy
+`tap-core/*` namespace during bottle creation and guest Formula loading.
+Generated upstream roots retain their ordinary short-name behavior; only the
+explicit repository-rooted URL remains intact.
+
+Homebrew's upstream package uploader still derives its destination through the
+short-name helper. This patch protects bottle metadata creation and guest
+loading; production publication continues to use Kandelo's independently
+validated, credential-isolated OCI/ORAS transport described below.
+
+The supported prefix and cellar are:
 
 ```text
 /home/linuxbrew/.linuxbrew

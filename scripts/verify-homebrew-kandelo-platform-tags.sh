@@ -25,6 +25,8 @@ fi
 cp "$BREW_REPO/Library/Homebrew/hardware.rb" "$OVERLAY_ROOT/Library/Homebrew/hardware.rb"
 cp "$BREW_REPO/Library/Homebrew/extend/os/mac/utils/bottles.rb" \
   "$OVERLAY_ROOT/Library/Homebrew/extend/os/mac/utils/bottles.rb"
+cp "$BREW_REPO/Library/Homebrew/github_packages.rb" \
+  "$OVERLAY_ROOT/Library/Homebrew/github_packages.rb"
 cp "$BREW_REPO/Library/Homebrew/utils/bottles.rb" "$OVERLAY_ROOT/Library/Homebrew/utils/bottles.rb"
 cp "$BREW_REPO/bin/brew" "$OVERLAY_ROOT/bin/brew"
 

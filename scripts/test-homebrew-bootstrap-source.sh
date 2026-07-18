@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PREPARE="$ROOT/scripts/prepare-homebrew-bootstrap-source.sh"
 PATCH_FILE="$ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
-PATCH_SHA256="288602a306b7a045b53f57aa83d7da6eecff407a16b0c3f3840e51cd3a91be5e"
+PATCH_SHA256="9c52238d811616c210cd1ecdd23b0192a3e0333219a70b34d8ea6d77dbcfbf74"
 BREW_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_BREW_REPOSITORY:-https://github.com/Homebrew/brew.git}"
 BREW_REVISION="21aba0bc7080a75753f01c06d2358ca27706bfeb"
 TAP_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_TAP_REPOSITORY:-https://github.com/kandelo-dev/homebrew-tap-core.git}"

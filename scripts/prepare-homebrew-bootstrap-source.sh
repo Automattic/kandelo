@@ -160,6 +160,7 @@ mapfile -t CHANGED_PATHS < <(
 )
 EXPECTED_PATHS=(
     "Library/Homebrew/extend/os/mac/utils/bottles.rb"
+    "Library/Homebrew/github_packages.rb"
     "Library/Homebrew/hardware.rb"
     "Library/Homebrew/utils/bottles.rb"
     "bin/brew"

@@ -1556,6 +1556,16 @@ def check_publisher(workflow)
   check(!platform_patch.include?("KandeloPublisher") &&
         !platform_patch.include?("add_global_deps_to_spec"),
         "guest Homebrew platform patch suppresses Linux global dependencies")
+  [
+    "diff --git a/Library/Homebrew/github_packages.rb b/Library/Homebrew/github_packages.rb",
+    "# An explicit repository-rooted package path is not a generated tap name.",
+    '"#{URL_PREFIX}#{org.downcase}/#{repo}"',
+  ].each do |fragment|
+    check(platform_patch.include?(fragment),
+          "guest Homebrew platform patch lacks repository-root preservation: #{fragment}")
+  end
+  check(platform_patch.include?("-    root_url(org, repo)"),
+        "guest Homebrew platform patch does not replace upstream GHCR root shortening")
   bootstrap_builder = File.read(File.join(REPO_ROOT, "scripts/build-homebrew-bootstrap.sh"))
   check(!bootstrap_builder.include?(publisher_isolation_patch_path),
         "guest Homebrew bootstrap applies the publisher-only isolation patch")

@@ -4,17 +4,21 @@ overlay = ARGV.shift || ENV["HOMEBREW_KANDELO_OVERLAY"]
 if overlay && !overlay.empty?
   Utils.send(:remove_const, :Bottles) if defined?(Utils::Bottles)
   Object.send(:remove_const, :Hardware) if defined?(Hardware)
+  Object.send(:remove_const, :GitHubPackages) if defined?(GitHubPackages)
 
   load File.join(overlay, "hardware.rb")
   load File.join(overlay, "utils/bottles.rb")
   mac_bottles = File.join(overlay, "extend/os/mac/utils/bottles.rb")
   load mac_bottles if File.exist?(mac_bottles)
+  load File.join(overlay, "github_packages.rb")
 else
   require "hardware"
   require "utils/bottles"
+  require "github_packages"
 end
 
 require "bottle_specification"
+require "bottle"
 
 def assert(condition, label)
   raise label unless condition
@@ -70,4 +74,52 @@ assert(stored_tags.include?(:wasm64_kandelo), "formula DSL stores wasm64_kandelo
 assert(!stored_tags.include?(:x86_64_wasm32_kandelo), "formula DSL does not synthesize x86_64_wasm32_kandelo")
 assert(!stored_tags.include?(:x86_64_wasm64_kandelo), "formula DSL does not synthesize x86_64_wasm64_kandelo")
 
-puts "Kandelo Homebrew platform tags round-trip"
+assert_equal(
+  "https://ghcr.io/v2/kandelo-dev/tap-core",
+  GitHubPackages.root_url("Kandelo-dev", "homebrew-tap-core"),
+  "generated Homebrew package root remains canonical",
+)
+repository_root = "https://ghcr.io/v2/Kandelo-dev/homebrew-tap-core"
+normalized_repository_root = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+assert_equal(
+  normalized_repository_root,
+  GitHubPackages.root_url_if_match(repository_root),
+  "explicit GitHub package repository root retains homebrew prefix",
+)
+canonical_tap_root = "https://ghcr.io/v2/kandelo-dev/tap-core"
+assert_equal(
+  canonical_tap_root,
+  GitHubPackages.root_url_if_match(canonical_tap_root),
+  "explicit canonical tap root remains unchanged",
+)
+repository_spec = BottleSpecification.new
+repository_spec.root_url(repository_root)
+assert_equal(
+  normalized_repository_root,
+  repository_spec.root_url,
+  "Formula bottle metadata retains explicit repository root",
+)
+bottle_digest = "a" * 64
+repository_spec.sha256(
+  cellar: :any_skip_relocation,
+  wasm32_kandelo: bottle_digest,
+)
+repository_bottle = Bottle.new(
+  nil,
+  repository_spec,
+  Utils::Bottles::Tag.from_symbol(:wasm32_kandelo),
+  name: "zlib",
+  pkg_version: PkgVersion.parse("1.3.1"),
+)
+assert_equal(
+  "#{normalized_repository_root}/zlib/blobs/sha256:#{bottle_digest}",
+  repository_bottle.url,
+  "repository-rooted bottle blob URL",
+)
+assert_equal(
+  CurlGitHubPackagesDownloadStrategy,
+  repository_bottle.resource.download_strategy,
+  "repository-rooted bottle download strategy",
+)
+
+puts "Kandelo Homebrew platform tags and package roots round-trip"
