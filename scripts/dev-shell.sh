@@ -69,6 +69,10 @@ nix_develop=(
     --keep INPUT_SKIP_TESTS \
     --keep INPUT_BUMP_LOCKFILE \
     --keep GH_TOKEN \
+    --keep GHCR_AUTH_MODE \
+    --keep GHCR_REQUIRE_PAT \
+    --keep GHCR_USER \
+    --keep GHCR_DESTINATION_MODE \
     --keep GITHUB_REPOSITORY \
     --keep GITHUB_ACTOR \
     --keep GITHUB_REF \

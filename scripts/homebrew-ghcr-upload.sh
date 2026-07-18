@@ -13,6 +13,7 @@ AUTH_DIR=""
 AUTH_CONFIG=""
 WORK_DIR=""
 REGISTRY_USER=""
+DESTINATION_MODE="${GHCR_DESTINATION_MODE:-tap}"
 
 cleanup() {
   [ -z "$AUTH_DIR" ] || rm -rf "$AUTH_DIR"
@@ -31,6 +32,11 @@ actor. When GHCR hides an absent reference behind an anonymous authorization
 failure, write mode uses isolated ORAS credentials only to distinguish missing
 from present. It never evaluates Formula Ruby or constructs registry metadata
 while credentials are present.
+
+GHCR_DESTINATION_MODE=repository-canary is a first-party visibility experiment.
+It keeps the canonical Homebrew identity in the immutable layout but transports
+one child to the exact tap-repository namespace. The mode requires GITHUB_TOKEN
+authentication, an absent destination package, and anonymous digest readback.
 EOF
 }
 
@@ -121,7 +127,7 @@ if ! [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
   exit 2
 fi
 
-REMOTE="ghcr.io/${TAP_NAME}/${FORMULA}"
+NORMALIZED_TAP_REPOSITORY="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 auth_parent="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 
 validate_auth_contract() {
@@ -132,6 +138,27 @@ validate_auth_contract() {
     pat|github-token|automatic) ;;
     *)
       echo "homebrew-ghcr-upload.sh: GHCR auth mode is invalid" >&2
+      exit 2
+      ;;
+  esac
+  case "$DESTINATION_MODE" in
+    tap) ;;
+    repository-canary)
+      if [ "$auth_mode" != github-token ] || [ "$require_pat" != false ]; then
+        echo "homebrew-ghcr-upload.sh: repository canary requires GitHub-token authentication" >&2
+        exit 2
+      fi
+      if [ "$DRY_RUN" = 1 ] || [ "$KIND" != child ]; then
+        echo "homebrew-ghcr-upload.sh: repository canary requires a write-mode child upload" >&2
+        exit 2
+      fi
+      if [ "$NORMALIZED_TAP_REPOSITORY" != kandelo-dev/homebrew-tap-core ]; then
+        echo "homebrew-ghcr-upload.sh: repository canary is restricted to the protected Kandelo tap" >&2
+        exit 2
+      fi
+      ;;
+    *)
+      echo "homebrew-ghcr-upload.sh: GHCR destination mode is invalid" >&2
       exit 2
       ;;
   esac
@@ -172,6 +199,11 @@ validate_auth_contract() {
 }
 
 validate_auth_contract
+
+case "$DESTINATION_MODE" in
+  tap) REMOTE="ghcr.io/${TAP_NAME}/${FORMULA}" ;;
+  repository-canary) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;
+esac
 
 WORK_DIR="$(mktemp -d "$auth_parent/kandelo-homebrew-preflight.XXXXXX")"
 anonymous_config="$WORK_DIR/anonymous.json"
@@ -270,7 +302,22 @@ visibility_boundary() {
 }
 
 anonymous_fetch preflight
-if [ "$remote_status" = auth-required ] && [ "$DRY_RUN" != 1 ]; then
+if [ "$DESTINATION_MODE" = repository-canary ]; then
+  [ "$remote_status" != present ] || {
+    echo "homebrew-ghcr-upload.sh: repository canary requires an absent destination package" >&2
+    exit 1
+  }
+  ensure_authenticated_config
+  authenticated_repository_fetch canary-preflight
+  [ "$repository_status" = missing ] || {
+    echo "homebrew-ghcr-upload.sh: repository canary requires an absent destination package" >&2
+    exit 1
+  }
+  # A missing package necessarily has no destination tag. Normalize the hidden
+  # anonymous result so the ordinary immutable child upload path runs once.
+  remote_status=missing
+  REMOTE_DIGEST=null
+elif [ "$remote_status" = auth-required ] && [ "$DRY_RUN" != 1 ]; then
   authenticated_fetch preflight
   if [ "$remote_status" = present ]; then
     visibility_boundary
@@ -350,6 +397,11 @@ elif [ "$status" = uploaded ]; then
     echo "homebrew-ghcr-upload.sh: uploaded reference did not become anonymously readable" >&2
     exit 1
   fi
+fi
+
+if [ "$DESTINATION_MODE" = repository-canary ] && [ "$status" != uploaded ]; then
+  echo "homebrew-ghcr-upload.sh: repository canary did not create a new package" >&2
+  exit 1
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then

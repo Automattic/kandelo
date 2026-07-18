@@ -829,6 +829,14 @@ case "${1:-}" in
         ghcr-missing-private:manifest:authenticated:2) mode=missing ;;
         ghcr-missing-private:repo:authenticated:3) mode=repository-missing ;;
         ghcr-missing-private:manifest:anonymous:4) mode=private ;;
+        ghcr-canary-missing-present:manifest:anonymous:1) mode=private ;;
+        ghcr-canary-missing-present:repo:authenticated:2) mode=repository-missing ;;
+        ghcr-canary-missing-present:manifest:anonymous:3) mode=present ;;
+        ghcr-canary-existing:manifest:anonymous:1) mode=missing ;;
+        ghcr-canary-existing:repo:authenticated:2) mode=repository-present ;;
+        ghcr-canary-missing-private:manifest:anonymous:1) mode=private ;;
+        ghcr-canary-missing-private:repo:authenticated:2) mode=repository-missing ;;
+        ghcr-canary-missing-private:manifest:anonymous:3) mode=private ;;
         *) exit 2 ;;
       esac
     elif [[ "$mode" == *-* ]]; then
@@ -1075,6 +1083,110 @@ grep -E '^login ghcr.io .* -u tester --password-stdin$' "$ORAS_LOG" >/dev/null |
 }
 ! grep -E '^login ghcr.io .* -u package-bot --password-stdin$' "$ORAS_LOG" >/dev/null || {
   echo "GitHub-token mode reused the PAT owner identity" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-canary-missing-present \
+  ORAS_STATE="$TMP_ROOT/repository-canary-oras-state" \
+  ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+  KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
+  PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+  GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false \
+  GHCR_DESTINATION_MODE=repository-canary \
+  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+    --layout "$TMP_ROOT/child32/layout" \
+    --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --out-json "$TMP_ROOT/child32/repository-canary-upload.json" >/dev/null
+jq -e '
+  .tap_name == "kandelo-dev/tap-core" and
+  .publication.remote == "ghcr.io/kandelo-dev/homebrew-tap-core/hello" and
+  .publication.status == "uploaded" and
+  .publication.public_readback_digest == .publication.digest
+' "$TMP_ROOT/child32/repository-canary-upload.json" >/dev/null
+grep -F 'ghcr.io/kandelo-dev/homebrew-tap-core/hello:sha256-' "$ORAS_LOG" >/dev/null || {
+  echo "repository canary did not use the exact repository-rooted destination" >&2
+  exit 1
+}
+grep -E '^login ghcr.io .* -u tester --password-stdin$' "$ORAS_LOG" >/dev/null || {
+  echo "repository canary did not use the Actions actor" >&2
+  exit 1
+}
+! grep -F 'test-token' "$ORAS_LOG" >/dev/null || {
+  echo "repository canary credential appeared in ORAS arguments or logs" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure repository-canary-pat \
+  "repository canary requires GitHub-token authentication" \
+  env ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token \
+    GITHUB_ACTOR=tester GHCR_AUTH_MODE=pat GHCR_REQUIRE_PAT=true \
+    GHCR_USER=package-bot GHCR_DESTINATION_MODE=repository-canary \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello --out-json "$TMP_ROOT/repository-canary-pat.json"
+[ ! -s "$ORAS_LOG" ] || {
+  echo "PAT-backed repository canary reached ORAS" >&2
+  exit 1
+}
+
+expect_failure repository-canary-third-party \
+  "repository canary is restricted to the protected Kandelo tap" \
+  env ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token \
+    GITHUB_ACTOR=tester GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false \
+    GHCR_DESTINATION_MODE=repository-canary \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/generic32/layout" \
+      --layout-receipt "$TMP_ROOT/generic32/receipt.json" \
+      --tap-repository Acme/homebrew-tools --tap-name Acme/tools \
+      --formula hello --out-json "$TMP_ROOT/repository-canary-third-party.json"
+[ ! -s "$ORAS_LOG" ] || {
+  echo "third-party repository canary reached ORAS" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+expect_failure repository-canary-existing \
+  "repository canary requires an absent destination package" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-canary-existing \
+    ORAS_STATE="$TMP_ROOT/repository-canary-existing-state" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false \
+    GHCR_DESTINATION_MODE=repository-canary \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello --out-json "$TMP_ROOT/repository-canary-existing.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "existing repository canary package reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure repository-canary-private \
+  "authorized owner must make the GHCR package public" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-canary-missing-private \
+    ORAS_STATE="$TMP_ROOT/repository-canary-private-state" \
+    KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false \
+    GHCR_DESTINATION_MODE=repository-canary \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello --out-json "$TMP_ROOT/repository-canary-private.json"
+grep -F 'ghcr.io/kandelo-dev/homebrew-tap-core/hello:sha256-' "$ORAS_LOG" >/dev/null || {
+  echo "private repository canary did not upload before the visibility boundary" >&2
   exit 1
 }
 assert_logged_auth_configs_retired

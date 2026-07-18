@@ -10,6 +10,9 @@ require "yaml"
 REPO_ROOT = File.expand_path("..", __dir__)
 PUBLISHER_PATH = File.join(REPO_ROOT, ".github/workflows/reusable-homebrew-bottle-publish.yml")
 MAINTENANCE_PATH = File.join(REPO_ROOT, ".github/workflows/reusable-homebrew-bottle-maintenance.yml")
+REPOSITORY_CANARY_PATH = File.join(
+  REPO_ROOT, ".github/workflows/reusable-homebrew-repository-namespace-canary.yml"
+)
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
@@ -25,6 +28,7 @@ PUBLISHER_VERIFY_DIGEST = "a6077aa35c272afcc1e3670a9ef58cb999eb447d4ddd81b551a5b
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
+REPOSITORY_CANARY_STEPS_DIGEST = "460f99aac539a0b58a0a0967d6bb6f7859e4ce718a1da32c201c9f59d5b7d3bc"
 
 def check(condition, message)
   raise message unless condition
@@ -392,6 +396,108 @@ def check_tap_callers
       "deletion-reason" => "${{ github.event.client_payload.deletion_reason || '' }}",
     },
   )
+end
+
+def check_repository_canary(workflow)
+  top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_keys == %w[jobs name on],
+        "repository namespace canary has unexpected top-level configuration")
+  check(workflow["name"] == "Reusable Homebrew repository namespace canary",
+        "repository namespace canary name changed")
+
+  events = workflow_events(workflow)
+  check(events == {
+    "workflow_call" => {
+      "inputs" => {
+        "kandelo-ref" => { "type" => "string", "required" => true },
+      },
+    },
+  }, "repository namespace canary workflow_call contract changed")
+  check(!workflow.key?("permissions"),
+        "repository namespace canary requests workflow-wide permissions")
+  check_common(workflow, "repository namespace canary")
+
+  jobs = workflow_jobs(workflow)
+  check(jobs.keys == ["canary"], "repository namespace canary job set changed")
+  job = jobs.fetch("canary")
+  check(job.keys.sort == %w[permissions runs-on steps timeout-minutes] &&
+        job["runs-on"] == "ubuntu-latest" && job["timeout-minutes"] == 30 &&
+        exact_permissions?(job["permissions"], {
+          "actions" => "read", "contents" => "read", "packages" => "write",
+        }), "repository namespace canary authority changed")
+
+  steps = job_steps(job, "repository namespace canary")
+  check(contract_digest(steps) == REPOSITORY_CANARY_STEPS_DIGEST,
+        "repository namespace canary step contract changed")
+  check(values_for_key(workflow, "uses") == [
+    CHECKOUT_ACTION, NIX_ACTION, DOWNLOAD_ACTION, UPLOAD_ACTION,
+  ], "repository namespace canary action set or pins changed")
+
+  trust = named_step(steps, "Validate exact canary caller")
+  check(trust["env"] == {
+    "CALLER_ACTION" => "${{ github.event.action }}",
+    "CALLER_EVENT_NAME" => "${{ github.event_name }}",
+    "CALLER_REF" => "${{ github.ref }}",
+    "CALLER_REPOSITORY" => "${{ github.repository }}",
+    "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
+    "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
+  }, "repository namespace canary caller context changed")
+  [
+    "kandelo-dev/homebrew-tap-core",
+    "refs/heads/main",
+    "repository_dispatch",
+    "test-repository-rooted-ghcr-package",
+    "repository-namespace-canary.yml@refs/heads/main",
+    '[[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]]',
+  ].each do |fragment|
+    check(trust.fetch("run").include?(fragment),
+          "repository namespace canary caller validation lacks #{fragment}")
+  end
+
+  checkout = named_step(steps, "Checkout exact Kandelo canary source")
+  check(checkout["uses"] == CHECKOUT_ACTION && checkout["with"] == {
+    "persist-credentials" => false,
+    "repository" => "Automattic/kandelo",
+    "ref" => "${{ inputs.kandelo-ref }}",
+    "path" => "kandelo",
+    "submodules" => false,
+  }, "repository namespace canary checkout changed")
+
+  download = named_step(steps, "Download exact GITHUB_TOKEN zlib control artifact")
+  check(download["uses"] == DOWNLOAD_ACTION && download["with"] == {
+    "name" => "homebrew-oci-child-zlib-wasm32-attempt-1",
+    "path" => "${{ runner.temp }}/homebrew-repository-namespace-canary",
+    "github-token" => "${{ github.token }}",
+    "repository" => "Kandelo-dev/homebrew-tap-core",
+    "run-id" => 29628202419,
+  }, "repository namespace canary control artifact changed")
+
+  upload = named_step(steps, "Create exact repository-rooted package with GITHUB_TOKEN")
+  check(upload["env"] == {
+    "GH_TOKEN" => "${{ github.token }}",
+    "GHCR_AUTH_MODE" => "github-token",
+    "GHCR_REQUIRE_PAT" => "false",
+    "GHCR_DESTINATION_MODE" => "repository-canary",
+  }, "repository namespace canary authentication changed")
+  [
+    "scripts/homebrew-ghcr-upload.sh",
+    "--tap-repository kandelo-dev/homebrew-tap-core",
+    "--tap-name kandelo-dev/tap-core",
+    "--formula zlib",
+  ].each do |fragment|
+    check(upload.fetch("run").include?(fragment),
+          "repository namespace canary upload lacks #{fragment}")
+  end
+
+  credential_names = %w[
+    GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN
+    HOMEBREW_DOCKER_REGISTRY_TOKEN
+  ]
+  credential_steps = steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(credential_steps == [upload],
+        "repository namespace canary credentials escape the upload step")
 end
 
 def check_publisher(workflow)
@@ -2797,7 +2903,7 @@ def mutate_named_step(workflow, job_name, step_name)
   step
 end
 
-def self_test(publisher, maintenance)
+def self_test(publisher, maintenance, repository_canary)
   fixture = YAML.safe_load(<<~YAML, aliases: false)
     on:
       workflow_dispatch: {}
@@ -2811,6 +2917,32 @@ def self_test(publisher, maintenance)
   YAML
   check(workflow_events(fixture).key?("workflow_dispatch"), "self-test missed workflow_dispatch")
   expect_rejection("mutable action and cache state") { check_common(fixture, "fixture") }
+
+  {
+    "repository canary PAT authentication" => lambda { |w|
+      mutate_named_step(w, "canary", "Create exact repository-rooted package with GITHUB_TOKEN")
+        .fetch("env")["GHCR_AUTH_MODE"] = "pat"
+    },
+    "repository canary mutable source" => lambda { |w|
+      mutate_named_step(w, "canary", "Checkout exact Kandelo canary source")
+        .fetch("with")["ref"] = "main"
+    },
+    "repository canary different control run" => lambda { |w|
+      mutate_named_step(w, "canary", "Download exact GITHUB_TOKEN zlib control artifact")
+        .fetch("with")["run-id"] = 1
+    },
+    "repository canary secret injection" => lambda { |w|
+      workflow_events(w).fetch("workflow_call")["secrets"] = {
+        "TOKEN" => { "required" => true },
+      }
+    },
+  }.each do |label, mutation|
+    expect_rejection(label) do
+      mutated = deep_copy(repository_canary)
+      mutation.call(mutated)
+      check_repository_canary(mutated)
+    end
+  end
 
   sidecar_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-generate-sidecars-from-env.sh"))
   fingerprint_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-sysroot-fingerprint.sh"))
@@ -3425,10 +3557,12 @@ end
 begin
   publisher = load_workflow(PUBLISHER_PATH)
   maintenance = load_workflow(MAINTENANCE_PATH)
-  self_test(publisher, maintenance)
+  repository_canary = load_workflow(REPOSITORY_CANARY_PATH)
+  self_test(publisher, maintenance, repository_canary)
   check_publisher(publisher)
   check_caller_validation_behavior(publisher)
   check_maintenance(maintenance)
+  check_repository_canary(repository_canary)
   check_tap_callers
   puts "check-homebrew-publish-workflow-trust.rb: ok"
 rescue KeyError, Psych::Exception, RuntimeError => e

@@ -468,6 +468,29 @@ requires the PAT and maps it from the repository secret
 `HOMEBREW_GITHUB_PACKAGES_USER`. Maintenance rebuilds deliberately retain
 `github.token` during this experiment.
 
+The repository-namespace visibility canary is a separate, one-shot transport
+path; it is not an alternate bottle-root contract. Its exact reviewed caller
+on `Kandelo-dev/homebrew-tap-core@main` receives only the caller repository's
+`github.token` and passes no package PAT secret. The canary downloads the
+immutable zlib OCI child produced by Actions run `29628202419`, artifact
+`homebrew-oci-child-zlib-wasm32-attempt-1`, and revalidates its pinned source,
+bottle, and manifest digests. That layout retains the canonical Homebrew tap
+identity and bottle URL under `kandelo-dev/tap-core`; only its registry
+transport destination changes from `ghcr.io/kandelo-dev/tap-core/zlib` to
+`ghcr.io/kandelo-dev/homebrew-tap-core/zlib`. The uploader derives that
+alternate destination from the already validated tap repository rather than
+accepting a URL.
+
+To prove first-package creation rather than reuse of existing public state, the
+canary authenticates only long enough to require that the destination package
+repository itself is absent before copying the child. It then retires the
+credential state and requires an anonymous readback of the exact manifest
+digest. PAT or automatic auth, dry-run or index uploads, third-party tap
+repositories, pre-existing destination packages, and non-public readback all
+fail closed. The canary stops after the immutable child upload: it does not
+publish the mutable version index, verify a release, edit Formulae, generate
+sidecars, or record a tap failure report.
+
 After a read-only planning job resolves the immutable Kandelo commit, tap
 commit, ABI namespace, derived bottle root, and formula matrix, each
 `(formula, arch)` entry crosses five separate runner roles. OCI child uploads
@@ -628,7 +651,10 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    existing descriptor, an unclassified response, or an authorization failure
    stops before transport. A directly anonymous missing response is already
    public evidence that the destination tag is absent and does not need that
-   private-state disambiguation. The uploader copies only the validated child
+   private-state disambiguation during ordinary publication. The one-shot
+   repository-namespace canary is stricter: it always requires an authenticated
+   missing-repository result so an existing public package with a new tag cannot
+   produce a false positive. The uploader copies only the validated child
    layout to its content-derived tag, retires the isolated ORAS authentication
    state, and requires an anonymous exact-digest readback. Its only output is a
    strict data receipt binding the canonical layout receipt to that public

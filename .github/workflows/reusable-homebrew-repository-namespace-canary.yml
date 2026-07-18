@@ -1,0 +1,162 @@
+name: Reusable Homebrew repository namespace canary
+
+on:
+  workflow_call:
+    inputs:
+      kandelo-ref:
+        type: string
+        required: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - name: Validate exact canary caller
+        shell: bash
+        env:
+          CALLER_ACTION: ${{ github.event.action }}
+          CALLER_EVENT_NAME: ${{ github.event_name }}
+          CALLER_REF: ${{ github.ref }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+        run: |
+          set -euo pipefail
+          normalized_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          [ "$normalized_repository" = kandelo-dev/homebrew-tap-core ] || {
+            echo "::error::repository namespace canary is restricted to the protected Kandelo tap"; exit 2;
+          }
+          [ "$CALLER_REF" = refs/heads/main ] || {
+            echo "::error::repository namespace canary requires tap main"; exit 2;
+          }
+          [ "$CALLER_EVENT_NAME" = repository_dispatch ] &&
+            [ "$CALLER_ACTION" = test-repository-rooted-ghcr-package ] || {
+            echo "::error::repository namespace canary requires its reviewed dispatch event"; exit 2;
+          }
+          [ "$CALLER_WORKFLOW_REF" = \
+            "$CALLER_REPOSITORY/.github/workflows/repository-namespace-canary.yml@refs/heads/main" ] || {
+            echo "::error::repository namespace canary requires its reviewed caller workflow"; exit 2;
+          }
+          [[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::repository namespace canary requires an exact Kandelo commit"; exit 2;
+          }
+
+      - name: Checkout exact Kandelo canary source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: Automattic/kandelo
+          ref: ${{ inputs.kandelo-ref }}
+          path: kandelo
+          submodules: false
+
+      - name: Verify exact Kandelo canary source
+        shell: bash
+        env:
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+        run: |
+          set -euo pipefail
+          [ "$(git -C kandelo rev-parse HEAD)" = "$KANDELO_REF" ] || {
+            echo "::error::repository namespace canary source differs from its reviewed commit"; exit 2;
+          }
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Warm Kandelo dev shell
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh true
+
+      - name: Download exact GITHUB_TOKEN zlib control artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-oci-child-zlib-wasm32-attempt-1
+          path: ${{ runner.temp }}/homebrew-repository-namespace-canary
+          github-token: ${{ github.token }}
+          repository: Kandelo-dev/homebrew-tap-core
+          run-id: 29628202419
+
+      - name: Validate immutable zlib control artifact without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::credential-free canary validator received $secret_name"; exit 2;
+            }
+          done
+          artifact="$RUNNER_TEMP/homebrew-repository-namespace-canary"
+          cd kandelo
+          bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py validate-child \
+            --layout "$artifact/layout" --receipt "$artifact/receipt.json"
+          jq -e '
+            .schema == 2 and .kind == "child" and
+            .formula == "zlib" and .arch == "wasm32" and
+            .tap_repository == "kandelo-dev/homebrew-tap-core" and
+            .tap_name == "kandelo-dev/tap-core" and
+            .tap_commit == "251842db9c780a021d817d337532141b078ebaf4" and
+            .kandelo_commit == "129887dcaafcac304d25f3a89f7afb97b09dcd06" and
+            .bottle.sha256 == "9bf367f25489dd76ece8a29317316149d51a63ce4b6a8c10b591d4ca18b6a1e8" and
+            .oci.manifest.digest == "sha256:7d21ffd3055e1b6ec1187a622a39196e9d585a9de6e87b4ce28fc2e9ee561feb" and
+            .oci.transport_tag == "sha256-7d21ffd3055e1b6ec1187a622a39196e9d585a9de6e87b4ce28fc2e9ee561feb"
+          ' "$artifact/receipt.json" >/dev/null
+
+      - name: Create exact repository-rooted package with GITHUB_TOKEN
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_AUTH_MODE: github-token
+          GHCR_REQUIRE_PAT: "false"
+          GHCR_DESTINATION_MODE: repository-canary
+        run: |
+          set -euo pipefail
+          artifact="$RUNNER_TEMP/homebrew-repository-namespace-canary"
+          receipt="$RUNNER_TEMP/homebrew-repository-namespace-canary-result/receipt.json"
+          cd kandelo
+          bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh \
+            --layout "$artifact/layout" \
+            --layout-receipt "$artifact/receipt.json" \
+            --tap-repository kandelo-dev/homebrew-tap-core \
+            --tap-name kandelo-dev/tap-core \
+            --formula zlib \
+            --out-json "$receipt"
+
+      - name: Validate public canary receipt without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::credential-free canary receipt validator received $secret_name"; exit 2;
+            }
+          done
+          receipt="$RUNNER_TEMP/homebrew-repository-namespace-canary-result/receipt.json"
+          jq -e '
+            .schema == 3 and .kind == "child" and .formula == "zlib" and
+            .tap_repository == "kandelo-dev/homebrew-tap-core" and
+            .tap_name == "kandelo-dev/tap-core" and
+            .publication.remote == "ghcr.io/kandelo-dev/homebrew-tap-core/zlib" and
+            .publication.reference == "sha256-7d21ffd3055e1b6ec1187a622a39196e9d585a9de6e87b4ce28fc2e9ee561feb" and
+            .publication.digest == "sha256:7d21ffd3055e1b6ec1187a622a39196e9d585a9de6e87b4ce28fc2e9ee561feb" and
+            .publication.status == "uploaded" and
+            .publication.public_readback_digest == .publication.digest
+          ' "$receipt" >/dev/null
+
+      - name: Upload public canary receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-repository-namespace-canary-result
+          path: ${{ runner.temp }}/homebrew-repository-namespace-canary-result/receipt.json
+          if-no-files-found: error
+          retention-days: 14

@@ -14,6 +14,37 @@ fail() {
   exit 1
 }
 
+assert_ghcr_auth_env_crosses_dev_shell() {
+  local capture="$TMPDIR/ghcr-dev-shell-env.txt" nix_bin
+
+  nix_bin="$(command -v nix || true)"
+  if [ -z "$nix_bin" ]; then
+    for candidate in /nix/var/nix/profiles/default/bin/nix "$HOME/.nix-profile/bin/nix"; do
+      if [ -x "$candidate" ]; then
+        nix_bin="$candidate"
+        break
+      fi
+    done
+  fi
+  [ -n "$nix_bin" ] || fail "cannot exercise the GHCR dev-shell boundary without Nix"
+
+  PATH="$(dirname "$nix_bin"):$PATH" \
+    GHCR_AUTH_MODE=pat \
+    GHCR_REQUIRE_PAT=true \
+    GHCR_USER=package-bot \
+    GHCR_DESTINATION_MODE=repository-canary \
+    bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+      printf "%s\n%s\n%s\n%s\n" \
+        "${GHCR_AUTH_MODE:-}" \
+        "${GHCR_REQUIRE_PAT:-}" \
+        "${GHCR_USER:-}" \
+        "${GHCR_DESTINATION_MODE:-}" >"$1"
+    ' bash "$capture"
+
+  [ "$(cat "$capture")" = $'pat\ntrue\npackage-bot\nrepository-canary' ] ||
+    fail "dev shell did not preserve the reviewed GHCR transport contract"
+}
+
 FORMULA_RUNNER_FIXTURE_ROOT="$TMPDIR/formula-runner-root"
 
 make_formula_runner_fixture() {
@@ -4572,6 +4603,7 @@ EOF
 }
 
 make_formula_runner_fixture
+assert_ghcr_auth_env_crosses_dev_shell
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
