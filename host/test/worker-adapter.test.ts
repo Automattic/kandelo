@@ -10,7 +10,7 @@ import {
 describe("MockWorkerAdapter", () => {
   it("should create a worker handle and capture workerData", () => {
     const adapter = new MockWorkerAdapter();
-    const data = { type: "init", pid: 1 };
+    const data = { type: "init", pid: 100 };
     const handle = adapter.createWorker(data);
     expect(handle).toBeDefined();
     expect(adapter.lastWorker).not.toBeNull();
@@ -22,9 +22,9 @@ describe("MockWorkerAdapter", () => {
     const handle = adapter.createWorker({});
     const messages: unknown[] = [];
     handle.on("message", (msg) => messages.push(msg));
-    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 1 });
+    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 100 });
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toEqual({ type: "ready", pid: 1 });
+    expect(messages[0]).toEqual({ type: "ready", pid: 100 });
   });
 
   it("should dispatch error events to registered handlers", () => {

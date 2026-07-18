@@ -187,6 +187,7 @@ _Noreturn void kernel_exit(int32_t status);
  * fork callers, not every function that makes any syscall. */
 
 void __fork_handler(int);
+void __wasm_posix_after_fork_child(void);
 
 /* _Fork/fork/vfork MUST NOT be inlined. wasm-fork-instrument discovers
  * the call chain around kernel_fork. At -O2, LLVM inlines these wrappers into every caller
@@ -205,6 +206,9 @@ int _Fork(void)
     if (ret < 0) {
         *__errno_location() = (int)(-ret);
         return -1;
+    }
+    if (ret == 0) {
+        __wasm_posix_after_fork_child();
     }
     return (int)ret;
 }

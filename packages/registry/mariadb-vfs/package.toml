@@ -12,7 +12,7 @@ kernel_abi = 7
 #     to bake `/bin/dash` + `/bin/sh` symlink for dinit's scripted bootstrap services
 #   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()` (strict —
 #     throws if neither tryResolveBinary nor the source-tree path resolves)
-#     to bake `/sbin/dinit` + `/sbin/dinitctl` (PID 1 for the service tree).
+#     to bake `/sbin/dinit` + `/sbin/dinitctl` as the service supervisor.
 # Without these declarations a clean source-build (e.g., during manual
 # force-rebuild) fails. Folds each prereq's cache_key into ours so any
 # bump invalidates the mariadb-vfs cache.

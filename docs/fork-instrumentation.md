@@ -167,8 +167,11 @@ though their buffer headers are distinct.
 For `fork()` from a pthread worker, the host must preserve the pthread entry
 context as well as the buffer:
 
-- `CentralizedKernelWorker.addChannel(pid, offset, tid, fnPtr, argPtr)` records
-  the pthread entry table index and userdata for each thread channel.
+- `CentralizedKernelWorker` creates a host-side, one-shot
+  `ThreadChannelAttachment` bound to the kernel's exact clone result.
+  `attachThreadChannel(attachment, offset)` records that kernel-assigned
+  identity, pthread entry table index, and userdata for the thread channel;
+  host code cannot provide or substitute a PID/TID.
 - `centralizedThreadWorkerMain` overrides `kernel_fork` for instrumented modules
   and drives `wpk_fork_unwind_begin` / `wpk_fork_state` /
   `wpk_fork_rewind_begin` around the pthread function, using

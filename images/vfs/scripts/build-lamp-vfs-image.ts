@@ -1,7 +1,7 @@
 /**
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
- * browser demo. The image starts from shell.vfs.zst, then dinit (PID 1)
- * brings up the full stack:
+ * browser demo. The image starts from shell.vfs.zst, then dinit, the first
+ * user process, brings up the full stack:
  *
  *   mariadb           (process)  — starts from a build-time-initialized /data
  *   wp-config-init    (internal) — dependency marker. The browser host writes
@@ -281,9 +281,9 @@ const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin E
 # Background it, watch for the canonical "bootstrap done" marker (the
 # \`wordpress\` database directory created by the LAST statement in
 # bootstrap.sql), then kill mariadbd. Falls back to a 60s safety cap
-# if the marker never lands. **No \`wait\`** — dinit (PID 1) reaps
-# orphans and races with dash's wait builtin, which then blocks.
-# Letting dinit reap is fine.
+# if the marker never lands. The shell remains the direct parent and waits
+# after terminating mariadbd; the kernel's synthetic PID 1 has no reaper
+# worker, while dinit is a separate ordinary user process.
 #
 # Polling the marker shaves ~30-50s off boot vs the previous fixed
 # 60s sleep — that sleep was the dominant boot-time cost, since the
@@ -317,6 +317,7 @@ done
 kill -TERM $PID 2>/dev/null
 sleep 1
 kill -KILL $PID 2>/dev/null
+wait $PID 2>/dev/null || true
 exit 0
 `;
 

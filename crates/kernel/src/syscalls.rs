@@ -727,12 +727,7 @@ fn commit_exec_state_impl(
     // executable, so retain it through the irreversible commit point.
     let lifecycle_state = proc.state;
     if caller_tid != 0 && caller_tid != proc.pid {
-        let thread_index = proc
-            .threads
-            .iter()
-            .position(|thread| thread.tid == caller_tid)
-            .ok_or(Errno::ESRCH)?;
-        let caller = proc.threads.remove(thread_index);
+        let caller = proc.remove_thread(caller_tid).ok_or(Errno::ESRCH)?;
         proc.signals.blocked = caller.signals.blocked;
         proc.main_thread_signals = caller.signals;
     }
@@ -771,8 +766,7 @@ fn commit_exec_state_impl(
     proc.exit_status = 0;
     proc.exit_signal = 0;
     proc.thread_name = [0; 16];
-    proc.threads.clear();
-    proc.next_tid = 0;
+    proc.clear_threads();
     proc.sigsuspend_saved_mask = None;
     proc.alt_stack_sp = 0;
     proc.alt_stack_flags = 2; // SS_DISABLE
@@ -786,6 +780,7 @@ fn commit_exec_state_impl(
     proc.fork_exec_path = None;
     proc.fork_exec_argv = None;
     proc.fork_fd_actions.clear();
+    proc.clear_exec_prepare();
     proc.fork_pipe_replay.clear();
     proc.fork_count = 0;
     proc.has_exec = true;
@@ -3844,7 +3839,14 @@ pub fn sys_write(
             // Compute RLIMIT_FSIZE once for this logical write. For regular
             // files and memfds this resolves the authoritative append or
             // open-file-description offset without changing either cursor.
-            let writable_len = write_operation_budget(proc, host, fd, None, buf.len())?;
+            let writable_len = write_operation_budget(
+                proc,
+                host,
+                crate::process_table::current_tid(),
+                fd,
+                None,
+                buf.len(),
+            )?;
 
             // memfd: write to the shared in-memory backing. Apply O_APPEND
             // only at the actual non-empty mutation boundary.
@@ -4030,7 +4032,11 @@ pub fn sys_lseek(
         if new_pos < 0 {
             return Err(Errno::EINVAL);
         }
-        crate::descriptor_backing::set_current_offset(ofd.file_type, ofd.host_handle, new_pos)?;
+        crate::descriptor_backing::set_current_offset(
+            ofd.file_type,
+            ofd.host_handle,
+            new_pos,
+        )?;
         return Ok(new_pos);
     }
 
@@ -4198,14 +4204,10 @@ pub fn sys_pread(
 /// Queue a synchronous file-size-limit signal for the thread that issued the
 /// write. A worker thread must not redirect SIGXFSZ through the process-shared
 /// pending set to a different thread that happens to have it unblocked.
-fn raise_fsize_signal_for_caller(proc: &mut Process) {
-    let tid = crate::process_table::current_tid();
-    if !proc.raise_for_thread(tid, SIGXFSZ) {
-        // A stale host TID must not lose the required signal. The shared
-        // queue is the conservative fallback used by the existing signal
-        // entry points for unknown thread identities.
-        proc.signals.raise(SIGXFSZ);
-    }
+fn raise_fsize_signal_for_caller(proc: &mut Process, tid: u32) -> Result<(), Errno> {
+    proc.raise_for_thread(tid, SIGXFSZ)
+        .then_some(())
+        .ok_or(Errno::ESRCH)
 }
 
 /// Apply POSIX RLIMIT_FSIZE semantics to one regular-file write operation.
@@ -4215,6 +4217,7 @@ fn raise_fsize_signal_for_caller(proc: &mut Process) {
 /// starting offset fails with EFBIG and generates SIGXFSZ.
 fn fsize_limited_write_len(
     proc: &mut Process,
+    caller_tid: u32,
     offset: u64,
     requested_len: usize,
 ) -> Result<usize, Errno> {
@@ -4226,7 +4229,7 @@ fn fsize_limited_write_len(
         return Ok(requested_len);
     }
     if offset >= fsize_limit {
-        raise_fsize_signal_for_caller(proc);
+        raise_fsize_signal_for_caller(proc, caller_tid)?;
         return Err(Errno::EFBIG);
     }
     // Convert only after comparing in u64. The kernel itself is wasm32 even
@@ -4249,6 +4252,7 @@ fn fsize_limited_write_len(
 pub(crate) fn write_operation_budget(
     proc: &mut Process,
     host: &mut dyn HostIO,
+    caller_tid: u32,
     fd: i32,
     offset: Option<i64>,
     requested_len: usize,
@@ -4296,7 +4300,7 @@ pub(crate) fn write_operation_budget(
         }
     };
 
-    fsize_limited_write_len(proc, start, requested_len)
+    fsize_limited_write_len(proc, caller_tid, start, requested_len)
 }
 
 /// Validate a transfer source without consuming data or changing its cursor.
@@ -4369,7 +4373,14 @@ pub fn sys_pwrite(
     let host_handle = ofd.host_handle;
     let file_type = ofd.file_type;
     let saved_offset = ofd.offset;
-    let writable_len = write_operation_budget(proc, host, fd, Some(offset), buf.len())?;
+    let writable_len = write_operation_budget(
+        proc,
+        host,
+        crate::process_table::current_tid(),
+        fd,
+        Some(offset),
+        buf.len(),
+    )?;
 
     if file_type == FileType::MemFd {
         let memfd_idx = (-(host_handle + 1)) as usize;
@@ -4444,7 +4455,14 @@ pub fn sys_pwritev(
 ) -> Result<usize, Errno> {
     let requested_len = checked_iovec_len(iovecs)?;
     let writable_len =
-        write_operation_budget(proc, host, fd, Some(offset), requested_len)?;
+        write_operation_budget(
+            proc,
+            host,
+            crate::process_table::current_tid(),
+            fd,
+            Some(offset),
+            requested_len,
+        )?;
     let mut total = 0usize;
     let mut cur_offset = offset;
     for buf in iovecs {
@@ -4485,7 +4503,14 @@ pub fn sys_sendfile(
     count: usize,
 ) -> Result<usize, Errno> {
     validate_transfer_input(proc, in_fd, (offset >= 0).then_some(offset))?;
-    let writable_len = write_operation_budget(proc, host, out_fd, None, count)?;
+    let writable_len = write_operation_budget(
+        proc,
+        host,
+        crate::process_table::current_tid(),
+        out_fd,
+        None,
+        count,
+    )?;
     if count == 0 {
         return Ok(0);
     }
@@ -4556,7 +4581,14 @@ pub fn sys_copy_file_range(
     len: usize,
 ) -> Result<usize, Errno> {
     validate_transfer_input(proc, fd_in, off_in)?;
-    let writable_len = write_operation_budget(proc, host, fd_out, off_out, len)?;
+    let writable_len = write_operation_budget(
+        proc,
+        host,
+        crate::process_table::current_tid(),
+        fd_out,
+        off_out,
+        len,
+    )?;
     if len == 0 {
         return Ok(0);
     }
@@ -6764,9 +6796,9 @@ pub fn sys_setpgid(proc: &mut Process, pid: u32, pgid: u32) -> Result<(), Errno>
         return Err(Errno::ESRCH);
     }
     // POSIX: a session leader cannot change its process group. Check the
-    // explicit flag — `sid == pid` alone is wrong because a forked child
-    // inherits the parent's sid and if that ever equals the child's pid
-    // (e.g. PID reuse) we'd wrongly classify the child as a session leader.
+    // explicit flag is the authoritative state; numeric identity equality is
+    // not a substitute for the recorded setsid transition (and must remain
+    // correct if a future allocation policy changes).
     if proc.is_session_leader {
         return Err(Errno::EPERM);
     }
@@ -6801,53 +6833,25 @@ pub fn sys_setsid(proc: &mut Process) -> Result<u32, Errno> {
     Ok(proc.sid)
 }
 
-/// Send a signal to a process.
-/// If pid matches current process, is 0 (process group), or is the negative of our pgid,
-/// raises locally. Otherwise delegates to host for cross-process delivery.
-pub fn sys_kill(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    pid: i32,
-    sig: u32,
-) -> Result<(), Errno> {
+/// Send a signal to this exact process. Machine-wide target selection belongs
+/// to `ProcessTable` at the Wasm boundary and is never delegated to a host.
+pub fn sys_kill(proc: &mut Process, pid: i32, sig: u32) -> Result<(), Errno> {
     if sig >= NSIG && sig != 0 {
         return Err(Errno::EINVAL);
     }
-    let is_local = pid == proc.pid as i32 || pid == 0 || pid == -(proc.pgid as i32);
+    if pid != proc.pid as i32 {
+        return Err(Errno::ESRCH);
+    }
     if sig == 0 {
-        // sig=0 is a validity/existence check. Local always succeeds.
-        // For remote pids, delegate to host so it can return ESRCH if needed.
-        if is_local {
-            return Ok(());
-        } else {
-            return host.host_kill(pid, sig);
-        }
+        return Ok(());
     }
-    if is_local {
-        proc.raise_signal(sig);
-        Ok(())
-    } else {
-        host.host_kill(pid, sig)
-    }
+    proc.raise_signal(sig);
+    Ok(())
 }
 
 /// Send a signal to the current process.
-pub fn sys_raise(proc: &mut Process, host: &mut dyn HostIO, sig: u32) -> Result<(), Errno> {
-    sys_kill(proc, host, proc.pid as i32, sig)
-}
-
-/// Fork the current process. Delegates to host for worker creation.
-/// Returns child PID in parent (> 0), 0 in child, or error.
-pub fn sys_fork(_proc: &mut Process, host: &dyn HostIO) -> Result<u32, Errno> {
-    let result = host.host_fork();
-    if result < 0 {
-        match Errno::from_u32((-result) as u32) {
-            Some(e) => Err(e),
-            None => Err(Errno::EIO),
-        }
-    } else {
-        Ok(result as u32)
-    }
+pub fn sys_raise(proc: &mut Process, sig: u32) -> Result<(), Errno> {
+    sys_kill(proc, proc.pid as i32, sig)
 }
 
 /// Execute a new program. Delegates to host for binary loading.
@@ -7196,8 +7200,8 @@ pub fn sys_signal(proc: &mut Process, signum: u32, handler_val: u32) -> Result<i
 /// POSIX: `sigprocmask` in a multi-threaded program has the same effect as
 /// `pthread_sigmask` — each thread has its own blocked mask. The current
 /// thread id is read from the process table (set by the host before each
-/// `kernel_handle_channel`). `tid == 0` or `tid == pid` selects the main
-/// thread (process-level mask).
+/// `kernel_handle_channel`). Host dispatch binds the explicit leader PID for
+/// the main thread; TID 0 remains only an isolated unit-test sentinel.
 pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Errno> {
     let tid = crate::process_table::current_tid();
     let old_mask = proc.blocked_for(tid);
@@ -11300,11 +11304,12 @@ pub fn sys_recvfrom(
         return Ok((0, 0));
     }
 
+    let pid = proc.pid;
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
     let datagram_idx = sock
         .dgram_queue
         .iter()
-        .position(|d| dgram_matches_connected_peer(sock, proc.pid, d));
+        .position(|d| dgram_matches_connected_peer(sock, pid, d));
     if datagram_idx.is_none() {
         if sock.state == SocketState::Connected && sock.connect_error != 0 {
             let err = sock.connect_error;
@@ -12812,9 +12817,9 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
 //
 // The host selects the syscall mailbox by channelOffset first, then binds the
 // corresponding TID in process_table::current_tid before entering the kernel.
-// That TID is what musl's gettid-based pthread implementation observes. A
-// current_tid of 0 is the host/kernel sentinel for the process main thread, so
-// the syscall returns the process pid for main-thread callers.
+// That TID is what musl's gettid-based pthread implementation observes. Host
+// dispatch binds the explicit process-leader TID. The zero alias remains only
+// for isolated syscall unit tests, where it likewise reports the process PID.
 pub fn sys_gettid(proc: &Process) -> i32 {
     let tid = crate::process_table::current_tid();
     if proc.is_main_thread(tid) {
@@ -12914,8 +12919,7 @@ pub fn sys_futex(
 /// Allocates a TID, stores thread state, and returns the TID. The host's
 /// handleClone then spawns the actual thread Worker.
 pub fn sys_clone(
-    proc: &mut Process,
-    _host: &mut dyn HostIO,
+    table: &mut crate::process_table::ProcessTable,
     _fn_ptr: usize,
     stack_ptr: usize,
     flags: u32,
@@ -12924,8 +12928,6 @@ pub fn sys_clone(
     tls_ptr: usize,
     ctid_ptr: usize,
 ) -> Result<i32, Errno> {
-    use crate::process::ThreadInfo;
-
     const CLONE_VM: u32 = 0x00000100;
     const CLONE_THREAD: u32 = 0x00010000;
     const CLONE_PARENT_SETTID: u32 = 0x00100000;
@@ -12939,7 +12941,6 @@ pub fn sys_clone(
         return Err(Errno::ENOSYS);
     }
 
-    let tid = proc.alloc_tid();
     let effective_tls = if flags & CLONE_SETTLS != 0 {
         tls_ptr
     } else {
@@ -12953,11 +12954,9 @@ pub fn sys_clone(
     // POSIX: new threads inherit the creator's signal mask. The creator is
     // identified by current_tid because clone arrives through the caller's
     // channel mailbox but the kernel stores masks by TID.
-    let caller_tid = crate::process_table::current_tid();
-    let inherited_blocked = proc.blocked_for(caller_tid);
-    let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
-    thread_info.signals.blocked = inherited_blocked;
-    proc.add_thread(thread_info);
+    let caller_tid = table.current_tid();
+    let pid = table.current_pid();
+    let tid = table.create_thread(pid, caller_tid, stack_ptr, effective_tls, effective_ctid)?;
 
     let _ = flags & CLONE_PARENT_SETTID;
     Ok(tid as i32)
@@ -13905,7 +13904,7 @@ pub fn sys_ftruncate(
         && (length as u64) > current_size
         && (length as u64) > fsize_limit
     {
-        raise_fsize_signal_for_caller(proc);
+        raise_fsize_signal_for_caller(proc, crate::process_table::current_tid())?;
         return Err(Errno::EFBIG);
     }
 
@@ -14102,7 +14101,14 @@ pub fn sys_writev(
     buffers: &[&[u8]],
 ) -> Result<usize, Errno> {
     let requested_len = checked_iovec_len(buffers)?;
-    let writable_len = write_operation_budget(proc, host, fd, None, requested_len)?;
+    let writable_len = write_operation_budget(
+        proc,
+        host,
+        crate::process_table::current_tid(),
+        fd,
+        None,
+        requested_len,
+    )?;
     let mut total = 0usize;
     for buf in buffers {
         if total == writable_len {
@@ -15037,7 +15043,7 @@ mod tests {
 
     fn set_test_current_tid(tid: u32) {
         unsafe {
-            (*crate::process_table::GLOBAL_PROCESS_TABLE.0.get()).set_current_tid(tid);
+            (*crate::process_table::GLOBAL_PROCESS_TABLE.0.get()).set_current_tid_for_test(tid);
         }
     }
 
@@ -15666,10 +15672,6 @@ mod tests {
             Ok(())
         }
 
-        fn host_kill(&mut self, _pid: i32, _sig: u32) -> Result<(), Errno> {
-            Ok(())
-        }
-
         fn host_exec(&mut self, _path: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
@@ -15794,9 +15796,6 @@ mod tests {
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
         }
-        fn host_fork(&self) -> i32 {
-            -(Errno::ENOSYS as i32)
-        }
         fn host_futex_wait(
             &mut self,
             _addr: usize,
@@ -15807,16 +15806,6 @@ mod tests {
         }
         fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
-        }
-        fn host_clone(
-            &mut self,
-            _fn_ptr: usize,
-            _arg: usize,
-            _stack_ptr: usize,
-            _tls_ptr: usize,
-            _ctid_ptr: usize,
-        ) -> Result<i32, Errno> {
-            Err(Errno::ENOSYS)
         }
         fn bind_framebuffer(
             &mut self,
@@ -18103,7 +18092,7 @@ mod tests {
     fn test_kill_marks_signal_pending() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        sys_kill(&mut proc, &mut host, 1, 2).unwrap(); // SIGINT=2
+        sys_kill(&mut proc, 1, 2).unwrap(); // SIGINT=2
         assert!(proc.signals.is_pending(2));
     }
 
@@ -18111,7 +18100,7 @@ mod tests {
     fn test_kill_sig_zero_is_noop() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        sys_kill(&mut proc, &mut host, 1, 0).unwrap();
+        sys_kill(&mut proc, 1, 0).unwrap();
         assert_eq!(proc.signals.pending, 0);
     }
 
@@ -18119,16 +18108,16 @@ mod tests {
     fn test_kill_invalid_signal() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let result = sys_kill(&mut proc, &mut host, 1, 100);
+        let result = sys_kill(&mut proc, 1, 100);
         assert_eq!(result, Err(Errno::EINVAL));
     }
 
     #[test]
-    fn test_kill_remote_pid_calls_host_kill() {
+    fn test_process_local_kill_rejects_remote_pid() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let result = sys_kill(&mut proc, &mut host, 2, 15);
-        assert!(result.is_ok());
+        let result = sys_kill(&mut proc, 2, 15);
+        assert_eq!(result, Err(Errno::ESRCH));
         assert!(!proc.signals.is_pending(15)); // NOT pending locally
     }
 
@@ -18136,27 +18125,26 @@ mod tests {
     fn test_kill_self_raises_locally() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let result = sys_kill(&mut proc, &mut host, 1, 2);
+        let result = sys_kill(&mut proc, 1, 2);
         assert!(result.is_ok());
         assert!(proc.signals.is_pending(2));
     }
 
     #[test]
-    fn test_kill_pid_zero_raises_locally() {
+    fn test_process_local_kill_does_not_infer_group_from_pid_zero() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let result = sys_kill(&mut proc, &mut host, 0, 2);
-        assert!(result.is_ok());
-        assert!(proc.signals.is_pending(2));
+        let result = sys_kill(&mut proc, 0, 2);
+        assert_eq!(result, Err(Errno::ESRCH));
+        assert!(!proc.signals.is_pending(2));
     }
 
     #[test]
-    fn test_kill_sig_zero_remote_delegates_to_host() {
+    fn test_process_local_kill_sig_zero_rejects_remote_pid() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        // sig=0 to remote pid should delegate to host for existence check
-        let result = sys_kill(&mut proc, &mut host, 2, 0);
-        assert!(result.is_ok()); // MockHostIO returns Ok(())
+        let result = sys_kill(&mut proc, 2, 0);
+        assert_eq!(result, Err(Errno::ESRCH));
         assert_eq!(proc.signals.pending, 0); // no signal raised locally
     }
 
@@ -18275,14 +18263,14 @@ mod tests {
     fn test_raise_is_kill_to_self() {
         let mut proc = Process::new(42);
         let mut host = MockHostIO::new();
-        sys_raise(&mut proc, &mut host, 15).unwrap(); // SIGTERM
+        sys_raise(&mut proc, 15).unwrap(); // SIGTERM
         assert!(proc.signals.is_pending(15));
     }
 
     #[test]
     fn test_deliver_signal_marks_pending() {
-        let mut proc = Process::new(1);
-        // Simulate what kernel_deliver_signal does
+        let mut proc = Process::new(42);
+        // Direct signal generation records a pending instance.
         proc.signals.raise(15); // SIGTERM
         assert!(proc.signals.is_pending(15));
     }
@@ -18320,7 +18308,7 @@ mod tests {
 
         // Step 3: Raise SIGINT
         let mut host = MockHostIO::new();
-        let result = sys_raise(&mut proc, &mut host, SIGINT);
+        let result = sys_raise(&mut proc, SIGINT);
         assert!(result.is_ok());
         assert!(proc.signals.is_pending(SIGINT), "SIGINT should be pending");
 
@@ -18728,19 +18716,19 @@ mod tests {
         use crate::process_table::ProcessTable;
         use crate::spawn::SpawnAttrs;
 
-        const PARENT: u32 = 970_100;
-        const FORK_CHILD: u32 = 970_101;
+        const PARENT: u32 = 100;
+        const FORK_CHILD: u32 = 101;
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
-        table.create_process(PARENT).unwrap();
+        assert_eq!(table.create_process().unwrap(), PARENT);
 
         let inherited_fd = sys_eventfd2(table.get_mut(PARENT).unwrap(), 0, O_NONBLOCK).unwrap();
         let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
         let backing_generation =
             descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
-        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), FORK_CHILD);
         let spawn_child = table
-            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child_for_caller(PARENT, PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
             .unwrap();
         assert_eq!(
             descriptor_backing_ref_count(FileType::EventFd, backing_idx),
@@ -18818,20 +18806,20 @@ mod tests {
         use crate::process_table::ProcessTable;
         use crate::spawn::SpawnAttrs;
 
-        const PARENT: u32 = 970_200;
-        const FORK_CHILD: u32 = 970_201;
+        const PARENT: u32 = 100;
+        const FORK_CHILD: u32 = 101;
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
         host.clock_time = (100, 0);
-        table.create_process(PARENT).unwrap();
+        assert_eq!(table.create_process().unwrap(), PARENT);
         let inherited_fd =
             sys_timerfd_create(table.get_mut(PARENT).unwrap(), 0, O_NONBLOCK).unwrap();
         let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
         let backing_generation =
             descriptor_backing_generation(FileType::TimerFd, backing_idx).unwrap();
-        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), FORK_CHILD);
         let spawn_child = table
-            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child_for_caller(PARENT, PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
             .unwrap();
 
         sys_timerfd_settime(
@@ -18889,11 +18877,11 @@ mod tests {
         use crate::spawn::SpawnAttrs;
         use wasm_posix_shared::signal::{SIGINT, SIGTERM, SIGUSR1};
 
-        const PARENT: u32 = 970_300;
-        const FORK_CHILD: u32 = 970_301;
+        const PARENT: u32 = 100;
+        const FORK_CHILD: u32 = 101;
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
-        table.create_process(PARENT).unwrap();
+        assert_eq!(table.create_process().unwrap(), PARENT);
         let inherited_fd = sys_signalfd4(
             table.get_mut(PARENT).unwrap(),
             -1,
@@ -18904,9 +18892,9 @@ mod tests {
         let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
         let backing_generation =
             descriptor_backing_generation(FileType::SignalFd, backing_idx).unwrap();
-        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), FORK_CHILD);
         let spawn_child = table
-            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child_for_caller(PARENT, PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
             .unwrap();
 
         let usr1_mask = 1u64 << (SIGUSR1 - 1);
@@ -18971,11 +18959,11 @@ mod tests {
         use crate::process_table::ProcessTable;
         use crate::spawn::SpawnAttrs;
 
-        const PARENT: u32 = 970_400;
-        const FORK_CHILD: u32 = 970_401;
+        const PARENT: u32 = 100;
+        const FORK_CHILD: u32 = 101;
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
-        table.create_process(PARENT).unwrap();
+        assert_eq!(table.create_process().unwrap(), PARENT);
         let inherited_fd = sys_memfd_create(table.get_mut(PARENT).unwrap(), b"shared", 0).unwrap();
         let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
         let backing_generation =
@@ -18995,9 +18983,9 @@ mod tests {
             SEEK_SET,
         )
         .unwrap();
-        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), FORK_CHILD);
         let spawn_child = table
-            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child_for_caller(PARENT, PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
             .unwrap();
 
         let mut pair = [0u8; 2];
@@ -19104,15 +19092,15 @@ mod tests {
     fn inherited_memfd_seek_cur_lock_and_fdinfo_use_peer_advanced_cursor() {
         use crate::process_table::ProcessTable;
 
-        const PARENT: u32 = 970_450;
-        const CHILD: u32 = 970_451;
+        const PARENT: u32 = 100;
+        const CHILD: u32 = 101;
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
-        table.create_process(PARENT).unwrap();
+        assert_eq!(table.create_process().unwrap(), PARENT);
         let fd = sys_memfd_create(table.get_mut(PARENT).unwrap(), b"cursor-lock", 0).unwrap();
         sys_write(table.get_mut(PARENT).unwrap(), &mut host, fd, b"abcdefgh").unwrap();
         sys_lseek(table.get_mut(PARENT).unwrap(), &mut host, fd, 0, SEEK_SET).unwrap();
-        table.fork_process(PARENT, CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), CHILD);
 
         let mut prefix = [0u8; 3];
         sys_read(table.get_mut(CHILD).unwrap(), &mut host, fd, &mut prefix).unwrap();
@@ -19171,11 +19159,11 @@ mod tests {
         use crate::process_table::ProcessTable;
         use crate::spawn::SpawnAttrs;
 
-        const PARENT: u32 = 970_500;
-        const FORK_CHILD: u32 = 970_501;
+        const PARENT: u32 = 100;
+        const FORK_CHILD: u32 = 101;
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
-        table.create_process(PARENT).unwrap();
+        assert_eq!(table.create_process().unwrap(), PARENT);
         table.get_mut(PARENT).unwrap().argv = vec![b"parent-program".to_vec()];
         let expected = crate::procfs::generate_stat(table.get(PARENT).unwrap());
         let inherited_fd = crate::procfs::procfs_open(
@@ -19198,10 +19186,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&first, &expected[..7]);
-        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), FORK_CHILD);
         let spawn_child = table
-            .spawn_child(
-                PARENT,
+            .spawn_child_for_caller(
+                PARENT, PARENT,
                 &[b"spawn-program"],
                 &[],
                 &[],
@@ -19278,11 +19266,11 @@ mod tests {
     fn fork_clofork_filter_recomputes_ofd_refs_and_backing_lifetime() {
         use crate::process_table::ProcessTable;
 
-        const PARENT: u32 = 970_600;
-        const CHILD: u32 = 970_601;
+        const PARENT: u32 = 100;
+        const CHILD: u32 = 101;
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
-        table.create_process(PARENT).unwrap();
+        assert_eq!(table.create_process().unwrap(), PARENT);
         let clo_fork_fd = sys_eventfd2(table.get_mut(PARENT).unwrap(), 1, 0).unwrap();
         let inherited_alias = sys_dup(table.get_mut(PARENT).unwrap(), clo_fork_fd).unwrap();
         let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), clo_fork_fd);
@@ -19296,7 +19284,7 @@ mod tests {
             .unwrap()
             .fd_flags |= FD_CLOFORK;
 
-        table.fork_process(PARENT, CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), CHILD);
         let child = table.get(CHILD).unwrap();
         assert!(child.fd_table.get(clo_fork_fd).is_err());
         let child_entry = child.fd_table.get(inherited_alias).unwrap();
@@ -19337,10 +19325,10 @@ mod tests {
         use crate::spawn::{FileAction, SpawnAttrs};
         use wasm_posix_shared::signal::SIGINT;
 
-        const PARENT: u32 = 970_700;
+        const PARENT: u32 = 100;
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
-        table.create_process(PARENT).unwrap();
+        assert_eq!(table.create_process().unwrap(), PARENT);
 
         let eventfd = sys_eventfd2(table.get_mut(PARENT).unwrap(), 0, O_CLOEXEC).unwrap();
         let timerfd = sys_timerfd_create(table.get_mut(PARENT).unwrap(), 0, O_CLOEXEC).unwrap();
@@ -19377,7 +19365,7 @@ mod tests {
         });
 
         let child = table
-            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child_for_caller(PARENT, PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
             .unwrap();
         for (fd, file_type, idx, _) in tracked {
             assert!(table.get(child).unwrap().fd_table.get(fd).is_err());
@@ -19385,8 +19373,8 @@ mod tests {
         }
 
         let err = table
-            .spawn_child(
-                PARENT,
+            .spawn_child_for_caller(
+                PARENT, PARENT,
                 &[],
                 &[],
                 &[FileAction::Dup2 { srcfd: 999, fd: 1 }],
@@ -19411,317 +19399,6 @@ mod tests {
             assert_descriptor_backing_released(file_type, idx, generation);
         }
         table.remove_process(PARENT).unwrap();
-    }
-
-    #[test]
-    fn legacy_exec_transfers_survivor_and_releases_cloexec_only_backing() {
-        use crate::process_table::ProcessTable;
-
-        const PID: u32 = 970_800;
-        let mut old = Process::new(PID);
-        let mut host = MockHostIO::new();
-        let removed_fd = sys_eventfd2(&mut old, 11, O_CLOEXEC).unwrap();
-        let retained_fd = sys_eventfd2(&mut old, 22, 0).unwrap();
-        let filtered_alias = sys_dup(&mut old, retained_fd).unwrap();
-        old.fd_table.get_mut(filtered_alias).unwrap().fd_flags |= FD_CLOEXEC;
-        let removed_idx = descriptor_backing_idx(&old, removed_fd);
-        let removed_generation =
-            descriptor_backing_generation(FileType::EventFd, removed_idx).unwrap();
-        let retained_idx = descriptor_backing_idx(&old, retained_fd);
-
-        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(&old).unwrap();
-        let replacement = crate::fork::deserialize_exec_state(&serialized, PID).unwrap();
-        assert!(replacement.fd_table.get(removed_fd).is_err());
-        assert!(replacement.fd_table.get(filtered_alias).is_err());
-        let retained_ofd_idx = replacement.fd_table.get(retained_fd).unwrap().ofd_ref.0;
-        assert_eq!(
-            replacement
-                .ofd_table
-                .get(retained_ofd_idx)
-                .unwrap()
-                .ref_count,
-            1
-        );
-
-        let mut table = ProcessTable::new();
-        table.processes.insert(PID, old);
-        table.replace_legacy_exec_process(PID, replacement).unwrap();
-        assert_descriptor_backing_released(FileType::EventFd, removed_idx, removed_generation);
-        assert_eq!(
-            descriptor_backing_ref_count(FileType::EventFd, retained_idx),
-            Some(1),
-            "the replacement must transfer, not duplicate, the survivor's ownership ref"
-        );
-
-        let mut value = [0u8; 8];
-        sys_read(
-            table.get_mut(PID).unwrap(),
-            &mut host,
-            retained_fd,
-            &mut value,
-        )
-        .unwrap();
-        assert_eq!(u64::from_le_bytes(value), 22);
-        sys_close(table.get_mut(PID).unwrap(), &mut host, retained_fd).unwrap();
-        table.remove_process(PID).unwrap();
-    }
-
-    #[test]
-    fn legacy_exec_decrements_shared_host_ofd_before_peer_final_close() {
-        use crate::process_table::ProcessTable;
-
-        const PARENT: u32 = 970_805;
-        const CHILD: u32 = 970_806;
-        const HOST_HANDLE: i64 = 9_708_050;
-        let file = FileId::Host { dev: 97, ino: 805 };
-
-        let mut parent = Process::new(PARENT);
-        let ofd_idx = parent.ofd_table.create(
-            FileType::Regular,
-            O_RDWR,
-            HOST_HANDLE,
-            b"/legacy-exec-shared-lock".to_vec(),
-        );
-        parent.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(file);
-        let ofd_id = parent.ofd_table.get(ofd_idx).unwrap().ofd_id;
-        let fd = parent
-            .fd_table
-            .alloc(OpenFileDescRef(ofd_idx), FD_CLOEXEC)
-            .unwrap();
-
-        let mut table = ProcessTable::new();
-        table.processes.insert(PARENT, parent);
-        table
-            .advisory_locks_mut()
-            .set_lock(
-                file,
-                LockOwner::OpenFileDescription(ofd_id),
-                Some(AdvisoryLockType::Write),
-                LockRange::normalize(0, 1).unwrap(),
-            )
-            .unwrap();
-        table.fork_process(PARENT, CHILD).unwrap();
-        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 2);
-
-        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(
-            table.get(PARENT).unwrap(),
-        )
-        .unwrap();
-        let replacement = crate::fork::deserialize_exec_state(&serialized, PARENT).unwrap();
-
-        let cleanup = table
-            .replace_legacy_exec_process(PARENT, replacement)
-            .unwrap();
-        assert!(cleanup.host_closes.is_empty());
-        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 1);
-        assert!(!table.advisory_locks().is_empty());
-
-        let mut host = MockHostIO::new();
-        let (child, locks) = table.process_and_advisory_locks(CHILD).unwrap();
-        sys_close_with_locks(child, locks, &mut host, fd).unwrap();
-        assert_eq!(host.closed_handles, vec![HOST_HANDLE]);
-        assert!(table.advisory_locks().is_empty());
-        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 0);
-
-        table.remove_process(CHILD).unwrap();
-        table.remove_process(PARENT).unwrap();
-    }
-
-    #[test]
-    fn legacy_exec_counts_self_transferred_ofd_entries_independently() {
-        use crate::process_table::ProcessTable;
-
-        const PID: u32 = 970_807;
-        const HOST_HANDLE: i64 = 9_708_070;
-        let _guard = SCM_RIGHTS_LIFETIME_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let file = FileId::Host { dev: 97, ino: 807 };
-
-        let mut old = Process::new(PID);
-        let original_ofd = old.ofd_table.create(
-            FileType::Regular,
-            O_RDWR,
-            HOST_HANDLE,
-            b"/legacy-exec-self-transfer".to_vec(),
-        );
-        old.ofd_table.get_mut(original_ofd).unwrap().file_id = Some(file);
-        let ofd_id = old.ofd_table.get(original_ofd).unwrap().ofd_id;
-        let original_fd = old
-            .fd_table
-            .alloc(OpenFileDescRef(original_ofd), 0)
-            .unwrap();
-
-        // Receiving our own SCM_RIGHTS payload creates another local OFD
-        // entry with the same global OfdId and one additional host-resource
-        // ownership reference.
-        let queued = retain_fd_for_scm_rights(&old, original_fd);
-        let received = install_scm_rights_fds(&mut old, vec![queued]);
-        assert_eq!(received.len(), 1);
-        let received_fd = received[0];
-        let received_ofd = old.fd_table.get(received_fd).unwrap().ofd_ref.0;
-        assert_ne!(received_ofd, original_ofd);
-        assert_eq!(old.ofd_table.get(received_ofd).unwrap().ofd_id, ofd_id);
-        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 2);
-
-        old.fd_table.get_mut(original_fd).unwrap().fd_flags |= FD_CLOEXEC;
-        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(&old).unwrap();
-        let replacement = crate::fork::deserialize_exec_state(&serialized, PID).unwrap();
-        assert!(replacement.ofd_table.get(original_ofd).is_none());
-        assert_eq!(replacement.ofd_table.get(received_ofd).unwrap().ofd_id, ofd_id);
-
-        let mut table = ProcessTable::new();
-        table.processes.insert(PID, old);
-        table
-            .advisory_locks_mut()
-            .set_lock(
-                file,
-                LockOwner::OpenFileDescription(ofd_id),
-                Some(AdvisoryLockType::Write),
-                LockRange::normalize(0, 1).unwrap(),
-            )
-            .unwrap();
-
-        let cleanup = table
-            .replace_legacy_exec_process(PID, replacement)
-            .unwrap();
-        assert!(cleanup.host_closes.is_empty());
-        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 1);
-        assert_eq!(table.advisory_locks().len(), 1);
-
-        let mut host = MockHostIO::new();
-        let (process, locks) = table.process_and_advisory_locks(PID).unwrap();
-        sys_close_with_locks(process, locks, &mut host, received_fd).unwrap();
-        assert_eq!(host.closed_handles, vec![HOST_HANDLE]);
-        assert!(table.advisory_locks().is_empty());
-        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 0);
-        table.remove_process(PID).unwrap();
-    }
-
-    #[test]
-    fn legacy_fork_into_fresh_table_keeps_host_handle_single_owned() {
-        use crate::process_table::ProcessTable;
-
-        const PARENT: u32 = 970_810;
-        const CHILD: u32 = 970_811;
-        const HOST_HANDLE: i64 = 9_708_110;
-
-        let mut source = Process::new(PARENT);
-        let ofd_idx = source.ofd_table.create(
-            FileType::Regular,
-            O_RDWR,
-            HOST_HANDLE,
-            b"/fresh-kernel-handle".to_vec(),
-        );
-        let fd = source
-            .fd_table
-            .alloc(OpenFileDescRef(ofd_idx), 0)
-            .unwrap();
-        let mut serialized = vec![0u8; 64 * 1024];
-        let written = crate::fork::serialize_fork_state(&source, &mut serialized).unwrap();
-        let child = crate::fork::deserialize_fork_state(&serialized[..written], CHILD).unwrap();
-        assert_eq!(child.ppid, PARENT);
-
-        let mut table = ProcessTable::new();
-        table.insert_legacy_fork_process(child).unwrap();
-        let mut host = MockHostIO::new();
-        sys_close(table.get_mut(CHILD).unwrap(), &mut host, fd).unwrap();
-        assert_eq!(host.closed_handles, vec![HOST_HANDLE]);
-    }
-
-    #[test]
-    fn legacy_fork_into_fresh_table_rejects_reused_special_backing() {
-        use crate::process_table::ProcessTable;
-
-        const OWNER: u32 = 970_820;
-        const CHILD: u32 = 970_821;
-        let mut owner = Process::new(OWNER);
-        let owner_fd = sys_eventfd2(&mut owner, 37, 0).unwrap();
-        let backing_idx = descriptor_backing_idx(&owner, owner_fd);
-        let generation =
-            descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
-
-        // Model a stale serialized child whose stable index now names another
-        // process's live object. A fresh-table legacy install has no parent
-        // ownership to transfer and must reject rather than add a reference.
-        let mut child = Process::new(CHILD);
-        child.ppid = 999_999;
-        let stale_handle = -((backing_idx as i64) + 1);
-        let stale_ofd = child.ofd_table.create(
-            FileType::EventFd,
-            O_RDWR,
-            stale_handle,
-            b"/dev/eventfd".to_vec(),
-        );
-        child
-            .fd_table
-            .alloc(OpenFileDescRef(stale_ofd), 0)
-            .unwrap();
-
-        let mut table = ProcessTable::new();
-        assert_eq!(table.insert_legacy_fork_process(child), Err(Errno::EBADF));
-        assert!(table.get(CHILD).is_none());
-        assert_eq!(
-            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
-            Some(1)
-        );
-        assert_eq!(
-            descriptor_backing_generation(FileType::EventFd, backing_idx),
-            Some(generation)
-        );
-
-        let mut host = MockHostIO::new();
-        let mut value = [0u8; 8];
-        sys_read(&mut owner, &mut host, owner_fd, &mut value).unwrap();
-        assert_eq!(u64::from_le_bytes(value), 37);
-        sys_close(&mut owner, &mut host, owner_fd).unwrap();
-    }
-
-    #[test]
-    fn legacy_exec_into_fresh_table_rejects_reused_special_backing() {
-        use crate::process_table::ProcessTable;
-
-        const OWNER: u32 = 970_830;
-        const EXEC_PID: u32 = 970_831;
-        let mut owner = Process::new(OWNER);
-        let owner_fd = sys_eventfd2(&mut owner, 41, 0).unwrap();
-        let backing_idx = descriptor_backing_idx(&owner, owner_fd);
-        let generation =
-            descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
-
-        let mut replacement = Process::new(EXEC_PID);
-        let stale_handle = -((backing_idx as i64) + 1);
-        let stale_ofd = replacement.ofd_table.create(
-            FileType::EventFd,
-            O_RDWR,
-            stale_handle,
-            b"/dev/eventfd".to_vec(),
-        );
-        replacement
-            .fd_table
-            .alloc(OpenFileDescRef(stale_ofd), 0)
-            .unwrap();
-
-        let mut table = ProcessTable::new();
-        assert_eq!(
-            table.replace_legacy_exec_process(EXEC_PID, replacement),
-            Err(Errno::EBADF)
-        );
-        assert!(table.get(EXEC_PID).is_none());
-        assert_eq!(
-            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
-            Some(1)
-        );
-        assert_eq!(
-            descriptor_backing_generation(FileType::EventFd, backing_idx),
-            Some(generation)
-        );
-
-        let mut host = MockHostIO::new();
-        let mut value = [0u8; 8];
-        sys_read(&mut owner, &mut host, owner_fd, &mut value).unwrap();
-        assert_eq!(u64::from_le_bytes(value), 41);
-        sys_close(&mut owner, &mut host, owner_fd).unwrap();
     }
 
     #[test]
@@ -19954,13 +19631,13 @@ mod tests {
 
     #[test]
     fn scm_rights_in_flight_reference_survives_sender_crash_removal() {
-        const SENDER_PID: u32 = 76;
+        const SENDER_PID: u32 = 100;
 
         let _guard = SCM_RIGHTS_LIFETIME_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut table = crate::process_table::ProcessTable::new();
-        table.create_process(SENDER_PID).unwrap();
+        assert_eq!(table.create_process().unwrap(), SENDER_PID);
         let mut host = MockHostIO::new();
         let sender_fd =
             sys_memfd_create(table.get_mut(SENDER_PID).unwrap(), b"scm-crash", 0).unwrap();
@@ -20952,9 +20629,15 @@ mod tests {
         let mut proc = Process::new(10);
         let mut host = MockHostIO::new();
         let mut caller = ThreadInfo::new(11, 0, 0, 0);
-        caller.signals.blocked = crate::signal::sig_bit(SIGTERM);
-        caller.signals.raise_with_value(32, 101);
-        caller.signals.raise_with_value(32, 202);
+        caller.state_mut_for_test().signals.blocked = crate::signal::sig_bit(SIGTERM);
+        caller
+            .state_mut_for_test()
+            .signals
+            .raise_with_value(32, 101);
+        caller
+            .state_mut_for_test()
+            .signals
+            .raise_with_value(32, 202);
         proc.add_thread(caller);
         proc.add_thread(ThreadInfo::new(12, 0, 0, 0));
         proc.main_thread_signals.raise(SIGINT);
@@ -23774,7 +23457,7 @@ mod tests {
         sys_setrlimit(&mut proc, RLIMIT_FSIZE, limit, limit).unwrap();
 
         assert_eq!(
-            write_operation_budget(&mut proc, &mut host, fd, Some(0), 10),
+            write_operation_budget(&mut proc, &mut host, 1, fd, Some(0), 10),
             Ok(10)
         );
         assert_eq!(
@@ -24674,14 +24357,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fork_returns_enosys_with_mock() {
-        let mut proc = Process::new(1);
-        let host = MockHostIO::new();
-        let result = sys_fork(&mut proc, &host);
-        assert_eq!(result, Err(Errno::ENOSYS));
-    }
-
-    #[test]
     fn test_fork_child_fields_default_to_false() {
         let proc = Process::new(1);
         assert!(!proc.fork_child);
@@ -25015,9 +24690,6 @@ mod tests {
         fn host_fchown(&mut self, _handle: i64, _uid: u32, _gid: u32) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_kill(&mut self, _pid: i32, _sig: u32) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_exec(&mut self, _path: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
@@ -25100,9 +24772,6 @@ mod tests {
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
         }
-        fn host_fork(&self) -> i32 {
-            -(Errno::ENOSYS as i32)
-        }
         fn host_futex_wait(
             &mut self,
             _addr: usize,
@@ -25113,16 +24782,6 @@ mod tests {
         }
         fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
-        }
-        fn host_clone(
-            &mut self,
-            _fn_ptr: usize,
-            _arg: usize,
-            _stack_ptr: usize,
-            _tls_ptr: usize,
-            _ctid_ptr: usize,
-        ) -> Result<i32, Errno> {
-            Err(Errno::ENOSYS)
         }
         fn bind_framebuffer(
             &mut self,
@@ -25472,25 +25131,30 @@ mod tests {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         use crate::process_table::ProcessTable;
 
-        const PARENT: u32 = 9031;
-        const CHILD: u32 = 9032;
+        const PARENT: u32 = 100;
+        const CHILD: u32 = 101;
         let path = b"/tmp/fork_accept_9031.sock";
         let resolved = crate::path::resolve_path(path, b"/");
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
 
         let mut host = MockHostIO::new();
-        let mut parent = Process::new(PARENT);
-        let server_fd = sys_socket(&mut parent, &mut host, 1, 1, 0).unwrap();
+        let mut table = ProcessTable::new();
+        assert_eq!(table.create_process().unwrap(), PARENT);
+        let server_fd = sys_socket(table.get_mut(PARENT).unwrap(), &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 110];
         addr[0] = 1;
         addr[2..2 + path.len()].copy_from_slice(path);
         let addrlen = 2 + path.len() + 1;
-        sys_bind(&mut parent, &mut host, server_fd, &addr[..addrlen]).unwrap();
-        sys_listen(&mut parent, &mut host, server_fd, 5).unwrap();
+        sys_bind(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            server_fd,
+            &addr[..addrlen],
+        )
+        .unwrap();
+        sys_listen(table.get_mut(PARENT).unwrap(), &mut host, server_fd, 5).unwrap();
 
-        let mut table = ProcessTable::new();
-        table.processes.insert(PARENT, parent);
-        table.fork_process(PARENT, CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), CHILD);
 
         let client_fd = {
             let parent = table.get_mut(PARENT).unwrap();
@@ -25652,7 +25316,7 @@ mod tests {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        proc.pid = 9020;
+        proc.set_pid_for_test(9020);
         proc.umask = 0o027;
         let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 110];
@@ -25711,7 +25375,7 @@ mod tests {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        proc.pid = 9021;
+        proc.set_pid_for_test(9021);
         let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 110];
         addr[0] = 1;
@@ -25751,7 +25415,7 @@ mod tests {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        proc.pid = 9022;
+        proc.set_pid_for_test(9022);
         let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 110];
         addr[0] = 1;
@@ -25775,7 +25439,7 @@ mod tests {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        proc.pid = 9023;
+        proc.set_pid_for_test(9023);
         let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 16];
         addr[0] = 1; // AF_UNIX
@@ -25802,7 +25466,7 @@ mod tests {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        proc.pid = 9024;
+        proc.set_pid_for_test(9024);
         let server_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 16];
         addr[0] = 1; // AF_UNIX
@@ -25937,9 +25601,6 @@ mod tests {
             fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
                 Ok(())
             }
@@ -26007,24 +25668,11 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Err(Errno::ENOENT)
             }
-            fn host_fork(&self) -> i32 {
-                -(Errno::ENOSYS as i32)
-            }
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Err(Errno::EAGAIN)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
-            }
-            fn host_clone(
-                &mut self,
-                _f: usize,
-                _a: usize,
-                _s: usize,
-                _t: usize,
-                _c: usize,
-            ) -> Result<i32, Errno> {
-                Err(Errno::ENOSYS)
             }
             fn bind_framebuffer(
                 &mut self,
@@ -27673,7 +27321,7 @@ mod tests {
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
 
-        proc.pid = 9025;
+        proc.set_pid_for_test(9025);
         let server_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
         let mut addr = [0u8; 64];
         addr[0] = 1; // AF_UNIX
@@ -28468,19 +28116,10 @@ mod tests {
     // ── Threading tests ──────────────────────────────────────────────
 
     #[test]
-    fn test_process_thread_alloc_tid() {
-        let mut proc = Process::new(42);
-        let tid1 = proc.alloc_tid();
-        let tid2 = proc.alloc_tid();
-        assert_eq!(tid1, 43); // pid + 1
-        assert_eq!(tid2, 44);
-    }
-
-    #[test]
     fn test_process_thread_add_remove() {
         use crate::process::ThreadInfo;
         let mut proc = Process::new(10);
-        let tid = proc.alloc_tid();
+        let tid = 11;
         proc.add_thread(ThreadInfo::new(tid, 0x1000, 0x2000, 0x3000));
         assert!(proc.get_thread(tid).is_some());
         assert_eq!(proc.get_thread(tid).unwrap().stack_ptr, 0x2000);
@@ -28492,34 +28131,37 @@ mod tests {
 
     #[test]
     fn test_clone_rejects_non_thread() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
         // Without CLONE_VM | CLONE_THREAD, clone should return ENOSYS
-        let result = sys_clone(&mut proc, &mut host, 0, 0, 0, 0, 0, 0, 0);
+        let result = sys_clone(&mut table, 0, 0, 0, 0, 0, 0, 0);
         assert_eq!(result, Err(Errno::ENOSYS));
     }
 
     #[test]
     fn test_clone_rejects_clone_vm_only() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
         const CLONE_VM: u32 = 0x00000100;
         // CLONE_VM without CLONE_THREAD should fail
-        let result = sys_clone(&mut proc, &mut host, 0, 0x8000, CLONE_VM, 0, 0, 0, 0);
+        let result = sys_clone(&mut table, 0, 0x8000, CLONE_VM, 0, 0, 0, 0);
         assert_eq!(result, Err(Errno::ENOSYS));
     }
 
     #[test]
     fn test_clone_thread_allocates_kernel_thread() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
         const CLONE_VM: u32 = 0x00000100;
         const CLONE_THREAD: u32 = 0x00010000;
         let flags = CLONE_VM | CLONE_THREAD;
-        let result = sys_clone(&mut proc, &mut host, 0, 0x8000, flags, 0, 0, 0, 0);
+        let result = sys_clone(&mut table, 0, 0x8000, flags, 0, 0, 0, 0);
         let tid = result.expect("thread-style clone should allocate a tid");
-        assert!(tid > 0);
-        assert!(proc.get_thread(tid as u32).is_some());
+        assert_eq!(tid, 101);
+        assert!(table.get(pid).unwrap().get_thread(tid as u32).is_some());
     }
 
     #[test]
@@ -28555,9 +28197,9 @@ mod tests {
         let mut proc = Process::new(1);
 
         // Allocate 3 threads
-        let t1 = proc.alloc_tid();
-        let t2 = proc.alloc_tid();
-        let t3 = proc.alloc_tid();
+        let t1 = 2;
+        let t2 = 3;
+        let t3 = 4;
 
         proc.add_thread(ThreadInfo::new(t1, 0x100, 0x1000, 0x2000));
         proc.add_thread(ThreadInfo::new(t2, 0x200, 0x3000, 0x4000));
@@ -28583,7 +28225,7 @@ mod tests {
         assert_eq!(info.tls_ptr, 0x123);
         assert_eq!(info.tidptr, 0); // default
 
-        info.tidptr = 0x456;
+        info.state_mut_for_test().tidptr = 0x456;
         assert_eq!(info.tidptr, 0x456);
     }
 
@@ -28591,7 +28233,7 @@ mod tests {
     fn test_process_get_thread_mut() {
         use crate::process::ThreadInfo;
         let mut proc = Process::new(5);
-        let tid = proc.alloc_tid();
+        let tid = 6;
         proc.add_thread(ThreadInfo::new(tid, 0, 0, 0));
 
         // Modify thread via mutable ref
@@ -29733,9 +29375,6 @@ mod tests {
             fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
                 Ok(())
             }
@@ -29803,24 +29442,11 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
             }
-            fn host_fork(&self) -> i32 {
-                -(Errno::ENOSYS as i32)
-            }
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Err(Errno::EAGAIN)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
-            }
-            fn host_clone(
-                &mut self,
-                _f: usize,
-                _a: usize,
-                _s: usize,
-                _t: usize,
-                _c: usize,
-            ) -> Result<i32, Errno> {
-                Err(Errno::ENOSYS)
             }
             fn bind_framebuffer(
                 &mut self,
@@ -29966,9 +29592,6 @@ mod tests {
             fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
                 Ok(())
             }
@@ -30036,24 +29659,11 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
             }
-            fn host_fork(&self) -> i32 {
-                -(Errno::ENOSYS as i32)
-            }
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
-            }
-            fn host_clone(
-                &mut self,
-                _f: usize,
-                _a: usize,
-                _s: usize,
-                _t: usize,
-                _c: usize,
-            ) -> Result<i32, Errno> {
-                Err(Errno::ENOSYS)
             }
             fn bind_framebuffer(
                 &mut self,
@@ -30196,9 +29806,6 @@ mod tests {
             fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
                 Ok(())
             }
@@ -30266,24 +29873,11 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
             }
-            fn host_fork(&self) -> i32 {
-                -1
-            }
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
-            }
-            fn host_clone(
-                &mut self,
-                _f: usize,
-                _a: usize,
-                _s: usize,
-                _t: usize,
-                _c: usize,
-            ) -> Result<i32, Errno> {
-                Err(Errno::ENOSYS)
             }
             fn bind_framebuffer(
                 &mut self,
@@ -30818,7 +30412,7 @@ mod tests {
         let mut table = ProcessTable::new();
         // PID 1 is reserved for the virtual init process; use 100 for the test
         // parent so create_process doesn't collide with the auto-registered init.
-        table.create_process(100).unwrap();
+        assert_eq!(table.create_process().unwrap(), 100);
 
         // Create a pipe in the parent
         {
@@ -30832,7 +30426,7 @@ mod tests {
         }
 
         // Fork
-        table.fork_process(100, 101).unwrap();
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 101);
 
         // Child should NOT have fd 0 (CLOFORK), but SHOULD have fd 1
         let child = table.get(101).unwrap();
@@ -32335,8 +31929,17 @@ mod tests {
             ..Default::default()
         };
         let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
-        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
-        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        unsafe {
+            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+        };
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_CREATE_DUMB,
+            &mut buf,
+        )
+        .unwrap();
         let created: WpkDrmModeCreateDumb =
             unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
 
@@ -32358,7 +31961,14 @@ mod tests {
         };
         let mut dbuf = [0u8; core::mem::size_of::<WpkDrmModeDestroyDumb>()];
         unsafe { core::ptr::write_unaligned(dbuf.as_mut_ptr() as *mut WpkDrmModeDestroyDumb, req) };
-        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DESTROY_DUMB, &mut dbuf).unwrap();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_DESTROY_DUMB,
+            &mut dbuf,
+        )
+        .unwrap();
         assert!(
             !proc
                 .ofd_table
@@ -32372,7 +31982,14 @@ mod tests {
 
         // Second DESTROY_DUMB on the same handle → ENOENT.
         assert_eq!(
-            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DESTROY_DUMB, &mut dbuf).unwrap_err(),
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_DESTROY_DUMB,
+                &mut dbuf
+            )
+            .unwrap_err(),
             Errno::ENOENT
         );
     }
@@ -32448,7 +32065,14 @@ mod tests {
         };
         let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
         unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, req) };
-        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_PRIME_HANDLE_TO_FD,
+            &mut pbuf,
+        )
+        .unwrap();
         let out: WpkDrmPrimeHandle =
             unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
         assert!(out.fd >= 0);
@@ -32486,8 +32110,17 @@ mod tests {
             ..Default::default()
         };
         let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
-        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
-        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        unsafe {
+            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+        };
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd_a,
+            DRM_IOCTL_MODE_CREATE_DUMB,
+            &mut buf,
+        )
+        .unwrap();
         let created: WpkDrmModeCreateDumb =
             unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
 
@@ -32499,7 +32132,14 @@ mod tests {
         };
         let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
         unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, exp) };
-        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd_a,
+            DRM_IOCTL_PRIME_HANDLE_TO_FD,
+            &mut pbuf,
+        )
+        .unwrap();
         let exported: WpkDrmPrimeHandle =
             unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
 
@@ -32510,7 +32150,14 @@ mod tests {
             fd: exported.fd,
         };
         unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, imp) };
-        sys_ioctl(&mut proc, &mut host, fd_b, DRM_IOCTL_PRIME_FD_TO_HANDLE, &mut pbuf).unwrap();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd_b,
+            DRM_IOCTL_PRIME_FD_TO_HANDLE,
+            &mut pbuf,
+        )
+        .unwrap();
         let imported: WpkDrmPrimeHandle =
             unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
         assert_eq!(imported.handle, 1, "first handle in fd_b's namespace");
@@ -32597,14 +32244,12 @@ mod tests {
 
         // Bo exists in the registry with refcount = 1.
         let bo_id = crate::dri::bo::next_id_for_test() - 1;
-        let bo_present_before =
-            crate::dri::with_registry(|r| r.get(bo_id).is_some());
+        let bo_present_before = crate::dri::with_registry(|r| r.get(bo_id).is_some());
         assert!(bo_present_before);
 
         // Close the fd — the bo must be gone.
         sys_close(&mut proc, &mut host, fd).unwrap();
-        let bo_gone_after =
-            crate::dri::with_registry(|r| r.get(bo_id).is_none());
+        let bo_gone_after = crate::dri::with_registry(|r| r.get(bo_id).is_none());
         assert!(bo_gone_after, "close should have released the bo");
         // Avoid "unused variable" warning.
         let _ = created;
@@ -33302,9 +32947,7 @@ mod tests {
             ..Default::default()
         };
         let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
-        unsafe {
-            core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
-        };
+        unsafe { core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
         let created: WpkDrmModeCreateDumb =
             unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };

@@ -201,7 +201,7 @@ describe("LiveKernelHost: process events", () => {
     const offA = host.subscribeProcessEvents(a);
     host.subscribeProcessEvents(b);
     offA();
-    host.emitProcessEvent({ kind: "spawn", pid: 1 });
+    host.emitProcessEvent({ kind: "spawn", pid: 100 });
     expect(a).not.toHaveBeenCalled();
     expect(b).toHaveBeenCalledOnce();
   });
@@ -287,9 +287,9 @@ describe("LiveKernelHost: process listing", () => {
       kernel: {
         fs,
         enumProcs: async () => [
-          { pid: 1, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "/sbin/dinit" },
-          { pid: 2, ppid: 1, uid: 33, gid: 33, vsizeBytes: 2048, state: "S", comm: "php-fpm", cmdline: "php-fpm: pool www" },
-          { pid: 3, ppid: 1, uid: 4242, gid: 4242, vsizeBytes: 4096, state: "S", comm: "worker", cmdline: "worker" },
+          { pid: 100, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "/sbin/dinit" },
+          { pid: 101, ppid: 100, uid: 33, gid: 33, vsizeBytes: 2048, state: "S", comm: "php-fpm", cmdline: "php-fpm: pool www" },
+          { pid: 102, ppid: 100, uid: 4242, gid: 4242, vsizeBytes: 4096, state: "S", comm: "worker", cmdline: "worker" },
         ],
       } as any,
     });
@@ -348,7 +348,7 @@ describe("LiveKernelHost: shell command queue", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        spawnFromVfs: async () => ({ pid: 1, exit: new Promise<number>(() => {}) }),
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
           callback(encoder.encode("kandelo$ "));
@@ -396,7 +396,7 @@ describe("LiveKernelHost: shell command queue", () => {
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
-        spawnFromVfs: async () => ({ pid: 1, exit: new Promise<number>(() => {}) }),
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
           callback(encoder.encode("kandelo$ "));
@@ -443,7 +443,7 @@ describe("LiveKernelHost: shell command queue", () => {
       releaseSpawn = resolve;
     });
     let spawnCalls = 0;
-    let nextPid = 1;
+    const allocatedPids = [100];
 
     const host = new LiveKernelHost({
       kernel: {
@@ -451,7 +451,7 @@ describe("LiveKernelHost: shell command queue", () => {
         spawnFromVfs: async () => {
           spawnCalls++;
           await spawnGate;
-          const pid = nextPid++;
+          const pid = allocatedPids.shift()!;
           return { pid, exit: new Promise<number>(() => {}) };
         },
         onPtyOutput(pid: number, callback: (data: Uint8Array) => void) {
@@ -489,8 +489,8 @@ describe("LiveKernelHost: shell command queue", () => {
       visibleText += decoder.decode(bytes);
     });
     expect(spawnCalls).toBe(1);
-    expect(writes).toEqual([{ pid: 1, text: "printf guide-visible\n" }]);
-    expect(visibleText).toContain("spawned:1");
+    expect(writes).toEqual([{ pid: 100, text: "printf guide-visible\n" }]);
+    expect(visibleText).toContain("spawned:100");
     expect(visibleText).toContain("printf guide-visible");
     expect(visibleText).toContain("done");
   });
@@ -501,21 +501,21 @@ describe("LiveKernelHost: shell command queue", () => {
     const callbacks = new Map<number, (data: Uint8Array) => void>();
     const livePids = new Set<number>();
     const writes: number[] = [];
-    let nextPid = 1;
+    const allocatedPids = [101, 102];
 
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => {
-          const pid = nextPid++;
+          const pid = allocatedPids.shift()!;
           livePids.add(pid);
           return { pid, exit: new Promise<number>(() => {}) };
         },
         enumProcs: async () => [
-          { pid: 99, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "dinit" },
+          { pid: 100, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "dinit" },
           ...Array.from(livePids).map((pid) => ({
             pid,
-            ppid: 99,
+            ppid: 100,
             uid: 1000,
             gid: 1000,
             vsizeBytes: 1024,
@@ -548,18 +548,18 @@ describe("LiveKernelHost: shell command queue", () => {
     firstHandle.onData((bytes) => {
       seen += decoder.decode(bytes);
     });
-    expect(seen).toContain("spawned:1");
+    expect(seen).toContain("spawned:101");
 
-    livePids.delete(1);
+    livePids.delete(101);
     const secondHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
     secondHandle.write("echo second\n");
-    expect(writes).toEqual([2]);
-    expect(seen).toContain("spawned:2");
-    expect(seen).toContain("write:2:echo second");
+    expect(writes).toEqual([102]);
+    expect(seen).toContain("spawned:102");
+    expect(seen).toContain("write:102:echo second");
 
     firstHandle.write("echo first\n");
-    expect(writes).toEqual([2, 2]);
-    expect(seen).toContain("write:2:echo first");
+    expect(writes).toEqual([102, 102]);
+    expect(seen).toContain("write:102:echo first");
   });
 
   it("keeps PTY listeners connected when an exited shell respawns", async () => {
@@ -568,13 +568,13 @@ describe("LiveKernelHost: shell command queue", () => {
     const callbacks = new Map<number, (data: Uint8Array) => void>();
     const exitResolvers = new Map<number, (status: number) => void>();
     const writes: number[] = [];
-    let nextPid = 1;
+    const allocatedPids = [100, 101];
 
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => {
-          const pid = nextPid++;
+          const pid = allocatedPids.shift()!;
           const exit = new Promise<number>((resolve) => {
             exitResolvers.set(pid, resolve);
           });
@@ -604,21 +604,21 @@ describe("LiveKernelHost: shell command queue", () => {
     firstHandle.onData((bytes) => {
       seen += decoder.decode(bytes);
     });
-    expect(seen).toContain("spawned:1");
+    expect(seen).toContain("spawned:100");
 
-    exitResolvers.get(1)?.(0);
+    exitResolvers.get(100)?.(0);
     await Promise.resolve();
     await Promise.resolve();
 
     const secondHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
     secondHandle.write("echo after-exit\n");
-    expect(writes).toEqual([2]);
-    expect(seen).toContain("spawned:2");
-    expect(seen).toContain("write:2:echo after-exit");
+    expect(writes).toEqual([101]);
+    expect(seen).toContain("spawned:101");
+    expect(seen).toContain("write:101:echo after-exit");
 
     firstHandle.write("echo old-handle\n");
-    expect(writes).toEqual([2, 2]);
-    expect(seen).toContain("write:2:echo old-handle");
+    expect(writes).toEqual([101, 101]);
+    expect(seen).toContain("write:101:echo old-handle");
   });
 });
 

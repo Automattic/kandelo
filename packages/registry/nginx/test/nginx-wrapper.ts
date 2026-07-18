@@ -173,6 +173,7 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
 
   const io = new NodePlatformIO();
   const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+  let masterPid = 0;
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
@@ -194,13 +195,12 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
         const childChannelOffset = (MAX_PAGES - 2) * 65536;
         new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset]);
 
         const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
-          ppid: parentPid,
           programBytes: nginxBytes,
           memory: childMemory,
           channelOffset: childChannelOffset,
@@ -221,7 +221,7 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
       onExec: async () => -38, // ENOSYS
 
       onExit: (pid, exitStatus) => {
-        if (pid === 1) {
+        if (pid === masterPid) {
           kernelWorker.unregisterProcess(pid);
         } else {
           kernelWorker.deactivateProcess(pid);
@@ -243,10 +243,10 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
   memory.grow(MAX_PAGES - 17);
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-  const pid = 1;
-  kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
+  const pid = kernelWorker.createProcess(CAPTURED_STDIO);
+  masterPid = pid;
+  kernelWorker.registerProcess(pid, memory, [channelOffset]);
   kernelWorker.setCwd(pid, opts.prefix || process.cwd());
-  kernelWorker.setNextChildPid(2);
 
   // Build nginx argv
   const argv = ["nginx", "-p", (opts.prefix || process.cwd()) + "/", "-c", opts.config];
@@ -260,7 +260,6 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid,
-    ppid: 0,
     programBytes: nginxBytes,
     memory,
     channelOffset,

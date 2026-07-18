@@ -15,8 +15,10 @@ Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A sing
                     │                   │
                     │  ProcessTable     │
                     │  ├─ pid 1         │
-                    │  ├─ pid 2         │
+                    │  │  synthetic init│
+                    │  ├─ pid 100       │
                     │  └─ pid N         │
+                    │  Task-ID allocator│
                     │                   │
                     │  Fd tables        │
                     │  Advisory locks   │
@@ -29,8 +31,8 @@ Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A sing
               ┌────────────┼────────────┐
               │            │            │
      ┌────────┴──┐  ┌─────┴─────┐  ┌──┴────────┐
-     │ Worker 1   │  │ Worker 2   │  │ Worker N   │
-     │ pid=1      │  │ pid=2      │  │ pid=N      │
+     │ Worker 100 │  │ Worker 101 │  │ Worker N   │
+     │ pid=100    │  │ pid=101    │  │ pid=N      │
      │ User Wasm  │  │ User Wasm  │  │ User Wasm  │
      │ + musl     │  │ + musl     │  │ + musl     │
      │ + glue     │  │ + glue     │  │ + glue     │
@@ -55,7 +57,7 @@ Key source files:
 | `pipe.rs` | Kernel-space pipe ring buffers with cross-process wakeup |
 | `pty.rs` | Pseudoterminal pairs with line discipline (canonical/raw mode) |
 | `process.rs` | Process struct, HostIO trait, per-process state |
-| `process_table.rs` | ProcessTable — maps PIDs to Process structs |
+| `process_table.rs` | ProcessTable — maps PIDs to Process structs and owns the machine-wide PID/TID allocator |
 | `signal.rs` | Signal subsystem: masks, handlers, RT queuing, delivery |
 | `socket.rs` | AF_INET and AF_UNIX socket implementation |
 | `fork.rs` | Fork/exec state serialization and deserialization |
@@ -67,11 +69,24 @@ Key source files:
 Key kernel exports (called by the host):
 
 ```
-kernel_create_process(pid) → 0
-kernel_fork_process(parent_pid, child_pid) → 0
+kernel_create_process() → assigned_pid | -errno
+kernel_create_process_with_stdio(stdin_kind, stdout_kind, stderr_kind) → assigned_pid | -errno
+kernel_validate_task(pid, tid) → 0 | -errno
+kernel_set_current_tid(pid, tid) → 0 | -errno
+kernel_fork_process(parent_pid, caller_tid) → assigned_child_pid | -errno
+kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len) → assigned_child_pid | -errno
 kernel_remove_process(pid) → 0
 kernel_handle_channel(channel_offset, pid) → result
-kernel_exec_setup(pid) → result
+kernel_exec_prepare(pid, caller_tid) → 0 | -errno
+kernel_exec_setup_for_thread(pid, caller_tid) → 0 | -errno
+kernel_thread_exit(pid, tid) → 0 | -errno
+kernel_dequeue_signal(pid, tid, out_ptr) → 0 | signum | -errno
+kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr) → child_pid | 0 | -errno
+kernel_prepare_write_operation(pid, tid, fd, offset, len, positioned) → allowed_len | -errno
+kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno
+kernel_ipc_shmdt_for_task(pid, tid, shmid) → 0 | -errno
+kernel_ipc_shmat_for_process(pid, shmid, addr, flags) → segment_size | -errno
+kernel_ipc_shmdt_for_process(pid, shmid) → 0 | -errno
 kernel_get_cwd(pid, buf, len) → bytes_written
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
@@ -202,8 +217,8 @@ dedicated kernel worker. The kernel worker owns the JavaScript timer because a
 process worker executing a CPU-bound Wasm loop cannot service its own event
 loop. At the monotonic deadline the host sets each flag byte with an atomic
 store in the process's shared memory. Timer entries retain the exact
-process-generation object as well as the PID, so exec, exit, or PID reuse
-cannot redirect a stale callback into a replacement process. Deadlines beyond
+process-generation object as well as the PID, so exec or exit cannot redirect
+a stale callback into a replacement process image. Deadlines beyond
 JavaScript's signed 32-bit timer range are scheduled in bounded chunks.
 
 The imported function and its pointer-width-specific signature are part of
@@ -314,6 +329,72 @@ generic wake event without implementing advisory-lock storage.
 
 ## Multi-Process Model
 
+### Task identity allocation
+
+The Rust `ProcessTable` is the sole authority for every process ID (PID) and
+pthread thread ID (TID) in a kernel instance. One monotonically increasing,
+positive signed task-ID sequence serves top-level process creation, `fork()`,
+non-forking `posix_spawn()`, and thread-style `clone()`. It starts at 100 and
+never reuses an identity, even after a process is reaped or a thread exits. If
+the sequence assigns `i32::MAX`, that allocation succeeds; the next allocation
+fails with `EAGAIN` instead of wrapping.
+
+This ownership is enforced inside the Rust type boundary, not only by call-site
+convention. Each allocation produces an opaque, non-cloneable `AllocatedTaskId`
+that production process or thread construction must consume. Process IDs,
+thread IDs, and thread membership are read-only outside that path. Raw numeric
+constructors exist only for isolated `cfg(test)` fixtures, and fork
+deserialization fills a child record whose identity `ProcessTable` has already
+allocated rather than accepting a second PID source.
+
+PID 1 is outside that sequence. The kernel creates it as a synthetic root-owned
+init reservation with no user Wasm worker, so PID-addressed existence and
+permission checks have a real kernel target. The first user process is therefore
+PID 100, not PID 1. This synthetic record is not a user-space init program or
+an active wait-loop reaper.
+
+Callers never choose an ID or advance a watermark. The host helper
+`CentralizedKernelWorker.createProcess(...)` asks the Rust kernel to create a
+top-level process and returns the assigned PID. `registerProcess(pid, ...)`
+only attaches host memory, syscall channels, and worker metadata to an existing
+running or stopped kernel process; it rejects unknown, exited, and synthetic
+PID 1 records and cannot create or reserve one. Adding a syscall channel calls
+the read-only `kernel_validate_task(pid, tid)`, which accepts only that
+process's main task or one of its kernel-allocated threads before the host
+records the channel. For a cloned pthread, the callback receives a one-shot
+transport proof bound to the exact clone result; `attachThreadChannel` derives
+the PID and TID from that proof, rejects replay and duplicate mailbox ownership,
+and never accepts a caller-selected numeric identity. Validation does not
+install dispatch authority. Immediately before each mailbox call, the host
+calls `kernel_set_current_tid(pid, tid)`;
+`kernel_handle_channel` consumes and clears that exact pair on every returning
+path, while the non-returning `_exit` path clears it before trapping. Transport
+misrouting or earlier validation therefore cannot authorize a later dispatch.
+Signal dequeue, child-wait polling, write-limit preparation, and guest SysV
+shared-memory attachment also carry the exact live caller TID explicitly;
+lifecycle cleanup uses separately named process-level SysV exports.
+Fork and spawn carry the channel's caller TID to the kernel, which validates it
+as a live task belonging to the parent. That value selects caller-specific
+state; it is never a candidate child identity. Clone validates the bound caller
+against the same live task records before allocating its new thread ID. Fork,
+spawn, and clone callbacks likewise receive identities that the Rust kernel has
+already allocated.
+`exec()` preserves the calling process identity.
+
+A task-binding rejection while the Process is live is a fatal host/kernel
+protocol failure: the host marks the process crashed and terminates its Workers
+without returning a synthetic guest error. Rust must accept that signal-death
+transition before the host records the process as reaped or wakes its parent;
+a missing or rejected transition remains a loud protocol failure. A trap from
+the non-returning kernel exit path is also insufficient by itself: the host
+verifies the Process is actually `Exited` before publishing a clean exit.
+During process exit, Node and browser may briefly retain exact channel objects
+until Worker termination completes.
+Once Rust has made that Process Exited, those channels can finish only musl's
+`exit_group`/`exit` transport handshake; every other late syscall stays parked
+and never re-enters kernel state. Final teardown removes all PID-prefixed thread
+channel, fork-context, and clear-TID metadata.
+
 ### fork()
 
 Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stack (details in [fork-instrumentation.md](fork-instrumentation.md)):
@@ -322,12 +403,14 @@ Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stac
 2. Host's `kernel_fork` override calls `wpk_fork_unwind_begin(buf)`. The tool-injected export sets state to UNWINDING, initializes the absolute frame cursor `current_pos = buf + frames_start_offset` at `*(buf+0)`, and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the buffer's `saved_globals[]` area.
 3. The return-to-caller chain unwinds; each instrumented function's postamble writes its frame to the buffer and bumps `current_pos`.
 4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
-5. Kernel's `kernel_fork_process` copies process metadata and the fd/OFD tables,
-   while inherited stateful descriptors retain references to their existing
-   kernel-global backings.
+5. Kernel's `kernel_fork_process(parent_pid, caller_tid)` validates the caller,
+   allocates the child PID from the global task-ID sequence, and copies process
+   metadata and the fd/OFD tables. The child receives the calling task's blocked
+   signal mask, while inherited stateful descriptors retain references to their
+   existing kernel-global backings.
 6. Host copies the parent's linear memory to a new `WebAssembly.Memory` and spawns a child worker.
 7. Child worker calls `wpk_fork_rewind_begin(buf)` — the tool's export restores all saved globals. The host then calls `setupChannelBase(...)` (which reads the now-correct `__tls_base`) and invokes `_start`.
-8. Each instrumented function's preamble sees state=REWINDING, reloads its frame, and re-enters the call site where the parent was interrupted. Eventually reaches the `kernel_fork` call site in the leaf function, which returns 0.
+8. Each instrumented function's preamble sees state=REWINDING, reloads its frame, and re-enters the call site where the parent was interrupted. Eventually reaches the `kernel_fork` call site in the leaf function, which returns 0. Libc then refreshes the copied pthread TID from the kernel through `set_tid_address` before returning to user code.
 9. `wpk_fork_rewind_end` resets state; fork returns 0 in child, child PID in parent.
 
 The instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
@@ -379,15 +462,19 @@ remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
 1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
 2. Host resolves `path` to a Wasm binary (via filesystem or program map)
 3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries, with each string limited to one 64 KiB scratch transfer); oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross into the kernel one at a time, so the fixed host scratch allocation is never overrun and an empty environment explicitly clears the prior one.
-4. The host validates the exec caller and deferred file actions, then publishes
-   and flushes writable tracked mappings while the old image is still live.
+4. The host calls `kernel_exec_prepare(pid, caller_tid)` while the old image is
+   still live. The kernel validates that the exact caller is a live task owned
+   by the process and applies deferred `posix_spawn` file actions; any failure
+   returns before the address-space transition. The host then publishes and
+   flushes writable tracked mappings while the old image is still live.
    Tracked shared file mappings hold a lifetime-stable host handle independent
    of the guest fd, so closing the original fd does not by itself prevent
    writeback. A failed flush leaves the old mapping trackers and SysV
    attachments in place.
-   `kernel_exec_setup` then closes CLOEXEC fds and directory streams and resets
-   image-specific state **in place**, including the program break (POSIX/Linux
-   behavior — the prior program's brk does not carry over). Exact kernel objects
+   At the commit boundary, `kernel_exec_setup_for_thread(pid, caller_tid)`
+   closes CLOEXEC fds and directory streams and resets image-specific state
+   **in place**, including the program break (POSIX/Linux behavior — the prior
+   program's brk does not carry over). Exact kernel objects
    behind surviving descriptors are never fork-cloned or reconstructed: socket
    queues, eventfd/epoll/timerfd/signalfd state, memfd contents, procfs
    snapshots, terminal input, and OFD identity therefore survive without
@@ -421,16 +508,20 @@ caller now take.
    `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
 2. Host (`handleSpawn` in `kernel-worker.ts`) reads the blob from
    caller memory, copies it to kernel scratch, and calls
-   `kernel_spawn_process(parent_pid, blob_ptr, blob_len)`.
+   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)`.
 3. Kernel parses the blob (`crates/kernel/src/spawn.rs::parse_blob` —
-   the trust boundary; bails with EINVAL on any malformed offset) and
-   calls `ProcessTable::spawn_child`.
-4. `spawn_child` allocates the child pid, builds the child Process
-   from `Process::new(child_pid)` plus selective inheritance from the
-   parent (uid/gid/pgid/sid/cwd/umask/rlimits, fd_table + ofd_table +
+   the trust boundary; bails with EINVAL on any malformed offset), validates
+   `caller_tid` as a live task belonging to the parent, and calls
+   `ProcessTable::spawn_child_for_caller`.
+4. `spawn_child_for_caller` allocates the child PID from the same global task-ID sequence
+   used by top-level creation, fork, and clone, then consumes that opaque
+   allocation token to build the child Process plus selective inheritance from the
+   parent (uid/gid/pgid/sid/cwd/umask/rlimits, the calling task's blocked
+   signal mask, fd_table + ofd_table +
    sockets via the `bump_inherited_resource_refcounts` helper that
    fork also uses), applies attrs in POSIX order (SETSID → SETPGROUP →
-   SETSIGMASK → SETSIGDEF), then applies file actions in forward
+   SETSIGMASK → SETSIGDEF), so `POSIX_SPAWN_SETSIGMASK` replaces the
+   inherited caller mask, then applies file actions in forward
    order. Failure on any action rolls back via `remove_process`.
 5. The kernel returns the allocated pid via `pid_out_ptr` in caller
    memory. The host's `onSpawn` callback (Node:
@@ -438,9 +529,10 @@ caller now take.
    `host/src/browser-kernel-worker-entry.ts::handlePosixSpawn`)
    receives the authoritative parent pid, resolves the program bytes,
    instantiates a fresh Worker for the child, and publishes a parented
-   `proc_event` spawn notification. The Worker is registered with
-   `skipKernelCreate: true` because the kernel already inserted the
-   Process; its initialization metadata carries the same parent pid.
+   `proc_event` spawn notification. The host registers the Worker's memory and
+   channels against the Process the kernel already inserted; registration does
+   not create or select the child identity. Its initialization metadata carries
+   the same parent pid.
 
 PATH search lives in libc (`posix_spawnp.c`); the kernel never sees
 PATH-relative names.
@@ -728,7 +820,7 @@ Kandelo browser UI presets use this approach. Each image builder pre-populates a
 
 There are two consumption patterns for VFS images, depending on whether the demo wants the kernel worker to fully own the filesystem:
 
-**Kernel-owned VFS (`kernelOwnedFs: true` + `kernel.boot()`).** The main thread never instantiates the `MemoryFileSystem`. Instead, the demo fetches the `.vfs.zst` bytes and hands them to `BrowserKernel.boot({ kernelWasm, vfsImage, argv, env })`. The kernel worker restores the filesystem internally (auto-detecting zstd magic), exec()s `argv[0]` as the first ("init") process, and the main thread becomes a thin client — only routing stdin/stdout, network backend messages, framebuffer events, and HTTP-bridge messages. Service-supervised demos run dinit (`/sbin/dinit --container`) as that init process; dinit reads `/etc/dinit.d/*` from the image and brings up the service tree. Single-program demos (python, perl, php, ruby) exec the language interpreter directly. This is the path new demos should use.
+**Kernel-owned VFS (`kernelOwnedFs: true` + `kernel.boot()`).** The main thread never instantiates the `MemoryFileSystem`. Instead, the demo fetches the `.vfs.zst` bytes and hands them to `BrowserKernel.boot({ kernelWasm, vfsImage, argv, env })`. The kernel worker restores the filesystem internally (auto-detecting zstd magic), exec()s `argv[0]` as the first user process, and the main thread becomes a thin client — only routing stdin/stdout, network backend messages, framebuffer events, and HTTP-bridge messages. Service-supervised demos run dinit (`/sbin/dinit --container`) as that service supervisor; dinit reads `/etc/dinit.d/*` from the image and brings up the service tree. Single-program demos (python, perl, php, ruby) exec the language interpreter directly. This is the path new demos should use.
 
 **Legacy main-thread-owned VFS (`memfs:` constructor option + `kernel.spawn()`).** The main thread restores the image into its own `MemoryFileSystem`, hands the SAB to a fresh `BrowserKernel`, and then calls `kernel.spawn(programBytes, argv)` to launch transient binaries. Useful for demos that fetch additional binaries at runtime (test runners, REPLs that load arbitrary code), but the main thread is in the syscall hot path for FS operations. Still used by `benchmark`, `erlang`, and `shell`.
 
@@ -925,6 +1017,11 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 
 Features: RT signal queuing with `si_value`, cross-process `kill`/`killpg`, `sigaltstack` with shadow stack swap, `sigsuspend`, `sigtimedwait`, `setitimer`/`alarm` via host timers.
 
+Exact-thread delivery never degrades into process-wide delivery. `tkill` and
+`tgkill` resolve their target against retained live task records in the calling
+process; TID 0 and unknown or exited TIDs return `ESRCH`. Cross-process
+exact-thread delivery is not yet supported.
+
 POSIX timer scheduling is split at an explicit ownership boundary. The shared
 Node/browser host owns wall-clock `setTimeout`/`setInterval` scheduling, while
 the kernel owns the timer object, notification-pending state, exact
@@ -980,14 +1077,14 @@ Main Thread                              Kernel Worker
 
 **`BrowserKernel`** (`host/src/browser-kernel-host.ts`): Main-thread proxy that communicates with the browser kernel worker via `postMessage`. This is host/runtime code, maintained beside the Node.js host (`host/src/node-kernel-host.ts`). Browser apps and demos consume it; they do not own it. The current API has two boot paths:
 
-- `kernel.boot({ kernelWasm, vfsImage, argv, env, ... })` — preferred. Combined with `kernelOwnedFs: true`, the main thread never holds a `MemoryFileSystem` reference. The kernel worker restores the image and exec()s `argv[0]` as the first process. All FS operations stay inside the worker, off the syscall hot path.
-- `kernel.spawn(programBytes, argv, opts)` — legacy. Posts the wasm bytes to the kernel worker, which allocates and registers the process, starts its process worker, and then returns the assigned pid in the spawn response. Kept for transient binary launches (REPLs, test runners, benchmarks) that the kernel can't currently load via fork+exec from a baked binary.
+- `kernel.boot({ kernelWasm, vfsImage, argv, env, ... })` — preferred. Combined with `kernelOwnedFs: true`, the main thread never holds a `MemoryFileSystem` reference. The kernel worker restores the image and exec()s `argv[0]` as the first user process. All FS operations stay inside the worker, off the syscall hot path.
+- `kernel.spawn(programBytes, argv, opts)` — legacy. Posts the wasm bytes to the kernel worker; the Rust `ProcessTable` allocates the PID, then the worker attaches host state, starts the process worker, and returns the assigned PID. Kept for transient binary launches (REPLs, test runners, benchmarks) that the kernel can't currently load via fork+exec from a baked binary.
 
 The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY routing, framebuffer registry mirroring, HTTP bridge handoff) are pid-addressed and work the same in both boot paths.
 
 **Browser kernel worker** (`host/src/browser-kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. Syscall notification remains event-driven through `Atomics.waitAsync`, not channel polling. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue; this keeps syscall handling and worker messages progressing together under multi-process bridge load. Node.js retains its native/default batching unchanged.
 
-**dinit (PID 1)** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit handles SIGCHLD reaping, restarts disabled by default, and inter-service `depends-on` ordering.
+**dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children, leaves reparented-orphan reaping unsupported because synthetic PID 1 has no wait loop, disables restarts by default, and enforces inter-service `depends-on` ordering.
 
 **Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
 

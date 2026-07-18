@@ -37,13 +37,13 @@ function createHarness(options: {
     view.setUint32(CH_ERRNO, errno, true);
     return 0;
   });
-  const dequeueSignal = vi.fn((_pid: number, outPtr: number) => {
+  const dequeueSignal = vi.fn((_pid: number, _tid: number, outPtr: number) => {
     if (handlerSignal > 0) {
       new DataView(kernelMemory.buffer).setUint32(outPtr, handlerSignal, true);
     }
     return handlerSignal;
   });
-  const setCurrentTid = vi.fn();
+  const setCurrentTid = vi.fn(() => 0);
   const completeChannel = vi.fn();
   const handleProcessTerminated = vi.fn();
   const worker: any = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
@@ -107,7 +107,7 @@ describe("select and pselect signal outcomes", () => {
       EINTR,
     );
     expect(harness.worker.pendingSelectRetries.size).toBe(0);
-    expect(harness.setCurrentTid).toHaveBeenCalledWith(43);
+    expect(harness.setCurrentTid).toHaveBeenCalledWith(42, 43);
     expect(harness.setCurrentTid.mock.invocationCallOrder.at(-1)).toBeLessThan(
       harness.dequeueSignal.mock.invocationCallOrder[0],
     );
