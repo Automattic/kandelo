@@ -308,6 +308,11 @@ if [ "$DESTINATION_MODE" = repository-canary ]; then
     exit 1
   }
   ensure_authenticated_config
+  authenticated_fetch canary-preflight
+  [ "$remote_status" = missing ] || {
+    echo "homebrew-ghcr-upload.sh: repository canary requires an absent destination package" >&2
+    exit 1
+  }
   authenticated_repository_fetch canary-preflight
   [ "$repository_status" = missing ] || {
     echo "homebrew-ghcr-upload.sh: repository canary requires an absent destination package" >&2

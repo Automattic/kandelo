@@ -830,13 +830,16 @@ case "${1:-}" in
         ghcr-missing-private:repo:authenticated:3) mode=repository-missing ;;
         ghcr-missing-private:manifest:anonymous:4) mode=private ;;
         ghcr-canary-missing-present:manifest:anonymous:1) mode=private ;;
-        ghcr-canary-missing-present:repo:authenticated:2) mode=repository-missing ;;
-        ghcr-canary-missing-present:manifest:anonymous:3) mode=present ;;
+        ghcr-canary-missing-present:manifest:authenticated:2) mode=missing ;;
+        ghcr-canary-missing-present:repo:authenticated:3) mode=repository-missing ;;
+        ghcr-canary-missing-present:manifest:anonymous:4) mode=present ;;
         ghcr-canary-existing:manifest:anonymous:1) mode=missing ;;
-        ghcr-canary-existing:repo:authenticated:2) mode=repository-present ;;
+        ghcr-canary-existing:manifest:authenticated:2) mode=missing ;;
+        ghcr-canary-existing:repo:authenticated:3) mode=repository-present ;;
         ghcr-canary-missing-private:manifest:anonymous:1) mode=private ;;
-        ghcr-canary-missing-private:repo:authenticated:2) mode=repository-missing ;;
-        ghcr-canary-missing-private:manifest:anonymous:3) mode=private ;;
+        ghcr-canary-missing-private:manifest:authenticated:2) mode=missing ;;
+        ghcr-canary-missing-private:repo:authenticated:3) mode=repository-missing ;;
+        ghcr-canary-missing-private:manifest:anonymous:4) mode=private ;;
         *) exit 2 ;;
       esac
     elif [[ "$mode" == *-* ]]; then
