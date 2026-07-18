@@ -701,7 +701,16 @@ jobs:
 
       - name: Materialize binaries
         env:
-          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive espeak-ng
+          # wayland-protocols is a source-staged package (ManifestKind::Source,
+          # no publishable binary archive). Binary materialization runs
+          # fetch-only, which cannot source-build it, so it succeeds only on a
+          # warm resolver cache and fails deterministically on a cold runner
+          # (see build_deps.rs cmd_resolve). It has no runtime binary to
+          # materialize — the protocol XML is compiled into wlcompositor/wlterm
+          # during "Build test programs" — so skip it here. That later
+          # source-build warms the cache before the fetch-only prepare-browser
+          # step.
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive espeak-ng wayland-protocols
         # Resolve against the durable ABI release plus local file://
         # overlays for any matrix-built archives. Runtime-only PRs can
         # still reach this overlay path when preflight detects durable
