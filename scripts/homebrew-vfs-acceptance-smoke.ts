@@ -429,16 +429,18 @@ function collectDependencyEdges(
 }
 
 function assertGhcrBottleSources(plan: HomebrewVfsPlan): void {
-  const [owner, name, extra] = plan.tapName.split("/");
-  if (!owner || !name || extra !== undefined) fail("tap name is not owner/name");
-  const root = `https://ghcr.io/v2/${owner}/${name}`;
+  const [owner, repository, extra] = plan.tapRepository.toLowerCase().split("/");
+  if (!owner || !repository || extra !== undefined) {
+    fail("tap repository is not owner/repository");
+  }
+  const root = `https://ghcr.io/v2/${owner}/${repository}`;
   for (const pkg of plan.packages) {
     if (pkg.sourceStatus !== "success" || pkg.metadataStatus !== "success") {
       fail(`package ${pkg.name} did not select a current successful bottle`);
     }
     const expected = `${root}/${pkg.name}/blobs/sha256:${pkg.sha256}`;
     if (pkg.url !== expected) {
-      fail(`package ${pkg.name} bottle URL is not the tap GHCR blob ${expected}`);
+      fail(`package ${pkg.name} bottle URL is not the repository GHCR blob ${expected}`);
     }
   }
 }

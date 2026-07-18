@@ -53,16 +53,18 @@ Homebrew tap identity. Every repository uses the conventional
 `<owner>/homebrew-<name>` shape and canonical tap name `<owner>/<name>`. The
 default repository is `kandelo-dev/homebrew-tap-core`, so its tap name is
 `kandelo-dev/tap-core` and its bottle root is
-`https://ghcr.io/v2/kandelo-dev/tap-core`. A caller must run from that
+`https://ghcr.io/v2/kandelo-dev/homebrew-tap-core`. A caller must run from that
 same repository's reviewed `main` workflow.
 
-The caller grants the maximum permission ceiling. Four fresh runner roles then
-downgrade it: a read-only build/test job, a `packages: write` uploader without
-tap write access, a read-only anonymous/runtime verifier, and a
-`contents: write` tap finalizer without package write access. Dry runs never
-schedule the uploader or finalizer. Jobs exchange strict, bounded data
-handoffs; Formula builds cannot pass scripts, environment files, or credentials
-to a privileged runner.
+The caller grants the maximum permission ceiling. Production child and
+version-index writes use only that caller repository's scoped built-in
+`GITHUB_TOKEN` (`github.token`); the reusable workflow accepts no package PAT
+input or secret. Four fresh runner roles then downgrade it: a read-only
+build/test job, a `packages: write` uploader without tap write access, a
+read-only anonymous/runtime verifier, and a `contents: write` tap finalizer
+without package write access. Dry runs never schedule the uploader or
+finalizer. Jobs exchange strict, bounded data handoffs; Formula builds cannot
+pass scripts, environment files, or credentials to a privileged runner.
 Before GHCR credentials are exposed, the uploader validates the complete bottle
 archive as inert data. Every Wasm member, regardless of mode or path, must match
 the selected Kandelo ABI and memory width and satisfy the fork-instrumentation
@@ -84,7 +86,7 @@ the selected static Formula bottle tag, and regenerate `Kandelo/` state. It
 does not execute Formula Ruby or Homebrew with tap write credentials. Failed attempts go
 under `Kandelo/reports/failures/` without replacing last-green
 `Kandelo/metadata.json`. The bottle root is always derived from the lowercase
-Homebrew tap name; callers cannot override it.
+tap repository, including its `homebrew-` prefix; callers cannot override it.
 
 Manual rebuilds and rollback reporting are
 handled by `.github/workflows/reusable-homebrew-bottle-maintenance.yml`.
@@ -94,13 +96,20 @@ Rollback mode records a report under `Kandelo/reports/rollbacks/` while
 preserving last-green metadata; package deletion is exceptional and must be
 documented with both the deleted package URL and the operational reason.
 
+The never-live private `tap-core/zlib` and `tap-core/bzip2` controls are a
+one-time migration cleanup: keep them through the repository-rooted zlib and
+fresh-package bzip2 production pilots, then follow the exact inventory,
+deletion, verification, and restoration procedure in
+[Public Package Creation And Legacy Namespace Retirement](../../docs/homebrew-publishing.md#public-package-creation-and-legacy-namespace-retirement).
+
 Parallel peer and sibling-architecture publications compose against refreshed
 tap state under the shared lock, and Formula source drift after planning aborts
 publication. Older-ABI handoffs and lower bottle rebuilds for the same package
-identity are rejected under that lock. New GHCR packages are private by default. Changing one to public
-is an explicit approval boundary; the workflow does not change package
-visibility. A write publication cannot finalize until its bottle passes
-anonymous digest readback.
+identity are rejected under that lock. New packages use the exact public
+tap-repository namespace and carry the source-repository annotation before
+their first push; the workflow does not change package visibility. A write
+publication cannot finalize until the resulting package passes anonymous
+digest readback.
 
 Homebrew formula and bottle metadata remain the contract consumed by `brew`.
 Kandelo sidecar metadata is the bounded contract consumed by host VFS tooling,

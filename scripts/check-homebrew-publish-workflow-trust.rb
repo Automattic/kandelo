@@ -20,11 +20,11 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "994892064c7903c01a2584ecf42217a44c7fb4b877134a2b85628dbca0db1683"
+PUBLISHER_PLAN_DIGEST = "45b3551a20a8dd1d545b0aefec5fc142c1f298d3ef9db44a021b62a36f8c1938"
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
-PUBLISHER_UPLOAD_DIGEST = "e245199d1a635c8a07f9e98dabf03213b3a29dc2cad2f3e729bd8ea903d1e62b"
-PUBLISHER_INDEX_DIGEST = "e9ff42e9d459565e2e57eacab9464451cb67783e03b800df80a22cf3246ec7e1"
-PUBLISHER_VERIFY_DIGEST = "a6077aa35c272afcc1e3670a9ef58cb999eb447d4ddd81b551a5b5848ef312df"
+PUBLISHER_UPLOAD_DIGEST = "76789c81227ed5499b39cf20bbc067fd2d2d884b42863abf7c4286a35c739f8c"
+PUBLISHER_INDEX_DIGEST = "e351d98dd7e6d8121cb6e9896509cd2143c40bc411d50e6d1828cbae1754817f"
+PUBLISHER_VERIFY_DIGEST = "25e745059c0e67bf5f55870fd4750ceb74f6baee7e6da3d9f81f38f31d4a1f48"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -351,14 +351,7 @@ def check_tap_callers
     event_type: "publish-kandelo-bottles",
     job_name: "publish",
     reusable: "Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main",
-    inputs: publish_inputs.merge({
-      "github-packages-user" => "${{ vars.HOMEBREW_GITHUB_PACKAGES_USER }}",
-      "require-github-packages-token" => true,
-    }),
-    secrets: {
-      "HOMEBREW_GITHUB_PACKAGES_TOKEN" =>
-        "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN }}",
-    },
+    inputs: publish_inputs,
   )
 
   check_tap_caller(
@@ -510,7 +503,7 @@ def check_publisher(workflow)
   events = workflow_events(workflow)
   check(events.keys == ["workflow_call"], "publisher must only expose workflow_call")
   workflow_call = events.fetch("workflow_call")
-  check(workflow_call.keys.sort == %w[inputs secrets],
+  check(workflow_call.keys == ["inputs"],
         "publisher workflow_call contract changed")
   check(workflow_call["inputs"] == {
     "kandelo-repository" => { "type" => "string", "default" => "Automattic/kandelo" },
@@ -526,18 +519,12 @@ def check_publisher(workflow)
     "force" => { "type" => "boolean", "default" => false },
     "dry-run" => { "type" => "boolean", "default" => false },
     "require-vfs-acceptance" => { "type" => "boolean", "default" => false },
-    "github-packages-user" => { "type" => "string", "default" => "" },
-    "require-github-packages-token" => { "type" => "boolean", "default" => false },
   }, "publisher inputs changed")
-  packages_secret_contract = {
-    "HOMEBREW_GITHUB_PACKAGES_TOKEN" => { "required" => false },
-  }
-  check(workflow_call["secrets"] == packages_secret_contract,
-        "publisher package secret declaration changed")
   check(!workflow.key?("permissions"), "publisher requests workflow-wide permissions")
-  check_common(workflow, "reusable publisher", allowed_secret_nodes: [packages_secret_contract])
-  check(JSON.generate(workflow).scan("secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN").length == 4,
-        "publisher package secret escaped the two registry transport steps")
+  check_common(workflow, "reusable publisher")
+  serialized_workflow = JSON.generate(workflow)
+  check(!serialized_workflow.match?(/\$\{\{\s*secrets(?:\.|\[)/),
+        "publisher still accepts a caller secret")
 
   jobs = workflow_jobs(workflow)
   check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index upload-bottle verify-bottle],
@@ -742,6 +729,30 @@ def check_publisher(workflow)
   check(plan_steps.index(tap_checkout) < plan_steps.index(matrix_plan) &&
         plan_steps.index(matrix_plan) < plan_steps.index(vfs_selection),
         "publisher validates VFS acceptance selection outside the planning trust boundary")
+  check(matrix_plan.keys.sort == %w[env id name run shell] &&
+        matrix_plan["id"] == "matrix" && matrix_plan["shell"] == "bash" &&
+        matrix_plan["env"] == {
+          "ARCHES" => "${{ inputs.arches }}",
+          "EXPECTED_ABI" => "${{ steps.release.outputs.abi }}",
+          "EXPECTED_BOTTLE_ROOT_URL" =>
+            "${{ steps.release.outputs.bottle-root-prefix }}",
+          "EXPECTED_CACHE_KEYS_JSON" => "${{ inputs.expected-cache-keys }}",
+          "FORCE_REBUILD" => "${{ inputs.force }}",
+          "FORMULAE" => "${{ inputs.formulae }}",
+        }, "publisher matrix planner mapping changed")
+  matrix_plan_run = matrix_plan.fetch("run")
+  [
+    'expected_args+=(--expected-cache-keys "$expected_file")',
+    'expected_args+=(--expected-abi "$EXPECTED_ABI")',
+    'expected_args+=(--expected-bottle-root-url "$EXPECTED_BOTTLE_ROOT_URL")',
+    '--tap-root "$GITHUB_WORKSPACE/tap"', '--formulae "$FORMULAE"',
+    '--arches "$ARCHES"', '"${expected_args[@]}"',
+  ].each do |fragment|
+    check(matrix_plan_run.include?(fragment),
+          "publisher matrix planner lacks #{fragment}")
+  end
+  check(matrix_plan_run.scan("--expected-bottle-root-url").length == 1,
+        "publisher matrix planner root argument changed")
 
   release_step = named_step(plan_steps, "Resolve release and bottle root")
   check(release_step.fetch("env") == {
@@ -977,12 +988,9 @@ def check_publisher(workflow)
   check(uploader_credential_steps.map { |step| step["name"] } ==
         ["Upload validated bottle in isolated ORAS auth state"] &&
         uploader_credential_steps.first["env"] == {
-          "GH_TOKEN" =>
-            "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN || github.token }}",
-          "GHCR_AUTH_MODE" =>
-            "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN != '' && 'pat' || 'github-token' }}",
-          "GHCR_REQUIRE_PAT" => "${{ inputs.require-github-packages-token }}",
-          "GHCR_USER" => "${{ inputs.github-packages-user }}",
+          "GH_TOKEN" => "${{ github.token }}",
+          "GHCR_AUTH_MODE" => "github-token",
+          "GHCR_REQUIRE_PAT" => "false",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
@@ -994,12 +1002,9 @@ def check_publisher(workflow)
   check(index_credential_steps.map { |step| step["name"] } ==
         ["Publish the complete Homebrew version index in isolated ORAS auth state"] &&
         index_credential_steps.first["env"] == {
-          "GH_TOKEN" =>
-            "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN || github.token }}",
-          "GHCR_AUTH_MODE" =>
-            "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN != '' && 'pat' || 'github-token' }}",
-          "GHCR_REQUIRE_PAT" => "${{ inputs.require-github-packages-token }}",
-          "GHCR_USER" => "${{ inputs.github-packages-user }}",
+          "GH_TOKEN" => "${{ github.token }}",
+          "GHCR_AUTH_MODE" => "github-token",
+          "GHCR_REQUIRE_PAT" => "false",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
@@ -2212,6 +2217,17 @@ def check_publisher(workflow)
         upload_attempt.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
         upload_attempt.fetch("run").include?('--out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"'),
         "publisher isolated upload path changed")
+  ghcr_uploader_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-ghcr-upload.sh"))
+  [
+    'DESTINATION_MODE="${GHCR_DESTINATION_MODE:-repository}"',
+    'repository) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;',
+  ].each do |fragment|
+    check(ghcr_uploader_source.include?(fragment),
+          "publisher GHCR transport lacks #{fragment}")
+  end
+  check(!ghcr_uploader_source.include?(
+          'tap) REMOTE="ghcr.io/${TAP_NAME}/${FORMULA}"'
+        ), "publisher GHCR transport retains a tap-name-rooted production destination")
   trusted_runner_roots = [
     '--forbidden-root "$GITHUB_WORKSPACE"',
     '--forbidden-root "$(dirname "$GITHUB_WORKSPACE")"',
@@ -2275,11 +2291,20 @@ def check_publisher(workflow)
           "publisher version-index input validation lacks #{fragment}")
   end
   index_import_run = index_import.fetch("run")
+  check(index_import.keys.sort == %w[env id name run shell] &&
+        index_import["id"] == "existing-index" && index_import["shell"] == "bash" &&
+        index_import["env"] == {
+          "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
+          "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
+        }, "publisher anonymous version-index import mapping changed")
+  repository_remote =
+    'remote="ghcr.io/${tap_repository}/${KANDELO_HOMEBREW_FORMULA}"'
   [
     "anonymous index import received $secret_name",
     "scripts/homebrew-oci-layout.py import-public-index",
-    'tap_name="$(printf \'%s\' "$KANDELO_HOMEBREW_TAP_NAME" | tr \'[:upper:]\' \'[:lower:]\')"',
-    'remote="ghcr.io/${tap_name}/${KANDELO_HOMEBREW_FORMULA}"',
+    'tap_repository="$(printf \'%s\' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr \'[:upper:]\' \'[:lower:]\')"',
+    repository_remote,
     '--remote "$remote"', '--reference "$top_ref"',
     '--registry-config "$anonymous_config"', '--out-layout "$existing"',
     '--out-result "$result"',
@@ -2289,6 +2314,9 @@ def check_publisher(workflow)
     check(index_import_run.include?(fragment),
           "publisher anonymous version-index import lacks #{fragment}")
   end
+  check(index_import_run.scan(repository_remote).length == 1 &&
+        !index_import_run.include?('remote="ghcr.io/${tap_name}/'),
+        "publisher anonymous version-index import is not repository-rooted")
   check((credential_names & index_import_run.scan(/[A-Z][A-Z0-9_]+/)).all? do |name|
     index_import_run.include?("-u #{name}") || index_import_run.include?("$secret_name")
   end, "publisher anonymous version-index import references an available credential")
@@ -2414,22 +2442,35 @@ def check_publisher(workflow)
         "publisher renames a selected bottle without validated Homebrew metadata")
   check((credential_names & anonymous_run.scan(/[A-Z][A-Z0-9_]+/)).empty?,
         "publisher anonymous bottle readback references a credential")
-  index_verify_run = named_step(
+  index_verify = named_step(
     verify_steps, "Validate exact public Homebrew index traversal without credentials"
-  ).fetch("run")
+  )
+  check(index_verify.keys.sort == %w[env if name run shell] &&
+        index_verify["if"] ==
+          "${{ !inputs.dry-run && steps.index-publication.outcome == 'success' }}" &&
+        index_verify["shell"] == "bash" && index_verify["env"] == {
+          "KANDELO_HOMEBREW_ARCH" => "${{ matrix.arch }}",
+          "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
+          "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
+        }, "publisher exact public Homebrew index verification mapping changed")
+  index_verify_run = index_verify.fetch("run")
   [
     "public Homebrew index verifier received $secret_name",
     "validate-index-receipt", "validate-publication-receipt", "--kind index",
     "oras cp", "--from-registry-config", "--to-oci-layout",
     "scripts/homebrew-oci-layout.py validate-index",
-    'tap_name="$(printf \'%s\' "$KANDELO_HOMEBREW_TAP_NAME" | tr \'[:upper:]\' \'[:lower:]\')"',
-    'remote="ghcr.io/${tap_name}/${KANDELO_HOMEBREW_FORMULA}"',
+    'tap_repository="$(printf \'%s\' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr \'[:upper:]\' \'[:lower:]\')"',
+    repository_remote,
     '.manifest_digest == $child[0].oci.manifest.digest',
     '.bottle_sha256 == $child[0].bottle.sha256',
   ].each do |fragment|
     check(index_verify_run.include?(fragment),
           "publisher exact public Homebrew index verification lacks #{fragment}")
   end
+  check(index_verify_run.scan(repository_remote).length == 1 &&
+        !index_verify_run.include?('remote="ghcr.io/${tap_name}/'),
+        "publisher public Homebrew index verification is not repository-rooted")
   browser_demo_step = named_step(verify_steps,
                                  "Prepare the supported interactive browser demo graph")
   check(browser_demo_step.keys.sort == %w[if name run shell] &&
@@ -2595,7 +2636,7 @@ def check_publisher(workflow)
     "allowFallback: false", "createBrowserCandidateMetadata", 'runtime: "node"',
     'runtime: "browser"', 'compatibility_basis: "pending-exact-image-runtime-test"',
     "selected acceptance formula must resolve at least one real package dependency edge",
-    "did not select a current successful bottle", "bottle URL is not the tap GHCR blob",
+    "did not select a current successful bottle", "bottle URL is not the repository GHCR blob",
     "is not a Brewfile root", "is not a link owned by acceptance formula",
     "base VFS ABI", "kernel Wasm ABI", "Node acceptance stdout did not contain",
     "expected stdout must be a single-line string",
@@ -2968,16 +3009,15 @@ def self_test(publisher, maintenance, repository_canary)
       }
     },
     "extra publisher secret" => lambda { |w|
-      workflow_events(w).fetch("workflow_call").fetch("secrets")["UNREVIEWED_TOKEN"] = {
-        "required" => false,
+      workflow_events(w).fetch("workflow_call")["secrets"] = {
+        "UNREVIEWED_TOKEN" => { "required" => false },
       }
     },
-    "package PAT reaches finalizer" => lambda { |w|
+    "package secret reaches finalizer" => lambda { |w|
       step = mutate_named_step(
         w, "finalize-tap", "Publish validated sidecars under the tap state lock"
       )
-      step.fetch("env")["GH_TOKEN"] =
-        "${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN || github.token }}"
+      step.fetch("env")["GH_TOKEN"] = "${{ secrets.UNREVIEWED_TOKEN }}"
     },
     "caller feature branch" => lambda { |w|
       step = mutate_named_step(w, "plan", "Validate caller trust boundary")
@@ -3062,6 +3102,17 @@ def self_test(publisher, maintenance, repository_canary)
         'homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_REPOSITORY"'
       )
     },
+    "planner bottle root mapping dropped" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Plan formula matrix")
+      step.fetch("env").delete("EXPECTED_BOTTLE_ROOT_URL")
+    },
+    "planner bottle root argument dropped" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Plan formula matrix")
+      step["run"] = step.fetch("run").sub(
+        'expected_args+=(--expected-bottle-root-url "$EXPECTED_BOTTLE_ROOT_URL")',
+        "true"
+      )
+    },
     "uploader dependency bypass" => lambda { |w|
       w.fetch("jobs").fetch("upload-bottle")["needs"] = ["plan"]
     },
@@ -3080,8 +3131,25 @@ def self_test(publisher, maintenance, repository_canary)
     "uploader authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("upload-bottle").fetch("permissions")["contents"] = "write"
     },
+    "uploader PAT authentication" => lambda { |w|
+      step = mutate_named_step(
+        w, "upload-bottle", "Upload validated bottle in isolated ORAS auth state"
+      )
+      step.fetch("env")["GH_TOKEN"] = "${{ secrets.UNREVIEWED_TOKEN }}"
+      step.fetch("env")["GHCR_AUTH_MODE"] = "pat"
+      step.fetch("env")["GHCR_REQUIRE_PAT"] = "true"
+    },
     "version-index authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("publish-bottle-index").fetch("permissions")["contents"] = "write"
+    },
+    "version-index PAT authentication" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index",
+        "Publish the complete Homebrew version index in isolated ORAS auth state"
+      )
+      step.fetch("env")["GH_TOKEN"] = "${{ secrets.UNREVIEWED_TOKEN }}"
+      step.fetch("env")["GHCR_AUTH_MODE"] = "pat"
+      step.fetch("env")["GHCR_REQUIRE_PAT"] = "true"
     },
     "version-index serialization bypass" => lambda { |w|
       w.fetch("jobs").fetch("publish-bottle-index").delete("concurrency")
@@ -3360,6 +3428,14 @@ def self_test(publisher, maintenance, repository_canary)
         "scripts/homebrew-oci-layout.py import-public-index", "oras cp"
       )
     },
+    "existing index remote rebound to tap name" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index", "Import the existing public Homebrew version index anonymously"
+      )
+      step["run"] = step.fetch("run").gsub("tap_repository", "tap_name").gsub(
+        "KANDELO_HOMEBREW_TAP_REPOSITORY", "KANDELO_HOMEBREW_TAP_NAME"
+      )
+    },
     "version-index sibling preservation bypass" => lambda { |w|
       step = mutate_named_step(
         w, "publish-bottle-index", "Compose one complete Homebrew version index without credentials"
@@ -3391,6 +3467,14 @@ def self_test(publisher, maintenance, repository_canary)
         w, "verify-bottle", "Validate exact public Homebrew index traversal without credentials"
       )
       step["run"] = step.fetch("run").sub("validate-publication-receipt", "true")
+    },
+    "public index remote rebound to tap name" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Validate exact public Homebrew index traversal without credentials"
+      )
+      step["run"] = step.fetch("run").gsub("tap_repository", "tap_name").gsub(
+        "KANDELO_HOMEBREW_TAP_REPOSITORY", "KANDELO_HOMEBREW_TAP_NAME"
+      )
     },
     "unbounded browser registry fetch" => lambda { |w|
       step = mutate_named_step(

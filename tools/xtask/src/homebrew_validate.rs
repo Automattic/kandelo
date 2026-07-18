@@ -11,6 +11,17 @@ use crate::repo_root;
 const DEFAULT_METADATA_REL: &str = "Kandelo/metadata.json";
 const SCHEMA_ROOT_REL: &str = "homebrew/homebrew-tap-core/Kandelo";
 
+fn repository_bottle_root(repository: &str) -> String {
+    format!("https://ghcr.io/v2/{}", repository.to_ascii_lowercase())
+}
+
+fn repository_bottle_url(repository: &str, package: &str, sha256: &str) -> String {
+    format!(
+        "{}/{package}/blobs/sha256:{sha256}",
+        repository_bottle_root(repository)
+    )
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let options = Options::parse(args)?;
     let report = validate(&options)?;
@@ -392,12 +403,11 @@ impl Validator<'_> {
                 "package {package_name}: Formula bottle tags are absent but metadata advertises {expected_tags:?}"
             )),
             Some(block) => {
-                let expected_root = string_at(metadata, "/tap_name").map(|tap_name| {
-                    format!("https://ghcr.io/v2/{tap_name}")
-                });
+                let expected_root =
+                    string_at(metadata, "/tap_repository").map(repository_bottle_root);
                 if expected_root.as_deref() != Some(block.root_url.as_str()) {
                     self.err(format!(
-                        "package {package_name}: Formula bottle root_url {:?} does not match Homebrew tap root {expected_root:?}",
+                        "package {package_name}: Formula bottle root_url {:?} does not match the tap repository package root {expected_root:?}",
                         block.root_url
                     ));
                 }
@@ -429,11 +439,18 @@ impl Validator<'_> {
             return;
         };
         let top_abi = u64_at(metadata, "/kandelo_abi");
+        let tap_repository = string_at(metadata, "/tap_repository");
         let mut seen_arches = BTreeSet::new();
         for (index, bottle) in bottles.iter().enumerate() {
             self.report.bottles += 1;
             let bottle_label = format!("package {package_name} bottle #{index}");
-            self.validate_bottle_identity(&bottle_label, bottle, top_abi);
+            self.validate_bottle_identity(
+                &bottle_label,
+                package_name,
+                bottle,
+                top_abi,
+                tap_repository,
+            );
 
             if let Some(arch) = string_at(bottle, "/arch") {
                 if !seen_arches.insert(arch.to_string()) {
@@ -456,7 +473,14 @@ impl Validator<'_> {
         }
     }
 
-    fn validate_bottle_identity(&mut self, label: &str, bottle: &Value, top_abi: Option<u64>) {
+    fn validate_bottle_identity(
+        &mut self,
+        label: &str,
+        package_name: &str,
+        bottle: &Value,
+        top_abi: Option<u64>,
+        tap_repository: Option<&str>,
+    ) {
         if let (Some(bottle_abi), Some(top_abi)) = (u64_at(bottle, "/kandelo_abi"), top_abi) {
             if bottle_abi != top_abi {
                 self.err(format!(
@@ -488,6 +512,34 @@ impl Validator<'_> {
             if !supports_browser {
                 self.err(format!(
                     "{label}: browser_compatible=true requires runtime_support to include browser"
+                ));
+            }
+        }
+
+        if string_at(bottle, "/status") == Some("success") {
+            if let (Some(repository), Some(url), Some(sha256)) = (
+                tap_repository,
+                string_at(bottle, "/url"),
+                string_at(bottle, "/sha256"),
+            ) {
+                let expected_url = repository_bottle_url(repository, package_name, sha256);
+                if url != expected_url {
+                    self.err(format!(
+                        "{label}: success bottle URL {url:?} does not match tap repository package URL {expected_url:?}"
+                    ));
+                }
+            }
+        }
+
+        if let (Some(repository), Some(url), Some(sha256)) = (
+            tap_repository,
+            string_at(bottle, "/fallback_url"),
+            string_at(bottle, "/fallback_sha256"),
+        ) {
+            let expected_url = repository_bottle_url(repository, package_name, sha256);
+            if url != expected_url {
+                self.err(format!(
+                    "{label}: fallback bottle URL {url:?} does not match tap repository package URL {expected_url:?}"
                 ));
             }
         }
@@ -1057,7 +1109,7 @@ mod tests {
                 "  desc \"Fixture\"\n",
                 "\n",
                 "  bottle do\n",
-                "    root_url \"https://ghcr.io/v2/kandelo-dev/tap-core\"\n",
+                "    root_url \"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core\"\n",
                 "    sha256 cellar: :any_skip_relocation, wasm32_kandelo: ",
                 "\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n",
                 "  end\n",
@@ -1075,12 +1127,26 @@ mod tests {
                 load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/metadata.json");
             let mut formula =
                 load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/formula/hello.json");
-            let link = load_repo_json(
+            let mut link = load_repo_json(
                 "homebrew/homebrew-tap-core/Kandelo/examples/link/hello-2.12.1-rebuild0-wasm32.json",
             );
-            let provenance = load_repo_json(
+            let mut provenance = load_repo_json(
                 "homebrew/homebrew-tap-core/Kandelo/examples/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
             );
+
+            let bottle_sha256 = string_at(&metadata, "/packages/0/bottles/0/sha256")
+                .unwrap()
+                .to_string();
+            let bottle_url =
+                repository_bottle_url("kandelo-dev/homebrew-tap-core", "hello", &bottle_sha256);
+            set(
+                &mut metadata,
+                "/packages/0/bottles/0/url",
+                json!(bottle_url.clone()),
+            );
+            set(&mut formula, "/bottles/0/url", json!(bottle_url.clone()));
+            set(&mut link, "/bottle/url", json!(bottle_url.clone()));
+            set(&mut provenance, "/bottle/url", json!(bottle_url));
 
             set(
                 &mut metadata,
@@ -1219,7 +1285,7 @@ mod tests {
         write_text(
             &formula_path,
             &source.replace(
-                "https://ghcr.io/v2/kandelo-dev/tap-core",
+                "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
                 "https://ghcr.io/v2/attacker/core",
             ),
         );
@@ -1380,6 +1446,106 @@ mod tests {
     }
 
     #[test]
+    fn rejects_success_bottle_url_outside_repository_package_root() {
+        let mut fixture = Fixture::new();
+        let sha256 = string_at(&fixture.metadata, "/packages/0/bottles/0/sha256")
+            .unwrap()
+            .to_string();
+        let old_root_url = repository_bottle_url("kandelo-dev/tap-core", "hello", &sha256);
+        set(
+            &mut fixture.metadata,
+            "/packages/0/bottles/0/url",
+            json!(old_root_url.clone()),
+        );
+        set(
+            &mut fixture.formula,
+            "/bottles/0/url",
+            json!(old_root_url.clone()),
+        );
+        set(
+            &mut fixture.link,
+            "/bottle/url",
+            json!(old_root_url.clone()),
+        );
+        set(&mut fixture.provenance, "/bottle/url", json!(old_root_url));
+        fixture.write();
+
+        let report = fixture.validate();
+        assert!(
+            report.errors.join("\n").contains(
+                "success bottle URL \"https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:"
+            ),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("does not match tap repository package URL"),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
+    }
+
+    #[test]
+    fn rejects_fallback_bottle_url_outside_repository_package_root() {
+        let mut fixture = Fixture::new();
+        let success = fixture.metadata["packages"][0]["bottles"][0].clone();
+        let fallback_sha256 = success["sha256"].clone();
+        let fallback = json!({
+            "arch": success["arch"].clone(),
+            "bottle_tag": success["bottle_tag"].clone(),
+            "kandelo_abi": success["kandelo_abi"].clone(),
+            "cellar": success["cellar"].clone(),
+            "prefix": success["prefix"].clone(),
+            "runtime_support": success["runtime_support"].clone(),
+            "browser_compatible": success["browser_compatible"].clone(),
+            "fork_instrumentation": success["fork_instrumentation"].clone(),
+            "status": "failed",
+            "built_by": success["built_by"].clone(),
+            "built_from": success["built_from"].clone(),
+            "error": "build failed",
+            "last_attempt": "2026-06-28T00:00:00Z",
+            "last_attempt_by": "https://example.invalid/kandelo-dev/homebrew-tap-core/actions/runs/43",
+            "fallback_url": repository_bottle_url(
+                "kandelo-dev/tap-core",
+                "hello",
+                fallback_sha256.as_str().unwrap(),
+            ),
+            "fallback_sha256": fallback_sha256,
+            "fallback_bytes": success["bytes"].clone(),
+            "fallback_cache_key_sha": success["cache_key_sha"].clone(),
+            "fallback_link_manifest": success["link_manifest"].clone(),
+            "fallback_built_at": "2026-06-27T00:00:00Z",
+        });
+        set(
+            &mut fixture.metadata,
+            "/packages/0/bottles/0",
+            fallback.clone(),
+        );
+        set(&mut fixture.formula, "/bottles/0", fallback);
+        fixture.write();
+
+        let report = fixture.validate();
+        assert!(
+            report.errors.join("\n").contains(
+                "fallback bottle URL \"https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:"
+            ),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("does not match tap repository package URL"),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
+    }
+
+    #[test]
     fn rejects_formula_bottle_root_drift() {
         let fixture = Fixture::new();
         let path = fixture.tap_root.join("Formula/hello.rb");
@@ -1387,7 +1553,7 @@ mod tests {
         write_text(
             &path,
             &source.replace(
-                "https://ghcr.io/v2/kandelo-dev/tap-core",
+                "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
                 "https://ghcr.io/v2/attacker/wrong-tap",
             ),
         );
@@ -1397,7 +1563,7 @@ mod tests {
             report
                 .errors
                 .join("\n")
-                .contains("does not match Homebrew tap root")
+                .contains("does not match the tap repository package root")
         );
     }
 

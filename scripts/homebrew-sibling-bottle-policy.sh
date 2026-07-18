@@ -81,8 +81,8 @@ homebrew_assert_published_bottle_not_newer() {
 
 homebrew_sibling_bottle_policy() {
   local metadata="$1" name="$2" version="$3" formula_revision="$4"
-  local rebuild="$5" abi="$6" caller="${7:-homebrew-sibling-bottle-policy}"
-  local policy
+  local rebuild="$5" abi="$6" expected_root="$7" formula_path="$8"
+  local caller="${9:-homebrew-sibling-bottle-policy}" formula_roots policy
 
   if [ ! -e "$metadata" ]; then
     printf '%s\n' discard
@@ -96,9 +96,24 @@ homebrew_sibling_bottle_policy() {
      ! [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$ ]] ||
      ! [[ "$formula_revision" =~ ^(0|[1-9][0-9]*)$ ]] ||
      ! [[ "$rebuild" =~ ^(0|[1-9][0-9]*)$ ]] ||
-     ! [[ "$abi" =~ ^(0|[1-9][0-9]*)$ ]]; then
+     ! [[ "$abi" =~ ^(0|[1-9][0-9]*)$ ]] ||
+     ! [[ "$expected_root" =~ ^https://ghcr\.io/v2/[a-z0-9._-]+/[a-z0-9._/-]+$ ]] ||
+     [[ "$expected_root" == */ ]]; then
     echo "$caller: invalid bottle identity for sibling preservation" >&2
     return 1
+  fi
+  if [ ! -f "$formula_path" ] || [ -L "$formula_path" ]; then
+    echo "$caller: current Formula is not a regular file" >&2
+    return 1
+  fi
+  formula_roots="$(sed -nE 's/^    root_url "([^"]+)"$/\1/p' "$formula_path")"
+  if [[ "$formula_roots" == *$'\n'* ]]; then
+    echo "$caller: current Formula has multiple bottle roots" >&2
+    return 1
+  fi
+  if [ -z "$formula_roots" ] || [ "$formula_roots" != "$expected_root" ]; then
+    printf '%s\n' discard
+    return 0
   fi
 
   if ! policy="$(jq -er \

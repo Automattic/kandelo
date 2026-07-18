@@ -13,7 +13,7 @@ AUTH_DIR=""
 AUTH_CONFIG=""
 WORK_DIR=""
 REGISTRY_USER=""
-DESTINATION_MODE="${GHCR_DESTINATION_MODE:-tap}"
+DESTINATION_MODE="${GHCR_DESTINATION_MODE:-repository}"
 
 cleanup() {
   [ -z "$AUTH_DIR" ] || rm -rf "$AUTH_DIR"
@@ -26,7 +26,8 @@ usage() {
 usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--dry-run]
 
 Validates an explicit local OCI layout, preflights the destination reference,
-and uses ORAS only to copy that immutable layout to GHCR. In PAT mode,
+and uses ORAS only to copy that immutable layout to the exact tap-repository
+namespace in GHCR. In PAT mode,
 GHCR_USER must name the owner of GH_TOKEN. GitHub-token mode uses the Actions
 actor. When GHCR hides an absent reference behind an anonymous authorization
 failure, write mode uses isolated ORAS credentials only to distinguish missing
@@ -142,7 +143,7 @@ validate_auth_contract() {
       ;;
   esac
   case "$DESTINATION_MODE" in
-    tap) ;;
+    repository) ;;
     repository-canary)
       if [ "$auth_mode" != github-token ] || [ "$require_pat" != false ]; then
         echo "homebrew-ghcr-upload.sh: repository canary requires GitHub-token authentication" >&2
@@ -201,7 +202,7 @@ validate_auth_contract() {
 validate_auth_contract
 
 case "$DESTINATION_MODE" in
-  tap) REMOTE="ghcr.io/${TAP_NAME}/${FORMULA}" ;;
+  repository) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;
   repository-canary) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;
 esac
 

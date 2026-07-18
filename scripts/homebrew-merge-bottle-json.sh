@@ -53,7 +53,7 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 EXPECTED_TAP_ROOT="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
 if [ "$EXPECTED_ROOT_URL" != "$EXPECTED_TAP_ROOT" ]; then
-  echo "homebrew-merge-bottle-json.sh: expected bottle root does not match Homebrew tap name" >&2
+  echo "homebrew-merge-bottle-json.sh: expected bottle root does not match the tap repository package root" >&2
   exit 2
 fi
 case "$EXPECTED_CELLAR" in
@@ -138,6 +138,7 @@ ABI_VERSION="${RELEASE_TAG#bottles-abi-v}"
 SIBLING_POLICY="$(homebrew_sibling_bottle_policy \
   "$TAP_ROOT/Kandelo/metadata.json" "$FORMULA" "$PKG_VERSION" \
   "$FORMULA_REVISION" "$REBUILD" "$ABI_VERSION" \
+  "$EXPECTED_ROOT_URL" "$FORMULA_PATH" \
   "homebrew-merge-bottle-json.sh")"
 ruby "$COMPOSER" \
   "$FORMULA_PATH" \

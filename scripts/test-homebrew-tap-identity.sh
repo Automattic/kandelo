@@ -25,9 +25,9 @@ expect_identity_rejection() {
 [ "$(homebrew_resolve_tap_name Acme/homebrew-tools Acme/tools)" = \
   "acme/tools" ] || fail "conventional third-party identity was not normalized"
 [ "$(homebrew_bottle_root_url kandelo-dev/homebrew-tap-core '')" = \
-  "https://ghcr.io/v2/kandelo-dev/tap-core" ] || fail "protected bottle root changed"
+  "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" ] || fail "protected repository-rooted bottle namespace changed"
 [ "$(homebrew_bottle_root_url Acme/homebrew-tools Acme/tools)" = \
-  "https://ghcr.io/v2/acme/tools" ] || fail "third-party bottle root was not derived from its tap name"
+  "https://ghcr.io/v2/acme/homebrew-tools" ] || fail "third-party bottle root was not derived from its repository"
 
 expect_identity_rejection "an implicit third-party tap name" Acme/homebrew-tools
 expect_identity_rejection "a nonconventional third-party repository" Acme/tools Acme/tools
@@ -43,7 +43,7 @@ jq -nS '{
   tap_repository: "Acme/homebrew-tools",
   tap_name: "acme/tools",
   tap_commit: ("a" * 40),
-  bottle_root_url: "https://ghcr.io/v2/acme/tools",
+  bottle_root_url: "https://ghcr.io/v2/acme/homebrew-tools",
   bottle_tag: "wasm32_kandelo",
   dependencies: []
 }' >"$provenance"
@@ -55,7 +55,7 @@ python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
   --tap-repository Acme/homebrew-tools \
   --tap-name Acme/tools \
   --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --bottle-root-url https://ghcr.io/v2/acme/tools
+  --bottle-root-url https://ghcr.io/v2/acme/homebrew-tools
 
 if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
   --input "$provenance" \
@@ -64,7 +64,7 @@ if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
   --tap-repository Acme/homebrew-tools \
   --tap-name Acme/other \
   --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --bottle-root-url https://ghcr.io/v2/acme/tools >/dev/null 2>&1; then
+  --bottle-root-url https://ghcr.io/v2/acme/homebrew-tools >/dev/null 2>&1; then
   fail "dependency provenance accepted a mismatched repository and tap name"
 fi
 
@@ -76,7 +76,7 @@ jq -nS '{
   tap_repository: "kandelo-dev/homebrew-tap-core",
   tap_name: "kandelo-dev/tap-core",
   tap_commit: ("a" * 40),
-  bottle_root_url: "https://ghcr.io/v2/kandelo-dev/tap-core",
+  bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
   bottle_tag: "wasm32_kandelo",
   dependencies: []
 }' >"$default_provenance"
@@ -86,7 +86,7 @@ python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
   --arch wasm32 \
   --tap-repository kandelo-dev/homebrew-tap-core \
   --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --bottle-root-url https://ghcr.io/v2/kandelo-dev/tap-core
+  --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core
 
 if python3 "$REPO_ROOT/scripts/homebrew-oci-layout.py" source-closure \
   --tap-root "$REPO_ROOT" \

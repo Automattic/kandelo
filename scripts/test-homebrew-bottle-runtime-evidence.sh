@@ -37,7 +37,7 @@ abi=39
 tap_repository="kandelo-dev/homebrew-tap-core"
 tap_name="kandelo-dev/tap-core"
 tap_commit=""
-bottle_root="https://ghcr.io/v2/kandelo-dev/tap-core"
+bottle_root="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
 bottle="$TMPDIR/hello--1.0.wasm32_kandelo.bottle.tar.gz"
 bottle_json="$TMPDIR/bottle.json"
 formula_info="$TMPDIR/formula-info.json"
@@ -57,7 +57,7 @@ class Hello < Formula
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
   bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "PLACEHOLDER"
   end
 end
@@ -77,7 +77,7 @@ formula_sha="$(sha256sum "$tap/Formula/hello.rb" | awk '{print $1}')"
 
 jq -nS --arg sha "$bottle_sha" '{hello: {
   formula: {name: "hello", path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/hello.rb", pkg_version: "1.0"},
-  bottle: {root_url: "https://ghcr.io/v2/kandelo-dev/tap-core", cellar: "any_skip_relocation", rebuild: 0,
+  bottle: {root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core", cellar: "any_skip_relocation", rebuild: 0,
     tags: {wasm32_kandelo: {sha256: $sha}}}
 }}' >"$bottle_json"
 jq -nS --arg sha "$bottle_sha" --arg url "$bottle_url" --arg formula_sha "$formula_sha" '{
@@ -106,7 +106,7 @@ jq -nS --arg tap_commit "$tap_commit" '{
   schema: 2, formula: "hello", arch: "wasm32",
   tap_repository: "kandelo-dev/homebrew-tap-core", tap_name: "kandelo-dev/tap-core",
   tap_commit: $tap_commit,
-  bottle_root_url: "https://ghcr.io/v2/kandelo-dev/tap-core",
+  bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
   bottle_tag: "wasm32_kandelo", dependencies: []
 }' >"$dependency_provenance"
 jq -nS --arg sha "$bottle_sha" --arg url "$bottle_url" --argjson bytes "$bottle_bytes" '{
