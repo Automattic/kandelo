@@ -330,7 +330,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const forkReplayContexts = new Map<number, ForkReplayContext>();
   let mainThreadForkCount: bigint | undefined;
 
-  const pid = 100;
+  let pid = 0;
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
@@ -353,7 +353,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-          skipKernelCreate: true,
           ptrWidth: parentPtrWidth,
           maxAddr: childLayout.maxAddr,
           mmapBase: childLayout.mmapBase,
@@ -375,7 +374,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
-          ppid: parentPid,
           programBytes: parentProgram,
           memory: childMemory,
           channelOffset: childChannelOffset,
@@ -477,7 +475,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           if (kernelWorker.finalizeExecHandoffTermination(execPid) > 0) return 0;
 
           kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], {
-            skipKernelCreate: true,
+            preserveProcessState: true,
             ptrWidth: newPtrWidth,
             metadataPtrWidth: sourcePtrWidth,
             brkBase: newLayout.brkBase,
@@ -495,7 +493,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           const initData: CentralizedWorkerInitMessage = {
             type: "centralized_init",
             pid: execPid,
-            ppid: 0,
             programBytes: newProgramBytes,
             memory: newMemory,
             channelOffset: newChannelOffset,
@@ -534,7 +531,17 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           return 0;
         }
       },
-      onClone: async (clonePid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
+      onClone: async (attachment) => {
+        const {
+          pid: clonePid,
+          tid,
+          fnPtr,
+          argPtr,
+          stackPtr,
+          tlsPtr,
+          ctidPtr,
+          memory,
+        } = attachment;
         const threadAllocator = threadAllocators.get(clonePid);
         if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
@@ -544,7 +551,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         }
         const alloc = threadAllocator.allocate(memory);
         try {
-          kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr, memory);
+          kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
         } catch (err) {
           threadAllocator.free(alloc.basePage);
           throw err;
@@ -582,7 +589,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           threadAllocator.free(alloc.basePage);
         });
 
-        return tid;
       },
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
@@ -629,6 +635,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   });
 
   await kernelWorker.init(kernelWasmBytes);
+  pid = kernelWorker.createProcess(CAPTURED_STDIO);
 
   const {
     memory,
@@ -649,7 +656,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     brkBase: layout.brkBase,
     mmapBase: layout.mmapBase,
     maxAddr: layout.maxAddr,
-    stdio: CAPTURED_STDIO,
   });
   processProgramBytes.set(pid, programBytes);
   processLayouts.set(pid, layout);
@@ -665,7 +671,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid,
-    ppid: 0,
     programBytes,
     memory,
     channelOffset,

@@ -41,8 +41,7 @@ describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
-      pid: 1,
-      ppid: 0,
+      pid: 100,
       programBytes: loadProgramBytes(),
       memory,
       channelOffset,
@@ -57,8 +56,7 @@ describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
     const errorPort = createMockPort();
     const errorInitData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
-      pid: 2,
-      ppid: 0,
+      pid: 101,
       programBytes: new ArrayBuffer(0),
       memory,
       channelOffset,
@@ -68,6 +66,6 @@ describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
 
     expect(errorPort.messages).toHaveLength(1);
     expect((errorPort.messages[0] as any).type).toBe("error");
-    expect((errorPort.messages[0] as any).pid).toBe(2);
+    expect((errorPort.messages[0] as any).pid).toBe(101);
   });
 });

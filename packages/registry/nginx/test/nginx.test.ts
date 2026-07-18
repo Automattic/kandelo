@@ -106,6 +106,7 @@ describe.skipIf(!nginxWasmPath)(
       const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
       let resolveExit: (status: number) => void;
       const exitPromise = new Promise<number>((r) => (resolveExit = r));
+      let masterPid = 0;
 
       const kw = new CentralizedKernelWorker(
         { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
@@ -127,13 +128,12 @@ describe.skipIf(!nginxWasmPath)(
             const childChannelOffset = (MAX_PAGES - 2) * 65536;
             new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-            kw.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+            kw.registerProcess(childPid, childMemory, [childChannelOffset]);
 
             const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
             const childInitData: CentralizedWorkerInitMessage = {
               type: "centralized_init",
               pid: childPid,
-              ppid: parentPid,
               programBytes,
               memory: childMemory,
               channelOffset: childChannelOffset,
@@ -152,7 +152,7 @@ describe.skipIf(!nginxWasmPath)(
           },
           onExec: async () => -38,
           onExit: (pid, status) => {
-            if (pid === 100) {
+            if (pid === masterPid) {
               kw.unregisterProcess(pid);
               resolveExit!(status);
             } else {
@@ -175,18 +175,13 @@ describe.skipIf(!nginxWasmPath)(
       memory.grow(MAX_PAGES - 17);
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-      // The kernel reserves PID 1 for a virtual init process (used by
-      // `kill(1, ...)` / EPERM semantics), so the test runs nginx at
-      // PID 100 with workers spawned at 101+. The actual PID nginx
-      // sees doesn't matter to its operation.
-      kw.registerProcess(100, memory, [channelOffset], { stdio: CAPTURED_STDIO });
-      kw.setCwd(100, nginxPrefix);
-      kw.setNextChildPid(101);
+      masterPid = kw.createProcess(CAPTURED_STDIO);
+      kw.registerProcess(masterPid, memory, [channelOffset]);
+      kw.setCwd(masterPid, nginxPrefix);
 
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
-        pid: 100,
-        ppid: 0,
+        pid: masterPid,
         programBytes,
         memory,
         channelOffset,
@@ -195,7 +190,7 @@ describe.skipIf(!nginxWasmPath)(
       };
 
       const masterWorker = workerAdapter.createWorker(initData);
-      workers.set(100, masterWorker);
+      workers.set(masterPid, masterWorker);
       masterWorker.on("error", () => {});
 
       // Wait for the TCP listener to be ready (poll until port accepts)

@@ -4,6 +4,10 @@ Generated: 2026-03-30
 
 Source: LTP open_posix_testsuite (conformance/interfaces)
 
+> This is dated historical evidence, not the current support contract. The run
+> predates ABI 42, which reserves PID 1 for a kernel-created synthetic init
+> process and allocates the first user PID from 100.
+
 | Status | Count |
 |--------|-------|
 | PASS | 161 |
@@ -20,8 +24,8 @@ Source: LTP open_posix_testsuite (conformance/interfaces)
 
 | Test | Interface | Reason |
 |------|-----------|--------|
-| `2-2` | kill | EPERM test: PID 1 is our process, not init |
-| `3-1` | kill | EPERM test: PID 1 is our process, not init |
+| `2-2` | kill | Historical runtime made PID 1 the test process; superseded by ABI 42 |
+| `3-1` | kill | Historical runtime made PID 1 the test process; superseded by ABI 42 |
 | `12-1` | mlock | Needs pwd.h (getpwnam) |
 | `1-1` | munmap | Requires real page unmapping |
 | `1-2` | munmap | Requires real page unmapping |

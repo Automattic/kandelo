@@ -114,8 +114,8 @@ export class PtyTerminal {
    * connect xterm.js I/O. Same as {@link BrowserKernel.boot} but with PTY
    * forced on. Returns a promise that resolves with the exit code.
    *
-   * The kernel worker is the source of truth for the pid; we wait for the
-   * spawn round-trip to know it. PTY output that arrives before the
+   * The Rust ProcessTable is the PID authority; the worker returns its
+   * allocation over the spawn round-trip. PTY output that arrives before the
    * onPtyOutput handler is registered is buffered in BrowserKernel and
    * drained when the handler attaches.
    */

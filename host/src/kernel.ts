@@ -217,13 +217,10 @@ const WASM_STATFS_SIZE = 72;
 const WASM_DIRENT_SIZE = STRUCT_SIZE_WASM_DIRENT;
 
 export interface KernelCallbacks {
-  onKill?: (pid: number, signal: number) => number;
   onExec?: (path: string) => number;
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
-  onFork?: (forkSab: SharedArrayBuffer) => void;
   onWaitpid?: (targetPid: number, options: number) => void;
-  onClone?: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number) => number;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
   onUdpBind?: (handle: number, addr: [number, number, number, number], port: number) => number;
   onUdpUnbind?: (handle: number) => number;
@@ -266,7 +263,6 @@ export class WasmPosixKernel {
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
   private signalWakeSab: SharedArrayBuffer | null = null;
   private programFuncTable: WebAssembly.Table | null = null;
-  private forkSab: SharedArrayBuffer | null = null;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * Extra host-handle ownership held by regular-file MAP_SHARED backings.
@@ -281,8 +277,6 @@ export class WasmPosixKernel {
   /** Active synchronous host_fstat capture used by mmap preflight. */
   private fstatHandleCapture: { handle: number | null } | null = null;
   isThreadWorker = false;
-  /** PID for this kernel instance (set by the worker) */
-  pid = 0;
   /**
    * Live `/dev/fb0` mappings the kernel has reported via
    * `host_bind_framebuffer`. Renderers (canvas in browser, no-op in
@@ -551,10 +545,6 @@ export class WasmPosixKernel {
     this.signalWakeSab = sab;
   }
 
-  registerForkSab(sab: SharedArrayBuffer): void {
-    this.forkSab = sab;
-  }
-
   registerWaitpidSab(sab: SharedArrayBuffer): void {
     this.waitpidSab = sab;
   }
@@ -687,9 +677,6 @@ export class WasmPosixKernel {
         host_fchown: (handle: bigint, uid: number, gid: number): number => {
           return this.hostFchown(handle, uid, gid);
         },
-        host_kill: (pid: number, sig: number): number => {
-          return this.hostKill(pid, sig);
-        },
         host_exec: (pathPtr: bigint, pathLen: number): number => {
           return this.hostExec(Number(pathPtr), pathLen);
         },
@@ -797,17 +784,11 @@ export class WasmPosixKernel {
         host_getaddrinfo: (namePtr: bigint, nameLen: number, resultPtr: bigint, resultLen: number): number => {
           return this.hostGetaddrinfo(Number(namePtr), nameLen, Number(resultPtr), resultLen);
         },
-        host_fork: (): number => {
-          return this.hostFork();
-        },
         host_futex_wait: (addr: bigint, expected: number, timeoutLo: number, timeoutHi: number): number => {
           return this.hostFutexWait(Number(addr), expected, timeoutLo, timeoutHi);
         },
         host_futex_wake: (addr: bigint, count: number): number => {
           return this.hostFutexWake(Number(addr), count);
-        },
-        host_clone: (fnPtr: bigint, arg: bigint, stackPtr: bigint, tlsPtr: bigint, ctidPtr: bigint): number => {
-          return this.hostClone(Number(fnPtr), Number(arg), Number(stackPtr), Number(tlsPtr), Number(ctidPtr));
         },
         host_is_thread_worker: (): number => {
           return this.isThreadWorker ? 1 : 0;
@@ -1946,15 +1927,6 @@ export class WasmPosixKernel {
     }
   }
 
-  // ---- Phase 13d: Cross-process kill ----
-
-  private hostKill(pid: number, sig: number): number {
-    if (this.callbacks.onKill) {
-      return this.callbacks.onKill(pid, sig);
-    }
-    return -3; // -ESRCH: no callback means can't reach other processes
-  }
-
   // ---- Phase 13e: Exec ----
 
   private hostExec(pathPtr: number, pathLen: number): number {
@@ -2662,40 +2634,6 @@ export class WasmPosixKernel {
     }
   }
 
-  /**
-   * host_fork() -> i32
-   * Guest-initiated fork. Posts fork_request to host, blocks on Atomics.wait
-   * until host signals back with child PID via forkSab.
-   *
-   * forkSab layout: Int32Array(2) on SharedArrayBuffer(8)
-   *   [0] = flag (0 = waiting, 1 = done)
-   *   [1] = result (child PID or negative errno)
-   */
-  private hostFork(): number {
-    if (!this.forkSab) {
-      return -38; // -ENOSYS
-    }
-
-    const view = new Int32Array(this.forkSab);
-
-    // Reset flag
-    Atomics.store(view, 0, 0);
-    Atomics.store(view, 1, 0);
-
-    // Notify host via callback
-    if (this.callbacks.onFork) {
-      this.callbacks.onFork(this.forkSab);
-    } else {
-      return -38; // -ENOSYS — no fork handler registered
-    }
-
-    // Block until host signals completion
-    Atomics.wait(view, 0, 0);
-
-    // Read result (child PID or negative errno)
-    return Atomics.load(view, 1);
-  }
-
   private hostFutexWait(addr: number, expected: number, timeoutLo: number, timeoutHi: number): number {
     if (!this.memory) return -22; // -EINVAL
 
@@ -2729,13 +2667,6 @@ export class WasmPosixKernel {
     const i32view = new Int32Array(this.memory.buffer);
     const index = addr >>> 2;
     return Atomics.notify(i32view, index, count);
-  }
-
-  private hostClone(fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number): number {
-    if (this.callbacks.onClone) {
-      return this.callbacks.onClone(fnPtr, arg, stackPtr, tlsPtr, ctidPtr);
-    }
-    return -38; // -ENOSYS — no clone handler registered
   }
 
 }
