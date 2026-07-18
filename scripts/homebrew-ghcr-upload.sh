@@ -13,7 +13,10 @@ AUTH_DIR=""
 AUTH_CONFIG=""
 WORK_DIR=""
 REGISTRY_USER=""
-DESTINATION_MODE="${GHCR_DESTINATION_MODE:-repository}"
+AUTH_MODE="automatic"
+REQUIRE_PAT="false"
+REGISTRY_USER_INPUT=""
+DESTINATION_MODE="repository"
 
 cleanup() {
   [ -z "$AUTH_DIR" ] || rm -rf "$AUTH_DIR"
@@ -23,18 +26,18 @@ trap cleanup EXIT
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--dry-run]
+usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--auth-mode <automatic|github-token|pat>] [--require-pat <true|false>] [--registry-user <login>] [--destination-mode <repository|repository-canary>] [--dry-run]
 
 Validates an explicit local OCI layout, preflights the destination reference,
 and uses ORAS only to copy that immutable layout to the exact tap-repository
 namespace in GHCR. In PAT mode,
-GHCR_USER must name the owner of GH_TOKEN. GitHub-token mode uses the Actions
+--registry-user must name the owner of GH_TOKEN. GitHub-token mode uses the Actions
 actor. When GHCR hides an absent reference behind an anonymous authorization
 failure, write mode uses isolated ORAS credentials only to distinguish missing
 from present. It never evaluates Formula Ruby or constructs registry metadata
 while credentials are present.
 
-GHCR_DESTINATION_MODE=repository-canary is a first-party visibility experiment.
+--destination-mode repository-canary is a first-party visibility experiment.
 It keeps the canonical Homebrew identity in the immutable layout but transports
 one child to the exact tap-repository namespace. The mode requires GITHUB_TOKEN
 authentication, an absent destination package, and anonymous digest readback.
@@ -49,6 +52,10 @@ while [ "$#" -gt 0 ]; do
     --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --out-json) OUT_JSON="${2:-}"; shift 2 ;;
+    --auth-mode) AUTH_MODE="${2:-}"; shift 2 ;;
+    --require-pat) REQUIRE_PAT="${2:-}"; shift 2 ;;
+    --registry-user) REGISTRY_USER_INPUT="${2:-}"; shift 2 ;;
+    --destination-mode) DESTINATION_MODE="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-ghcr-upload.sh: unknown flag $1" >&2; usage; exit 2 ;;
@@ -132,10 +139,7 @@ NORMALIZED_TAP_REPOSITORY="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:l
 auth_parent="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 
 validate_auth_contract() {
-  local auth_mode="${GHCR_AUTH_MODE:-automatic}"
-  local require_pat="${GHCR_REQUIRE_PAT:-false}"
-
-  case "$auth_mode" in
+  case "$AUTH_MODE" in
     pat|github-token|automatic) ;;
     *)
       echo "homebrew-ghcr-upload.sh: GHCR auth mode is invalid" >&2
@@ -145,7 +149,7 @@ validate_auth_contract() {
   case "$DESTINATION_MODE" in
     repository) ;;
     repository-canary)
-      if [ "$auth_mode" != github-token ] || [ "$require_pat" != false ]; then
+      if [ "$AUTH_MODE" != github-token ] || [ "$REQUIRE_PAT" != false ]; then
         echo "homebrew-ghcr-upload.sh: repository canary requires GitHub-token authentication" >&2
         exit 2
       fi
@@ -163,9 +167,9 @@ validate_auth_contract() {
       exit 2
       ;;
   esac
-  case "$require_pat" in
+  case "$REQUIRE_PAT" in
     true)
-      if [ "$auth_mode" != pat ]; then
+      if [ "$AUTH_MODE" != pat ]; then
         echo "homebrew-ghcr-upload.sh: required GitHub Packages PAT is unavailable" >&2
         exit 2
       fi
@@ -177,19 +181,19 @@ validate_auth_contract() {
       ;;
   esac
 
-  case "$auth_mode" in
+  case "$AUTH_MODE" in
     pat)
       if [ -z "${GH_TOKEN:-}" ]; then
         echo "homebrew-ghcr-upload.sh: selected GitHub Packages PAT is unavailable" >&2
         exit 2
       fi
-      REGISTRY_USER="${GHCR_USER:-}"
+      REGISTRY_USER="$REGISTRY_USER_INPUT"
       ;;
     github-token)
       REGISTRY_USER="${GITHUB_ACTOR:-github-actions}"
       ;;
     automatic)
-      REGISTRY_USER="${GHCR_USER:-${GITHUB_ACTOR:-github-actions}}"
+      REGISTRY_USER="${REGISTRY_USER_INPUT:-${GITHUB_ACTOR:-github-actions}}"
       ;;
   esac
   if [ -z "$REGISTRY_USER" ] || [ "${#REGISTRY_USER}" -gt 255 ] ||

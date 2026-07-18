@@ -22,13 +22,13 @@ DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a54
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "45b3551a20a8dd1d545b0aefec5fc142c1f298d3ef9db44a021b62a36f8c1938"
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
-PUBLISHER_UPLOAD_DIGEST = "76789c81227ed5499b39cf20bbc067fd2d2d884b42863abf7c4286a35c739f8c"
-PUBLISHER_INDEX_DIGEST = "e351d98dd7e6d8121cb6e9896509cd2143c40bc411d50e6d1828cbae1754817f"
-PUBLISHER_VERIFY_DIGEST = "25e745059c0e67bf5f55870fd4750ceb74f6baee7e6da3d9f81f38f31d4a1f48"
+PUBLISHER_UPLOAD_DIGEST = "1023843652029512072c79e0ceb8f09283b60d520fc01fe01e7d92d90c178fb7"
+PUBLISHER_INDEX_DIGEST = "9cbffcbc9e880246b8e476cf0e4e76b210e544ef127cafc7c81ead8b059dd87f"
+PUBLISHER_VERIFY_DIGEST = "9d726b44d62982c080c2c8a95fb6a91772d476db8ccdeba207c82e4e4b71123c"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
-REPOSITORY_CANARY_STEPS_DIGEST = "460f99aac539a0b58a0a0967d6bb6f7859e4ce718a1da32c201c9f59d5b7d3bc"
+REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
 
 def check(condition, message)
   raise message unless condition
@@ -468,15 +468,15 @@ def check_repository_canary(workflow)
   upload = named_step(steps, "Create exact repository-rooted package with GITHUB_TOKEN")
   check(upload["env"] == {
     "GH_TOKEN" => "${{ github.token }}",
-    "GHCR_AUTH_MODE" => "github-token",
-    "GHCR_REQUIRE_PAT" => "false",
-    "GHCR_DESTINATION_MODE" => "repository-canary",
   }, "repository namespace canary authentication changed")
   [
     "scripts/homebrew-ghcr-upload.sh",
     "--tap-repository kandelo-dev/homebrew-tap-core",
     "--tap-name kandelo-dev/tap-core",
     "--formula zlib",
+    "--auth-mode github-token",
+    "--require-pat false",
+    "--destination-mode repository-canary",
   ].each do |fragment|
     check(upload.fetch("run").include?(fragment),
           "repository namespace canary upload lacks #{fragment}")
@@ -989,8 +989,6 @@ def check_publisher(workflow)
         ["Upload validated bottle in isolated ORAS auth state"] &&
         uploader_credential_steps.first["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
-          "GHCR_AUTH_MODE" => "github-token",
-          "GHCR_REQUIRE_PAT" => "false",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
@@ -1003,8 +1001,6 @@ def check_publisher(workflow)
         ["Publish the complete Homebrew version index in isolated ORAS auth state"] &&
         index_credential_steps.first["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
-          "GHCR_AUTH_MODE" => "github-token",
-          "GHCR_REQUIRE_PAT" => "false",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
@@ -2215,11 +2211,16 @@ def check_publisher(workflow)
         upload_validate.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
         upload_attempt.fetch("run").include?("scripts/homebrew-ghcr-upload.sh") &&
         upload_attempt.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
+        upload_attempt.fetch("run").include?("--auth-mode github-token") &&
+        upload_attempt.fetch("run").include?("--require-pat false") &&
+        upload_attempt.fetch("run").include?("--destination-mode repository") &&
         upload_attempt.fetch("run").include?('--out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"'),
         "publisher isolated upload path changed")
   ghcr_uploader_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-ghcr-upload.sh"))
   [
-    'DESTINATION_MODE="${GHCR_DESTINATION_MODE:-repository}"',
+    'AUTH_MODE="automatic"',
+    'REQUIRE_PAT="false"',
+    'DESTINATION_MODE="repository"',
     'repository) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;',
   ].each do |fragment|
     check(ghcr_uploader_source.include?(fragment),
@@ -2372,6 +2373,9 @@ def check_publisher(workflow)
     "scripts/homebrew-ghcr-upload.sh",
     '--layout "$RUNNER_TEMP/homebrew-complete-index/layout"',
     '--layout-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json"',
+    "--auth-mode github-token",
+    "--require-pat false",
+    "--destination-mode repository",
     '--out-json "$RUNNER_TEMP/homebrew-complete-index/transport-receipt.json"',
   ].each do |fragment|
     check(index_publish_run.include?(fragment),
@@ -2961,8 +2965,10 @@ def self_test(publisher, maintenance, repository_canary)
 
   {
     "repository canary PAT authentication" => lambda { |w|
-      mutate_named_step(w, "canary", "Create exact repository-rooted package with GITHUB_TOKEN")
-        .fetch("env")["GHCR_AUTH_MODE"] = "pat"
+      step = mutate_named_step(
+        w, "canary", "Create exact repository-rooted package with GITHUB_TOKEN"
+      )
+      step["run"] = step.fetch("run").sub("--auth-mode github-token", "--auth-mode pat")
     },
     "repository canary mutable source" => lambda { |w|
       mutate_named_step(w, "canary", "Checkout exact Kandelo canary source")
@@ -3136,8 +3142,9 @@ def self_test(publisher, maintenance, repository_canary)
         w, "upload-bottle", "Upload validated bottle in isolated ORAS auth state"
       )
       step.fetch("env")["GH_TOKEN"] = "${{ secrets.UNREVIEWED_TOKEN }}"
-      step.fetch("env")["GHCR_AUTH_MODE"] = "pat"
-      step.fetch("env")["GHCR_REQUIRE_PAT"] = "true"
+      step["run"] = step.fetch("run")
+        .sub("--auth-mode github-token", "--auth-mode pat")
+        .sub("--require-pat false", "--require-pat true")
     },
     "version-index authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("publish-bottle-index").fetch("permissions")["contents"] = "write"
@@ -3148,8 +3155,9 @@ def self_test(publisher, maintenance, repository_canary)
         "Publish the complete Homebrew version index in isolated ORAS auth state"
       )
       step.fetch("env")["GH_TOKEN"] = "${{ secrets.UNREVIEWED_TOKEN }}"
-      step.fetch("env")["GHCR_AUTH_MODE"] = "pat"
-      step.fetch("env")["GHCR_REQUIRE_PAT"] = "true"
+      step["run"] = step.fetch("run")
+        .sub("--auth-mode github-token", "--auth-mode pat")
+        .sub("--require-pat false", "--require-pat true")
     },
     "version-index serialization bypass" => lambda { |w|
       w.fetch("jobs").fetch("publish-bottle-index").delete("concurrency")
