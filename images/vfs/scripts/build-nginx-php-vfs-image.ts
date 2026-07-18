@@ -1,6 +1,6 @@
 /**
  * Build a fully-bootable VFS image for the nginx + PHP-FPM demo. The image
- * starts from shell.vfs.zst, then dinit (PID 1) brings up php-fpm on :9000
+ * starts from shell.vfs.zst, then dinit, the first user process, brings up php-fpm on :9000
  * and nginx on :8080 (depends-on chain ensures php-fpm is up first).
  *
  * Produces: apps/browser-demos/public/nginx-php.vfs
@@ -202,7 +202,7 @@ sort($extensions);
   <div class="info">
     <p>This page is dynamically rendered by <strong>PHP-FPM</strong>,
     proxied via FastCGI from <strong>nginx</strong>, both running inside
-    the same POSIX kernel. dinit (PID 1) brought them up in dependency
+    the same POSIX kernel. dinit, the first user process, brought them up in dependency
     order: php-fpm first, then nginx.</p>
   </div>
   <table>

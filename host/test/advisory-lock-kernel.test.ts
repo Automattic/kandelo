@@ -83,16 +83,15 @@ function makeProcessMemory(): ProcessMemory {
 
 function register(
   worker: CentralizedKernelWorker,
-  pid: number,
-): ProcessMemory {
+): number {
+  const pid = worker.createProcess(CAPTURED_STDIO);
   const entry = makeProcessMemory();
   worker.registerProcess(pid, entry.memory, [entry.channelOffset], {
     brkBase: entry.layout.brkBase,
     mmapBase: entry.layout.mmapBase,
     maxAddr: entry.layout.maxAddr,
-    stdio: CAPTURED_STDIO,
   });
-  return entry;
+  return pid;
 }
 
 function issue(
@@ -117,6 +116,9 @@ function issue(
 
   const handleChannel = (worker as any).kernelInstance.exports
     .kernel_handle_channel as (offset: number | bigint, pid: number) => number;
+  const setCurrentTid = (worker as any).kernelInstance.exports
+    .kernel_set_current_tid as (pid: number, tid: number) => number;
+  expect(setCurrentTid(pid, pid)).toBe(0);
   handleChannel(worker.toKernelPtr(scratchOffset), pid);
   return {
     value: Number(channel.getBigInt64(CH_RETURN, true)),
@@ -206,12 +208,9 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
       new NodeTimeProvider(),
     );
     const worker = await makeWorker(platform);
-    const firstPid = 690;
-    const secondPid = 691;
-    const aliasPid = 692;
-    register(worker, firstPid);
-    register(worker, secondPid);
-    register(worker, aliasPid);
+    const firstPid = register(worker);
+    const secondPid = register(worker);
+    const aliasPid = register(worker);
 
     try {
       const firstFd = openFile(worker, firstPid, "/first/file");
@@ -253,12 +252,9 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
     linkSync(original, alias);
 
     const worker = await makeWorker();
-    const ownerPid = 700;
-    const peerPid = 701;
-    const recreatedPid = 702;
-    register(worker, ownerPid);
-    register(worker, peerPid);
-    register(worker, recreatedPid);
+    const ownerPid = register(worker);
+    const peerPid = register(worker);
+    const recreatedPid = register(worker);
 
     try {
       const ownerFd = openFile(worker, ownerPid, original);
@@ -323,11 +319,8 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
     const path = join(root, "file");
     writeFileSync(path, "data");
     const worker = await makeWorker();
-    const parentPid = 705;
-    const childPid = 706;
-    const peerPid = 707;
-    register(worker, parentPid);
-    register(worker, peerPid);
+    const parentPid = register(worker);
+    const peerPid = register(worker);
 
     try {
       const parentFd = openFile(worker, parentPid, path);
@@ -338,8 +331,9 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
       });
 
       const forkProcess = (worker as any).kernelInstance.exports
-        .kernel_fork_process as (parent: number, child: number) => number;
-      expect(forkProcess(parentPid, childPid)).toBe(0);
+        .kernel_fork_process as (parent: number, callerTid: number) => number;
+      const childPid = forkProcess(parentPid, parentPid);
+      expect(childPid).toBeGreaterThan(0);
       expect(lock(worker, peerPid, peerFd, 0n, 1n)).toEqual({
         value: -1,
         errno: EAGAIN,
@@ -370,11 +364,8 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
     const path = join(root, "file");
     writeFileSync(path, "data");
     const worker = await makeWorker();
-    const ownerPid = 710;
-    const childPid = 711;
-    const peerPid = 712;
-    register(worker, ownerPid);
-    register(worker, peerPid);
+    const ownerPid = register(worker);
+    const peerPid = register(worker);
 
     try {
       const ownerFd = openFile(worker, ownerPid, path);
@@ -388,8 +379,9 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
         .toEqual({ value: -1, errno: EAGAIN });
 
       const forkProcess = (worker as any).kernelInstance.exports
-        .kernel_fork_process as (parent: number, child: number) => number;
-      expect(forkProcess(ownerPid, childPid)).toBe(0);
+        .kernel_fork_process as (parent: number, callerTid: number) => number;
+      const childPid = forkProcess(ownerPid, ownerPid);
+      expect(childPid).toBeGreaterThan(0);
 
       closeFile(worker, ownerPid, ownerFd);
       closeFile(worker, ownerPid, duplicate.value);
@@ -418,10 +410,8 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
     const path = join(root, "file");
     writeFileSync(path, "capacity");
     const worker = await makeWorker();
-    const ownerPid = 720;
-    const peerPid = 721;
-    register(worker, ownerPid);
-    register(worker, peerPid);
+    const ownerPid = register(worker);
+    const peerPid = register(worker);
 
     try {
       const fd = openFile(worker, ownerPid, path);

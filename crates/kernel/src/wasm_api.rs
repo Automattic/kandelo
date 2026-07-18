@@ -26,7 +26,8 @@ use crate::process::{
     HostIO, Process, ProcessState, StdioConfig, StdioKind, normalize_posix_timer_signo,
 };
 use crate::signal::{
-    DefaultSignalOutcome, apply_default_signal_action_with_locks, deliver_pending_signals_with_locks,
+    DefaultSignalOutcome, apply_default_signal_action_with_locks,
+    deliver_pending_signals_for_tid_with_locks, deliver_pending_signals_with_locks,
     dequeue_signal_for, terminate_process_by_signal_with_locks,
 };
 use crate::syscalls;
@@ -74,7 +75,6 @@ unsafe extern "C" {
     fn host_fsync(handle: i64) -> i32;
     fn host_fchmod(handle: i64, mode: u32) -> i32;
     fn host_fchown(handle: i64, uid: u32, gid: u32) -> i32;
-    fn host_kill(pid: i32, sig: u32) -> i32;
     fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_set_alarm(seconds: u32) -> i32;
     fn host_set_posix_timer(
@@ -140,16 +140,8 @@ unsafe extern "C" {
         result_ptr: *mut u8,
         result_len: u32,
     ) -> i32;
-    fn host_fork() -> i32;
     fn host_futex_wait(addr: usize, expected: u32, timeout_ns_lo: u32, timeout_ns_hi: u32) -> i32;
     fn host_futex_wake(addr: usize, count: u32) -> i32;
-    fn host_clone(
-        fn_ptr: usize,
-        arg: usize,
-        stack_ptr: usize,
-        tls_ptr: usize,
-        ctid_ptr: usize,
-    ) -> i32;
     fn host_is_thread_worker() -> i32;
     fn host_bind_framebuffer(
         pid: i32,
@@ -569,18 +561,6 @@ impl HostIO for WasmHostIO {
         i32_to_result(result)
     }
 
-    fn host_kill(&mut self, pid: i32, sig: u32) -> Result<(), Errno> {
-        let ret = unsafe { host_kill(pid, sig) };
-        if ret < 0 {
-            match Errno::from_u32((-ret) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(())
-        }
-    }
-
     fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno> {
         let ret = unsafe { host_exec(path.as_ptr(), path.len() as u32) };
         if ret < 0 {
@@ -830,13 +810,6 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_fork(&self) -> i32 {
-        gkl_release();
-        let result = unsafe { host_fork() };
-        gkl_acquire();
-        result
-    }
-
     fn host_futex_wait(
         &mut self,
         addr: usize,
@@ -862,29 +835,6 @@ impl HostIO for WasmHostIO {
 
     fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno> {
         let result = unsafe { host_futex_wake(addr, count) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result)
-        }
-    }
-
-    fn host_clone(
-        &mut self,
-        fn_ptr: usize,
-        arg: usize,
-        stack_ptr: usize,
-        tls_ptr: usize,
-        ctid_ptr: usize,
-    ) -> Result<i32, Errno> {
-        // Release GKL before blocking — host_clone blocks on Atomics.wait
-        // until the process-manager assigns a TID.
-        gkl_release();
-        let result = unsafe { host_clone(fn_ptr, arg, stack_ptr, tls_ptr, ctid_ptr) };
-        gkl_acquire();
         if result < 0 {
             match Errno::from_u32((-result) as u32) {
                 Some(e) => Err(e),
@@ -1290,13 +1240,13 @@ pub extern "C" fn kernel_get_memory_pages() -> u32 {
 }
 
 /// Create a new process in the process table with captured pipe stdio.
-/// Returns 0 on success, -EEXIST if pid already exists.
+/// Returns the kernel-allocated pid on success or a negative errno.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_create_process(pid: u32) -> i32 {
+pub extern "C" fn kernel_create_process() -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.create_process(pid) {
-        Ok(()) => 0,
-        Err(()) => -(Errno::EEXIST as i32),
+    match table.create_process() {
+        Ok(pid) => pid as i32,
+        Err(e) => -(e as i32),
     }
 }
 
@@ -1306,11 +1256,10 @@ pub extern "C" fn kernel_create_process(pid: u32) -> i32 {
 /// - 0: host-backed pipe semantics (`isatty` false, FIFO stat mode)
 /// - 1: host-backed terminal/char-device semantics
 ///
-/// Returns 0 on success, -EINVAL for an unknown stdio kind, or -EEXIST if
-/// pid already exists.
+/// Returns the kernel-allocated pid on success, -EINVAL for an unknown stdio
+/// kind, or another negative errno on allocation failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_create_process_with_stdio(
-    pid: u32,
     stdin_kind: u32,
     stdout_kind: u32,
     stderr_kind: u32,
@@ -1329,9 +1278,9 @@ pub extern "C" fn kernel_create_process_with_stdio(
     };
 
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.create_process_with_stdio(pid, stdio) {
-        Ok(()) => 0,
-        Err(()) => -(Errno::EEXIST as i32),
+    match table.create_process_with_stdio(stdio) {
+        Ok(pid) => pid as i32,
+        Err(e) => -(e as i32),
     }
 }
 
@@ -1527,7 +1476,6 @@ pub extern "C" fn kernel_push_process_metadata_entry(
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
     use core::sync::atomic::Ordering;
 
-    let removed = result.process;
     // A process removed without reaching sys_exit (worker crash or explicit
     // host termination) can still own host-side VFS handles. Close directory
     // iterators before their backing file handles,
@@ -1542,7 +1490,7 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
     // /dev/fb0 cleanup: if the exiting process held a live mmap, tell the host
     // to drop the canvas binding before the process Memory disappears. Then
     // release the global owner claim — best-effort CAS makes this idempotent.
-    if removed.fb_binding.is_some() {
+    if result.had_framebuffer_binding {
         unsafe { host_unbind_framebuffer(pid as i32) };
     }
     let _ = crate::process_table::FB0_OWNER.compare_exchange(
@@ -1605,14 +1553,15 @@ pub extern "C" fn kernel_reap_process(pid: u32) -> i32 {
     reap_process_and_cleanup(pid)
 }
 
-/// Fork a process in the process table.
-/// Clones parent's Process state and creates a child with `child_pid`.
-/// Returns 0 on success, negative errno on error.
+/// Fork a process in the process table on behalf of a validated parent task.
+/// Clones parent's Process state under a kernel-allocated child pid and
+/// preserves the calling task's signal mask in the child.
+/// Returns the child pid on success, negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_fork_process(parent_pid: u32, child_pid: u32) -> i32 {
+pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.fork_process(parent_pid, child_pid) {
-        Ok(()) => 0,
+    match table.fork_process_for_caller(parent_pid, caller_tid) {
+        Ok(child_pid) => child_pid as i32,
         Err(e) => -(e as i32),
     }
 }
@@ -1632,7 +1581,12 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, child_pid: u32) -> i32 {
 /// `blob_ptr..blob_ptr + blob_len` lies inside the kernel's linear
 /// memory and stays valid for the duration of this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_process(parent_pid: u32, blob_ptr: usize, blob_len: usize) -> i32 {
+pub extern "C" fn kernel_spawn_process(
+    parent_pid: u32,
+    caller_tid: u32,
+    blob_ptr: usize,
+    blob_len: usize,
+) -> i32 {
     let bytes = unsafe { core::slice::from_raw_parts(blob_ptr as *const u8, blob_len) };
     let parsed = match crate::spawn::parse_blob(bytes) {
         Ok(p) => p,
@@ -1648,8 +1602,9 @@ pub extern "C" fn kernel_spawn_process(parent_pid: u32, blob_ptr: usize, blob_le
     // / etc) — host imports defined at the top of this module.
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let mut host = WasmHostIO;
-    match table.spawn_child(
+    match table.spawn_child_for_caller(
         parent_pid,
+        caller_tid,
         &argv_refs,
         &envp_refs,
         &parsed.file_actions,
@@ -1791,6 +1746,7 @@ pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_wait_child_poll(
     parent_pid: u32,
+    caller_tid: u32,
     target_pid: i32,
     event_mask: u32,
     flags: u32,
@@ -1802,6 +1758,9 @@ pub extern "C" fn kernel_wait_child_poll(
 
     let selected = {
         let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        if table.validate_task(parent_pid, caller_tid).is_err() {
+            return -(Errno::ESRCH as i32);
+        }
         table.poll_wait_event(parent_pid, target_pid, event_mask, flags)
     };
 
@@ -1882,23 +1841,6 @@ pub extern "C" fn kernel_has_sa_nocldstop(pid: u32) -> i32 {
     }
 }
 
-/// Reset signal mask for a process.
-/// Fork children re-execute _start, so they don't get musl's __restore_sigs
-/// after fork(). Clear the blocked mask so the child starts with no signals
-/// blocked, matching a fresh process.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_reset_signal_mask(pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.get_mut(pid) {
-        Some(proc) => {
-            proc.signals.blocked = 0;
-            proc.sigsuspend_saved_mask = None;
-            0
-        }
-        None => -(Errno::ESRCH as i32),
-    }
-}
-
 /// Check if a signal is blocked for a process.
 /// Returns 1 if blocked by *every* thread of `pid` (i.e. no thread can
 /// currently receive it), 0 if at least one thread has it unblocked,
@@ -1956,6 +1898,9 @@ pub extern "C" fn kernel_thread_has_deliverable(pid: u32, tid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) => {
+            if !proc.is_live_explicit_tid(tid) {
+                return -(Errno::ESRCH as i32);
+            }
             if proc.deliverable_for(tid) != 0 {
                 1
             } else {
@@ -2208,20 +2153,19 @@ fn process_name_bytes(proc: &crate::process::Process) -> Vec<u8> {
     }
 }
 
-/// Dequeue one pending Handler signal for a process.
+/// Dequeue one pending Handler signal for an exact live task.
 /// Writes signal delivery info to `out_ptr` (24 bytes):
 ///   [0..4] signum (u32), [4..8] handler_index (u32), [8..12] sa_flags (u32),
 ///   [16..24] old_blocked_mask (u64)
 /// Applies sa_mask | sig_bit(signum) to the process's blocked mask (POSIX).
 /// Returns signum (>0) if a signal was dequeued, 0 if none pending.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
+pub extern "C" fn kernel_dequeue_signal(pid: u32, tid: u32, out_ptr: *mut u8) -> i32 {
     use crate::signal::{SignalHandler, sig_bit};
-    let tid = crate::process_table::current_tid();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+    let (proc, advisory_locks) = match table.task_and_advisory_locks(pid, tid) {
         Some(pair) => pair,
-        None => return 0,
+        None => return -(Errno::ESRCH as i32),
     };
     loop {
         // Peek at the lowest-numbered deliverable signal for this thread:
@@ -2304,17 +2248,10 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
     }
 }
 
-/// Handle exec semantics on a process in the process table.
-/// Closes CLOEXEC descriptors and resets image-specific state in place so
-/// surviving kernel objects retain their exact identity and queues.
-/// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
-    kernel_exec_setup_inner(pid, pid)
-}
-
 /// Thread-aware exec setup. When a pthread invokes exec, its signal mask and
-/// directed pending signals become the surviving process thread's state.
+/// directed pending signals become the surviving process thread's state. The
+/// same exact kernel-owned task must first have completed
+/// [`kernel_exec_prepare`].
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exec_setup_for_thread(pid: u32, caller_tid: u32) -> i32 {
     kernel_exec_setup_inner(pid, caller_tid)
@@ -2336,23 +2273,9 @@ pub extern "C" fn kernel_exec_prepare(pid: u32, caller_tid: u32) -> i32 {
 
 fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = table
-        .process_and_advisory_locks(pid)
-        .ok_or(Errno::ESRCH)?;
+    let (proc, advisory_locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
 
-    if matches!(
-        proc.state,
-        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
-    ) {
-        return Err(Errno::ESRCH);
-    }
-
-    if caller_tid != 0
-        && caller_tid != pid
-        && !proc.threads.iter().any(|thread| thread.tid == caller_tid)
-    {
-        return Err(Errno::ESRCH);
-    }
+    proc.begin_exec_prepare(caller_tid)?;
 
     // Apply pending fork fd actions (from posix_spawn) before exec.
     // These are dup2/close/open operations that rearrange descriptors (for
@@ -2400,31 +2323,19 @@ fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
             }
         }
     }
+    proc.finish_exec_prepare(caller_tid);
     Ok(())
 }
 
 fn kernel_exec_setup_inner(pid: u32, caller_tid: u32) -> i32 {
-    // Compatibility fallback for hosts that have not adopted the explicit
-    // prepare step yet. New hosts call kernel_exec_prepare first, leaving no
-    // actions here; validating twice is deliberate and harmless.
-    let has_pending_actions = {
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        match table.get(pid) {
-            Some(proc) => !proc.fork_fd_actions.is_empty(),
-            None => return -(Errno::ESRCH as i32),
-        }
-    };
-    if has_pending_actions {
-        if let Err(e) = prepare_exec_state(pid, caller_tid) {
-            return -(e as i32);
-        }
-    }
-
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
         Some(pair) => pair,
         None => return -(Errno::ESRCH as i32),
     };
+    if let Err(e) = proc.consume_exec_prepare(caller_tid) {
+        return -(e as i32);
+    }
     let mut host = WasmHostIO;
     match syscalls::commit_exec_state_with_locks(proc, advisory_locks, &mut host, caller_tid) {
         Ok(()) => 0,
@@ -2496,9 +2407,13 @@ fn mq_would_block_result(timeout_ptr: usize, table: &crate::mqueue::MqueueTable,
 pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
     use wasm_posix_shared::channel::*;
 
-    // Set current process for dispatch
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.set_current_pid(pid);
+    // Every mailbox call consumes an explicit kernel-validated task binding
+    // installed by kernel_set_current_tid. Missing or stale ambient state must
+    // not silently become main-thread authority.
+    let has_task_binding = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        table.has_current_tid_binding(pid)
+    };
 
     // Read syscall number and args from kernel memory
     let base = offset;
@@ -2537,7 +2452,12 @@ pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
     // kernel memory terms. The JS layer sets pointer args as absolute
     // kernel-memory addresses, so we pass them through unchanged.
 
-    let result = dispatch_channel_syscall(syscall_nr, &args);
+    let result = if has_task_binding {
+        dispatch_channel_syscall(syscall_nr, &args)
+    } else {
+        -(Errno::ESRCH as i32)
+    };
+    unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
 
     // Write result back to channel
     let out = unsafe {
@@ -3311,8 +3231,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             let len = unsafe { cstr_len(p) };
             kernel_execveat(a1 as i32, p, len, a5 as u32)
         }
-        212 => kernel_fork(), // SYS_FORK
-        213 => kernel_fork(), // SYS_VFORK (treat as fork)
+        // The centralized host must intercept fork and ask ProcessTable to
+        // allocate the child identity. A direct dispatch cannot create a
+        // worker without bypassing that authority, so fail truthfully.
+        212 | 213 => -(Errno::ENOSYS as i32), // SYS_FORK / SYS_VFORK
         201 => kernel_clone(
             0,
             a2 as usize,
@@ -3588,7 +3510,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             } else {
                 0
             };
-            kernel_kill_with_value(a1, a2 as u32, si_value)
+            kernel_kill_with_metadata(a1, a2 as u32, si_value, -1)
         }
 
         // SYS_RT_SIGRETURN: signal handler return — clean up alt stack state
@@ -4346,57 +4268,132 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 // SysV IPC kernel exports
 // ---------------------------------------------------------------------------
 
-/// Set the current process for subsequent kernel_ipc_* calls.
-/// Host must call this before kernel_ipc_shmat/shmdt/shm_read_chunk/shm_write_chunk.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_current_pid(pid: u32) {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.set_current_pid(pid);
-}
-
-/// Set the current kernel/libc thread id for the next `kernel_handle_channel`
-/// call and for subsequent signal syscalls that need to know which POSIX thread
-/// is executing (`sigprocmask`, `sigsuspend`, `ppoll`/`pselect`, etc.).
+/// Bind the current kernel/libc thread id for exactly the next
+/// `kernel_handle_channel` call. Signal syscalls dispatched by that call use
+/// the same validated task context.
 ///
 /// The host tracks `(pid, channelOffset) -> tid` in its own map (`channelTids`)
 /// and must call this *before* dispatching a thread-originated syscall. The
-/// channel offset identifies the host mailbox; this value supplies the
-/// guest-visible pthread identity used by gettid, set_tid_address, per-thread
-/// signal state, and clear-TID cleanup.
+/// ProcessTable rejects a TID that it did not allocate for `pid`, so the host
+/// mapping remains transport metadata rather than an identity authority.
 ///
 /// This is ambient dispatch context for today's serialized host/kernel entry
 /// model. If a single kernel instance ever services channels concurrently or
 /// reentrantly, the TID should move into the syscall header or be passed as a
-/// `kernel_handle_channel` argument. The main thread uses `tid = 0`, which is
-/// also the default.
+/// `kernel_handle_channel` argument. The main thread uses its explicit leader
+/// TID, equal to `pid`. Zero is reserved for kernel-internal unit-test dispatch
+/// state and is rejected here.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_current_tid(tid: u32) {
+pub extern "C" fn kernel_set_current_tid(pid: u32, tid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.set_current_tid(tid);
+    match table.bind_current_tid(pid, tid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Validate a host channel's exact task identity without installing a
+/// one-shot dispatch binding.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_validate_task(pid: u32, tid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.validate_task(pid, tid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
 }
 
 /// Attach to shared memory segment. Returns segment size, or negative errno.
 /// Host uses this + kernel_ipc_shm_read_chunk to transfer data to process memory.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shmat(shmid: i32, _shmaddr: i32, flags: i32) -> i32 {
+pub extern "C" fn kernel_ipc_shmat(shmid: i32, shmaddr: i32, flags: i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
+    if !table.has_current_tid_binding(pid) {
+        return -(Errno::ESRCH as i32);
+    }
+    kernel_ipc_shmat_for_process(pid, shmid, shmaddr, flags)
+}
+
+/// Host-side SysV attachment with an explicit kernel-owned process identity.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmat_for_process(
+    pid: u32,
+    shmid: i32,
+    _shmaddr: i32,
+    flags: i32,
+) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let (uid, gid) = match table.get(pid) {
+        Some(proc)
+            if pid != crate::process_table::SYNTHETIC_INIT_PID
+                && matches!(proc.state, ProcessState::Running | ProcessState::Stopped) =>
+        {
+            (proc.euid, proc.egid)
+        }
+        _ => return -(Errno::ESRCH as i32),
+    };
     let ipc = unsafe { crate::ipc::global_ipc_table() };
-    let (pid, uid, gid) = current_pid_eids();
     match ipc.shmat(shmid, pid, flags as u32, uid, gid) {
         Ok(size) => size as i32,
         Err(e) => -(e as i32),
     }
 }
 
+/// Guest-originated SysV attachment for an exact live calling task.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmat_for_task(
+    pid: u32,
+    tid: u32,
+    shmid: i32,
+    shmaddr: i32,
+    flags: i32,
+) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if table.validate_task(pid, tid).is_err() {
+        return -(Errno::ESRCH as i32);
+    }
+    kernel_ipc_shmat_for_process(pid, shmid, shmaddr, flags)
+}
+
 /// Detach from shared memory segment.
 /// Host should call kernel_ipc_shm_write_chunk first to sync data back.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_ipc_shmdt(shmid: i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
+    if !table.has_current_tid_binding(pid) {
+        return -(Errno::ESRCH as i32);
+    }
+    kernel_ipc_shmdt_for_process(pid, shmid)
+}
+
+/// Host-side SysV detach with an explicit retained process identity. Exited
+/// zombies remain eligible so teardown can release attachments after death.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_for_process(pid: u32, shmid: i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc)
+            if pid != crate::process_table::SYNTHETIC_INIT_PID
+                && proc.state != ProcessState::Limbo => {}
+        _ => return -(Errno::ESRCH as i32),
+    }
     let ipc = unsafe { crate::ipc::global_ipc_table() };
-    let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
     match ipc.shmdt(shmid, pid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }
+}
+
+/// Guest-originated SysV detach for an exact live calling task.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_for_task(pid: u32, tid: u32, shmid: i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if table.validate_task(pid, tid).is_err() {
+        return -(Errno::ESRCH as i32);
+    }
+    kernel_ipc_shmdt_for_process(pid, shmid)
 }
 
 /// Read a chunk of shared memory segment data into scratch area.
@@ -4601,14 +4598,6 @@ pub extern "C" fn kernel_mq_is_mqd(fd: i32) -> i32 {
     if table.is_mqd(fd as u32) { 1 } else { 0 }
 }
 
-/// Initialize the kernel with a new process.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_init(pid: u32) {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.processes.insert(pid, Process::new(pid));
-    table.set_current_pid(pid);
-}
-
 /// Serialize current process state for fork. Returns bytes written, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fork_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
@@ -4616,64 +4605,6 @@ pub extern "C" fn kernel_get_fork_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     match crate::fork::serialize_fork_state(proc, buf) {
         Ok(written) => written as i32,
-        Err(e) => -(e as i32),
-    }
-}
-
-/// Initialize kernel from serialized fork state (child side).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_init_from_fork(buf_ptr: *const u8, buf_len: u32, child_pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if table.get(child_pid).is_some() {
-        return -(Errno::EEXIST as i32);
-    }
-    let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
-    match crate::fork::deserialize_fork_state(buf, child_pid) {
-        Ok(proc) => {
-            if let Err(e) = table.insert_legacy_fork_process(proc) {
-                return -(e as i32);
-            }
-            table.set_current_pid(child_pid);
-            0
-        }
-        Err(e) => -(e as i32),
-    }
-}
-
-/// Serialize exec-safe state. Returns bytes written on success, negative errno on error.
-/// Exec state differs from fork: closes CLOEXEC fds, resets caught signal handlers,
-/// preserves pending signals and signal mask.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_get_exec_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    match crate::fork::serialize_exec_state(proc, buf) {
-        Ok(written) => written as i32,
-        Err(e) => -(e as i32),
-    }
-}
-
-/// Initialize kernel from exec state (replaces current process image).
-/// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_init_from_exec(buf_ptr: *const u8, buf_len: u32, pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
-    match crate::fork::deserialize_exec_state(buf, pid) {
-        Ok(proc) => {
-            let cleanup = match table.replace_legacy_exec_process(pid, proc) {
-                Ok(cleanup) => cleanup,
-                Err(e) => return -(e as i32),
-            };
-            for dir_handle in cleanup.host_dir_closes {
-                unsafe { host_closedir(dir_handle) };
-            }
-            for handle in cleanup.host_closes {
-                unsafe { host_close(handle) };
-            }
-            table.set_current_pid(pid);
-            0
-        }
         Err(e) => -(e as i32),
     }
 }
@@ -4843,11 +4774,12 @@ pub extern "C" fn kernel_write(fd: i32, buf_ptr: *const u8, buf_len: u32) -> i32
 ///
 /// `positioned != 0` selects the supplied offset (pwrite/pwritev); otherwise
 /// the open-file-description cursor and O_APPEND state are authoritative.
-/// The host binds the calling TID before entering this export so SIGXFSZ is
-/// queued for the thread that issued the operation.
+/// The host supplies the exact calling TID so this direct export does not
+/// install or consume ambient channel-dispatch authority.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_prepare_write_operation(
     pid: u32,
+    tid: u32,
     fd: i32,
     offset: i64,
     requested_len: u32,
@@ -4855,8 +4787,7 @@ pub extern "C" fn kernel_prepare_write_operation(
 ) -> i64 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.set_current_pid(pid);
-    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+    let (proc, advisory_locks) = match table.task_and_advisory_locks(pid, tid) {
         Some(pair) => pair,
         None => return -(Errno::ESRCH as i64),
     };
@@ -4864,6 +4795,7 @@ pub extern "C" fn kernel_prepare_write_operation(
     let result = match syscalls::write_operation_budget(
         proc,
         &mut host,
+        tid,
         fd,
         (positioned != 0).then_some(offset),
         requested_len as usize,
@@ -4871,7 +4803,12 @@ pub extern "C" fn kernel_prepare_write_operation(
         Ok(len) => len as i64,
         Err(e) => -(e as i64),
     };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    let _ = deliver_pending_signals_for_tid_with_locks(
+        proc,
+        advisory_locks,
+        &mut host,
+        tid,
+    );
     result
 }
 
@@ -5795,31 +5732,40 @@ pub extern "C" fn kernel_setsid() -> i32 {
 /// Send a signal to a process. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
-    kernel_kill_with_value(pid, sig, 0)
+    kernel_kill_with_metadata(pid, sig, 0, 0)
 }
 
-/// Send signal with si_value (for sigqueue/rt_sigqueueinfo).
-fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
+/// Send a process-directed signal with its siginfo metadata.
+fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value: i32, si_code: i32) -> i32 {
     use wasm_posix_shared::signal::NSIG;
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let mut host = WasmHostIO;
     let caller_pid = table.current_pid();
+    let caller_tid = table.current_tid();
     let (caller_pgid, sender_uid, sender_euid) = match table.get(caller_pid) {
-        Some(caller) => (caller.pgid, caller.uid, caller.euid),
+        Some(caller) if caller.is_live_explicit_tid(caller_tid) => {
+            (caller.pgid, caller.uid, caller.euid)
+        }
         None => return -(Errno::ESRCH as i32),
+        Some(_) => return -(Errno::ESRCH as i32),
     };
 
     let deliver_caller = |table: &mut crate::process_table::ProcessTable,
                           host: &mut WasmHostIO| {
         if let Some((caller, locks)) = table.process_and_advisory_locks(caller_pid) {
-            deliver_pending_signals_with_locks(caller, locks, host);
+            let _ = deliver_pending_signals_for_tid_with_locks(
+                caller,
+                locks,
+                host,
+                caller_tid,
+            );
         }
     };
 
     // Handle cross-process kill directly via ProcessTable.
-    let is_local = pid == caller_pid as i32 || pid == 0 || pid == -(caller_pgid as i32);
-    if !is_local && pid > 0 {
+    let is_self = pid == caller_pid as i32;
+    if !is_self && pid > 0 {
         if sig >= NSIG && sig != 0 {
             deliver_caller(table, &mut host);
             return -(Errno::EINVAL as i32);
@@ -5832,11 +5778,22 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
             {
                 -(Errno::EPERM as i32)
             }
+            Some(_) if target_pid == crate::process_table::SYNTHETIC_INIT_PID => 0,
+            Some(target) if !target.is_live_explicit_tid(target.pid) => {
+                -(Errno::ESRCH as i32)
+            }
             Some(_) => {
                 if sig > 0 {
                     if let Some((target, locks)) = table.process_and_advisory_locks(target_pid) {
-                        target.raise_signal_with_value(sig, si_value);
-                        deliver_pending_signals_with_locks(target, locks, &mut host);
+                        target.raise_signal_with_metadata(sig, si_value, si_code);
+                        if let Some(target_tid) = target.pick_thread_for_shared_signal(sig) {
+                            let _ = deliver_pending_signals_for_tid_with_locks(
+                                target,
+                                locks,
+                                &mut host,
+                                target_tid,
+                            );
+                        }
                     }
                 }
                 0
@@ -5846,13 +5803,62 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
         deliver_caller(table, &mut host);
         return result;
     }
-    // kill(-pgid, sig) sends signal to all processes in group |pid|
-    if !is_local && pid < -1 {
+    // kill(-1, sig) targets every permitted live process except the caller and
+    // synthetic init, matching Linux's observable choice within POSIX's
+    // implementation-defined system-process exclusions.
+    if pid == -1 {
         if sig >= NSIG && sig != 0 {
             deliver_caller(table, &mut host);
             return -(Errno::EINVAL as i32);
         }
-        let target_pgid = (-pid) as u32;
+        let pids: Vec<u32> = table
+            .live_processes_descending()
+            .map(|(target_pid, _)| target_pid)
+            .filter(|&target_pid| target_pid != caller_pid)
+            .collect();
+        let mut delivered = false;
+        let mut any_perm_denied = false;
+        for target_pid in pids {
+            let Some(target) = table.get(target_pid) else {
+                continue;
+            };
+            if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
+                any_perm_denied = true;
+                continue;
+            }
+            delivered = true;
+            if sig > 0 {
+                if let Some((target, locks)) = table.process_and_advisory_locks(target_pid) {
+                    target.raise_signal_with_metadata(sig, si_value, si_code);
+                    if let Some(target_tid) = target.pick_thread_for_shared_signal(sig) {
+                        let _ = deliver_pending_signals_for_tid_with_locks(
+                            target,
+                            locks,
+                            &mut host,
+                            target_tid,
+                        );
+                    }
+                }
+            }
+        }
+        deliver_caller(table, &mut host);
+        if delivered {
+            return 0;
+        }
+        if any_perm_denied {
+            return -(Errno::EPERM as i32);
+        }
+        return -(Errno::ESRCH as i32);
+    }
+
+    // kill(0, sig) targets the caller's group; kill(-pgid, sig) targets the
+    // named group. Every target task is selected from kernel state.
+    if pid == 0 || pid < -1 {
+        if sig >= NSIG && sig != 0 {
+            deliver_caller(table, &mut host);
+            return -(Errno::EINVAL as i32);
+        }
+        let target_pgid = if pid == 0 { caller_pgid } else { (-pid) as u32 };
         let pids = table.pids_in_group(target_pgid);
         if pids.is_empty() {
             deliver_caller(table, &mut host);
@@ -5868,13 +5874,27 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
                     any_perm_denied = true;
                     continue;
                 }
+                if target_pid == crate::process_table::SYNTHETIC_INIT_PID {
+                    delivered = true;
+                    continue;
+                }
+                if !target.is_live_explicit_tid(target.pid) {
+                    continue;
+                }
                 delivered = true;
                 if sig > 0 {
                     if let Some((target, locks)) =
                         table.process_and_advisory_locks(target_pid)
                     {
-                        target.raise_signal_with_value(sig, si_value);
-                        deliver_pending_signals_with_locks(target, locks, &mut host);
+                        target.raise_signal_with_metadata(sig, si_value, si_code);
+                        if let Some(target_tid) = target.pick_thread_for_shared_signal(sig) {
+                            let _ = deliver_pending_signals_for_tid_with_locks(
+                                target,
+                                locks,
+                                &mut host,
+                                target_tid,
+                            );
+                        }
                     }
                 }
             }
@@ -5889,24 +5909,25 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
         }
     }
 
-    // For local sigqueue, raise with value on the current process directly.
-    if si_value != 0 && sig > 0 {
-        let Some((caller, locks)) = table.process_and_advisory_locks(caller_pid) else {
-            return -(Errno::ESRCH as i32);
-        };
-        caller.raise_signal_with_value(sig, si_value);
-        deliver_pending_signals_with_locks(caller, locks, &mut host);
-        return 0;
+    // The only remaining target is the exact calling process. Remote target
+    // selection never delegates to a host callback.
+    if sig >= NSIG && sig != 0 {
+        deliver_caller(table, &mut host);
+        return -(Errno::EINVAL as i32);
     }
     let Some((caller, locks)) = table.process_and_advisory_locks(caller_pid) else {
         return -(Errno::ESRCH as i32);
     };
-    let result = match syscalls::sys_kill(caller, &mut host, pid, sig) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(caller, locks, &mut host);
-    result
+    if sig > 0 {
+        caller.raise_signal_with_metadata(sig, si_value, si_code);
+    }
+    let _ = deliver_pending_signals_for_tid_with_locks(
+        caller,
+        locks,
+        &mut host,
+        caller_tid,
+    );
+    0
 }
 
 /// sigaltstack — get/set alternate signal stack state.
@@ -6050,27 +6071,12 @@ pub extern "C" fn kernel_sched_getparam(pid: i32, param_ptr: *mut u8) -> i32 {
     0
 }
 
-/// Deliver a signal from an external source (host). Called by host when
-/// another process sends a signal to this one via kill().
-/// Returns 0 on success, -EINVAL for invalid signal.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_deliver_signal(sig: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
-        return -(Errno::EINVAL as i32);
-    }
-    proc.raise_signal(sig);
-    let mut host = WasmHostIO;
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    0
-}
-
 /// Send a signal to the current process. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_raise(sig: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_raise(proc, &mut host, sig) {
+    let result = match syscalls::sys_raise(proc, sig) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -6082,10 +6088,10 @@ pub extern "C" fn kernel_raise(sig: u32) -> i32 {
 /// process. POSIX requires that directed signals go to that thread's pending
 /// queue, not the process-wide shared queue.
 ///
-/// - `tid == 0` or `tid == pid` targets the main thread's directed queue.
+/// - `tid == pid` targets the main thread's directed queue.
 /// - Other `tid` values look up the thread in `Process::threads` and raise
 ///   on its own per-thread pending queue.
-/// - Unknown `tid` → `-ESRCH`.
+/// - `tid == 0`, unknown, or stale `tid` → `-ESRCH`.
 ///
 /// Cross-process `tkill` is not supported (returns `-ESRCH`); use `kill` or
 /// `tgkill` with the current process's `tgid` for current-process delivery.
@@ -6122,6 +6128,14 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
         return -(Errno::EINVAL as i32);
     }
 
+    // Exact-thread signal APIs accept only task IDs that the ProcessTable
+    // allocated and that are still live in this process. In particular, the
+    // internal tid=0 sentinel used for process-wide dispatch is not a task.
+    if !proc.is_live_explicit_tid(tid) {
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+        return -(Errno::ESRCH as i32);
+    }
+
     // Main thread: use its directed queue rather than the process-shared set.
     if proc.is_main_thread(tid) {
         if sig > 0 {
@@ -6136,27 +6150,12 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
     }
 
     // Worker thread: direct deliver to that thread's own pending queue.
-    // If the TID doesn't match any known worker, fall back to shared-pending
-    // delivery. This is a safety net for callers that pass a stale TID —
-    // notably `raise()` in a forked child whose pthread_self()->tid hasn't
-    // been refreshed via `set_tid_address` yet. Strict POSIX would return
-    // ESRCH, but returning an error here silently breaks `abort()` and any
-    // in-process signalling that uses `tkill(self_tid, sig)`; aligning with
-    // the previous "tkill is raise" behaviour keeps those paths alive while
-    // per-thread routing is still correct for genuinely-known TIDs.
     if sig > 0 {
-        let directed = if si_code != 0 || si_value != 0 {
+        if si_code != 0 || si_value != 0 {
             proc.raise_for_thread_with_value(tid, sig, si_value)
         } else {
             proc.raise_for_thread(tid, sig)
         };
-        if !directed {
-            if si_code != 0 || si_value != 0 {
-                proc.raise_signal_with_value(sig, si_value);
-            } else {
-                proc.raise_signal(sig);
-            }
-        }
     }
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     0
@@ -7203,6 +7202,10 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
             syscalls::sys_exit_with_locks(proc, advisory_locks, &mut host, status);
         }
     } // _gkl dropped here — GKL released
+    // `kernel_handle_channel` normally consumes its one-shot task binding on
+    // return. `_exit` deliberately traps instead, so consume it here before
+    // control leaves the kernel and no exited task remains ambient authority.
+    unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
     // Halt execution — musl's _exit loops forever if we just return.
     #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
     unsafe {
@@ -7502,7 +7505,7 @@ fn cross_process_loopback_connect(
     // Prefer highest pid — when parent and child both inherit a listener
     // (e.g. FPM master forks worker), the child (worker) is the one
     // that actually calls accept().
-    for (&pid, target_proc) in table.processes.iter().rev() {
+    for (pid, target_proc) in table.live_processes_descending() {
         if pid == my_pid {
             continue;
         }
@@ -7648,7 +7651,7 @@ fn cross_process_loopback_connect6(
         sock_idx
     };
     let mut listener = None;
-    for (&pid, target_proc) in table.processes.iter().rev() {
+    for (pid, target_proc) in table.live_processes_descending() {
         if pid == my_pid {
             continue;
         }
@@ -7857,36 +7860,34 @@ mod socket_wrapper_tests {
     use crate::errno::Errno;
     use crate::fd::OpenFileDescRef;
     use crate::ofd::FileType;
-    use crate::process::Process;
     use crate::process_table::ProcessTable;
     use crate::socket::{SocketDomain, SocketInfo, SocketType};
     use wasm_posix_shared::flags::O_RDWR;
 
     #[test]
     fn unix_datagram_cross_process_retry_preserves_connrefused() {
-        let mut proc = Process::new(9040);
-        let sock_idx =
-            proc.sockets
-                .alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
-        let ofd_idx = proc.ofd_table.create(
-            FileType::Socket,
-            O_RDWR,
-            -((sock_idx as i64) + 1),
-            b"/dev/socket".to_vec(),
-        );
-        let fd = proc
-            .fd_table
-            .alloc(OpenFileDescRef(ofd_idx), 0)
-            .unwrap();
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let fd = {
+            let proc = table.get_mut(pid).unwrap();
+            let sock_idx =
+                proc.sockets
+                    .alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
+            let ofd_idx = proc.ofd_table.create(
+                FileType::Socket,
+                O_RDWR,
+                -((sock_idx as i64) + 1),
+                b"/dev/socket".to_vec(),
+            );
+            proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
+        };
         // Abstract names do not touch HostIO, which keeps this wrapper test
         // focused on the retry's socket-type guard.
         let addr = [1, 0, 0, b'm', b'i', b's', b's'];
         let mut host = WasmHostIO;
-        let mut table = ProcessTable::new();
-        table.processes.insert(proc.pid, proc);
 
         assert_eq!(
-            cross_process_unix_connect(&mut table, 9040, &mut host, fd, &addr),
+            cross_process_unix_connect(&mut table, pid, &mut host, fd, &addr),
             Err(Errno::ECONNREFUSED),
         );
     }
@@ -9406,8 +9407,9 @@ pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
         Ok(()) => {
             // Exec succeeded — the host is asynchronously replacing this process
             // image. Trap to stop the current wasm execution immediately.
-            // GKL must be released before trapping so subsequent kernel calls
-            // (e.g. kernel_get_exec_state) don't deadlock.
+            // GKL must be released before trapping so subsequent centralized
+            // kernel calls during the host's exec transition do not deadlock.
+            unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
             #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
             unsafe {
                 core::hint::unreachable_unchecked();
@@ -9445,6 +9447,7 @@ pub extern "C" fn kernel_execveat(
 
     match result {
         Ok(()) => {
+            unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
             #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
             unsafe {
                 core::hint::unreachable_unchecked();
@@ -9454,21 +9457,6 @@ pub extern "C" fn kernel_execveat(
                 0
             }
         }
-        Err(e) => -(e as i32),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// fork (guest-initiated)
-// ---------------------------------------------------------------------------
-
-/// Fork the current process. Returns child PID in parent, 0 in child, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fork() -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let host = WasmHostIO;
-    match syscalls::sys_fork(proc, &host) {
-        Ok(pid) => pid as i32,
         Err(e) => -(e as i32),
     }
 }
@@ -9484,10 +9472,10 @@ pub extern "C" fn kernel_clone(
     tls_ptr: usize,
     ctid_ptr: usize,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match syscalls::sys_clone(
-        proc, &mut host, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr,
+        table, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr,
     ) {
         Ok(tid) => tid,
         Err(e) => -(e as i32),
@@ -9657,16 +9645,6 @@ pub extern "C" fn kernel_clear_fork_exec() -> i32 {
     proc.fork_fd_actions.clear();
     proc.fork_child = false;
     0
-}
-
-/// Set PID/PPID on an existing process (used by wpk_fork_* instrumentation
-/// to update identity after full memory snapshot restoration without full
-/// re-init).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_child_pid(new_pid: u32) {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    proc.ppid = proc.pid;
-    proc.pid = new_pid;
 }
 
 // ---------------------------------------------------------------------------
@@ -10355,13 +10333,55 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: 
 /// Removes the thread from the process's thread table.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
-    let owner = ((pid as u64) << 32) | tid as u64;
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if let Some(proc) = pt.get_mut(pid) {
-        syscalls::cancel_fifo_open_for_owner(proc, owner);
-        proc.remove_thread(tid);
+    match kernel_thread_exit_in_table(pt, pid, tid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
     }
-    0
+}
+
+fn kernel_thread_exit_in_table(
+    pt: &mut crate::process_table::ProcessTable,
+    pid: u32,
+    tid: u32,
+) -> Result<(), Errno> {
+    let owner = ((pid as u64) << 32) | tid as u64;
+    let proc = pt.get_mut(pid).ok_or(Errno::ESRCH)?;
+    if proc.get_thread(tid).is_none() {
+        return Err(Errno::ESRCH);
+    }
+    syscalls::cancel_fifo_open_for_owner(proc, owner);
+    proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod thread_exit_tests {
+    use super::*;
+
+    #[test]
+    fn thread_exit_rejects_unknown_or_wrong_owner_and_removes_exact_task() {
+        let mut pt = crate::process_table::ProcessTable::new();
+        let first = pt.create_process().unwrap();
+        let second = pt.create_process().unwrap();
+        let tid = pt.create_thread(first, first, 0, 0, 0).unwrap();
+
+        assert_eq!(
+            kernel_thread_exit_in_table(&mut pt, second, tid),
+            Err(Errno::ESRCH)
+        );
+        assert!(pt.get(first).unwrap().get_thread(tid).is_some());
+        assert_eq!(kernel_thread_exit_in_table(&mut pt, first, tid), Ok(()));
+        assert!(pt.get(first).unwrap().get_thread(tid).is_none());
+        assert_eq!(
+            kernel_thread_exit_in_table(&mut pt, first, tid),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(
+            kernel_thread_exit_in_table(&mut pt, 9_999, tid),
+            Err(Errno::ESRCH)
+        );
+    }
 }
 
 /// futex — real implementation via host Atomics.wait/notify.

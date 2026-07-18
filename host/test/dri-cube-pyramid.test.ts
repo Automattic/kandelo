@@ -87,7 +87,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       const workerAdapter = new NodeWorkerAdapter();
       const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
-      const parentPid = 100;
+      let parentPid = 0;
       let stdout = "";
       let stderr = "";
       let resolveExit: (s: number) => void;
@@ -118,7 +118,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
             kernel.registerProcess(childPid, childMemory, [childChannelOffset], {
-              skipKernelCreate: true,
               ptrWidth,
             });
 
@@ -131,7 +130,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             const childInit: CentralizedWorkerInitMessage = {
               type: "centralized_init",
               pid: childPid,
-              ppid: parentForkPid,
               programBytes,
               memory: childMemory,
               channelOffset: childChannelOffset,
@@ -181,13 +179,14 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       });
 
       await kernel.init(kernelWasmBytes);
+      parentPid = kernel.createProcess(CAPTURED_STDIO);
 
       const memory = createProcessMemory(17);
       const channelOffset = (MAX_PAGES - 2) * 65536;
       memory.grow(MAX_PAGES - 17);
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-      kernel.registerProcess(parentPid, memory, [channelOffset], { ptrWidth, stdio: CAPTURED_STDIO });
+      kernel.registerProcess(parentPid, memory, [channelOffset], { ptrWidth });
       const heapBase = extractHeapBase(programBytes);
       if (heapBase !== null) kernel.setBrkBase(parentPid, heapBase);
 
@@ -198,7 +197,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid: parentPid,
-        ppid: 0,
         programBytes,
         memory,
         channelOffset,

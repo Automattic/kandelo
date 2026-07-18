@@ -30,7 +30,7 @@ This file is the counterpart to [wasm-limitations.md](wasm-limitations.md), whic
 - `pthread_create-oom`: **not a kernel gap** — see "Not compromising" table below. The kernel correctly caps address space and `pthread_create` returns `EAGAIN` when `mmap` fails; the test's `t_memfill` setup sequence (specifically the `while (malloc(1));` drain) doesn't terminate within the 30 s timeout in our 1 GiB wasm arena.
 
 **Closed:**
-- `signal/pthread_kill`, `raise-race`: **per-thread signal routing landed.** `ThreadInfo` now carries its own pending/blocked/rt_queue; `tkill`/`tgkill` deliver to the target thread's directed queue; `pthread_sigmask` / `sigsuspend` / `ppoll` / `pselect` / `sigtimedwait` all operate on the calling thread's state via `kernel_set_current_tid`.
+- `signal/pthread_kill`, `raise-race`: **per-thread signal routing landed.** `ThreadInfo` now carries its own pending/blocked/rt_queue; `tkill`/`tgkill` deliver only to a kernel-validated live target's directed queue and return `ESRCH` for TID 0 or an unknown/stale target; `pthread_sigmask` / `sigsuspend` / `ppoll` / `pselect` / `sigtimedwait` all operate on the calling thread's state via `kernel_set_current_tid`.
 
 **Root cause (fixed):** `__NR_exit_group` was aliased to `__NR_exit` (both = 34) in the wasm syscall headers. When a non-main thread called `exit()` / `_Exit()` → `SYS_exit_group`, it emitted syscall 34. The host's channel dispatcher saw syscall 34 from a non-main channel and ran the *thread-exit* path (remove channel only), leaving the main process worker to spin forever. Tests that called `exit(0)` from a spawned thread therefore hung.
 
@@ -127,7 +127,7 @@ And a matching `/etc/group`. Low-risk change — pure userspace + VFS.
 
 ### 6. Per-thread signal masks (blocks AIO and `pthread_kill`) — *CLOSED*
 
-**Status (landed in this PR):** Per-thread `blocked` / `pending` / `rt_queue` now live on `ThreadInfo`. `kernel_set_current_tid` lets `sigprocmask`, `sigsuspend`, `ppoll`, `pselect6`, `sigtimedwait` operate on the calling thread's state. `tkill`/`tgkill` write into the target thread's directed pending queue rather than the shared process queue. `ABI_VERSION` bumped to 4 (new kernel exports — see `abi/snapshot.json`).
+**Status (landed in this PR):** Per-thread `blocked` / `pending` / `rt_queue` now live on `ThreadInfo`. The feature first added `kernel_set_current_tid` in ABI 4 so `sigprocmask`, `sigsuspend`, `ppoll`, `pselect6`, and `sigtimedwait` operate on the calling thread's state. As of ABI 42 the export takes `(pid, tid)` and validates that the TID belongs to that kernel process before binding a channel. `tkill`/`tgkill` write only into a live target thread's directed pending queue; TID 0 and unknown or exited targets return `ESRCH` instead of falling back to the process-wide queue.
 
 **Closed tests:** libc-test `regression/raise-race` (previously flakey XFAIL; now passes — timing-slow so it can appear as `TIME` on heavily-loaded runs, still acceptable per `CLAUDE.md`), sortix `signal/pthread_kill`, sortix `basic/aio/aio_fsync`, sortix `basic/aio/aio_read`, sortix `basic/aio/aio_error` (after `sys_pread` / `sys_pwrite` reject negative offsets with `EINVAL`, 2026-04-22 — the test's `aio_write(offset=-9000)` used to surface the host's seek error as `EIO`).
 
@@ -163,22 +163,21 @@ Verified by adding `debug_log` calls in `kernel_kill_with_value`, `sys_sigsuspen
 
 If the caller inserts even a short `nanosleep` between `aio_read` and `sigsuspend`, SIGUSR1 gets delivered correctly to main because main is running at the moment delivery picks a thread. Sortix's test has no such delay, so it's the realistic failure mode.
 
-**Fix approach:**
+**Landed implementation:**
 
-1. Move `blocked` and `sigsuspend_saved_mask` off `SignalState` / `Process` and onto `ThreadInfo` (or a new per-thread slot keyed by `(pid, tid)`). Keep `pending` and `rt_queue` process-wide — signals are generated at the process, not the thread.
-2. `get_process()` plus the current channel must surface the *current thread*, so that `sys_sigprocmask` / `sys_sigsuspend` / `sys_rt_sigpending` read-and-write the caller's own `blocked` mask. The channel already threads `channel.pid` through `kernel_set_current_pid`; add a similar `set_current_tid` and read it in those syscalls.
-3. Signal delivery logic (`kernel_dequeue_signal`, `deliver_pending_signals`) must pick a thread whose `blocked` mask does *not* block the signal, with a preference for a thread currently parked in `sigsuspend`/`sigtimedwait`/`pselect6`/`ppoll` on that signal. Today we just dequeue into whichever channel next completes a syscall — that's what sends the AIO signal to the worker.
-4. `sys_pthread_kill(tid, sig)` should target a specific thread's pending queue rather than the process-wide queue.
-5. Fork: a single thread survives fork; only that thread's mask is inherited. Existing code resets the process mask on fork (`kernel_reset_signal_mask`) — needs to become per-thread.
-
-Non-trivial refactor. Estimated ~600–900 LoC across `signal.rs`, `process.rs`, `wasm_api.rs`, `syscalls.rs`, plus matching host-side `currentHandleTid` plumbing in `kernel-worker.ts`. All existing tests that exercise the single-threaded path must continue to pass — the main thread's mask semantics are load-bearing for nginx, PHP-FPM, MariaDB signal handling, etc.
-
-**Starting files:**
-- `crates/kernel/src/signal.rs` — `SignalState` split: per-thread (`blocked`, saved masks) vs per-process (`pending`, `rt_queue`, `actions`).
-- `crates/kernel/src/process.rs` — `ThreadInfo` struct: add `blocked`, `sigsuspend_saved_mask`, per-thread alt-stack depth (already multi-thread capable?).
-- `crates/kernel/src/wasm_api.rs` — sigprocmask/sigsuspend/rt_sigpending must look up the current thread; `kernel_dequeue_signal` must choose a thread whose mask permits the signal.
-- `host/src/kernel-worker.ts` — add `currentHandleTid` alongside `currentHandlePid`; plumb it into `set_current_tid` before every `kernel_handle_channel` call.
-- Reference: `host/src/kernel-worker.ts` line ~4869 (`callbacks.onClone(..., channel.memory)`) — thread channels are already per-tid; the channel→tid mapping is the hook to add.
+1. `blocked`, saved masks, directed pending state, and realtime queues live on
+   each kernel-owned task record, while process-directed pending state remains
+   shared.
+2. ABI 42 validates and binds the exact `(pid, tid)` for each channel dispatch.
+   `sigprocmask`, `sigsuspend`, `rt_sigpending`, `ppoll`, `pselect6`, and
+   `sigtimedwait` therefore operate on the calling task rather than a PID-only
+   selector.
+3. `kernel_dequeue_signal(pid, tid, out_ptr)` validates the target task and
+   dequeues only signals deliverable to it. Unknown, foreign, stale, or exited
+   tasks return `ESRCH` without consuming signal state.
+4. `tkill` and `tgkill` write only to an exact live task's directed queue.
+5. Fork receives the validated caller TID, copies only that task's signal mask,
+   and no longer uses the obsolete host-driven `kernel_reset_signal_mask` path.
 
 **Why AIO does not need its own target.** Once per-thread masks work, stock musl AIO passes the three sortix tests unmodified. No AIO-specific code is required in our kernel. Any attempt to "implement AIO natively" (kernel io_uring shim, etc.) would be wasted effort — the bug is strictly in the signal subsystem.
 

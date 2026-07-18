@@ -71,7 +71,7 @@ describe("BrowserWorkerAdapter", () => {
   describe("createWorker", () => {
     it("should create a Worker with the entry URL and module type", () => {
       const adapter = new BrowserWorkerAdapter("worker.js");
-      adapter.createWorker({ pid: 1 });
+      adapter.createWorker({ pid: 100 });
 
       expect(lastMockWorker).not.toBeNull();
       expect(lastMockWorker!.url).toBe("worker.js");
@@ -116,10 +116,10 @@ describe("BrowserWorkerAdapter", () => {
       const received: unknown[] = [];
 
       handle.on("message", (msg) => received.push(msg));
-      lastMockWorker!.simulateMessage({ type: "ready", pid: 1 });
+      lastMockWorker!.simulateMessage({ type: "ready", pid: 100 });
 
       expect(received).toHaveLength(1);
-      expect(received[0]).toEqual({ type: "ready", pid: 1 });
+      expect(received[0]).toEqual({ type: "ready", pid: 100 });
     });
 
     it("should support multiple message handlers", () => {

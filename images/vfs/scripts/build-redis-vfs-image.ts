@@ -1,5 +1,5 @@
 /**
- * Build a fully-bootable VFS image for the Redis demo. dinit (PID 1)
+ * Build a fully-bootable VFS image for the Redis demo. dinit, the first user process,
  * brings up redis-server on port 6379 with persistence disabled.
  *
  * Produces: apps/browser-demos/public/redis.vfs

@@ -210,28 +210,6 @@ Future cleanup:
 `host/src/dylink.ts` (`DynamicLinker`, `LoadSharedLibraryOptions`),
 `examples/dlopen/test.test.ts`, `host/test/dylink.test.ts`.
 
-### Pre-instantiation worker errors bypass the kernel exit path
-When a process worker fails before any syscall (e.g. ABI mismatch, link
-error, malformed wasm), it posts `{type:"error"}` via `port.postMessage`.
-The kernel-worker-entry catches that and synthesizes `{type:"stderr"}` +
-`{type:"exit"}` messages directly to the host, which works for the
-common case but bypasses the kernel's normal exit path
-(`callbacks.onExit` → `kernelWorker.unregisterProcess(pid)` →
-hostReaped tracking → child-pid bookkeeping). For these pre-instantiation
-failures the kernel only holds `kernel_create_process(pid)` state, so the
-leak is minimal — but it's inconsistent with how successful exits flow.
-
-The SAB syscall channel can't carry this signal because the channel
-glue isn't linked yet at the failure point (the wasm instance doesn't
-exist), so the postMessage path is the right transport. The fix is to
-route the message through the kernel's normal exit machinery — call
-`kernelWorker.unregisterProcess(pid)` and trigger the `onExit` callback
-with a non-zero status — instead of fabricating an exit message at
-the protocol layer.
-
-**Files:** `host/src/node-kernel-worker-entry.ts` (handleSpawn's
-`worker.on("message")` handler).
-
 ## User-space programs
 
 ### Add a real shadow-stack overflow guard beyond the SDK's 8 MiB floor

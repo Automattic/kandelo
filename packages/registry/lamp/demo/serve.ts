@@ -2,7 +2,7 @@
  * serve.ts — Full LAMP stack on kandelo.
  *
  * Runs MariaDB + PHP-FPM + nginx as separate Wasm processes in one kernel:
- *   - MariaDB   (pid 1, threads for signal handler + timer)
+ *   - MariaDB   (threads for signal handler + timer)
  *   - PHP-FPM   (master + 6 worker processes)
  *   - nginx     (master + 2 worker processes)
  *

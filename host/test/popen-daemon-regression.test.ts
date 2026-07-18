@@ -5,8 +5,8 @@
  * Initial PID must not be 1. daemon-failure checks `getppid() != 1` as the
  *    "daemon did not detach" condition. If the test harness spawns user
  *    programs at pid 1, forked children see ppid=1 and the test misfires.
- *    (Regressed when PR #289 moved PID allocation into the kernel worker
- *    and reset the counter to 1 — see host/src/node-kernel-worker-entry.ts.)
+ *    (Regressed when PR #289 reset the former host allocator to 1.) The Rust
+ *    kernel now reserves PID 1 and allocates every user-process PID itself.
  */
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";

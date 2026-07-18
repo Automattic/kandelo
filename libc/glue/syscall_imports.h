@@ -19,22 +19,8 @@
 /* Process / Fork / Exec management                                    */
 /* ------------------------------------------------------------------ */
 
-KERNEL_IMPORT(kernel_init)
-void kernel_init(uint32_t pid);
-
 KERNEL_IMPORT(kernel_get_fork_state)
 int32_t kernel_get_fork_state(uint8_t *buf_ptr, uint32_t buf_len);
-
-KERNEL_IMPORT(kernel_init_from_fork)
-int32_t kernel_init_from_fork(const uint8_t *buf_ptr, uint32_t buf_len,
-                              uint32_t child_pid);
-
-KERNEL_IMPORT(kernel_get_exec_state)
-int32_t kernel_get_exec_state(uint8_t *buf_ptr, uint32_t buf_len);
-
-KERNEL_IMPORT(kernel_init_from_exec)
-int32_t kernel_init_from_exec(const uint8_t *buf_ptr, uint32_t buf_len,
-                              uint32_t pid);
 
 KERNEL_IMPORT(kernel_convert_pipe_to_host)
 int32_t kernel_convert_pipe_to_host(uint32_t ofd_idx, int64_t new_host_handle);
@@ -245,9 +231,6 @@ int32_t kernel_setsid(void);
 
 KERNEL_IMPORT(kernel_kill)
 int32_t kernel_kill(int32_t pid, uint32_t sig);
-
-KERNEL_IMPORT(kernel_deliver_signal)
-int32_t kernel_deliver_signal(uint32_t sig);
 
 KERNEL_IMPORT(kernel_raise)
 int32_t kernel_raise(uint32_t sig);

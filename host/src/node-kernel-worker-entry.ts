@@ -28,6 +28,7 @@ import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
+  ThreadChannelAttachment,
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import {
@@ -260,6 +261,17 @@ async function finalizeProcessWorker(
   if (intentionallyTerminated.has(worker as object)) return;
   const cur = processes.get(pid);
   if (!cur || cur.worker !== worker) return;
+
+  // A kernel-side exit callback may already be draining this exact Worker
+  // generation. Its teardown deliberately keeps channels registered until
+  // every backing Worker is gone, so a trailing worker-main exit/error event
+  // must not race in here and deactivate the pid early. The browser entry
+  // funnels the same events through finishProcessExit(), whose teardown-map
+  // guard provides this ordering directly.
+  if (processTeardowns.has(worker)) {
+    reportProcessExit(pid, exitStatus);
+    return;
+  }
   vmInterruptTimers.clear(pid);
 
   // Synthesize a signal-style reap *before* `deactivateProcess` in
@@ -277,7 +289,7 @@ async function finalizeProcessWorker(
 
   // Report while this worker is still known to be the current generation.
   // Its asynchronous termination must not report an exit for an exec
-  // replacement that has since reused the pid.
+  // replacement that has since installed a new generation under the same pid.
   reportProcessExit(pid, exitStatus);
   await terminateThreadWorkers(pid);
   await terminateTrackedWorker(worker);
@@ -692,17 +704,17 @@ async function handleInit(msg: InitMessage) {
 // --- Spawn ---
 
 function handleSpawn(msg: SpawnMessage) {
-  let registeredPid: number | undefined;
+  let createdPid: number | undefined;
   try {
-    // Shared source of truth with fork(); a worker-local counter would let a
-    // spawn reuse a kernel-owned pid and fail kernel_create with EEXIST.
-    const pid = kernelWorker.allocateTopLevelSpawnPid();
-
     if (!isWasmModuleBytes(msg.programBytes)) {
       respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
       return;
     }
 
+    const pid = kernelWorker.createProcess(
+      msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
+    );
+    createdPid = pid;
     const ptrWidth = detectPtrWidth(msg.programBytes);
     const {
       memory,
@@ -718,9 +730,7 @@ function handleSpawn(msg: SpawnMessage) {
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
-      stdio: msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     });
-    registeredPid = pid;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
     if (msg.cwd) {
@@ -754,7 +764,6 @@ function handleSpawn(msg: SpawnMessage) {
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
-      ppid: 0,
       programBytes: msg.programBytes,
       programModule: msg.programModule,
       memory,
@@ -801,12 +810,13 @@ function handleSpawn(msg: SpawnMessage) {
     });
 
     installCrashSafetyNet(worker, pid);
-    registeredPid = undefined;
+    createdPid = undefined;
 
     respond(msg.requestId, pid);
   } catch (e) {
-    if (registeredPid !== undefined) {
-      kernelWorker.unregisterProcess(registeredPid);
+    if (createdPid !== undefined) {
+      kernelWorker.unregisterProcess(createdPid);
+      kernelWorker.removeProcessFromKernelTable(createdPid);
     }
     respondError(msg.requestId, String(e));
   }
@@ -846,7 +856,6 @@ async function handleFork(
   new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
   kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-    skipKernelCreate: true,
     ptrWidth,
     maxAddr: childLayout.maxAddr,
     mmapBase: childLayout.mmapBase,
@@ -866,7 +875,6 @@ async function handleFork(
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
-    ppid: parentPid,
     programBytes: parentProgram,
     programModule: parentInfo.programModule,
     memory: childMemory,
@@ -965,9 +973,9 @@ async function handleExec(
     return -12; // ENOMEM before the exec commit point
   }
 
-  // Resolution/compilation yielded to the event loop. The numeric pid may
-  // now name a replacement generation; a stale continuation must not commit
-  // exec state against it.
+  // Resolution/compilation yielded to the event loop. Another exec may have
+  // replaced the host execution generation for this persistent PID; a stale
+  // continuation must not commit exec state against it.
   if (processes.get(pid) !== initiatingInfo
       || kernelWorker.isExecHandoffActive(pid)
       || !kernelWorker.isProcessExecutionActive(pid)) return -3; // ESRCH
@@ -1010,7 +1018,6 @@ async function handleExec(
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
-      ppid: 0,
       programBytes,
       programModule,
       memory: newMemory,
@@ -1022,7 +1029,7 @@ async function handleExec(
     };
 
     kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-      skipKernelCreate: true,
+      preserveProcessState: true,
       ptrWidth: newPtrWidth,
       metadataPtrWidth: initiatingInfo.ptrWidth,
       brkBase: newLayout.brkBase,
@@ -1131,9 +1138,8 @@ async function handleExec(
  * The kernel has already constructed the child Process descriptor in its
  * ProcessTable under `childPid` (with attrs and file actions applied).
  * This callback resolves the program bytes for `path`, allocates a fresh
- * Memory for the child, registers it with the kernel via
- * `registerProcess({ skipKernelCreate: true })`, and launches a Worker
- * for it.
+ * Memory for the child, attaches it to the existing kernel Process, and
+ * launches a Worker for it.
  *
  * Distinct from handleExec (which replaces the calling worker) and
  * handleFork (which clones the parent's Memory): handlePosixSpawn always
@@ -1187,10 +1193,8 @@ async function handlePosixSpawn(
   } = createFreshProcessMemory(childPid, programBytes, ptrWidth);
   const channelOffset = layout.channelOffset;
 
-  // The kernel already created the child Process via kernel_spawn_process,
-  // so skip the kernelCreate side of registerProcess.
+  // The kernel already created the child Process via kernel_spawn_process.
   kernelWorker.registerProcess(childPid, memory, [channelOffset], {
-    skipKernelCreate: true,
     ptrWidth,
     brkBase: layout.brkBase,
     mmapBase: layout.mmapBase,
@@ -1200,7 +1204,6 @@ async function handlePosixSpawn(
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
-    ppid: parentPid,
     programBytes,
     programModule,
     memory,
@@ -1268,15 +1271,10 @@ async function handlePosixSpawn(
 }
 
 async function handleClone(
-  pid: number,
-  tid: number,
-  fnPtr: number,
-  argPtr: number,
-  stackPtr: number,
-  tlsPtr: number,
-  ctidPtr: number,
-  memory: WebAssembly.Memory,
-): Promise<number> {
+  attachment: ThreadChannelAttachment,
+): Promise<void> {
+  const { pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory } =
+    attachment;
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
 
@@ -1291,7 +1289,7 @@ async function handleClone(
 
   // Compilation yields. A sibling pthread may have committed exec while this
   // clone continuation was suspended; never attach the old program/Memory to
-  // the replacement process that now owns the same numeric pid.
+  // the replacement exec image for the same process identity.
   if (!isCurrentProcessGeneration(
     processes,
     pid,
@@ -1319,7 +1317,7 @@ async function handleClone(
   // this thread back through its entry point (see ForkFromThreadContext
   // in kernel-worker.ts).
   try {
-    kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr, memory);
+    kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
   } catch (err) {
     processInfo.threadAllocator.free(alloc.basePage);
     throw err;
@@ -1451,7 +1449,6 @@ async function handleClone(
     throw new Error(`Process ${pid} changed generation before thread Worker launch`);
   }
 
-  return tid;
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {

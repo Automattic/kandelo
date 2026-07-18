@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build dinit (https://github.com/davmac314/dinit) for wasm32-posix.
-# dinit is a service supervisor / init system. We use it as PID 1 in
+# dinit is a service supervisor / init system. We use it to supervise
 # service-demo VFS images so the demos boot via real init mechanics
 # (per-service config files, dependency resolution, fail-fast on
 # upstream failures) rather than JS-side orchestration.

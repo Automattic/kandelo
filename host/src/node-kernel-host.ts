@@ -299,9 +299,9 @@ export class NodeKernelHost {
     ) {
       this.unclaimedExitStatuses.delete(pid);
     } else if (unclaimedExitStatus !== undefined) {
-      // PIDs can be reused. An older unclaimed exit for the same numeric PID
-      // must not satisfy this new spawn, or callers observe an immediate
-      // success while the new process is still running.
+      // Defensively discard a stale unclaimed exit for this numeric identity.
+      // The current kernel never reuses task IDs, so a nonmatching sequence is
+      // host bookkeeping from an obsolete generation, not this spawn's exit.
       this.unclaimedExitStatuses.delete(pid);
     }
     const exitPromise = unclaimedExitStatus !== undefined &&

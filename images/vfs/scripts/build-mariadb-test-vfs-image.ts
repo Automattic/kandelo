@@ -1,6 +1,6 @@
 /**
  * Build a fully-bootable VFS image for the MariaDB mysql-test browser
- * runner. dinit (PID 1) brings up the test-server tree:
+ * runner. dinit, the first user process, brings up the test-server tree:
  *
  *   mariadb-bootstrap (scripted, oneshot) → mariadb (process)
  *
@@ -181,9 +181,9 @@ function buildServices(): DinitService[] {
       type: "scripted",
       // mariadbd --bootstrap doesn't exit at stdin EOF in the wasm port.
       // The wrapper backgrounds it, sleeps long enough for bootstrap to
-      // drain the SQL, then kills it. **No `wait`** — dinit (PID 1)
-      // reaps orphans aggressively and dash's `wait` builtin then blocks
-      // indefinitely. Letting dinit reap is fine.
+      // drain the SQL, then kills and waits for it. The shell is the direct
+      // parent and must reap it; PID 1 is a synthetic kernel record with no
+      // worker, and dinit runs as the first ordinary user process.
       command: "/bin/sh /etc/mariadb/bootstrap.sh",
       logfile: "/var/log/mariadb-bootstrap.log",
       restart: false,
@@ -252,9 +252,8 @@ async function main() {
   const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
-  // bootstrap-runner: backgrounds mariadbd --bootstrap, sleeps to let
-  // it drain SQL, then SIGTERMs it. See per-engine notes in
-  // build-mariadb-vfs-image.ts for why `wait` is unsafe here.
+  // bootstrap-runner: backgrounds mariadbd --bootstrap, sleeps to let it
+  // drain SQL, then terminates and reaps the direct child before returning.
   const bootstrapArgs = [
     ...commonMariadbArgs(),
     "--bootstrap", "--skip-networking", "--log-warnings=0",
@@ -266,6 +265,7 @@ sleep 30
 kill -TERM $PID 2>/dev/null
 sleep 1
 kill -KILL $PID 2>/dev/null
+wait $PID 2>/dev/null || true
 exit 0
 `);
 

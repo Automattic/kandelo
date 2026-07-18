@@ -6,9 +6,9 @@
 //!
 //! Operations:
 //! - `create_process` — create a new empty process
-//! - `fork_process` — clone a parent process via serialize/deserialize
+//! - `fork_process_for_caller` — clone a parent after exact-task validation
 //! - `remove_process` — remove a process from the table
-//! - `set_current_pid` — select which process is being serviced
+//! - `bind_current_tid` — validate the exact task being serviced
 
 extern crate alloc;
 
@@ -17,15 +17,37 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicI32;
 
-use wasm_posix_shared::flags::O_ACCMODE;
 use wasm_posix_shared::Errno;
+use wasm_posix_shared::flags::O_ACCMODE;
 
 use crate::lock::AdvisoryLockManager;
 use crate::ofd::FileType;
+#[cfg(test)]
+use crate::process::ThreadInfo;
 use crate::process::{ChildWaitEvent, Process, ProcessState, StdioConfig};
 
 const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
+pub(crate) const SYNTHETIC_INIT_PID: u32 = 1;
+const FIRST_TASK_ID: u32 = 100;
+const MAX_TASK_ID: u32 = i32::MAX as u32;
+
+/// A fresh machine-wide task identity minted by [`ProcessTable`].
+///
+/// The private field and absence of `Copy`/`Clone` make this a linear safe-Rust
+/// capability: production process/thread constructors must consume it, while
+/// code outside this module cannot manufacture or duplicate one.
+pub(crate) struct AllocatedTaskId(u32);
+
+impl AllocatedTaskId {
+    pub(crate) fn as_raw(&self) -> u32 {
+        self.0
+    }
+
+    pub(crate) fn into_raw(self) -> u32 {
+        self.0
+    }
+}
 
 /// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
 ///
@@ -37,36 +59,60 @@ pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
 
 /// Table of all processes managed by the kernel.
 ///
-/// Each process is identified by its pid. The `current_pid` field tracks
-/// which process is currently being serviced (set by the JS host before
-/// calling `kernel_handle_channel`).
+/// Each process is identified by its pid. The current pid/tid pair is a
+/// short-lived, validated dispatch binding for one syscall channel; it is not
+/// an alternate process selector or identity authority.
+///
+/// Production callers cannot create a second task-ID allocator:
+///
+/// ```compile_fail
+/// use kandelo_kernel::process_table::ProcessTable;
+/// let _ = ProcessTable::new();
+/// ```
 pub struct ProcessTable {
+    #[cfg(not(test))]
+    processes: BTreeMap<u32, Process>,
+    // Cross-module unit tests build Process fixtures directly. Production
+    // code cannot bypass the guarded accessors below.
+    #[cfg(test)]
     pub(crate) processes: BTreeMap<u32, Process>,
     /// Sole machine-wide authority for POSIX, OFD, and flock advisory locks.
     advisory_locks: AdvisoryLockManager,
     current_pid: u32,
-    next_spawn_pid: u32,
+    /// Next machine-wide process or thread identity to consider.
+    ///
+    /// This cursor is monotonic and remains ahead of every identity ever
+    /// allocated by this kernel instance. `MAX_TASK_ID + 1` is the exhausted
+    /// sentinel, so successful IDs always fit in the positive `i32` ABI.
+    next_task_id: u32,
     /// Kernel/libc thread id for the syscall currently being serviced.
     ///
     /// The host already selected a syscall channel by its `channelOffset`; this
     /// field supplies the POSIX thread identity that cannot be inferred from the
-    /// `kernel_handle_channel(pid)` call. `0` means "main thread" and is also
-    /// the fallback for callers that do not bind a pthread TID.
+    /// `kernel_handle_channel(pid)` call. Production bindings always use an
+    /// explicit positive task ID; `0` remains an internal unit-test sentinel.
     ///
     /// This is ambient dispatch context for the current serialized kernel call.
     /// If a single kernel instance ever services channels concurrently or
     /// reentrantly, the TID should move into the syscall header or be passed as
     /// an explicit `kernel_handle_channel` argument.
     current_tid: u32,
+    /// Process that owns `current_tid` for the pending serialized dispatch.
+    /// Keeping the pair prevents a stale or misrouted host dispatch from
+    /// applying one process's valid TID to another process.
+    current_tid_pid: u32,
 }
 
-/// Outcome of `ProcessTable::remove_process`. Bundles the removed
-/// `Process` with side-effect lists the caller must drain: file, directory,
-/// and AF_INET host handles released during cleanup. The caller is
-/// `kernel_remove_process`, which has access to the raw host-close externs;
-/// this layer doesn't.
+/// Outcome of `ProcessTable::remove_process`. Bundles the side effects the
+/// caller must drain after the removed process has been consumed here. The
+/// caller is `kernel_remove_process`, which has access to the raw host-close
+/// externs; this layer doesn't.
 pub struct RemoveProcessResult {
-    pub process: Process,
+    /// Whether the removed process had a live framebuffer mapping that the
+    /// host must unbind. The owned `Process` deliberately does not escape the
+    /// table: otherwise it could replace a different table entry wholesale
+    /// and smuggle its immutable PID under the wrong map key.
+    pub had_framebuffer_binding: bool,
     /// Host file handles whose cross-process refcount reached 0 during
     /// teardown. The caller must invoke `host_close(h)` on each.
     pub host_closes: Vec<i64>,
@@ -79,15 +125,6 @@ pub struct RemoveProcessResult {
     /// this kernel-side bookkeeping intentionally doesn't touch the
     /// host trait so `process_table.rs` stays host-agnostic.
     pub host_net_closes: Vec<i32>,
-}
-
-/// Host resources released while the retained legacy exec ABI replaces a
-/// Process in place. The Wasm export layer drains these through the normal
-/// host close imports after the infallible replacement commit.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct LegacyExecCleanup {
-    pub host_closes: Vec<i64>,
-    pub host_dir_closes: Vec<i64>,
 }
 
 /// Subset of parent state inherited by a `posix_spawn` child. Captured up
@@ -292,14 +329,27 @@ fn serialize_fork_state_with_growing_buffer(parent: &Process) -> Result<Vec<u8>,
 }
 
 impl ProcessTable {
-    pub const fn new() -> Self {
+    const fn new_inner() -> Self {
         ProcessTable {
             processes: BTreeMap::new(),
             advisory_locks: AdvisoryLockManager::new(),
             current_pid: 0,
-            next_spawn_pid: 2,
+            next_task_id: FIRST_TASK_ID,
             current_tid: 0,
+            current_tid_pid: 0,
         }
+    }
+
+    /// Construct the one production process table owned by the kernel.
+    #[cfg(not(test))]
+    const fn new() -> Self {
+        Self::new_inner()
+    }
+
+    /// Construct an isolated process-table fixture.
+    #[cfg(test)]
+    pub(crate) const fn new() -> Self {
+        Self::new_inner()
     }
 
     /// Create a new process with captured, pipe-backed stdio and add it to
@@ -309,27 +359,36 @@ impl ProcessTable {
     /// no worker — it exists so that `kill(1, ...)` and `sched_*(1, ...)` from
     /// user processes resolve to a real target owned by root, enabling EPERM
     /// checks to fire instead of ESRCH.
-    pub fn create_process(&mut self, pid: u32) -> Result<(), ()> {
-        self.create_process_with_stdio(pid, StdioConfig::captured())
+    pub fn create_process(&mut self) -> Result<u32, Errno> {
+        self.create_process_with_stdio(StdioConfig::captured())
     }
 
     /// Create a new process with explicit stdio wiring and add it to the table.
-    pub fn create_process_with_stdio(&mut self, pid: u32, stdio: StdioConfig) -> Result<(), ()> {
+    pub fn create_process_with_stdio(&mut self, stdio: StdioConfig) -> Result<u32, Errno> {
         self.ensure_init();
-        if self.processes.contains_key(&pid) {
-            return Err(());
-        }
-        self.processes.insert(pid, Process::new_with_stdio(pid, stdio));
-        Ok(())
+        let task_id = self.allocate_task_id()?;
+        let pid = task_id.as_raw();
+        self.processes
+            .insert(pid, Process::new_allocated_with_stdio(task_id, stdio));
+        Ok(pid)
     }
 
     /// Ensure the virtual init process (pid 1) is present. Idempotent.
     pub fn ensure_init(&mut self) {
-        if !self.processes.contains_key(&1) {
-            let mut init = Process::new(1);
+        if !self.processes.contains_key(&SYNTHETIC_INIT_PID) {
+            // PID 1 is a reserved kernel identity rather than an allocation
+            // from the user task sequence, so mint its capability here at the
+            // sole identity-authority boundary.
+            let mut init = Process::new_allocated(AllocatedTaskId(SYNTHETIC_INIT_PID));
             init.ppid = 0;
             init.argv.push(alloc::vec::Vec::from(b"init".as_slice()));
-            self.processes.insert(1, init);
+            // PID 1 is an addressable kernel identity, not a schedulable
+            // process. It must not own normal-process descriptors or terminal
+            // state that could later be mutated or cleaned up by a host path.
+            init.fd_table = crate::fd::FdTable::new();
+            init.ofd_table = crate::ofd::OfdTable::new();
+            init.terminal.foreground_pgid = 0;
+            self.processes.insert(SYNTHETIC_INIT_PID, init);
         }
     }
 
@@ -357,6 +416,12 @@ impl ProcessTable {
         pid: u32,
         retain_limbo_leader: bool,
     ) -> Option<RemoveProcessResult> {
+        // PID 1 is the kernel-reserved synthetic init identity. It is outside
+        // the allocatable task sequence and must remain present for the entire
+        // kernel instance rather than being removed and lazily recreated.
+        if pid == SYNTHETIC_INIT_PID {
+            return None;
+        }
         let proc = self.processes.remove(&pid)?;
         let _ = unsafe { crate::pipe::global_pipe_table().cancel_fifo_opens_for_process(pid) };
         let mut host_closes: Vec<i64> = Vec::new();
@@ -599,7 +664,7 @@ impl ProcessTable {
         }
 
         Some(RemoveProcessResult {
-            process: proc,
+            had_framebuffer_binding: proc.fb_binding.is_some(),
             host_closes,
             host_dir_closes,
             host_net_closes,
@@ -613,7 +678,7 @@ impl ProcessTable {
     }
 
     fn limbo_process_from(proc: &Process) -> Process {
-        let mut limbo = Process::new(proc.pid);
+        let mut limbo = Process::new_allocated(AllocatedTaskId(proc.pid));
         limbo.ppid = proc.ppid;
         limbo.uid = proc.uid;
         limbo.gid = proc.gid;
@@ -657,34 +722,111 @@ impl ProcessTable {
         }
     }
 
-    /// Set the current pid for syscall dispatch.
-    pub fn set_current_pid(&mut self, pid: u32) {
-        self.current_pid = pid;
-    }
-
     /// Get the current pid.
     pub fn current_pid(&self) -> u32 {
-        self.current_pid
+        if self.has_current_tid_binding(self.current_pid) {
+            self.current_pid
+        } else {
+            0
+        }
     }
 
-    /// Set the current kernel/libc thread id for the next serialized dispatch.
+    /// Bind the current kernel/libc thread id for the next serialized dispatch.
     ///
-    /// The host calls this after selecting a pthread channel and before
-    /// `kernel_handle_channel` so gettid, set_tid_address, pthread signal masks,
-    /// directed signal delivery, and clear-TID cleanup all refer to the calling
-    /// thread. `0` means "main thread" and is the default.
-    pub fn set_current_tid(&mut self, tid: u32) {
+    /// The host transports the channel-to-TID association, but it cannot mint
+    /// that identity: a non-main TID must already belong to the addressed live
+    /// Process. The process PID explicitly names the main thread; zero is not
+    /// accepted at this host-callable boundary.
+    pub fn bind_current_tid(&mut self, pid: u32, tid: u32) -> Result<(), Errno> {
+        // Every bind attempt supersedes any earlier ambient authority, even
+        // when validation fails. Otherwise a stale same-PID binding could
+        // authorize the next mailbox after a rejected replacement attempt.
+        self.clear_current_tid_binding();
+        self.validate_task(pid, tid)?;
+        self.current_pid = pid;
         self.current_tid = tid;
+        self.current_tid_pid = pid;
+        Ok(())
+    }
+
+    /// Validate an exact live task without installing ambient dispatch state.
+    ///
+    /// Host registration uses this read-only query before attaching transport
+    /// metadata. Only `bind_current_tid` may create the one-shot authority used
+    /// by `kernel_handle_channel`.
+    pub fn validate_task(&self, pid: u32, tid: u32) -> Result<(), Errno> {
+        if pid == SYNTHETIC_INIT_PID {
+            return Err(Errno::ESRCH);
+        }
+        let process = self.processes.get(&pid).ok_or(Errno::ESRCH)?;
+        if !matches!(process.state, ProcessState::Running | ProcessState::Stopped)
+            || !process.is_live_explicit_tid(tid)
+        {
+            return Err(Errno::ESRCH);
+        }
+        Ok(())
+    }
+
+    /// Whether the next channel dispatch has an explicit, live task binding
+    /// for exactly `pid`.
+    pub fn has_current_tid_binding(&self, pid: u32) -> bool {
+        if self.current_tid_pid != pid || self.current_tid == 0 {
+            return false;
+        }
+        self.processes.get(&pid).is_some_and(|process| {
+            matches!(process.state, ProcessState::Running | ProcessState::Stopped)
+                && process.is_live_explicit_tid(self.current_tid)
+        })
+    }
+
+    /// Consume the ambient task binding after one serialized channel call.
+    /// A stale binding must never authorize a later mailbox dispatch.
+    pub fn clear_current_tid_binding(&mut self) {
+        self.current_pid = 0;
+        self.current_tid = 0;
+        self.current_tid_pid = 0;
+    }
+
+    /// Set synthetic dispatch state in unit tests that exercise a standalone
+    /// `Process` without installing it in the global ProcessTable.
+    #[cfg(test)]
+    pub(crate) fn set_current_tid_for_test(&mut self, tid: u32) {
+        self.current_tid = tid;
+        self.current_tid_pid = 0;
     }
 
     /// Get the current kernel/libc thread id (0 for main thread).
     pub fn current_tid(&self) -> u32 {
-        self.current_tid
+        // `current_tid_pid == 0` is reserved for isolated unit-test dispatch
+        // state installed by `set_current_tid_for_test`.
+        if self.current_tid_pid == 0 {
+            return self.current_tid;
+        }
+        if self.current_tid_pid != self.current_pid {
+            return 0;
+        }
+        let Some(process) = self.processes.get(&self.current_pid) else {
+            return 0;
+        };
+        if matches!(process.state, ProcessState::Exited | ProcessState::Limbo) {
+            return 0;
+        }
+        if process.is_main_thread(self.current_tid)
+            || process.get_thread(self.current_tid).is_some()
+        {
+            self.current_tid
+        } else {
+            0
+        }
     }
 
     /// Get a mutable reference to the current process.
     pub fn current_process(&mut self) -> Option<&mut Process> {
-        self.processes.get_mut(&self.current_pid)
+        let pid = self.current_pid;
+        if !self.has_current_tid_binding(pid) {
+            return None;
+        }
+        self.processes.get_mut(&pid)
     }
 
     /// Borrow the current process and machine-wide lock manager together.
@@ -694,6 +836,9 @@ impl ProcessTable {
         &mut self,
     ) -> Option<(&mut Process, &mut AdvisoryLockManager)> {
         let pid = self.current_pid;
+        if !self.has_current_tid_binding(pid) {
+            return None;
+        }
         let processes = &mut self.processes;
         let advisory_locks = &mut self.advisory_locks;
         processes
@@ -706,11 +851,35 @@ impl ProcessTable {
         &mut self,
         pid: u32,
     ) -> Option<(&mut Process, &mut AdvisoryLockManager)> {
+        if pid == SYNTHETIC_INIT_PID {
+            return None;
+        }
         let processes = &mut self.processes;
         let advisory_locks = &mut self.advisory_locks;
         processes
             .get_mut(&pid)
             .map(|process| (process, advisory_locks))
+    }
+
+    /// Borrow an ordinary process only when `tid` names one of its exact live
+    /// kernel-owned tasks. This is the mutation boundary for host operations
+    /// that carry explicit `(pid, tid)` transport metadata instead of using a
+    /// channel dispatch binding.
+    pub fn task_and_advisory_locks(
+        &mut self,
+        pid: u32,
+        tid: u32,
+    ) -> Option<(&mut Process, &mut AdvisoryLockManager)> {
+        if pid == SYNTHETIC_INIT_PID {
+            return None;
+        }
+        let processes = &mut self.processes;
+        let advisory_locks = &mut self.advisory_locks;
+        let process = processes.get_mut(&pid)?;
+        if !process.is_live_explicit_tid(tid) {
+            return None;
+        }
+        Some((process, advisory_locks))
     }
 
     #[cfg(test)]
@@ -725,17 +894,19 @@ impl ProcessTable {
 
     /// Get a mutable reference to a process by pid.
     pub fn get_mut(&mut self, pid: u32) -> Option<&mut Process> {
+        if pid == SYNTHETIC_INIT_PID {
+            return None;
+        }
         self.processes.get_mut(&pid)
     }
 
-    /// Fork a process: serialize the parent's state and deserialize it as the child.
-    /// Uses the existing fork serialization infrastructure to deep-copy Process state.
-    /// Returns Ok(()) on success, Err(errno) on failure.
-    pub fn fork_process(&mut self, parent_pid: u32, child_pid: u32) -> Result<(), Errno> {
-        if self.processes.contains_key(&child_pid) {
-            return Err(Errno::EEXIST);
-        }
-        let serialized_parent = {
+    /// Fork a process on behalf of a kernel-validated task in that process.
+    pub fn fork_process_for_caller(
+        &mut self,
+        parent_pid: u32,
+        caller_tid: u32,
+    ) -> Result<u32, Errno> {
+        let (serialized_parent, caller_blocked) = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
             if matches!(
                 parent.state,
@@ -743,11 +914,26 @@ impl ProcessTable {
             ) {
                 return Err(Errno::ESRCH);
             }
-            serialize_fork_state_with_growing_buffer(parent)?
+            if !parent.is_live_explicit_tid(caller_tid) {
+                return Err(Errno::ESRCH);
+            }
+            (
+                serialize_fork_state_with_growing_buffer(parent)?,
+                parent.blocked_for(caller_tid),
+            )
         };
 
-        // Deserialize as child
-        let mut child = crate::fork::deserialize_fork_state(&serialized_parent, child_pid)?;
+        let child_task_id = self.allocate_task_id()?;
+        let child_pid = child_task_id.as_raw();
+
+        // Install fork state into a record whose identity capability was
+        // already allocated here; the deserializer cannot select a PID.
+        let mut child = Process::new_allocated_empty(child_task_id);
+        crate::fork::deserialize_allocated_fork_state(&serialized_parent, &mut child)?;
+        // POSIX fork leaves one thread in the child, and that thread inherits
+        // the mask of the task that called fork rather than the process
+        // leader's mask.
+        child.signals.blocked = caller_blocked;
 
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
@@ -768,224 +954,14 @@ impl ProcessTable {
             parent.increment_fork_count();
         }
 
-        Ok(())
+        Ok(child_pid)
     }
 
-    /// Insert a process produced by the retained legacy fork-state ABI.
-    /// Unlike a raw map insert, this refuses to replace an existing pid and
-    /// either establishes same-instance inherited refs or preserves fresh-
-    /// kernel sole ownership before moving the process into the table.
-    #[cfg_attr(
-        not(any(target_arch = "wasm32", target_arch = "wasm64")),
-        allow(dead_code)
-    )]
-    pub(crate) fn insert_legacy_fork_process(&mut self, child: Process) -> Result<(), Errno> {
-        if self.processes.contains_key(&child.pid) {
-            return Err(Errno::EEXIST);
-        }
-
-        if self.processes.contains_key(&child.ppid) {
-            // Same-instance legacy install: the parent still owns every
-            // inherited resource, so establish the child's additional refs.
-            bump_inherited_resource_refcounts(child.ppid, &child)?;
-        } else {
-            // The retained ABI also initializes a fresh kernel instance where
-            // the parent Process is intentionally absent. Ordinary host-backed
-            // handles are sole-owned by that child and must not receive a
-            // phantom parent ref. Kernel-global descriptor backings are not
-            // serialized, however, so accepting one here could alias a reused
-            // slot; fail truthfully instead.
-            if child.ofd_table.iter().any(|(_, ofd)| {
-                crate::descriptor_backing::manages_ofd(ofd.file_type, ofd.host_handle)
-            }) {
-                return Err(Errno::EBADF);
-            }
-        }
-        self.processes.insert(child.pid, child);
-        Ok(())
-    }
-
-    /// Replace an existing process through the retained legacy exec-state
-    /// ABI, transferring one ownership reference for surviving descriptor
-    /// backings and releasing old CLOEXEC-only/orphaned OFDs exactly once.
-    #[cfg_attr(
-        not(any(target_arch = "wasm32", target_arch = "wasm64")),
-        allow(dead_code)
-    )]
-    pub(crate) fn replace_legacy_exec_process(
-        &mut self,
-        pid: u32,
-        mut replacement: Process,
-    ) -> Result<LegacyExecCleanup, Errno> {
-        let mut cleanup = LegacyExecCleanup::default();
-        if replacement.pid != pid {
-            return Err(Errno::EINVAL);
-        }
-        if let Some(old) = self.processes.get(&pid) {
-            if matches!(old.state, ProcessState::Exited | ProcessState::Limbo) {
-                return Err(Errno::ESRCH);
-            }
-            // Exec replaces the image, not the process identity or its
-            // job-control state or unconsumed parent-visible status record.
-            replacement.state = old.state;
-            replacement.wait_event = old.wait_event;
-
-            // The exec wire format preserves OFD table indices. Validate that
-            // every replacement entry is transferring the exact old entry at
-            // that index. OfdId alone is deliberately insufficient here:
-            // SCM_RIGHTS can install multiple process-local OFD entries that
-            // share one machine-wide identity, and CLOEXEC may remove only one
-            // of those ownership references.
-            for (index, new_ofd) in replacement.ofd_table.iter() {
-                let Some(old_ofd) = old.ofd_table.get(index) else {
-                    return Err(Errno::EBADF);
-                };
-                if new_ofd.ofd_id != old_ofd.ofd_id
-                    || new_ofd.file_id != old_ofd.file_id
-                    || new_ofd.file_type != old_ofd.file_type
-                    || new_ofd.host_handle != old_ofd.host_handle
-                {
-                    return Err(Errno::EBADF);
-                }
-            }
-            let removed = crate::descriptor_backing::removed_backings_for_exec(old, &replacement)?;
-
-            // The retained exec wire format omits CLOEXEC descriptors. Track
-            // their file identities before replacing the Process so POSIX's
-            // "close any descriptor for this file" rule is applied to the
-            // process-owned namespace. Stable OfdIds independently identify
-            // descriptions that have no surviving machine reference.
-            let mut closed_file_ids = Vec::new();
-            for (fd, entry) in old.fd_table.iter() {
-                let old_ofd = match old.ofd_table.get(entry.ofd_ref.0) {
-                    Some(ofd) => ofd,
-                    None => continue,
-                };
-                let survived = replacement
-                    .fd_table
-                    .get(fd)
-                    .ok()
-                    .and_then(|new_entry| replacement.ofd_table.get(new_entry.ofd_ref.0))
-                    .is_some_and(|new_ofd| new_ofd.ofd_id == old_ofd.ofd_id);
-                if !survived {
-                    if let Some(file_id) = old_ofd.file_id {
-                        if !closed_file_ids.contains(&file_id) {
-                            closed_file_ids.push(file_id);
-                        }
-                    }
-                }
-            }
-
-            let mut orphaned_ofd_ids = Vec::new();
-            let mut removed_host_handles = Vec::new();
-            let mut removed_host_dir_handles = Vec::new();
-            for (old_index, old_ofd) in old.ofd_table.iter() {
-                // Resource ownership belongs to each process-local OFD entry,
-                // while advisory locks belong to the stable machine-wide
-                // OfdId. Keep those two survival questions separate.
-                let resource_survives_exec = replacement
-                    .ofd_table
-                    .get(old_index)
-                    .is_some_and(|new_ofd| new_ofd.ofd_id == old_ofd.ofd_id);
-                let identity_survives_exec = replacement
-                    .ofd_table
-                    .iter()
-                    .any(|(_, new_ofd)| new_ofd.ofd_id == old_ofd.ofd_id);
-                // Directory iteration handles are deliberately not serialized
-                // across exec; even a surviving OFD restarts with -1.
-                if old_ofd.dir_host_handle >= 0 {
-                    removed_host_dir_handles.push(old_ofd.dir_host_handle);
-                }
-                if !resource_survives_exec {
-                    if old_ofd.host_handle >= 0
-                        && matches!(
-                            old_ofd.file_type,
-                            FileType::Regular
-                                | FileType::Directory
-                                | FileType::CharDevice
-                                | FileType::Pipe
-                        )
-                    {
-                        removed_host_handles.push(old_ofd.host_handle);
-                    }
-                }
-                let referenced_by_peer = self.processes.iter().any(|(&other_pid, peer)| {
-                    other_pid != pid
-                        && peer
-                            .ofd_table
-                            .iter()
-                            .any(|(_, peer_ofd)| peer_ofd.ofd_id == old_ofd.ofd_id)
-                }) || crate::ofd::has_in_flight_ofd(old_ofd.ofd_id);
-                if !identity_survives_exec
-                    && !referenced_by_peer
-                    && !orphaned_ofd_ids.contains(&old_ofd.ofd_id)
-                {
-                    orphaned_ofd_ids.push(old_ofd.ofd_id);
-                }
-            }
-            // POSIX directory streams are also discarded across exec, but
-            // they live outside the OFD table and are intentionally absent
-            // from the legacy exec payload. Return their host iterator
-            // handles alongside the per-OFD iterators before dropping the
-            // old Process.
-            for stream in old.dir_streams.iter().flatten() {
-                removed_host_dir_handles.push(stream.host_handle);
-            }
-
-            let old = self.processes.insert(pid, replacement).unwrap();
-            crate::descriptor_backing::release_backings(&removed);
-            drop(old);
-
-            cleanup.host_dir_closes = removed_host_dir_handles;
-            for host_handle in removed_host_handles {
-                if crate::ofd::host_handle_close_ref(host_handle) {
-                    cleanup.host_closes.push(host_handle);
-                }
-            }
-
-            let mut locks_changed = false;
-            for file_id in closed_file_ids {
-                locks_changed |= self.advisory_locks.remove_process_file(pid, file_id).changed;
-            }
-            for ofd_id in orphaned_ofd_ids {
-                locks_changed |= self.advisory_locks.remove_ofd(ofd_id).changed;
-            }
-            if locks_changed {
-                crate::wakeup::push_advisory_lock();
-            }
-        } else {
-            // A fresh kernel instance has no old Process from which to
-            // transfer global backing ownership, and the retained wire format
-            // does not serialize those backing values. Reject them instead of
-            // letting a stale stable index alias this instance's current or
-            // future allocation at the same slot.
-            if replacement.ofd_table.iter().any(|(_, ofd)| {
-                crate::descriptor_backing::manages_ofd(ofd.file_type, ofd.host_handle)
-            }) {
-                return Err(Errno::EBADF);
-            }
-            self.processes.insert(pid, replacement);
-        }
-        Ok(cleanup)
-    }
-
-    /// Non-forking spawn: build a child process for `posix_spawn` without
-    /// going through fork continuation at all. The child is constructed from a
-    /// fresh `Process::new(child_pid)` and selectively inherits only what
-    /// POSIX requires (identity, cwd, umask, rlimits, signal mask, fd
-    /// state); everything else (signal handlers, threads, mmap, alt-stack,
-    /// terminal state, pending signals, alarms) is left at the
-    /// `Process::new` defaults — exec semantics would reset those anyway.
-    ///
-    /// `argv` and `envp` come from the spawn caller, not the parent.
-    ///
-    /// Critically, `fork_count` on the parent is **not** incremented.
-    ///
-    /// File actions and spawn attributes are accepted but not yet applied
-    /// (Tasks 8 / 9).
-    pub fn spawn_child(
+    /// Non-forking spawn on behalf of a kernel-validated task in the parent.
+    pub fn spawn_child_for_caller(
         &mut self,
         parent_pid: u32,
+        caller_tid: u32,
         argv: &[&[u8]],
         envp: &[&[u8]],
         file_actions: &[crate::spawn::FileAction],
@@ -999,6 +975,9 @@ impl ProcessTable {
                 parent.state,
                 crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
             ) {
+                return Err(Errno::ESRCH);
+            }
+            if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
             }
             // Compute the SIG_IGN-disposition bitmask for signals 1..=64.
@@ -1019,7 +998,7 @@ impl ProcessTable {
                 nice: parent.nice,
                 rlimits: parent.rlimits,
                 cwd: parent.cwd.clone(),
-                blocked_signals: parent.signals.blocked,
+                blocked_signals: parent.blocked_for(caller_tid),
                 ignored_signals,
                 fd_table: parent.fd_table.clone(),
                 ofd_table: parent.ofd_table.clone(),
@@ -1027,8 +1006,9 @@ impl ProcessTable {
             }
         };
 
-        let child_pid = self.allocate_spawn_pid();
-        let mut child = Process::new(child_pid);
+        let child_task_id = self.allocate_task_id()?;
+        let child_pid = child_task_id.as_raw();
+        let mut child = Process::new_allocated(child_task_id);
 
         // ── POSIX-required inheritance ─────────────────────────────────
         child.ppid = parent_pid;
@@ -1252,24 +1232,79 @@ impl ProcessTable {
         Ok(())
     }
 
-    /// Next unused spawn pid >= 2 (pid 1 is reserved for init).
+    /// Allocate the sole machine-wide POSIX task identity.
     ///
-    /// Keep this monotonic instead of reusing the smallest recently-reaped pid.
-    /// The JS host can still be asynchronously terminating pthread workers for
-    /// the old process generation after waitpid reaps it; avoiding immediate
-    /// pid reuse prevents stale host cleanup from targeting the new child.
-    fn allocate_spawn_pid(&mut self) -> u32 {
-        let mut pid = self.next_spawn_pid.max(2);
-        while self.processes.contains_key(&pid) {
-            pid += 1;
+    /// Process IDs and pthread thread IDs share this monotonically increasing
+    /// namespace. IDs are never reused within a kernel instance, including
+    /// after process reaping or thread exit. Exhaustion is reported instead of
+    /// wrapping into reserved IDs or the negative half of the `i32` ABI.
+    fn allocate_task_id(&mut self) -> Result<AllocatedTaskId, Errno> {
+        let mut candidate = self.next_task_id;
+        while candidate <= MAX_TASK_ID {
+            let in_use = self.processes.contains_key(&candidate)
+                || self
+                    .processes
+                    .values()
+                    .any(|process| process.get_thread(candidate).is_some());
+            if !in_use {
+                self.next_task_id = candidate + 1;
+                return Ok(AllocatedTaskId(candidate));
+            }
+            candidate += 1;
         }
-        self.next_spawn_pid = pid.saturating_add(1).max(2);
-        pid
+        self.next_task_id = MAX_TASK_ID + 1;
+        Err(Errno::EAGAIN)
+    }
+
+    /// Create a pthread task in an existing live process.
+    pub(crate) fn create_thread(
+        &mut self,
+        pid: u32,
+        caller_tid: u32,
+        stack_ptr: usize,
+        tls_ptr: usize,
+        ctid_ptr: usize,
+    ) -> Result<u32, Errno> {
+        let inherited_blocked = {
+            let process = self.processes.get(&pid).ok_or(Errno::ESRCH)?;
+            if matches!(process.state, ProcessState::Exited | ProcessState::Limbo) {
+                return Err(Errno::ESRCH);
+            }
+            if !process.is_live_explicit_tid(caller_tid) {
+                return Err(Errno::ESRCH);
+            }
+            process.blocked_for(caller_tid)
+        };
+        let task_id = self.allocate_task_id()?;
+        let tid = task_id.as_raw();
+        let process = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
+        let thread_info = process.add_allocated_thread(task_id, ctid_ptr, stack_ptr, tls_ptr);
+        thread_info.signals.blocked = inherited_blocked;
+        Ok(tid)
     }
 
     /// Get a reference to a process by pid.
     pub fn get(&self, pid: u32) -> Option<&Process> {
         self.processes.get(&pid)
+    }
+
+    /// Iterate live, ordinary processes from newest to oldest identity.
+    ///
+    /// Keeping lifecycle filtering here prevents kernel subsystems from
+    /// treating the immutable synthetic init record or retained exited records
+    /// as runnable processes while scanning machine-wide state.
+    pub(crate) fn live_processes_descending(
+        &self,
+    ) -> impl Iterator<Item = (u32, &Process)> {
+        self.processes.iter().rev().filter_map(|(&pid, process)| {
+            if pid == SYNTHETIC_INIT_PID
+                || matches!(process.state, ProcessState::Exited | ProcessState::Limbo)
+            {
+                None
+            } else {
+                Some((pid, process))
+            }
+        })
     }
 
     /// Find the process record that owns a retained Linux-style task ID.
@@ -1278,6 +1313,9 @@ impl ProcessTable {
     /// Process record. Exited leaders remain addressable until reaped, while a
     /// Limbo record is only an internal process-group/session placeholder.
     pub fn get_process_containing_task(&self, tid: u32) -> Option<&Process> {
+        if tid == SYNTHETIC_INIT_PID {
+            return None;
+        }
         if let Some(leader) = self
             .processes
             .get(&tid)
@@ -1351,7 +1389,10 @@ impl ProcessTable {
         let mut saw_matching_child = false;
 
         for (&child_pid, child) in &mut self.processes {
-            if child.ppid != parent_pid || child.state == ProcessState::Limbo {
+            if child_pid == SYNTHETIC_INIT_PID
+                || child.ppid != parent_pid
+                || child.state == ProcessState::Limbo
+            {
                 continue;
             }
             if !Self::child_matches_wait_target(child_pid, child, target_pid, parent_pgid) {
@@ -1413,26 +1454,268 @@ mod wait_tests {
     use super::*;
 
     #[test]
-    fn spawn_pid_allocation_does_not_reuse_reaped_pid() {
+    fn task_ids_are_shared_by_create_clone_fork_and_spawn() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
         let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let tid = table
+            .create_thread(parent_pid, parent_pid, 0x1000, 0, 0)
+            .unwrap();
+        let fork_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
+        let mut host = NoopHost;
+        let spawn_pid = table
+            .spawn_child_for_caller(
+                parent_pid, parent_pid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+        let top_level_pid = table.create_process().unwrap();
 
-        let first_pid = table.allocate_spawn_pid();
-        table.processes.insert(first_pid, Process::new(first_pid));
-        table.processes.remove(&first_pid);
+        assert_eq!(
+            [parent_pid, tid, fork_pid, spawn_pid, top_level_pid],
+            [100, 101, 102, 103, 104]
+        );
+        for pid in [parent_pid, fork_pid, spawn_pid, top_level_pid] {
+            assert_eq!(
+                table.get(pid).unwrap().pid,
+                pid,
+                "ProcessTable key and immutable process identity diverged"
+            );
+        }
+        assert_eq!(
+            table.get(parent_pid).unwrap().get_thread(tid).unwrap().tid,
+            tid
+        );
+        assert_eq!(table.get(fork_pid).unwrap().ppid, parent_pid);
+        assert_eq!(table.get(spawn_pid).unwrap().ppid, parent_pid);
+    }
 
-        let second_pid = table.allocate_spawn_pid();
-        assert!(
-            second_pid > first_pid,
-            "spawn pid allocation must not immediately reuse a reaped pid"
+    #[test]
+    fn fork_and_spawn_inherit_the_kernel_validated_callers_signal_mask() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let caller_tid = table
+            .create_thread(parent_pid, parent_pid, 0x1000, 0, 0)
+            .unwrap();
+        let parent = table.get_mut(parent_pid).unwrap();
+        parent.signals.blocked = 0x11;
+        parent.get_thread_mut(caller_tid).unwrap().signals.blocked = 0x22;
+
+        let fork_pid = table
+            .fork_process_for_caller(parent_pid, caller_tid)
+            .unwrap();
+        assert_eq!(table.get(fork_pid).unwrap().signals.blocked, 0x22);
+
+        let mut host = NoopHost;
+        let spawn_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                caller_tid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+        assert_eq!(table.get(spawn_pid).unwrap().signals.blocked, 0x22);
+    }
+
+    #[test]
+    fn fork_and_spawn_reject_unallocated_caller_task_ids() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let unknown_tid = parent_pid + 1;
+
+        assert_eq!(
+            table.fork_process_for_caller(parent_pid, 0),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(
+            table.fork_process_for_caller(parent_pid, unknown_tid),
+            Err(Errno::ESRCH)
+        );
+        let mut host = NoopHost;
+        assert_eq!(
+            table.spawn_child_for_caller(
+                parent_pid,
+                unknown_tid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            ),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(
+            table.create_process(),
+            Ok(unknown_tid),
+            "rejected identities must not consume a kernel task ID"
+        );
+    }
+
+    #[test]
+    fn task_id_allocation_skips_retained_processes_and_threads() {
+        let mut table = ProcessTable::new();
+        let mut zombie = Process::new(100);
+        zombie.state = ProcessState::Exited;
+        zombie.add_thread(ThreadInfo::new(101, 0, 0, 0));
+        table.processes.insert(100, zombie);
+
+        assert_eq!(table.allocate_task_id().map(|id| id.into_raw()), Ok(102));
+    }
+
+    #[test]
+    fn task_ids_are_not_reused_and_exhaustion_is_reported() {
+        let mut table = ProcessTable::new();
+        let first_pid = table.create_process().unwrap();
+        table.remove_process(first_pid).unwrap();
+        assert_eq!(table.create_process(), Ok(first_pid + 1));
+
+        table.next_task_id = MAX_TASK_ID;
+        assert_eq!(table.create_process(), Ok(MAX_TASK_ID));
+        assert_eq!(table.create_process(), Err(Errno::EAGAIN));
+        table.remove_process(MAX_TASK_ID).unwrap();
+        assert_eq!(table.create_process(), Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn synthetic_init_reservation_cannot_be_removed_or_reaped() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let first_pid = table.create_process().unwrap();
+        assert!(table.get(1).is_some());
+        assert!(table.get_process_containing_task(1).is_none());
+        assert!(table.get_mut(1).is_none());
+        assert!(table.process_and_advisory_locks(1).is_none());
+        assert!(table.task_and_advisory_locks(1, 1).is_none());
+        assert!(table.current_process().is_none());
+        assert!(table.current_process_and_advisory_locks().is_none());
+
+        assert_eq!(table.bind_current_tid(1, 1), Err(Errno::ESRCH));
+        assert_eq!(table.create_thread(1, 1, 0, 0, 0), Err(Errno::ESRCH));
+        assert_eq!(table.fork_process_for_caller(1, 1), Err(Errno::ESRCH));
+        let mut host = NoopHost;
+        assert_eq!(
+            table.spawn_child_for_caller(
+                1,
+                1,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            ),
+            Err(Errno::ESRCH),
+        );
+        assert!(table.remove_process(1).is_none());
+        assert!(table.reap_process(1).is_none());
+        assert!(table.get(1).is_some());
+        assert_eq!(table.create_process(), Ok(first_pid + 1));
+    }
+
+    #[test]
+    fn dispatch_tid_binding_accepts_only_kernel_owned_tasks() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let tid = table.create_thread(pid, pid, 0, 0, 0).unwrap();
+
+        assert_eq!(table.bind_current_tid(pid, 0), Err(Errno::ESRCH));
+        assert_eq!(table.bind_current_tid(pid, pid), Ok(()));
+        assert_eq!(table.bind_current_tid(pid, tid), Ok(()));
+        assert_eq!(table.current_tid(), tid);
+        assert!(table.has_current_tid_binding(pid));
+
+        assert_eq!(table.bind_current_tid(pid, tid + 1), Err(Errno::ESRCH));
+        assert!(!table.has_current_tid_binding(pid));
+        assert_eq!(table.current_tid(), 0);
+
+        assert_eq!(table.bind_current_tid(pid, tid), Ok(()));
+        table.clear_current_tid_binding();
+        assert!(!table.has_current_tid_binding(pid));
+        assert_eq!(table.current_pid(), 0);
+        assert_eq!(table.current_tid(), 0);
+        assert!(table.current_process().is_none());
+        assert!(table.current_process_and_advisory_locks().is_none());
+
+        assert_eq!(table.bind_current_tid(pid + 99, 0), Err(Errno::ESRCH));
+        assert_eq!(table.current_pid(), 0);
+
+        assert!(table.task_and_advisory_locks(pid, 0).is_none());
+        assert!(table.task_and_advisory_locks(pid, pid + 99).is_none());
+        assert!(table.task_and_advisory_locks(pid + 99, pid).is_none());
+        assert!(table.task_and_advisory_locks(pid, pid).is_some());
+        assert!(table.task_and_advisory_locks(pid, tid).is_some());
+
+        let other_pid = table.create_process().unwrap();
+        table.bind_current_tid(other_pid, other_pid).unwrap();
+        assert_eq!(table.current_tid(), other_pid);
+        table.clear_current_tid_binding();
+        assert_eq!(table.current_tid(), 0);
+
+        table.bind_current_tid(pid, tid).unwrap();
+        table.get_mut(pid).unwrap().state = ProcessState::Exited;
+        assert_eq!(table.current_pid(), 0);
+        assert!(table.current_process().is_none());
+        assert!(table.current_process_and_advisory_locks().is_none());
+        assert!(table.task_and_advisory_locks(pid, pid).is_none());
+        assert!(table.task_and_advisory_locks(pid, tid).is_none());
+        assert_eq!(table.bind_current_tid(pid, 0), Err(Errno::ESRCH));
+        assert_eq!(table.bind_current_tid(pid, tid), Err(Errno::ESRCH));
+        assert_eq!(table.current_tid(), 0);
+    }
+
+    #[test]
+    fn thread_creation_accepts_only_a_live_caller_owned_by_the_process() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let other_pid = table.create_process().unwrap();
+
+        assert_eq!(table.create_thread(pid, 9_999, 0, 0, 0), Err(Errno::ESRCH));
+        assert_eq!(
+            table.create_thread(pid, other_pid, 0, 0, 0),
+            Err(Errno::ESRCH)
+        );
+
+        assert_eq!(table.create_thread(pid, 0, 0, 0, 0), Err(Errno::ESRCH));
+        let creator_tid = table.create_thread(pid, pid, 0, 0, 0).unwrap();
+        assert_eq!(creator_tid, other_pid + 1);
+        let child_tid = table.create_thread(pid, creator_tid, 0, 0, 0).unwrap();
+        assert_eq!(child_tid, creator_tid + 1);
+
+        table.get_mut(pid).unwrap().remove_thread(creator_tid);
+        assert_eq!(
+            table.create_thread(pid, creator_tid, 0, 0, 0),
+            Err(Errno::ESRCH),
+        );
+        assert_eq!(
+            table.create_thread(pid, pid, 0, 0, 0).unwrap(),
+            child_tid + 1,
+            "rejected caller identities must not consume a task ID",
         );
     }
 
     #[test]
     fn reap_retains_group_leader_as_limbo_until_group_empties() {
         let mut table = ProcessTable::new();
-        table.create_process(100).unwrap();
-        table.fork_process(100, 101).unwrap();
-        table.fork_process(100, 102).unwrap();
+        assert_eq!(table.create_process().unwrap(), 100);
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 101);
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 102);
         table.processes.get_mut(&101).unwrap().pgid = 101;
         table.processes.get_mut(&102).unwrap().pgid = 101;
         table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
@@ -1462,9 +1745,9 @@ mod wait_tests {
     #[test]
     fn remove_process_does_not_create_limbo_record() {
         let mut table = ProcessTable::new();
-        table.create_process(100).unwrap();
-        table.fork_process(100, 101).unwrap();
-        table.fork_process(100, 102).unwrap();
+        assert_eq!(table.create_process().unwrap(), 100);
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 101);
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 102);
         table.processes.get_mut(&101).unwrap().pgid = 101;
         table.processes.get_mut(&102).unwrap().pgid = 101;
         table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
@@ -1507,147 +1790,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_state_install_rejects_collisions_but_allows_fresh_kernel_tables() {
-        let mut table = ProcessTable::new();
-        table.create_process(100).unwrap();
-        table.get_mut(100).unwrap().argv = alloc::vec![b"original".to_vec()];
-
-        let mut colliding_fork = Process::new(100);
-        colliding_fork.ppid = 100;
-        assert_eq!(
-            table.insert_legacy_fork_process(colliding_fork),
-            Err(Errno::EEXIST)
-        );
-        assert_eq!(table.get(100).unwrap().argv[0], b"original");
-
-        let mut child_without_local_parent = Process::new(101);
-        child_without_local_parent.ppid = 999;
-        table
-            .insert_legacy_fork_process(child_without_local_parent)
-            .unwrap();
-        assert_eq!(table.get(101).unwrap().ppid, 999);
-
-        table
-            .replace_legacy_exec_process(777, Process::new(777))
-            .unwrap();
-        assert!(table.get(777).is_some());
-        assert_eq!(
-            table.replace_legacy_exec_process(100, Process::new(102)),
-            Err(Errno::EINVAL)
-        );
-        assert_eq!(table.get(100).unwrap().argv[0], b"original");
-    }
-
-    #[test]
-    fn legacy_exec_preserves_stopped_state_and_parent_visible_status_record() {
-        use wasm_posix_shared::signal::SIGTSTP;
-        use wasm_posix_shared::wait::EVENT_STOPPED;
-
-        let mut table = ProcessTable::new();
-        table.create_process(200).unwrap();
-        assert!(table.get_mut(200).unwrap().record_stop(SIGTSTP));
-
-        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(
-            table.get(200).unwrap(),
-        )
-        .unwrap();
-        let replacement = crate::fork::deserialize_exec_state(&serialized, 200).unwrap();
-
-        table
-            .replace_legacy_exec_process(200, replacement)
-            .unwrap();
-
-        assert_eq!(table.get(200).unwrap().state, ProcessState::Stopped);
-        let event = table.get(200).unwrap().wait_event.unwrap();
-        assert_eq!(event.event_mask, EVENT_STOPPED);
-        assert_eq!(event.si_status, SIGTSTP as i32);
-    }
-
-    #[test]
-    fn legacy_exec_returns_unserialized_directory_stream_handles() {
-        use crate::process::DirStream;
-
-        let mut table = ProcessTable::new();
-        table.create_process(202).unwrap();
-        table
-            .get_mut(202)
-            .unwrap()
-            .dir_streams
-            .push(Some(DirStream {
-                host_handle: 8_202,
-                path: b"/tmp".to_vec(),
-                position: 3,
-                synth_dot_state: 2,
-            }));
-
-        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(
-            table.get(202).unwrap(),
-        )
-        .unwrap();
-        let replacement = crate::fork::deserialize_exec_state(&serialized, 202).unwrap();
-        assert!(replacement.dir_streams.is_empty());
-
-        let cleanup = table
-            .replace_legacy_exec_process(202, replacement)
-            .unwrap();
-        assert_eq!(cleanup.host_dir_closes, vec![8_202]);
-    }
-
-    #[test]
-    fn legacy_exec_releases_cloexec_process_and_final_ofd_locks() {
-        use crate::fd::OpenFileDescRef;
-        use crate::lock::{AdvisoryLockType, FileId, LockOwner, LockRange};
-        use wasm_posix_shared::fd_flags::FD_CLOEXEC;
-        use wasm_posix_shared::flags::O_RDWR;
-
-        let mut table = ProcessTable::new();
-        table.create_process(201).unwrap();
-        let file = FileId::Host { dev: 8, ino: 9 };
-        let (ofd_id, fd) = {
-            let process = table.get_mut(201).unwrap();
-            let ofd_index = process.ofd_table.create(
-                FileType::Regular,
-                O_RDWR,
-                -50,
-                b"/cloexec".to_vec(),
-            );
-            process.ofd_table.get_mut(ofd_index).unwrap().file_id = Some(file);
-            let ofd_id = process.ofd_table.get(ofd_index).unwrap().ofd_id;
-            let fd = process
-                .fd_table
-                .alloc(OpenFileDescRef(ofd_index), FD_CLOEXEC)
-                .unwrap();
-            (ofd_id, fd)
-        };
-        assert!(table.get(201).unwrap().fd_table.get(fd).is_ok());
-        table
-            .advisory_locks
-            .set_lock(
-                file,
-                LockOwner::Process(201),
-                Some(AdvisoryLockType::Write),
-                LockRange::normalize(0, 1).unwrap(),
-            )
-            .unwrap();
-        table
-            .advisory_locks
-            .set_lock(
-                file,
-                LockOwner::OpenFileDescription(ofd_id),
-                Some(AdvisoryLockType::Write),
-                LockRange::normalize(2, 1).unwrap(),
-            )
-            .unwrap();
-
-        let serialized =
-            crate::fork::serialize_exec_state_with_growing_buffer(table.get(201).unwrap())
-                .unwrap();
-        let replacement = crate::fork::deserialize_exec_state(&serialized, 201).unwrap();
-        table.replace_legacy_exec_process(201, replacement).unwrap();
-        assert!(table.advisory_locks.is_empty());
-    }
-
-    #[test]
     fn fork_pipe_replay_includes_fds_above_default_nofile_limit() {
         use crate::fd::OpenFileDescRef;
         use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
@@ -1678,13 +1820,14 @@ mod tests {
         use crate::spawn::SpawnAttrs;
 
         let mut table = ProcessTable::new();
-        table.create_process(100).unwrap();
+        assert_eq!(table.create_process().unwrap(), 100);
         table.get_mut(100).unwrap().state = crate::process::ProcessState::Exited;
 
-        assert_eq!(table.fork_process(100, 101), Err(Errno::ESRCH));
+        assert_eq!(table.fork_process_for_caller(100, 100), Err(Errno::ESRCH));
         let mut host = NoopHost;
         assert_eq!(
-            table.spawn_child(
+            table.spawn_child_for_caller(
+                100,
                 100,
                 &[b"/bin/child".as_slice()],
                 &[],
@@ -1703,7 +1846,7 @@ mod tests {
         use wasm_posix_shared::signal::SIGSTOP;
 
         let mut table = ProcessTable::new();
-        table.create_process(100).unwrap();
+        assert_eq!(table.create_process().unwrap(), 100);
         assert!(table.get_mut(100).unwrap().record_stop(SIGSTOP));
 
         // The host resolves a posix_spawn executable asynchronously. A stop
@@ -1711,7 +1854,8 @@ mod tests {
         // the resolved continuation must still be allowed to create its child.
         let mut host = NoopHost;
         let child_pid = table
-            .spawn_child(
+            .spawn_child_for_caller(
+                100,
                 100,
                 &[b"/bin/child".as_slice()],
                 &[],
@@ -1888,8 +2032,8 @@ mod tests {
         let recv_idx = pipe_table.alloc(PipeBuffer::new(DEFAULT_PIPE_CAPACITY));
 
         let mut table = ProcessTable::new();
-        table.create_process(950_001).unwrap();
-        let proc = table.processes.get_mut(&950_001).unwrap();
+        let pid = table.create_process().unwrap();
+        let proc = table.processes.get_mut(&pid).unwrap();
         let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 6);
         socket.state = SocketState::Connected;
         socket.send_buf_idx = Some(send_idx);
@@ -1906,7 +2050,7 @@ mod tests {
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();
 
-        table.remove_process(950_001).unwrap();
+        table.remove_process(pid).unwrap();
 
         let send_pipe = pipe_table.get_mut(send_idx).unwrap();
         assert!(!send_pipe.is_write_end_open());
@@ -1953,7 +2097,7 @@ mod tests {
         const LARGE_PATH_LEN: usize = 1024;
 
         let mut table = ProcessTable::new();
-        table.create_process(100).unwrap();
+        assert_eq!(table.create_process().unwrap(), 100);
 
         let last_fd = {
             let parent = table.processes.get_mut(&100).unwrap();
@@ -1981,9 +2125,12 @@ mod tests {
             );
         }
 
-        table
-            .fork_process(100, 101)
-            .expect("fork should grow its process-state buffer");
+        assert_eq!(
+            table
+                .fork_process_for_caller(100, 100)
+                .expect("fork should grow its process-state buffer"),
+            101
+        );
 
         let child = table.processes.get(&101).unwrap();
         let child_fd = child.fd_table.get(last_fd).unwrap();
@@ -2003,10 +2150,11 @@ mod tests {
         crate::socket::udp_cleanup_process(PARENT);
         crate::socket::udp_cleanup_process(CHILD);
         let mut table = ProcessTable::new();
-        table.create_process(PARENT).unwrap();
+        table.next_task_id = PARENT;
+        assert_eq!(table.create_process().unwrap(), PARENT);
         let sock_idx = install_bound_udp4_socket(&mut table, PARENT, PORT);
 
-        table.fork_process(PARENT, CHILD).unwrap();
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), CHILD);
         assert_udp_owner(PORT, PARENT, sock_idx, true);
         assert_udp_owner(PORT, CHILD, sock_idx, true);
 
@@ -2042,13 +2190,14 @@ mod tests {
 
         crate::socket::udp_cleanup_process(PARENT);
         let mut table = ProcessTable::new();
-        table.create_process(PARENT).unwrap();
+        table.next_task_id = PARENT;
+        assert_eq!(table.create_process().unwrap(), PARENT);
         let sock_idx = install_bound_udp4_socket(&mut table, PARENT, PORT);
         let mut host = NoopHost;
 
         let child_pid = table
-            .spawn_child(
-                PARENT,
+            .spawn_child_for_caller(
+                PARENT, PARENT,
                 &[b"/bin/child".as_slice()],
                 &[],
                 &[],
@@ -2072,22 +2221,25 @@ mod tests {
         use wasm_posix_shared::wait::{CLD_EXITED, EVENT_EXITED};
 
         let mut table = ProcessTable::new();
-        table.create_process(10).unwrap();
-        table.create_process(11).unwrap();
-        let child = table.processes.get_mut(&11).unwrap();
-        child.ppid = 10;
+        let parent_pid = table.create_process().unwrap();
+        let child_pid = table.create_process().unwrap();
+        let child = table.processes.get_mut(&child_pid).unwrap();
+        child.ppid = parent_pid;
         assert!(child.record_normal_exit(7));
 
         let (pid, event) = table
-            .poll_wait_event(10, -1, EVENT_EXITED, 0)
+            .poll_wait_event(parent_pid, -1, EVENT_EXITED, 0)
             .unwrap()
             .unwrap();
-        assert_eq!(pid, 11);
+        assert_eq!(pid, child_pid);
         assert_eq!(event.wait_status, 7 << 8);
         assert_eq!(event.si_code, CLD_EXITED);
         assert_eq!(event.si_status, 7);
-        assert!(table.get(11).unwrap().wait_event.is_none());
-        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
+        assert!(table.get(child_pid).unwrap().wait_event.is_none());
+        assert_eq!(
+            table.poll_wait_event(parent_pid, -1, EVENT_EXITED, 0),
+            Ok(None)
+        );
     }
 
     #[test]
@@ -2095,21 +2247,21 @@ mod tests {
         use wasm_posix_shared::wait::{CLD_KILLED, EVENT_EXITED, WNOWAIT};
 
         let mut table = ProcessTable::new();
-        table.create_process(10).unwrap();
-        table.create_process(11).unwrap();
-        table.processes.get_mut(&11).unwrap().ppid = 10;
-        table.get_mut(11).unwrap().record_signal_exit(15);
+        let parent_pid = table.create_process().unwrap();
+        let child_pid = table.create_process().unwrap();
+        table.processes.get_mut(&child_pid).unwrap().ppid = parent_pid;
+        table.get_mut(child_pid).unwrap().record_signal_exit(15);
 
         for _ in 0..2 {
             let (_, event) = table
-                .poll_wait_event(10, 11, EVENT_EXITED, WNOWAIT)
+                .poll_wait_event(parent_pid, child_pid as i32, EVENT_EXITED, WNOWAIT)
                 .unwrap()
                 .unwrap();
             assert_eq!(event.wait_status, 15);
             assert_eq!(event.si_code, CLD_KILLED);
             assert_eq!(event.si_status, 15);
         }
-        assert!(table.get(11).unwrap().wait_event.is_some());
+        assert!(table.get(child_pid).unwrap().wait_event.is_some());
     }
 
     #[test]
@@ -2118,20 +2270,23 @@ mod tests {
         use wasm_posix_shared::wait::{EVENT_EXITED, EVENT_STOPPED};
 
         let mut table = ProcessTable::new();
-        table.create_process(10).unwrap();
-        table.create_process(11).unwrap();
-        let child = table.processes.get_mut(&11).unwrap();
-        child.ppid = 10;
+        let parent_pid = table.create_process().unwrap();
+        let child_pid = table.create_process().unwrap();
+        let child = table.processes.get_mut(&child_pid).unwrap();
+        child.ppid = parent_pid;
         assert!(child.record_stop(SIGTSTP));
 
-        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
         assert_eq!(
-            table.get(11).unwrap().wait_event.unwrap().event_mask,
+            table.poll_wait_event(parent_pid, -1, EVENT_EXITED, 0),
+            Ok(None)
+        );
+        assert_eq!(
+            table.get(child_pid).unwrap().wait_event.unwrap().event_mask,
             EVENT_STOPPED
         );
         assert!(
             table
-                .poll_wait_event(10, -1, EVENT_STOPPED, 0)
+                .poll_wait_event(parent_pid, -1, EVENT_STOPPED, 0)
                 .unwrap()
                 .is_some()
         );
@@ -2142,18 +2297,24 @@ mod tests {
         use wasm_posix_shared::wait::{EVENT_EXITED, WNOWAIT};
 
         let mut table = ProcessTable::new();
-        table.create_process(10).unwrap();
-        table.create_process(11).unwrap();
-        table.processes.get_mut(&11).unwrap().ppid = 10;
+        let parent_pid = table.create_process().unwrap();
+        let child_pid = table.create_process().unwrap();
+        table.processes.get_mut(&child_pid).unwrap().ppid = parent_pid;
 
-        assert_eq!(table.poll_wait_event(10, -1, EVENT_EXITED, 0), Ok(None));
         assert_eq!(
-            table.poll_wait_event(10, 12, EVENT_EXITED, 0),
+            table.poll_wait_event(parent_pid, -1, EVENT_EXITED, 0),
+            Ok(None)
+        );
+        assert_eq!(
+            table.poll_wait_event(parent_pid, 999, EVENT_EXITED, 0),
             Err(Errno::ECHILD)
         );
-        assert_eq!(table.poll_wait_event(10, -1, 0, 0), Err(Errno::EINVAL));
         assert_eq!(
-            table.poll_wait_event(10, -1, EVENT_EXITED, WNOWAIT | 2),
+            table.poll_wait_event(parent_pid, -1, 0, 0),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            table.poll_wait_event(parent_pid, -1, EVENT_EXITED, WNOWAIT | 2),
             Err(Errno::EINVAL)
         );
     }
@@ -2163,49 +2324,47 @@ mod tests {
         use wasm_posix_shared::wait::EVENT_EXITED;
 
         let mut table = ProcessTable::new();
-        table.create_process(10).unwrap();
-        table.processes.get_mut(&10).unwrap().pgid = 20;
-        table.create_process(11).unwrap();
+        let parent_pid = table.create_process().unwrap();
+        table.processes.get_mut(&parent_pid).unwrap().pgid = 20;
+        let same_group_child = table.create_process().unwrap();
         {
-            let child = table.processes.get_mut(&11).unwrap();
-            child.ppid = 10;
+            let child = table.processes.get_mut(&same_group_child).unwrap();
+            child.ppid = parent_pid;
             child.pgid = 20;
             child.record_normal_exit(0);
         }
-        table.create_process(12).unwrap();
+        let other_group_child = table.create_process().unwrap();
         {
-            let child = table.processes.get_mut(&12).unwrap();
-            child.ppid = 10;
+            let child = table.processes.get_mut(&other_group_child).unwrap();
+            child.ppid = parent_pid;
             child.pgid = 30;
             child.record_normal_exit(1);
         }
 
         assert_eq!(
             table
-                .poll_wait_event(10, 0, EVENT_EXITED, 0)
+                .poll_wait_event(parent_pid, 0, EVENT_EXITED, 0)
                 .unwrap()
                 .unwrap()
                 .0,
-            11
+            same_group_child
         );
         assert_eq!(
             table
-                .poll_wait_event(10, -30, EVENT_EXITED, 0)
+                .poll_wait_event(parent_pid, -30, EVENT_EXITED, 0)
                 .unwrap()
                 .unwrap()
                 .0,
-            12
+            other_group_child
         );
     }
 
     #[test]
     fn remove_process_releases_process_and_final_ofd_locks() {
-        use crate::lock::{
-            AdvisoryLockType, FileId, LockOwner, LockRange, OfdId,
-        };
+        use crate::lock::{AdvisoryLockType, FileId, LockOwner, LockRange, OfdId};
 
         let mut table = ProcessTable::new();
-        table.create_process(20).unwrap();
+        let pid = table.create_process().unwrap();
         let file = FileId::Host { dev: 3, ino: 9 };
         let process_range = LockRange::normalize(0, 10).unwrap();
         let ofd_range = LockRange::normalize(20, 10).unwrap();
@@ -2215,7 +2374,7 @@ mod tests {
             .advisory_locks_mut()
             .set_lock(
                 file,
-                LockOwner::Process(20),
+                LockOwner::Process(pid),
                 Some(AdvisoryLockType::Write),
                 process_range,
             )
@@ -2230,7 +2389,7 @@ mod tests {
             )
             .unwrap();
 
-        let proc = table.processes.get_mut(&20).unwrap();
+        let proc = table.processes.get_mut(&pid).unwrap();
         let idx = proc.ofd_table.create(
             FileType::Regular,
             wasm_posix_shared::flags::O_RDWR,
@@ -2242,39 +2401,49 @@ mod tests {
             .alloc(crate::fd::OpenFileDescRef(idx), 0)
             .unwrap();
 
-        table.remove_process(20).expect("process removed");
+        table.remove_process(pid).expect("process removed");
         assert!(table.advisory_locks().is_empty());
     }
 
     #[test]
-    fn task_lookup_prefers_leaders_and_excludes_dead_worker_threads() {
+    fn task_lookup_resolves_unique_leaders_and_excludes_dead_worker_threads() {
         let mut table = ProcessTable::new();
-        table.create_process(100).unwrap();
-        table.create_process(200).unwrap();
-        table
-            .get_mut(100)
-            .unwrap()
-            .add_thread(crate::process::ThreadInfo::new(900, 0, 0, 0));
-        table
-            .get_mut(100)
-            .unwrap()
-            .add_thread(crate::process::ThreadInfo::new(200, 0, 0, 0));
+        let first_pid = table.create_process().unwrap();
+        let second_pid = table.create_process().unwrap();
+        let tid = table.create_thread(first_pid, first_pid, 0, 0, 0).unwrap();
 
-        assert_eq!(table.get_process_containing_task(100).unwrap().pid, 100);
-        // An exact process leader wins over a numerically colliding worker TID.
-        assert_eq!(table.get_process_containing_task(200).unwrap().pid, 200);
-        assert_eq!(table.get_process_containing_task(900).unwrap().pid, 100);
+        assert_eq!(
+            table.get_process_containing_task(first_pid).unwrap().pid,
+            first_pid
+        );
+        assert_eq!(
+            table.get_process_containing_task(second_pid).unwrap().pid,
+            second_pid
+        );
+        assert_eq!(
+            table.get_process_containing_task(tid).unwrap().pid,
+            first_pid
+        );
 
-        table.get_mut(100).unwrap().state = ProcessState::Stopped;
-        assert_eq!(table.get_process_containing_task(900).unwrap().pid, 100);
-        table.get_mut(100).unwrap().state = ProcessState::Exited;
-        assert_eq!(table.get_process_containing_task(100).unwrap().pid, 100);
-        assert!(table.get_process_containing_task(900).is_none());
+        table.get_mut(first_pid).unwrap().state = ProcessState::Stopped;
+        assert_eq!(
+            table.get_process_containing_task(tid).unwrap().pid,
+            first_pid
+        );
+        table.get_mut(first_pid).unwrap().state = ProcessState::Exited;
+        assert_eq!(
+            table.get_process_containing_task(first_pid).unwrap().pid,
+            first_pid
+        );
+        assert!(table.get_process_containing_task(tid).is_none());
 
-        table.get_mut(200).unwrap().state = ProcessState::Exited;
-        assert_eq!(table.get_process_containing_task(200).unwrap().pid, 200);
-        table.get_mut(200).unwrap().state = ProcessState::Limbo;
-        assert!(table.get_process_containing_task(200).is_none());
+        table.get_mut(second_pid).unwrap().state = ProcessState::Exited;
+        assert_eq!(
+            table.get_process_containing_task(second_pid).unwrap().pid,
+            second_pid
+        );
+        table.get_mut(second_pid).unwrap().state = ProcessState::Limbo;
+        assert!(table.get_process_containing_task(second_pid).is_none());
 
         assert!(table.get_process_containing_task(9999).is_none());
     }

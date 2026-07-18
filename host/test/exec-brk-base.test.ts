@@ -185,7 +185,7 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
   }, 30_000);
 
   // Bug case 2: dash forks /bin/sh which forks mariadbd. The dinit-shape
-  // chain (PID 1 → fork sh → fork mariadbd) — this is the original
+  // chain (first user process → fork sh → fork mariadbd) — this is the original
   // mariadbd-bootstrap-hangs-in-wasm-port-during-kernel reproducer.
   it("dash → fork /bin/sh → fork mariadbd: boots InnoDB", async () => {
     const r = await runDashCommand(
