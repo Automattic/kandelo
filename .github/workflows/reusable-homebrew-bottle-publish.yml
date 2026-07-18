@@ -1107,8 +1107,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GHCR_AUTH_MODE: github-token
-          GHCR_REQUIRE_PAT: "false"
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
@@ -1121,6 +1119,9 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --formula "$KANDELO_HOMEBREW_FORMULA"
+            --auth-mode github-token
+            --require-pat false
+            --destination-mode repository
             --out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"
           )
           bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh "${upload_args[@]}"
@@ -1342,8 +1343,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GHCR_AUTH_MODE: github-token
-          GHCR_REQUIRE_PAT: "false"
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
@@ -1356,6 +1355,9 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --auth-mode github-token \
+            --require-pat false \
+            --destination-mode repository \
             --out-json "$RUNNER_TEMP/homebrew-complete-index/transport-receipt.json"
 
       - name: Upload public Homebrew version-index evidence
@@ -1592,6 +1594,9 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --formula "$KANDELO_HOMEBREW_FORMULA"
+            --auth-mode automatic
+            --require-pat false
+            --destination-mode repository
             --out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"
             --dry-run
           )

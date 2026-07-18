@@ -14,7 +14,7 @@ fail() {
   exit 1
 }
 
-assert_ghcr_auth_env_crosses_dev_shell() {
+assert_ghcr_auth_env_does_not_cross_dev_shell() {
   local capture="$TMPDIR/ghcr-dev-shell-env.txt" nix_bin
 
   nix_bin="$(command -v nix || true)"
@@ -41,8 +41,8 @@ assert_ghcr_auth_env_crosses_dev_shell() {
         "${GHCR_DESTINATION_MODE:-}" >"$1"
     ' bash "$capture"
 
-  [ "$(cat "$capture")" = $'pat\ntrue\npackage-bot\nrepository-canary' ] ||
-    fail "dev shell did not preserve the reviewed GHCR transport contract"
+  cmp -s <(printf '\n\n\n\n') "$capture" ||
+    fail "dev shell preserved Homebrew-only GHCR transport controls"
 }
 
 FORMULA_RUNNER_FIXTURE_ROOT="$TMPDIR/formula-runner-root"
@@ -4626,7 +4626,7 @@ EOF
 }
 
 make_formula_runner_fixture
-assert_ghcr_auth_env_crosses_dev_shell
+assert_ghcr_auth_env_does_not_cross_dev_shell
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"

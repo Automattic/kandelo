@@ -115,9 +115,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GHCR_AUTH_MODE: github-token
-          GHCR_REQUIRE_PAT: "false"
-          GHCR_DESTINATION_MODE: repository-canary
         run: |
           set -euo pipefail
           artifact="$RUNNER_TEMP/homebrew-repository-namespace-canary"
@@ -129,6 +126,9 @@ jobs:
             --tap-repository kandelo-dev/homebrew-tap-core \
             --tap-name kandelo-dev/tap-core \
             --formula zlib \
+            --auth-mode github-token \
+            --require-pat false \
+            --destination-mode repository-canary \
             --out-json "$receipt"
 
       - name: Validate public canary receipt without credentials

@@ -972,12 +972,13 @@ expect_failure required-pat-missing "required GitHub Packages PAT is unavailable
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=present \
     ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
     PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
-    GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=true \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello \
+      --auth-mode github-token \
+      --require-pat true \
       --out-json "$TMP_ROOT/child32/required-pat-missing.json"
 [ ! -s "$ORAS_LOG" ] || {
   echo "missing required PAT reached the public registry probe" >&2
@@ -989,12 +990,13 @@ expect_failure pat-owner-missing "GHCR registry user is invalid" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=present \
     ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
     PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
-    GHCR_AUTH_MODE=pat GHCR_REQUIRE_PAT=true \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello \
+      --auth-mode pat \
+      --require-pat true \
       --out-json "$TMP_ROOT/child32/pat-owner-missing.json"
 [ ! -s "$ORAS_LOG" ] || {
   echo "PAT without its owner identity reached the public registry probe" >&2
@@ -1007,12 +1009,14 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
   ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
   KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
   PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
-  GHCR_AUTH_MODE=pat GHCR_REQUIRE_PAT=true GHCR_USER=package-bot \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
+    --auth-mode pat \
+    --require-pat true \
+    --registry-user package-bot \
     --out-json "$TMP_ROOT/child32/upload.json" >/dev/null
 grep -E '^login ghcr.io .* -u package-bot --password-stdin$' "$ORAS_LOG" >/dev/null || {
   echo "explicit GHCR package user did not reach the isolated ORAS login" >&2
@@ -1078,12 +1082,14 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
   ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
   KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
   PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
-  GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false GHCR_USER=package-bot \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
+    --auth-mode github-token \
+    --require-pat false \
+    --registry-user package-bot \
     --out-json "$TMP_ROOT/child32/github-token-upload.json" >/dev/null
 jq -e '
   .publication.remote == "ghcr.io/kandelo-dev/homebrew-tap-core/hello" and
@@ -1105,13 +1111,14 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-canary-missing-present \
   ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
   KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
   PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
-  GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false \
-  GHCR_DESTINATION_MODE=repository-canary \
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --layout "$TMP_ROOT/child32/layout" \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
+    --auth-mode github-token \
+    --require-pat false \
+    --destination-mode repository-canary \
     --out-json "$TMP_ROOT/child32/repository-canary-upload.json" >/dev/null
 jq -e '
   .tap_name == "kandelo-dev/tap-core" and
@@ -1137,13 +1144,15 @@ assert_logged_auth_configs_retired
 expect_failure repository-canary-pat \
   "repository canary requires GitHub-token authentication" \
   env ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token \
-    GITHUB_ACTOR=tester GHCR_AUTH_MODE=pat GHCR_REQUIRE_PAT=true \
-    GHCR_USER=package-bot GHCR_DESTINATION_MODE=repository-canary \
+    GITHUB_ACTOR=tester \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
-      --formula hello --out-json "$TMP_ROOT/repository-canary-pat.json"
+      --formula hello \
+      --auth-mode pat --require-pat true --registry-user package-bot \
+      --destination-mode repository-canary \
+      --out-json "$TMP_ROOT/repository-canary-pat.json"
 [ ! -s "$ORAS_LOG" ] || {
   echo "PAT-backed repository canary reached ORAS" >&2
   exit 1
@@ -1152,13 +1161,15 @@ expect_failure repository-canary-pat \
 expect_failure repository-canary-third-party \
   "repository canary is restricted to the protected Kandelo tap" \
   env ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token \
-    GITHUB_ACTOR=tester GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false \
-    GHCR_DESTINATION_MODE=repository-canary \
+    GITHUB_ACTOR=tester \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/generic32/layout" \
       --layout-receipt "$TMP_ROOT/generic32/receipt.json" \
       --tap-repository Acme/homebrew-tools --tap-name Acme/tools \
-      --formula hello --out-json "$TMP_ROOT/repository-canary-third-party.json"
+      --formula hello \
+      --auth-mode github-token --require-pat false \
+      --destination-mode repository-canary \
+      --out-json "$TMP_ROOT/repository-canary-third-party.json"
 [ ! -s "$ORAS_LOG" ] || {
   echo "third-party repository canary reached ORAS" >&2
   exit 1
@@ -1170,13 +1181,14 @@ expect_failure repository-canary-existing \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-canary-existing \
     ORAS_STATE="$TMP_ROOT/repository-canary-existing-state" \
     PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
-    GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false \
-    GHCR_DESTINATION_MODE=repository-canary \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
-      --formula hello --out-json "$TMP_ROOT/repository-canary-existing.json"
+      --formula hello \
+      --auth-mode github-token --require-pat false \
+      --destination-mode repository-canary \
+      --out-json "$TMP_ROOT/repository-canary-existing.json"
 ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "existing repository canary package reached OCI transport" >&2
   exit 1
@@ -1190,13 +1202,14 @@ expect_failure repository-canary-private \
     ORAS_STATE="$TMP_ROOT/repository-canary-private-state" \
     KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
     PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
-    GHCR_AUTH_MODE=github-token GHCR_REQUIRE_PAT=false \
-    GHCR_DESTINATION_MODE=repository-canary \
     bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
-      --formula hello --out-json "$TMP_ROOT/repository-canary-private.json"
+      --formula hello \
+      --auth-mode github-token --require-pat false \
+      --destination-mode repository-canary \
+      --out-json "$TMP_ROOT/repository-canary-private.json"
 grep -F 'ghcr.io/kandelo-dev/homebrew-tap-core/hello:sha256-' "$ORAS_LOG" >/dev/null || {
   echo "private repository canary did not upload before the visibility boundary" >&2
   exit 1
