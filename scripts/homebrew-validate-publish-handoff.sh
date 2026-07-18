@@ -185,7 +185,7 @@ SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 EXPECTED_BOTTLE_ROOT_URL="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
 if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
-  echo "homebrew-validate-publish-handoff.sh: bottle root URL does not match Homebrew tap name" >&2
+  echo "homebrew-validate-publish-handoff.sh: bottle root URL does not match the tap repository package root" >&2
   exit 2
 fi
 # shellcheck source=/dev/null
@@ -316,7 +316,8 @@ fi
 BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$BUILD_ROOT/manifest.json")"
 SIBLING_POLICY="$(homebrew_sibling_bottle_policy \
   "$TAP_ROOT/Kandelo/metadata.json" "$FORMULA" "$VERSION" "$FORMULA_REVISION" \
-  "$BOTTLE_REBUILD" "$ABI_VERSION" "homebrew-validate-publish-handoff.sh")"
+  "$BOTTLE_REBUILD" "$ABI_VERSION" "$BOTTLE_ROOT_URL" "$TAP_FORMULA" \
+  "homebrew-validate-publish-handoff.sh")"
 VALIDATION_TMP="$(mktemp -d)"
 cleanup() { rm -rf "$VALIDATION_TMP"; }
 trap cleanup EXIT

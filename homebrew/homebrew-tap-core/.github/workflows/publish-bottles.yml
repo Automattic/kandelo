@@ -23,7 +23,3 @@ jobs:
       expected-cache-keys: ${{ github.event.client_payload.expected_cache_keys || '' }}
       force: ${{ github.event.client_payload.force || false }}
       dry-run: false
-      github-packages-user: ${{ vars.HOMEBREW_GITHUB_PACKAGES_USER }}
-      require-github-packages-token: true
-    secrets:
-      HOMEBREW_GITHUB_PACKAGES_TOKEN: ${{ secrets.HOMEBREW_GITHUB_PACKAGES_TOKEN }}

@@ -9,6 +9,55 @@ use std::path::{Path, PathBuf};
 const METADATA_REL: &str = "Kandelo/metadata.json";
 const ZERO_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
+fn repository_bottle_root(repository: &str) -> String {
+    format!("https://ghcr.io/v2/{}", repository.to_ascii_lowercase())
+}
+
+fn repository_bottle_url(repository: &str, package: &str, sha256: &str) -> String {
+    format!(
+        "{}/{package}/blobs/sha256:{sha256}",
+        repository_bottle_root(repository)
+    )
+}
+
+fn bottle_uses_repository_root(repository: &str, package: &str, bottle: &Value) -> bool {
+    let success_url_matches = if bottle.get("status").and_then(Value::as_str) == Some("success") {
+        match (
+            bottle.get("url").and_then(Value::as_str),
+            bottle.get("sha256").and_then(Value::as_str),
+        ) {
+            (Some(url), Some(sha256)) => url == repository_bottle_url(repository, package, sha256),
+            _ => false,
+        }
+    } else {
+        true
+    };
+
+    let fallback_url_matches = match (bottle.get("fallback_url"), bottle.get("fallback_sha256")) {
+        (None, None) => true,
+        (Some(url), Some(sha256)) => match (url.as_str(), sha256.as_str()) {
+            (Some(url), Some(sha256)) => url == repository_bottle_url(repository, package, sha256),
+            _ => false,
+        },
+        _ => false,
+    };
+
+    success_url_matches && fallback_url_matches
+}
+
+fn package_uses_repository_root(repository: &str, package: &Value) -> bool {
+    let Some(name) = package.get("name").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(bottles) = package.get("bottles").and_then(Value::as_array) else {
+        return false;
+    };
+    !bottles.is_empty()
+        && bottles
+            .iter()
+            .all(|bottle| bottle_uses_repository_root(repository, name, bottle))
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let options = Options::parse(args)?;
     let input = read_manifest(&options.input_path)?;
@@ -343,7 +392,9 @@ impl Generator<'_> {
             let Some(name) = package.get("name").and_then(Value::as_str) else {
                 continue;
             };
-            if !current_names.contains(name) {
+            if !current_names.contains(name)
+                && package_uses_repository_root(&self.input.tap_repository, package)
+            {
                 package_values.push(package.clone());
             }
         }
@@ -599,7 +650,9 @@ impl Generator<'_> {
             let Some(arch) = bottle.get("arch").and_then(Value::as_str) else {
                 continue;
             };
-            if !current_arches.contains(arch) {
+            if !current_arches.contains(arch)
+                && bottle_uses_repository_root(&self.input.tap_repository, &package.name, bottle)
+            {
                 bottle_values.push(bottle.clone());
             }
         }
@@ -705,6 +758,17 @@ impl Generator<'_> {
         }
         output["built_from"]["formula_sha256"] = json!(archived_formula_sha);
         let (bottle_sha, bottle_bytes) = sha256_file_and_len(&bottle_path)?;
+        let expected_url =
+            repository_bottle_url(&self.input.tap_repository, &package.name, &bottle_sha);
+        if url != expected_url {
+            return Err(bottle_error(
+                package,
+                bottle,
+                &format!(
+                    "success bottle URL {url:?} does not match tap repository package URL {expected_url:?}"
+                ),
+            ));
+        }
         let link_path = link_manifest_path(package, &bottle.arch);
         let provenance_path = provenance_path(package, &bottle.arch);
         require_relative_path(&link_path, "link manifest path")?;
@@ -904,6 +968,11 @@ impl Generator<'_> {
                     && candidate.get("bytes").is_some()
                     && candidate.get("cache_key_sha").is_some()
                     && candidate.get("link_manifest").is_some()
+                    && bottle_uses_repository_root(
+                        &self.input.tap_repository,
+                        &package.name,
+                        candidate,
+                    )
             })
     }
 
@@ -1252,7 +1321,7 @@ mod tests {
     const FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Fixture\"\nend\n";
     const CURRENT_ARCHIVED_FORMULA_TEXT: &str =
         "class Hello < Formula\n  desc \"Current fixture\"\nend\n";
-    const CURRENT_TAP_FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Current fixture\"\n\n  bottle do\n    root_url \"https://ghcr.io/v2/kandelo-dev/tap-core\"\n    sha256 cellar: :any_skip_relocation, wasm64_kandelo: \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"\n  end\nend\n";
+    const CURRENT_TAP_FORMULA_TEXT: &str = "class Hello < Formula\n  desc \"Current fixture\"\n\n  bottle do\n    root_url \"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core\"\n    sha256 cellar: :any_skip_relocation, wasm64_kandelo: \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"\n  end\nend\n";
 
     fn write_text(path: &Path, text: &str) {
         if let Some(parent) = path.parent() {
@@ -1332,7 +1401,7 @@ mod tests {
 
         let mut formula = source.strip_suffix("end\n").unwrap().to_string();
         formula.push_str("\n  bottle do\n");
-        formula.push_str("    root_url \"https://ghcr.io/v2/kandelo-dev/tap-core\"\n");
+        formula.push_str("    root_url \"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core\"\n");
         let rebuild = package["bottle_rebuild"].as_u64().unwrap();
         if rebuild != 0 {
             formula.push_str(&format!("    rebuild {rebuild}\n"));
@@ -1346,7 +1415,7 @@ mod tests {
         write_text(&tap_root.join("Formula/hello.rb"), &formula);
     }
 
-    fn fixture_input(bottle_file: &str, status: &str) -> Value {
+    fn fixture_input(bottle_file: &str, bottle_sha256: &str, status: &str) -> Value {
         let mut bottle = json!({
             "arch": "wasm32",
             "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
@@ -1360,9 +1429,11 @@ mod tests {
         });
         if status == "success" {
             bottle["bottle_file"] = json!(bottle_file);
-            bottle["url"] = json!(
-                "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm32_kandelo.bottle.tar.gz"
-            );
+            bottle["url"] = json!(repository_bottle_url(
+                "kandelo-dev/homebrew-tap-core",
+                "hello",
+                bottle_sha256,
+            ));
             bottle["cache_key_sha"] =
                 json!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
             bottle["payload_root"] = json!("hello/2.12.1");
@@ -1446,9 +1517,14 @@ mod tests {
                 &tap_root.join("Formula/hello.rb"),
                 FORMULA_TEXT,
             );
-            write_bottle(&input_dir.join("hello.bottle.tar.gz"), FORMULA_TEXT);
+            let bottle_path = input_dir.join("hello.bottle.tar.gz");
+            write_bottle(&bottle_path, FORMULA_TEXT);
+            let bottle_sha256 = sha256_file_and_len(&bottle_path).unwrap().0;
             let input_path = input_dir.join("sidecars.json");
-            write_json_value(&input_path, &fixture_input("hello.bottle.tar.gz", status));
+            write_json_value(
+                &input_path,
+                &fixture_input("hello.bottle.tar.gz", &bottle_sha256, status),
+            );
             Self {
                 _dir: dir,
                 tap_root,
@@ -1532,9 +1608,11 @@ mod tests {
         assert_eq!(bottle["status"], json!("failed"));
         assert_eq!(
             bottle["fallback_url"],
-            json!(
-                "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm32_kandelo.bottle.tar.gz"
-            )
+            json!(repository_bottle_url(
+                "kandelo-dev/homebrew-tap-core",
+                "hello",
+                bottle["fallback_sha256"].as_str().unwrap(),
+            ))
         );
         assert_eq!(
             bottle["fallback_sha256"],
@@ -1592,9 +1670,15 @@ mod tests {
 
         let mut input = load_json(&current.input_path).unwrap();
         input["packages"][0]["bottles"][0]["arch"] = json!("wasm64");
-        input["packages"][0]["bottles"][0]["url"] = json!(
-            "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm64_kandelo.bottle.tar.gz"
-        );
+        let current_bottle_sha =
+            sha256_file_and_len(&current.input_path.with_file_name("hello.bottle.tar.gz"))
+                .unwrap()
+                .0;
+        input["packages"][0]["bottles"][0]["url"] = json!(repository_bottle_url(
+            "kandelo-dev/homebrew-tap-core",
+            "hello",
+            &current_bottle_sha,
+        ));
         input["kandelo_commit"] = json!("4444444444444444444444444444444444444444");
         input["packages"][0]["formula_source_sha256"] = json!(current_formula_sha.clone());
         write_json_value(&current.input_path, &input);
@@ -1678,6 +1762,156 @@ mod tests {
             current.tap_root.to_string_lossy().into_owned(),
         ])
         .unwrap();
+    }
+
+    #[test]
+    fn success_generation_rejects_url_outside_repository_package_root() {
+        let fixture = Fixture::new("success");
+        let mut input = load_json(&fixture.input_path).unwrap();
+        let bottle_sha =
+            sha256_file_and_len(&fixture.input_path.with_file_name("hello.bottle.tar.gz"))
+                .unwrap()
+                .0;
+        input["packages"][0]["bottles"][0]["url"] = json!(repository_bottle_url(
+            "kandelo-dev/tap-core",
+            "hello",
+            &bottle_sha,
+        ));
+        write_json_value(&fixture.input_path, &input);
+
+        let error = run(vec![
+            "--tap-root".to_string(),
+            fixture.tap_root.to_string_lossy().into_owned(),
+            "--input".to_string(),
+            fixture.input_path.to_string_lossy().into_owned(),
+        ])
+        .unwrap_err();
+        assert!(
+            error.contains("success bottle URL")
+                && error.contains("does not match tap repository package URL"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn failed_generation_does_not_retain_old_root_last_green_fallback() {
+        let previous = Fixture::new("success");
+        previous.run(None);
+        let previous_metadata_path = previous.tap_root.join("Kandelo/metadata.json");
+        let mut previous_metadata = load_json(&previous_metadata_path).unwrap();
+        let sha256 = previous_metadata["packages"][0]["bottles"][0]["sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        previous_metadata["packages"][0]["bottles"][0]["url"] = json!(repository_bottle_url(
+            "kandelo-dev/tap-core",
+            "hello",
+            &sha256,
+        ));
+        write_json_value(&previous_metadata_path, &previous_metadata);
+
+        let failed = Fixture::new("failed");
+        failed.run(Some(&previous_metadata_path));
+
+        let metadata: Value = load_json(&failed.tap_root.join("Kandelo/metadata.json")).unwrap();
+        let bottle = &metadata["packages"][0]["bottles"][0];
+        assert_eq!(bottle["status"], json!("failed"));
+        assert!(bottle.get("fallback_url").is_none());
+        assert!(bottle.get("fallback_sha256").is_none());
+    }
+
+    #[test]
+    fn success_generation_does_not_retain_old_root_sibling_bottle() {
+        let previous = Fixture::new("success");
+        previous.run(None);
+        let previous_metadata_path = previous.tap_root.join("Kandelo/metadata.json");
+        let mut previous_metadata = load_json(&previous_metadata_path).unwrap();
+        let sha256 = previous_metadata["packages"][0]["bottles"][0]["sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        previous_metadata["packages"][0]["bottles"][0]["url"] = json!(repository_bottle_url(
+            "kandelo-dev/tap-core",
+            "hello",
+            &sha256,
+        ));
+        write_json_value(&previous_metadata_path, &previous_metadata);
+
+        let current = Fixture::new("success");
+        copy_tree(
+            &previous.tap_root.join("Kandelo"),
+            &current.tap_root.join("Kandelo"),
+        );
+        let mut input = load_json(&current.input_path).unwrap();
+        input["packages"][0]["bottles"][0]["arch"] = json!("wasm64");
+        write_json_value(&current.input_path, &input);
+        current.run(Some(&previous_metadata_path));
+
+        let metadata: Value = load_json(&current.tap_root.join("Kandelo/metadata.json")).unwrap();
+        let bottles = metadata["packages"][0]["bottles"].as_array().unwrap();
+        assert_eq!(bottles.len(), 1);
+        assert_eq!(bottles[0]["arch"], json!("wasm64"));
+    }
+
+    #[test]
+    fn success_generation_does_not_retain_old_root_unselected_package() {
+        let previous = Fixture::new("success");
+        previous.run(None);
+        let previous_metadata_path = previous.tap_root.join("Kandelo/metadata.json");
+        let mut previous_metadata = load_json(&previous_metadata_path).unwrap();
+        let previous_bottle = &previous_metadata["packages"][0]["bottles"][0];
+        let fallback_sha256 = previous_bottle["sha256"].clone();
+        let fallback_bottle = json!({
+            "arch": previous_bottle["arch"].clone(),
+            "bottle_tag": previous_bottle["bottle_tag"].clone(),
+            "kandelo_abi": previous_bottle["kandelo_abi"].clone(),
+            "cellar": previous_bottle["cellar"].clone(),
+            "prefix": previous_bottle["prefix"].clone(),
+            "runtime_support": previous_bottle["runtime_support"].clone(),
+            "browser_compatible": previous_bottle["browser_compatible"].clone(),
+            "fork_instrumentation": previous_bottle["fork_instrumentation"].clone(),
+            "status": "failed",
+            "built_by": previous_bottle["built_by"].clone(),
+            "built_from": previous_bottle["built_from"].clone(),
+            "error": "build failed",
+            "last_attempt": "2026-06-28T00:00:00Z",
+            "last_attempt_by": "https://example.invalid/kandelo-dev/homebrew-tap-core/actions/runs/43",
+            "fallback_url": repository_bottle_url(
+                "kandelo-dev/tap-core",
+                "zlib",
+                fallback_sha256.as_str().unwrap(),
+            ),
+            "fallback_sha256": fallback_sha256,
+            "fallback_bytes": previous_bottle["bytes"].clone(),
+            "fallback_cache_key_sha": previous_bottle["cache_key_sha"].clone(),
+            "fallback_link_manifest": previous_bottle["link_manifest"].clone(),
+            "fallback_built_at": "2026-06-27T00:00:00Z",
+        });
+        let mut unselected_package = previous_metadata["packages"][0].clone();
+        unselected_package["name"] = json!("zlib");
+        unselected_package["full_name"] = json!("kandelo-dev/tap-core/zlib");
+        unselected_package["bottles"] = json!([fallback_bottle]);
+        previous_metadata["packages"]
+            .as_array_mut()
+            .unwrap()
+            .push(unselected_package);
+        write_json_value(&previous_metadata_path, &previous_metadata);
+
+        let current = Fixture::new("success");
+        copy_tree(
+            &previous.tap_root.join("Kandelo"),
+            &current.tap_root.join("Kandelo"),
+        );
+        current.run(Some(&previous_metadata_path));
+
+        let metadata: Value = load_json(&current.tap_root.join("Kandelo/metadata.json")).unwrap();
+        let package_names = metadata["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|package| package["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(package_names, vec!["hello"]);
     }
 
     #[test]

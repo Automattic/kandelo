@@ -8,18 +8,20 @@ ARCHES="wasm32"
 METADATA_PATH=""
 EXPECTED_CACHE_KEYS=""
 EXPECTED_ABI=""
+EXPECTED_BOTTLE_ROOT_URL=""
 FORCE=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-plan-matrix.sh --tap-root <tap-root> [--formulae <list|all>] [--arches <list>] [--metadata <path>] [--expected-cache-keys <path> --expected-abi <N>] [--force]
+usage: scripts/homebrew-plan-matrix.sh --tap-root <tap-root> [--formulae <list|all>] [--arches <list>] [--metadata <path>] [--expected-cache-keys <path> --expected-abi <N> --expected-bottle-root-url <url>] [--force]
 
 Lists may be comma, space, or newline separated. Output is a JSON array of
 {"formula": "...", "arch": "..."} entries.
 
 When --expected-cache-keys is provided, entries whose current successful tap
 metadata already carries the expected cache key under the exact expected ABI
-and release tag are skipped unless --force is set. The expected cache-key JSON may be either {"formula":"sha"} or
+and release tag and repository-rooted bottle URL are skipped unless --force is
+set. The expected cache-key JSON may be either {"formula":"sha"} or
 {"formula":{"wasm32":"sha","wasm64":"sha"}}.
 EOF
 }
@@ -32,6 +34,7 @@ while [ "$#" -gt 0 ]; do
     --metadata) METADATA_PATH="${2:-}"; shift 2 ;;
     --expected-cache-keys) EXPECTED_CACHE_KEYS="${2:-}"; shift 2 ;;
     --expected-abi) EXPECTED_ABI="${2:-}"; shift 2 ;;
+    --expected-bottle-root-url) EXPECTED_BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-plan-matrix.sh: unknown flag $1" >&2; usage; exit 2 ;;
@@ -67,8 +70,16 @@ if [ -n "$EXPECTED_CACHE_KEYS" ]; then
     echo "homebrew-plan-matrix.sh: --expected-abi is required with cache keys and must be a positive u32" >&2
     exit 2
   fi
+  if ! [[ "$EXPECTED_BOTTLE_ROOT_URL" =~ ^https://ghcr\.io/v2/[a-z0-9._-]+/[a-z0-9._/-]+$ ]] ||
+     [[ "$EXPECTED_BOTTLE_ROOT_URL" == */ ]]; then
+    echo "homebrew-plan-matrix.sh: --expected-bottle-root-url is required with cache keys and must be a GHCR v2 root" >&2
+    exit 2
+  fi
 elif [ -n "$EXPECTED_ABI" ]; then
   echo "homebrew-plan-matrix.sh: --expected-abi requires --expected-cache-keys" >&2
+  exit 2
+elif [ -n "$EXPECTED_BOTTLE_ROOT_URL" ]; then
+  echo "homebrew-plan-matrix.sh: --expected-bottle-root-url requires --expected-cache-keys" >&2
   exit 2
 fi
 
@@ -152,7 +163,8 @@ jq -c \
   --argjson metadata "$metadata_json" \
   --argjson expected "$expected_json" \
   --argjson force "$force_json" \
-  --arg expected_abi "$EXPECTED_ABI" '
+  --arg expected_abi "$EXPECTED_ABI" \
+  --arg expected_bottle_root_url "$EXPECTED_BOTTLE_ROOT_URL" '
   def expected_key($formula; $arch):
     if $expected == null then
       null
@@ -174,7 +186,12 @@ jq -c \
         ($metadata.packages // [])[]?
         | select(.name == $formula)
         | (.bottles // [])[]?
-        | select(.arch == $arch and ((.status // "success") == "success"))
+        | select(
+            .arch == $arch and ((.status // "success") == "success") and
+            (.sha256 | type) == "string" and
+            .url == ($expected_bottle_root_url + "/" + $formula +
+              "/blobs/sha256:" + .sha256)
+          )
         | .cache_key_sha // empty
       ][0] // null
     end;

@@ -14,6 +14,18 @@ fail() {
 
 metadata="$TMPDIR/metadata.json"
 missing="$TMPDIR/missing.json"
+formula="$TMPDIR/sqlite.rb"
+cat >"$formula" <<'RUBY'
+class Sqlite < Formula
+  desc "fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    rebuild 2
+    sha256 cellar: :any_skip_relocation, wasm64_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  end
+end
+RUBY
 cat >"$metadata" <<'JSON'
 {
   "kandelo_abi": 40,
@@ -29,6 +41,7 @@ JSON
 policy() {
   homebrew_sibling_bottle_policy \
     "$1" sqlite "$2" "$3" "$4" "$5" \
+    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core "$formula" \
     test-homebrew-sibling-bottle-policy.sh
 }
 
@@ -36,6 +49,14 @@ policy() {
   fail "missing metadata preserved a sibling bottle"
 [ "$(policy "$metadata" 3.50.2_1 1 2 40)" = preserve ] ||
   fail "matching metadata discarded a sibling bottle"
+sed 's#kandelo-dev/homebrew-tap-core#kandelo-dev/tap-core#' \
+  "$formula" >"$TMPDIR/old-root.rb"
+mv "$TMPDIR/old-root.rb" "$formula"
+[ "$(policy "$metadata" 3.50.2_1 1 2 40)" = discard ] ||
+  fail "old-root Formula preserved a sibling bottle across the namespace migration"
+sed 's#kandelo-dev/tap-core#kandelo-dev/homebrew-tap-core#' \
+  "$formula" >"$TMPDIR/repository-root.rb"
+mv "$TMPDIR/repository-root.rb" "$formula"
 [ "$(policy "$metadata" 3.50.3_1 1 2 40)" = discard ] ||
   fail "version transition preserved a sibling bottle"
 [ "$(policy "$metadata" 3.50.2_1 2 2 40)" = discard ] ||
@@ -89,17 +110,7 @@ fi
 tap="$TMPDIR/tap"
 mkdir -p "$tap/Formula" "$tap/Kandelo"
 cp "$metadata" "$tap/Kandelo/metadata.json"
-cat >"$tap/Formula/sqlite.rb" <<'RUBY'
-class Sqlite < Formula
-  desc "fixture"
-
-  bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/tap-core"
-    rebuild 2
-    sha256 cellar: :any_skip_relocation, wasm64_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  end
-end
-RUBY
+cp "$formula" "$tap/Formula/sqlite.rb"
 cp "$tap/Formula/sqlite.rb" "$TMPDIR/planned.rb"
 selected_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 jq -n --arg sha "$selected_sha" '{
@@ -110,7 +121,7 @@ jq -n --arg sha "$selected_sha" '{
       pkg_version: "3.50.2_1"
     },
     bottle: {
-      root_url: "https://ghcr.io/v2/kandelo-dev/tap-core",
+      root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
       cellar: "any_skip_relocation",
       rebuild: 2,
       tags: {wasm32_kandelo: {sha256: $sha}}
@@ -126,7 +137,7 @@ merge_args=(
   --release-tag bottles-abi-v40
   --bottle-json "$TMPDIR/bottle.json"
   --expected-sha256 "$selected_sha"
-  --expected-root-url https://ghcr.io/v2/kandelo-dev/tap-core
+  --expected-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core
   --expected-cellar any_skip_relocation
 )
 bash "$REPO_ROOT/scripts/homebrew-merge-bottle-json.sh" "${merge_args[@]}" >/dev/null

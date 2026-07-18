@@ -335,12 +335,13 @@ def formula_record(info: Any, expected_full_name: str, expected_name: str) -> di
 def capture(args: argparse.Namespace) -> None:
     repository = args.tap_repository
     require_string(repository, "tap repository", TAP_REPOSITORY)
+    normalized_repository = normalized_tap_name(repository)
     normalized_tap = selected_tap_name(args)
     require_string(args.tap_commit, "tap commit", COMMIT)
     require_string(args.formula, "formula", FORMULA_NAME)
     if args.arch not in ("wasm32", "wasm64"):
         fail(f"unsupported architecture: {args.arch}")
-    expected_root = f"https://ghcr.io/v2/{normalized_tap}"
+    expected_root = f"https://ghcr.io/v2/{normalized_repository}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
 
@@ -585,8 +586,9 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         fail("dependency provenance schema must be 2")
     if root["formula"] != args.formula or root["arch"] != args.arch:
         fail("dependency provenance formula or architecture does not match the build")
+    normalized_repository = normalized_tap_name(args.tap_repository)
     normalized_tap = selected_tap_name(args)
-    expected_root = f"https://ghcr.io/v2/{normalized_tap}"
+    expected_root = f"https://ghcr.io/v2/{normalized_repository}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
     if (

@@ -407,7 +407,8 @@ compose_publication_handoff() {
     "$kandelo_abi" "homebrew-publish-sidecars.sh"
   sibling_policy="$(homebrew_sibling_bottle_policy \
     "$previous_metadata" "$FORMULA" "$version" "$formula_revision" "$rebuild" \
-    "$kandelo_abi" "homebrew-publish-sidecars.sh")"
+    "$kandelo_abi" "$bottle_root" "$COMPOSE_ROOT/$formula_path" \
+    "homebrew-publish-sidecars.sh")"
 
   ruby "$KANDELO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$COMPOSE_ROOT/$formula_path" \
