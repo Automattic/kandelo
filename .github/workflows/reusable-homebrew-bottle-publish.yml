@@ -1215,12 +1215,14 @@ jobs:
         with:
           pattern: homebrew-oci-child-${{ matrix.formula }}-*-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-oci-children
+          merge-multiple: false
 
       - name: Download public child publication receipts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: homebrew-upload-receipt-${{ matrix.formula }}-*-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-child-publications
+          merge-multiple: false
 
       - name: Validate child layouts and public publication evidence without credentials
         shell: bash
@@ -1237,21 +1239,55 @@ jobs:
             }
           done
           cd kandelo
-          shopt -s nullglob
-          child_receipts=("$RUNNER_TEMP"/homebrew-oci-children/*/receipt.json)
-          [ "${#child_receipts[@]}" -gt 0 ] || {
-            echo "::error::no OCI child receipts were downloaded"; exit 1;
+          child_root="$RUNNER_TEMP/homebrew-oci-children"
+          publication_root="$RUNNER_TEMP/homebrew-child-publications"
+          child_paths="$RUNNER_TEMP/homebrew-index-child-paths.txt"
+          publication_paths="$RUNNER_TEMP/homebrew-index-publication-paths.txt"
+          bash scripts/homebrew-index-artifact-paths.sh \
+            --root "$child_root" --kind child \
+            --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --out "$child_paths"
+          bash scripts/homebrew-index-artifact-paths.sh \
+            --root "$publication_root" --kind publication \
+            --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --out "$publication_paths"
+          mapfile -d '' -t child_receipts <"$child_paths"
+          mapfile -d '' -t publication_receipts <"$publication_paths"
+          [ "${#child_receipts[@]}" -eq "${#publication_receipts[@]}" ] || {
+            echo "::error::OCI child and public receipt counts differ"; exit 1;
           }
+          declare -A downloaded_publications=()
+          declare -A used_publications=()
+          for publication in "${publication_receipts[@]}"; do
+            downloaded_publications["$publication"]=1
+          done
           : >"$RUNNER_TEMP/homebrew-index-child-args.txt"
           for receipt in "${child_receipts[@]}"; do
             child_root="$(dirname "$receipt")"
-            arch="$(jq -er '.arch' "$receipt")"
-            publication="$RUNNER_TEMP/homebrew-child-publications/homebrew-upload-receipt-${KANDELO_HOMEBREW_FORMULA}-${arch}-attempt-${GITHUB_RUN_ATTEMPT}/receipt.json"
-            [ -f "$publication" ] && [ ! -L "$publication" ] || {
-              echo "::error::missing public child publication receipt for $arch"; exit 1;
-            }
             bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py validate-child \
               --layout "$child_root/layout" --receipt "$receipt"
+            arch="$(jq -er '.arch' "$receipt")"
+            if [ "$receipt" != "$RUNNER_TEMP/homebrew-oci-children/receipt.json" ]; then
+              expected_receipt="$RUNNER_TEMP/homebrew-oci-children/homebrew-oci-child-${KANDELO_HOMEBREW_FORMULA}-${arch}-attempt-${GITHUB_RUN_ATTEMPT}/receipt.json"
+              [ "$receipt" = "$expected_receipt" ] || {
+                echo "::error::OCI child receipt path disagrees with its validated architecture"; exit 1;
+              }
+            fi
+            publication_candidates=()
+            for candidate in \
+              "$RUNNER_TEMP/homebrew-child-publications/receipt.json" \
+              "$RUNNER_TEMP/homebrew-child-publications/homebrew-upload-receipt-${KANDELO_HOMEBREW_FORMULA}-${arch}-attempt-${GITHUB_RUN_ATTEMPT}/receipt.json"; do
+              [ -n "${downloaded_publications[$candidate]+x}" ] && \
+                publication_candidates+=("$candidate")
+            done
+            [ "${#publication_candidates[@]}" -eq 1 ] || {
+              echo "::error::missing or ambiguous public child publication receipt for $arch"; exit 1;
+            }
+            publication="${publication_candidates[0]}"
+            [ -z "${used_publications[$publication]+x}" ] || {
+              echo "::error::public child publication receipt was reused"; exit 1;
+            }
+            used_publications["$publication"]=1
             bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py \
               validate-publication-receipt \
               --receipt "$publication" \
@@ -1263,6 +1299,9 @@ jobs:
             printf '%s\0%s\0' "$child_root/layout" "$receipt" \
               >>"$RUNNER_TEMP/homebrew-index-child-args.txt"
           done
+          [ "${#used_publications[@]}" -eq "${#publication_receipts[@]}" ] || {
+            echo "::error::an unmatched public child publication receipt was downloaded"; exit 1;
+          }
 
       - name: Import the existing public Homebrew version index anonymously
         id: existing-index
@@ -1280,9 +1319,13 @@ jobs:
             }
           done
           cd kandelo
-          first_receipt="$(find "$RUNNER_TEMP/homebrew-oci-children" -mindepth 2 -maxdepth 2 \
-            -name receipt.json -type f -print -quit)"
-          [ -n "$first_receipt" ] || { echo "::error::missing first child receipt"; exit 1; }
+          exec 3<"$RUNNER_TEMP/homebrew-index-child-args.txt"
+          IFS= read -r -d '' _first_layout <&3 && \
+            IFS= read -r -d '' first_receipt <&3 || {
+              exec 3<&-
+              echo "::error::missing first validated child receipt"; exit 1;
+            }
+          exec 3<&-
           top_ref="$(jq -er '.top_ref' "$first_receipt")"
           tap_repository="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           remote="ghcr.io/${tap_repository}/${KANDELO_HOMEBREW_FORMULA}"

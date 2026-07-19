@@ -4059,6 +4059,89 @@ assert_publisher_trust_contract() {
   ruby "$REPO_ROOT/scripts/check-homebrew-publish-workflow-trust.rb"
 }
 
+assert_index_artifact_download_topologies() {
+  local helper="$REPO_ROOT/scripts/homebrew-index-artifact-paths.sh"
+  local flat_child="$TMPDIR/index-artifacts-flat-child"
+  local flat_publication="$TMPDIR/index-artifacts-flat-publication"
+  local nested_child="$TMPDIR/index-artifacts-nested-child"
+  local nested_publication="$TMPDIR/index-artifacts-nested-publication"
+  local nested_single="$TMPDIR/index-artifacts-nested-single"
+  local ambiguous="$TMPDIR/index-artifacts-ambiguous"
+  local symlinked="$TMPDIR/index-artifacts-symlinked"
+  local empty="$TMPDIR/index-artifacts-empty"
+  local arch child_dir out publication_dir
+  local -a paths=()
+
+  mkdir -p "$flat_child/layout" "$flat_publication"
+  printf '{"arch":"wasm32"}\n' >"$flat_child/receipt.json"
+  printf '{"arch":"wasm32"}\n' >"$flat_publication/receipt.json"
+  out="$TMPDIR/index-artifacts-flat-child.paths"
+  bash "$helper" --root "$flat_child" --kind child --formula zlib \
+    --run-attempt 1 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 1 ] && [ "${paths[0]}" = "$flat_child/receipt.json" ] ||
+    fail "single pattern-matched child artifact was not accepted in its flattened layout"
+  out="$TMPDIR/index-artifacts-flat-publication.paths"
+  bash "$helper" --root "$flat_publication" --kind publication --formula zlib \
+    --run-attempt 1 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 1 ] && [ "${paths[0]}" = "$flat_publication/receipt.json" ] ||
+    fail "single pattern-matched publication artifact was not accepted in its flattened layout"
+
+  for arch in wasm32 wasm64; do
+    child_dir="$nested_child/homebrew-oci-child-zlib-${arch}-attempt-2"
+    publication_dir="$nested_publication/homebrew-upload-receipt-zlib-${arch}-attempt-2"
+    mkdir -p "$child_dir/layout" "$publication_dir"
+    printf '{"arch":"%s"}\n' "$arch" >"$child_dir/receipt.json"
+    printf '{"arch":"%s"}\n' "$arch" >"$publication_dir/receipt.json"
+  done
+  out="$TMPDIR/index-artifacts-nested-child.paths"
+  bash "$helper" --root "$nested_child" --kind child --formula zlib \
+    --run-attempt 2 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 2 ] &&
+    [ "${paths[0]}" = "$nested_child/homebrew-oci-child-zlib-wasm32-attempt-2/receipt.json" ] &&
+    [ "${paths[1]}" = "$nested_child/homebrew-oci-child-zlib-wasm64-attempt-2/receipt.json" ] ||
+    fail "multi-architecture child artifacts did not retain named-directory isolation"
+  out="$TMPDIR/index-artifacts-nested-publication.paths"
+  bash "$helper" --root "$nested_publication" --kind publication --formula zlib \
+    --run-attempt 2 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 2 ] &&
+    [ "${paths[0]}" = "$nested_publication/homebrew-upload-receipt-zlib-wasm32-attempt-2/receipt.json" ] &&
+    [ "${paths[1]}" = "$nested_publication/homebrew-upload-receipt-zlib-wasm64-attempt-2/receipt.json" ] ||
+    fail "multi-architecture publication artifacts did not retain named-directory isolation"
+
+  mkdir -p "$ambiguous/layout" \
+    "$ambiguous/homebrew-oci-child-zlib-wasm32-attempt-1/layout"
+  printf '{}\n' >"$ambiguous/receipt.json"
+  printf '{}\n' >"$ambiguous/homebrew-oci-child-zlib-wasm32-attempt-1/receipt.json"
+  if bash "$helper" --root "$ambiguous" --kind child --formula zlib \
+    --run-attempt 1 --out "$TMPDIR/index-artifacts-ambiguous.paths" >/dev/null 2>&1; then
+    fail "index artifact collector accepted mixed flattened and nested layouts"
+  fi
+
+  mkdir -p "$symlinked/layout" "$empty"
+  printf '{}\n' >"$TMPDIR/index-artifacts-real-receipt.json"
+  ln -s "$TMPDIR/index-artifacts-real-receipt.json" "$symlinked/receipt.json"
+  if bash "$helper" --root "$symlinked" --kind child --formula zlib \
+    --run-attempt 1 --out "$TMPDIR/index-artifacts-symlinked.paths" >/dev/null 2>&1; then
+    fail "index artifact collector accepted a symlinked receipt"
+  fi
+  if bash "$helper" --root "$empty" --kind publication --formula zlib \
+    --run-attempt 1 --out "$TMPDIR/index-artifacts-empty.paths" >/dev/null 2>&1; then
+    fail "index artifact collector accepted a missing publication receipt"
+  fi
+
+  mkdir -p "$nested_single/homebrew-upload-receipt-zlib-wasm32-attempt-1"
+  printf '{}\n' \
+    >"$nested_single/homebrew-upload-receipt-zlib-wasm32-attempt-1/receipt.json"
+  if bash "$helper" --root "$nested_single" --kind publication --formula zlib \
+    --run-attempt 1 --out "$TMPDIR/index-artifacts-nested-single.paths" >/dev/null 2>&1; then
+    fail "index artifact collector accepted an impossible nested single-artifact layout"
+  fi
+}
+
 assert_formula_composition_is_static_and_lossless() {
   local planned="$TMPDIR/formula-planned.rb"
   local current="$TMPDIR/formula-current.rb"
@@ -4632,6 +4715,7 @@ assert_matrix_skips_unchanged_cache_key
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-publisher-overlay-patch.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
+assert_index_artifact_download_topologies
 assert_sysroot_fingerprint_is_arch_specific
 assert_bottle_build_trusts_selected_tap
 assert_bottle_build_forces_same_tap_dependencies

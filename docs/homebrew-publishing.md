@@ -671,6 +671,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    serialize supported writers. Under that lock it validates every requested
    child layout and public child receipt, anonymously imports the current
    Homebrew top reference, and preserves a compatible sibling architecture. The
+   pinned artifact downloader extracts a single pattern match directly into the
+   requested directory but gives multiple matches separate artifact-name
+   directories. Index input discovery accepts exactly those flat-single and
+   nested-multiple layouts while keeping artifact merging disabled so wasm32 and
+   wasm64 `layout/` and `receipt.json` paths cannot collide. Mixed, unexpected,
+   symlinked, duplicate, or unmatched child/publication layouts fail closed.
+   Child validation occurs before the receipt architecture is trusted. The
    anonymous importer
    validates bounded top, child, config, and layer descriptors by digest before
    it starts the layer copy, confirms the mutable tag did not change during that

@@ -23,7 +23,7 @@ BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "45b3551a20a8dd1d545b0aefec5fc142c1f298d3ef9db44a021b62a36f8c1938"
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
 PUBLISHER_UPLOAD_DIGEST = "1023843652029512072c79e0ceb8f09283b60d520fc01fe01e7d92d90c178fb7"
-PUBLISHER_INDEX_DIGEST = "9cbffcbc9e880246b8e476cf0e4e76b210e544ef127cafc7c81ead8b059dd87f"
+PUBLISHER_INDEX_DIGEST = "9fe1633079f5bb32bb589ed941876ed6429a16ce66d70cf399a0727e98cb7752"
 PUBLISHER_VERIFY_DIGEST = "9d726b44d62982c080c2c8a95fb6a91772d476db8ccdeba207c82e4e4b71123c"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -1073,6 +1073,20 @@ def check_publisher(workflow)
           "name" => upload_receipt_name,
           "path" => "${{ runner.temp }}/homebrew-upload-receipt",
   }, "publisher receipt download contract changed")
+  index_child_download = named_step(index_steps, "Download immutable OCI child layouts")
+  check(index_child_download["uses"] == DOWNLOAD_ACTION && index_child_download["with"] == {
+    "pattern" => "homebrew-oci-child-${{ matrix.formula }}-*-attempt-${{ github.run_attempt }}",
+    "path" => "${{ runner.temp }}/homebrew-oci-children",
+    "merge-multiple" => false,
+  }, "publisher version-index child artifact download contract changed")
+  index_receipt_download = named_step(
+    index_steps, "Download public child publication receipts"
+  )
+  check(index_receipt_download["uses"] == DOWNLOAD_ACTION && index_receipt_download["with"] == {
+    "pattern" => "homebrew-upload-receipt-${{ matrix.formula }}-*-attempt-${{ github.run_attempt }}",
+    "path" => "${{ runner.temp }}/homebrew-child-publications",
+    "merge-multiple" => false,
+  }, "publisher version-index publication artifact download contract changed")
   index_publication_upload = named_step(index_steps, "Upload public Homebrew version-index evidence")
   check(index_publication_upload["uses"] == UPLOAD_ACTION &&
         index_publication_upload["with"] == {
@@ -2294,12 +2308,37 @@ def check_publisher(workflow)
   index_validate_run = index_validate.fetch("run")
   [
     "credential-free index input validator received $secret_name",
+    "scripts/homebrew-index-artifact-paths.sh",
+    '--kind child', '--kind publication',
+    "OCI child and public receipt counts differ",
+    "missing or ambiguous public child publication receipt",
+    "public child publication receipt was reused",
     "scripts/homebrew-oci-layout.py validate-child",
     "validate-publication-receipt", '--kind child',
     'printf \'%s\\0%s\\0\'',
   ].each do |fragment|
     check(index_validate_run.include?(fragment),
           "publisher version-index input validation lacks #{fragment}")
+  end
+  child_validation_index = index_validate_run.index(
+    "scripts/homebrew-oci-layout.py validate-child"
+  )
+  child_arch_index = index_validate_run.index('arch="$(jq -er \'.arch\' "$receipt")"')
+  check(child_validation_index && child_arch_index && child_validation_index < child_arch_index,
+        "publisher trusts a child receipt architecture before validating its OCI layout")
+  topology_helper = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-index-artifact-paths.sh")
+  )
+  [
+    'if [ -e "$ROOT/receipt.json" ] || [ -L "$ROOT/receipt.json" ]',
+    'fail "flattened receipt is not a regular file"',
+    'fail "nested artifact directory has an unexpected name"',
+    'fail "nested receipt is not a regular file"',
+    'fail "nested artifact download must contain multiple artifacts"',
+    'fail "artifact download has an invalid receipt count"',
+  ].each do |fragment|
+    check(topology_helper.include?(fragment),
+          "publisher index artifact topology helper lacks #{fragment}")
   end
   index_import_run = index_import.fetch("run")
   check(index_import.keys.sort == %w[env id name run shell] &&
@@ -3437,6 +3476,15 @@ def self_test(publisher, maintenance, repository_canary)
         "Validate child layouts and public publication evidence without credentials"
       )
       step["run"] = step.fetch("run").sub("validate-publication-receipt", "validate-child-receipt")
+    },
+    "flattened single index artifact bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index",
+        "Validate child layouts and public publication evidence without credentials"
+      )
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/homebrew-index-artifact-paths.sh", "true"
+      )
     },
     "unbounded existing index descriptor" => lambda { |w|
       step = mutate_named_step(
