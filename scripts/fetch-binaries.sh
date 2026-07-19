@@ -15,8 +15,12 @@
 # places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
 # into the cache. Browser demos hardcode these paths.
 #
-# Packages without `build.toml` (kernel-test-programs, kind=source,
-# libraries that ship only as link-time inputs) are skipped here.
+# Packages without `build.toml` (kernel-test-programs, libraries
+# that ship only as link-time inputs) are skipped here, as are all
+# `kind = "source"` packages — those are never published as binary
+# archives and cannot source-build under `--fetch-only`, even the
+# ones that carry a build.toml purely for its `inputs` cache-key
+# list (e.g. wayland-protocols).
 # Kernel and userspace now have build.toml entries, so published
 # release indexes can populate `binaries/kernel.wasm` and
 # `binaries/userspace.wasm` for fresh checkouts and npm package
@@ -178,11 +182,21 @@ SKIPPED=0
 read_package_toml() {
     local toml="$1"
     awk '
-        BEGIN { in_arches = 0; arches = "" }
+        BEGIN { in_arches = 0; arches = ""; kind = ""; in_root = 1 }
         /^\[/ {
             # New TOML section header: leave any in-progress
-            # multi-line "arches = [" capture.
+            # multi-line "arches = [" capture, and leave the
+            # root table so a nested `kind = ...` is not mistaken
+            # for the top-level manifest kind.
             in_arches = 0
+            in_root = 0
+        }
+        in_root == 1 && /^kind[[:space:]]*=/ {
+            line = $0
+            sub(/^kind[[:space:]]*=[[:space:]]*/, "", line)
+            gsub(/["[:space:]]+/, "", line)
+            kind = line
+            next
         }
         /^arches[[:space:]]*=[[:space:]]*\[/ {
             line = $0
@@ -219,6 +233,7 @@ read_package_toml() {
             # `wasm32 wasm64`). Without quoting, bash parses the
             # second arch as a command name.
             print "ARCHES=\"" arches "\""
+            print "KIND=\"" kind "\""
         }
     ' "$toml"
 }
@@ -233,10 +248,24 @@ for pkg_dir in "$LIBS_DIR"/*/; do
         continue
     fi
 
+    KIND=""
     eval "$(read_package_toml "$toml")"
 
     if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
         echo "fetch-binaries: skip $pkg (WASM_POSIX_FETCH_SKIP_PKGS)"
+        SKIPPED=$((SKIPPED + 1))
+        continue
+    fi
+
+    # `kind = "source"` packages are never published as binary
+    # archives: consumers stage their vendored source tree at
+    # build time. Some (e.g. wayland-protocols) still carry a
+    # build.toml to satisfy the manifest schema, so the build.toml
+    # test below would not catch them. Skip by kind explicitly —
+    # in `--fetch-only` mode the resolver refuses to run a source
+    # build script, so resolving one here would fail the run.
+    if [ "$KIND" = "source" ]; then
+        echo "fetch-binaries: skip $pkg (kind=source)"
         SKIPPED=$((SKIPPED + 1))
         continue
     fi

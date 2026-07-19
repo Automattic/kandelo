@@ -26,6 +26,7 @@ import type {
     CentralizedThreadInitMessage,
     WorkerToHostMessage,
 } from "../../../../host/src/worker-protocol";
+import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 import { ThreadPageAllocator } from "../../../../host/src/thread-allocator";
 
 const CH_TOTAL_SIZE = 72 + 65536;
@@ -217,7 +218,7 @@ async function main() {
 
                 kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
-                const FORK_BUF_SIZE = 16384;
+                const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
                 const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
                 const childInitData: CentralizedWorkerInitMessage = {
                     type: "centralized_init",

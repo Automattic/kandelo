@@ -690,6 +690,34 @@ function buildImportObject(
 /** Size of the fork save buffer used by wpk_fork_* instrumentation */
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
+/**
+ * The instrumented binary pushes fork frames with no bounds check, so a stack
+ * deeper than the buffer spills into the adjacent syscall channel and the child
+ * later traps on rewind with a cryptic `call_indirect` signature mismatch, far
+ * from the cause. After unwind, `current_pos` (the header word at `forkBufAddr`)
+ * holds the peak — catch the overrun here and name it. Shared → both hosts.
+ */
+export function assertForkBufferWithinBounds(
+  memory: WebAssembly.Memory,
+  forkBufAddr: number,
+  ptrWidth: 4 | 8,
+  pid: number,
+): void {
+  const view = new DataView(memory.buffer);
+  const currentPos = ptrWidth === 8
+    ? Number(view.getBigUint64(forkBufAddr, true))
+    : view.getUint32(forkBufAddr, true);
+  if (currentPos > FORK_BUF_SIZE) {
+    throw new Error(
+      `fork save buffer overflow (pid=${pid}): peak current_pos=${currentPos} ` +
+      `exceeds FORK_SAVE_BUFFER_SIZE=${FORK_BUF_SIZE}. The fork call stack is too ` +
+      `deep for the save buffer; frames spilled into the syscall channel. Raise ` +
+      `FORK_SAVE_BUFFER_SIZE in crates/shared/src/lib.rs (it may grow up to one ` +
+      `64 KB fork-save page) and regenerate the ABI snapshot.`,
+    );
+  }
+}
+
 // Slot below forkBufAddr that stores the head pointer of the dlopen
 // archive linked list. Fork's memcpy carries the parent's archive into
 // the child intact; the child walks it to replay each dlopen before
@@ -1021,6 +1049,7 @@ export async function centralizedWorkerMain(
           if (forkState === 1) {
             // Unwind completed (fork) — finalize and send SYS_FORK.
             unwindEnd();
+            assertForkBufferWithinBounds(memory, forkBufAddr, ptrWidth, pid);
 
             // Send SYS_FORK through the channel now that memory has the
             // fork save buffer populated (saved_globals + frames).
@@ -1831,6 +1860,7 @@ export async function centralizedThreadWorkerMain(
         const forkState = getState();
         if (forkState === 1) {
           unwindEnd();
+          assertForkBufferWithinBounds(memory, forkBufAddr, ptrWidth, pid);
           const childPid = sendForkSyscall(memory, channelOffset);
           if (childPid < 0) {
             throw new Error(`Fork failed: errno=${-childPid}`);
