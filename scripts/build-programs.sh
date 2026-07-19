@@ -541,9 +541,23 @@ for src in "$REPO_ROOT/programs/"*.c; do
         sdl2_*.c)
             # SDL2's KMSDRM backend calls into gbm and libdrm, so both
             # follow libSDL2.a in the link order.
+            #
+            # libwayland-client + libffi: SDL2 is built with
+            # `--enable-video-wayland --disable-wayland-shared`, so libSDL2.a's
+            # video bootstrap array lists Wayland_bootstrap BEFORE
+            # KMSDRM_bootstrap and direct-references wl_display_connect (no
+            # dlopen). SDL_Init(VIDEO) probes Wayland first: the REAL
+            # wl_display_connect(NULL) returns NULL in this env (no
+            # XDG_RUNTIME_DIR / compositor), so SDL falls through to KMSDRM —
+            # the real-hardware auto-select path. Without these archives
+            # wl_display_connect resolves to the host's throw-on-call stub and
+            # the probe aborts the program. libffi backs libwayland-client's
+            # wl_closure marshalling.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libffi.a"
             ;;
         posix-timer-thread.c)
             # Keep the fixture's pthread capacity small so its timer-helper
