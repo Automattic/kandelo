@@ -864,18 +864,34 @@ unless global_dependencies(target).empty?
   raise "selected Kandelo target Formula retained native Linux global dependencies"
 end
 
-nonmatching = Formula.new(
+same_tap_dependency = Formula.new(
   name: "zlib",
   full_name: "kandelo-dev/tap-core/zlib",
 )
-unless global_dependencies(nonmatching) == [:bubblewrap]
-  raise "protected target plan changed Linux global dependencies for another Formula"
+unless global_dependencies(same_tap_dependency).empty?
+  raise "recursive same-tap Formula retained native Linux global dependencies"
+end
+
+other_tap = Formula.new(
+  name: "zlib",
+  full_name: "example/other/zlib",
+)
+unless global_dependencies(other_tap) == [:bubblewrap]
+  raise "protected publisher plan changed Linux global dependencies for another tap"
+end
+
+native = Formula.new(name: "cmake", full_name: "homebrew/core/cmake")
+unless global_dependencies(native) == [:bubblewrap]
+  raise "protected publisher plan changed native Homebrew global dependencies"
 end
 
 plan_path.delete
-native = Formula.new(name: "cmake", full_name: "homebrew/core/cmake")
-unless global_dependencies(native) == [:bubblewrap]
-  raise "native Formula without a publisher plan lost Linux global dependencies"
+inactive_target = Formula.new(
+  name: "hello",
+  full_name: "kandelo-dev/tap-core/hello",
+)
+unless global_dependencies(inactive_target) == [:bubblewrap]
+  raise "Kandelo Formula without a publisher plan lost Linux global dependencies"
 end
 
 plan_path.write(JSON.generate(plan))

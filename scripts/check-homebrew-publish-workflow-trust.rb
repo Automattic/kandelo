@@ -1575,6 +1575,7 @@ def check_publisher(workflow)
     "expected_tap_git_head: tap_git_revision",
     "FileUtils.touch(bottle_path, mtime: tab_source_modified_time)",
     "def self.dependency_plan(formula = nil, require_match: true)",
+    "def self.selected_tap_formula?(formula)",
     'PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"',
     "plan_path = HOMEBREW_PREFIX/PLAN_FILENAME",
     "plan = KandeloPublisher.dependency_plan(formula)",
@@ -1582,7 +1583,7 @@ def check_publisher(workflow)
     "dependency.build? && !dependency.implicit?",
     "direct_native_build_dependencies.sort_by(&:name)",
     "diff --git a/Library/Homebrew/extend/os/linux/formula.rb b/Library/Homebrew/extend/os/linux/formula.rb",
-    "return if KandeloPublisher.dependency_plan(self, require_match: false)",
+    "return if KandeloPublisher.selected_tap_formula?(self)",
     "diff --git a/Library/Homebrew/extend/os/linux/sandbox.rb b/Library/Homebrew/extend/os/linux/sandbox.rb",
     "return if KandeloPublisher.active?",
     "diff --git a/Library/Homebrew/diagnostic.rb b/Library/Homebrew/diagnostic.rb",
@@ -1611,6 +1612,9 @@ def check_publisher(workflow)
     "failed bottle did not restore the exact installed receipt bytes",
     "publisher accepted mismatched archived receipt provenance",
     "ordinary Homebrew receipt behavior changed without a protected publisher plan",
+    "recursive same-tap Formula retained native Linux global dependencies",
+    "protected publisher plan changed Linux global dependencies for another tap",
+    "protected publisher plan changed native Homebrew global dependencies",
   ].each do |fragment|
     check(publisher_patch_test.include?(fragment),
           "publisher overlay regression test lacks #{fragment}")

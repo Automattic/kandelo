@@ -298,6 +298,12 @@ while a protected Kandelo target plan is active. A usable Bubblewrap already
 provided by the host can still be detected and used, but Homebrew cannot fetch
 unplanned native code into the target Cellar after isolation begins. Native
 Homebrew has no target plan and retains its normal sandbox dependency behavior.
+The publisher also suppresses Homebrew's Linux-only global dependencies while
+it loads any Formula from the selected Kandelo tap. Homebrew recursively loads
+same-tap dependencies when it writes the target receipt; without this
+tap-scoped guard, native Bubblewrap or libcap could be recorded as a Kandelo
+guest runtime dependency. Formulae from other taps and the separate native
+Homebrew prefix retain Homebrew's normal Linux dependency behavior.
 The dedicated build identity, transient systemd service, `NoNewPrivileges`,
 immutable inputs, and teardown checks remain the publisher's primary process
 boundary when the host cannot create a rootless Bubblewrap sandbox. The builder

@@ -28,9 +28,10 @@ authority. When the isolated publisher supplies its protected static plan,
 populate the build child's environment with only the matching direct native
 build dependencies. Do not recursively expand them. Every selected dependency
 must already be present as a proxy keg, so a missing proxy still fails closed.
-Use that same protected plan to suppress Linux global dependencies only for the
-identified Kandelo target Formula. Other Formulae and the separate native
-Homebrew prefix retain normal Linux dependency resolution.
+Use that same protected plan to suppress Linux global dependencies for the
+identified Kandelo target and every Formula in its selected tap while Homebrew
+derives the recursive target receipt. Formulae from other taps and the separate
+native Homebrew prefix retain normal Linux dependency resolution.
 While that plan is active, also prevent `brew test` from automatically pouring
 Bubblewrap into the target Cellar. A usable host Bubblewrap can still be used,
 but an unavailable sandbox cannot bypass the publisher's reviewed native plan.
@@ -52,9 +53,9 @@ Homebrew keeps its normal repository, trust, and dependency behavior.
  Library/Homebrew/diagnostic.rb              |  1 +
  Library/Homebrew/extend/os/linux/formula.rb |  4 ++++
  Library/Homebrew/extend/os/linux/sandbox.rb |  4 +++-
- Library/Homebrew/kandelo_publisher.rb       | 98 +++++++++++++++++++++++++++++
+ Library/Homebrew/kandelo_publisher.rb       | 105 ++++++++++++++++++++++++++++
  Library/Homebrew/trust.rb                   |  1 +
- 7 files changed, 142 insertions(+), 2 deletions(-)
+ 7 files changed, 149 insertions(+), 2 deletions(-)
 
 diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb
 index be833176c0..465cf63438 100644
@@ -171,7 +172,7 @@ index dbe848ba51..ea87cff22e 100644
 
        sig { params(spec: SoftwareSpec).void }
        def add_global_deps_to_spec(spec)
-+        return if KandeloPublisher.dependency_plan(self, require_match: false)
++        return if KandeloPublisher.selected_tap_formula?(self)
 +
          @global_deps ||= T.let(nil, T.nilable(T::Array[Dependency]))
          @global_deps ||= begin
@@ -195,7 +196,7 @@ new file mode 100644
 index 0000000000..ff90519c8
 --- /dev/null
 +++ b/Library/Homebrew/kandelo_publisher.rb
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,105 @@
 +# typed: false
 +# frozen_string_literal: true
 +
@@ -215,6 +216,13 @@ index 0000000000..ff90519c8
 +
 +  def self.active?
 +    !dependency_plan(nil).nil?
++  end
++
++  def self.selected_tap_formula?(formula)
++    plan = dependency_plan(nil)
++    return false if plan.nil?
++
++    formula.full_name.start_with?("#{plan.fetch("tap")}/")
 +  end
 +
 +  def self.reproducible_gnu_tar
