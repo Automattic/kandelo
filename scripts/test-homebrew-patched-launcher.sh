@@ -620,7 +620,7 @@ native_lifecycle_work="$TMPDIR/native-lifecycle-work"
 NATIVE_TEST_BASE="$(mktemp -d /tmp/k.XXXXXX)"
 NATIVE_TEST_BASE="$(cd "$NATIVE_TEST_BASE" && pwd -P)"
 native_base="$NATIVE_TEST_BASE"
-native_prefix="$native_base/p"
+native_prefix="$(homebrew_patched_launcher_native_prefix_path "$native_base")"
 native_cache="$native_base/c"
 native_temp="$native_base/t"
 native_config="$native_base/g"
@@ -661,8 +661,8 @@ long_native_status="$?"
 set -e
 [ "$long_native_status" -eq 2 ] ||
   fail "native Homebrew accepted a prefix too long for bottle relocation"
-[[ "$long_native_error" == *"too long for fixed-prefix Linuxbrew bottle relocation"* ]] ||
-  fail "long native prefix failure did not identify the relocation boundary"
+[[ "$long_native_error" == *"must exactly match fixed-prefix Linuxbrew bottle path lengths"* ]] ||
+  fail "long native prefix failure did not identify the exact relocation boundary"
 for rejected_native_root in "$long_native_prefix" "$long_native_cache" \
   "$long_native_temp" "$long_native_config" "$long_native_home"; do
   [ ! -e "$rejected_native_root" ] ||
@@ -670,6 +670,22 @@ for rejected_native_root in "$long_native_prefix" "$long_native_cache" \
 done
 [ -z "$HOMEBREW_PATCHED_NATIVE_PREFIX" ] ||
   fail "long native prefix rejection changed launcher state"
+short_native_prefix="$native_base/q"
+set +e
+short_native_error="$(homebrew_patched_launcher_prepare_native_prefix \
+  "$short_native_prefix" "$TMPDIR/short-native-cache" \
+  "$TMPDIR/short-native-temp" "$TMPDIR/short-native-config" \
+  "$TMPDIR/short-native-home" 2>&1)"
+short_native_status="$?"
+set -e
+[ "$short_native_status" -eq 2 ] ||
+  fail "native Homebrew accepted a prefix shorter than the bottle build prefix"
+[[ "$short_native_error" == *"must exactly match fixed-prefix Linuxbrew bottle path lengths"* ]] ||
+  fail "short native prefix failure did not identify the exact relocation boundary"
+[ ! -e "$short_native_prefix" ] ||
+  fail "short native prefix rejection created state before validation"
+[ -z "$HOMEBREW_PATCHED_NATIVE_PREFIX" ] ||
+  fail "short native prefix rejection changed launcher state"
 homebrew_patched_launcher_prepare_native_prefix \
   "$native_prefix" "$native_cache" "$native_temp" "$native_config" "$native_home"
 native_base_mode="$(stat -c %a "$native_base" 2>/dev/null || stat -f %Lp "$native_base")"
@@ -700,7 +716,11 @@ GITHUB_ACTIONS=false homebrew_patched_launcher_run_native install-native-fixture
 GITHUB_ACTIONS=false homebrew_patched_launcher_run_native install-native-fixture badlink
 GITHUB_ACTIONS=false homebrew_patched_launcher_run_native install-native-fixture abslink
 GITHUB_ACTIONS=false homebrew_patched_launcher_run_native create-native-relative-link \
-  badlink ../../../cmake/1.0/bin/cmake cross-rack
+  cmake cmake-cross-final cmake-cross
+GITHUB_ACTIONS=false homebrew_patched_launcher_run_native create-native-relative-link \
+  cmake ../../../ninja/1.0/bin/ninja cmake-cross-final
+GITHUB_ACTIONS=false homebrew_patched_launcher_run_native create-native-relative-link \
+  badlink ../../../../../../untrusted-native-tool relative-escape
 GITHUB_ACTIONS=false homebrew_patched_launcher_run_native create-native-relative-link \
   abslink /tmp/untrusted-native-tool absolute-escape
 [ -d "$native_prefix/Cellar/cmake/1.0" ] || fail "native Formula was not installed"
@@ -711,7 +731,7 @@ if GITHUB_ACTIONS=false homebrew_patched_launcher_run_native --prefix >/dev/null
 fi
 
 if homebrew_patched_launcher_bridge_native_formula badlink >/dev/null 2>&1; then
-  fail "native Formula proxy accepted a relative symlink that changes meaning"
+  fail "native Formula proxy accepted a relative symlink outside the native prefix"
 fi
 [ ! -e "$prefix/Cellar/badlink" ] && [ ! -L "$prefix/Cellar/badlink" ] && \
   [ ! -e "$prefix/opt/badlink" ] && [ ! -L "$prefix/opt/badlink" ] ||
@@ -788,6 +808,17 @@ native_proxy_opt="$prefix/opt/cmake"
 [ "$("$native_proxy_opt/bin/cmake")" = "native fixture" ] && \
   [ "$("$native_proxy_opt/bin/cmake-link")" = "native fixture" ] ||
   fail "native Formula proxy did not preserve executable links"
+[ -L "$native_proxy_opt/bin/cmake-cross" ] && \
+  [ -L "$native_proxy_opt/bin/cmake-cross-final" ] && \
+  [ "$(readlink "$native_proxy_opt/bin/cmake-cross")" = \
+    "$native_prefix/Cellar/ninja/1.0/bin/ninja" ] && \
+  [ "$(readlink "$native_proxy_opt/bin/cmake-cross-final")" = \
+    "$native_prefix/Cellar/ninja/1.0/bin/ninja" ] && \
+  [ "$("$native_proxy_opt/bin/cmake-cross")" = "native fixture" ] ||
+  fail "native Formula proxy did not preserve links into its sealed native closure"
+[ ! -e "$prefix/Cellar/ninja" ] && [ ! -L "$prefix/Cellar/ninja" ] && \
+  [ ! -e "$prefix/opt/ninja" ] && [ ! -L "$prefix/opt/ninja" ] ||
+  fail "native Formula proxy exposed a transitive native dependency in the target prefix"
 [ "$(readlink "$native_proxy_opt")" = "../Cellar/cmake/1.0" ] && \
   [ "$(cd "$native_proxy_opt" && pwd -P)" = "$native_proxy_keg" ] ||
   fail "native Formula opt link is not canonical"
@@ -1032,7 +1063,9 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   ISOLATION_NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"
   ISOLATION_NATIVE_BASE="$(cd "$ISOLATION_NATIVE_BASE" && pwd -P)"
   isolated_native_base="$ISOLATION_NATIVE_BASE"
-  isolated_native_prefix="$isolated_native_base/p"
+  isolated_native_prefix="$(
+    homebrew_patched_launcher_native_prefix_path "$isolated_native_base"
+  )"
   isolated_native_cache="$isolated_native_base/c"
   isolated_native_temp="$isolated_native_base/t"
   isolated_native_config="$isolated_native_base/g"
@@ -1340,6 +1373,10 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   homebrew_patched_launcher_run_native remove-native-entry unsafe-fifo
   homebrew_patched_launcher_run_native install-native-fixture cmake
   homebrew_patched_launcher_run_native install-native-fixture ninja
+  homebrew_patched_launcher_run_native create-native-relative-link \
+    cmake cmake-cross-final cmake-cross
+  homebrew_patched_launcher_run_native create-native-relative-link \
+    cmake ../../../ninja/1.0/bin/ninja cmake-cross-final
   homebrew_patched_launcher_seal_native_prefix
   [ "$(stat -c '%u:%g:%a' "$isolated_native_prefix")" = "0:0:555" ] ||
     fail "sealed native prefix ownership or mode is unsafe"
@@ -1369,6 +1406,19 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   target_proxy_keg="$target_proxy_rack/1.0"
   target_proxy_opt="$isolated_prefix/opt/cmake"
   homebrew_patched_launcher_bridge_native_formula cmake
+  [ -L "$target_proxy_opt/bin/cmake-cross" ] && \
+    [ -L "$target_proxy_opt/bin/cmake-cross-final" ] && \
+    [ "$(readlink "$target_proxy_opt/bin/cmake-cross")" = \
+      "$isolated_native_prefix/Cellar/ninja/1.0/bin/ninja" ] && \
+    [ "$(readlink "$target_proxy_opt/bin/cmake-cross-final")" = \
+      "$isolated_native_prefix/Cellar/ninja/1.0/bin/ninja" ] && \
+    [ "$("$target_proxy_opt/bin/cmake-cross")" = "native fixture" ] ||
+    fail "isolated native Formula proxy did not preserve its sealed native closure"
+  [ ! -e "$isolated_prefix/Cellar/ninja" ] && \
+    [ ! -L "$isolated_prefix/Cellar/ninja" ] && \
+    [ ! -e "$isolated_prefix/opt/ninja" ] && \
+    [ ! -L "$isolated_prefix/opt/ninja" ] ||
+    fail "isolated native Formula proxy exposed its transitive closure"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-native-target-boundary \
     "$isolated_native_prefix" "$target_proxy_rack" "$target_proxy_keg" \
     "$target_proxy_opt" "../Cellar/cmake/1.0" "$native_runner" \

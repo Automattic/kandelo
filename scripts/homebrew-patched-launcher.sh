@@ -794,6 +794,35 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_LAUNCHER=""
 }
 
+# Return a child of BASE whose byte length exactly matches Linuxbrew's bottle
+# prefix. Homebrew's fixed-prefix binary relocation pads shorter replacements
+# with NUL bytes; some runtimes (notably Perl) expose those bytes through their
+# compiled search paths instead of treating them as harmless string padding.
+homebrew_patched_launcher_native_prefix_path() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_native_prefix_path: expected BASE" >&2
+    return 2
+  fi
+  local base realpath_bin bottle_prefix=/home/linuxbrew/.linuxbrew
+  local base_bytes bottle_prefix_bytes suffix_bytes suffix
+  realpath_bin="$(command -v realpath || true)"
+  [ -n "$realpath_bin" ] && [ -x "$realpath_bin" ] || {
+    echo "homebrew-patched-launcher: realpath is required to select the native prefix" >&2
+    return 2
+  }
+  base="$("$realpath_bin" -m -- "$1")" || return 2
+  base_bytes="$(LC_ALL=C printf '%s' "$base" | wc -c | tr -d '[:space:]')"
+  bottle_prefix_bytes="$(LC_ALL=C printf '%s' "$bottle_prefix" | wc -c | tr -d '[:space:]')"
+  suffix_bytes=$((bottle_prefix_bytes - base_bytes - 1))
+  if [ "$suffix_bytes" -lt 1 ]; then
+    echo "homebrew-patched-launcher: native prefix base leaves no room for an exact Linuxbrew relocation path: $base" >&2
+    return 2
+  fi
+  printf -v suffix '%*s' "$suffix_bytes" ''
+  suffix="${suffix// /p}"
+  printf '%s/%s\n' "$base" "$suffix"
+}
+
 # Give native Homebrew its own prefix while reusing the exact reviewed source
 # overlay. Host Formulae and their recursive closure never occupy the target
 # Cellar, so a native dependency may share a short name with the Kandelo target.
@@ -893,15 +922,17 @@ homebrew_patched_launcher_prepare_native_prefix() {
       esac
     done
   done
-  # Linuxbrew bottles can rewrite their fixed build prefix only when the
-  # destination strings fit in the bytes already reserved by the bottle.
+  # A shorter binary replacement is NUL-padded by Homebrew. That is acceptable
+  # for many native tools but corrupts compiled path arrays in runtimes such as
+  # Perl, which then surface the padding as part of @INC. Use the exact build
+  # prefix length so native bottles need neither padding nor truncation.
   native_prefix_bytes="$(LC_ALL=C printf '%s' "${native_roots[0]}" | wc -c | tr -d '[:space:]')"
   native_cellar_bytes="$(LC_ALL=C printf '%s' "${native_roots[0]}/Cellar" | wc -c | tr -d '[:space:]')"
   bottle_prefix_bytes="$(LC_ALL=C printf '%s' /home/linuxbrew/.linuxbrew | wc -c | tr -d '[:space:]')"
   bottle_cellar_bytes="$(LC_ALL=C printf '%s' /home/linuxbrew/.linuxbrew/Cellar | wc -c | tr -d '[:space:]')"
-  if [ "$native_prefix_bytes" -gt "$bottle_prefix_bytes" ] ||
-     [ "$native_cellar_bytes" -gt "$bottle_cellar_bytes" ]; then
-    echo "homebrew-patched-launcher: native prefix is too long for fixed-prefix Linuxbrew bottle relocation: ${native_roots[0]}" >&2
+  if [ "$native_prefix_bytes" -ne "$bottle_prefix_bytes" ] ||
+     [ "$native_cellar_bytes" -ne "$bottle_cellar_bytes" ]; then
+    echo "homebrew-patched-launcher: native prefix must exactly match fixed-prefix Linuxbrew bottle path lengths: ${native_roots[0]}" >&2
     return 2
   fi
   for path in "${native_roots[@]}"; do
@@ -1056,6 +1087,90 @@ homebrew_patched_launcher_seal_native_prefix() {
   HOMEBREW_PATCHED_NATIVE_SEALED=1
 }
 
+# Preserve relative links from a direct native Formula into its recursive
+# closure without copying that closure into the target Cellar. The source
+# prefix has already been sealed root-owned and read-only, so an absolute link
+# to the exact resolved source is stable for the remainder of Formula execution.
+homebrew_patched_launcher_rewrite_native_bridge_links() {
+  if [ "$#" -ne 2 ]; then
+    echo "homebrew_patched_launcher_rewrite_native_bridge_links: expected NATIVE_KEG TARGET_KEG" >&2
+    return 2
+  fi
+  local native_keg="$1" target_keg="$2"
+  local rewrite_bash rewrite_find rewrite_ln rewrite_readlink rewrite_realpath rewrite_rm
+  local rewrite_script
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    rewrite_bash=/usr/bin/bash
+    rewrite_find=/usr/bin/find
+    rewrite_ln=/usr/bin/ln
+    rewrite_readlink=/usr/bin/readlink
+    rewrite_realpath=/usr/bin/realpath
+    rewrite_rm=/usr/bin/rm
+  else
+    rewrite_bash="$(command -v bash)"
+    rewrite_find="$(command -v find)"
+    rewrite_ln="$(command -v ln)"
+    rewrite_readlink="$(command -v readlink)"
+    rewrite_realpath="$(command -v realpath)"
+    rewrite_rm="$(command -v rm)"
+  fi
+  rewrite_script='
+    set -euo pipefail
+    native_keg="$1"
+    target_keg="$2"
+    native_prefix="$3"
+    find_bin="$4"
+    ln_bin="$5"
+    readlink_bin="$6"
+    realpath_bin="$7"
+    rm_bin="$8"
+    while IFS= read -r -d "" link; do
+      target="$("$readlink_bin" "$link")"
+      [[ "$target" != /* ]] || continue
+      resolved="$("$realpath_bin" -m -- "${link%/*}/$target")"
+      case "$resolved" in
+        "$native_keg"|"$native_keg"/*) continue ;;
+        "$native_prefix"|"$native_prefix"/*)
+          [ -e "$resolved" ] || {
+            echo "homebrew-patched-launcher: native Formula cross-keg link is unresolved: $link -> $target" >&2
+            exit 1
+          }
+          ;;
+        *)
+          echo "homebrew-patched-launcher: native Formula cross-keg link escaped after validation: $link -> $target" >&2
+          exit 1
+          ;;
+      esac
+      case "$link" in
+        "$native_keg"/*) relative="${link#"$native_keg"/}" ;;
+        *)
+          echo "homebrew-patched-launcher: native Formula link left its selected keg: $link" >&2
+          exit 1
+          ;;
+      esac
+      target_link="$target_keg/$relative"
+      [ -L "$target_link" ] && [ "$("$readlink_bin" "$target_link")" = "$target" ] || {
+        echo "homebrew-patched-launcher: copied native Formula link differs from its sealed source: $relative" >&2
+        exit 1
+      }
+      "$rm_bin" -f -- "$target_link"
+      "$ln_bin" -s -- "$resolved" "$target_link"
+    done < <("$find_bin" "$native_keg" -xdev -type l -print0)
+  '
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- "$rewrite_bash" -c "$rewrite_script" \
+      kandelo-native-bridge-link-rewrite \
+      "$native_keg" "$target_keg" "$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+      "$rewrite_find" "$rewrite_ln" "$rewrite_readlink" "$rewrite_realpath" \
+      "$rewrite_rm"
+  else
+    "$rewrite_bash" -c "$rewrite_script" kandelo-native-bridge-link-rewrite \
+      "$native_keg" "$target_keg" "$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+      "$rewrite_find" "$rewrite_ln" "$rewrite_readlink" "$rewrite_realpath" \
+      "$rewrite_rm"
+  fi
+}
+
 # Surface only a direct native dependency to target Homebrew. Its selected keg
 # is copied into a canonical target rack; its recursive native closure remains
 # in the separate prefix for embedded absolute paths and cannot collide with a
@@ -1141,6 +1256,12 @@ homebrew_patched_launcher_bridge_native_formula() {
         resolved="$("$realpath_bin" -m -- "${link%/*}/$target")"
         case "$resolved" in
           "$native_keg"|"$native_keg"/*) ;;
+          "$native_prefix"|"$native_prefix"/*)
+            [ -e "$resolved" ] || {
+              printf "%s -> %s\n" "$link" "$target"
+              exit 1
+            }
+            ;;
           *)
             printf "%s -> %s\n" "$link" "$target"
             exit 1
@@ -1187,6 +1308,10 @@ homebrew_patched_launcher_bridge_native_formula() {
         "$native_opt_target/." "$target_keg/" || bridge_status=1
     fi
     if [ "$bridge_status" -eq 0 ]; then
+      homebrew_patched_launcher_rewrite_native_bridge_links \
+        "$native_opt_target" "$target_keg" || bridge_status=1
+    fi
+    if [ "$bridge_status" -eq 0 ]; then
       "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chown -hR root:root \
         "$target_rack" || bridge_status=1
     fi
@@ -1208,6 +1333,9 @@ homebrew_patched_launcher_bridge_native_formula() {
     if ! install -d -m 0755 "$target_rack" "$target_keg"; then
       bridge_status=1
     elif ! cp -R -p "$native_opt_target/." "$target_keg/"; then
+      bridge_status=1
+    elif ! homebrew_patched_launcher_rewrite_native_bridge_links \
+      "$native_opt_target" "$target_keg"; then
       bridge_status=1
     elif ! find "$target_rack" -type d -exec chmod a-w {} +; then
       bridge_status=1

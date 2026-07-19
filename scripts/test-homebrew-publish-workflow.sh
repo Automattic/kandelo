@@ -84,6 +84,10 @@ homebrew_patched_launcher_snapshot_target_cellar_layout() {
   done | LC_ALL=C sort
 }
 
+homebrew_patched_launcher_native_prefix_path() {
+  printf '%s/p\n' "$1"
+}
+
 homebrew_patched_launcher_prepare_native_prefix() {
   HOMEBREW_PATCHED_NATIVE_PREFIX="$1"
   HOMEBREW_PATCHED_NATIVE_HOME="$5"
