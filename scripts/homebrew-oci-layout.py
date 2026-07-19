@@ -1103,7 +1103,7 @@ def load_receipt(path: pathlib.Path) -> dict[str, Any]:
     return root
 
 
-def load_layout_root(layout: pathlib.Path) -> dict[str, Any]:
+def load_layout_roots(layout: pathlib.Path) -> list[Any]:
     real_directory(layout, "OCI layout")
     if load_json(layout / "oci-layout", "OCI layout marker") != {"imageLayoutVersion": "1.0.0"}:
         fail("OCI layout marker is invalid")
@@ -1114,9 +1114,70 @@ def load_layout_root(layout: pathlib.Path) -> dict[str, Any]:
     )
     if root["schemaVersion"] != 2 or root["mediaType"] != OCI_INDEX:
         fail("OCI layout index has invalid media type or schema")
-    if not isinstance(root["manifests"], list) or len(root["manifests"]) != 1:
+    if not isinstance(root["manifests"], list) or not root["manifests"]:
+        fail("OCI layout index must contain at least one root descriptor")
+    return root["manifests"]
+
+
+def load_layout_root(layout: pathlib.Path) -> dict[str, Any]:
+    roots = load_layout_roots(layout)
+    if len(roots) != 1:
         fail("OCI layout index must contain exactly one root descriptor")
-    return root["manifests"][0]
+    return roots[0]
+
+
+def load_homebrew_index_root(
+    layout: pathlib.Path, expected_root: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    roots = load_layout_roots(layout)
+    matching_roots = [
+        index
+        for index, descriptor in enumerate(roots)
+        if descriptor == expected_root
+    ]
+    if len(matching_roots) != 1:
+        fail(
+            "OCI layout must contain exactly one expected Homebrew top root descriptor"
+        )
+    root_index = matching_roots[0]
+    root = roots[root_index]
+    top = exact_keys(
+        read_json_blob(layout, root, "top index"),
+        {"annotations", "manifests", "mediaType", "schemaVersion"},
+        "Homebrew top index",
+    )
+    if top["mediaType"] != OCI_INDEX or top["schemaVersion"] != 2:
+        fail("Homebrew top index media type or schema is invalid")
+    if not isinstance(top["manifests"], list) or not 1 <= len(top["manifests"]) <= 2:
+        fail("Homebrew top index must contain one or two child manifests")
+
+    expected_expanded_roots: list[dict[str, Any]] = []
+    for index, descriptor in enumerate(top["manifests"]):
+        if not isinstance(descriptor, dict) or not isinstance(
+            descriptor.get("annotations"), dict
+        ):
+            fail(
+                f"Homebrew child descriptor {index} cannot be an expanded OCI layout root"
+            )
+        annotations = descriptor["annotations"]
+        if "org.opencontainers.image.ref.name" not in annotations:
+            fail(f"Homebrew child descriptor {index} has no Homebrew reference")
+        expanded = dict(descriptor)
+        expanded["annotations"] = {
+            key: value
+            for key, value in annotations.items()
+            if key != "org.opencontainers.image.ref.name"
+        }
+        expected_expanded_roots.append(expanded)
+
+    extra_roots = roots[:root_index] + roots[root_index + 1 :]
+    if extra_roots and sorted(canonical_json(item) for item in extra_roots) != sorted(
+        canonical_json(item) for item in expected_expanded_roots
+    ):
+        fail(
+            "OCI layout expanded roots do not exactly match the untagged Homebrew child set"
+        )
+    return root, top
 
 
 def expected_semantics(receipt: dict[str, Any]) -> dict[str, str]:
@@ -1572,22 +1633,13 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
 
 def validate_index_layout(layout: pathlib.Path, receipt: dict[str, Any]) -> None:
     receipt = validate_index_receipt(receipt)
-    root = exact_keys(
-        load_layout_root(layout), {"annotations", "digest", "mediaType", "size"}, "top root"
-    )
-    if root["mediaType"] != OCI_INDEX or root["annotations"] != {
-        "org.opencontainers.image.ref.name": receipt["top"]["ref"]
-    }:
-        fail("OCI top root descriptor is invalid")
-    if root["digest"] != receipt["top"]["digest"] or root["size"] != receipt["top"]["size"]:
-        fail("OCI top root descriptor does not match its receipt")
-    top = exact_keys(
-        read_json_blob(layout, root, "top index"),
-        {"annotations", "manifests", "mediaType", "schemaVersion"},
-        "Homebrew top index",
-    )
-    if top["mediaType"] != OCI_INDEX or top["schemaVersion"] != 2:
-        fail("Homebrew top index media type or schema is invalid")
+    expected_root = {
+        "annotations": {"org.opencontainers.image.ref.name": receipt["top"]["ref"]},
+        "digest": receipt["top"]["digest"],
+        "mediaType": OCI_INDEX,
+        "size": receipt["top"]["size"],
+    }
+    _root, top = load_homebrew_index_root(layout, expected_root)
     semantics = {
         "dev.kandelo.homebrew.abi": str(receipt["abi"]),
         "dev.kandelo.homebrew.bottle_rebuild": str(receipt["bottle_rebuild"]),
@@ -1602,9 +1654,10 @@ def validate_index_layout(layout: pathlib.Path, receipt: dict[str, Any]) -> None
     }
     if top["annotations"] != expected_top_annotations(semantics, receipt["top"]["ref"]):
         fail("Homebrew top index semantic identity does not match receipt")
-    if not isinstance(top["manifests"], list) or not 1 <= len(top["manifests"]) <= 2:
-        fail("Homebrew top index must contain one or two child manifests")
-    validated = [validate_manifest_descriptor(layout, descriptor, semantics) for descriptor in top["manifests"]]
+    validated = [
+        validate_manifest_descriptor(layout, descriptor, semantics)
+        for descriptor in top["manifests"]
+    ]
     summary = [
         {
             "arch": item["arch"],
@@ -1763,6 +1816,28 @@ def run_oras_blob_descriptor_fetch(
         maximum_stdout=MAX_MANIFEST_BYTES,
         maximum_stderr=MAX_MANIFEST_BYTES,
         timeout=180,
+    )
+
+
+def run_oras_blob_fetch(
+    *, registry_config: pathlib.Path, target: str, output: pathlib.Path, maximum: int
+) -> tuple[int, str]:
+    return run_bounded_command(
+        command=[
+            "oras",
+            "blob",
+            "fetch",
+            "--output",
+            "-",
+            "--registry-config",
+            str(registry_config),
+            target,
+        ],
+        output=output,
+        maximum_stdout=maximum,
+        maximum_stderr=MAX_MANIFEST_BYTES,
+        timeout=180,
+        label="anonymous registry blob response",
     )
 
 
@@ -1934,11 +2009,13 @@ def fetch_remote_json(
     maximum: int,
     label: str,
     temporary: pathlib.Path,
+    blob: bool = False,
 ) -> Any:
     if size > maximum:
         fail(f"{label} exceeds {maximum} bytes")
     output = temporary / f"{label.replace(' ', '-')}-{digest}.json"
-    status, error = run_oras_fetch(
+    fetch = run_oras_blob_fetch if blob else run_oras_fetch
+    status, error = fetch(
         registry_config=registry_config,
         target=f"{remote}@sha256:{digest}",
         output=output,
@@ -2044,6 +2121,7 @@ def validate_remote_index_graph(
                 maximum=MAX_JSON,
                 label=f"public child config {index}",
                 temporary=temporary,
+                blob=True,
             ),
             {"architecture", "os", "rootfs", "variant"},
             f"public child config {index}",
@@ -2177,18 +2255,21 @@ def import_public_index(args: argparse.Namespace) -> None:
     )
     if result.returncode != 0:
         fail("digest-pinned anonymous Homebrew index copy failed")
-    root = exact_keys(
-        load_layout_root(output_layout),
-        {"annotations", "digest", "mediaType", "size"},
-        "imported public top descriptor",
+    expected_root = {
+        "annotations": {"org.opencontainers.image.ref.name": reference},
+        "digest": f"sha256:{top_digest}",
+        "mediaType": OCI_INDEX,
+        "size": top_size,
+    }
+    load_homebrew_index_root(output_layout, expected_root)
+    write_json(
+        output_layout / "index.json",
+        {
+            "manifests": [expected_root],
+            "mediaType": OCI_INDEX,
+            "schemaVersion": 2,
+        },
     )
-    if (
-        root["mediaType"] != OCI_INDEX
-        or root["digest"] != f"sha256:{top_digest}"
-        or root["size"] != top_size
-        or root["annotations"] != {"org.opencontainers.image.ref.name": reference}
-    ):
-        fail("digest-pinned imported layout does not match the validated top descriptor")
     write_json(
         output_result,
         {

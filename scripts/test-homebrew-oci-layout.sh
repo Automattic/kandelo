@@ -280,6 +280,62 @@ jq -e '
   (.children | map(.homebrew_ref)) == ["1.0.wasm32_kandelo", "1.0.wasm64_kandelo"]
 ' "$TMP_ROOT/combined/receipt.json" >/dev/null
 
+# ORAS materializes a copied index and its children as OCI layout entry points.
+# Accept that exact expanded root set while rejecting partial or foreign roots.
+cp -a "$TMP_ROOT/combined" "$TMP_ROOT/oras-expanded"
+python3 - "$TMP_ROOT/oras-expanded/layout" <<'PY'
+import json
+import pathlib
+import sys
+
+layout = pathlib.Path(sys.argv[1])
+root_path = layout / "index.json"
+root = json.loads(root_path.read_text())
+top_descriptor = root["manifests"][0]
+top = json.loads(
+    (layout / "blobs/sha256" / top_descriptor["digest"].removeprefix("sha256:")).read_text()
+)
+for descriptor in top["manifests"]:
+    expanded = json.loads(json.dumps(descriptor))
+    del expanded["annotations"]["org.opencontainers.image.ref.name"]
+    root["manifests"].append(expanded)
+root_path.write_text(json.dumps(root, sort_keys=True, separators=(",", ":")))
+PY
+python3 "$TOOL" validate-index \
+  --layout "$TMP_ROOT/oras-expanded/layout" \
+  --receipt "$TMP_ROOT/oras-expanded/receipt.json"
+
+cp -a "$TMP_ROOT/oras-expanded" "$TMP_ROOT/oras-partial"
+jq 'del(.manifests[-1])' "$TMP_ROOT/oras-partial/layout/index.json" \
+  >"$TMP_ROOT/oras-partial/layout/index.json.tmp"
+mv "$TMP_ROOT/oras-partial/layout/index.json.tmp" \
+  "$TMP_ROOT/oras-partial/layout/index.json"
+expect_failure oras-partial "untagged Homebrew child set" \
+  python3 "$TOOL" validate-index \
+    --layout "$TMP_ROOT/oras-partial/layout" \
+    --receipt "$TMP_ROOT/oras-partial/receipt.json"
+
+cp -a "$TMP_ROOT/oras-expanded" "$TMP_ROOT/oras-ambiguous"
+jq '.manifests += [.manifests[0]]' "$TMP_ROOT/oras-ambiguous/layout/index.json" \
+  >"$TMP_ROOT/oras-ambiguous/layout/index.json.tmp"
+mv "$TMP_ROOT/oras-ambiguous/layout/index.json.tmp" \
+  "$TMP_ROOT/oras-ambiguous/layout/index.json"
+expect_failure oras-ambiguous "exactly one expected Homebrew top root" \
+  python3 "$TOOL" validate-index \
+    --layout "$TMP_ROOT/oras-ambiguous/layout" \
+    --receipt "$TMP_ROOT/oras-ambiguous/receipt.json"
+
+cp -a "$TMP_ROOT/oras-expanded" "$TMP_ROOT/oras-retagged-child"
+jq '.manifests[1].annotations["org.opencontainers.image.ref.name"] = "1.0.wasm32_kandelo"' \
+  "$TMP_ROOT/oras-retagged-child/layout/index.json" \
+  >"$TMP_ROOT/oras-retagged-child/layout/index.json.tmp"
+mv "$TMP_ROOT/oras-retagged-child/layout/index.json.tmp" \
+  "$TMP_ROOT/oras-retagged-child/layout/index.json"
+expect_failure oras-retagged-child "untagged Homebrew child set" \
+  python3 "$TOOL" validate-index \
+    --layout "$TMP_ROOT/oras-retagged-child/layout" \
+    --receipt "$TMP_ROOT/oras-retagged-child/receipt.json"
+
 # Re-merging one identical child preserves the compatible sibling and is idempotent.
 python3 "$TOOL" merge-index \
   --existing-layout "$TMP_ROOT/combined/layout" \
@@ -566,12 +622,16 @@ case "${1:-} ${2:-}" in
     target="${!#}"
     [[ "$target" == *@sha256:* ]] || exit 8
     digest="${target##*@sha256:}"
-    resolved_size="${IMPORT_BLOB_SIZE:-}"
-    if [ -z "$resolved_size" ]; then
-      resolved_size="$(wc -c <"$IMPORT_LAYOUT/blobs/sha256/$digest" | tr -d '[:space:]')"
+    if [[ " $* " == *" --descriptor "* ]]; then
+      resolved_size="${IMPORT_BLOB_SIZE:-}"
+      if [ -z "$resolved_size" ]; then
+        resolved_size="$(wc -c <"$IMPORT_LAYOUT/blobs/sha256/$digest" | tr -d '[:space:]')"
+      fi
+      jq -n --arg digest "sha256:$digest" --argjson size "$resolved_size" \
+        '{digest: $digest, size: $size}'
+    else
+      cat "$IMPORT_LAYOUT/blobs/sha256/$digest"
     fi
-    jq -n --arg digest "sha256:$digest" --argjson size "$resolved_size" \
-      '{digest: $digest, size: $size}'
     ;;
   "cp --from-registry-config")
     source_ref="${@: -2:1}"
@@ -582,6 +642,24 @@ case "${1:-} ${2:-}" in
     }
     destination="${destination_ref%:*}"
     cp -a "$IMPORT_LAYOUT" "$destination"
+    python3 - "$destination" <<'PY'
+import json
+import pathlib
+import sys
+
+layout = pathlib.Path(sys.argv[1])
+root_path = layout / "index.json"
+root = json.loads(root_path.read_text())
+top_descriptor = root["manifests"][0]
+top = json.loads(
+    (layout / "blobs/sha256" / top_descriptor["digest"].removeprefix("sha256:")).read_text()
+)
+for descriptor in top["manifests"]:
+    expanded = json.loads(json.dumps(descriptor))
+    del expanded["annotations"]["org.opencontainers.image.ref.name"]
+    root["manifests"].append(expanded)
+root_path.write_text(json.dumps(root, sort_keys=True, separators=(",", ":")))
+PY
     ;;
   *) exit 2 ;;
 esac
@@ -616,6 +694,8 @@ jq -e '
   .schema == 1 and .status == "present" and
   (.digest | test("^sha256:[0-9a-f]{64}$"))
 ' "$TMP_ROOT/import-valid-result.json" >/dev/null
+jq -e '.manifests | length == 1' \
+  "$TMP_ROOT/import-valid-output/layout/index.json" >/dev/null
 python3 "$TOOL" validate-index \
   --layout "$TMP_ROOT/import-valid-output/layout" \
   --receipt "$TMP_ROOT/combined/receipt.json"
@@ -623,6 +703,7 @@ grep -F "manifest fetch --descriptor" "$TMP_ROOT/import-valid.log" >/dev/null
 grep -F "ghcr.io/kandelo-dev/homebrew-tap-core/hello@sha256:" \
   "$TMP_ROOT/import-valid.log" >/dev/null
 grep -F "blob fetch --descriptor" "$TMP_ROOT/import-valid.log" >/dev/null
+grep -F "blob fetch --output -" "$TMP_ROOT/import-valid.log" >/dev/null
 grep -E '^cp .*ghcr\.io/kandelo-dev/homebrew-tap-core/hello@sha256:' \
   "$TMP_ROOT/import-valid.log" >/dev/null || {
   echo "public index copy was not pinned to the validated digest" >&2

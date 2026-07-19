@@ -2382,7 +2382,12 @@ def check_publisher(workflow)
     'resolve_remote_blob_descriptor(',
     'f"{remote}@sha256:{top_digest}"',
     '"--to-oci-layout"',
-    'digest-pinned imported layout does not match the validated top descriptor',
+    'def run_oras_blob_fetch(',
+    'blob=True',
+    'load_homebrew_index_root(output_layout, expected_root)',
+    'output_layout / "index.json"',
+    '"manifests": [expected_root]',
+    'untagged Homebrew child set',
   ].each do |fragment|
     check(index_import_tool.include?(fragment),
           "trusted anonymous version-index importer lacks #{fragment}")

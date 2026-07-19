@@ -681,11 +681,15 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    anonymous importer
    validates bounded top, child, config, and layer descriptors by digest before
    it starts the layer copy, confirms the mutable tag did not change during that
-   validation, and pins the copy to the validated top digest. It then composes
-   one complete OCI image index at Homebrew's version/rebuild reference. Only
-   the final layout copy receives registry credentials; Formula Ruby and OCI
-   composition remain credential-free. A conflicting same-reference child or a
-   stale Formula/support closure fails instead of overwriting bytes. The top
+   validation, and pins the copy to the validated top digest. ORAS exposes the
+   copied top index and its children as local OCI layout entry points, removing
+   only each child's local reference-name annotation. The importer requires
+   that exact expanded set and then canonicalizes the validated layout back to
+   its single tagged top entry before composition. It then composes one complete
+   OCI image index at Homebrew's version/rebuild reference. Only the final
+   layout copy receives registry credentials; Formula Ruby and OCI composition
+   remain credential-free. A conflicting same-reference child or a stale
+   Formula/support closure fails instead of overwriting bytes. The top
    index receipt records the previous digest, transport rechecks that digest
    immediately before its copy, and an anonymous readback verifies the result.
    GitHub Container Registry (GHCR) does not provide this path with a documented
@@ -707,9 +711,14 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    It uses the locally built bottle in dry-run mode. In write mode it discards
    that bottle as runtime evidence, anonymously imports and validates the exact
    public top-index-to-child-to-layer graph, and rechecks the selected layer's
-   SHA-256 and byte count. It statically composes the selected bottle block from
-   reconstructed canonical metadata. In an isolated identity it then runs the
-   reviewed pinned Homebrew implementation with the Kandelo platform patch. The
+   SHA-256 and byte count. ORAS may expose the copied top index and its child
+   manifests as separate local OCI layout entry points. The verifier selects
+   exactly one receipt-matched top entry and accepts additional entries only
+   when they are the complete, exact descriptor set declared by that top index;
+   partial, duplicate, ambiguous, or unrelated roots fail closed. It statically
+   composes the selected bottle block from reconstructed canonical metadata.
+   In an isolated identity it then runs the reviewed pinned Homebrew
+   implementation with the Kandelo platform patch. The
    verifier independently resolves the runtime-only same-tap closure and the
    complete runtime/test closure. Its static direct-host plan excludes pure
    build tools, then native Homebrew installs the remaining runtime/test tools
