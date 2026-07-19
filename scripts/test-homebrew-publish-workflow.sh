@@ -2174,7 +2174,7 @@ assert_bottle_build_installs_test_dependencies() {
   local provenance_capture="$TMPDIR/bottle-test-dependency-provenance.txt"
   local provenance_log_capture="$TMPDIR/bottle-test-dependency-install.log"
   local native_prefix_capture="$TMPDIR/bottle-test-dependency-native-prefix.txt"
-  local native_prefix real_python3
+  local native_prefix real_python3 gnu_tar_bin
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
   cat >"$tap/Formula/hello.rb" <<'EOF'
@@ -2191,6 +2191,8 @@ EOF
 class TestHelper < Formula
 end
 EOF
+  git -C "$tap" add Formula
+  git -C "$tap" commit -q -m "add bottle builder fixtures"
 
   cat >"$fake_brew" <<'EOF'
 #!/usr/bin/env bash
@@ -2256,6 +2258,10 @@ case "${1:-}" in
         printf 'target-tags=%s|%s\n' \
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
           >>"$FAKE_BREW_LOG"
+        tap_head="$(git -C "$FAKE_TAP_ROOT" rev-parse HEAD)"
+        cat >"$FAKE_BREW_PREFIX/INSTALL_RECEIPT.json" <<JSON
+{"source":{"path":"Formula/hello.rb","tap":"kandelo-dev/tap-core","tap_git_head":"$tap_head","versions":{"stable":"1.0"}},"built_as_bottle":false,"poured_from_bottle":false}
+JSON
         ;;
       *) exit 43 ;;
     esac
@@ -2290,11 +2296,45 @@ case "${1:-}" in
     printf 'bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
+    [[ "${HOMEBREW_KANDELO_GNU_TAR:-}" =~ ^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$ ]] || exit 54
+    bottle_dir="$PWD"
+    bottle_stage="$(mktemp -d "$PWD/fake-bottle.XXXXXX")"
+    mkdir -p "$bottle_stage/hello/1.0/bin"
+    jq 'del(.source.tap_git_head)' \
+      "$FAKE_BREW_PREFIX/INSTALL_RECEIPT.json" \
+      >"$bottle_stage/hello/1.0/INSTALL_RECEIPT.json"
+    printf 'stable target payload\n' >"$bottle_stage/hello/1.0/bin/hello"
+    python3 -c '
+import os, sys
+root, timestamp = sys.argv[1], int(sys.argv[2])
+for directory, names, files in os.walk(root):
+    os.utime(directory, (timestamp, timestamp))
+    for name in names + files:
+        path = os.path.join(directory, name)
+        os.utime(path, (timestamp, timestamp), follow_symlinks=False)
+' "$bottle_stage" "${FAKE_BUILD_TIME:?}"
+    bottle_tar="$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar"
+    (
+      cd "$bottle_stage"
+      "$HOMEBREW_KANDELO_GNU_TAR" --create --numeric-owner \
+        --mtime='2024-01-22 17:12:37' \
+        --sort=name \
+        --owner=0 --group=0 --numeric-owner \
+        --format=pax \
+        --pax-option=globexthdr.name=/GlobalHead.%n,exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime \
+        --file "$bottle_tar" hello/1.0
+    )
+    gzip -n -c "$bottle_tar" \
+      >"$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+    rm -f "$bottle_tar"
+    python3 -c 'import os, sys; os.utime(sys.argv[1], (1705948357, 1705948357))' \
+      "$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
     cat >hello--1.0.wasm32_kandelo.bottle.json <<'JSON'
 {
   "kandelo-dev/tap-core/hello": {
     "formula": {"name": "hello", "pkg_version": "1.0"},
     "bottle": {
+      "date": "2024-01-22T17:12:37Z",
       "rebuild": 1,
       "tags": {
         "wasm32_kandelo": {
@@ -2305,7 +2345,8 @@ case "${1:-}" in
   }
 }
 JSON
-    printf 'fixture bottle\n' >hello--1.0.wasm32_kandelo.bottle.1.tar.gz
+    python3 -c 'import os, sys; os.utime(sys.argv[1], (1705948357, 1705948357))' \
+      hello--1.0.wasm32_kandelo.bottle.json
     ;;
   *) exit 44 ;;
 esac
@@ -2313,6 +2354,7 @@ EOF
   chmod +x "$fake_brew"
 
   real_python3="$(command -v python3)"
+  gnu_tar_bin="$(command -v tar)"
   cat >"$fake_bin/python3" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2348,6 +2390,7 @@ EOF
     FAKE_REALM_COMMAND_LOG="$realm_log" \
     FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
+    FAKE_BUILD_TIME=1700000000 \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
@@ -2382,6 +2425,82 @@ EOF
   )
   [ ! -e "${native_prefix%/p}" ] ||
     fail "bottle build retained its native prefix after successful cleanup"
+
+  # A later tap-only report commit and a different wall-clock build time must
+  # not change the bottle layer. The fake Brew mirrors the patched publisher's
+  # copied receipt, exact upstream GNU tar arguments, and stable archive time;
+  # the installed receipt must still retain each run's truthful selected head.
+  local first_tap_head second_tap_head first_archive second_archive first_sha second_sha
+  local second_out="$TMPDIR/bottle-test-dependency-second-out"
+  local second_prefix="$TMPDIR/bottle-test-dependency-second-prefix"
+  local second_log="$TMPDIR/bottle-test-dependency-second.log"
+  local second_realm_log="$TMPDIR/bottle-test-dependency-second-realms.log"
+  local second_lifecycle_log="$TMPDIR/bottle-test-dependency-second-lifecycle.log"
+  local second_native_capture="$TMPDIR/bottle-test-dependency-second-native-prefix.txt"
+  local second_provenance_capture="$TMPDIR/bottle-test-dependency-second-provenance.txt"
+  local second_provenance_log="$TMPDIR/bottle-test-dependency-second-install.log"
+  first_tap_head="$(git -C "$tap" rev-parse HEAD)"
+  first_archive="$out/bottles/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+  first_sha="$(sha256sum "$first_archive" 2>/dev/null | awk '{print $1}' || \
+    shasum -a 256 "$first_archive" | awk '{print $1}')"
+  [ "$(jq -r '.source.tap_git_head' "$brew_prefix/INSTALL_RECEIPT.json")" = \
+    "$first_tap_head" ] ||
+    fail "first bottle run did not preserve its installed tap provenance"
+  "$gnu_tar_bin" --extract --gzip --to-stdout \
+    --file "$first_archive" hello/1.0/INSTALL_RECEIPT.json |
+    jq -e '.source.tap == "kandelo-dev/tap-core" and
+      (.source | has("tap_git_head") | not)' >/dev/null ||
+    fail "first bottle archive did not retain only stable receipt provenance"
+
+  printf 'retry after unrelated finalizer commit\n' >"$tap/Kandelo/retry-state.txt"
+  git -C "$tap" add Kandelo/retry-state.txt
+  git -C "$tap" commit -q -m "record unrelated publication retry"
+  second_tap_head="$(git -C "$tap" rev-parse HEAD)"
+  [ "$first_tap_head" != "$second_tap_head" ] ||
+    fail "reproducible bottle fixture did not change tap HEAD"
+  mkdir -p "$second_prefix"
+  if ! PATH="$fake_bin:$PATH" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$second_provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$second_provenance_log" \
+    FAKE_BREW_LOG="$second_log" \
+    FAKE_REALM_COMMAND_LOG="$second_realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$second_lifecycle_log" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$second_native_capture" \
+    FAKE_BUILD_TIME=1800000000 \
+    FAKE_BREW_PREFIX="$second_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --arch wasm32 \
+      --out "$second_out" \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>&1; then
+    fail "second reproducible bottle fixture did not complete"
+  fi
+  second_archive="$second_out/bottles/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+  second_sha="$(sha256sum "$second_archive" 2>/dev/null | awk '{print $1}' || \
+    shasum -a 256 "$second_archive" | awk '{print $1}')"
+  [ "$first_sha" = "$second_sha" ] ||
+    fail "tap-only retry or build time changed the bottle archive SHA"
+  [ "$(jq -r '.source.tap_git_head' "$second_prefix/INSTALL_RECEIPT.json")" = \
+    "$second_tap_head" ] ||
+    fail "second bottle run did not preserve its installed tap provenance"
+  [ "$(jq -r '."kandelo-dev/tap-core/hello".bottle.date' \
+    "$out/bottles/hello--1.0.wasm32_kandelo.bottle.json")" = \
+    "$(jq -r '."kandelo-dev/tap-core/hello".bottle.date' \
+      "$second_out/bottles/hello--1.0.wasm32_kandelo.bottle.json")" ] ||
+    fail "tap-only retry changed the normalized bottle date"
+  [ "$(python3 -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_mtime))' \
+    "$first_archive")" = 1705948357 ] &&
+    [ "$(python3 -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_mtime))' \
+      "$second_archive")" = 1705948357 ] ||
+    fail "fake bottle runner did not normalize both archive mtimes"
 
   local runtime_query_line build_test_query_line native_cmake_line native_ninja_line
   local native_cmake_info_line native_ninja_info_line native_missing_line seal_line
@@ -2463,6 +2582,7 @@ EOF
     FAKE_REALM_COMMAND_LOG="$realm_log" \
     FAKE_REALM_LIFECYCLE_LOG="$cellar_leak_lifecycle" \
     FAKE_NATIVE_PREFIX_CAPTURE="$cellar_leak_capture" \
+    FAKE_BUILD_TIME=1700000000 \
     FAKE_INSTALL_IMPLICIT_NATIVE=1 \
     FAKE_BREW_PREFIX="$cellar_leak_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
@@ -2507,6 +2627,7 @@ EOF
     FAKE_REALM_COMMAND_LOG="$realm_log" \
     FAKE_REALM_LIFECYCLE_LOG="$cleanup_failure_lifecycle" \
     FAKE_NATIVE_PREFIX_CAPTURE="$cleanup_failure_capture" \
+    FAKE_BUILD_TIME=1700000000 \
     FAKE_LAUNCHER_CLEANUP_STATUS=7 \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \

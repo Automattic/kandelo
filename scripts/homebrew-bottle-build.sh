@@ -90,6 +90,25 @@ if [ -z "$BREW_BIN" ] || [ ! -x "$BREW_BIN" ]; then
   exit 2
 fi
 
+# Bottles retain an embedded receipt for Kandelo's static VFS composer, so the
+# publisher overlay cannot use Homebrew's `--only-json-tab` reproducibility
+# path. Supply the exact declared GNU tar instead of letting Formula code or an
+# ambient host PATH choose the archive implementation.
+unset HOMEBREW_KANDELO_GNU_TAR
+HOMEBREW_KANDELO_GNU_TAR="$(command -v tar || true)"
+GNU_TAR_VERSION="$("$HOMEBREW_KANDELO_GNU_TAR" --version 2>/dev/null || true)"
+if ! [[ "$HOMEBREW_KANDELO_GNU_TAR" =~ ^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$ ]] ||
+   [ ! -f "$HOMEBREW_KANDELO_GNU_TAR" ] ||
+   [ -L "$HOMEBREW_KANDELO_GNU_TAR" ] ||
+   [ ! -x "$HOMEBREW_KANDELO_GNU_TAR" ] ||
+   [ -w "$HOMEBREW_KANDELO_GNU_TAR" ] ||
+   ! [[ "${GNU_TAR_VERSION%%$'\n'*}" =~ ^tar\ \(GNU\ tar\)\ [0-9] ]]; then
+  echo "homebrew-bottle-build.sh: dev shell does not provide a protected Nix GNU tar" >&2
+  exit 2
+fi
+unset GNU_TAR_VERSION
+export HOMEBREW_KANDELO_GNU_TAR
+
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
@@ -538,8 +557,8 @@ if [ "$(basename "${bottle_archives[0]}")" != "$BOTTLE_LOCAL_FILENAME" ]; then
   exit 1
 fi
 
-cp "$BOTTLE_SOURCE_JSON" "$OUT_DIR/bottles/"
-cp "${bottle_archives[0]}" "$OUT_DIR/bottles/"
+cp -p "$BOTTLE_SOURCE_JSON" "$OUT_DIR/bottles/"
+cp -p "${bottle_archives[0]}" "$OUT_DIR/bottles/"
 
 BOTTLE_JSON="$OUT_DIR/bottles/$(basename "$BOTTLE_SOURCE_JSON")"
 BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"

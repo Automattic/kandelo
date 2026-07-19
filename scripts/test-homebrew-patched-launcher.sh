@@ -151,7 +151,7 @@ case "${1:-}" in
     [ "${HOMEBREW_RELOCATE_BUILD_PREFIX:-}" = 1 ]
     for target_only in KANDELO_HOMEBREW_ARCH KANDELO_HOMEBREW_KANDELO_ROOT \
       HOMEBREW_KANDELO_ABI HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_LLVM_BIN \
-      HOMEBREW_KANDELO_NODE HOMEBREW_KANDELO_NODE_RECEIPT_PATH \
+      HOMEBREW_KANDELO_GNU_TAR HOMEBREW_KANDELO_NODE HOMEBREW_KANDELO_NODE_RECEIPT_PATH \
       HOMEBREW_KANDELO_ROOT HOMEBREW_KANDELO_SYSROOT LLVM_BIN \
       PLAYWRIGHT_BROWSERS_PATH WASM_POSIX_LLVM_DIR WASM_POSIX_SYSROOT; do
       [ -z "${!target_only+x}" ] || exit 1
@@ -193,6 +193,12 @@ case "${1:-}" in
       if ls "$hidden_root" >/dev/null 2>&1; then exit 1; fi
       if (: >"$hidden_root/native-write-probe") 2>/dev/null; then exit 1; fi
     done
+    ;;
+  assert-protected-gnu-tar)
+    [ "$#" -eq 2 ]
+    [ "${HOMEBREW_KANDELO_GNU_TAR:-}" = "$2" ]
+    [ -f "$2" ] && [ -x "$2" ] && [ ! -L "$2" ]
+    [ ! -w "$2" ] && [ ! -w "${2%/*}" ]
     ;;
   assert-target-native-boundary)
     [ "$#" -eq 7 ]
@@ -1108,6 +1114,10 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   export KANDELO_HOMEBREW_GETENT_BIN=/usr/bin/getent
   export KANDELO_HOMEBREW_PGREP_BIN=/usr/bin/pgrep
   export KANDELO_HOMEBREW_PKILL_BIN=/usr/bin/pkill
+  HOMEBREW_KANDELO_GNU_TAR="$(command -v tar)"
+  export HOMEBREW_KANDELO_GNU_TAR
+  [[ "$HOMEBREW_KANDELO_GNU_TAR" =~ ^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$ ]] ||
+    fail "launcher isolation test requires the declared Nix GNU tar"
   mkdir -p "$XDG_CONFIG_HOME/homebrew"
   printf 'reviewed-trust\n' >"$XDG_CONFIG_HOME/homebrew/trust.json"
   : >"$XDG_CONFIG_HOME/homebrew/trust.json.lock"
@@ -1255,6 +1265,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "protected bottle lifecycle lost its shared temp root"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-identity \
     "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-protected-gnu-tar \
+    "$HOMEBREW_KANDELO_GNU_TAR"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-immutable-trust reviewed-trust
   "$HOMEBREW_PATCHED_BREW_BIN" assert-dependency-plan \

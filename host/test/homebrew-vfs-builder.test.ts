@@ -1,4 +1,17 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { gzipSync } from "fflate";
 import { ABI_VERSION } from "../src/generated/abi";
@@ -50,6 +63,88 @@ function bottleTar(entries: TarSpec[]): Uint8Array {
     offset += chunk.byteLength;
   }
   return gzipSync(tar);
+}
+
+function declaredNixGnuTar(): string {
+  const executable = (process.env.PATH ?? "")
+    .split(":")
+    .map((directory) => join(directory, "tar"))
+    .find((candidate) => {
+      try {
+        return lstatSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+  if (!executable ||
+      !/^\/nix\/store\/[0-9a-z]{32}-gnutar-[^/]+\/bin\/tar$/.test(executable) ||
+      realpathSync(executable) !== executable) {
+    throw new Error("Homebrew VFS PAX fixture requires the flake-declared Nix GNU tar");
+  }
+  const version = execFileSync(executable, ["--version"], { encoding: "utf8" });
+  if (!version.startsWith("tar (GNU tar) ")) {
+    throw new Error("Homebrew VFS PAX fixture requires the flake-declared Nix GNU tar");
+  }
+  return executable;
+}
+
+function tarTypeflags(tar: Uint8Array): string[] {
+  const flags: string[] = [];
+  let offset = 0;
+  while (offset + 512 <= tar.byteLength) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const sizeText = new TextDecoder()
+      .decode(header.subarray(124, 136))
+      .replaceAll("\0", "")
+      .trim();
+    const size = Number.parseInt(sizeText || "0", 8);
+    flags.push(String.fromCharCode(header[156] || "0".charCodeAt(0)));
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return flags;
+}
+
+function gnuPaxBottle(receipt: Uint8Array): {
+  bytes: Uint8Array;
+  gnuTar: string;
+  typeflags: string[];
+} {
+  const gnuTar = declaredNixGnuTar();
+  const root = mkdtempSync(join(tmpdir(), "kandelo-homebrew-pax-"));
+  try {
+    const payload = join(root, "hello", "2.12.1");
+    mkdirSync(join(payload, "bin"), { recursive: true });
+    mkdirSync(join(payload, ".brew"), { recursive: true });
+    mkdirSync(join(payload, "share"), { recursive: true });
+    writeFileSync(join(payload, "bin", "hello"), "#!/bin/sh\necho hello\n");
+    chmodSync(join(payload, "bin", "hello"), 0o755);
+    writeFileSync(join(payload, ".brew", "hello.rb"), "class Hello < Formula\nend\n");
+    writeFileSync(join(payload, "INSTALL_RECEIPT.json"), receipt);
+    // A safe component longer than the ustar name field forces a local PAX
+    // header and exercises the same parser path as publisher-created bottles.
+    writeFileSync(join(payload, "share", "p".repeat(120)), "PAX path fixture\n");
+
+    const archive = join(root, "hello.tar");
+    execFileSync(gnuTar, [
+      "--create",
+      "--numeric-owner",
+      "--mtime=2024-01-22 17:12:37",
+      "--sort=name",
+      "--owner=0",
+      "--group=0",
+      "--numeric-owner",
+      "--format=pax",
+      "--pax-option=globexthdr.name=/GlobalHead.%n,exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
+      "--file",
+      archive,
+      "hello/2.12.1",
+    ], { cwd: root });
+    const tar = new Uint8Array(readFileSync(archive));
+    return { bytes: gzipSync(tar), gnuTar, typeflags: tarTypeflags(tar) };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function tarHeader(entry: TarSpec): Uint8Array {
@@ -256,6 +351,35 @@ describe("Homebrew VFS builder", () => {
     expect(result.report.selection).toMatchObject({
       kind: "packages",
       requested_packages: ["hello"],
+    });
+  });
+
+  it("composes a real GNU PAX bottle while preserving its sanitized receipt bytes", async () => {
+    const receipt = utf8(JSON.stringify({
+      source: {
+        path: "Formula/hello.rb",
+        tap: "kandelo-dev/tap-core",
+        versions: { stable: "2.12.1" },
+      },
+      built_as_bottle: true,
+      poured_from_bottle: false,
+    }) + "\n");
+    const bottle = gnuPaxBottle(receipt);
+    expect(bottle.gnuTar).toMatch(/^\/nix\/store\/[0-9a-z]{32}-gnutar-[^/]+\/bin\/tar$/);
+    expect(bottle.typeflags.some((flag) => flag === "x" || flag === "g")).toBe(true);
+
+    const result = await buildFixture(bottle.bytes);
+    const installedReceiptBytes = readVfsFile(result.fs, `${KEG}/INSTALL_RECEIPT.json`);
+    expect(installedReceiptBytes).toBe(new TextDecoder().decode(receipt));
+    const installedReceipt = JSON.parse(installedReceiptBytes);
+    expect(installedReceipt.source.tap).toBe("kandelo-dev/tap-core");
+    expect(installedReceipt.source).not.toHaveProperty("tap_git_head");
+    const composition = JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    );
+    expect(composition.metadata).toMatchObject({
+      tap_name: "kandelo-dev/tap-core",
+      tap_commit: TAP_COMMIT,
     });
   });
 

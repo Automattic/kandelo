@@ -34,6 +34,12 @@ Homebrew prefix retain normal Linux dependency resolution.
 While that plan is active, also prevent `brew test` from automatically pouring
 Bubblewrap into the target Cellar. A usable host Bubblewrap can still be used,
 but an unavailable sandbox cannot bypass the publisher's reviewed native plan.
+The publisher retains an embedded receipt for Kandelo's static VFS composer,
+so make same-environment retries insensitive to tap-only commits with Homebrew's
+upstream GNU tar flags.
+Remove only the tap Git head from a fresh copy of the temporary archived receipt
+and restore the exact installed receipt after bottling. Normalize the archive
+file time to the stable source time used by Homebrew's tar and gzip paths.
 Every other required Homebrew path remains subject to the normal writability
 check, and explicit `brew trust` operations still use the normal mutation path and fail
 against an immutable publisher store.
@@ -42,12 +48,13 @@ This patch is applied only to the publisher's temporary Homebrew overlay. Guest
 Homebrew keeps its normal repository, trust, and dependency behavior.
 ---
  Library/Homebrew/build.rb                   | 24 +++++++++++++++++++++++-
+ Library/Homebrew/dev-cmd/bottle.rb          | 12 ++++++++++++
  Library/Homebrew/diagnostic.rb              |  1 +
  Library/Homebrew/extend/os/linux/formula.rb |  4 ++++
  Library/Homebrew/extend/os/linux/sandbox.rb |  4 +++-
- Library/Homebrew/kandelo_publisher.rb       | 61 +++++++++++++++++++++++++++++
+ Library/Homebrew/kandelo_publisher.rb       | 98 +++++++++++++++++++++++++++++
  Library/Homebrew/trust.rb                   |  1 +
- 6 files changed, 93 insertions(+), 2 deletions(-)
+ 7 files changed, 142 insertions(+), 2 deletions(-)
 
 diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb
 index be833176c0..465cf63438 100644
@@ -96,6 +103,45 @@ index be833176c0..465cf63438 100644
    sig { params(dependent: Formula).returns(BuildOptions) }
    def effective_build_options_for(dependent)
      args  = dependent.build.used_options
+diff --git a/Library/Homebrew/dev-cmd/bottle.rb b/Library/Homebrew/dev-cmd/bottle.rb
+index dbd420e2c5..82d3263e97 100644
+--- a/Library/Homebrew/dev-cmd/bottle.rb
++++ b/Library/Homebrew/dev-cmd/bottle.rb
+@@ -4,4 +4,5 @@
+ require "abstract_command"
++require "kandelo_publisher"
+ require "fileutils"
+ require "formula"
+ require "utils/bottles"
+@@ -365,5 +366,10 @@ module Homebrew
+       sig { params(mtime: String, default_tar: T::Boolean).returns([String, T::Array[String]]) }
+       def setup_tar_and_args!(mtime, default_tar: false)
++        publisher_gnu_tar = KandeloPublisher.reproducible_gnu_tar
++        unless publisher_gnu_tar.nil?
++          return [publisher_gnu_tar, reproducible_gnutar_args(mtime)].freeze
++        end
++
+         # Without --only-json-tab bottles are never reproducible
+         default_tar_args = ["tar", tar_args].freeze
+         return default_tar_args if !args.only_json_tab? || default_tar
+@@ -513,5 +519,10 @@ module Homebrew
+               tab.changed_files&.delete(Pathname.new(AbstractTab::FILENAME))
+               tab.tabfile&.unlink
+             else
++              KandeloPublisher.prepare_archived_tab!(
++                tab,
++                expected_tap:          tap.name,
++                expected_tap_git_head: tap_git_revision,
++              )
+               tab.write
+             end
+@@ -543,5 +554,6 @@ module Homebrew
+                                                 mtime:     tab.source_modified_time,
+                                                 orig_name: relocatable_tar_path,
+                                                 output:    bottle_path)
++              FileUtils.touch(bottle_path, mtime: tab_source_modified_time) if KandeloPublisher.active?
+               sudo_purge
+             end
 diff --git a/Library/Homebrew/diagnostic.rb b/Library/Homebrew/diagnostic.rb
 index f493938c3a..66926e07ea 100644
 --- a/Library/Homebrew/diagnostic.rb
@@ -146,10 +192,10 @@ index ba803bc756..06d1671285 100644
            begin
 diff --git a/Library/Homebrew/kandelo_publisher.rb b/Library/Homebrew/kandelo_publisher.rb
 new file mode 100644
-index 0000000000..86f9dec415
+index 0000000000..ff90519c8
 --- /dev/null
 +++ b/Library/Homebrew/kandelo_publisher.rb
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,98 @@
 +# typed: false
 +# frozen_string_literal: true
 +
@@ -162,9 +208,46 @@ index 0000000000..86f9dec415
 +  MAX_PLAN_BYTES = 65_536
 +  PLAN_KEYS = %w[build build_and_test formula full_name runtime_and_test schema tap].freeze
 +  DEPENDENCY_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
++  GNU_TAR_ENV = "HOMEBREW_KANDELO_GNU_TAR"
++  GNU_TAR_PATH = ENV.fetch(GNU_TAR_ENV, "").dup.freeze
++  NIX_GNU_TAR_PATH = %r{\A/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar\z}
++  TAP_GIT_HEAD = /\A[0-9a-f]{40}\z/
 +
 +  def self.active?
 +    !dependency_plan(nil).nil?
++  end
++
++  def self.reproducible_gnu_tar
++    return unless active?
++
++    path = GNU_TAR_PATH
++    stat = File.lstat(path)
++    protected_tar = NIX_GNU_TAR_PATH.match?(path) && stat.file? && !stat.symlink? &&
++                    (stat.mode & 0o222).zero? && (stat.mode & 0o111).positive? &&
++                    File.realpath(path) == path
++    raise "Kandelo publisher GNU tar is not a protected Nix gnutar" unless protected_tar
++
++    path
++  rescue Errno::ENOENT, Errno::ENOTDIR
++    raise "Kandelo publisher GNU tar is not a protected Nix gnutar"
++  end
++
++  def self.prepare_archived_tab!(tab, expected_tap:, expected_tap_git_head:)
++    return unless active?
++
++    source = tab.source
++    raise "Kandelo publisher installation receipt source is invalid" unless source.is_a?(Hash)
++    tap_git_head = source["tap_git_head"]
++    valid_tap_source = expected_tap.is_a?(String) && source["tap"] == expected_tap &&
++                       expected_tap_git_head.is_a?(String) && TAP_GIT_HEAD.match?(expected_tap_git_head) &&
++                       tap_git_head == expected_tap_git_head
++    unless valid_tap_source
++      raise "Kandelo publisher installation receipt does not match the selected tap revision"
++    end
++
++    archived_source = source.dup
++    archived_source.delete("tap_git_head")
++    tab.source = archived_source
 +  end
 +
 +  def self.dependency_plan(formula = nil, require_match: true)

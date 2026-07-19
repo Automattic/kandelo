@@ -1210,6 +1210,9 @@ def check_publisher(workflow)
         "dev shell drops exact Homebrew runtime evidence inputs")
   check(!dev_shell.include?("--keep KANDELO_HOMEBREW_TAP_NAME"),
         "dev shell globally preserves caller-selected Homebrew tap identity")
+  flake = File.binread(File.join(REPO_ROOT, "flake.nix"))
+  check(flake.scan("pkgs.gnutar".b).length == 1,
+        "dev shell does not declare exactly one GNU tar publisher input")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
   [
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
@@ -1233,6 +1236,12 @@ def check_publisher(workflow)
     'log="$CONTROL_DIR/brew-install-attempt-${attempt}.log"',
     'rm -rf "$CONTROL_DIR"',
     'unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG',
+    'unset HOMEBREW_KANDELO_GNU_TAR',
+    'HOMEBREW_KANDELO_GNU_TAR="$(command -v tar || true)"',
+    'GNU_TAR_VERSION="$("$HOMEBREW_KANDELO_GNU_TAR" --version 2>/dev/null || true)"',
+    '^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$',
+    'dev shell does not provide a protected Nix GNU tar',
+    'export HOMEBREW_KANDELO_GNU_TAR',
     'run_brew_for_kandelo_bottles()',
     'HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG"',
     'KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG"',
@@ -1251,10 +1260,19 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_snapshot_target_cellar_layout',
     'Formula test or bottle creation changed the planned target Cellar',
     'run_brew_for_kandelo_bottles "$BREW_BIN" bottle',
+    'cp -p "$BOTTLE_SOURCE_JSON" "$OUT_DIR/bottles/"',
+    'cp -p "${bottle_archives[0]}" "$OUT_DIR/bottles/"',
     "printf 'NATIVE_BUILD_ROOT=%q\\n' \"$NATIVE_BUILD_ROOT\"",
   ].each do |fragment|
     check(bottle_builder.include?(fragment), "reviewed bottle builder lacks #{fragment}")
   end
+  retained_receipt_bottle_command = <<~'SHELL'.chomp
+    run_brew_for_kandelo_bottles "$BREW_BIN" bottle \
+        --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+  SHELL
+  check(bottle_builder.include?(retained_receipt_bottle_command) &&
+        !bottle_builder.match?(/bottle \\\n\s+--only-json-tab/),
+        "reviewed bottle builder no longer retains its embedded installation receipt")
   host_plan_index = bottle_builder.index("--host-dependencies-json")
   native_install_index = bottle_builder.index(
     "run_native_brew_logged install --as-dependency --formula"
@@ -1538,10 +1556,24 @@ def check_publisher(workflow)
   )
   [
     "diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb",
+    "diff --git a/Library/Homebrew/dev-cmd/bottle.rb b/Library/Homebrew/dev-cmd/bottle.rb",
     'require "kandelo_publisher"',
     "diff --git a/Library/Homebrew/kandelo_publisher.rb b/Library/Homebrew/kandelo_publisher.rb",
     "module KandeloPublisher",
     "def self.active?",
+    'GNU_TAR_PATH = ENV.fetch(GNU_TAR_ENV, "").dup.freeze',
+    "def self.reproducible_gnu_tar",
+    "publisher_gnu_tar = KandeloPublisher.reproducible_gnu_tar",
+    "reproducible_gnutar_args(mtime)",
+    "def self.prepare_archived_tab!(tab, expected_tap:, expected_tap_git_head:)",
+    'source["tap"] == expected_tap',
+    "tap_git_head == expected_tap_git_head",
+    "archived_source = source.dup",
+    'archived_source.delete("tap_git_head")',
+    "tab.source = archived_source",
+    "expected_tap:          tap.name",
+    "expected_tap_git_head: tap_git_revision",
+    "FileUtils.touch(bottle_path, mtime: tab_source_modified_time)",
     "def self.dependency_plan(formula = nil, require_match: true)",
     'PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"',
     "plan_path = HOMEBREW_PREFIX/PLAN_FILENAME",
@@ -1563,6 +1595,26 @@ def check_publisher(workflow)
     check(publisher_isolation_patch.include?(fragment),
           "publisher-only isolation patch lacks #{fragment}")
   end
+  check(!publisher_isolation_patch.include?('+    source.delete("tap_git_head")'),
+        "publisher patch mutates the shallow-copied installed receipt source")
+  publisher_patch_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-publisher-overlay-patch.sh")
+  )
+  [
+    '"--mtime=#{mtime}"',
+    '"--sort=name"',
+    '"--owner=0", "--group=0", "--numeric-owner"',
+    '"--format=pax"',
+    'globexthdr.name=/GlobalHead.%n,exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime',
+    'ENV["HOMEBREW_KANDELO_GNU_TAR"] = "/tmp/formula-controlled-tar"',
+    "successful bottle did not restore the exact installed receipt bytes",
+    "failed bottle did not restore the exact installed receipt bytes",
+    "publisher accepted mismatched archived receipt provenance",
+    "ordinary Homebrew receipt behavior changed without a protected publisher plan",
+  ].each do |fragment|
+    check(publisher_patch_test.include?(fragment),
+          "publisher overlay regression test lacks #{fragment}")
+  end
   check(!platform_patch.include?("dir == HOMEBREW_REPOSITORY"),
         "guest Homebrew platform patch skips repository writability")
   check(!platform_patch.include?("trusted_tap?(tap)"),
@@ -1570,6 +1622,10 @@ def check_publisher(workflow)
   check(!platform_patch.include?("KandeloPublisher") &&
         !platform_patch.include?("add_global_deps_to_spec"),
         "guest Homebrew platform patch suppresses Linux global dependencies")
+  check(!platform_patch.include?("HOMEBREW_KANDELO_GNU_TAR") &&
+        !platform_patch.include?("reproducible_gnutar_args") &&
+        !platform_patch.include?("prepare_archived_tab!"),
+        "guest Homebrew platform patch includes publisher-only bottle normalization")
   [
     "diff --git a/Library/Homebrew/github_packages.rb b/Library/Homebrew/github_packages.rb",
     "# An explicit repository-rooted package path is not a generated tap name.",
@@ -1737,6 +1793,10 @@ def check_publisher(workflow)
     'cannot seed Bundler groups after isolation',
     'homebrew_assert_tree_symlinks_contained "$sysroot" sysroot',
     'homebrew_assert_tree_not_replaceable_by_user "$build_user" "$sysroot"',
+    '"$build_user" "$HOMEBREW_KANDELO_GNU_TAR"',
+    '"$HOMEBREW_KANDELO_GNU_TAR" "Nix GNU tar" || return',
+    'homebrew_assert_tree_not_replaceable_by_user \
+      "$build_user" "$HOMEBREW_KANDELO_GNU_TAR" || return',
     'sysroot_access_violation="$(/usr/bin/find "$expected_sysroot" -xdev',
     'protected sysroot alias has unsafe access',
     'sysroot build root cannot be inside mutable Formula state',
@@ -1961,10 +2021,29 @@ def check_publisher(workflow)
   check(!launcher.include?('chmod 0660 "$trust_lock"') &&
         !launcher.include?('chown "root:$build_group" "$trust_lock"'),
         "isolated Brew launcher leaves the trust lock writable")
+  target_environment = launcher[/\n  preserved_variables=\((.*?)\n  \)/m, 1]
+  check(target_environment&.include?("HOMEBREW_KANDELO_GNU_TAR"),
+        "isolated target Homebrew drops the validated GNU tar path")
   native_environment = launcher[/native_preserved_variables=\((.*?)\n  \)/m, 1]
   check(native_environment &&
-        !native_environment.match?(/KANDELO|HOMEBREW_CACHE|HOMEBREW_TEMP|XDG_CONFIG_HOME|LLVM/),
+        !native_environment.match?(/KANDELO|HOMEBREW_CACHE|HOMEBREW_TEMP|XDG_CONFIG_HOME|LLVM|GNU_TAR/),
         "isolated native Homebrew inherits target-only state or Kandelo controls")
+  gnu_tar_executable_index = launcher.index(
+    '"$HOMEBREW_KANDELO_GNU_TAR" "Nix GNU tar" || return'
+  )
+  gnu_tar_tree_index = launcher.index(
+    '"$build_user" "$HOMEBREW_KANDELO_GNU_TAR" || return',
+    gnu_tar_executable_index
+  )
+  check(gnu_tar_executable_index && gnu_tar_tree_index &&
+        gnu_tar_executable_index < gnu_tar_tree_index,
+        "GNU tar ancestor replacement protection does not follow executable validation")
+  launcher_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-patched-launcher.sh")
+  )
+  check(launcher_test.include?("assert-protected-gnu-tar") &&
+        launcher_test.include?('[ ! -w "$2" ] && [ ! -w "${2%/*}" ]'),
+        "launcher regression does not exercise GNU tar as the dedicated Formula identity")
   native_validation_index = launcher.index('native_inputs=("$native_prefix"')
   native_overlap_index = launcher.index(
     "Homebrew state roots must not contain one another"

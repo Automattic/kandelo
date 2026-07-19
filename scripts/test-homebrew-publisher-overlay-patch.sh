@@ -6,12 +6,17 @@ PATCH_FILE="$ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-mkdir -p "$TMPDIR/Library/Homebrew/extend/os/linux" \
+mkdir -p "$TMPDIR/Library/Homebrew/dev-cmd" \
+  "$TMPDIR/Library/Homebrew/extend/os/linux" \
   "$TMPDIR/Library/Homebrew/utils/github"
-for fixture in global.rb build_options.rb keg.rb extend/ENV.rb \
-  exceptions.rb system_command.rb utils/popen.rb utils/github/actions.rb; do
+for fixture in abstract_command.rb global.rb build_options.rb keg.rb extend/ENV.rb \
+  exceptions.rb system_command.rb utils/bottles.rb utils/popen.rb utils/github/actions.rb; do
   : >"$TMPDIR/Library/Homebrew/$fixture"
 done
+cat >"$TMPDIR/Library/Homebrew/abstract_command.rb" <<'RUBY'
+class AbstractCommand
+end
+RUBY
 cat >"$TMPDIR/Library/Homebrew/env_config.rb" <<'RUBY'
 module Homebrew
   module EnvConfig
@@ -30,6 +35,129 @@ class Formula
       raise "missing sandbox installation reason" if reason.empty?
 
       self.installations = installations.to_i + 1
+    end
+  end
+end
+RUBY
+cat >"$TMPDIR/Library/Homebrew/dev-cmd/bottle.rb" <<'RUBY'
+# typed: strict
+# frozen_string_literal: true
+
+require "abstract_command"
+require "fileutils"
+require "formula"
+require "utils/bottles"
+
+module T
+  Boolean = Object
+
+  class Array
+    def self.[](*) = Object
+  end
+end
+
+def sig(*) = nil
+
+module Utils
+  module Gzip
+    class << self
+      attr_accessor :captured_receipt, :fail_after_capture, :receipt_path
+    end
+
+    def self.compress_with_options(_input, mtime:, orig_name:, output:)
+      raise "missing stable gzip inputs" if mtime.nil? || orig_name.empty?
+
+      self.captured_receipt = File.binread(receipt_path)
+      raise "forced bottle compression failure" if fail_after_capture
+
+      File.binwrite(output, "stable gzip fixture\n")
+    end
+  end
+end
+
+module Homebrew
+  module DevCmd
+    class Bottle < AbstractCommand
+      include FileUtils
+
+      def initialize(args)
+        @args = args
+      end
+
+      attr_reader :args
+
+      def tar_args = ["default-tar-args"]
+
+      def reproducible_gnutar_args(mtime)
+        [
+          # Set the mtime of all files to the latest mtime in the formula
+          "--mtime=#{mtime}",
+          # File ordering
+          "--sort=name",
+          # Users, groups and numeric ids
+          "--owner=0", "--group=0", "--numeric-owner",
+          # PAX headers
+          "--format=pax",
+          # Set exthdr names to exclude PID (for GNU tar <1.33). Also don't store atime and ctime.
+          "--pax-option=globexthdr.name=/GlobalHead.%n,exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime"
+        ].freeze
+      end
+
+      def gnu_tar_formula_ensure_installed_if_needed! = nil
+      def gnu_tar(_formula) = "unused-gnu-tar"
+      def sudo_purge = nil
+
+      sig { params(mtime: String, default_tar: T::Boolean).returns([String, T::Array[String]]) }
+      def setup_tar_and_args!(mtime, default_tar: false)
+        # Without --only-json-tab bottles are never reproducible
+        default_tar_args = ["tar", tar_args].freeze
+        return default_tar_args if !args.only_json_tab? || default_tar
+
+        # Use gnu-tar as it can be set up for reproducibility better than libarchive
+        # and to be consistent between macOS and Linux.
+        gnu_tar_formula = gnu_tar_formula_ensure_installed_if_needed!
+        return default_tar_args if gnu_tar_formula.blank?
+
+        [gnu_tar(gnu_tar_formula), reproducible_gnutar_args(mtime)].freeze
+      end
+
+      def create_fixture_bottle(tab, bottle_path, expected_tap:, expected_tap_git_head:,
+                                fail_before_compress: false)
+        original_tab = nil
+        changed_files = []
+        tap = Struct.new(:name).new(expected_tap)
+        tap_git_revision = expected_tap_git_head
+
+        begin
+            original_tab = tab.dup
+            tab.poured_from_bottle = false
+            tab.time = nil
+            tab.changed_files = changed_files.dup
+            if args.only_json_tab?
+              tab.changed_files&.delete(Pathname.new(AbstractTab::FILENAME))
+              tab.tabfile&.unlink
+            else
+              tab.write
+            end
+
+            raise "forced tar failure" if fail_before_compress
+
+            time_at_epoch = Time.at(1)
+            tab_source_modified_time = [time_at_epoch, tab.source_modified_time].max
+            relocatable_tar_path = "fixture-bottle.tar"
+            begin
+              Utils::Gzip.compress_with_options(relocatable_tar_path,
+                                                mtime:     tab.source_modified_time,
+                                                orig_name: relocatable_tar_path,
+                                                output:    bottle_path)
+              sudo_purge
+            end
+
+          nil
+        ensure
+          original_tab&.write
+        end
+      end
     end
   end
 end
@@ -346,6 +474,12 @@ RUBY
 git -C "$TMPDIR" apply --check "$PATCH_FILE"
 git -C "$TMPDIR" apply --whitespace=nowarn "$PATCH_FILE"
 
+GNU_TAR_BIN="$(command -v tar || true)"
+if ! [[ "$GNU_TAR_BIN" =~ ^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$ ]]; then
+  echo "test-homebrew-publisher-overlay-patch.sh: run through scripts/dev-shell.sh to provide Nix GNU tar" >&2
+  exit 1
+fi
+
 patched_line_count="$(grep -c 'next if trusted_tap?(tap)' \
   "$TMPDIR/Library/Homebrew/trust.rb")"
 [ "$patched_line_count" = "1" ] || {
@@ -368,6 +502,186 @@ sandbox_guard_count="$(grep -c \
   echo "test-homebrew-publisher-overlay-patch.sh: patch did not add one publisher sandbox-install guard" >&2
   exit 1
 }
+
+HOMEBREW_KANDELO_GNU_TAR="$GNU_TAR_BIN" \
+ruby -I"$TMPDIR/Library/Homebrew" - "$TMPDIR" "$GNU_TAR_BIN" <<'RUBY'
+require "json"
+require "pathname"
+require "time"
+
+HOMEBREW_PREFIX = Pathname(ARGV.fetch(0))/"bottle-prefix"
+HOMEBREW_PREFIX.mkpath
+expected_gnu_tar = ARGV.fetch(1)
+
+class FixtureBottleArgs
+  def only_json_tab? = false
+end
+
+class FixtureBottleTab
+  attr_accessor :changed_files, :poured_from_bottle, :source, :time
+  attr_reader :source_modified_time
+
+  def initialize(receipt_path, source, source_modified_time)
+    @receipt_path = receipt_path
+    @source = source
+    @source_modified_time = source_modified_time
+  end
+
+  def write
+    @receipt_path.write(JSON.generate({ "source" => source, "stable" => "receipt field" }))
+  end
+end
+
+plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
+plan = {
+  "schema" => 2,
+  "tap" => "kandelo-dev/tap-core",
+  "formula" => "hello",
+  "full_name" => "kandelo-dev/tap-core/hello",
+  "build" => [],
+  "build_and_test" => [],
+  "runtime_and_test" => [],
+}
+plan_path.write(JSON.generate(plan))
+plan_path.chmod(0o444)
+
+require "dev-cmd/bottle"
+
+# KandeloPublisher captures this launcher-validated path before Formula source
+# can run. A Formula-side ENV mutation must not redirect archive creation.
+ENV["HOMEBREW_KANDELO_GNU_TAR"] = "/tmp/formula-controlled-tar"
+bottle = Homebrew::DevCmd::Bottle.new(FixtureBottleArgs.new)
+mtime = "2024-01-22 17:12:37"
+expected_args = [
+  "--mtime=#{mtime}",
+  "--sort=name",
+  "--owner=0", "--group=0", "--numeric-owner",
+  "--format=pax",
+  "--pax-option=globexthdr.name=/GlobalHead.%n,exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
+]
+tar, tar_args = bottle.setup_tar_and_args!(mtime)
+raise "publisher did not retain the module-load GNU tar" unless tar == expected_gnu_tar
+raise "publisher did not use exact upstream reproducible GNU tar arguments" unless tar_args == expected_args
+
+expected_tap = "kandelo-dev/tap-core"
+expected_head = "0123456789abcdef0123456789abcdef01234567"
+source_time = Time.at(1_705_948_357)
+original_source = {
+  "path" => "Formula/hello.rb",
+  "tap" => expected_tap,
+  "tap_git_head" => expected_head,
+  "versions" => { "stable" => "1.0" },
+}
+receipt_path = HOMEBREW_PREFIX/"INSTALL_RECEIPT.json"
+bottle_path = HOMEBREW_PREFIX/"hello.bottle.tar.gz"
+tab = FixtureBottleTab.new(receipt_path, original_source, source_time)
+Utils::Gzip.receipt_path = receipt_path
+bottle.create_fixture_bottle(
+  tab,
+  bottle_path,
+  expected_tap: expected_tap,
+  expected_tap_git_head: expected_head,
+)
+archived_source = JSON.parse(Utils::Gzip.captured_receipt).fetch("source")
+expected_archived_source = original_source.reject { |key, _| key == "tap_git_head" }
+unless archived_source == expected_archived_source
+  raise "archived receipt changed more than the volatile tap Git head"
+end
+if tab.source.equal?(original_source)
+  raise "archived receipt reused the shallow-copied installed source Hash"
+end
+restored_source = JSON.parse(receipt_path.read).fetch("source")
+raise "successful bottle did not restore installed tap provenance" unless restored_source == original_source
+expected_installed_receipt = JSON.generate({ "source" => original_source, "stable" => "receipt field" })
+unless receipt_path.binread == expected_installed_receipt
+  raise "successful bottle did not restore the exact installed receipt bytes"
+end
+unless bottle_path.mtime.to_i == source_time.to_i
+  raise "publisher bottle file mtime was not normalized to source time"
+end
+unless bottle_path.mtime.utc.iso8601 == source_time.utc.iso8601
+  raise "publisher bottle JSON date source was not normalized"
+end
+
+def assert_failure_restores_receipt(bottle, receipt_path, bottle_path, source, source_time,
+                                    expected_tap, expected_head, compression_failure: false)
+  receipt_path.delete if receipt_path.exist?
+  bottle_path.delete if bottle_path.exist?
+  tab = FixtureBottleTab.new(receipt_path, source, source_time)
+  Utils::Gzip.receipt_path = receipt_path
+  Utils::Gzip.fail_after_capture = compression_failure
+  begin
+    bottle.create_fixture_bottle(
+      tab,
+      bottle_path,
+      expected_tap: expected_tap,
+      expected_tap_git_head: expected_head,
+      fail_before_compress: !compression_failure,
+    )
+    raise "forced bottle failure unexpectedly succeeded"
+  rescue RuntimeError => e
+    expected_message = compression_failure ? "forced bottle compression failure" : "forced tar failure"
+    raise unless e.message == expected_message
+  ensure
+    Utils::Gzip.fail_after_capture = false
+  end
+  restored_source = JSON.parse(receipt_path.read).fetch("source")
+  raise "failed bottle did not restore installed tap provenance" unless restored_source == source
+  expected_receipt = JSON.generate({ "source" => source, "stable" => "receipt field" })
+  unless receipt_path.binread == expected_receipt
+    raise "failed bottle did not restore the exact installed receipt bytes"
+  end
+end
+
+assert_failure_restores_receipt(
+  bottle, receipt_path, bottle_path, original_source, source_time, expected_tap, expected_head,
+)
+assert_failure_restores_receipt(
+  bottle, receipt_path, bottle_path, original_source, source_time, expected_tap, expected_head,
+  compression_failure: true,
+)
+
+invalid_sources = [
+  { "tap" => expected_tap },
+  { "tap" => expected_tap, "tap_git_head" => "ABC" },
+  { "tap" => "other/tap", "tap_git_head" => expected_head },
+  { "tap" => expected_tap, "tap_git_head" => "f" * 40 },
+]
+invalid_sources.each do |source|
+  tab = FixtureBottleTab.new(receipt_path, source, source_time)
+  original_source_object = tab.source
+  begin
+    KandeloPublisher.prepare_archived_tab!(
+      tab,
+      expected_tap: expected_tap,
+      expected_tap_git_head: expected_head,
+    )
+    raise "publisher accepted mismatched archived receipt provenance"
+  rescue RuntimeError => e
+    unless e.message.include?("does not match the selected tap revision")
+      raise
+    end
+  end
+  unless tab.source.equal?(original_source_object)
+    raise "rejected archived receipt still replaced its source Hash"
+  end
+end
+
+plan_path.delete
+inactive_source = { "tap" => "unrelated/tap" }
+inactive_tab = FixtureBottleTab.new(receipt_path, inactive_source, source_time)
+KandeloPublisher.prepare_archived_tab!(
+  inactive_tab,
+  expected_tap: expected_tap,
+  expected_tap_git_head: expected_head,
+)
+unless inactive_tab.source.equal?(inactive_source)
+  raise "ordinary Homebrew receipt behavior changed without a protected publisher plan"
+end
+unless bottle.setup_tar_and_args!(mtime) == ["tar", ["default-tar-args"]]
+  raise "ordinary Homebrew tar selection changed without a protected publisher plan"
+end
+RUBY
 
 ruby -I"$TMPDIR/Library/Homebrew" - "$TMPDIR" <<'RUBY'
 require "json"

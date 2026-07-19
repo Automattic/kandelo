@@ -1431,6 +1431,13 @@ homebrew_patched_launcher_isolate() {
     homebrew_assert_protected_host_executable \
       "$build_user" "/usr/bin/$protected_bin" "/usr/bin/$protected_bin" "$protected_bin"
   done
+  if [ -n "${HOMEBREW_KANDELO_GNU_TAR:-}" ]; then
+    homebrew_assert_protected_host_executable \
+      "$build_user" "$HOMEBREW_KANDELO_GNU_TAR" \
+      "$HOMEBREW_KANDELO_GNU_TAR" "Nix GNU tar" || return
+    homebrew_assert_tree_not_replaceable_by_user \
+      "$build_user" "$HOMEBREW_KANDELO_GNU_TAR" || return
+  fi
   [ -d /run/systemd/system ] || {
     echo "homebrew-patched-launcher: systemd is not the active service manager" >&2
     return 2
@@ -1742,7 +1749,7 @@ homebrew_patched_launcher_isolate() {
     HOMEBREW_NO_INSTALL_CLEANUP HOMEBREW_NO_ANALYTICS HOMEBREW_DEVELOPER
     KANDELO_HOMEBREW_ARCH
     HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_NODE
-    HOMEBREW_KANDELO_LLVM_BIN HOMEBREW_KANDELO_ABI
+    HOMEBREW_KANDELO_GNU_TAR HOMEBREW_KANDELO_LLVM_BIN HOMEBREW_KANDELO_ABI
     HOMEBREW_KANDELO_NODE_RECEIPT_PATH
     LLVM_BIN WASM_POSIX_LLVM_DIR
     NIX_SSL_CERT_FILE SSL_CERT_FILE PLAYWRIGHT_BROWSERS_PATH

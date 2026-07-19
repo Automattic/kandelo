@@ -70,6 +70,10 @@
             pkgs.pkg-config
             pkgs.gnumake
             pkgs.bash
+            # GNU tar is a declared publisher input. Kandelo's temporary
+            # Homebrew overlay uses Homebrew's upstream reproducible tar flags
+            # for bottles that retain an embedded installation receipt.
+            pkgs.gnutar
             pkgs.wget
             pkgs.zstd
             pkgs.git

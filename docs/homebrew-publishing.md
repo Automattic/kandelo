@@ -312,11 +312,69 @@ the already provisioned target bottles and exact native proxy kegs instead of
 resolving both package realms into one Cellar. The verifier still runs the
 Formula's `test do` block after pouring the target bottle.
 
-This separation changes publisher orchestration, not Kandelo's process ABI or
-a package's target build inputs. By itself it does not require an ABI version
-bump, a `build.toml` package revision change, or a rebuild of existing package
-archives or bottle outputs. Those artifacts change only when their actual
-output inputs change.
+### Retained-receipt bottle repeatability
+
+Homebrew's general reproducible-bottle path uses `brew bottle
+--only-json-tab`: it omits `INSTALL_RECEIPT.json` from the archive and carries
+the Tab separately in bottle metadata. Kandelo deliberately does not use that
+mode. The static VFS composer does not run Homebrew's install/pour transaction;
+it extracts the bottle directly, validates the link-manifest receipts, and
+preserves `.brew/<formula>.rb` plus `INSTALL_RECEIPT.json` in the staged keg.
+Removing the embedded receipt would therefore break the current static image
+composition contract.
+
+The publisher-only Homebrew overlay makes this retained-receipt path repeatable
+for retries in the same build environment. `flake.nix` declares GNU tar, the
+builder accepts only the immutable Nix-store `gnutar` executable, and the
+isolated launcher proves that neither the dedicated Formula identity nor any
+writable ancestor can replace it. The overlay captures that validated path
+before Formula evaluation and passes it to Homebrew's existing
+`reproducible_gnutar_args`; Kandelo does not maintain a second set of tar
+flags. Those upstream arguments fix entry order, owner/group identity, PAX
+header naming, and entry mtimes to the receipt's stable source-modified time.
+The completed gzip file is assigned that same stable mtime, which also makes
+Homebrew's raw bottle-JSON `bottle.date` stable.
+
+Before archiving, the overlay requires the receipt's `source.tap` and exact
+lowercase 40-character `source.tap_git_head` to match the selected tap name and
+revision already resolved by `brew bottle`. It then assigns the temporary Tab a
+fresh copy of its `source` object and removes only `tap_git_head` from that
+copy. This assignment is important because Homebrew's saved Tab copy is
+shallow: deleting from the original object would also erase the provenance
+that its `ensure` block restores. On both success and failure, upstream
+Homebrew rewrites the installed build receipt from the saved Tab, retaining
+the exact selected tap head. A normal later Homebrew pour likewise writes a
+fresh installed receipt for the selected Formula and its exact current tap
+head.
+
+The archived receipt used by static VFS composition intentionally has no
+`source.tap_git_head`. The VFS builder preserves those receipt bytes instead of
+pretending that it performed a Homebrew pour; the separately generated
+`/etc/kandelo/homebrew-vfs.json` binds the exact canonical tap name and planned
+tap commit for the composed image. Consumers must use that composition
+metadata—not infer a pour event from the sanitized embedded receipt—for the
+static image's tap provenance.
+
+This is a bounded repeatability guarantee, not universal cross-runner
+reproducibility. For the same package source, Formula/support closure,
+dependencies, target outputs, pinned Homebrew, and build environment, a retry
+whose only change is a later tap failure/finalizer commit produces the same
+bottle archive SHA. The retained Tab still includes environment-derived fields
+such as `built_on` and `compiler`, while raw `.bottle.json` truthfully retains
+`formula.tap_git_revision`; raw JSON can therefore differ when the planned tap
+head changes even though the bottle layer does not. Runner-image, compiler,
+CPU, dependency, or other build-environment changes require a new supported
+bottle identity (a bottle rebuild or Formula revision), not reuse of an
+existing immutable package reference.
+
+The native/target realm separation changes publisher orchestration, not
+Kandelo's process ABI or a package's target build inputs. The retained-receipt
+normalization likewise does not change the target payload, but it does change
+the packaging bytes of a bottle previously archived with the default tar path
+and mutable tap head. An affected bottle that is already public must be
+republished under a new supported immutable bottle identity; its existing
+registry reference must never be overwritten. Neither publisher change by
+itself requires an ABI version bump or a `build.toml` package revision change.
 
 After building the consumer, the builder checks every same-tap dependency in
 its `INSTALL_RECEIPT.json`. The installed dependency receipt must say
