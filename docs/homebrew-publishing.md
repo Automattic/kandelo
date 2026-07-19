@@ -790,7 +790,16 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    tree for the verifier identity. Runtime provenance remains limited to the
    runtime-only closure. The target cache then starts empty, source fallback is
    forbidden, and Homebrew itself must fetch, force-pour, inspect, and test the
-   exact public bottle. Formula and
+   exact public bottle. For a GitHub Container Registry (GHCR) bottle, Homebrew
+   normally logs the version/rebuild manifest endpoint that it fetches, such as
+   `.../zlib/manifests/1.3.1_3`, rather than the selected layer's digest URL.
+   Runtime evidence accepts a fetch action for either that exact expected
+   manifest endpoint or the exact bottle blob URL. A manifest log line is not
+   sufficient by itself: the verifier has already anonymously validated the
+   top-index-to-child-to-layer graph, and it still requires the Formula metadata
+   to select the exact blob, exactly one cached archive to match the expected
+   SHA-256 and byte count, the exact bottle filename to be poured, and
+   Homebrew's install receipt to report a bottle install. Formula and
    support source are checked out fresh again before sidecar generation, which
    does not execute Formula Ruby. A bounded
    archive inspector independently derives the keg file inventory, executable
