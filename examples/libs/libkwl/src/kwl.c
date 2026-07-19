@@ -14,14 +14,17 @@
  *   - pointer enter/motion/button
  * events land in a fixed ring the app pops via kwl_dispatch().
  *
- * Client-side decoration (CSD): every window carries a KWL_TITLEBAR_H-px
- * titlebar libkwl draws once into each buffer — title text plus a close
- * box. The buffer the compositor sees is (w × h+titlebar); the app's
- * kwl_window_surface() is a sub-view starting below the titlebar, and all
- * pointer events the app receives are content-local. A press on the
- * titlebar is not forwarded: it either emits KWL_CLOSE (on the close box)
- * or asks the compositor to start an interactive move via
- * xdg_toplevel.move — the standard Wayland CSD drag contract. */
+ * Decoration is negotiated: tb_h is the titlebar height the compositor
+ * grants — KWL_TITLEBAR_H under client-side decoration, 0 under server-side
+ * (a tiling WM draws its own border). When present, libkwl draws the
+ * titlebar once into each buffer (title text plus a close box); the buffer
+ * the compositor sees is (w × h+tb_h), the app's kwl_window_surface() is a
+ * sub-view starting below it, and pointer events reach the app content-local.
+ * A press on the titlebar is not forwarded: it emits KWL_CLOSE (close box) or
+ * starts an interactive move via xdg_toplevel.move — the CSD drag contract.
+ *
+ * Resize: on a compositor-dictated configure, kwl_apply_resize() rebuilds
+ * both buffers at the new size and posts KWL_RESIZE for the app to re-lay-out. */
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -36,6 +39,7 @@
 #include <wayland-client.h>
 #include <wayland-client-protocol.h>
 #include "xdg-shell-client-protocol.h"
+#include "xdg-decoration-v1-client-protocol.h"
 
 #include <gbm.h>
 #include <xkbcommon/xkbcommon.h>
@@ -75,10 +79,16 @@ struct kwl_window {
     struct xdg_toplevel *toplevel;
     struct wl_keyboard *keyboard;
     struct wl_pointer *pointer;
+    struct zxdg_decoration_manager_v1 *decor_mgr;
+    struct zxdg_toplevel_decoration_v1 *decor;
 
+    char *title;     /* retained: redrawn into the titlebar on resize */
     int w, h;        /* app-visible CONTENT size */
-    int total_h;     /* h + KWL_TITLEBAR_H — the wl_surface size */
+    int tb_h;        /* titlebar height: 0 under server-side decoration */
+    int total_h;     /* h + tb_h — the wl_surface size */
     int configured;
+    int mapped;      /* first buffer committed; a later configure = resize */
+    int pending_w, pending_h;   /* last configure's surface size (0 = keep) */
 
     /* gbm allocation for the shared wl_shm buffers. */
     int render_fd;
@@ -100,6 +110,9 @@ struct kwl_window {
     struct kwl_event evq[KWL_EVQ_SIZE];
     int evq_head, evq_tail, evq_count;
 };
+
+/* Reallocate the buffers to a new content size and post KWL_RESIZE. */
+static void kwl_apply_resize(struct kwl_window *w, int cw, int ch);
 
 /* ---- event ring -------------------------------------------------------- */
 
@@ -134,6 +147,9 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
         w->seat = wl_registry_bind(reg, name, &wl_seat_interface, 1);
     else if (strcmp(iface, "wl_output") == 0)
         w->output = wl_registry_bind(reg, name, &wl_output_interface, 2);
+    else if (strcmp(iface, "zxdg_decoration_manager_v1") == 0)
+        w->decor_mgr = wl_registry_bind(
+            reg, name, &zxdg_decoration_manager_v1_interface, 1);
 }
 static void registry_global_remove(void *data, struct wl_registry *r,
                                    uint32_t name) {}
@@ -151,20 +167,50 @@ static const struct xdg_wm_base_listener wm_base_listener = {
     .ping = wm_base_ping,
 };
 
+/* The compositor grants a decoration mode: SERVER_SIDE means it draws the
+ * border itself, so we drop our CSD titlebar (tb_h 0); CLIENT_SIDE keeps it.
+ * Delivered once, in the create roundtrip before the buffers are sized. */
+static void decoration_configure(void *data,
+                                 struct zxdg_toplevel_decoration_v1 *d,
+                                 uint32_t mode) {
+    struct kwl_window *w = data;
+    w->tb_h = mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                  ? 0
+                  : KWL_TITLEBAR_H;
+}
+static const struct zxdg_toplevel_decoration_v1_listener decoration_listener = {
+    .configure = decoration_configure,
+};
+
+/* xdg_surface.configure is the commit barrier for a batch of toplevel state.
+ * The pending toplevel size (if the compositor dictated one) takes effect
+ * here: once mapped, a size that differs from the current surface is a
+ * tiling resize. */
 static void xdg_surface_configure(void *data, struct xdg_surface *xs,
                                   uint32_t serial) {
     struct kwl_window *w = data;
     xdg_surface_ack_configure(xs, serial);
     w->configured = 1;
+    if (w->mapped && w->pending_w > 0 && w->pending_h > 0) {
+        int cw = w->pending_w, ch = w->pending_h - w->tb_h;
+        if (ch > 0 && (cw != w->w || ch != w->h))
+            kwl_apply_resize(w, cw, ch);
+    }
+    w->pending_w = w->pending_h = 0;
 }
 static const struct xdg_surface_listener xdg_surface_listener = {
     .configure = xdg_surface_configure,
 };
 
-/* v1 ignores the compositor's suggested size — the window keeps the size
- * the app requested (surfaces are fixed-size in v1). */
+/* Record the compositor's suggested surface size; 0×0 ("you decide", the
+ * floating case) leaves the window at the size the app asked for. The resize
+ * itself is deferred to the xdg_surface.configure barrier above. */
 static void toplevel_configure(void *data, struct xdg_toplevel *t, int32_t w,
-                               int32_t h, struct wl_array *states) {}
+                               int32_t h, struct wl_array *states) {
+    struct kwl_window *win = data;
+    win->pending_w = w;
+    win->pending_h = h;
+}
 static void toplevel_close(void *data, struct xdg_toplevel *t) {
     struct kwl_window *win = data;
     struct kwl_event e = { .type = KWL_CLOSE };
@@ -284,10 +330,10 @@ static const struct wl_keyboard_listener keyboard_listener = {
 
 /* ---- pointer ----------------------------------------------------------- */
 
-/* The close box rect, in surface coordinates. */
+/* The close box rect, in surface coordinates (CSD only). */
 static int in_close_box(struct kwl_window *w, int x, int y) {
     int bx = w->w - KWL_TB_CLOSE_MARGIN - KWL_TB_CLOSE_SZ;
-    int by = (KWL_TITLEBAR_H - KWL_TB_CLOSE_SZ) / 2;
+    int by = (w->tb_h - KWL_TB_CLOSE_SZ) / 2;
     return x >= bx && x < bx + KWL_TB_CLOSE_SZ &&
            y >= by && y < by + KWL_TB_CLOSE_SZ;
 }
@@ -305,11 +351,11 @@ static void ptr_motion(void *data, struct wl_pointer *p, uint32_t time,
     struct kwl_window *w = data;
     w->ptr_x = wl_fixed_to_int(x);
     w->ptr_y = wl_fixed_to_int(y);
-    if (w->ptr_y < KWL_TITLEBAR_H) return;   /* decoration, not app content */
+    if (w->ptr_y < w->tb_h) return;   /* decoration, not app content */
     struct kwl_event e = {
         .type = KWL_POINTER_MOTION,
         .x = w->ptr_x,
-        .y = w->ptr_y - KWL_TITLEBAR_H,
+        .y = w->ptr_y - w->tb_h,
     };
     kwl_push(w, &e);
 }
@@ -317,7 +363,7 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
                        uint32_t time, uint32_t button, uint32_t state) {
     struct kwl_window *w = data;
     if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
-        w->ptr_y < KWL_TITLEBAR_H) {
+        w->ptr_y < w->tb_h) {
         /* Titlebar interactions are the toolkit's, not the app's. */
         if (in_close_box(w, w->ptr_x, w->ptr_y)) {
             struct kwl_event e = { .type = KWL_CLOSE };
@@ -339,7 +385,7 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
         .button = button,
         .state = state,
         .x = w->ptr_x,
-        .y = w->ptr_y - KWL_TITLEBAR_H,
+        .y = w->ptr_y - w->tb_h,
     };
     kwl_push(w, &e);
 }
@@ -406,11 +452,22 @@ static int kwl_buffer_init(struct kwl_window *w, struct kwl_buffer *b) {
     return 0;
 }
 
-/* The app's drawable: the buffer rows below the titlebar. */
+/* Release one buffer's bo + wl_buffer (the inverse of kwl_buffer_init). */
+static void kwl_buffer_fini(struct kwl_buffer *b) {
+    if (b->wl_buf) wl_buffer_destroy(b->wl_buf);
+    if (b->bo) {
+        if (b->map_data) gbm_bo_unmap(b->bo, b->map_data);
+        gbm_bo_destroy(b->bo);
+    }
+    memset(b, 0, sizeof(*b));
+}
+
+/* The app's drawable: the buffer rows below the titlebar (all rows under
+ * server-side decoration, where tb_h is 0). */
 static struct wpk_surface content_view(struct kwl_window *w,
                                        struct kwl_buffer *b) {
     return wpk_surface_wrap(
-        b->pixels + (size_t)KWL_TITLEBAR_H * (b->stride / 4), w->w, w->h,
+        b->pixels + (size_t)w->tb_h * (b->stride / 4), w->w, w->h,
         b->stride);
 }
 
@@ -450,7 +507,8 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     if (!win) { errno = ENOMEM; return NULL; }
     win->w = w;
     win->h = h;
-    win->total_h = h + KWL_TITLEBAR_H;
+    win->tb_h = KWL_TITLEBAR_H;   /* CSD default; SSD negotiation zeroes it */
+    if (title) win->title = strdup(title);
 
     int fd = connect_socket();
     if (fd < 0) goto fail;
@@ -486,11 +544,25 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
         /* The compositor's placement rules key on app_id. */
         xdg_toplevel_set_app_id(win->toplevel, title);
     }
+
+    /* Ask for a decoration so the compositor tells us whether it draws the
+     * border (SSD → no titlebar) or we do (CSD). It answers with a configure
+     * that decoration_configure() folds into tb_h before we size buffers. */
+    if (win->decor_mgr) {
+        win->decor = zxdg_decoration_manager_v1_get_toplevel_decoration(
+            win->decor_mgr, win->toplevel);
+        if (win->decor)
+            zxdg_toplevel_decoration_v1_add_listener(
+                win->decor, &decoration_listener, win);
+    }
     wl_surface_commit(win->surface);
 
-    /* Wait for the initial configure before attaching a buffer. */
+    /* Wait for the initial configure (+ the decoration mode) before sizing
+     * and attaching a buffer. */
     while (!win->configured)
         if (wl_display_dispatch(win->display) < 0) goto fail;
+
+    win->total_h = h + win->tb_h;
 
     /* gbm-backed double buffer. */
     win->render_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
@@ -500,11 +572,14 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     for (int i = 0; i < KWL_NUM_BUFFERS; i++)
         if (kwl_buffer_init(win, &win->bufs[i]) != 0) goto fail;
 
-    /* Decorate both buffers once; the app only ever draws the content. */
-    struct wpk_font *tb_font = wpk_font_load_default(KWL_TB_FONT_PX);
-    for (int i = 0; i < KWL_NUM_BUFFERS; i++)
-        draw_titlebar(win, &win->bufs[i], title, tb_font);
-    if (tb_font) wpk_font_destroy(tb_font);
+    /* Decorate both buffers once (skipped under SSD, tb_h 0); the app only
+     * ever draws the content. */
+    if (win->tb_h > 0) {
+        struct wpk_font *tb_font = wpk_font_load_default(KWL_TB_FONT_PX);
+        for (int i = 0; i < KWL_NUM_BUFFERS; i++)
+            draw_titlebar(win, &win->bufs[i], title, tb_font);
+        if (tb_font) wpk_font_destroy(tb_font);
+    }
 
     win->back_index = 0;
     win->back = content_view(win, &win->bufs[0]);
@@ -517,19 +592,16 @@ fail:
 
 void kwl_window_destroy(struct kwl_window *win) {
     if (!win) return;
-    for (int i = 0; i < KWL_NUM_BUFFERS; i++) {
-        struct kwl_buffer *b = &win->bufs[i];
-        if (b->wl_buf) wl_buffer_destroy(b->wl_buf);
-        if (b->bo) {
-            if (b->map_data) gbm_bo_unmap(b->bo, b->map_data);
-            gbm_bo_destroy(b->bo);
-        }
-    }
+    for (int i = 0; i < KWL_NUM_BUFFERS; i++)
+        kwl_buffer_fini(&win->bufs[i]);
     if (win->gbm) gbm_device_destroy(win->gbm);
     if (win->render_fd > 0) close(win->render_fd);
     if (win->xkb_state) xkb_state_unref(win->xkb_state);
     if (win->xkb_keymap) xkb_keymap_unref(win->xkb_keymap);
     if (win->xkb_ctx) xkb_context_unref(win->xkb_ctx);
+    if (win->decor) zxdg_toplevel_decoration_v1_destroy(win->decor);
+    if (win->decor_mgr) zxdg_decoration_manager_v1_destroy(win->decor_mgr);
+    free(win->title);
     if (win->toplevel) xdg_toplevel_destroy(win->toplevel);
     if (win->xdg_surface) xdg_surface_destroy(win->xdg_surface);
     if (win->surface) wl_surface_destroy(win->surface);
@@ -541,7 +613,34 @@ struct wpk_surface *kwl_window_surface(struct kwl_window *win) {
     return &win->back;
 }
 
+/* A tiling compositor dictated a new size: rebuild both buffers, redraw the
+ * titlebar (CSD only), reset the back buffer, and hand the app a KWL_RESIZE
+ * so it re-lays-out its content. The app's next kwl_window_commit presents
+ * the new geometry. */
+static void kwl_apply_resize(struct kwl_window *w, int cw, int ch) {
+    for (int i = 0; i < KWL_NUM_BUFFERS; i++)
+        kwl_buffer_fini(&w->bufs[i]);
+    w->w = cw;
+    w->h = ch;
+    w->total_h = ch + w->tb_h;
+    for (int i = 0; i < KWL_NUM_BUFFERS; i++)
+        if (kwl_buffer_init(w, &w->bufs[i]) != 0) return;   /* OOM: leave broken */
+
+    if (w->tb_h > 0) {
+        struct wpk_font *tb_font = wpk_font_load_default(KWL_TB_FONT_PX);
+        for (int i = 0; i < KWL_NUM_BUFFERS; i++)
+            draw_titlebar(w, &w->bufs[i], w->title, tb_font);
+        if (tb_font) wpk_font_destroy(tb_font);
+    }
+
+    w->back_index = 0;
+    w->back = content_view(w, &w->bufs[0]);
+    struct kwl_event e = { .type = KWL_RESIZE, .x = cw, .y = ch };
+    kwl_push(w, &e);
+}
+
 void kwl_window_commit(struct kwl_window *win) {
+    win->mapped = 1;   /* first commit maps; later configures are resizes */
     struct kwl_buffer *b = &win->bufs[win->back_index];
     wl_surface_attach(win->surface, b->wl_buf, 0, 0);
     wl_surface_damage(win->surface, 0, 0, win->w, win->total_h);

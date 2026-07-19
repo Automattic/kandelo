@@ -894,6 +894,68 @@ fn handle_dri_ioctl(
             }
             Ok(())
         }
+        DRM_IOCTL_WPK_CREATE_GPU_BO => {
+            if buf.len() < core::mem::size_of::<WpkDrmGpuBoCreate>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmGpuBoCreate =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.width == 0 || req.height == 0 {
+                return Err(Errno::EINVAL);
+            }
+            // GPU-tier bos are always 32bpp (ARGB/XRGB8888). Allocate in
+            // the registry first so the id/stride are known before asking
+            // the host to build the texture. Roll back on host failure.
+            let (bo_id, stride) = crate::dri::with_registry(|r| {
+                let bo = r.alloc_gpu(req.width, req.height, 32);
+                (bo.id, bo.stride)
+            });
+            let host_rc =
+                host.gbm_gpu_bo_create(pid, bo_id, req.width, req.height, req.format, req.usage);
+            if host_rc < 0 {
+                crate::dri::with_registry(|r| {
+                    r.decref(bo_id);
+                });
+                return Err(Errno::ENOMEM);
+            }
+            // Register a fresh per-fd handle. On EMFILE, roll back the bo
+            // and its host texture.
+            let handle = match dri_state_mut(proc, ofd_idx) {
+                Ok(dri) => {
+                    let h = dri.next_handle;
+                    match dri.next_handle.checked_add(1) {
+                        Some(n) => {
+                            dri.next_handle = n;
+                            dri.handles.insert(h, bo_id);
+                            h
+                        }
+                        None => {
+                            crate::dri::with_registry(|r| {
+                                r.decref(bo_id);
+                            });
+                            host.gbm_bo_destroy(pid, bo_id);
+                            return Err(Errno::EMFILE);
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::dri::with_registry(|r| {
+                        r.decref(bo_id);
+                    });
+                    host.gbm_bo_destroy(pid, bo_id);
+                    return Err(e);
+                }
+            };
+            // Write back over the same 16-byte buffer: width/height are
+            // echoed unchanged, `format`/`usage` slots become
+            // `handle`/`stride` outputs (see WpkDrmGpuBoCreate docs).
+            req.format = handle;
+            req.usage = stride;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
         DRM_IOCTL_MODE_MAP_DUMB => {
             if buf.len() < core::mem::size_of::<WpkDrmModeMapDumb>() {
                 return Err(Errno::EINVAL);
@@ -904,6 +966,16 @@ fn handle_dri_ioctl(
                 .handles
                 .get(&req.handle)
                 .ok_or(Errno::ENOENT)?;
+            // GPU-tier bos have no CPU-side SAB, so they cannot be mapped.
+            // Reject here (matching a real driver's EINVAL on a
+            // scanout/render-only bo) rather than handing back an offset
+            // that the mmap path would then fail to decode.
+            let is_gpu = crate::dri::with_registry(|r| {
+                r.get(bo_id).map(|b| b.tier == crate::dri::BoTier::GpuTexture)
+            });
+            if is_gpu == Some(true) {
+                return Err(Errno::EINVAL);
+            }
             // The "mmap offset" is just the BoId page-shifted so it
             // can't collide with file offsets. The mmap path decodes
             // the offset back to a BoId.
@@ -1143,15 +1215,28 @@ fn handle_dri_ioctl(
             Ok(())
         }
         gl::GLIO_CREATE_SURFACE => {
-            if buf.len() < core::mem::size_of::<gl::GlSurfaceAttrs>() {
+            let attrs_size = core::mem::size_of::<gl::GlSurfaceAttrs>();
+            if buf.len() < attrs_size {
                 return Err(Errno::EINVAL);
             }
-            let attrs_bytes = &buf[..core::mem::size_of::<gl::GlSurfaceAttrs>()];
             let attrs: gl::GlSurfaceAttrs =
-                unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             if attrs.kind != gl::WPK_SURFACE_DEFAULT && attrs.kind != gl::WPK_SURFACE_PBUFFER {
                 return Err(Errno::EINVAL);
             }
+            // GPU-tier producer targeting (PR10 §7.1): `reserved[0]` carries
+            // the target bo HANDLE (eglCreateWindowSurface's
+            // EGL_WPK_TARGET_BO attrib) — the bo whose FBO this window
+            // surface renders into. Translate it to the global bo_id here
+            // (the host can't resolve a per-fd handle), exactly as
+            // BIND_FOREIGN_TEXTURE does. 0 = no target (an ordinary canvas
+            // / scanout surface), the common case.
+            let target_bo_id: u32 = if attrs.reserved[0] != 0 {
+                let dri = dri_state(proc, ofd_idx)?;
+                *dri.handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?
+            } else {
+                0
+            };
             let surface_id;
             {
                 let dri = dri_state_mut(proc, ofd_idx)?;
@@ -1165,6 +1250,12 @@ fn handle_dri_ioctl(
                 surface_id = 1u32;
                 gls.surface_id = Some(surface_id);
             }
+            // Overwrite `reserved[0]` in place with the resolved global
+            // bo_id so the host — which reads these bytes by pointer —
+            // sees an id it can look up, not the per-fd handle. reserved[0]
+            // is at byte offset 16 in the 32-byte GlSurfaceAttrs.
+            buf[16..20].copy_from_slice(&target_bo_id.to_le_bytes());
+            let attrs_bytes = &buf[..attrs_size];
             host.gl_create_surface(pid, surface_id, attrs_bytes);
             Ok(())
         }
@@ -2367,18 +2458,53 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                         };
                     }
                     if let Some(send_idx) = sock.send_buf_idx {
-                        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
-                        if let Some(pipe) = pipe {
-                            pipe.close_write_end();
-                            unsafe { crate::pipe::global_pipe_table().free_if_closed(send_idx) };
+                        // If this close fully closes the pipe, no one can ever
+                        // receive its still-queued SCM_RIGHTS FDs — release the
+                        // channel's in-flight bo refcount so those bos don't leak.
+                        let drained = {
+                            let pipe =
+                                unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
+                            if let Some(pipe) = pipe {
+                                pipe.close_write_end();
+                                if pipe.is_fully_closed() {
+                                    pipe.take_pending_prime_bo_ids()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        };
+                        for bo_id in drained {
+                            let rc = crate::dri::with_registry(|r| r.decref(bo_id));
+                            if rc == Some(0) {
+                                host.gbm_bo_destroy(pid as i32, bo_id);
+                            }
                         }
+                        unsafe { crate::pipe::global_pipe_table().free_if_closed(send_idx) };
                     }
                     if let Some(recv_idx) = sock.recv_buf_idx {
-                        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
-                        if let Some(pipe) = pipe {
-                            pipe.close_read_end();
-                            unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
+                        let drained = {
+                            let pipe =
+                                unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
+                            if let Some(pipe) = pipe {
+                                pipe.close_read_end();
+                                if pipe.is_fully_closed() {
+                                    pipe.take_pending_prime_bo_ids()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        };
+                        for bo_id in drained {
+                            let rc = crate::dri::with_registry(|r| r.decref(bo_id));
+                            if rc == Some(0) {
+                                host.gbm_bo_destroy(pid as i32, bo_id);
+                            }
                         }
+                        unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
                     }
                 }
                 proc.sockets.free(sock_idx);
@@ -6224,8 +6350,16 @@ pub fn sys_mmap(
                 return Ok(addr_out);
             }
             let bo_id = ((offset as u64) >> 12) as crate::dri::BoId;
-            let bo_size = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.size))
-                .ok_or(Errno::EINVAL)?;
+            let (bo_size, bo_tier) = crate::dri::with_registry(|r| {
+                r.get(bo_id).map(|b| (b.size, b.tier))
+            })
+            .ok_or(Errno::EINVAL)?;
+            // GPU-tier bos have no CPU-side SAB. MAP_DUMB already refuses
+            // to hand out an offset for them, but guard the mmap path too
+            // (a caller could forge the encoded offset directly).
+            if bo_tier == crate::dri::BoTier::GpuTexture {
+                return Err(Errno::EINVAL);
+            }
             // Accept either the raw bo size (matching what DRM_IOCTL_MODE_
             // CREATE_DUMB returned and what the libgbm stub + direct
             // mmap callers pass) or the wasm-page-aligned size some
@@ -11665,6 +11799,18 @@ mod tests {
         /// Return value for `gl_bind_foreign_texture` (> 0 = texture id,
         /// <= 0 = failure → the ioctl surfaces EIO).
         gl_bind_foreign_texture_rc: i32,
+        /// Recorded `(pid, bo_id, width, height, format, usage)` for every
+        /// `gbm_gpu_bo_create` call (WPK_CREATE_GPU_BO).
+        gbm_gpu_bo_create_calls: Vec<(i32, u32, u32, u32, u32, u32)>,
+        /// Return value for `gbm_gpu_bo_create` (>= 0 = success, negative =
+        /// errno → the ioctl surfaces ENOMEM). Defaults to 0.
+        gbm_gpu_bo_create_rc: i32,
+        /// Recorded `(pid, bo_id)` for every `gbm_bo_destroy` call.
+        gbm_bo_destroy_calls: Vec<(i32, u32)>,
+        /// Recorded `(pid, surface_id, attrs_bytes)` for every
+        /// `gl_create_surface` call — lets tests assert the kernel handed
+        /// the host a resolved target bo_id in `attrs.reserved[0]`.
+        gl_create_surface_calls: Vec<(i32, u32, Vec<u8>)>,
     }
 
     impl MockHostIO {
@@ -11690,6 +11836,10 @@ mod tests {
                 kms_set_fb_calls: Vec::new(),
                 gl_bind_foreign_texture_calls: Vec::new(),
                 gl_bind_foreign_texture_rc: 7,
+                gbm_gpu_bo_create_calls: Vec::new(),
+                gbm_gpu_bo_create_rc: 0,
+                gbm_bo_destroy_calls: Vec::new(),
+                gl_create_surface_calls: Vec::new(),
             }
         }
 
@@ -12157,7 +12307,22 @@ mod tests {
         ) -> i32 {
             0
         }
-        fn gbm_bo_destroy(&mut self, _pid: i32, _bo_id: u32) {}
+        fn gbm_gpu_bo_create(
+            &mut self,
+            pid: i32,
+            bo_id: u32,
+            width: u32,
+            height: u32,
+            format: u32,
+            usage: u32,
+        ) -> i32 {
+            self.gbm_gpu_bo_create_calls
+                .push((pid, bo_id, width, height, format, usage));
+            self.gbm_gpu_bo_create_rc
+        }
+        fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
+            self.gbm_bo_destroy_calls.push((pid, bo_id));
+        }
         fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
             self.gbm_bo_bind_calls.push((pid, bo_id, addr, len));
             self.gbm_bo_bind_rc
@@ -12178,6 +12343,10 @@ mod tests {
             self.gl_bind_foreign_texture_calls
                 .push((pid, ctx_id, bo_id, gl_target));
             self.gl_bind_foreign_texture_rc
+        }
+        fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {
+            self.gl_create_surface_calls
+                .push((pid, surface_id, attrs.to_vec()));
         }
     }
 
@@ -22077,6 +22246,122 @@ mod tests {
     }
 
     #[test]
+    fn dri_ioctl_create_gpu_bo_returns_handle_stride_and_calls_host() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // width/height in; format/usage passed through to the host.
+        let req = WpkDrmGpuBoCreate {
+            width: 64,
+            height: 32,
+            format: 0x3432_5258, // DRM_FORMAT_XRGB8888
+            usage: 0x5,          // GBM_BO_USE_SCANOUT|RENDERING
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf).unwrap();
+
+        let out: WpkDrmGpuBoCreate =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGpuBoCreate) };
+        assert_eq!(out.width, 64, "width echoed unchanged");
+        assert_eq!(out.height, 32, "height echoed unchanged");
+        assert_eq!(out.format, 1, "format slot becomes the out handle");
+        assert_eq!(out.usage, 64 * 4, "usage slot becomes the out stride (bytes)");
+
+        // The host received one gpu-bo-create with the original
+        // format/usage and the registry's bo id.
+        assert_eq!(host.gbm_gpu_bo_create_calls.len(), 1);
+        let (cpid, _bo, cw, ch, cfmt, cusage) = host.gbm_gpu_bo_create_calls[0];
+        assert_eq!((cpid, cw, ch, cfmt, cusage), (1, 64, 32, 0x3432_5258, 0x5));
+    }
+
+    #[test]
+    fn dri_ioctl_create_gpu_bo_rejects_zero_dims() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        for (w, h) in [(0u32, 32u32), (64, 0)] {
+            let req = WpkDrmGpuBoCreate { width: w, height: h, format: 0, usage: 0 };
+            let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };
+            assert_eq!(
+                sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf)
+                    .unwrap_err(),
+                Errno::EINVAL
+            );
+        }
+        assert!(host.gbm_gpu_bo_create_calls.is_empty(), "no host call on reject");
+    }
+
+    #[test]
+    fn dri_ioctl_create_gpu_bo_rolls_back_on_host_failure() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.gbm_gpu_bo_create_rc = -(Errno::ENOMEM as i32);
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let req = WpkDrmGpuBoCreate { width: 8, height: 8, format: 0, usage: 0 };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf).unwrap_err(),
+            Errno::ENOMEM
+        );
+        // The registry allocation was rolled back — the bo id it would
+        // have used is now free, so the next alloc reclaims nothing stale
+        // (tombstone gap) but no live bo leaked.
+        assert!(
+            crate::dri::with_registry(|r| r.get(1).is_none()),
+            "failed gpu bo must be decref'd, not leaked"
+        );
+        // No per-fd handle was installed either.
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .handles
+            .is_empty());
+    }
+
+    #[test]
+    fn dri_ioctl_map_dumb_rejects_gpu_tier_bo() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // Create a GPU-tier bo, grab its handle.
+        let req = WpkDrmGpuBoCreate { width: 16, height: 16, format: 0, usage: 0 };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf).unwrap();
+        let created: WpkDrmGpuBoCreate =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGpuBoCreate) };
+        let handle = created.format; // out handle lives in the format slot
+
+        // MAP_DUMB on a GPU-tier bo is rejected — it has no CPU SAB.
+        let map = WpkDrmModeMapDumb { handle, pad: 0, offset: 0 };
+        let mut mbuf = [0u8; core::mem::size_of::<WpkDrmModeMapDumb>()];
+        unsafe { core::ptr::write_unaligned(mbuf.as_mut_ptr() as *mut WpkDrmModeMapDumb, map) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_MAP_DUMB, &mut mbuf).unwrap_err(),
+            Errno::EINVAL
+        );
+    }
+
+    #[test]
     fn dri_ioctl_map_dumb_returns_bo_id_shifted_offset() {
         use wasm_posix_shared::dri::*;
         let mut proc = Process::new(1);
@@ -23077,6 +23362,45 @@ mod tests {
     }
 
     #[test]
+    fn mmap_dri_rejects_gpu_tier_bo_offset() {
+        // A GPU-tier bo has no CPU-side SAB. MAP_DUMB already refuses to
+        // hand out an offset for it, but a caller could forge the encoded
+        // offset (bo_id << 12) directly — the mmap path must still reject
+        // it rather than bind a nonexistent SAB slice.
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // First registry alloc → bo id 1; forge its encoded mmap offset.
+        let req = WpkDrmGpuBoCreate { width: 64, height: 64, format: 0, usage: 0 };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf).unwrap();
+
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            (1u64 << 12) as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+        assert!(host.gbm_bo_bind_calls.is_empty());
+        assert!(proc.dri_bindings.is_empty());
+    }
+
+    #[test]
     fn mmap_dri_rolls_back_when_host_bind_fails() {
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
@@ -23429,6 +23753,81 @@ mod tests {
                 .unwrap_err(),
             Errno::EIO,
         );
+    }
+
+    #[test]
+    fn glio_create_surface_translates_target_bo_handle() {
+        // GPU-tier producer targeting: GLIO_CREATE_SURFACE's reserved[0]
+        // carries the target bo HANDLE; the kernel must translate it to a
+        // global bo_id (which the host can resolve) before forwarding, and
+        // reject an unknown handle with ENOENT.
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::gl;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Two fds so this fd's local handle (1) differs from the resolved
+        // global bo id (2), proving the kernel translated rather than
+        // forwarded the raw handle.
+        let fd_a = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let dumb = WpkDrmModeCreateDumb { width: 64, height: 32, bpp: 32, ..Default::default() };
+        let mut dbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(dbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, dumb) };
+        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_MODE_CREATE_DUMB, &mut dbuf).unwrap();
+        unsafe { core::ptr::write_unaligned(dbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, dumb) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut dbuf).unwrap();
+        let dumb_out: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(dbuf.as_ptr() as *const _) };
+        assert_eq!(dumb_out.handle, 1); // this fd's local handle
+
+        // Bring up the GL session + context on `fd`.
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        let cattrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 3] };
+        let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, cattrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
+
+        let sz = core::mem::size_of::<gl::GlSurfaceAttrs>();
+        let mut sbuf = vec![0u8; sz];
+        let mut nullbuf = [0u8; 0];
+        let read_reserved0 =
+            |bytes: &[u8]| u32::from_le_bytes(bytes[16..20].try_into().unwrap());
+
+        // (1) No target (reserved[0]=0) → host sees 0 (ordinary surface).
+        let s0 = gl::GlSurfaceAttrs {
+            kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [0; 4],
+        };
+        unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s0) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap();
+        assert_eq!(read_reserved0(&host.gl_create_surface_calls[0].2), 0);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut nullbuf).unwrap();
+
+        // (2) Target this fd's local handle 1 → host sees global bo_id 2.
+        let s1 = gl::GlSurfaceAttrs {
+            kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [1, 0, 0, 0],
+        };
+        unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s1) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap();
+        assert_eq!(read_reserved0(&host.gl_create_surface_calls[1].2), 2);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut nullbuf).unwrap();
+
+        // (3) Unknown target handle → ENOENT, and the host is NOT called.
+        let s2 = gl::GlSurfaceAttrs {
+            kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [999, 0, 0, 0],
+        };
+        unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s2) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap_err(),
+            Errno::ENOENT,
+        );
+        assert_eq!(host.gl_create_surface_calls.len(), 2);
     }
 
     #[test]

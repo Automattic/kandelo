@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 #
-# Build SDL2 (libSDL2.a) — KMSDRM + ALSA + evdev backends only — for
+# Build SDL2 (libSDL2.a) — KMSDRM + Wayland + ALSA + evdev backends — for
 # wasm32-posix-kernel. The kandelo demos (the sdl2 playground binary
 # + future `sysroot(sdl2-demo)` work) call into the standard SDL2 API
 # (SDL_Init, SDL_CreateWindow, SDL_OpenAudio, SDL_PumpEvents) and
 # fan out through:
 #
 #   src/video/kmsdrm/    → libdrm + libgbm + GL stack
+#   src/video/wayland/   → libwayland-client + wl_egl_window shim
+#                          (libwayland-egl.a) + libxkbcommon; runs GL
+#                          clients against wlcompositor (step 12).
 #   src/audio/alsa/      → libasound (subset, packages/registry/alsa-lib)
 #   src/core/linux/      → /dev/input/event[0-31] direct via evdev
 #
@@ -58,6 +61,13 @@ fi
 LIBDRM_PREFIX="${WASM_POSIX_DEP_LIBDRM_DIR:?WASM_POSIX_DEP_LIBDRM_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
 ALSA_PREFIX="${WASM_POSIX_DEP_ALSA_LIB_DIR:?WASM_POSIX_DEP_ALSA_LIB_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
 LIBINPUT_PREFIX="${WASM_POSIX_DEP_LIBINPUT_LITE_DIR:?WASM_POSIX_DEP_LIBINPUT_LITE_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
+# Wayland backend deps (step 12b): libwayland provides
+# libwayland-{client,cursor}.a + wayland-egl/cursor headers + the
+# wayland-{client,egl,cursor,scanner}.pc files; libxkbcommon provides
+# libxkbcommon.a + xkbcommon.pc. Their pkgconfig dirs feed SDL2's
+# configure gate (see the CheckWayland short-circuit below).
+LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
+LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
 
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -95,6 +105,41 @@ BUILD_DIR="$SCRIPT_DIR/sdl2-build"
 rm -rf "$BUILD_DIR" "$INSTALL_DIR"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
+
+# --- Wayland pkg-config wiring (step 12b) ------------------------------
+# SDL2's configure gates the Wayland backend on a hard pkg-config probe
+# (configure.ac CheckWayland ~L1742):
+#   $PKG_CONFIG --exists 'wayland-client >= 1.18' wayland-scanner \
+#               wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0'
+# The wayland-* .pc files ship in libwayland's prefix, xkbcommon.pc in
+# libxkbcommon's. egl.pc has no owning resolver package (our libEGL is the
+# build-programs.sh stub), so we synthesize a minimal one here purely to
+# satisfy the --exists gate — SDL compiles against its own bundled khronos
+# EGL headers (src/video/khronos), and the wayland backend links libEGL.a
+# explicitly at client-link time (step 12c), so egl.pc's Libs/Cflags are
+# never consumed. PKG_CONFIG points at the cross wrapper, which reads
+# PKG_CONFIG_PATH (kandelo cache + this build dir pass its host-path filter).
+export PKG_CONFIG=wasm32posix-pkg-config
+PC_LOCAL="$BUILD_DIR/pkgconfig"
+mkdir -p "$PC_LOCAL"
+cat > "$PC_LOCAL/egl.pc" <<EOF
+Name: egl
+Description: EGL (kandelo libEGL stub; headers via SDL khronos, lib linked at client-link)
+Version: 1.5
+Libs: -lEGL
+Cflags:
+EOF
+export PKG_CONFIG_PATH="$LIBWAYLAND_PREFIX/lib/pkgconfig:$LIBXKBCOMMON_PREFIX/lib/pkgconfig:$PC_LOCAL"
+
+# Sanity: fail loudly if the gate probe won't pass, rather than letting
+# configure silently report "Wayland support: no".
+if ! "$PKG_CONFIG" --exists 'wayland-client >= 1.18' wayland-scanner \
+        wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0'; then
+    echo "ERROR: wayland pkg-config gate failed. PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >&2
+    "$PKG_CONFIG" --exists --print-errors 'wayland-client >= 1.18' \
+        wayland-scanner wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0' >&2 || true
+    exit 1
+fi
 
 # --- Configure ---
 # Backend matrix:
@@ -188,7 +233,8 @@ LDFLAGS="-L$LIBDRM_PREFIX/lib -L$ALSA_PREFIX/lib -L$LIBINPUT_PREFIX/lib" \
     --enable-static --disable-shared \
     \
     --enable-video --enable-video-kmsdrm --disable-kmsdrm-shared \
-    --disable-video-x11 --disable-video-wayland \
+    --disable-video-x11 \
+    --enable-video-wayland --disable-wayland-shared --disable-libdecor \
     --disable-video-vivante --disable-video-cocoa \
     --disable-video-directfb --disable-video-offscreen \
     --enable-video-opengl --enable-video-opengles2 \

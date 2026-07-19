@@ -431,21 +431,43 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # Audio + evdev objects are present in libSDL2.a too but the
             # smoke calls SDL_Init(SDL_INIT_VIDEO) only, so the audio /
             # input archives don't need to be on the link line.
+            #
+            # libwayland-client + libffi: since step 12 built SDL2 with
+            # `--enable-video-wayland --disable-wayland-shared`, libSDL2.a's
+            # video bootstrap array lists Wayland_bootstrap BEFORE
+            # KMSDRM_bootstrap and direct-references wl_display_connect (no
+            # dlopen). SDL_Init(VIDEO) therefore probes Wayland first: it
+            # calls the REAL wl_display_connect(NULL), which returns NULL in
+            # this env (no XDG_RUNTIME_DIR / compositor), so SDL falls
+            # through to KMSDRM — the real-hardware auto-select path. Without
+            # these archives wl_display_connect resolves to the host's
+            # throw-on-call stub and the probe aborts the program. libffi
+            # backs libwayland-client's wl_closure marshalling.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libffi.a"
             ;;
         sdl2_alsa_smoke.c)
+            # libwayland-client + libffi: same SDL_Init(VIDEO) Wayland-probe
+            # fall-through as sdl2_kmsdrm_smoke (see above).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
                 "$SYSROOT/lib/libasound.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libffi.a"
             ;;
         sdl2_evdev_smoke.c)
+            # libwayland-client + libffi: same SDL_Init(VIDEO) Wayland-probe
+            # fall-through as sdl2_kmsdrm_smoke (see above).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
                 "$SYSROOT/lib/libinput.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libffi.a"
             ;;
         *)
             build_program "$src" "$OUT_DIR_32"
@@ -510,6 +532,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     ln -sfn "$WLC_LIBFFI/lib/libffi.a"            "$SYSROOT/lib/libffi.a"
     ln -sfn "$WLC_LIBWL/lib/libwayland-server.a"  "$SYSROOT/lib/libwayland-server.a"
     ln -sfn "$WLC_LIBWL/lib/libwayland-client.a"  "$SYSROOT/lib/libwayland-client.a"
+    ln -sfn "$WLC_LIBWL/lib/libwayland-cursor.a"  "$SYSROOT/lib/libwayland-cursor.a"
     ln -sfn "$WLC_LIBXKB/lib/libxkbcommon.a"      "$SYSROOT/lib/libxkbcommon.a"
     mkdir -p "$SYSROOT/include/xkbcommon"
     for h in "$WLC_LIBXKB/include/xkbcommon"/*.h; do
@@ -525,6 +548,42 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner server-header "$XDG_XML" "$WLC_GEN/xdg-shell-server-protocol.h"
     wayland-scanner client-header "$XDG_XML" "$WLC_GEN/xdg-shell-client-protocol.h"
 
+    # Same for zwp_linux_dmabuf_v1 (PR11): the compositor's GPU-tier client
+    # buffer path. Server side is compiled into wlcompositor; the client
+    # header + private-code drive wldmabuf-test.
+    DMABUF_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/linux-dmabuf-v1.xml"
+    wayland-scanner private-code  "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-protocol.c"
+    wayland-scanner server-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-server-protocol.h"
+    wayland-scanner client-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-client-protocol.h"
+
+    # Same for zxdg_decoration_manager_v1 (PR14e): server-side decoration
+    # negotiation. The compositor forces SERVER_SIDE so tiled clients drop CSD;
+    # the client header + private-code drive wlclient-test's decoration request.
+    DECOR_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/xdg-decoration-unstable-v1.xml"
+    wayland-scanner private-code  "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-protocol.c"
+    wayland-scanner server-header "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-server-protocol.h"
+    wayland-scanner client-header "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-client-protocol.h"
+
+    # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
+    # Wayland+GLES backend uses as its EGLNativeWindowType. It allocates the
+    # GPU-tier bo the window renders into and wraps it as a zwp_linux_dmabuf_v1
+    # wl_buffer; libEGL targets that bo's FBO and attach+commits it on swap
+    # (see libc/glue/libwayland-egl.c). Self-contained: bundles the dmabuf
+    # client glue since neither SDL2 nor libwayland ships it, so a GL client
+    # only links libwayland-egl.a + libEGL.a. Public headers are vendored
+    # verbatim from wayland 1.24.0 under libc/glue/wayland-egl-include/.
+    echo "  Building libwayland-egl.a (wl_egl_window shim)..."
+    for h in wayland-egl.h wayland-egl-core.h wayland-egl-backend.h; do
+        ln -sfn "$GLUE_DIR/wayland-egl-include/$h" "$SYSROOT/include/$h"
+    done
+    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$GLUE_DIR" \
+        "-I$GLUE_DIR/wayland-egl-include" -c \
+        "$GLUE_DIR/libwayland-egl.c" -o "$WLC_GEN/libwayland-egl.o"
+    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" -c \
+        "$WLC_GEN/linux-dmabuf-v1-protocol.c" -o "$WLC_GEN/linux-dmabuf-v1-protocol.o"
+    "$LLVM_BIN/llvm-ar" rcs "$SYSROOT/lib/libwayland-egl.a" \
+        "$WLC_GEN/libwayland-egl.o" "$WLC_GEN/linux-dmabuf-v1-protocol.o"
+
     # Server. Link order: dependents (compositor + xdg glue) before
     # dependencies; libffi last so wl_closure_invoke's ffi_call resolves.
     # libwpkdraw renders the compositor's wallpaper (gradient + wordmark);
@@ -535,6 +594,8 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
         "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
         "$WLC_GEN/xdg-shell-protocol.c" \
+        "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
+        "$WLC_GEN/xdg-decoration-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-server.a" \
         "$SYSROOT/lib/libwpkdraw.a" \
@@ -557,6 +618,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
         "$REPO_ROOT/programs/wlcompositor/wlclient-test.c" \
         "$WLC_GEN/xdg-shell-protocol.c" \
+        "$WLC_GEN/xdg-decoration-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-client.a" \
         "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
@@ -565,6 +627,41 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         -o "$client_wasm"
     "$FORK_INSTRUMENT" "$client_wasm" -o "$client_wasm.instr"
     mv "$client_wasm.instr" "$client_wasm"
+
+    # kwlctl (PR14c): the hyprctl-analog CLI over the compositor's
+    # /tmp/kwlctl-0 control socket. Plain libc + sockets, no wayland libs.
+    if [ -f "$REPO_ROOT/programs/wlcompositor/kwlctl.c" ]; then
+        kwlctl_wasm="$OUT_DIR_32/kwlctl.wasm"
+        echo "  Compiling kwlctl (control CLI)..."
+        "$CC" "${CFLAGS[@]}" \
+            "$REPO_ROOT/programs/wlcompositor/kwlctl.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$kwlctl_wasm"
+        "$FORK_INSTRUMENT" "$kwlctl_wasm" -o "$kwlctl_wasm.instr"
+        mv "$kwlctl_wasm.instr" "$kwlctl_wasm"
+    fi
+
+    # dmabuf client (PR11): drives the zwp_linux_dmabuf_v1 buffer path so
+    # host/test/wlcompositor-dmabuf-smoke.test.ts can assert the compositor
+    # composites a dmabuf-imported buffer. Links the dmabuf client glue.
+    if [ -f "$REPO_ROOT/programs/wlcompositor/wldmabuf-test.c" ]; then
+        dmabuf_wasm="$OUT_DIR_32/wldmabuf-test.wasm"
+        echo "  Compiling wldmabuf-test (dmabuf client)..."
+        "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+            "$REPO_ROOT/programs/wlcompositor/wldmabuf-test.c" \
+            "$WLC_GEN/xdg-shell-protocol.c" \
+            "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$dmabuf_wasm"
+        "$FORK_INSTRUMENT" "$dmabuf_wasm" -o "$dmabuf_wasm.instr"
+        mv "$dmabuf_wasm.instr" "$dmabuf_wasm"
+    fi
+
 fi
 
 # libkwl (PR7 Phase 2): in-tree Wayland toolkit over libwayland-client.
@@ -599,6 +696,7 @@ if [ -d "$LIBKWL_DIR/src" ]; then
         "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
             "$REPO_ROOT/programs/$kwl_app.c" \
             "$KWL_GEN/xdg-shell-protocol.c" \
+            "$KWL_GEN/xdg-decoration-v1-protocol.c" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libkwl.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
@@ -631,6 +729,7 @@ if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1; then
         "$REPO_ROOT/programs/wlterm/wlterm.c" \
         "$REPO_ROOT/programs/wlterm/vt100.c" \
         "$KWL_GEN/xdg-shell-protocol.c" \
+        "$KWL_GEN/xdg-decoration-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libkwl.a" \
         "$SYSROOT/lib/libwpkdraw.a" \

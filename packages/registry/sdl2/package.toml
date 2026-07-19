@@ -24,6 +24,11 @@
 #   libinput-lite — present so SDL2's evdev path falls through the
 #                   libinput detection without re-scanning udev;
 #                   every entry returns NULL/0.
+#   libwayland    — Wayland video backend (step 12b): provides
+#                   libwayland-client/cursor.a, wayland-egl/cursor
+#                   headers, and the wayland-{client,egl,cursor,scanner}
+#                   .pc files SDL2's configure gate requires.
+#   libxkbcommon  — Wayland keyboard (xkbcommon .pc + libxkbcommon.a).
 #   (GL stack)    — libegl-stub + libgles2-stub + libgbm-extended
 #                   (planned alongside this PR; SDL2 KMSDRM needs
 #                   gbm_surface_*). The single-PR scope bundles
@@ -43,7 +48,7 @@ kernel_abi = 16
 # B5 wires deps via the resolver graph; the build script
 # `build-sdl2.sh` calls `cargo xtask build-deps resolve <dep>`
 # at the start of each iteration.
-depends_on = ["libdrm@2.4.120", "alsa-lib@1.2.10", "libinput-lite@0.1.0"]
+depends_on = ["libdrm@2.4.120", "alsa-lib@1.2.10", "libinput-lite@0.1.0", "libwayland@1.24.0", "libxkbcommon@1.7.0"]
 
 [source]
 url = "https://github.com/libsdl-org/SDL/releases/download/release-2.30.0/SDL2-2.30.0.tar.gz"

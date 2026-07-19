@@ -458,6 +458,28 @@ void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     EMIT_END()
 }
 
+/* Column-major 4x4 matrix uniforms — the MVP path any 3D client needs.
+ * WebGL2 rejects a
+ * transpose flag other than false, so the host forwards `transpose`
+ * verbatim to gl.uniformMatrix4fv; callers must pass GL_FALSE and supply
+ * column-major data. Payload: i32 loc, u32 count, u32 transposeBool,
+ * f32 mat[count*16]. */
+void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose,
+                        const GLfloat *value) {
+    if (count < 0 || !value) return;
+    uint32_t floats = (uint32_t)count * 16u;
+    /* The TLV payload-length field is u16 — a single record holds at
+     * most (0xFFFF - 12) / 4 floats. One mat4 (16 floats) is far under
+     * that; guard anyway so an oversized array drops rather than truncates. */
+    if (12u + floats * 4u > 0xFFFFu) return;
+    EMIT_BEGIN(OP_UNIFORM_MATRIX4FV, 12u + floats * 4u)
+    w_i32(&_c, location);
+    w_u32(&_c, (uint32_t)count);
+    w_u32(&_c, transpose ? 1u : 0u);
+    for (uint32_t i = 0; i < floats; i++) w_f32(&_c, value[i]);
+    EMIT_END()
+}
+
 /* ----- framebuffers ------------------------------------------------- */
 
 void glGenFramebuffers(GLsizei n, GLuint *out) {

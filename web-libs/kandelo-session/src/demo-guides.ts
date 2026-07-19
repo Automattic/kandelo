@@ -8,7 +8,15 @@ import { genericDemoPresentation } from "./demo-config";
 import type { DemoPresentation } from "./kernel-host";
 
 export const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
-export const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
+// The original distro.ibiblio.org path 404'd upstream in Jul 2026 (the WAD was
+// removed), which broke the `/?demo=doom` boot ("fetch failed for /doom1.wad:
+// 404"). Repointed to a pinned Wayback snapshot of the same file — the `id_`
+// suffix returns the original raw bytes (no Wayback UI injection), and the
+// captured bytes hash to DOOM_WAD_SHA256 below (4,196,020 B, DOOM shareware
+// v1.9, freely distributable). Pin the timestamp so the source is deterministic
+// and cannot silently drift.
+export const DOOM_WAD_URL =
+  "https://web.archive.org/web/20260714010718id_/http://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
 export const DOOM_WAD_SHA256 = "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
 
 const shellScript = `echo "Hello from a Kandelo guided script"
