@@ -1649,8 +1649,24 @@ async function bootProfile(
           spawnBg(paintBytes, "wlpaint");
 
           tick("running wlterm...");
-          await host.runShellCommand("/usr/local/bin/wlterm");
-          tick("wlterm exited");
+          // Keep-alive foreground client. Launch it through the non-forking
+          // `spawn` path (like the clock + paint clients) instead of
+          // runShellCommand, which makes the pts/0 shell fork()+exec the client.
+          // That shell-fork intermittently fails to start the client under CI's
+          // Linux headless-chromium worker scheduling, so it never connects
+          // (CLIENT_CONNECTED count=3 never fires). `spawn` resolves on process
+          // EXIT (it is used as an exitPromise in kernel-host.ts), so awaiting
+          // it keeps the demo alive exactly as the foreground shell command did.
+          await kernelForWayland.spawn(termBytes, ["wlterm"], {
+            env: SHELL_ENV,
+            cwd: DEMO_HOME,
+            uid: DEMO_UID,
+            gid: DEMO_GID,
+          }).then(
+            () => tick("wlterm exited"),
+            (err: unknown) =>
+              tick(`wlterm failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           tick(`wayland failed: ${msg}`);
