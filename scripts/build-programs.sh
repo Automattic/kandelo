@@ -431,21 +431,43 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # Audio + evdev objects are present in libSDL2.a too but the
             # smoke calls SDL_Init(SDL_INIT_VIDEO) only, so the audio /
             # input archives don't need to be on the link line.
+            #
+            # libwayland-client + libffi: since step 12 built SDL2 with
+            # `--enable-video-wayland --disable-wayland-shared`, libSDL2.a's
+            # video bootstrap array lists Wayland_bootstrap BEFORE
+            # KMSDRM_bootstrap and direct-references wl_display_connect (no
+            # dlopen). SDL_Init(VIDEO) therefore probes Wayland first: it
+            # calls the REAL wl_display_connect(NULL), which returns NULL in
+            # this env (no XDG_RUNTIME_DIR / compositor), so SDL falls
+            # through to KMSDRM — the real-hardware auto-select path. Without
+            # these archives wl_display_connect resolves to the host's
+            # throw-on-call stub and the probe aborts the program. libffi
+            # backs libwayland-client's wl_closure marshalling.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libffi.a"
             ;;
         sdl2_alsa_smoke.c)
+            # libwayland-client + libffi: same SDL_Init(VIDEO) Wayland-probe
+            # fall-through as sdl2_kmsdrm_smoke (see above).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
                 "$SYSROOT/lib/libasound.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libffi.a"
             ;;
         sdl2_evdev_smoke.c)
+            # libwayland-client + libffi: same SDL_Init(VIDEO) Wayland-probe
+            # fall-through as sdl2_kmsdrm_smoke (see above).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
                 "$SYSROOT/lib/libinput.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libffi.a"
             ;;
         *)
             build_program "$src" "$OUT_DIR_32"
