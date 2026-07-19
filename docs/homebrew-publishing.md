@@ -1240,6 +1240,13 @@ which excludes packages whose demos are provided by the external software
 gallery. Those platform assets are not the migrated package under test, and
 unrelated gallery packages are not bottle verification prerequisites.
 
+When the Homebrew bootstrap validates those platform programs, it reads each
+output's `fork_instrumentation` policy from the package registry. An output that
+declares `disabled` may import `kernel.kernel_fork` without `wpk_fork_*` exports,
+but it is rejected if instrumentation exports are present. This preserves the
+package's explicit compatibility boundary instead of misclassifying the
+published artifact as stale.
+
 ## Browser Gallery Assets
 
 Generate browser gallery assets only from browser-smoked wasm32 metadata:

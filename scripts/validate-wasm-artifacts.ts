@@ -9,7 +9,7 @@ import { HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS } from "../host/src/generated/abi"
 
 function usage(): never {
   process.stderr.write(
-    "Usage: scripts/validate-wasm-artifacts.ts --abi <version> [--profile program|kernel] <artifact.wasm>...\n",
+    "Usage: scripts/validate-wasm-artifacts.ts --abi <version> [--profile program|kernel] [--fork-instrumentation auto|disabled] <artifact.wasm>...\n",
   );
   process.exit(2);
 }
@@ -17,6 +17,7 @@ function usage(): never {
 const args = process.argv.slice(2);
 let expectedAbi: number | undefined;
 let profile: "program" | "kernel" = "program";
+let forkInstrumentation: "auto" | "disabled" = "auto";
 const paths: string[] = [];
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -28,6 +29,10 @@ for (let i = 0; i < args.length; i++) {
     const value = args[++i];
     if (value !== "program" && value !== "kernel") usage();
     profile = value;
+  } else if (arg === "--fork-instrumentation") {
+    const value = args[++i];
+    if (value !== "auto" && value !== "disabled") usage();
+    forkInstrumentation = value;
   } else if (arg.startsWith("-")) {
     usage();
   } else {
@@ -39,9 +44,11 @@ if (
   !Number.isSafeInteger(expectedAbi) ||
   paths.length === 0
 ) usage();
+if (profile === "kernel" && forkInstrumentation === "disabled") usage();
 const requiredExports = profile === "kernel"
   ? HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS
   : ["__abi_version", "_start"];
+const forkInstrumentationDisabled = forkInstrumentation === "disabled";
 let failed = false;
 
 for (const path of paths) {
@@ -62,6 +69,8 @@ for (const path of paths) {
     failures = describeWasmArtifactPolicyFailures(program, {
       expectedAbi,
       requiredExports,
+      requireForkInstrumentation: forkInstrumentationDisabled ? false : undefined,
+      forbidForkInstrumentation: forkInstrumentationDisabled,
     });
     if (abi === null) failures.unshift("does not expose a constant __abi_version");
   } catch (error) {

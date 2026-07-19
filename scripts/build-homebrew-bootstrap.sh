@@ -237,10 +237,46 @@ done < <(awk '
         }
     }
 ' "$ROOTFS_PACKAGE_MANIFEST")
+
+# The rootfs includes every browser platform prerequisite, including programs
+# whose package intentionally disables fork instrumentation. Validate each
+# exact artifact under the policy declared by its package instead of treating
+# every kernel_fork import as an auto-instrumented program.
+AUTO_FORK_WASM_ARTIFACTS=()
+DISABLED_FORK_WASM_ARTIFACTS=()
+for wasm_path in "${WASM_ARTIFACTS[@]}"; do
+    resolver_rel="${wasm_path#"$REPO_ROOT/binaries/"}"
+    if [ "$resolver_rel" = "$wasm_path" ]; then
+        echo "build-homebrew-bootstrap: artifact is outside binaries/: $wasm_path" >&2
+        exit 1
+    fi
+    fork_policy="$("${XTASK[@]}" output-fork-instrumentation-for-rel "$resolver_rel")"
+    case "$fork_policy" in
+        auto)
+            AUTO_FORK_WASM_ARTIFACTS+=("$wasm_path")
+            ;;
+        disabled)
+            DISABLED_FORK_WASM_ARTIFACTS+=("$wasm_path")
+            ;;
+        *)
+            echo "build-homebrew-bootstrap: unsupported fork instrumentation policy '$fork_policy' for $resolver_rel" >&2
+            exit 1
+            ;;
+    esac
+done
+
 "$REPO_ROOT/host/node_modules/.bin/tsx" scripts/validate-wasm-artifacts.ts \
     --abi "$ABI_VERSION" --profile kernel "$REPO_ROOT/binaries/kernel.wasm"
-"$REPO_ROOT/host/node_modules/.bin/tsx" scripts/validate-wasm-artifacts.ts \
-    --abi "$ABI_VERSION" --profile program "${WASM_ARTIFACTS[@]}"
+if [ "${#AUTO_FORK_WASM_ARTIFACTS[@]}" -gt 0 ]; then
+    "$REPO_ROOT/host/node_modules/.bin/tsx" scripts/validate-wasm-artifacts.ts \
+        --abi "$ABI_VERSION" --profile program \
+        --fork-instrumentation auto "${AUTO_FORK_WASM_ARTIFACTS[@]}"
+fi
+if [ "${#DISABLED_FORK_WASM_ARTIFACTS[@]}" -gt 0 ]; then
+    "$REPO_ROOT/host/node_modules/.bin/tsx" scripts/validate-wasm-artifacts.ts \
+        --abi "$ABI_VERSION" --profile program \
+        --fork-instrumentation disabled "${DISABLED_FORK_WASM_ARTIFACTS[@]}"
+fi
 
 node scripts/write-homebrew-bootstrap-metadata.mjs \
     --source "$BREW_SOURCE_PROVENANCE" \
