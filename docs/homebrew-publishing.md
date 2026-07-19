@@ -1317,6 +1317,92 @@ created public, repository-linked package `homebrew-tap-core/zlib`; earlier
 remained private. The production anonymous readback is the continuing guard
 against a GitHub behavior or organization policy change.
 
+### Post-publication acceptance
+
+Apply this acceptance gate to every normal production rollout dispatched with
+`publish-kandelo-bottles`. Maintenance rebuilds have a separate caller and job
+prefix. For a single-formula wasm32 publication, every instance in this exact
+normal-publication job set must conclude successfully:
+
+- `publish / plan`
+- `publish / build-and-test (<formula>, wasm32)`
+- `publish / upload-bottle (<formula>, wasm32)`
+- `publish / publish-bottle-index (<formula>)`
+- `publish / verify-bottle (<formula>, wasm32)`
+- `publish / finalize-tap (<formula>, wasm32)`
+
+For a multi-architecture publication, require every architecture-specific
+matrix instance as well as the single Formula-level index job. A finalizer that
+successfully writes a failure report still concludes as a failed job and does
+not satisfy this gate.
+
+Then validate a clean checkout of live tap `main`, verify the GitHub package is
+public and linked to the exact public repository, and anonymously import the
+complete live Homebrew index. Run the following from the Kandelo repository
+root, selecting the Formula being accepted. The package-record query uses the
+operator's GitHub CLI identity; the index import explicitly removes those
+credentials:
+
+```bash
+set -euo pipefail
+
+formula=zlib
+acceptance_root="$(mktemp -d)"
+trap 'rm -rf "$acceptance_root"' EXIT
+
+git clone --branch main --single-branch \
+  https://github.com/Kandelo-dev/homebrew-tap-core.git \
+  "$acceptance_root/tap"
+
+bash scripts/dev-shell.sh cargo xtask homebrew-validate \
+  --tap-root "$acceptance_root/tap"
+
+gh api \
+  "orgs/Kandelo-dev/packages/container/homebrew-tap-core%2F${formula}" |
+  jq -e '
+    .visibility == "public" and
+    (.repository.full_name | ascii_downcase) ==
+      "kandelo-dev/homebrew-tap-core"
+  '
+
+formula_metadata="$acceptance_root/tap/Kandelo/formula/${formula}.json"
+top_reference="$(
+  jq -er '
+    if .bottle_rebuild == 0 then
+      .version
+    else
+      "\(.version)-\(.bottle_rebuild)"
+    end
+  ' "$formula_metadata"
+)"
+printf '{"auths":{}}\n' >"$acceptance_root/anonymous-registry.json"
+
+env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
+  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+  bash scripts/dev-shell.sh python3 \
+    scripts/homebrew-oci-layout.py import-public-index \
+    --remote "ghcr.io/kandelo-dev/homebrew-tap-core/${formula}" \
+    --reference "$top_reference" \
+    --registry-config "$acceptance_root/anonymous-registry.json" \
+    --out-layout "$acceptance_root/public-index" \
+    --out-result "$acceptance_root/public-index-result.json"
+
+jq -e --arg layout "$acceptance_root/public-index" '
+  keys == ["digest", "layout", "schema", "status"] and
+  .schema == 1 and
+  .status == "present" and
+  .layout == $layout and
+  (.digest | test("^sha256:[0-9a-f]{64}$"))
+' "$acceptance_root/public-index-result.json"
+```
+
+`import-public-index` validates the bounded top index, child manifests,
+configuration, and bottle layers by digest before reporting `present`. The
+empty registry configuration plus removed credential variables ensures this is
+public-read evidence rather than an authenticated package fetch. Repeat the
+gate independently for every Formula selected by a rollout.
+
 ### One-time retirement of `tap-core/*`
 
 The two legacy private controls are not production bottle locations:
@@ -1326,7 +1412,19 @@ The two legacy private controls are not production bottle locations:
 | `tap-core/zlib` | private; last updated `2026-07-18T03:46:46Z` | old-root creation control |
 | `tap-core/bzip2` | private; last updated `2026-07-18T05:20:07Z` | old-root creation control |
 | `homebrew-tap-core/zlib` | public; created by canary run `29652866481` | repository-rooted positive control and production destination |
-| `homebrew-tap-core/bzip2` | absent before the production pilot | fresh-package production proof |
+| `homebrew-tap-core/bzip2` | public and repository-linked; created by failed production run `29660666019` | fresh-package child-upload proof; full production pilot still required |
+
+[Run `29660666019`](https://github.com/Kandelo-dev/homebrew-tap-core/actions/runs/29660666019)
+was a partial success, not a completed bzip2 pilot. Its `plan`,
+`build-and-test`, and `upload-bottle` jobs succeeded. The upload created the
+previously absent package with public, source-repository-linked access and
+completed anonymous readback of the immutable child. The
+`publish-bottle-index` job then failed because its downloaded artifact layout
+was not discovered, so `verify-bottle` was skipped and `finalize-tap` recorded
+a failed attempt. That run proves fresh public child-package creation through
+the normal production credential path, but it does not prove the complete
+publication path. A later bzip2 pilot is therefore a retry against an existing
+public package, not another fresh-package test.
 
 Do not delete the two private controls merely because the public zlib canary
 passed. Keep them until all of these cutover gates are satisfied:
@@ -1336,10 +1434,10 @@ passed. Keep them until all of these cutover gates are satisfied:
    `Kandelo-dev/homebrew-tap-core@main`.
 2. A zlib production pilot completes the full path against the existing public
    `homebrew-tap-core/zlib` package.
-3. A subsequent bzip2 production pilot creates
-   `homebrew-tap-core/bzip2` from an absent package and completes the full path.
-   This is the proof that normal production creates a new public package; zlib
-   alone proves only that production can reuse an existing public package.
+3. A separate bzip2 production pilot completes the full path against the public
+   `homebrew-tap-core/bzip2` package created by the partial run above. The
+   earlier child upload is the fresh-package creation proof; the retry must
+   prove index publication, verification, and tap finalization.
 4. Both package records report `visibility: public` and repository
    `kandelo-dev/homebrew-tap-core`, and both successful workflow receipts contain
    the exact credential-free digest readback evidence.
@@ -1350,9 +1448,10 @@ passed. Keep them until all of these cutover gates are satisfied:
    table. A changed timestamp means some writer still targets the old namespace
    and must be investigated before deletion.
 
-Dispatch the two production pilots through the reviewed tap caller, one at a
-time. Wait for the zlib run to finish successfully and inspect its evidence
-before dispatching bzip2:
+Dispatch the pilots concurrently as two separate calls through the reviewed
+tap caller. Their builds and package writes are independent, and the tap-wide
+lock serializes their final tap updates. Do not open the broader rollout gate
+until both pilots have completed the post-publication acceptance above.
 
 ```bash
 gh api --method POST \
@@ -1363,7 +1462,6 @@ gh api --method POST \
 }
 JSON
 
-# Run only after zlib has completed successfully.
 gh api --method POST \
   'repos/Kandelo-dev/homebrew-tap-core/dispatches' --input - <<'JSON'
 {
