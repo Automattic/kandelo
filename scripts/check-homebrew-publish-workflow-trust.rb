@@ -2678,6 +2678,13 @@ def check_publisher(workflow)
           "publisher sidecar inspection drops explicit identity or root data at the dev-shell boundary")
   end
   verifier_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-generate-sidecars-from-env.sh"))
+  bottle_inspector_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-inspect-bottle.py"))
+  formula_digest_source = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-formula-source-digest.rb")
+  )
+  bottle_inspector_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-inspect-bottle.sh")
+  )
   fingerprint_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-sysroot-fingerprint.sh"))
   merge_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-merge-bottle-json.sh"))
   check_sidecar_sysroot_binding(verifier_source, fingerprint_source)
@@ -2685,6 +2692,25 @@ def check_publisher(workflow)
         verifier_source.include?('forbidden_roots = json.loads') &&
         verifier_source.include?('inspection_command.extend(("--forbidden-root", forbidden_root))'),
         "sidecar generator does not preserve trusted forbidden-root inspection")
+  check(verifier_source.include?('"--selected-formula",') &&
+        verifier_source.include?('os.environ["FORMULA_PATH"]') &&
+        bottle_inspector_source.include?('"--receipt-equivalent"') &&
+        bottle_inspector_source.include?('normalization not in {"exact", "bottle-block-removed"}') &&
+        formula_digest_source.include?('def receipt_match_kind(selected, receipt)') &&
+        formula_digest_source.include?(
+          'return nil if selected.bottle_range.nil? || !receipt.bottle_range.nil?'
+        ) &&
+        formula_digest_source.include?('source_identity_without_bottle(selected) == receipt.source'),
+        "sidecar generator does not enforce one-way canonical Formula receipt normalization")
+  [
+    "SELECTED_WASM32_BOTTLE_FORMULA",
+    "ARCHIVED_WASM64_RECEIPT_FORMULA",
+    "non-bottle-receipt-drift",
+    "replaced-bottle-receipt",
+  ].each do |fragment|
+    check(bottle_inspector_test.include?(fragment),
+          "Formula receipt normalization regression coverage lacks #{fragment}")
+  end
   [verifier_source, merge_source].each do |source|
     check(!source.include?("HOMEBREW_BREW_FILE") &&
           !source.include?("brew info") &&

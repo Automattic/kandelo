@@ -56,6 +56,8 @@ MAX_WASM_BYTES = 2 * 1024 * 1024 * 1024
 MAX_WASM_VALIDATOR_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 DEFAULT_WASM_TIMEOUT_SECONDS = 120
+FORMULA_RECEIPT_VALIDATOR_OUTPUT_BYTES = 16 * 1024
+FORMULA_RECEIPT_VALIDATOR_TIMEOUT_SECONDS = 30
 MAX_LINK_DEPTH = 256
 MAX_FORBIDDEN_ROOTS = 32
 MAX_FORBIDDEN_ROOT_BYTES = 4096
@@ -188,6 +190,7 @@ class BottleInspector:
         wasm_validator: pathlib.Path,
         wasm_timeout_seconds: int,
         forbidden_roots: tuple[str, ...],
+        selected_formula: pathlib.Path | None,
     ) -> None:
         self.archive_path = archive_path
         self.formula = formula
@@ -197,6 +200,10 @@ class BottleInspector:
         self.expected_arch = expected_arch
         self.wasm_validator = wasm_validator
         self.wasm_timeout_seconds = wasm_timeout_seconds
+        self.selected_formula = selected_formula
+        self.formula_receipt_validator = pathlib.Path(__file__).with_name(
+            "homebrew-formula-source-digest.rb"
+        )
         self.forbidden_roots = tuple(
             (root, root.encode("utf-8")) for root in forbidden_roots
         )
@@ -417,6 +424,62 @@ class BottleInspector:
             )
         return sorted(out, key=lambda value: (str(value["full_name"]).lower(), value["full_name"]))
 
+    def _validate_formula_receipt(self, formula_bytes: bytes) -> None:
+        if self.selected_formula is None:
+            return
+        if (
+            self.formula_receipt_validator.is_symlink()
+            or not self.formula_receipt_validator.is_file()
+        ):
+            fail("Formula receipt validator must be a regular non-symlink file")
+
+        try:
+            selected_metadata = self.selected_formula.lstat()
+        except OSError as error:
+            fail(f"cannot inspect selected Formula source: {error}")
+        if self.selected_formula.is_symlink() or not self.selected_formula.is_file():
+            fail("selected Formula source must be a regular non-symlink file")
+        if selected_metadata.st_size > MAX_FORMULA_BYTES:
+            fail(f"selected Formula source exceeds {MAX_FORMULA_BYTES} bytes")
+
+        with tempfile.NamedTemporaryFile(suffix=".rb") as archived_formula:
+            archived_formula.write(formula_bytes)
+            archived_formula.flush()
+            try:
+                result = subprocess.run(
+                    [
+                        "ruby",
+                        str(self.formula_receipt_validator),
+                        "--receipt-equivalent",
+                        str(self.selected_formula),
+                        archived_formula.name,
+                    ],
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=FORMULA_RECEIPT_VALIDATOR_TIMEOUT_SECONDS,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                fail(f"cannot validate archived Formula receipt: {error}")
+        if (
+            len(result.stdout) > FORMULA_RECEIPT_VALIDATOR_OUTPUT_BYTES
+            or len(result.stderr) > FORMULA_RECEIPT_VALIDATOR_OUTPUT_BYTES
+        ):
+            fail("Formula receipt validator output exceeds its limit")
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        if result.returncode != 0:
+            fail(
+                "archived Formula receipt does not match the selected tap Formula: "
+                f"{detail[:4096]}"
+            )
+        try:
+            normalization = result.stdout.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError:
+            fail("Formula receipt validator output is not UTF-8")
+        if normalization not in {"exact", "bottle-block-removed"}:
+            fail("Formula receipt validator returned an invalid normalization")
+
     def _path_executables(self, all_paths: list[str]) -> tuple[list[str], dict[str, ArchiveEntry]]:
         path_exec_files: list[str] = []
         resolved_execs: dict[str, ArchiveEntry] = {}
@@ -518,6 +581,7 @@ class BottleInspector:
         _formula_entry, formula_bytes = self._required_regular(
             formula_rel, MAX_FORMULA_BYTES
         )
+        self._validate_formula_receipt(formula_bytes)
         _receipt_entry, receipt_bytes = self._required_regular(
             "INSTALL_RECEIPT.json", MAX_RECEIPT_BYTES
         )
@@ -562,6 +626,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-abi", required=True, type=int)
     parser.add_argument("--expected-arch", required=True, choices=("wasm32", "wasm64"))
     parser.add_argument(
+        "--selected-formula",
+        help=(
+            "selected tap Formula whose exact bytes, optionally with only its canonical "
+            "bottle block removed, must match the archived Formula receipt"
+        ),
+    )
+    parser.add_argument(
         "--forbidden-root",
         action="append",
         required=True,
@@ -602,6 +673,13 @@ def parse_args() -> argparse.Namespace:
     if validator.is_symlink() or not validator.is_file():
         parser.error(f"--wasm-validator is not a regular non-symlink file: {validator}")
     args.wasm_validator = validator.resolve()
+    if args.selected_formula is not None:
+        selected_formula = pathlib.Path(args.selected_formula)
+        if selected_formula.is_symlink() or not selected_formula.is_file():
+            parser.error("--selected-formula must be a regular non-symlink file")
+        if selected_formula.stat().st_size > MAX_FORMULA_BYTES:
+            parser.error(f"--selected-formula exceeds {MAX_FORMULA_BYTES} bytes")
+        args.selected_formula = selected_formula.resolve()
     return args
 
 
@@ -637,6 +715,7 @@ def main() -> int:
             args.wasm_validator,
             args.wasm_timeout_seconds,
             args.forbidden_root,
+            args.selected_formula,
         ).run()
         write_result(result, args.out)
     except InspectionError as error:

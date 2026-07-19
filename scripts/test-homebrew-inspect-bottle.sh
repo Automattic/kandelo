@@ -157,9 +157,9 @@ PY
   exit 1
 }
 make_archive() {
-  local kind="$1" output="$2" wasm="${3:-$WASM}"
+  local kind="$1" output="$2" wasm="${3:-$WASM}" formula_source="${4:-$FORMULA_SOURCE}"
   python3 "$TMP_ROOT/make-archive.py" \
-    "$kind" "$output" "$FORMULA_SOURCE" "$wasm" "$FORBIDDEN_ROOT"
+    "$kind" "$output" "$formula_source" "$wasm" "$FORBIDDEN_ROOT"
 }
 
 VALID_ARCHIVE="$TMP_ROOT/valid.tar.gz"
@@ -171,6 +171,7 @@ python3 "$INSPECTOR" \
   --version 1.0 \
   --expected-abi "$ABI_VERSION" \
   --expected-arch wasm32 \
+  --selected-formula "$FORMULA_SOURCE" \
   --forbidden-root "$FORBIDDEN_ROOT" \
   --out "$VALID_JSON"
 
@@ -301,10 +302,93 @@ python3 "$INSPECTOR" \
   --version 1.0 \
   --expected-abi "$ABI_VERSION" \
   --expected-arch wasm64 \
+  --selected-formula "$FORMULA_SOURCE" \
   --forbidden-root "$FORBIDDEN_ROOT" \
   --out "$MEMORY64_JSON"
 jq -e '.arch == "wasm64" and .abi_version == $abi' \
   --argjson abi "$ABI_VERSION" "$MEMORY64_JSON" >/dev/null
+
+SELECTED_WASM32_BOTTLE_FORMULA="$TMP_ROOT/tool-selected-wasm32-bottle.rb"
+ARCHIVED_WASM64_RECEIPT_FORMULA="$TMP_ROOT/tool-archived-wasm64-receipt.rb"
+DRIFTED_MULTIARCH_FORMULA="$TMP_ROOT/tool-drifted-multiarch.rb"
+REPLACED_MULTIARCH_FORMULA="$TMP_ROOT/tool-replaced-multiarch.rb"
+# A later wasm64 build receives tap source that already contains the published
+# wasm32 stanza. Homebrew archives the same Formula with that stanza removed.
+cat >"$SELECTED_WASM32_BOTTLE_FORMULA" <<'RUBY'
+class Tool < Formula
+  desc "Archive inspector fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
+  end
+
+end
+RUBY
+cat >"$ARCHIVED_WASM64_RECEIPT_FORMULA" <<'RUBY'
+class Tool < Formula
+  desc "Archive inspector fixture"
+
+end
+RUBY
+cat >"$DRIFTED_MULTIARCH_FORMULA" <<'RUBY'
+class Tool < Formula
+  desc "Archive inspector fixture"
+  system "touch", "/tmp/untrusted-receipt-drift"
+
+end
+RUBY
+cat >"$REPLACED_MULTIARCH_FORMULA" <<'RUBY'
+class Tool < Formula
+  desc "Archive inspector fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    sha256 cellar: :any_skip_relocation, wasm64_kandelo: "3333333333333333333333333333333333333333333333333333333333333333"
+  end
+
+end
+RUBY
+
+MULTIARCH_RECEIPT_ARCHIVE="$TMP_ROOT/multiarch-receipt.tar.gz"
+make_archive valid "$MULTIARCH_RECEIPT_ARCHIVE" \
+  "$TMP_ROOT/memory64.wasm" "$ARCHIVED_WASM64_RECEIPT_FORMULA"
+python3 "$INSPECTOR" \
+  --archive "$MULTIARCH_RECEIPT_ARCHIVE" \
+  --formula tool \
+  --version 1.0 \
+  --expected-abi "$ABI_VERSION" \
+  --expected-arch wasm64 \
+  --selected-formula "$SELECTED_WASM32_BOTTLE_FORMULA" \
+  --forbidden-root "$FORBIDDEN_ROOT" \
+  --out "$TMP_ROOT/multiarch-receipt.json"
+
+expect_formula_receipt_failure() {
+  local label="$1" archived_formula="$2"
+  local archive="$TMP_ROOT/$label.tar.gz" stderr="$TMP_ROOT/$label.err"
+  make_archive valid "$archive" "$TMP_ROOT/memory64.wasm" "$archived_formula"
+  if python3 "$INSPECTOR" \
+    --archive "$archive" \
+    --formula tool \
+    --version 1.0 \
+    --expected-abi "$ABI_VERSION" \
+    --expected-arch wasm64 \
+    --selected-formula "$SELECTED_WASM32_BOTTLE_FORMULA" \
+    --forbidden-root "$FORBIDDEN_ROOT" \
+    >"$TMP_ROOT/$label.out" 2>"$stderr"; then
+    echo "test-homebrew-inspect-bottle.sh: accepted $label Formula receipt" >&2
+    exit 1
+  fi
+  grep -F "archived Formula receipt does not match the selected tap Formula" \
+    "$stderr" >/dev/null || {
+    echo "test-homebrew-inspect-bottle.sh: wrong failure for $label Formula receipt" >&2
+    cat "$stderr" >&2
+    exit 1
+  }
+}
+
+expect_formula_receipt_failure non-bottle-receipt-drift "$DRIFTED_MULTIARCH_FORMULA"
+expect_formula_receipt_failure replaced-bottle-receipt "$REPLACED_MULTIARCH_FORMULA"
 
 make_wasm missing-abi <<'WAT'
 (module (memory 1) (func (export "tool")))

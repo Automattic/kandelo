@@ -167,6 +167,7 @@ if [ -d "$FORMULA_SOURCE_ROOT/Kandelo" ]; then
 fi
 export ABI_VERSION CACHE_KEY_SHA SDK_FINGERPRINT SYSROOT_FINGERPRINT FORMULA_SHA256 BREW_VERSION
 export TAP_COMMIT KANDELO_COMMIT GENERATED_AT RUN_URL TAP_NAME KANDELO_ROOT FORMULA_SOURCE_ROOT
+export FORMULA_PATH
 
 python3 - "$INPUT_JSON" <<'PY'
 import json
@@ -325,6 +326,8 @@ inspection_command = [
     os.environ["ABI_VERSION"],
     "--expected-arch",
     os.environ["KANDELO_HOMEBREW_ARCH"],
+    "--selected-formula",
+    os.environ["FORMULA_PATH"],
 ]
 for forbidden_root in forbidden_roots:
     inspection_command.extend(("--forbidden-root", forbidden_root))
@@ -345,8 +348,6 @@ if inspection.get("abi_version") != int(os.environ["ABI_VERSION"]):
     raise SystemExit("bounded bottle inspection ABI does not match the selected release")
 if inspection.get("arch") != os.environ["KANDELO_HOMEBREW_ARCH"]:
     raise SystemExit("bounded bottle inspection architecture does not match the selected bottle")
-if inspection.get("formula_sha256") != os.environ["FORMULA_SHA256"]:
-    raise SystemExit("archived Formula receipt does not match the exact selected tap Formula")
 fork_instrumentation = inspection.get("fork_instrumentation")
 if fork_instrumentation not in {"required", "not-required"}:
     raise SystemExit("bounded bottle inspection returned invalid fork instrumentation")

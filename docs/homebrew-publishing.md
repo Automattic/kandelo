@@ -361,6 +361,16 @@ the exact selected tap head. A normal later Homebrew pour likewise writes a
 fresh installed receipt for the selected Formula and its exact current tap
 head.
 
+Homebrew also removes an existing `bottle do` block when it copies Formula
+source into the keg's `.brew/<formula>.rb` receipt. That difference first
+appears when a later architecture is built after an earlier architecture has
+already added a bottle block to the tap. The verifier accepts either exact
+Formula bytes or the one structurally validated result of removing that
+canonical block and its composer-owned separator blank line. This is a
+one-way normalization: a receipt with a replacement bottle block, changed
+comments or whitespace, added Ruby, or any other non-bottle drift is rejected.
+The comparison does not rely only on a bottle-excluded digest.
+
 The archived receipt used by static VFS composition intentionally has no
 `source.tap_git_head`. The VFS builder preserves those receipt bytes instead of
 pretending that it performed a Homebrew pour; the separately generated

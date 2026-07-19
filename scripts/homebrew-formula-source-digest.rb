@@ -135,6 +135,15 @@ def equivalent_excluding_bottle?(left, right)
   end
 end
 
+def receipt_match_kind(selected, receipt)
+  return "exact" if selected.source == receipt.source
+  return nil if selected.bottle_range.nil? || !receipt.bottle_range.nil?
+
+  if source_identity_without_bottle(selected) == receipt.source
+    "bottle-block-removed"
+  end
+end
+
 def source_identity_without_bottle(parsed)
   lines = source_without_bottle(parsed).lines
   method_name = nil
@@ -208,7 +217,16 @@ def source_identity_without_bottle(parsed)
   lines.join
 end
 
-if ARGV.length == 3 && ARGV.fetch(0) == "--equivalent-excluding-bottle"
+if ARGV.length == 3 && ARGV.fetch(0) == "--receipt-equivalent"
+  selected = parse_formula(ARGV.fetch(1))
+  receipt = parse_formula(ARGV.fetch(2))
+  kind = receipt_match_kind(selected, receipt)
+  if kind.nil?
+    warn "archived Formula receipt differs outside Homebrew's canonical bottle-block removal"
+    exit 1
+  end
+  puts kind
+elsif ARGV.length == 3 && ARGV.fetch(0) == "--equivalent-excluding-bottle"
   left = parse_formula(ARGV.fetch(1))
   right = parse_formula(ARGV.fetch(2))
   unless equivalent_excluding_bottle?(left, right)
@@ -232,5 +250,5 @@ elsif ARGV.length == 1
   end
   puts Digest::SHA256.hexdigest(canonical_lines.join)
 else
-  abort "usage: homebrew-formula-source-digest.rb <formula.rb> | --identity-excluding-bottle <formula.rb> | --equivalent-excluding-bottle <left.rb> <right.rb>"
+  abort "usage: homebrew-formula-source-digest.rb <formula.rb> | --identity-excluding-bottle <formula.rb> | --equivalent-excluding-bottle <left.rb> <right.rb> | --receipt-equivalent <selected.rb> <receipt.rb>"
 end
