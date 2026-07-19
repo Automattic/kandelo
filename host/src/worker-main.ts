@@ -207,6 +207,83 @@ export interface DlopenSupport {
   resetForkChildLock: () => void;
 }
 
+type WasmPointer = number | bigint;
+
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SIGNED_WASM32 = -0x8000_0000;
+const MAX_UNSIGNED_WASM32 = 0xffff_ffff;
+const MIN_SIGNED_WASM64 = -(1n << 63n);
+const MAX_UNSIGNED_WASM64 = (1n << 64n) - 1n;
+
+/**
+ * Convert a Wasm pointer into the exact JavaScript offset required by typed
+ * array constructors. WebAssembly exposes memory32 i32 parameters as numbers
+ * and memory64 i64 parameters as bigints. Normalize the signed JS view back to
+ * the pointer's unsigned bit pattern, then reject any address JavaScript
+ * cannot represent exactly.
+ */
+function checkedWasmPointerOffset(
+  value: WasmPointer,
+  ptrWidth: 4 | 8,
+  context: string,
+): number {
+  let unsigned: bigint;
+  if (ptrWidth === 4) {
+    if (
+      typeof value !== "number"
+      || !Number.isSafeInteger(value)
+      || value < MIN_SIGNED_WASM32
+      || value > MAX_UNSIGNED_WASM32
+    ) {
+      throw new TypeError(`${context}: expected an exact memory32 pointer`);
+    }
+    unsigned = BigInt(value >>> 0);
+  } else {
+    if (
+      typeof value !== "bigint"
+      || value < MIN_SIGNED_WASM64
+      || value > MAX_UNSIGNED_WASM64
+    ) {
+      throw new TypeError(`${context}: expected an exact memory64 pointer`);
+    }
+    unsigned = BigInt.asUintN(64, value);
+  }
+
+  if (unsigned > MAX_SAFE_BIGINT) {
+    throw new RangeError(`${context}: pointer exceeds JavaScript's exact address range`);
+  }
+  return Number(unsigned);
+}
+
+function checkedWasmByteLength(value: number | bigint, context: string): number {
+  if (typeof value === "number" && !Number.isSafeInteger(value)) {
+    throw new RangeError(`${context}: length is not an exact non-negative JavaScript integer`);
+  }
+  const exact = typeof value === "bigint" ? value : BigInt(value);
+  if (exact < 0n || exact > MAX_SAFE_BIGINT) {
+    throw new RangeError(`${context}: length is not an exact non-negative JavaScript integer`);
+  }
+  return Number(exact);
+}
+
+function checkedWasmMemoryRange(
+  memory: WebAssembly.Memory,
+  pointer: WasmPointer,
+  lengthValue: number | bigint,
+  ptrWidth: 4 | 8,
+  context: string,
+): { offset: number; length: number } {
+  const offset = checkedWasmPointerOffset(pointer, ptrWidth, context);
+  const length = checkedWasmByteLength(lengthValue, context);
+  const memoryLength = memory.buffer.byteLength;
+  if (offset > memoryLength || length > memoryLength - offset) {
+    throw new RangeError(
+      `${context}: memory range [${offset}, ${offset + length}) exceeds ${memoryLength} bytes`,
+    );
+  }
+  return { offset, length };
+}
+
 /**
  * Thread workers instantiate a separate Wasm module/table/tag graph, so they
  * cannot safely load or invoke process side modules. Keep dlopen's ordinary C
@@ -253,7 +330,8 @@ function buildUnsupportedThreadDlopenImports(
  * call-site rewind buffer: a fork issued by a pthread rewinds from that
  * thread's buffer but still inherits the one process-wide dlopen archive.
  */
-function buildDlopenImports(
+/** @internal Exported so the pointer-width host import contract can be tested directly. */
+export function buildDlopenImports(
   memory: WebAssembly.Memory,
   channelOffset: number,
   archiveControlAddr: number,
@@ -730,26 +808,44 @@ function buildDlopenImports(
   };
 
   const imports: Record<string, WebAssembly.ExportValue> = {
-    __wasm_dlopen: (bytesPtr: number, bytesLen: number,
-                    namePtr: number, nameLen: number): number => {
+    __wasm_dlopen: (bytesPtr: WasmPointer, bytesLen: number | bigint,
+                    namePtr: WasmPointer, nameLen: number | bigint): number => {
       if (!acquireMainDlopenLock()) return 0;
       hostDlopenError = null;
       try {
+        const bytesRange = checkedWasmMemoryRange(
+          memory,
+          bytesPtr,
+          bytesLen,
+          ptrWidth,
+          "__wasm_dlopen bytes",
+        );
+        const nameRange = checkedWasmMemoryRange(
+          memory,
+          namePtr,
+          nameLen,
+          ptrWidth,
+          "__wasm_dlopen name",
+        );
         // dlopen(NULL, ...) asks for the main program's global symbol scope.
         // No module bytes are involved; return the linker's reserved opaque
         // handle while preserving the existing host-import signature.
-        if (bytesLen === 0 && nameLen === 0) {
+        if (bytesRange.length === 0 && nameRange.length === 0) {
           return getLinker().dlopenMain();
         }
 
-        const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
+        const bytes = new Uint8Array(memory.buffer, bytesRange.offset, bytesRange.length);
         // Copy bytes since memory.buffer may detach during Wasm instantiation
         const bytesCopy = new Uint8Array(bytes);
         // TextDecoder.decode() rejects views backed by SharedArrayBuffer
         // in Firefox (and recent Chrome), so copy the name bytes through
         // a non-shared Uint8Array before decoding. Same shape as
         // bytesCopy above.
-        const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
+        const nameBytesView = new Uint8Array(
+          memory.buffer,
+          nameRange.offset,
+          nameRange.length,
+        );
         const nameBytesCopy = new Uint8Array(nameBytesView);
         const name = decoder.decode(nameBytesCopy);
         const handle = getLinker().dlopenSync(name, bytesCopy);
@@ -777,10 +873,25 @@ function buildDlopenImports(
       }
     },
 
-    __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
+    __wasm_dlsym: (
+      handle: number,
+      namePtr: WasmPointer,
+      nameLen: number | bigint,
+    ): number => {
       // See __wasm_dlopen above: copy off the shared buffer before
       // TextDecoder.decode() touches it.
-      const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const nameRange = checkedWasmMemoryRange(
+        memory,
+        namePtr,
+        nameLen,
+        ptrWidth,
+        "__wasm_dlsym name",
+      );
+      const nameBytesView = new Uint8Array(
+        memory.buffer,
+        nameRange.offset,
+        nameRange.length,
+      );
       const nameBytesCopy = new Uint8Array(nameBytesView);
       const name = decoder.decode(nameBytesCopy);
       const result = getLinker().dlsym(handle, name);
@@ -791,14 +902,22 @@ function buildDlopenImports(
       return getLinker().dlclose(handle);
     },
 
-    __wasm_dlerror: (bufPtr: number, bufMax: number): number => {
+    __wasm_dlerror: (bufPtr: WasmPointer, bufMax: number | bigint): number => {
       const err = hostDlopenError ?? getLinker().dlerror();
       hostDlopenError = null;
       if (!err) return 0;
       const encoded = encoder.encode(err);
-      const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
-      return len;
+      const maxLength = checkedWasmByteLength(bufMax, "__wasm_dlerror buffer");
+      const range = checkedWasmMemoryRange(
+        memory,
+        bufPtr,
+        Math.min(encoded.length, maxLength),
+        ptrWidth,
+        "__wasm_dlerror buffer",
+      );
+      new Uint8Array(memory.buffer, range.offset, range.length)
+        .set(encoded.subarray(0, range.length));
+      return range.length;
     },
   };
 
