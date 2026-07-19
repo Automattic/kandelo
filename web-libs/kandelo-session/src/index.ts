@@ -3,3 +3,4 @@
 export * from "./kernel-host";
 export * from "./demo-config";
 export * from "./demo-guides";
+export * from "./shell-config";

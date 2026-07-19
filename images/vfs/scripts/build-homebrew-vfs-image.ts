@@ -35,7 +35,18 @@ import {
   MemoryFileSystem,
   type VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
-import { saveImage } from "./vfs-image-helpers";
+import {
+  KANDELO_SHELL_CONFIG_PATH,
+  MAX_KANDELO_SHELL_CONFIG_BYTES,
+  MAX_KANDELO_SHELL_EXECUTABLE_BYTES,
+  parseKandeloShellConfig,
+  type KandeloShellConfig,
+} from "../../../web-libs/kandelo-session/src/shell-config";
+import {
+  ensureDirRecursive,
+  saveImage,
+  writeVfsBinary,
+} from "./vfs-image-helpers";
 
 interface CliOptions {
   metadata: string;
@@ -52,6 +63,7 @@ interface CliOptions {
   baseImage?: string;
   maxBytes?: number;
   writeProfile: boolean;
+  shellConfig?: string;
 }
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
@@ -90,9 +102,19 @@ interface LoadedBaseImage {
   metadata: VfsImageMetadata;
 }
 
+interface LoadedShellConfig {
+  config: KandeloShellConfig;
+  source: Uint8Array;
+  sha256: string;
+  bytes: number;
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const metadata = readJsonFile(options.metadata);
+  const shellConfig = options.shellConfig
+    ? readShellConfig(options.shellConfig)
+    : undefined;
   const brewfileSelection = options.brewfile
     ? readBrewfileSelection(options.brewfile)
     : undefined;
@@ -126,6 +148,17 @@ async function main(): Promise<void> {
     } : undefined,
     loadBottleBytes: (pkg) => loadBottleBytes(pkg, options),
   });
+  if (shellConfig) {
+    assertShellExecutable(fs, shellConfig.config.path);
+    if (vfsPathExists(fs, KANDELO_SHELL_CONFIG_PATH)) {
+      throw new Error(
+        `refusing to overwrite existing default shell config: ${KANDELO_SHELL_CONFIG_PATH}`,
+      );
+    }
+    ensureDirRecursive(fs, dirname(KANDELO_SHELL_CONFIG_PATH));
+    writeVfsBinary(fs, KANDELO_SHELL_CONFIG_PATH, shellConfig.source, 0o644);
+    assertShellExecutable(fs, shellConfig.config.path);
+  }
 
   await saveImage(fs, options.out, {
     metadata: {
@@ -148,6 +181,13 @@ async function main(): Promise<void> {
             ? { brewfile: result.report.selection.brewfile }
             : {}),
         },
+        ...(shellConfig ? {
+          defaultShell: {
+            path: shellConfig.config.path,
+            argv: shellConfig.config.argv,
+            configSha256: shellConfig.sha256,
+          },
+        } : {}),
         packages: plan.packages.map((pkg) => ({
           name: pkg.name,
           version: pkg.version,
@@ -161,6 +201,14 @@ async function main(): Promise<void> {
 
   const report = {
     ...result.report,
+    ...(shellConfig ? {
+      default_shell: {
+        path: shellConfig.config.path,
+        argv: shellConfig.config.argv,
+        config_sha256: shellConfig.sha256,
+        config_bytes: shellConfig.bytes,
+      },
+    } : {}),
     ...(baseImage ? {
       base_image: {
         ...baseImage.binding,
@@ -237,6 +285,12 @@ function parseArgs(args: string[]): CliOptions {
       case "--write-profile":
         options.writeProfile = true;
         break;
+      case "--shell-config":
+        if (options.shellConfig !== undefined) {
+          usage("--shell-config may be provided only once");
+        }
+        options.shellConfig = requireValue(args, ++i, arg);
+        break;
       case "--help":
       case "-h":
         usage(undefined, 0);
@@ -257,6 +311,9 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.baseImage && !existsSync(options.baseImage)) {
     usage(`base image does not exist: ${options.baseImage}`);
+  }
+  if (options.shellConfig && !options.writeProfile) {
+    usage("--shell-config requires --write-profile so the Homebrew environment is initialized");
   }
 
   return options as CliOptions;
@@ -408,6 +465,45 @@ function readJsonFile(path: string): unknown {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
+function readShellConfig(path: string): LoadedShellConfig {
+  const bytes = readBoundedRegularFile(
+    path,
+    MAX_KANDELO_SHELL_CONFIG_BYTES,
+    "Kandelo default shell config",
+  );
+  const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const config = parseKandeloShellConfig(source);
+  if (!config) {
+    throw new Error(`Kandelo default shell config has an unsupported version: ${path}`);
+  }
+  return {
+    config,
+    source: bytes,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    bytes: bytes.byteLength,
+  };
+}
+
+function assertShellExecutable(fs: MemoryFileSystem, path: string): void {
+  let stat;
+  try {
+    stat = fs.stat(path);
+  } catch {
+    throw new Error(`default shell executable is missing from the composed VFS: ${path}`);
+  }
+  if ((stat.mode & 0xf000) !== 0x8000) {
+    throw new Error(`default shell path is not a regular file in the composed VFS: ${path}`);
+  }
+  if ((stat.mode & 0o111) === 0) {
+    throw new Error(`default shell is not executable in the composed VFS: ${path}`);
+  }
+  if (stat.size > MAX_KANDELO_SHELL_EXECUTABLE_BYTES) {
+    throw new Error(
+      `default shell exceeds ${MAX_KANDELO_SHELL_EXECUTABLE_BYTES} bytes in the composed VFS: ${path}`,
+    );
+  }
+}
+
 function readBoundedRegularFile(
   path: string,
   maximumBytes: number,
@@ -529,7 +625,8 @@ function usage(message?: string, code = 2): never {
   --report <report.json> \\
   [--expected-cache-key <name>=<sha256>] [--no-fallback] \\
   [--bottle-cache <dir>] [--base-image <base.vfs[.zst]>] \\
-  [--max-bytes <bytes|MiB>] [--write-profile]`);
+  [--max-bytes <bytes|MiB>] [--write-profile] \\
+  [--shell-config <shell.json>]`);
   process.exit(code);
 }
 

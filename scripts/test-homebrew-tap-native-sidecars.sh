@@ -940,6 +940,17 @@ brew "kandelo-dev/tap-core/sidecar-tool"
 EOF
 BREWFILE_SHA256="$(sha256_file "$BREWFILE")"
 BREWFILE_BYTES="$(wc -c < "$BREWFILE" | tr -d ' ')"
+SHELL_CONFIG="$TMPDIR/shell.json"
+printf '\357\273\277' > "$SHELL_CONFIG"
+cat >> "$SHELL_CONFIG" <<'EOF'
+{
+  "version": 1,
+  "path": "/home/linuxbrew/.linuxbrew/bin/sidecar-tool",
+  "argv": ["sidecar-tool", "--interactive"]
+}
+EOF
+SHELL_CONFIG_SHA256="$(sha256_file "$SHELL_CONFIG")"
+SHELL_CONFIG_BYTES="$(wc -c < "$SHELL_CONFIG" | tr -d ' ')"
 BASE_ROOT="$TMPDIR/base-root"
 BASE_MANIFEST="$TMPDIR/base.MANIFEST"
 BASE_IMAGE="$TMPDIR/base.vfs"
@@ -1106,6 +1117,19 @@ if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
 fi
 grep -F -- "--brewfile may be provided only once" \
   "$TMPDIR/repeated-brewfile.err" >/dev/null
+if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
+  --brewfile "$BREWFILE" \
+  --shell-config "$SHELL_CONFIG" \
+  --out "$TMPDIR/shell-without-profile.vfs.zst" \
+  --report "$TMPDIR/shell-without-profile-report.json" \
+  > /dev/null 2>"$TMPDIR/shell-without-profile.err"; then
+  echo "Homebrew VFS builder accepted a default shell without profile setup" >&2
+  exit 1
+fi
+grep -F -- "--shell-config requires --write-profile" \
+  "$TMPDIR/shell-without-profile.err" >/dev/null
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$TAP/Kandelo/metadata.json" \
   --tap-root "$TAP" \
@@ -1152,6 +1176,8 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --bottle-cache "$BOTTLE_CACHE" \
   --base-image "$BASE_IMAGE" \
   --max-bytes "$BASE_REQUESTED_MAX_BYTES" \
+  --write-profile \
+  --shell-config "$SHELL_CONFIG" \
   --out "$TMPDIR/sidecar-tool.vfs.zst" \
   --report "$TMPDIR/sidecar-tool-report.json" >/dev/null
 
@@ -1164,6 +1190,12 @@ jq -e '
     "parser":"kandelo-static-brewfile-v1",
     "sha256":$brewfile_sha,
     "bytes":$brewfile_bytes
+  } and
+  .default_shell == {
+    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool",
+    "argv":["sidecar-tool","--interactive"],
+    "config_sha256":$shell_config_sha,
+    "config_bytes":$shell_config_bytes
   } and
   (.packages[] | select(.name == "sidecar-tool") | .links) == [
     "bin/sidecar-tool",
@@ -1184,6 +1216,8 @@ jq -e '
 ' --arg base_sha "$BASE_IMAGE_SHA256" --argjson base_bytes "$BASE_IMAGE_BYTES" \
   --arg brewfile_sha "$BREWFILE_SHA256" \
   --argjson brewfile_bytes "$BREWFILE_BYTES" \
+  --arg shell_config_sha "$SHELL_CONFIG_SHA256" \
+  --argjson shell_config_bytes "$SHELL_CONFIG_BYTES" \
   --argjson abi "$ABI_VERSION" \
   "$TMPDIR/sidecar-tool-report.json" >/dev/null
 npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
@@ -1204,6 +1238,9 @@ jq -e '
 ' --arg brewfile_sha "$BREWFILE_SHA256" \
   --argjson brewfile_bytes "$BREWFILE_BYTES" \
   "$TMPDIR/sidecar-tool-root/etc/kandelo/homebrew-vfs.json" >/dev/null
+cmp "$SHELL_CONFIG" "$TMPDIR/sidecar-tool-root/etc/kandelo/shell.json"
+grep -F '/home/linuxbrew/.linuxbrew/bin' \
+  "$TMPDIR/sidecar-tool-root/etc/profile.d/kandelo-homebrew.sh" >/dev/null
 npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
   "$TMPDIR/sidecar-tool.vfs.zst" --format json --metadata \
   > "$TMPDIR/sidecar-tool-inspect.json"
@@ -1225,6 +1262,11 @@ jq -e '
       "bytes":$brewfile_bytes
     }
   } and
+  .metadata.homebrew.defaultShell == {
+    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool",
+    "argv":["sidecar-tool","--interactive"],
+    "configSha256":$shell_config_sha
+  } and
   ($requested_sha | test("^[0-9a-f]{64}$")) and
   (.metadata.baseImage | has("metadata") | not) and
   (.metadata | has("platformBase") | not) and
@@ -1237,6 +1279,7 @@ jq -e '
     "$TMPDIR/sidecar-tool-report.json")" \
   --arg brewfile_sha "$BREWFILE_SHA256" \
   --argjson brewfile_bytes "$BREWFILE_BYTES" \
+  --arg shell_config_sha "$SHELL_CONFIG_SHA256" \
   --argjson base_bytes "$BASE_IMAGE_BYTES" \
   --argjson abi "$ABI_VERSION" "$TMPDIR/sidecar-tool-inspect.json" >/dev/null
 

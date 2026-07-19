@@ -1,2 +1,7 @@
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
+
+for kandelo_profile in /etc/profile.d/*.sh; do
+    [ -r "$kandelo_profile" ] && . "$kandelo_profile"
+done
+unset kandelo_profile

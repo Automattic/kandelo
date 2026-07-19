@@ -376,6 +376,37 @@ button groups, an editable shell script, and optional companion HTML:
 }
 ```
 
+### Image-owned default shells
+
+An image that contains its own interactive shell can select it with
+`/etc/kandelo/shell.json`:
+
+```json
+{
+  "version": 1,
+  "path": "/home/linuxbrew/.linuxbrew/bin/dash",
+  "argv": ["dash", "-l", "-i"]
+}
+```
+
+The Kandelo browser loader validates this file before boot, verifies that
+`path` is an executable regular file in the restored VFS, and starts it through
+the kernel's normal VFS `exec` path. It does not download or overwrite the
+legacy Bash and Dash programs when this declaration is present. Images without
+the file retain the existing `/bin/bash` fallback.
+
+The declaration deliberately does not contain environment variables, a
+working directory, or user IDs. Those remain boot-descriptor policy; the image
+owns only the executable it contains and its startup arguments. Paths must be
+absolute and normalized, argument counts and byte sizes are bounded, shell
+executables are limited to 64 MiB, extra fields are rejected, and an
+unsupported version fails loudly.
+
+Login shells read `/etc/profile`. Kandelo's rootfs and shell images source
+readable `/etc/profile.d/*.sh` fragments there, so an image composer can add
+package-manager environment setup without teaching the browser about a
+particular package or prefix.
+
 `terminal.run` sends a command through the persistent PTY-backed shell.
 `terminal.write` sends raw text to that PTY, which is useful for entering input
 into an already-running REPL. `guide.companion.srcDoc` runs in a sandboxed
