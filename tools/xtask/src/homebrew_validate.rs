@@ -1353,6 +1353,21 @@ mod tests {
     }
 
     #[test]
+    fn accepts_posix_bracket_utility_paths() {
+        let mut fixture = Fixture::new();
+        set(
+            &mut fixture.link,
+            "/links/0/source",
+            json!("Cellar/hello/2.12.1/bin/["),
+        );
+        set(&mut fixture.link, "/links/0/target", json!("bin/["));
+        fixture.write();
+
+        let report = fixture.validate();
+        assert_eq!(report.errors, Vec::<String>::new());
+    }
+
+    #[test]
     fn rejects_dotdot_link_path() {
         let mut fixture = Fixture::new();
         set(&mut fixture.link, "/links/0/target", json!("../bin/hello"));

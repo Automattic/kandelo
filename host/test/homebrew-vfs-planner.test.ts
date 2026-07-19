@@ -328,6 +328,37 @@ describe("Homebrew VFS planner", () => {
     })).rejects.toThrow('link manifest duplicate target "bin/hello"');
   });
 
+  it("accepts POSIX bracket utility paths while keeping tap paths narrow", async () => {
+    const manifest = linkManifest("coreutils", "9.5", {
+      links: [{
+        type: "symlink",
+        source: "Cellar/coreutils/9.5/bin/[",
+        target: "bin/[",
+      }],
+    });
+    const plan = await planHomebrewVfs(metadata([
+      packageEntry("coreutils", "9.5"),
+    ]), {
+      packages: ["coreutils"],
+      arch: "wasm32",
+      loadLinkManifest: () => manifest,
+    });
+
+    expect(plan.packages[0].linkManifest.links[0]).toMatchObject({
+      source: "Cellar/coreutils/9.5/bin/[",
+      target: "bin/[",
+    });
+
+    const entry = packageEntry("coreutils", "9.5");
+    (entry.bottles as Array<Record<string, unknown>>)[0].link_manifest =
+      "Kandelo/link/coreutils-[.json";
+    await expect(planHomebrewVfs(metadata([entry]), {
+      packages: ["coreutils"],
+      arch: "wasm32",
+      loadLinkManifest: () => manifest,
+    })).rejects.toThrow("must be a safe relative path");
+  });
+
   it("rejects dependency cycles", async () => {
     const tapMetadata = metadata([
       packageEntry("alpha", "1.0", [{ name: "beta", version: "1.0" }]),

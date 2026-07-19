@@ -169,7 +169,8 @@ const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
-const SAFE_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
+const SAFE_TAP_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
+const SAFE_GUEST_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:\[\]-]+$/;
 const MAX_PACKAGE_NAME_BYTES = 255;
 const MAX_REQUESTED_PACKAGES = 128;
 const MAX_RESOLVED_PACKAGES = 128;
@@ -704,15 +705,15 @@ function validateLinkManifest(
     fail(`link manifest keg ${quote(link.keg)} must be under cellar ${quote(link.cellar)}`);
   }
 
-  validateRelativePath(link.bottle.payload_root, "link manifest bottle.payload_root");
+  validateGuestRelativePath(link.bottle.payload_root, "link manifest bottle.payload_root");
   if (link.receipts.length === 0) fail("link manifest receipts must not be empty");
   for (const receipt of link.receipts) {
-    validateRelativePath(receipt, "link manifest receipt");
+    validateGuestRelativePath(receipt, "link manifest receipt");
   }
   const targets = new Set<string>();
   for (const entry of link.links) {
-    validateRelativePath(entry.source, "link manifest link source");
-    validateRelativePath(entry.target, "link manifest link target");
+    validateGuestRelativePath(entry.source, "link manifest link source");
+    validateGuestRelativePath(entry.target, "link manifest link target");
     if (targets.has(entry.target)) {
       fail(`link manifest duplicate target ${quote(entry.target)}`);
     }
@@ -722,7 +723,7 @@ function validateLinkManifest(
     }
   }
   for (const path of link.env.PATH_prepend ?? []) {
-    validateRelativePath(path, "link manifest env.PATH_prepend");
+    validateGuestRelativePath(path, "link manifest env.PATH_prepend");
   }
 }
 
@@ -760,15 +761,19 @@ function validateSha256(value: string, label: string): string {
 }
 
 function validateTapRelativePath(path: string, label: string): void {
-  validateRelativePath(path, label);
+  validateRelativePath(path, label, SAFE_TAP_REL_SEGMENT_RE);
 }
 
-function validateRelativePath(path: string, label: string): void {
+function validateGuestRelativePath(path: string, label: string): void {
+  validateRelativePath(path, label, SAFE_GUEST_REL_SEGMENT_RE);
+}
+
+function validateRelativePath(path: string, label: string, segmentPattern: RegExp): void {
   const parts = path.split("/");
   if (
     path.startsWith("/") ||
     parts.length === 0 ||
-    parts.some((part) => part.length === 0 || part === "." || part === ".." || !SAFE_REL_SEGMENT_RE.test(part))
+    parts.some((part) => part.length === 0 || part === "." || part === ".." || !segmentPattern.test(part))
   ) {
     fail(`${label} ${quote(path)} must be a safe relative path`);
   }

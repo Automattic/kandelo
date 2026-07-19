@@ -1015,6 +1015,11 @@ tap-identity drift, duplicate roots or metadata, cache-key drift, missing
 packages, dependency cycles, unsafe paths, and link-manifest bottle drift
 before any bottle bytes are extracted. It resolves the requested roots and
 their single-tap dependency closure in deterministic dependency-first order.
+Guest-relative link-manifest paths admit literal square brackets so standard
+POSIX utility names such as `bin/[` remain representable. They still reject
+absolute paths, empty and `.`/`..` segments, backslashes, and whitespace. Tap
+metadata references use a separate, narrower path grammar and do not inherit
+the guest filename allowance.
 
 The Node-side builder is `buildHomebrewVfs()` in
 `host/src/homebrew-vfs-builder.ts`. It verifies bottle byte count and sha256,

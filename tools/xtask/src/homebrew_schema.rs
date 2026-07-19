@@ -110,6 +110,26 @@ mod tests {
     }
 
     #[test]
+    fn link_manifest_accepts_posix_bracket_utility_paths() {
+        let schema = compile_schema(&schema_rel("link-manifest"));
+        let mut instance = load_json(&example_rel("link/hello-2.12.1-rebuild0-wasm32.json"));
+        *instance
+            .pointer_mut("/links/0/source")
+            .expect("link source fixture path") =
+            json!("Cellar/coreutils/9.5/bin/[");
+        *instance
+            .pointer_mut("/links/0/target")
+            .expect("link target fixture path") = json!("bin/[");
+
+        let errors = validation_errors(&schema, &instance);
+        assert!(
+            errors.is_empty(),
+            "POSIX bracket utility paths should validate:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    #[test]
     fn link_manifest_rejects_malformed_bottle_sha() {
         let instance = load_json(&example_rel("link/hello-2.12.1-rebuild0-wasm32.json"));
         assert_invalid(&schema_rel("link-manifest"), instance, |value| {

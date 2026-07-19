@@ -479,6 +479,29 @@ describe("Homebrew VFS builder", () => {
     expect(result.fs.readlink(`${PREFIX}/bin/hello`)).toBe(`${KEG}/bin/hello`);
   });
 
+  it("pours and links a POSIX bracket utility path", async () => {
+    const bytes = bottleTar(standardEntries([
+      {
+        path: "hello/2.12.1/bin/[",
+        data: "#!/bin/sh\necho bracket\n",
+        mode: 0o755,
+      },
+    ]));
+    const result = await buildFixture(bytes, {
+      linkOverrides: {
+        links: [{
+          type: "symlink",
+          source: "Cellar/hello/2.12.1/bin/[",
+          target: "bin/[",
+        }],
+      },
+    });
+
+    expect(result.fs.readlink(`${PREFIX}/bin/[`)).toBe(`${KEG}/bin/[`);
+    expect(readVfsFile(result.fs, `${KEG}/bin/[`)).toContain("echo bracket");
+    expect(result.report.packages[0].links).toEqual(["bin/["]);
+  });
+
   it("records last-green fallback source status in the report", async () => {
     const bytes = bottleTar(standardEntries());
     const metadataOverrides = {
