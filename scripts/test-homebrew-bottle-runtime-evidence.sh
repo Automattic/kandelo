@@ -66,6 +66,7 @@ printf 'exact bottle fixture\n' >"$bottle"
 bottle_sha="$(sha256sum "$bottle" | awk '{print $1}')"
 bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
 bottle_url="$bottle_root/hello/blobs/sha256:$bottle_sha"
+manifest_url="$bottle_root/hello/manifests/1.0"
 sed -i "s/PLACEHOLDER/$bottle_sha/" "$tap/Formula/hello.rb"
 git -C "$tap" init -q
 git -C "$tap" config user.name fixture
@@ -95,7 +96,7 @@ jq -nS --arg tap_commit "$tap_commit" '{
   runtime_dependencies: []
 }' >"$target_receipt"
 cat >"$install_log" <<EOF
-==> Downloading $bottle_url
+==> Downloading $manifest_url
 ==> Pouring hello--1.0.wasm32_kandelo.bottle.tar.gz
 EOF
 jq -nS --argjson abi "$abi" '{schema: 1, formula: "hello", arch: "wasm32",
@@ -157,7 +158,8 @@ python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
 python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --input "$evidence" "${validate_args[@]}"
 
-jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" --arg tap_name "$tap_name" '
+jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" \
+  --arg tap_name "$tap_name" --arg manifest_url "$manifest_url" '
   .schema == 2 and .tap.name == $tap_name and
   .bottle.sha256 == $sha and .bottle.url == $url and
   .selection.bottle.mode == "anonymous-public-readback" and
@@ -165,9 +167,23 @@ jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" --arg tap_name "$tap_name"
   .target.receipt.poured_from_bottle == true and
   .target.install_log.source_build_absent == true and
   (.target.install_log.fetch | length) == 1 and
+  .target.install_log.fetch[0] == ("==> Downloading " + $manifest_url) and
   (.target.install_log.pour | length) == 1 and
   .node.runtime == "node" and .node.status == "success"
-' "$evidence" >/dev/null || fail "valid evidence omitted an exact-bottle runtime fact"
+' "$evidence" >/dev/null ||
+  fail "valid evidence omitted an exact-bottle runtime fact"
+
+cp "$install_log" "$install_log.manifest"
+cat >"$install_log" <<EOF
+==> Downloading $bottle_url
+==> Pouring hello--1.0.wasm32_kandelo.bottle.tar.gz
+EOF
+blob_evidence="$TMPDIR/runtime-evidence-blob-fetch.json"
+python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
+  "${capture_args[@]}" --out "$blob_evidence"
+python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$blob_evidence" "${validate_args[@]}"
+mv "$install_log.manifest" "$install_log"
 
 cp "$bottle_json" "$bottle_json.rebuild0"
 cp "$formula_info" "$formula_info.rebuild0"
@@ -177,7 +193,7 @@ mv "$bottle_json.next" "$bottle_json"
 jq '.formulae[0].bottle.stable.rebuild = 1' "$formula_info" >"$formula_info.next"
 mv "$formula_info.next" "$formula_info"
 cat >"$install_log" <<EOF
-==> Downloading $bottle_url
+==> Downloading $bottle_root/hello/manifests/1.0-1
 ==> Pouring hello--1.0.wasm32_kandelo.bottle.1.tar.gz
 EOF
 rebuild_evidence="$TMPDIR/runtime-evidence-rebuild1.json"
@@ -194,7 +210,7 @@ for wrong_pour in \
   'other--1.0.wasm32_kandelo.bottle.1.tar.gz' \
   'hello--2.0.wasm32_kandelo.bottle.1.tar.gz'; do
   cat >"$install_log" <<EOF
-==> Downloading $bottle_url
+==> Downloading $bottle_root/hello/manifests/1.0-1
 ==> Pouring $wrong_pour
 EOF
   expect_capture_rejection "non-canonical rebuild pour $wrong_pour"
@@ -227,6 +243,30 @@ done
 mv "$bottle_json.rebuild0" "$bottle_json"
 mv "$formula_info.rebuild0" "$formula_info"
 mv "$install_log.rebuild0" "$install_log"
+
+cp "$install_log" "$install_log.good"
+for wrong_manifest in \
+  "$bottle_root/other/manifests/1.0" \
+  "$bottle_root/Hello/manifests/1.0" \
+  "$bottle_root/hello/manifests/2.0" \
+  "$bottle_root/hello/manifests/1.0-1"; do
+  cat >"$install_log" <<EOF
+==> Downloading $wrong_manifest
+==> Pouring hello--1.0.wasm32_kandelo.bottle.tar.gz
+EOF
+  expect_capture_rejection "wrong public manifest reference $wrong_manifest"
+done
+cat >"$install_log" <<EOF
+Resolved $manifest_url
+==> Pouring hello--1.0.wasm32_kandelo.bottle.tar.gz
+EOF
+expect_capture_rejection "public manifest reference without fetch action"
+cat >"$install_log" <<EOF
+Not downloading $manifest_url
+==> Pouring hello--1.0.wasm32_kandelo.bottle.tar.gz
+EOF
+expect_capture_rejection "negated public manifest fetch action"
+mv "$install_log.good" "$install_log"
 
 mv "$node_receipt" "$node_receipt.missing"
 expect_capture_rejection "missing Node evidence"
@@ -284,5 +324,35 @@ if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --input "$TMPDIR/extra.json" "${validate_args[@]}" >/dev/null 2>&1; then
   fail "validator accepted an extra runtime-evidence field"
 fi
+
+jq --arg url "$bottle_root/hello/manifests/2.0" \
+  '.target.install_log.fetch = [("==> Downloading " + $url)]' \
+  "$evidence" >"$TMPDIR/wrong-manifest-evidence.json"
+if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$TMPDIR/wrong-manifest-evidence.json" "${validate_args[@]}" \
+  >/dev/null 2>&1; then
+  fail "validator accepted the wrong public manifest reference"
+fi
+
+jq --arg url "$manifest_url" \
+  '.target.install_log.fetch = [("Resolved " + $url)]' \
+  "$evidence" >"$TMPDIR/no-fetch-action-evidence.json"
+if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$TMPDIR/no-fetch-action-evidence.json" "${validate_args[@]}" \
+  >/dev/null 2>&1; then
+  fail "validator accepted a public manifest reference without a fetch action"
+fi
+
+for invalid_fetch in \
+  "==> Downloading $bottle_root/Hello/manifests/1.0" \
+  "Not downloading $manifest_url"; do
+  jq --arg line "$invalid_fetch" '.target.install_log.fetch = [$line]' \
+    "$evidence" >"$TMPDIR/invalid-fetch-evidence.json"
+  if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+    --input "$TMPDIR/invalid-fetch-evidence.json" "${validate_args[@]}" \
+    >/dev/null 2>&1; then
+    fail "validator accepted invalid public manifest fetch evidence: $invalid_fetch"
+  fi
+done
 
 echo "test-homebrew-bottle-runtime-evidence.sh: ok"

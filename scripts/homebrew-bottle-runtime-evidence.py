@@ -26,6 +26,7 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TAP_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SOURCE_BUILD = re.compile(r"\b(?:building|built)\b.*\bfrom source\b", re.IGNORECASE)
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+OCI_TAG = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 
 
 class EvidenceError(RuntimeError):
@@ -297,8 +298,32 @@ def line_names_bottle(line: str, filename: str) -> bool:
     return match is not None and match.group(1) == filename
 
 
+def public_manifest_url(
+    args: argparse.Namespace, version: str, rebuild: int
+) -> str:
+    reference = f"{version}-{rebuild}" if rebuild else version
+    require_string(reference, "Homebrew public manifest reference", OCI_TAG)
+    return f"{args.bottle_root_url}/{args.formula}/manifests/{reference}"
+
+
+def line_fetches_reference(line: str, references: tuple[str, ...]) -> bool:
+    match = re.fullmatch(
+        r"(?:==>\s+)?(?:Downloading|Downloaded|Fetching)\s+(\S+)",
+        line,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return False
+    fetched_reference = match.group(1)
+    return any(reference == fetched_reference for reference in references)
+
+
 def target_install_evidence(
-    args: argparse.Namespace, bottle_filename: str, selection: dict[str, Any]
+    args: argparse.Namespace,
+    bottle_filename: str,
+    version: str,
+    rebuild: int,
+    selection: dict[str, Any],
 ) -> dict[str, Any]:
     lines = read_log(pathlib.Path(args.install_log))
     source_lines = [line for line in lines if SOURCE_BUILD.search(line)]
@@ -313,14 +338,20 @@ def target_install_evidence(
         fail(f"target install lacks pour evidence for {bottle_filename}")
     mode = selection["bottle"]["mode"]
     if mode == "anonymous-public-readback":
+        fetch_references = (
+            args.bottle_url,
+            public_manifest_url(args, version, rebuild),
+        )
         fetch = [
             line
             for line in lines
-            if args.bottle_url.lower() in line.lower()
-            and re.search(r"\b(?:downloading|downloaded|fetching)\b", line, re.IGNORECASE)
+            if line_fetches_reference(line, fetch_references)
         ]
         if not fetch:
-            fail("target Homebrew install lacks fetch evidence for the exact public bottle URL")
+            fail(
+                "target Homebrew install lacks fetch evidence for the exact public "
+                "bottle blob or version manifest"
+            )
     else:
         fetch = list(selection["fetch"])
     installed_bottle = regular_file(
@@ -465,7 +496,9 @@ def build_document(args: argparse.Namespace) -> dict[str, Any]:
             "repository": args.tap_repository,
         },
         "target": {
-            "install_log": target_install_evidence(args, bottle_filename, selection),
+            "install_log": target_install_evidence(
+                args, bottle_filename, version, rebuild, selection
+            ),
             "receipt": target_receipt(args, version),
         },
     }
@@ -489,7 +522,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         "repository": args.tap_repository,
     }:
         fail("runtime evidence tap identity does not match")
-    version, tag_name, _, bottle_filename = canonical_bottle(args)
+    version, tag_name, rebuild, bottle_filename = canonical_bottle(args)
     bottle = exact_keys(
         root["bottle"], {"bytes", "sha256", "tag", "url", "version"}, "runtime evidence bottle"
     )
@@ -576,8 +609,15 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         if len(line.encode("utf-8")) > MAX_EVIDENCE_LINE_BYTES:
             fail(f"runtime target fetch[{index}] exceeds its byte limit")
         if selected_bottle["mode"] == "anonymous-public-readback":
-            if args.bottle_url.lower() not in line.lower():
-                fail("runtime target fetch evidence lacks the exact public bottle URL")
+            fetch_references = (
+                args.bottle_url,
+                public_manifest_url(args, version, rebuild),
+            )
+            if not line_fetches_reference(line, fetch_references):
+                fail(
+                    "runtime target fetch evidence lacks the exact public bottle "
+                    "blob or version manifest"
+                )
         elif args.bottle_sha256 not in line:
             fail("runtime dry-run target selection lacks the exact digest")
     receipt = exact_keys(
