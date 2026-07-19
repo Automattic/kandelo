@@ -8,7 +8,7 @@ import { genericDemoPresentation } from "./demo-config";
 import type { DemoPresentation } from "./kernel-host";
 
 export const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
-export const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
+export const DOOM_WAD_URL = "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad";
 export const DOOM_WAD_SHA256 = "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
 
 const shellScript = `echo "Hello from a Kandelo guided script"
