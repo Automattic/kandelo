@@ -6847,6 +6847,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-main-shell-closure.sh"
 assert_formula_composition_is_static_and_lossless
 assert_formula_source_closure_is_bound
 assert_playwright_json_capture_excludes_dev_shell_stdout

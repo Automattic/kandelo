@@ -113,7 +113,7 @@ export interface HomebrewVfsBuildResult {
   report: HomebrewVfsBuildReport;
 }
 
-type TarEntryType = "file" | "directory" | "symlink";
+type TarEntryType = "file" | "directory" | "symlink" | "hardlink";
 
 interface TarEntry {
   path: string;
@@ -127,6 +127,13 @@ interface StagePackageResult {
   files: number;
   directories: number;
   symlinks: number;
+}
+
+interface PendingHardlink {
+  archivePath: string;
+  path: string;
+  targetArchivePath: string;
+  targetPath: string;
 }
 
 export async function buildHomebrewVfs(
@@ -317,6 +324,7 @@ function stagePackage(
   ensureDirRecursive(fs, pkg.keg);
 
   const stagedPaths = new Set<string>();
+  const pendingHardlinks: PendingHardlink[] = [];
   let files = 0;
   let directories = 0;
   let symlinks = 0;
@@ -349,15 +357,90 @@ function stagePackage(
     if (entry.type === "file") {
       writeVfsBinary(fs, targetPath, entry.data, entry.mode || 0o644);
       files += 1;
-    } else {
+    } else if (entry.type === "symlink") {
       const linkName = entry.linkName ?? "";
       validateArchiveSymlink(pkg, targetPath, linkName);
       fs.symlink(linkName, targetPath);
       symlinks += 1;
+    } else {
+      const targetArchivePath = entry.linkName ?? "";
+      const hardlinkTarget = mapBottleEntryToGuestPath(pkg, targetArchivePath);
+      if (
+        !guestPathIsUnder(targetPath, pkg.keg) ||
+        hardlinkTarget === null ||
+        !guestPathIsUnder(hardlinkTarget, pkg.keg)
+      ) {
+        fail(
+          pkg,
+          `bottle hardlink ${entry.path} -> ${targetArchivePath} ` +
+            `is not contained in keg ${pkg.keg}`,
+        );
+      }
+      pendingHardlinks.push({
+        archivePath: entry.path,
+        path: targetPath,
+        targetArchivePath,
+        targetPath: hardlinkTarget,
+      });
     }
   }
 
+  files += stageHardlinks(fs, pkg, pendingHardlinks, stagedPaths);
+
   return { files, directories, symlinks };
+}
+
+function stageHardlinks(
+  fs: MemoryFileSystem,
+  pkg: HomebrewVfsPackagePlan,
+  hardlinks: PendingHardlink[],
+  stagedPaths: Set<string>,
+): number {
+  for (const hardlink of hardlinks) {
+    if (!stagedPaths.has(hardlink.targetPath)) {
+      fail(
+        pkg,
+        `bottle hardlink ${hardlink.archivePath} target ` +
+          `${hardlink.targetArchivePath} is not staged by this bottle`,
+      );
+    }
+  }
+
+  let pending = hardlinks;
+  let linked = 0;
+
+  while (pending.length > 0) {
+    const unresolved: PendingHardlink[] = [];
+    let progressed = false;
+
+    for (const hardlink of pending) {
+      const target = tryLstat(fs, hardlink.targetPath);
+      if (target === null) {
+        unresolved.push(hardlink);
+        continue;
+      }
+      if (kind(target) !== S_IFREG) {
+        fail(
+          pkg,
+          `bottle hardlink ${hardlink.archivePath} target ` +
+            `${hardlink.targetArchivePath} is not a regular file`,
+        );
+      }
+      fs.link(hardlink.targetPath, hardlink.path);
+      linked += 1;
+      progressed = true;
+    }
+
+    if (!progressed) {
+      const details = unresolved
+        .map((entry) => `${entry.archivePath} -> ${entry.targetArchivePath}`)
+        .join(", ");
+      fail(pkg, `bottle hardlink target is missing or cyclic: ${details}`);
+    }
+    pending = unresolved;
+  }
+
+  return linked;
 }
 
 function validateReceipts(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): void {
@@ -607,7 +690,19 @@ function parseTar(bytes: Uint8Array, label: string): TarEntry[] {
         });
         break;
       case "1":
-        throw new HomebrewVfsBuildError(`${label}: unsupported tar hardlink ${path}`);
+        if (size !== 0) {
+          throw new HomebrewVfsBuildError(
+            `${label}: hardlink ${path} has nonzero payload size ${size}`,
+          );
+        }
+        entries.push({
+          path,
+          type: "hardlink",
+          mode: mode || 0o644,
+          data: new Uint8Array(),
+          linkName: normalizeTarEntryPath(linkName, `${label}: hardlink target`),
+        });
+        break;
       case "3":
       case "4":
       case "6":

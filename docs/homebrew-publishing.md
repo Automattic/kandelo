@@ -1348,6 +1348,13 @@ The builder writes `/etc/kandelo/homebrew-vfs.json` and emits a build report;
 both record each `opt_link` path and target. Each package record retains its
 full Formula name, tap repository, tap name, and exact tap commit.
 
+Bottle tar hardlinks are supported only between regular files inside the same
+validated keg. The extractor resolves forward hardlinks after ordinary files,
+preserves their shared inode identity, and rejects unsafe paths, cross-keg
+Cellar entries or targets, targets not staged by the same bottle, non-regular
+targets, missing or cyclic targets, and hardlink headers with payload bytes.
+Device nodes and FIFOs remain unsupported.
+
 The CLI starts with an empty VFS by default. Pass `--base-image` to overlay the
 same verified bottle plan onto an explicit platform-only `.vfs` or `.vfs.zst`
 base image. The base must declare the same kernel ABI as the bottle metadata
@@ -1454,6 +1461,44 @@ executable and startup arguments explicitly. The browser remains independent
 of the selected Formula and executes the declared VFS path normally. Add
 `--write-profile --shell-config /path/to/shell.json` to the builder command
 when the Brewfile actually includes that declared shell.
+
+### Strict Main-Shell Bottle Closure
+
+`homebrew/main-shell.Brewfile` is the reviewed direct-root contract for the
+current rootfs plus browser shell/demo package closure. Keep it in the same
+order as `packages/registry/rootfs/package.toml` followed by the non-rootfs
+dependencies in `packages/registry/shell/package.toml`.
+`scripts/check-homebrew-main-shell-brewfile.mjs` enforces that relationship;
+the `file` package maps to Homebrew's reserved-name Formula
+`file-formula`.
+
+CI materialization uses an exact local tap checkout and its full 40-character
+commit:
+
+```bash
+scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-closure.sh \
+  --tap-root /path/to/exact/homebrew-tap-core \
+  --expected-tap-sha <full-sha>
+```
+
+The wrapper first builds a platform-only VFS from `MANIFEST` and
+`images/rootfs`. It deliberately does not generate or add the
+`images/rootfs/PACKAGES.toml` fragment, so legacy package-registry executables
+cannot remain as a hidden fallback. It then composes the Brewfile with
+`--no-fallback`, a 512 MiB filesystem, the image-owned Homebrew Bash config,
+and a verified bottle cache. Missing package metadata, unsuccessful bottle
+status, missing link sidecars, dependency gaps, digest drift, or a tap checkout
+different from the expected SHA fail the build. The tap checkout must also be
+clean, including no untracked files, and its metadata must name the canonical
+`kandelo-dev/homebrew-tap-core` repository and `kandelo-dev/tap-core` tap.
+
+The wrapper currently selects sidecars with `--runtime node` because older
+finalized sidecars predate truthful browser-compatibility recording. That is a
+selection compatibility boundary, not browser evidence. A produced image is
+not ready to replace the browser main shell until the exact emitted bytes have
+booted and exercised the closure in both Node and Chromium. Prefer
+`--runtime browser` once every selected bottle sidecar records browser support
+from exact-byte browser acceptance.
 
 Repeatable `--package <name>` remains available for lower-level tooling and
 focused tests. It preserves the provided root order and uses the same planner,

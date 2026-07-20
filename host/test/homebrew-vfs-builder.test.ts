@@ -176,7 +176,12 @@ function tarPayload(entry: TarSpec): Uint8Array {
 }
 
 function tarEntryData(entry: TarSpec): Uint8Array {
-  if ((entry.type ?? "file") !== "file") return new Uint8Array();
+  const carriesPayload =
+    (entry.type ?? "file") === "file" ||
+    (entry.type === "hardlink" && entry.data !== undefined);
+  if (!carriesPayload) {
+    return new Uint8Array();
+  }
   if (entry.data instanceof Uint8Array) return entry.data;
   return utf8(entry.data ?? "");
 }
@@ -629,12 +634,107 @@ describe("Homebrew VFS builder", () => {
     await expect(buildFixture(bytes)).rejects.toThrow("unsafe path segment");
   });
 
-  it("rejects unsupported hardlinks", async () => {
+  it("stages safe hardlinks as shared regular-file inodes", async () => {
     const bytes = bottleTar([
       ...standardEntries(),
       { path: "hello/2.12.1/bin/hello2", type: "hardlink", linkName: "hello/2.12.1/bin/hello" },
     ]);
 
-    await expect(buildFixture(bytes)).rejects.toThrow("unsupported tar hardlink");
+    const result = await buildFixture(bytes);
+    const original = result.fs.stat(`${KEG}/bin/hello`);
+    const linked = result.fs.stat(`${KEG}/bin/hello2`);
+
+    expect(readVfsFile(result.fs, `${KEG}/bin/hello2`)).toContain("echo hello");
+    expect(linked.ino).toBe(original.ino);
+    expect(linked.nlink).toBe(2);
+    expect(original.nlink).toBe(2);
+    expect(result.report.packages[0].staged_files).toBe(4);
+  });
+
+  it("resolves forward hardlinks after their regular-file targets", async () => {
+    const bytes = bottleTar([
+      { path: "hello/2.12.1/bin/hello2", type: "hardlink", linkName: "hello/2.12.1/bin/hello" },
+      ...standardEntries(),
+    ]);
+
+    const result = await buildFixture(bytes);
+    expect(result.fs.stat(`${KEG}/bin/hello2`).ino)
+      .toBe(result.fs.stat(`${KEG}/bin/hello`).ino);
+  });
+
+  it("rejects hardlinks whose targets escape the bottle", async () => {
+    const bytes = bottleTar([
+      ...standardEntries(),
+      { path: "hello/2.12.1/bin/hello2", type: "hardlink", linkName: "../hello" },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow("unsafe path segment");
+  });
+
+  it("rejects hardlinks into another Cellar keg", async () => {
+    const bytes = bottleTar([
+      ...standardEntries(),
+      {
+        path: "hello/2.12.1/bin/hello2",
+        type: "hardlink",
+        linkName: "Cellar/other/1.0/bin/other",
+      },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow(`not contained in keg ${KEG}`);
+  });
+
+  it("rejects hardlink entries installed into another Cellar keg", async () => {
+    const bytes = bottleTar([
+      ...standardEntries(),
+      {
+        path: "Cellar/other/1.0/bin/other",
+        type: "hardlink",
+        linkName: "hello/2.12.1/bin/hello",
+      },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow(`not contained in keg ${KEG}`);
+  });
+
+  it("rejects hardlinks with payload bytes", async () => {
+    const bytes = bottleTar([
+      ...standardEntries(),
+      {
+        path: "hello/2.12.1/bin/hello2",
+        type: "hardlink",
+        linkName: "hello/2.12.1/bin/hello",
+        data: "ignored payload",
+      },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow("nonzero payload size");
+  });
+
+  it("rejects hardlink targets not staged by the same bottle", async () => {
+    const missing = bottleTar([
+      ...standardEntries(),
+      { path: "hello/2.12.1/bin/hello2", type: "hardlink", linkName: "hello/2.12.1/bin/missing" },
+    ]);
+    await expect(buildFixture(missing)).rejects.toThrow("is not staged by this bottle");
+  });
+
+  it("rejects cyclic hardlink targets", async () => {
+    const cyclic = bottleTar([
+      ...standardEntries(),
+      { path: "hello/2.12.1/bin/hello2", type: "hardlink", linkName: "hello/2.12.1/bin/hello3" },
+      { path: "hello/2.12.1/bin/hello3", type: "hardlink", linkName: "hello/2.12.1/bin/hello2" },
+    ]);
+    await expect(buildFixture(cyclic)).rejects.toThrow("target is missing or cyclic");
+  });
+
+  it("rejects hardlinks to non-regular bottle entries", async () => {
+    const bytes = bottleTar([
+      ...standardEntries(),
+      { path: "hello/2.12.1/bin/hello-link", type: "symlink", linkName: "hello" },
+      { path: "hello/2.12.1/bin/hello2", type: "hardlink", linkName: "hello/2.12.1/bin/hello-link" },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow("is not a regular file");
   });
 });
