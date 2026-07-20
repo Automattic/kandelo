@@ -1205,11 +1205,21 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --max-bytes "$BASE_REQUESTED_MAX_BYTES" \
   --write-profile \
   --shell-config "$SHELL_CONFIG" \
+  --no-fallback \
   --out "$TMPDIR/sidecar-tool.vfs.zst" \
   --report "$TMPDIR/sidecar-tool-report.json" >/dev/null
 
-jq -e '
+jq -e --slurpfile metadata "$TAP/Kandelo/metadata.json" '
   [.packages[].name] == ["sidecar-dep", "sidecar-tool"] and
+  .metadata.tap_commit == $metadata[0].tap_commit and
+  ($metadata[0].packages[] | select(.name == "sidecar-dep") |
+    .bottles[] | select(.arch == "wasm32") | .built_from.tap_commit) as $dep_build_commit |
+  $dep_build_commit != $metadata[0].tap_commit and
+  all(.packages[]; . as $report |
+    ($metadata[0].packages[] | select(.name == $report.name) |
+      .bottles[] | select(.arch == $report.arch) | .built_from) as $built_from |
+    $report.tap_commit == $built_from.tap_commit and
+    $report.built_from == $built_from) and
   .selection.kind == "brewfile" and
   .selection.requested_packages == ["sidecar-tool"] and
   (.selection.requested_packages_sha256 | test("^[0-9a-f]{64}$")) and
@@ -1348,6 +1358,7 @@ const [
   executablePath,
   evidencePath,
   reviewedShellConfigPath,
+  reviewedReportPath,
 ] = process.argv.slice(2);
 validateHomebrewVfsAcceptance({
   metadataPath,
@@ -1356,7 +1367,7 @@ validateHomebrewVfsAcceptance({
   baseImagePath: "$BASE_IMAGE",
   baseOrigin: "kandelo-package-registry",
   imagePath: "$TMPDIR/sidecar-tool.vfs.zst",
-  reportPath: "$TMPDIR/sidecar-tool-report.json",
+  reportPath: reviewedReportPath ?? "$TMPDIR/sidecar-tool-report.json",
   kernelPath: "$TMPDIR/acceptance-kernel.wasm",
   kernelOrigin: "worktree-build",
   expectedRootPackage,
@@ -1377,7 +1388,7 @@ npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
   sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
   "$ACCEPTANCE_EVIDENCE"
-jq -e '
+jq -e --slurpfile metadata "$ACCEPTANCE_TAP/Kandelo/metadata.json" '
   .status == "validated" and
   .dependency_edges == [{
     "from":"kandelo-dev/tap-core/sidecar-tool",
@@ -1392,11 +1403,13 @@ jq -e '
     ]
   } and
   [.homebrew_bottles[].name] == ["sidecar-dep", "sidecar-tool"] and
-  all(.homebrew_bottles[];
-    .url == ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" + .name +
-      "/blobs/sha256:" + .sha256) and
-    .declared_runtime_support == ["node"] and
-    .declared_browser_compatible == false) and
+  all(.homebrew_bottles[]; . as $bottle |
+    $bottle.url == ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" + $bottle.name +
+      "/blobs/sha256:" + $bottle.sha256) and
+    $bottle.built_from == ($metadata[0].packages[] | select(.name == $bottle.name) |
+      .bottles[] | select(.arch == "wasm32") | .built_from) and
+    $bottle.declared_runtime_support == ["node"] and
+    $bottle.declared_browser_compatible == false) and
   .platform_inputs[0].role == "base-vfs" and
   .platform_inputs[0].origin == "kandelo-package-registry" and
   .platform_inputs[1].role == "kernel" and
@@ -1413,6 +1426,22 @@ jq -e '
 ' --arg shell_config_sha "$SHELL_CONFIG_SHA256" \
   --argjson shell_config_bytes "$SHELL_CONFIG_BYTES" \
   "$ACCEPTANCE_EVIDENCE" >/dev/null
+
+TAMPERED_BUILD_SOURCE_REPORT="$TMPDIR/tampered-build-source-report.json"
+jq '(.packages[] | select(.name == "sidecar-dep") |
+  .built_from.formula_sha256) = ("0" * 64)' \
+  "$TMPDIR/sidecar-tool-report.json" >"$TAMPERED_BUILD_SOURCE_REPORT"
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
+  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$TMPDIR/tampered-build-source-evidence.json" "$SHELL_CONFIG" \
+  "$TAMPERED_BUILD_SOURCE_REPORT" \
+  > /dev/null 2>"$TMPDIR/tampered-build-source.err"; then
+  echo "Homebrew VFS acceptance accepted altered bottle build provenance" >&2
+  exit 1
+fi
+grep -F "VFS report package sidecar-dep.built_from.formula_sha256 is" \
+  "$TMPDIR/tampered-build-source.err" >/dev/null
 
 MISMATCHED_SHELL_CONFIG="$TMPDIR/mismatched-shell.json"
 jq '.argv[1] = "--different"' "$SHELL_CONFIG" >"$MISMATCHED_SHELL_CONFIG"
@@ -1538,7 +1567,7 @@ if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   echo "Homebrew VFS acceptance accepted non-GHCR package sources" >&2
   exit 1
 fi
-grep -F "bottle URL is not the repository GHCR blob" "$TMPDIR/non-ghcr.err" >/dev/null
+grep -F "does not match repository-rooted GHCR URL" "$TMPDIR/non-ghcr.err" >/dev/null
 npx tsx -e "
 import { readFileSync } from 'node:fs';
 import { MemoryFileSystem } from '$REPO_ROOT/host/src/vfs/memory-fs.ts';
