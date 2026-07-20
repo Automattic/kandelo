@@ -3857,6 +3857,24 @@ EOF
   ! grep -F 'native-provenance-sentinel' "$provenance_log_capture" >/dev/null ||
     fail "native Homebrew output contaminated verifier provenance"
   [ -f "$runtime_evidence" ] || fail "bottle verifier did not emit runtime evidence"
+
+  # A force recovery can select a bottle block that is already present in the
+  # planned tap. The reconstructed Formula is then a truthful no-op, but it
+  # must still pass the same exact-file and clean-tap boundaries.
+  git -C "$tap" checkout -q -- Formula/hello.rb
+  rm -rf "$cache" "$state"
+  mkdir -p "$cache" "$state"
+  printf 'stale cache entry\n' >"$cache/stale"
+  : >"$log"
+  : >"$realm_log"
+  : >"$lifecycle_log"
+  run_bottle_verifier_fixture "$root/clean-runtime-evidence.json" >/dev/null
+  [ -z "$(git -C "$tapped_tap" status --short --untracked-files=all)" ] ||
+    fail "bottle verifier dirtied the selected tap for an unchanged reconstructed Formula"
+  cmp -s "$tap/Formula/hello.rb" "$tapped_tap/Formula/hello.rb" ||
+    fail "bottle verifier did not retain the unchanged reconstructed Formula"
+  [ -f "$root/clean-runtime-evidence.json" ] ||
+    fail "bottle verifier did not emit runtime evidence for an unchanged Formula"
 }
 
 assert_dependency_pour_provenance_is_bounded() {

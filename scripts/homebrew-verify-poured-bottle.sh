@@ -161,11 +161,19 @@ RECONSTRUCTED_FORMULA_RELATIVE="Formula/$FORMULA.rb"
 mapfile -t source_tap_changes < <(
   git -C "$TAP_ROOT" status --short --untracked-files=all
 )
-[ "${#source_tap_changes[@]}" -eq 1 ] && \
-  [ "${source_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] || {
-  echo "homebrew-verify-poured-bottle.sh: reconstructed tap must change only $RECONSTRUCTED_FORMULA_RELATIVE" >&2
-  exit 2
-}
+case "${#source_tap_changes[@]}" in
+  0) ;;
+  1)
+    [ "${source_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] || {
+      echo "homebrew-verify-poured-bottle.sh: reconstructed tap must be clean or change only $RECONSTRUCTED_FORMULA_RELATIVE" >&2
+      exit 2
+    }
+    ;;
+  *)
+    echo "homebrew-verify-poured-bottle.sh: reconstructed tap must be clean or change only $RECONSTRUCTED_FORMULA_RELATIVE" >&2
+    exit 2
+    ;;
+esac
 actual_sha="$(sha256sum "$BOTTLE" | awk '{print $1}')"
 actual_bytes="$(wc -c <"$BOTTLE" | tr -d '[:space:]')"
 [ "$actual_sha" = "$BOTTLE_SHA256" ] && [ "$actual_bytes" = "$BOTTLE_BYTES" ] || {
@@ -444,10 +452,21 @@ cp -- "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
 mapfile -t selected_tap_changes < <(
   git -C "$TAPPED_TAP_ROOT" status --short --untracked-files=all
 )
-[ "${#selected_tap_changes[@]}" -eq 1 ] && \
-  [ "${selected_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] && \
-  cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
-    "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" || {
+case "${#selected_tap_changes[@]}" in
+  0) ;;
+  1)
+    [ "${selected_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] || {
+      echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
+    exit 1
+    ;;
+esac
+cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
+  "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" || {
   echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
   exit 1
 }
