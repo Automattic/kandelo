@@ -4726,6 +4726,7 @@ RUBY
 require "fileutils"
 require "json"
 require "shellwords"
+require "tempfile"
 
 module KandeloFormulaSupport
   KANDELO_TAP_FORMULA_PREFIX = "kandelo-dev/tap-core/"
@@ -4753,6 +4754,20 @@ RUBY
   [ "$output" = $'kandelo-dev/tap-core/dep-a\nkandelo-dev/tap-core/dep-b' ] ||
     fail "static Formula resolver rejected a canonical benign support module: $output"
 
+  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
+require "fileutils"
+require "json"
+require "shellwords"
+
+module KandeloFormulaSupport
+  def kandelo_fixture
+    "fixture"
+  end
+end
+RUBY
+  expect_static_closure_failure support-ok \
+    "a support module missing its approved tempfile dependency"
+
   cat >"$tap/Formula/unsupported-require.rb" <<'RUBY'
 require "pathname"
 
@@ -4765,6 +4780,7 @@ RUBY
 require "fileutils"
 require "json"
 require "shellwords"
+require "tempfile"
 
 module KandeloFormulaSupport
   def self.included(formula)
@@ -4788,6 +4804,7 @@ RUBY
 require "fileutils"
 require "json"
 require "shellwords"
+require "tempfile"
 
 module KandeloFormulaSupport
   def kandelo_fixture
@@ -5566,6 +5583,7 @@ EOF
 require "fileutils"
 require "json"
 require "shellwords"
+require "tempfile"
 
 module KandeloFormulaSupport
   def kandelo_runner_command
@@ -5662,6 +5680,7 @@ EOF
 require "fileutils"
 require "json"
 require "shellwords"
+require "tempfile"
 
 module KandeloFormulaSupport
   def kandelo_escape
@@ -5722,6 +5741,7 @@ EOF
 require "fileutils"
 require "json"
 require "shellwords"
+require "tempfile"
 
 module KandeloFormulaSupport
   def kandelo_escape
@@ -5752,6 +5772,7 @@ EOF
 require "fileutils"
 require "json"
 require "shellwords"
+require "tempfile"
 
 module KandeloFormulaSupport
   def kandelo_escape
