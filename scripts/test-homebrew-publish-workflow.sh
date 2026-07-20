@@ -14,6 +14,119 @@ fail() {
   exit 1
 }
 
+assert_local_root_spill_uses_caller_work_root() {
+  local fixture="$TMPDIR/local-root-spill-caller-work"
+  local mock_bin="$fixture/mock-bin"
+  local work_root="$fixture/work"
+  local failed_work="$fixture/failed-work"
+  local missing_work="$fixture/missing-work"
+  local cargo_marker="$fixture/cargo-invoked"
+  local output tool_line tool_path err
+  mkdir -p "$mock_bin" "$work_root" "$failed_work"
+  work_root="$(cd "$work_root" && pwd -P)"
+  failed_work="$(cd "$failed_work" && pwd -P)"
+
+  cat >"$mock_bin/rustc" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "-vV" ]; then
+  printf 'rustc fixture\nhost: fixture-host\n'
+  exit 0
+fi
+exit 2
+EOF
+  cat >"$mock_bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${PR1003_EXPECTED_WORK_ROOT:?}"
+: "${PR1003_CARGO_MARKER:?}"
+printf 'invoked\n' >"$PR1003_CARGO_MARKER"
+case "${CARGO_TARGET_DIR:?}/" in
+  "$PR1003_EXPECTED_WORK_ROOT"/*) ;;
+  *)
+    echo "fixture cargo target escaped caller work root: $CARGO_TARGET_DIR" >&2
+    exit 71
+    ;;
+esac
+if [ "${PR1003_CARGO_FAIL:-0}" = "1" ]; then
+  exit 72
+fi
+expected_manifest="${PR1003_REPO_ROOT:?}/Cargo.toml"
+[ "$*" = "build --manifest-path $expected_manifest --locked --release -p wasm-local-root-spill --target fixture-host" ] || {
+  echo "unexpected cargo command: $*" >&2
+  exit 73
+}
+tool="$CARGO_TARGET_DIR/fixture-host/release/wasm-local-root-spill"
+mkdir -p "$(dirname "$tool")"
+cat >"$tool" <<'TOOL'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--help" ]; then
+  exit 0
+fi
+printf 'fixture-tool=%s\n' "$0"
+printf 'fixture-args=%s\n' "$*"
+TOOL
+chmod 0755 "$tool"
+EOF
+  chmod 0755 "$mock_bin/rustc" "$mock_bin/cargo"
+
+  output="$(
+    PATH="$mock_bin:$PATH" \
+    PR1003_EXPECTED_WORK_ROOT="$work_root" \
+    PR1003_CARGO_MARKER="$cargo_marker" \
+    PR1003_REPO_ROOT="$REPO_ROOT" \
+    HOST_TARGET=fixture-host \
+    WASM_POSIX_DEP_WORK_DIR="$work_root" \
+      bash "$REPO_ROOT/scripts/run-wasm-local-root-spill.sh" fixture-argument
+  )"
+  [ -f "$cargo_marker" ] ||
+    fail "caller-owned local-root-spill fixture did not build the host tool"
+  tool_line="$(printf '%s\n' "$output" | grep '^fixture-tool=' || true)"
+  tool_path="${tool_line#fixture-tool=}"
+  case "$tool_path" in
+    "$work_root"/kandelo-local-root-spill.*/bin/wasm-local-root-spill) ;;
+    *)
+      fail "local-root-spill runner did not execute a tool inside the caller work root: $output"
+      ;;
+  esac
+  printf '%s\n' "$output" | grep -F 'fixture-args=fixture-argument' >/dev/null ||
+    fail "caller-owned local-root-spill tool did not receive the requested arguments"
+
+  rm -f "$cargo_marker"
+  err="$fixture/missing-work.err"
+  if PATH="$mock_bin:$PATH" \
+      PR1003_EXPECTED_WORK_ROOT="$missing_work" \
+      PR1003_CARGO_MARKER="$cargo_marker" \
+      PR1003_REPO_ROOT="$REPO_ROOT" \
+      HOST_TARGET=fixture-host \
+      WASM_POSIX_DEP_WORK_DIR="$missing_work" \
+      bash "$REPO_ROOT/scripts/run-wasm-local-root-spill.sh" fixture-argument \
+      >/dev/null 2>"$err"; then
+    fail "local-root-spill runner accepted a missing caller work root"
+  fi
+  grep -F 'WASM_POSIX_DEP_WORK_DIR must be a real directory' "$err" >/dev/null ||
+    fail "local-root-spill runner did not explain the invalid caller work root"
+  [ ! -e "$cargo_marker" ] ||
+    fail "invalid caller work root reached Cargo"
+
+  err="$fixture/build-failure.err"
+  if PATH="$mock_bin:$PATH" \
+      PR1003_EXPECTED_WORK_ROOT="$failed_work" \
+      PR1003_CARGO_MARKER="$cargo_marker" \
+      PR1003_REPO_ROOT="$REPO_ROOT" \
+      PR1003_CARGO_FAIL=1 \
+      HOST_TARGET=fixture-host \
+      WASM_POSIX_DEP_WORK_DIR="$failed_work" \
+      bash "$REPO_ROOT/scripts/run-wasm-local-root-spill.sh" fixture-argument \
+      >/dev/null 2>"$err"; then
+    fail "local-root-spill runner ignored a caller-owned host-tool build failure"
+  fi
+  grep -F 'failed to build wasm-local-root-spill inside WASM_POSIX_DEP_WORK_DIR' \
+    "$err" >/dev/null ||
+    fail "local-root-spill runner did not explain its caller-owned build failure"
+}
+
 assert_ghcr_auth_env_does_not_cross_dev_shell() {
   local capture="$TMPDIR/ghcr-dev-shell-env.txt" nix_bin
 
@@ -5726,6 +5839,7 @@ EOF
 }
 
 make_formula_runner_fixture
+assert_local_root_spill_uses_caller_work_root
 assert_ghcr_auth_env_does_not_cross_dev_shell
 assert_matrix
 assert_matrix_skips_unchanged_cache_key

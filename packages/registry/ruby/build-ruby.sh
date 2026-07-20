@@ -7,7 +7,8 @@ set -euo pipefail
 #   1. Host-native miniruby (generates C source files during cross-compilation)
 #   2. Cross-compile Ruby for wasm32 using the SDK toolchain
 #
-# Output: packages/registry/ruby/bin/ruby.wasm and ruby-runtime.zip
+# Output: packages/registry/ruby/bin/ruby.wasm and ruby-runtime.zip for a
+# direct build, or WASM_POSIX_DEP_OUT_DIR for a resolver/Formula build.
 #
 # Prerequisites:
 #   - bash build.sh (kernel + sysroot)
@@ -16,13 +17,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/ruby-src"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/ruby-src"
 SOURCE_MARKER="$SRC_DIR/.kandelo-ruby-version"
-HOST_BUILD_DIR="$SCRIPT_DIR/ruby-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/ruby-cross-build"
-INSTALL_DIR="$SCRIPT_DIR/ruby-install"
-BIN_DIR="$SCRIPT_DIR/bin"
+HOST_BUILD_DIR="$WORK_DIR/ruby-host-build"
+CROSS_BUILD_DIR="$WORK_DIR/ruby-cross-build"
+INSTALL_DIR="$WORK_DIR/ruby-install"
+BIN_DIR="$WORK_DIR/bin"
 RUNTIME_ZIP="$BIN_DIR/ruby-runtime.zip"
+mkdir -p "$WORK_DIR"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
@@ -31,20 +34,36 @@ RUBY_MAJOR_MINOR="$(echo "$RUBY_VERSION" | cut -d. -f1-2)"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://cache.ruby-lang.org/pub/ruby/${RUBY_MAJOR_MINOR}/ruby-${RUBY_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-ruby}"
-# Explicit env wins; else the in-tree sysroot.
-SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-
-export WASM_POSIX_SYSROOT="$SYSROOT"
+# Explicit env wins; else the in-tree sysroot. Homebrew exposes the reviewed
+# checkout and sysroot read-only, so a Formula build augments a private copy
+# with Ruby's libyaml and compatibility headers instead of mutating its trusted
+# inputs. Direct developer builds retain the historical in-tree sysroot.
+SOURCE_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "ERROR: sysroot not found. Run: bash build.sh" >&2
+if [ ! -f "$SOURCE_SYSROOT/lib/libc.a" ]; then
+    echo "ERROR: sysroot not found at $SOURCE_SYSROOT. Run: bash build.sh" >&2
     exit 1
 fi
+
+SYSROOT="$SOURCE_SYSROOT"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    SYSROOT="$(mktemp -d "$WORK_DIR/kandelo-ruby-sysroot.XXXXXX")"
+    cp -a "$SOURCE_SYSROOT/." "$SYSROOT/"
+    # A resolver/Formula caller owns the declared output directory; it must not
+    # write a second copy into the protected checkout's local-binaries mirror.
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+        # Ruby is already instrumented below. Make the guard policy explicit so
+        # sealed installation does not need Cargo to rediscover package metadata.
+        export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+    fi
+fi
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$RUBY_VERSION" ]; then
     echo "==> Existing Ruby source is not $RUBY_VERSION; cleaning Ruby build directories..."
@@ -80,12 +99,12 @@ fi
 echo "==> zlib at $ZLIB_PREFIX"
 
 # Build libyaml if not already built (Ruby needs it for psych/YAML)
-LIBYAML_DIR="$SCRIPT_DIR/libyaml-install"
+LIBYAML_DIR="$WORK_DIR/libyaml-install"
 if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
     echo "==> Building libyaml for wasm32..."
     LIBYAML_VERSION="0.2.5"
     LIBYAML_SHA256="c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4"
-    LIBYAML_SRC="$SCRIPT_DIR/libyaml-src"
+    LIBYAML_SRC="$WORK_DIR/libyaml-src"
     if [ ! -d "$LIBYAML_SRC" ]; then
         curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
             -o "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
@@ -1198,8 +1217,9 @@ echo "==> Ruby built successfully!"
 ls -lh "$BIN_DIR/ruby.wasm"
 ls -lh "$RUNTIME_ZIP"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# package outputs over the fetched release.
+# Apply the normal artifact guards, then install into local-binaries for a
+# direct build or only into the caller-owned output directory for a sealed
+# resolver/Formula build.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary "$PACKAGE_NAME" "$SCRIPT_DIR/bin/ruby.wasm"
+install_local_binary "$PACKAGE_NAME" "$BIN_DIR/ruby.wasm"
 install_local_binary "$PACKAGE_NAME" "$RUNTIME_ZIP"
