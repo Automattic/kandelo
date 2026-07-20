@@ -24,7 +24,7 @@ PUBLISHER_PLAN_DIGEST = "9a7a17e2df77b08649bc6fdc4b54eaa5a28d509484ac958876a6fca
 PUBLISHER_BUILD_DIGEST = "7aac7bab60e0373bbb38b584a336f0b481d1350ae207df19773efc2ab6277431"
 PUBLISHER_UPLOAD_DIGEST = "d7dafdc1e7a56cddc31ee31ef150c88219c06a0635c491b0c05310dbd0b13cbb"
 PUBLISHER_INDEX_DIGEST = "be6a78a2b02f0769d072b09022f0de08afa34c2d2bf5cba8dd13ad1c22e47679"
-PUBLISHER_VERIFY_DIGEST = "e7605792545b49bf4ceb9caa623d8ec05240531e790fd14ba46721a5a04e7750"
+PUBLISHER_VERIFY_DIGEST = "cfd1d422ac8aaaf1ce7ef016873012758600815faf3158fccc2138280fed70c4"
 PUBLISHER_FINALIZE_DIGEST = "23289a15937635abc5b20272234e73ad47e8c59306ef967dd28ff5b13d9e3cf3"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -2823,6 +2823,25 @@ def check_publisher(workflow)
   check(index_verify_run.scan(repository_remote).length == 1 &&
         !index_verify_run.include?('remote="ghcr.io/${tap_name}/'),
         "publisher public Homebrew index verification is not repository-rooted")
+  browser_sysroot_step = named_step(
+    verify_steps, "Build Kandelo wasm64 sysroot for the interactive browser graph"
+  )
+  check(browser_sysroot_step.keys.sort == %w[if name run shell] &&
+        browser_sysroot_step["shell"] == "bash" &&
+        browser_sysroot_step["if"] ==
+          "${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}",
+        "publisher interactive browser wasm64 sysroot is not scoped to hello/wasm32")
+  browser_sysroot_run = browser_sysroot_step.fetch("run")
+  [
+    "set -euo pipefail", "cd kandelo-sysroot-build",
+    "bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix",
+    "[ -f sysroot64/lib/libc.a ]",
+  ].each do |fragment|
+    check(browser_sysroot_run.include?(fragment),
+          "publisher interactive browser wasm64 sysroot lacks #{fragment}")
+  end
+  check(!browser_sysroot_run.lines.any? { |line| line.strip == "cd kandelo" },
+        "publisher builds the browser wasm64 sysroot in the reviewed verifier checkout")
   browser_demo_step = named_step(verify_steps,
                                  "Prepare the supported interactive browser demo graph")
   check(browser_demo_step.keys.sort == %w[if name run shell] &&
@@ -2831,8 +2850,9 @@ def check_publisher(workflow)
         "publisher interactive browser graph is not scoped to hello/wasm32")
   browser_demo_run = browser_demo_step.fetch("run")
   [
-    'sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/sysroot"',
-    'sysroot_destination="$GITHUB_WORKSPACE/kandelo/sysroot"',
+    "for sysroot_name in sysroot sysroot64",
+    'sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/$sysroot_name"',
+    'sysroot_destination="$GITHUB_WORKSPACE/kandelo/$sysroot_name"',
     '[ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ]',
     '[ -f "$sysroot_source/lib/libc.a" ]',
     '[ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ]',
@@ -3953,6 +3973,22 @@ def self_test(publisher, maintenance, repository_canary)
       )
       step["run"] = step.fetch("run").sub(
         "./run.sh --fetch-only prepare-browser", "bash scripts/fetch-binaries.sh --fetch-only"
+      )
+    },
+    "missing interactive browser wasm64 sysroot build" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Build Kandelo wasm64 sysroot for the interactive browser graph"
+      )
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix", "true"
+      )
+    },
+    "browser handoff omits the wasm64 sysroot" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
+      )
+      step["run"] = step.fetch("run").sub(
+        "for sysroot_name in sysroot sysroot64", "for sysroot_name in sysroot"
       )
     },
     "missing exact browser sysroot handoff" => lambda { |w|

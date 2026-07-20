@@ -922,8 +922,11 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    revalidates the build handoff and receipt, fetches only the declared Kandelo
    platform runtime for Formula tests, builds the VFS image, and runs the
    runtime and browser gates. The `hello` browser-gallery smoke separately
-   prepares the supported interactive-demo graph; packages supplied by the
-   external software gallery are not verifier prerequisites.
+   prepares the supported interactive-demo graph. That graph contains owned
+   wasm32 and wasm64 process fixtures, so the verifier builds both sysroots in
+   its isolated sysroot checkout and copies both exact outputs into the fresh
+   browser checkout before running the supported preparation command. Packages
+   supplied by the external software gallery are not verifier prerequisites.
    Its isolated Homebrew process receives the same selected-tap trust as the
    build process, sealed into a readable, immutable build-local XDG store and
    using the same publisher-only redundant-persistence exception.
