@@ -189,6 +189,63 @@ def validate_dependency_provenance(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def dependency_closure_identity(
+    value: Any, args: argparse.Namespace, label: str
+) -> list[dict[str, str]]:
+    evidence = exact_keys(value, {"bottles", "provenance_sha256"}, label)
+    require_string(
+        evidence["provenance_sha256"], f"{label} provenance sha256", SHA256
+    )
+    bottles = evidence["bottles"]
+    if not isinstance(bottles, list) or len(bottles) > 128:
+        fail(f"{label} bottles must be an array of at most 128 entries")
+    expected_prefix = f"{normalized_tap_name(args)}/"
+    expected_tag = f"{args.arch}_kandelo"
+    prior_full_name = ""
+    identity: list[dict[str, str]] = []
+    for index, bottle in enumerate(bottles):
+        bottle = exact_keys(
+            bottle,
+            {"full_name", "version", "sha256", "tag", "receipt_sha256"},
+            f"{label} bottles[{index}]",
+        )
+        full_name = require_string(
+            bottle["full_name"], f"{label} bottles[{index}].full_name"
+        ).lower()
+        if not full_name.startswith(expected_prefix):
+            fail(f"{label} bottles[{index}] is outside the selected tap")
+        require_string(
+            full_name.removeprefix(expected_prefix),
+            f"{label} bottles[{index}] Formula name",
+            FORMULA_NAME,
+        )
+        if full_name <= prior_full_name:
+            fail(f"{label} bottles must be uniquely sorted by full_name")
+        prior_full_name = full_name
+        version = require_string(
+            bottle["version"], f"{label} bottles[{index}].version", PKG_VERSION
+        )
+        sha256 = require_string(
+            bottle["sha256"], f"{label} bottles[{index}].sha256", SHA256
+        )
+        if bottle["tag"] != expected_tag:
+            fail(f"{label} bottles[{index}] tag does not match {expected_tag}")
+        require_string(
+            bottle["receipt_sha256"],
+            f"{label} bottles[{index}].receipt_sha256",
+            SHA256,
+        )
+        identity.append(
+            {
+                "full_name": full_name,
+                "version": version,
+                "sha256": sha256,
+                "tag": expected_tag,
+            }
+        )
+    return identity
+
+
 def canonical_bottle(args: argparse.Namespace) -> tuple[str, str, int, str]:
     document = load_json(pathlib.Path(args.bottle_json), "canonical bottle JSON")
     if not isinstance(document, dict) or len(document) != 1:
@@ -534,8 +591,13 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         "version": version,
     }:
         fail("runtime evidence bottle identity does not match")
-    expected_dependencies = validate_dependency_provenance(args)
-    if root["dependencies"] != expected_dependencies:
+    expected_dependencies = dependency_closure_identity(
+        validate_dependency_provenance(args), args, "build dependency evidence"
+    )
+    runtime_dependencies = dependency_closure_identity(
+        root["dependencies"], args, "runtime dependency evidence"
+    )
+    if runtime_dependencies != expected_dependencies:
         fail("runtime evidence dependency closure does not match")
     selection = exact_keys(
         root["selection"], {"bottle", "fetch", "schema", "status"}, "runtime selection evidence"
