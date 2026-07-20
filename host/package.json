@@ -121,11 +121,11 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.1.1",
     "tsup": "^8.0.0",
     "tsx": "^4.22.4",
     "typedoc": "^0.28.19",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.9"
   },
   "dependencies": {
