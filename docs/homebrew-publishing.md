@@ -16,7 +16,9 @@ been validated through Kandelo. The supported implemented path today is:
 - Node and browser smoke tests decide which runtime claims are recorded;
 - an explicitly required, tap-selected dependency-bearing Brewfile gate can
   boot one exact composed image in Node and Chromium before its selected
-  consumer publication passes.
+  consumer publication passes; and
+- that required gate publishes the exact accepted image and evidence as a
+  public content-addressed release in the source tap after tap finalization.
 
 Homebrew formulae and bottle metadata remain Homebrew-native. Kandelo sidecar
 metadata is an additional contract for VFS builders, Node validation, browser
@@ -138,6 +140,7 @@ Homebrew publishing is a sibling to Kandelo package archive publishing:
 | `Kandelo/reports/*.provenance.json` | Same as metadata | Durable publication and validation evidence. |
 | `Kandelo/vfs-acceptance.json` and its Brewfile | Tap git repository | Optional tap-owned dependency-bearing acceptance selection. |
 | `Kandelo/dependency-taps.json` | Primary tap git repository | Exact reviewed public tap source lock. |
+| Required-gate VFS image, descriptor, report, and Node/browser evidence | Source tap GitHub Release `homebrew-vfs-sha256-<image-sha256>` | Kandelo browser direct-`vfs` launch, audit tooling, and operators. |
 | Browser gallery assets | Run-scoped diagnostic artifact | Review evidence only; not a durable public gallery. |
 
 Do not publish Homebrew bottles into Kandelo's `binaries-abi-v<N>` package
@@ -1018,6 +1021,21 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    It does not load Formula Ruby or run Homebrew in the credentialed role. Only
    the composed and fully validated Formula update, sidecars, and provenance are
    pushed.
+6. `publish-vfs-release` runs only when `require-vfs-acceptance: true`, every
+   verifier matrix entry succeeded, and every tap finalizer succeeded. The
+   verifier exports only the selected wasm32 image, its VFS report, the exact
+   Node and Chromium evidence, and a deterministic descriptor. A fresh job
+   checks out the exact planned Kandelo and tap commits, revalidates that inert
+   bundle without a token in its environment, compares its ABI and bottle
+   release tag to the trusted plan outputs, and only then exposes the scoped
+   `github.token` to one release-write step.
+   That step serializes on the content tag, creates or resumes an exact draft,
+   rejects duplicate, unexpected, missing-public, or byte-mismatched assets,
+   and publishes only after authenticated byte checks succeed. It finally
+   reads all five public URLs with token variables removed and verifies every
+   SHA-256 and byte count. It requires the published release API record to set
+   `immutable: true` before emitting success. A public release retry is
+   read-only and idempotent.
 
 Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
 remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow
@@ -1040,10 +1058,11 @@ and a manually dispatched dry run can write Actions storage in the same
 repository scope as a later privileged publish. Run-scoped diagnostic artifacts
 remain available, but cached build output is not an input to bottle publication.
 
-`bottles-abi-v<N>` is currently a metadata namespace, not a promise that a
-GitHub Release with that tag contains sidecars or gallery archives. Immutable,
-serialized gallery release publication is deferred. Do not restore the old
-mutable `gh release upload --clobber` path.
+`bottles-abi-v<N>` is a bottle metadata namespace, not a promise that a GitHub
+Release with that tag contains sidecars or gallery archives. Browser-proven VFS
+images use their own immutable `homebrew-vfs-sha256-<image-sha256>` releases;
+serialized gallery release publication remains deferred. Do not restore the
+old mutable `gh release upload --clobber` path.
 
 ## Sidecar Metadata
 
@@ -1488,6 +1507,67 @@ which excludes packages whose demos are provided by the external software
 gallery. Those platform assets are not the migrated package under test, and
 unrelated gallery packages are not bottle verification prerequisites.
 
+## Durable Browser-Proven VFS Releases
+
+A non-dry-run publication with the sealed `require-vfs-acceptance: true` input
+promotes the exact accepted wasm32 image only after both the complete verifier
+and tap finalizer matrices are green. Ordinary optional acceptance runs do not
+publish a VFS release. The release belongs to the source tap repository and has
+the content-addressed tag:
+
+```text
+homebrew-vfs-sha256-<full lowercase image SHA-256>
+```
+
+Before the first required-acceptance dispatch, a repository administrator must
+enable **Settings → Releases → Enable release immutability** for the source tap.
+GitHub applies that setting only to future releases. The publisher deliberately
+keeps only `contents: write` and cannot preflight the administration-only
+setting. Instead, it requires the published release API record to report
+`immutable: true` before it emits a success receipt or launch URL. If the
+setting was omitted, the run fails loudly and leaves the exact release state as
+diagnostic evidence; it does not delete or relabel the release automatically.
+That release is not an accepted Kandelo VFS product and needs explicit operator
+recovery before the content tag can be reused.
+
+It has exactly these assets:
+
+```text
+kandelo-homebrew.vfs.zst
+kandelo-homebrew-vfs.json
+kandelo-homebrew-vfs-report.json
+kandelo-homebrew-node-evidence.json
+kandelo-homebrew-browser-evidence.json
+```
+
+`kandelo-homebrew-vfs.json` is the stable machine-readable entry point. It
+binds the exact tap and Kandelo commits, ABI, bottle release tag, selected
+Brewfile roots and dependency edges, accepted command, optional image-owned
+default shell, and the image and evidence assets' public URLs, SHA-256 digests,
+and byte counts. Its
+`launch` object has `query_parameter: "vfs"` and a `value` containing the
+public image URL. Pass that value through the browser's normal direct-image
+path:
+
+```text
+?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
+```
+
+The release publisher never uses `--clobber`. A content-tag state lock
+serializes writers. An absent release starts as a draft; an interrupted exact
+draft may be completed, while unexpected assets or existing bytes with a
+different digest fail closed. Once public, the release is never mutated. The
+tag must be a direct commit reference to the exact tap source commit, and
+success requires GitHub-enforced release immutability plus anonymous
+digest-and-size readback of all five assets. The run retains a small publication
+receipt with the descriptor and direct-image URLs, but that Actions artifact is
+only a receipt; the release assets are the durable public product.
+
+This promotion proves only the configured dependency-bearing acceptance image.
+It does not rewrite bottle `browser_compatible` flags and does not create a
+generic software-gallery entry. Promoting arbitrary browser-compatible
+Formulae through a durable gallery remains a separate evidence-gated step.
+
 ## Browser Gallery Assets
 
 Generate browser gallery assets only from browser-smoked wasm32 metadata:
@@ -1510,7 +1590,8 @@ metadata where the wasm32 bottle is not `status = "success"` and
 wasm32 success metadata, an `archive_url`, and `browser_compatible = true`.
 Launch-time archive failures must remain visible in the Kandelo UI. The trusted
 publisher retains these generated files as run diagnostics only. Durable public
-gallery publication requires a separate immutable asset contract.
+gallery publication remains separate from the direct, content-addressed
+required-acceptance VFS release above.
 
 ## Operational Boundaries
 
@@ -1899,8 +1980,8 @@ rollback path instead.
 
 The implemented path covers a trusted bottle build, public repository-rooted
 GHCR package creation plus anonymous readback, sidecar validation, verified VFS
-image building, browser smoke, diagnostic gallery gating, and lossless
-under-lock tap composition with Formula source-closure drift rejection.
-Immutable gallery release publication, broader package coverage, general guest
-`brew install`, and broader release/gallery operator runbooks remain separate
-work.
+image building, Node and Chromium smoke, immutable public release of the exact
+required-acceptance image, diagnostic gallery gating, and lossless under-lock
+tap composition with Formula source-closure drift rejection. Durable generic
+gallery publication, broader package coverage, general guest `brew install`,
+and broader release/gallery operator runbooks remain separate work.
