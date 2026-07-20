@@ -670,9 +670,9 @@ case "$STATUS" in
       run_validator
     fi
     if [ "$REPAIR_ONLY" = "1" ]; then
-      commit_and_push "homebrew: repair ${FORMULA} ${ARCH} bottle sidecars"
+      commit_and_push "Homebrew: Repair ${FORMULA} ${ARCH} bottle sidecars"
     else
-      commit_and_push "homebrew: publish ${FORMULA} ${ARCH} bottle sidecars"
+      commit_and_push "Homebrew: Publish ${FORMULA} ${ARCH} bottle sidecars"
     fi
     ;;
   failed)
@@ -680,10 +680,10 @@ case "$STATUS" in
       guard_non_success_payload_preserves_last_green
       copy_payload
       run_validator
-      commit_and_push "homebrew: record ${FORMULA} ${ARCH} bottle failure"
+      commit_and_push "Homebrew: Record ${FORMULA} ${ARCH} bottle failure"
     else
       write_failure_report
-      commit_and_push "homebrew: record ${FORMULA} ${ARCH} bottle failure"
+      commit_and_push "Homebrew: Record ${FORMULA} ${ARCH} bottle failure"
     fi
     ;;
   rollback)
@@ -691,10 +691,10 @@ case "$STATUS" in
       guard_non_success_payload_preserves_last_green
       copy_payload
       run_validator
-      commit_and_push "homebrew: rollback ${FORMULA} ${ARCH} bottle metadata"
+      commit_and_push "Homebrew: Roll back ${FORMULA} ${ARCH} bottle metadata"
     else
       write_rollback_report
-      commit_and_push "homebrew: record ${FORMULA} ${ARCH} bottle rollback"
+      commit_and_push "Homebrew: Record ${FORMULA} ${ARCH} bottle rollback"
     fi
     ;;
 esac

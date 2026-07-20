@@ -449,6 +449,13 @@ The publisher does not use Homebrew's automatic increment, and it does not use
 must replace bytes already published under an immutable reference first
 commits the next positive rebuild to the Formula, then dispatches publication;
 a changed root URL or a different emitted rebuild fails before handoff.
+That rule applies whenever the tap records the Formula in either aggregate or
+formula-level Kandelo sidecars; a normal successful finalization records both,
+and a one-sided state fails closed. A registry index left behind by an earlier
+attempt that reached neither sidecar is incomplete publication state, not a
+last-green bottle identity; the bounded force-recovery path described below may
+replace that unfinalized index without making it selectable as accepted
+metadata.
 
 Before archiving, the overlay requires the receipt's `source.tap` and exact
 lowercase 40-character `source.tap_git_head` to match the selected tap name and
@@ -696,6 +703,21 @@ accepts no package PAT input or secret and cannot publish another repository's
 tap state or GHCR packages because caller and target repository identities must
 match.
 
+The `force` input normally means only "include this Formula in the build
+matrix even when its current cache key matches." It is not a general overwrite
+switch. When a forced run encounters a stale version index left by a partial
+publication, the credential-free composer may recover it only if the exact,
+clean planned tap commit contains neither `Kandelo/formula/<formula>.json` nor
+that Formula in `Kandelo/metadata.json`. The composer first validates the old
+index and children under their own source identity, requires the ABI, Formula,
+version, Formula revision, bottle rebuild, and repository identities to match
+the new children, and then discards every old child instead of mixing source
+closures. Its receipt retains the previous top digest and records the
+`unfinalized-stale-source-identity` transition reason. A finalized Formula,
+dirty or different tap checkout, fixed-identity mismatch, malformed old index,
+or ordinary non-forced run still fails; a finalized bottle with changed bytes
+requires a new Formula bottle `rebuild`.
+
 The repository-namespace visibility canary was a separate, one-shot transport
 path used to select the production bottle-root contract. Its exact reviewed caller
 on `Kandelo-dev/homebrew-tap-core@main` receives only the caller repository's
@@ -835,8 +857,14 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
 
    The handoff remains explicitly bounded while supporting complete large
    packages: Homebrew bottle JSON is capped at 16 MiB, dependency provenance at
-   1 MiB, the compressed bottle at 2 GiB, and its expanded tar stream at 16 GiB.
-   Generated formula and link sidecars are each capped at 16 MiB. Artifact
+   1 MiB, the inert sidecar-composition input at 8 MiB, the compressed bottle at
+   2 GiB, and its expanded tar stream at 16 GiB. Generated formula and link
+   sidecars are each capped at 16 MiB. The 8 MiB composition bound is the
+   smallest binary power-of-two boundary above the observed TeX Live inventory:
+   its 24,577 links produce a 4,599,594-byte generated link manifest, while the
+   previous 4 MiB input cap rejected the same already-validated inventory.
+   Raising this one byte bound does not relax the exact handoff layout, file
+   count, path, JSON schema, or aggregate validation. Artifact
    transport uses compression level zero because the bottle is already a gzip
    stream. Validators reject the first byte beyond each bound; large packages
    are not made publishable by truncating their file inventories or installed
@@ -920,7 +948,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    OCI image index at Homebrew's version/rebuild reference. Only the final
    layout copy receives registry credentials; Formula Ruby and OCI composition
    remain credential-free. A conflicting same-reference child or a stale
-   Formula/support closure fails instead of overwriting bytes. The top
+   Formula/support closure fails instead of overwriting accepted bytes. The
+   sole exception is an explicitly forced retry of an unfinalized partial
+   identity: the composer proves the exact planned tap has no formula-level or
+   aggregate sidecar entry, requires every fixed identity field to match,
+   validates the old index under its own identity, and discards all old
+   children. It never carries a sibling architecture across that transition.
+   The top
    index receipt records the previous digest, transport rechecks that digest
    immediately before its copy, and an anonymous readback verifies the result.
    GitHub Container Registry (GHCR) does not provide this path with a documented
@@ -1470,6 +1504,12 @@ to publish dependency-first. Publishing the selected consumer fails until its
 complete dependency closure is already public; existing single-bottle tests do
 not become dependency acceptance evidence.
 
+The Chromium gate captures the Playwright JSON reporter from the inner
+`npx playwright` process only. Dev-shell and Nix setup output remains ordinary
+workflow log output and never shares the report file. The workflow parses the
+complete JSON document and checks its exact pass/fail statistics; it does not
+filter mixed stdout or discard setup lines to manufacture a parseable report.
+
 The Node smoke for the published `hello` bottle:
 
 ```bash
@@ -1609,8 +1649,10 @@ required-acceptance VFS release above.
   failed attempt and preserving last-green fallback metadata.
 - Publication must compose peer packages and same-identity sibling-architecture
   bottle tags from refreshed tap state while holding the tap lock. Identity
-  transitions discard all old sibling tags before publishing the selected
-  architecture. Formula source changes after planning, noncanonical bottle
+  transitions for explicitly forced, unfinalized partial indexes discard all
+  old sibling tags before publishing the selected architecture. Accepted
+  identities require a bottle rebuild instead. Formula source changes after
+  planning, noncanonical bottle
   blocks, required shared Formula-support changes, Formula root/tag/digest
   disagreement with the tap sidecars, or symlinks in refreshed `Formula/` and
   `Kandelo/` state must fail publication; a global lock alone does not make
