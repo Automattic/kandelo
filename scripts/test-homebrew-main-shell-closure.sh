@@ -73,4 +73,10 @@ expect_failure "must declare the 512 MiB consumer profile" \
   node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
   "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
 
+jq '.compatibility.link_conflict_owners[0].package = "kandelo-dev/tap-core/not-locked"' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+expect_failure "compatibility.link_conflict_owners[0] is invalid" \
+  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
+  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+
 echo "test-homebrew-main-shell-closure: ok"

@@ -194,6 +194,7 @@ node "$REPO_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
 jq -e \
   --slurpfile selection "$SELECTION" \
   --slurpfile tap "$TAP_ROOT/Kandelo/metadata.json" \
+  --slurpfile lock "$MIGRATION_LOCK" \
   --argjson abi "$ABI_VERSION" \
   --arg catalog "$EXPECTED_TAP_SHA" \
   --arg lock_sha "$LOCK_SHA" \
@@ -237,6 +238,24 @@ jq -e \
     .ownership == "bottle-link-manifest" and
     (.package | startswith("kandelo-dev/tap-core/")) and
     (.target | startswith("/home/linuxbrew/.linuxbrew/bin/"))
+  ] | all) and
+  (([.link_conflicts[] | {
+      target,
+      package: .selected_package,
+      reason
+    }] | sort_by(.target)) ==
+    ([$lock[0].compatibility.link_conflict_owners[] | {
+      target,
+      package,
+      reason
+    }] | sort_by(.target))) and
+  ([.link_conflicts[] |
+    .selected_package as $selected |
+    .resolution == "migration-lock" and
+    (.owners | length) > 1 and
+    (.owners | index($selected)) != null and
+    (.skipped_packages == [.owners[] | select(. != $selected)]) and
+    (.path == ("/home/linuxbrew/.linuxbrew/" + .target))
   ] | all) and
   (.image_capacity.byte_length <= $max_bytes) and
   (.image_capacity.max_byte_length == $max_bytes) and

@@ -39,6 +39,7 @@ assertExactSequence(
   (value) => value,
 );
 validateReviewedSubstitutions(lock);
+validateCompatibilityPolicy(lock);
 if (metadataPath !== undefined) validateTapMetadata(lock, metadataPath);
 
 console.log(
@@ -133,6 +134,61 @@ function validateReviewedSubstitutions(lock) {
     "reviewed migration substitutions are incomplete or stale",
     ({ kind, registry, formula }) => `${kind}:${registry}->${formula}`,
   );
+}
+
+function validateCompatibilityPolicy(lock) {
+  const compatibility = lock.compatibility;
+  if (
+    !isRecord(compatibility) ||
+    !isRecord(compatibility.mirror_link_manifest_bin) ||
+    JSON.stringify(compatibility.mirror_link_manifest_bin.targets) !==
+      JSON.stringify(["/usr/bin", "/bin"]) ||
+    !Array.isArray(compatibility.link_conflict_owners) ||
+    !Array.isArray(compatibility.aliases)
+  ) {
+    throw new Error("main-shell migration compatibility policy is invalid");
+  }
+
+  const lockedPackages = new Set(
+    lock.packages.map(({ formula }) => `${tapName}/${formula.name}`),
+  );
+  const conflictTargets = new Set();
+  for (const [index, entry] of compatibility.link_conflict_owners.entries()) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.target !== "string" ||
+      !/^bin\/[a-z0-9][a-z0-9._+-]*$/.test(entry.target) ||
+      typeof entry.package !== "string" ||
+      !lockedPackages.has(entry.package) ||
+      typeof entry.reason !== "string" ||
+      entry.reason.trim().length === 0
+    ) {
+      throw new Error(`compatibility.link_conflict_owners[${index}] is invalid`);
+    }
+    if (conflictTargets.has(entry.target)) {
+      throw new Error(`compatibility link conflict target is duplicated: ${entry.target}`);
+    }
+    conflictTargets.add(entry.target);
+  }
+
+  for (const [index, entry] of compatibility.aliases.entries()) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.package !== "string" ||
+      !lockedPackages.has(entry.package) ||
+      typeof entry.source !== "string" ||
+      !/^bin\/[a-z0-9][a-z0-9._+-]*$/.test(entry.source) ||
+      !Array.isArray(entry.targets) ||
+      entry.targets.length === 0 ||
+      entry.targets.some((target) =>
+        typeof target !== "string" ||
+        !/^\/(?:[a-z0-9._+-]+\/)*[a-z0-9._+-]+$/.test(target)
+      ) ||
+      new Set(entry.targets).size !== entry.targets.length
+    ) {
+      throw new Error(`compatibility.aliases[${index}] is invalid`);
+    }
+  }
 }
 
 function validateTapMetadata(lock, path) {

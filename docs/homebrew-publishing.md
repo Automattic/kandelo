@@ -1520,8 +1520,16 @@ into `/bin` and `/usr/bin`. Reviewed aliases provide `/bin/sh` and
 `/usr/bin/sh` from Dash and preserve the existing `/usr/local/bin/fbdoom` and
 `/usr/local/bin/modeset` paths. The composer does not scan arbitrary bottle
 files, and it rejects unowned alias sources, duplicate targets, non-executable
-sources, or any collision with a platform/base-image path. Every generated
-link is attributed to its bottle and source in the report.
+sources, or any collision with a platform/base-image path. When two selected
+bottles own the same Homebrew-prefix link target, composition fails before
+pouring unless the migration lock explicitly selects the observable owner.
+The current shell selects `posix-utils-lite` for `bin/ed`, `bin/more`, and
+`bin/ex`, preserving the legacy shell behavior while retaining the standalone
+Ed, Less, and Vim commands under their non-conflicting names. Missing, stale,
+duplicate, and unnecessary owner declarations fail; package order never picks
+a winner. The report attributes generated compatibility links to their bottle
+source and records every conflict's owners, selected package, skipped packages,
+and reviewed reason.
 
 The wrapper currently selects sidecars with `--runtime node` because older
 finalized sidecars predate truthful browser-compatibility recording. That is a

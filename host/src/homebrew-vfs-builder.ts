@@ -57,6 +57,11 @@ export interface HomebrewVfsCompatibilityPolicy {
   mirror_link_manifest_bin: {
     targets: string[];
   };
+  link_conflict_owners: Array<{
+    target: string;
+    package: string;
+    reason: string;
+  }>;
   aliases: Array<{
     package: string;
     source: string;
@@ -70,6 +75,16 @@ export interface HomebrewVfsCompatibilityLinkReport {
   package: string;
   source: string;
   ownership: "bottle-link-manifest";
+}
+
+export interface HomebrewVfsLinkConflictReport {
+  path: string;
+  target: string;
+  owners: string[];
+  selected_package: string;
+  skipped_packages: string[];
+  reason: string;
+  resolution: "migration-lock";
 }
 
 export interface HomebrewVfsCatalogCheckout {
@@ -146,6 +161,7 @@ export interface HomebrewVfsBuildReport {
   selection: HomebrewVfsSelectionReport;
   catalog?: HomebrewVfsCatalogReport;
   compatibility_links?: HomebrewVfsCompatibilityLinkReport[];
+  link_conflicts?: HomebrewVfsLinkConflictReport[];
   migration_lock?: HomebrewVfsMigrationLockBinding;
   metadata: {
     tap_repository: string;
@@ -187,6 +203,11 @@ interface PendingHardlink {
   targetPath: string;
 }
 
+interface HomebrewVfsLinkResolution {
+  selectedPackageByPath: Map<string, string>;
+  reports: HomebrewVfsLinkConflictReport[];
+}
+
 export async function buildHomebrewVfs(
   plan: HomebrewVfsPlan,
   options: HomebrewVfsBuildOptions,
@@ -196,6 +217,7 @@ export async function buildHomebrewVfs(
   const selection = createSelectionReport(plan, options.selectionSource);
   const catalog = createCatalogReport(plan, options.catalogCheckout);
   const migrationLock = createMigrationLockBinding(options.migrationLock);
+  const linkResolution = resolveLinkConflicts(plan, options.compatibilityPolicy);
 
   ensureDirRecursive(fs, "/etc/kandelo");
 
@@ -205,7 +227,7 @@ export async function buildHomebrewVfs(
     const tarEntries = parseBottleTarGz(pkg, bottleBytes);
     const staged = stagePackage(fs, pkg, tarEntries);
     validateReceipts(fs, pkg);
-    const links = applyLinks(fs, pkg);
+    const links = applyLinks(fs, pkg, linkResolution);
 
     packageReports.push({
       name: pkg.name,
@@ -245,7 +267,7 @@ export async function buildHomebrewVfs(
   applyCanonicalOptLinks(fs, plan.packages);
   const compatibilityLinks = options.compatibilityPolicy === undefined
     ? undefined
-    : applyCompatibilityLinks(fs, plan, options.compatibilityPolicy);
+    : applyCompatibilityLinks(fs, plan, options.compatibilityPolicy, linkResolution);
 
   const report: HomebrewVfsBuildReport = {
     schema: 1,
@@ -253,6 +275,9 @@ export async function buildHomebrewVfs(
     ...(catalog === undefined ? {} : { catalog }),
     ...(compatibilityLinks === undefined ? {} : {
       compatibility_links: compatibilityLinks,
+    }),
+    ...(linkResolution.reports.length === 0 ? {} : {
+      link_conflicts: linkResolution.reports,
     }),
     ...(migrationLock === undefined ? {} : { migration_lock: migrationLock }),
     metadata: {
@@ -277,6 +302,9 @@ export async function buildHomebrewVfs(
       ...(catalog === undefined ? {} : { catalog }),
       ...(compatibilityLinks === undefined ? {} : {
         compatibility_links: compatibilityLinks,
+      }),
+      ...(linkResolution.reports.length === 0 ? {} : {
+        link_conflicts: linkResolution.reports,
       }),
       ...(migrationLock === undefined ? {} : { migration_lock: migrationLock }),
       metadata: report.metadata,
@@ -568,7 +596,126 @@ function validateReceipts(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): vo
   }
 }
 
-function applyLinks(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): string[] {
+function resolveLinkConflicts(
+  plan: HomebrewVfsPlan,
+  policy: HomebrewVfsCompatibilityPolicy | undefined,
+): HomebrewVfsLinkResolution {
+  const entriesByPath = new Map<
+    string,
+    Array<{ pkg: HomebrewVfsPackagePlan; entry: HomebrewLinkEntry }>
+  >();
+  const packageByFullName = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
+
+  for (const pkg of plan.packages) {
+    const seenTargets = new Set<string>();
+    for (const entry of pkg.linkManifest.links) {
+      if (seenTargets.has(entry.target)) {
+        fail(pkg, `link target ${entry.target} is duplicated`);
+      }
+      seenTargets.add(entry.target);
+      const path = joinGuestPath(pkg.prefix, entry.target);
+      if (!guestPathIsUnder(path, pkg.prefix)) {
+        fail(pkg, `link target ${entry.target} escapes prefix ${pkg.prefix}`);
+      }
+      const entries = entriesByPath.get(path) ?? [];
+      entries.push({ pkg, entry });
+      entriesByPath.set(path, entries);
+    }
+  }
+
+  if (policy !== undefined && !Array.isArray(policy.link_conflict_owners)) {
+    throw new HomebrewVfsBuildError(
+      "Homebrew compatibility link_conflict_owners policy is invalid",
+    );
+  }
+  const declarations = new Map<
+    string,
+    { target: string; package: string; reason: string }
+  >();
+  for (const declaration of policy?.link_conflict_owners ?? []) {
+    if (
+      typeof declaration?.target !== "string" ||
+      typeof declaration.package !== "string" ||
+      typeof declaration.reason !== "string" ||
+      declaration.reason.trim().length === 0
+    ) {
+      throw new HomebrewVfsBuildError(
+        "Homebrew compatibility link conflict owner is invalid",
+      );
+    }
+    validateSafeRelativePath(
+      declaration.target,
+      "Homebrew compatibility link conflict target",
+    );
+    if (declarations.has(declaration.target)) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility link conflict target ${declaration.target} is declared more than once`,
+      );
+    }
+    declarations.set(declaration.target, declaration);
+  }
+
+  const selectedPackageByPath = new Map<string, string>();
+  const reports: HomebrewVfsLinkConflictReport[] = [];
+  for (const [path, entries] of entriesByPath) {
+    const owners = Array.from(new Set(entries.map(({ pkg }) => pkg.fullName)));
+    if (owners.length < 2) continue;
+    const targets = Array.from(new Set(entries.map(({ entry }) => entry.target)));
+    if (targets.length !== 1) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew link conflict at ${path} has non-canonical target identities`,
+      );
+    }
+    const target = targets[0];
+    const declaration = declarations.get(target);
+    if (declaration === undefined) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew link target ${target} is owned by ${owners.join(", ")}; ` +
+          "the migration lock must select an owner",
+      );
+    }
+    if (!owners.includes(declaration.package)) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew migration-lock owner ${declaration.package} does not own conflicting target ${target}`,
+      );
+    }
+    selectedPackageByPath.set(path, declaration.package);
+    reports.push({
+      path,
+      target,
+      owners,
+      selected_package: declaration.package,
+      skipped_packages: owners.filter((owner) => owner !== declaration.package),
+      reason: declaration.reason,
+      resolution: "migration-lock",
+    });
+  }
+
+  for (const declaration of declarations.values()) {
+    const selectedPackage = packageByFullName.get(declaration.package);
+    if (selectedPackage === undefined) {
+      // A full migration lock is also used for focused partial selections.
+      // Its conflict policy becomes active as soon as its selected owner is
+      // present; the complete main-shell plan therefore checks every entry.
+      continue;
+    }
+    const path = joinGuestPath(selectedPackage.prefix, declaration.target);
+    if (selectedPackageByPath.get(path) !== declaration.package) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew migration-lock owner declaration for ${declaration.target} ` +
+          "is stale or unnecessary",
+      );
+    }
+  }
+
+  return { selectedPackageByPath, reports };
+}
+
+function applyLinks(
+  fs: MemoryFileSystem,
+  pkg: HomebrewVfsPackagePlan,
+  resolution: HomebrewVfsLinkResolution,
+): string[] {
   const linkedTargets: string[] = [];
   const seenTargets = new Set<string>();
 
@@ -587,12 +734,17 @@ function applyLinks(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): string[]
     if (sourceStat === null) {
       fail(pkg, `link source ${entry.source} is missing at ${sourcePath}`);
     }
+    validateLinkEntrySource(pkg, entry, sourceStat);
+    const selectedPackage = resolution.selectedPackageByPath.get(targetPath);
+    if (selectedPackage !== undefined && selectedPackage !== pkg.fullName) {
+      continue;
+    }
     if (tryLstat(fs, targetPath) !== null) {
       fail(pkg, `link target ${entry.target} already exists at ${targetPath}`);
     }
 
     ensureParentDir(fs, targetPath);
-    applyLinkEntry(fs, pkg, entry, sourcePath, sourceStat, targetPath);
+    applyLinkEntry(fs, entry, sourcePath, sourceStat, targetPath);
     linkedTargets.push(entry.target);
   }
 
@@ -624,11 +776,13 @@ function applyCompatibilityLinks(
   fs: MemoryFileSystem,
   plan: HomebrewVfsPlan,
   policy: HomebrewVfsCompatibilityPolicy,
+  resolution: HomebrewVfsLinkResolution,
 ): HomebrewVfsCompatibilityLinkReport[] {
   if (
     !policy ||
     !policy.mirror_link_manifest_bin ||
     !Array.isArray(policy.mirror_link_manifest_bin.targets) ||
+    !Array.isArray(policy.link_conflict_owners) ||
     !Array.isArray(policy.aliases)
   ) {
     throw new HomebrewVfsBuildError("Homebrew compatibility policy is invalid");
@@ -642,6 +796,9 @@ function applyCompatibilityLinks(
   for (const pkg of plan.packages) {
     for (const entry of pkg.linkManifest.links) {
       if (!/^bin\/[^/]+$/.test(entry.target)) continue;
+      const path = joinGuestPath(pkg.prefix, entry.target);
+      const selectedPackage = resolution.selectedPackageByPath.get(path);
+      if (selectedPackage !== undefined && selectedPackage !== pkg.fullName) continue;
       const key = `${pkg.fullName}\0${entry.target}`;
       ownedBinLinks.set(key, {
         pkg,
@@ -779,7 +936,6 @@ function canonicalOptLink(pkg: HomebrewVfsPackagePlan): HomebrewVfsOptLinkReport
 
 function applyLinkEntry(
   fs: MemoryFileSystem,
-  pkg: HomebrewVfsPackagePlan,
   entry: HomebrewLinkEntry,
   sourcePath: string,
   sourceStat: StatResult,
@@ -790,20 +946,27 @@ function applyLinkEntry(
       fs.symlink(sourcePath, targetPath);
       return;
     case "file": {
-      if (kind(sourceStat) !== S_IFREG) {
-        fail(pkg, `file link source ${entry.source} is not a regular file`);
-      }
       writeVfsBinary(fs, targetPath, readVfsFile(fs, sourcePath), parseManifestMode(entry, sourceStat));
       return;
     }
     case "directory": {
-      if (kind(sourceStat) !== S_IFDIR) {
-        fail(pkg, `directory link source ${entry.source} is not a directory`);
-      }
       ensureDirRecursive(fs, targetPath);
       fs.chmod(targetPath, parseManifestMode(entry, sourceStat));
       return;
     }
+  }
+}
+
+function validateLinkEntrySource(
+  pkg: HomebrewVfsPackagePlan,
+  entry: HomebrewLinkEntry,
+  sourceStat: StatResult,
+): void {
+  if (entry.type === "file" && kind(sourceStat) !== S_IFREG) {
+    fail(pkg, `file link source ${entry.source} is not a regular file`);
+  }
+  if (entry.type === "directory" && kind(sourceStat) !== S_IFDIR) {
+    fail(pkg, `directory link source ${entry.source} is not a directory`);
   }
 }
 

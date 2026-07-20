@@ -340,6 +340,59 @@ async function buildFixture(
   });
 }
 
+async function buildLinkConflictFixture(
+  compatibilityPolicy: HomebrewVfsCompatibilityPolicy | undefined,
+  packageNames = ["ed", "posix-utils-lite"],
+  onLoadBottle?: () => void,
+  missingSourcePackage?: string,
+): Promise<HomebrewVfsBuildResult> {
+  const bytes = bottleTar(standardEntries());
+  const basePlan = await planHomebrewVfs(metadataForBottle(bytes), {
+    packages: ["hello"],
+    arch: "wasm32",
+    runtime: "node",
+    loadLinkManifest: () => linkManifest(bytes),
+  });
+  const packages = packageNames.map((name) => {
+    const pkg = basePlan.packages[0];
+    const keg = `${CELLAR}/${name}/2.12.1`;
+    const sourceName = name === missingSourcePackage ? "missing" : "hello";
+    return {
+      ...pkg,
+      name,
+      fullName: `kandelo-dev/tap-core/${name}`,
+      keg,
+      linkManifestPath: `Kandelo/link/${name}-2.12.1-rebuild0-wasm32.json`,
+      linkManifest: {
+        ...pkg.linkManifest,
+        package: name,
+        keg,
+        links: [{
+          type: "symlink" as const,
+          source: `Cellar/${name}/2.12.1/bin/${sourceName}`,
+          target: "bin/ex",
+        }],
+        receipts: [
+          `Cellar/${name}/2.12.1/.brew/hello.rb`,
+          `Cellar/${name}/2.12.1/INSTALL_RECEIPT.json`,
+        ],
+      },
+    };
+  });
+  return buildHomebrewVfs({
+    ...basePlan,
+    requestedPackages: [...packageNames],
+    packages,
+  }, {
+    fs: MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024)),
+    compatibilityPolicy,
+    loadBottleBytes: () => {
+      onLoadBottle?.();
+      return bytes;
+    },
+  });
+}
+
 function readVfsFile(fs: MemoryFileSystem, path: string): string {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
@@ -527,6 +580,7 @@ describe("Homebrew VFS builder", () => {
     const bytes = bottleTar(standardEntries());
     const compatibilityPolicy: HomebrewVfsCompatibilityPolicy = {
       mirror_link_manifest_bin: { targets: ["/usr/bin", "/bin"] },
+      link_conflict_owners: [],
       aliases: [{
         package: "kandelo-dev/tap-core/hello",
         source: "bin/hello",
@@ -555,10 +609,102 @@ describe("Homebrew VFS builder", () => {
     ).compatibility_links).toEqual(result.report.compatibility_links);
   });
 
+  it("selects duplicate prefix and POSIX links only through migration-lock ownership", async () => {
+    const policy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: ["/usr/bin", "/bin"] },
+      link_conflict_owners: [{
+        target: "bin/ex",
+        package: "kandelo-dev/tap-core/posix-utils-lite",
+        reason: "Preserve the current main-shell ex implementation.",
+      }],
+      aliases: [],
+    };
+    const result = await buildLinkConflictFixture(policy);
+    const selectedKeg = `${CELLAR}/posix-utils-lite/2.12.1`;
+    const composition = JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    );
+
+    expect(result.fs.readlink(`${PREFIX}/bin/ex`)).toBe(`${selectedKeg}/bin/hello`);
+    expect(result.fs.readlink("/usr/bin/ex")).toBe(`${PREFIX}/bin/ex`);
+    expect(result.fs.readlink("/bin/ex")).toBe(`${PREFIX}/bin/ex`);
+    expect(result.report.packages.find(({ name }) => name === "ed")?.links).toEqual([]);
+    expect(result.report.packages.find(({ name }) => name === "posix-utils-lite")?.links)
+      .toEqual(["bin/ex"]);
+    expect(result.report.link_conflicts).toEqual([{
+      path: `${PREFIX}/bin/ex`,
+      target: "bin/ex",
+      owners: ["kandelo-dev/tap-core/ed", "kandelo-dev/tap-core/posix-utils-lite"],
+      selected_package: "kandelo-dev/tap-core/posix-utils-lite",
+      skipped_packages: ["kandelo-dev/tap-core/ed"],
+      reason: "Preserve the current main-shell ex implementation.",
+      resolution: "migration-lock",
+    }]);
+    expect(composition.link_conflicts).toEqual(result.report.link_conflicts);
+    expect(result.report.compatibility_links?.filter(({ source }) => source === "bin/ex"))
+      .toHaveLength(2);
+
+    const reversed = await buildLinkConflictFixture(
+      policy,
+      ["posix-utils-lite", "ed"],
+    );
+    expect(reversed.fs.readlink(`${PREFIX}/bin/ex`)).toBe(`${selectedKeg}/bin/hello`);
+    expect(reversed.report.link_conflicts?.[0].selected_package)
+      .toBe("kandelo-dev/tap-core/posix-utils-lite");
+  });
+
+  it("validates a reviewed losing link source before skipping its target", async () => {
+    const policy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [{
+        target: "bin/ex",
+        package: "kandelo-dev/tap-core/posix-utils-lite",
+        reason: "Preserve the current main-shell ex implementation.",
+      }],
+      aliases: [],
+    };
+    await expect(buildLinkConflictFixture(
+      policy,
+      undefined,
+      undefined,
+      "ed",
+    )).rejects.toThrow("link source Cellar/ed/2.12.1/bin/missing is missing");
+  });
+
+  it("rejects missing, stale, and duplicate link-conflict owner declarations before pouring", async () => {
+    let bottleLoads = 0;
+    await expect(buildLinkConflictFixture(undefined, undefined, () => {
+      bottleLoads += 1;
+    })).rejects.toThrow("migration lock must select an owner");
+    expect(bottleLoads).toBe(0);
+
+    const declaration = {
+      target: "bin/ex",
+      package: "kandelo-dev/tap-core/posix-utils-lite",
+      reason: "Preserve the current main-shell ex implementation.",
+    };
+    const policy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [declaration],
+      aliases: [],
+    };
+    await expect(buildLinkConflictFixture(
+      policy,
+      ["posix-utils-lite"],
+    )).rejects.toThrow("is stale or unnecessary");
+
+    await expect(buildLinkConflictFixture({
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [declaration, declaration],
+      aliases: [],
+    })).rejects.toThrow("is declared more than once");
+  });
+
   it("rejects legacy path collisions and aliases not owned by a bottle manifest", async () => {
     const bytes = bottleTar(standardEntries());
     const mirror: HomebrewVfsCompatibilityPolicy = {
       mirror_link_manifest_bin: { targets: ["/usr/bin"] },
+      link_conflict_owners: [],
       aliases: [],
     };
     await expect(buildFixture(bytes, {
@@ -572,6 +718,7 @@ describe("Homebrew VFS builder", () => {
     await expect(buildFixture(bytes, {
       compatibilityPolicy: {
         mirror_link_manifest_bin: { targets: [] },
+        link_conflict_owners: [],
         aliases: [{
           package: "kandelo-dev/tap-core/hello",
           source: "bin/not-reviewed",

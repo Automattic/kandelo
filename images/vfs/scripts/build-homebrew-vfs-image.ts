@@ -643,10 +643,28 @@ function migrationLockCompatibilityPolicy(
     !compatibility.mirror_link_manifest_bin.targets.every(
       (entry) => typeof entry === "string",
     ) ||
+    !Array.isArray(compatibility.link_conflict_owners) ||
     !Array.isArray(compatibility.aliases)
   ) {
     throw new Error(`Homebrew migration lock has an invalid compatibility policy: ${path}`);
   }
+  const linkConflictOwners = compatibility.link_conflict_owners.map((value, index) => {
+    if (
+      !isRecord(value) ||
+      typeof value.target !== "string" ||
+      typeof value.package !== "string" ||
+      typeof value.reason !== "string"
+    ) {
+      throw new Error(
+        `Homebrew migration lock compatibility.link_conflict_owners[${index}] is invalid: ${path}`,
+      );
+    }
+    return {
+      target: value.target,
+      package: value.package,
+      reason: value.reason,
+    };
+  });
   const aliases = compatibility.aliases.map((value, index) => {
     if (
       !isRecord(value) ||
@@ -669,6 +687,7 @@ function migrationLockCompatibilityPolicy(
     mirror_link_manifest_bin: {
       targets: [...compatibility.mirror_link_manifest_bin.targets] as string[],
     },
+    link_conflict_owners: linkConflictOwners,
     aliases,
   };
 }
