@@ -121,6 +121,7 @@ fi
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
+homebrew_patched_launcher_select_host_git
 mkdir -p "$OUT_DIR/bottles"
 if [ -n "$BUILD_USER" ]; then
   if [ ! -d "$SHARED_TEMP" ] || [ -L "$SHARED_TEMP" ]; then

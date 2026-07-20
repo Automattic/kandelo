@@ -532,6 +532,47 @@ homebrew_patched_launcher_worktree_registration_status() {
   return 1
 }
 
+homebrew_patched_launcher_git_version_is_supported() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_git_version_is_supported: expected VERSION" >&2
+    return 2
+  fi
+  local version="$1" major minor
+  if ! [[ "$version" =~ ^git\ version\ ([0-9]+)\.([0-9]+)(\.[0-9]+)*([.+-][^[:space:]]+)?$ ]]; then
+    return 1
+  fi
+  major=$((10#${BASH_REMATCH[1]}))
+  minor=$((10#${BASH_REMATCH[2]}))
+  [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 7 ]; }
+}
+
+# Keep Homebrew's host-side repository and trust operations on the declared
+# dev-shell Git even after a target Formula installs a Wasm `git` into the
+# selected Homebrew prefix. Homebrew preserves HOMEBREW_* variables when its
+# launcher resets PATH and gives this documented absolute override precedence
+# over the brewed Git shim.
+homebrew_patched_launcher_select_host_git() {
+  if [ "$#" -ne 0 ]; then
+    echo "homebrew_patched_launcher_select_host_git: expected no arguments" >&2
+    return 2
+  fi
+  local git_path git_version git_root
+  unset HOMEBREW_GIT_PATH
+  git_path="$(command -v git || true)"
+  git_root="${git_path%/bin/git}"
+  git_version="$("$git_path" --version 2>/dev/null || true)"
+  git_version="${git_version%%$'\n'*}"
+  if ! [[ "$git_path" =~ ^/nix/store/[0-9a-z]{32}-git-[^/]+/bin/git$ ]] ||
+     [ ! -f "$git_path" ] || [ -L "$git_path" ] || [ ! -x "$git_path" ] ||
+     [ -w "$git_path" ] || [ -w "${git_path%/*}" ] || [ -w "$git_root" ] ||
+     ! homebrew_patched_launcher_git_version_is_supported "$git_version"; then
+    echo "homebrew-patched-launcher: dev shell does not provide protected Nix Git 2.7.0 or newer" >&2
+    return 2
+  fi
+  HOMEBREW_GIT_PATH="$git_path"
+  export HOMEBREW_GIT_PATH
+}
+
 homebrew_assert_protected_host_executable() {
   if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
     echo "homebrew_assert_protected_host_executable: expected USER PATH EXPECTED LABEL [SYMLINK_TARGET]" >&2
@@ -1561,6 +1602,15 @@ homebrew_patched_launcher_isolate() {
     homebrew_assert_protected_host_executable \
       "$build_user" "/usr/bin/$protected_bin" "/usr/bin/$protected_bin" "$protected_bin"
   done
+  if [ -z "${HOMEBREW_GIT_PATH:-}" ]; then
+    echo "homebrew-patched-launcher: protected host Git was not selected before isolation" >&2
+    return 2
+  fi
+  homebrew_assert_protected_host_executable \
+    "$build_user" "$HOMEBREW_GIT_PATH" "$HOMEBREW_GIT_PATH" \
+    "Nix Git" || return
+  homebrew_assert_tree_not_replaceable_by_user \
+    "$build_user" "$HOMEBREW_GIT_PATH" || return
   if [ -n "${HOMEBREW_KANDELO_GNU_TAR:-}" ]; then
     homebrew_assert_protected_host_executable \
       "$build_user" "$HOMEBREW_KANDELO_GNU_TAR" \
@@ -1891,6 +1941,7 @@ homebrew_patched_launcher_isolate() {
     HOMEBREW_NO_INSTALL_CLEANUP HOMEBREW_NO_ANALYTICS HOMEBREW_DEVELOPER
     KANDELO_HOMEBREW_ARCH
     HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_NODE
+    HOMEBREW_GIT_PATH
     HOMEBREW_KANDELO_GNU_TAR HOMEBREW_KANDELO_LLVM_BIN HOMEBREW_KANDELO_ABI
     HOMEBREW_KANDELO_NODE_RECEIPT_PATH
     LLVM_BIN WASM_POSIX_LLVM_DIR
@@ -1899,7 +1950,7 @@ homebrew_patched_launcher_isolate() {
   native_preserved_variables=(
     CI GITHUB_ACTIONS RUNNER_OS LANG LC_ALL TZ SOURCE_DATE_EPOCH PATH
     HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALL_CLEANUP
-    HOMEBREW_NO_ANALYTICS HOMEBREW_DEVELOPER
+    HOMEBREW_NO_ANALYTICS HOMEBREW_DEVELOPER HOMEBREW_GIT_PATH
     NIX_SSL_CERT_FILE SSL_CERT_FILE
   )
   {

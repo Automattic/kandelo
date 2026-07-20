@@ -63,6 +63,13 @@ HOMEBREW_PATCHED_PREFIX=""
 HOMEBREW_PATCHED_NATIVE_PREFIX=""
 HOMEBREW_PATCHED_NATIVE_HOME=""
 
+homebrew_patched_launcher_select_host_git() {
+  unset HOMEBREW_GIT_PATH
+  HOMEBREW_GIT_PATH="$(command -v git || true)"
+  [ -n "$HOMEBREW_GIT_PATH" ] || return 2
+  export HOMEBREW_GIT_PATH
+}
+
 homebrew_patched_launcher_prepare() {
   HOMEBREW_PATCHED_BREW_BIN="$1"
   HOMEBREW_PATCHED_PREFIX="${FAKE_BREW_PREFIX:?}"
@@ -2508,7 +2515,7 @@ assert_bottle_build_installs_test_dependencies() {
   local provenance_capture="$TMPDIR/bottle-test-dependency-provenance.txt"
   local provenance_log_capture="$TMPDIR/bottle-test-dependency-install.log"
   local native_prefix_capture="$TMPDIR/bottle-test-dependency-native-prefix.txt"
-  local native_prefix real_python3 gnu_tar_bin
+  local native_prefix real_python3 gnu_tar_bin host_git_bin
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
@@ -2611,6 +2618,12 @@ case "${1:-}" in
         cat >"$FAKE_BREW_PREFIX/INSTALL_RECEIPT.json" <<JSON
 {"source":{"path":"Formula/hello.rb","tap":"kandelo-dev/tap-core","tap_git_head":"$tap_head","versions":{"stable":"1.0"}},"built_as_bottle":false,"poured_from_bottle":false}
 JSON
+        mkdir -p "$FAKE_BREW_PREFIX/bin"
+        cat >"$FAKE_BREW_PREFIX/bin/git" <<'TARGET_GIT'
+#!/usr/bin/env bash
+exit 86
+TARGET_GIT
+        chmod +x "$FAKE_BREW_PREFIX/bin/git"
         ;;
       *) exit 43 ;;
     esac
@@ -2637,6 +2650,14 @@ JSON
     ;;
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] || exit 46
+    if [ "${FAKE_ASSERT_GIT_CONTROL_PLANE:-}" = 1 ]; then
+      [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
+      [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 57
+      [ "$HOMEBREW_GIT_PATH" != "$FAKE_BREW_PREFIX/bin/git" ] || exit 58
+      "$HOMEBREW_GIT_PATH" --version >/dev/null || exit 59
+      "$HOMEBREW_GIT_PATH" -C "$FAKE_TAP_ROOT" rev-parse HEAD >/dev/null || exit 60
+      [ "$(grep -c '^trust --tap kandelo-dev/tap-core$' "$FAKE_BREW_LOG")" -eq 1 ] || exit 61
+    fi
     if [ "${FAKE_INSTALL_IMPLICIT_NATIVE:-}" = "1" ]; then
       mkdir -p "$FAKE_BREW_PREFIX/Cellar/bubblewrap/0.11.2"
     fi
@@ -2712,6 +2733,7 @@ EOF
 
   real_python3="$(command -v python3)"
   gnu_tar_bin="$(command -v tar)"
+  host_git_bin="$(command -v git)"
   cat >"$fake_bin/python3" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2748,6 +2770,8 @@ EOF
     FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
     FAKE_BUILD_TIME=1700000000 \
+    FAKE_ASSERT_GIT_CONTROL_PLANE=1 \
+    FAKE_EXPECTED_HOST_GIT="$host_git_bin" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
@@ -2755,6 +2779,7 @@ EOF
     HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
     KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
     HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
+    HOMEBREW_GIT_PATH=caller-poison \
     GITHUB_ACTIONS= \
     bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
       --tap-root "$tap" \
@@ -3085,7 +3110,7 @@ assert_bottle_verifier_installs_test_dependencies() {
   local shared_temp="$root/shared-temp"
   local renamed_err="$root/renamed-bottle.err"
   local nested_target_err="$root/nested-target.err"
-  local bottle_sha bottle_bytes tap_commit native_prefix real_python3 real_rm
+  local bottle_sha bottle_bytes tap_commit native_prefix real_python3 real_rm host_git_bin
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
 
   make_tap "$tap"
@@ -3252,6 +3277,12 @@ case "${1:-}" in
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
           >>"$FAKE_BREW_LOG"
         cp "$FAKE_BOTTLE" "$HOMEBREW_CACHE/selected-bottle.tar.gz"
+        mkdir -p "$FAKE_BREW_PREFIX/bin"
+        cat >"$FAKE_BREW_PREFIX/bin/git" <<'TARGET_GIT'
+#!/usr/bin/env bash
+exit 86
+TARGET_GIT
+        chmod +x "$FAKE_BREW_PREFIX/bin/git"
         : >"$FAKE_STATE/target"
         ;;
       *) exit 47 ;;
@@ -3284,6 +3315,16 @@ case "${1:-}" in
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] && \
       [ -f "$FAKE_STATE/target" ] || exit 50
+    [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 54
+    [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 55
+    [ "$HOMEBREW_GIT_PATH" != "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
+    "$HOMEBREW_GIT_PATH" --version >/dev/null || exit 57
+    trusted_remote="$("$HOMEBREW_GIT_PATH" -C "$FAKE_TAP_ROOT" \
+      config --local --get remote.origin.url)"
+    trusted_remote="${trusted_remote#file://}"
+    [ "$(cd "$trusted_remote" && pwd -P)" = \
+      "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 58
+    [ "$(grep -c '^trust --tap kandelo-dev/tap-core$' "$FAKE_BREW_LOG")" -eq 1 ] || exit 59
     printf 'test-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -3296,6 +3337,7 @@ EOF
 
   real_python3="$(command -v python3)"
   real_rm="$(command -v rm)"
+  host_git_bin="$(command -v git)"
   cat >"$fake_bin/python3" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -3377,6 +3419,7 @@ EOF
       FAKE_BREW_REPOSITORY="$brew_repo" \
       FAKE_TAP_ROOT="$tapped_tap" \
       FAKE_RECONSTRUCTED_TAP="$tap" \
+      FAKE_EXPECTED_HOST_GIT="$host_git_bin" \
       FAKE_TARGET_OPT_PREFIX="$target_opt_prefix" \
       FAKE_TARGET_PREFIX="$target_prefix" \
       FAKE_STATE="$state" \
@@ -3393,6 +3436,7 @@ EOF
       HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
       KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
       HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
+      HOMEBREW_GIT_PATH=caller-poison \
       GITHUB_ACTIONS= \
       bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
         --tap-root "$tap" \

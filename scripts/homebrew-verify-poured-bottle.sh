@@ -187,6 +187,7 @@ PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.pat
 PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
+homebrew_patched_launcher_select_host_git
 
 OUT_PARENT="$(dirname "$OUT")"
 mkdir -p "$OUT_PARENT"
