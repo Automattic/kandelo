@@ -31,9 +31,11 @@ The first-party migration target is
 `kandelo-dev/homebrew-tap-core`. Its Homebrew name is
 `kandelo-dev/tap-core`. `Automattic/kandelo-homebrew` is the historical tap,
 not an alternate publication target: do not dispatch, pin, or copy generated
-state to it. Retiring that repository's old dispatch callers is a separate
-administrative cleanup; until then, treat any run or package rooted there as
-stale migration evidence rather than current tap state.
+state to it. PR
+[`Automattic/kandelo-homebrew#147`](https://github.com/Automattic/kandelo-homebrew/pull/147)
+removed its dispatch publishers; repository-level Actions is disabled and the
+repository is archived. Treat any older run or package rooted there as stale
+migration evidence rather than current tap state.
 
 The shortest safe way to reason about one publication is:
 
@@ -73,10 +75,10 @@ This is a dated checkpoint, not a substitute for inspecting live tap
 
 | Capability | State on 2026-07-20 |
 |---|---|
-| First-party repository and public package path | Proved. Production state is in `kandelo-dev/homebrew-tap-core`; repository-rooted `homebrew-tap-core/zlib` and `homebrew-tap-core/bzip2` completed publication and anonymous-read acceptance. |
-| Core Formula rollout | In progress. The live tap contains many finalized wasm32 bottles whose recorded runtime support is Node. A bounded eight-run core wave for `file-formula`, `git`, `less`, `curl`, `texlive`, `hello`, `nano`, and `icu` is running under the current publisher; Curl carries its two architectures inside one run. Each still needs terminal successful finalization before its new claim is current. |
-| Durable VFS image | Implemented, including immutable release publication and exact Node/Chromium evidence validation. No required-acceptance VFS release has completed yet, so there is no current public Homebrew VFS product URL to advertise. |
-| Third-party tap | The immutable dependency-tap and federated VFS contracts are implemented. The external M4 canary has proved build, public upload/index, anonymous dependency reads, force-pour, and Node execution; its fresh exact Node/Chromium/finalization retry is running. General third-party support remains pending that terminal gate. |
+| First-party repository and public package path | Proved. Production state is in `kandelo-dev/homebrew-tap-core`; repository-rooted public packages are created with the caller's built-in `GITHUB_TOKEN`, and anonymous readback gates finalization. `zlib` and `bzip2` are the original controls. |
+| Core Formula rollout | In progress. The current migration wave has finalized `curl` (wasm32 and wasm64), `less`, `nano`, and `texlive` on live tap `main`. `file-formula`, `icu`, and `hello` await the combined browser-input retry. `git` awaits a platform PTY fix, and `ruby` has no finalized bottle. Existing live-tap Formulae outside this wave retain their recorded Node support. |
+| Durable VFS image | Implemented, including immutable release publication and exact Node/Chromium evidence validation. The external M4 canary built and accepted the exact image, but its interrupted draft release exposed the authenticated draft-resume bug now being corrected. No required-acceptance VFS release has completed yet, so there is no current public Homebrew VFS product URL to advertise. |
+| Third-party tap | The external M4 canary has proved public bottle/index publication, anonymous dependency reads, force-pour, tap finalization, and exact Node/Chromium VFS execution from its own conventional tap. Only its immutable VFS release retry remains before this canary is terminal end-to-end third-party acceptance. |
 | Ruby | `Formula/ruby.rb` exists and the live build reached the artifact-safety boundary, but no Ruby sidecar or bottle is finalized. Do not report Ruby as available. |
 | Erlang and CPython | Neither has a finalized live-tap Formula and bottle. Porting work and legacy/local artifacts are not publication evidence. |
 | Guest `brew install` | Not yet validated or supported as a user-facing workflow. Current consumption is through verified, precomposed VFS images. |
@@ -118,8 +120,8 @@ explicitly so an omitted input cannot silently change publication identity.
 ### Historical tap shutdown
 
 Retargeting is not complete merely because new callers use the new repository.
-At the 2026-07-20 checkpoint, `Automattic/kandelo-homebrew` still contained
-three historical `repository_dispatch` callers pinned to Kandelo commit
+The historical repository formerly contained three `repository_dispatch`
+callers pinned to Kandelo commit
 `c3f91d622c3c878e15783c67e99e483e54ab25c1`:
 
 ```text
@@ -128,24 +130,17 @@ three historical `repository_dispatch` callers pinned to Kandelo commit
 .github/workflows/maintain-bottles.yml
 ```
 
-Caller/target binding prevents those callers from writing
-`kandelo-dev/homebrew-tap-core`, but a repository writer could still dispatch
-them to mutate the obsolete tap and its GHCR namespace. That creates split
-publication authority and misleading packages even if the current tap remains
-intact.
+That authority is retired. PR
+[`#147`](https://github.com/Automattic/kandelo-homebrew/pull/147), merged as
+`1c8b34bc951128402227911ea0cf7ade3ff9722c`, removed the three callers and
+updated the remaining trust checks to reject future dispatch publishers. The
+repository is archived and its repository-level Actions permission reports
+`enabled: false`; disabling individual workflows alone would not have closed
+that authority.
 
-Retire that authority in a purpose-prefixed pull request to the historical
-repository:
-
-1. Remove the three dispatch callers.
-2. Update `.github/workflows/base-contract-checks.yml`,
-   `.github/workflows/contract-checks.yml`, and
-   `Kandelo/test-workflow-trust.{rb,sh}` so the remaining exact workflow set is
-   inert and any future `repository_dispatch` publisher is rejected.
-3. Require the candidate trust check to pass and explicitly review the expected
-   base-controlled trust-root failure before merging.
-4. After merge, have an administrator disable Actions or archive the
-   historical repository for defense in depth.
+If the historical repository is ever temporarily unarchived for
+administration, keep repository-level Actions disabled and rearchive it when
+the bounded operation is complete. Do not restore a publisher caller.
 
 Do not delete historical audit commits or copy old Formula/sidecar state into
 the live tap as part of shutdown.
