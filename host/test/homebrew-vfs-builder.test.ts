@@ -335,18 +335,30 @@ function readVfsFile(fs: MemoryFileSystem, path: string): string {
 }
 
 describe("Homebrew VFS builder", () => {
-  it("pours a verified bottle, validates receipts, applies prefix links, and writes metadata", async () => {
+  it("pours a verified bottle, creates its canonical opt link, and writes metadata", async () => {
     const bytes = bottleTar(standardEntries());
     const result = await buildFixture(bytes);
 
     expect(readVfsFile(result.fs, `${KEG}/bin/hello`)).toContain("echo hello");
     expect(result.fs.readlink(`${PREFIX}/bin/hello`)).toBe(`${KEG}/bin/hello`);
-    expect(readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json")).toContain("hello");
+    expect(result.fs.readlink(`${PREFIX}/opt/hello`)).toBe("../Cellar/hello/2.12.1");
+    expect(readVfsFile(result.fs, `${PREFIX}/opt/hello/bin/hello`)).toContain("echo hello");
+    const composition = JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    );
+    expect(composition.packages[0].opt_link).toEqual({
+      path: "opt/hello",
+      target: "../Cellar/hello/2.12.1",
+    });
     expect(result.report.packages[0]).toMatchObject({
       name: "hello",
       source_status: "success",
       staged_files: 3,
       links: ["bin/hello"],
+      opt_link: {
+        path: "opt/hello",
+        target: "../Cellar/hello/2.12.1",
+      },
     });
     expect(result.report.selection).toMatchObject({
       kind: "packages",
@@ -477,6 +489,36 @@ describe("Homebrew VFS builder", () => {
     });
 
     expect(result.fs.readlink(`${PREFIX}/bin/hello`)).toBe(`${KEG}/bin/hello`);
+  });
+
+  it("rejects a link-manifest collision with the canonical opt link", async () => {
+    const bytes = bottleTar(standardEntries());
+
+    await expect(buildFixture(bytes, {
+      linkOverrides: {
+        links: [
+          { type: "symlink", source: "bin/hello", target: "bin/hello" },
+          { type: "symlink", source: "bin/hello", target: "opt/hello" },
+        ],
+      },
+    })).rejects.toThrow(
+      `canonical opt link opt/hello already exists at ${PREFIX}/opt/hello`,
+    );
+  });
+
+  it("rejects a non-directory canonical opt root", async () => {
+    const bytes = bottleTar(standardEntries());
+
+    await expect(buildFixture(bytes, {
+      linkOverrides: {
+        links: [
+          { type: "symlink", source: "bin/hello", target: "bin/hello" },
+          { type: "symlink", source: "bin/hello", target: "opt" },
+        ],
+      },
+    })).rejects.toThrow(
+      `canonical opt directory is not a real directory at ${PREFIX}/opt`,
+    );
   });
 
   it("pours and links a POSIX bracket utility path", async () => {

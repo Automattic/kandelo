@@ -1203,9 +1203,14 @@ the guest filename allowance.
 The Node-side builder is `buildHomebrewVfs()` in
 `host/src/homebrew-vfs-builder.ts`. It verifies bottle byte count and sha256,
 extracts supported tar entries, stages kegs under the declared prefix,
-validates receipts, applies link manifests, writes
-`/etc/kandelo/homebrew-vfs.json`, and emits a build report. Each package record
-retains its full Formula name, tap repository, tap name, and exact tap commit.
+validates receipts, applies link manifests, and creates the canonical
+`opt/<formula>` symlink for every selected package. The `opt` link is
+builder-owned rather than a link-manifest entry: its relative target is derived
+from the package's validated prefix and exact keg, and any pre-existing path at
+that package's `opt` location fails composition instead of being overwritten.
+The builder writes `/etc/kandelo/homebrew-vfs.json` and emits a build report;
+both record each `opt_link` path and target. Each package record retains its
+full Formula name, tap repository, tap name, and exact tap commit.
 
 The CLI starts with an empty VFS by default. Pass `--base-image` to overlay the
 same verified bottle plan onto an explicit platform-only `.vfs` or `.vfs.zst`

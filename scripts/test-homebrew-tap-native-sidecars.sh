@@ -1231,6 +1231,14 @@ jq -e '
     "lib/libsidecar-tool.a",
     "share/man/man1/sidecar-tool.1"
   ] and
+  (.packages[] | select(.name == "sidecar-dep") | .opt_link) == {
+    "path":"opt/sidecar-dep",
+    "target":"../Cellar/sidecar-dep/1.0"
+  } and
+  (.packages[] | select(.name == "sidecar-tool") | .opt_link) == {
+    "path":"opt/sidecar-tool",
+    "target":"../Cellar/sidecar-tool/2.0_3"
+  } and
   .base_image.sha256 == $base_sha and
   .base_image.bytes == $base_bytes and
   .base_image.kernelAbi == $abi and
@@ -1257,6 +1265,13 @@ npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
   "$TMPDIR/sidecar-tool.vfs.zst" "$TMPDIR/sidecar-tool-root" >/dev/null
 grep -Fx 'base-image-marker' \
   "$TMPDIR/sidecar-tool-root/etc/base-image-marker" >/dev/null
+[ "$(readlink "$TMPDIR/sidecar-tool-root/home/linuxbrew/.linuxbrew/opt/sidecar-dep")" = \
+  "../Cellar/sidecar-dep/1.0" ]
+[ "$(readlink "$TMPDIR/sidecar-tool-root/home/linuxbrew/.linuxbrew/opt/sidecar-tool")" = \
+  "../Cellar/sidecar-tool/2.0_3" ]
+cmp \
+  "$TMPDIR/sidecar-tool-root/home/linuxbrew/.linuxbrew/opt/sidecar-tool/bin/sidecar-tool" \
+  "$TMPDIR/sidecar-tool-root/home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
 jq -e '
   .selection.kind == "brewfile" and
   .selection.requested_packages == ["sidecar-tool"] and
