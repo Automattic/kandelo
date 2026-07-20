@@ -41,7 +41,7 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
   expect(url.searchParams.has("demo")).toBe(false);
 });
 
-test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) => {
+test("Kandelo URL helper preserves selected direct and immutable VFS sources", async ({ page }) => {
   await page.goto(appUrl("/?demo=shell"), {
     waitUntil: "domcontentloaded",
   });
@@ -54,6 +54,9 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
       vfsImageUrlFromDescriptor,
     } = await import("/pages/kandelo/url-state.ts");
     const vfsImageUrl = "https://cdn.example.invalid/site.vfs.zst";
+    const descriptorUrl =
+      "https://github.com/Example/homebrew-tools/releases/download/" +
+      `homebrew-vfs-sha256-${"a".repeat(64)}/kandelo-homebrew-vfs.json`;
     const descriptor = {
       version: 1,
       id: "shell",
@@ -86,9 +89,29 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
       glyph: "st",
       estimatedUrlBytes: 120,
     }, "https://kandelo.dev/?demo=shell");
+    const resolverHref = galleryItemUrl({
+      id: "homebrew-shell",
+      title: "Homebrew shell",
+      summary: "Immutable Homebrew VFS release",
+      base: `kandelo:shell@abi${abiVersion}`,
+      packages: [],
+      bootCommand: ["dash", "-l", "-i"],
+      vfsImageResolver: {
+        kind: "homebrew-vfs-release",
+        descriptorUrl,
+        requireDefaultShell: true,
+      },
+      accent: "#cf5c36",
+      glyph: "hb",
+      estimatedUrlBytes: descriptorUrl.length + 32,
+    }, "https://kandelo.dev/?demo=shell&vfs=https%3A%2F%2Fexample.invalid%2Fold.vfs");
     return {
       href,
+      resolverHref,
       parsed: readKandeloBootQuery("?demo=site&vfs=https%3A%2F%2Fcdn.example.invalid%2Fsite.vfs.zst"),
+      parsedResolver: readKandeloBootQuery(
+        `?homebrewVfs=${encodeURIComponent(descriptorUrl)}`,
+      ),
       localRefUrl: vfsImageUrlFromDescriptor(descriptor),
       relativeRefUrl: vfsImageUrlFromDescriptor(withRelativeVfs),
       expectedRelativeRefUrl: new URL("images/site.vfs.zst", window.location.href).href,
@@ -100,6 +123,17 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
   expect(url.searchParams.get("vfs")).toBe("https://cdn.example.invalid/site.vfs.zst");
   expect(result.parsed).toEqual({
     vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst",
+    homebrewVfsDescriptorUrl: null,
+  });
+  const resolverUrl = new URL(result.resolverHref);
+  expect(resolverUrl.searchParams.has("demo")).toBe(false);
+  expect(resolverUrl.searchParams.has("vfs")).toBe(false);
+  expect(resolverUrl.searchParams.get("homebrewVfs")).toBe(
+    result.parsedResolver.homebrewVfsDescriptorUrl,
+  );
+  expect(result.parsedResolver).toEqual({
+    vfsImageUrl: null,
+    homebrewVfsDescriptorUrl: resolverUrl.searchParams.get("homebrewVfs"),
   });
   expect(result.localRefUrl).toBeNull();
   expect(result.relativeRefUrl).toBe(result.expectedRelativeRefUrl);

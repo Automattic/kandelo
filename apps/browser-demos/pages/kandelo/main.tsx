@@ -15,7 +15,6 @@ if (!container) {
 
 const qs = new URLSearchParams(location.search);
 const demo = qs.get("demo");
-const bootQuery = readKandeloBootQuery(location.search);
 const fbDemo = qs.get("fb"); // "test" | null
 
 const mount = (host: KernelHost) => {
@@ -30,7 +29,15 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
-    const useSpiderMonkeyNodeHost = demo === "node" || demo === "spidermonkey-node" || demo === "spidermonkey";
+    const bootQuery = readKandeloBootQuery(location.search);
+    if (bootQuery.vfsImageUrl && bootQuery.homebrewVfsDescriptorUrl) {
+      throw new Error(
+        "Choose either the vfs query parameter or homebrewVfs, not both.",
+      );
+    }
+    const useSpiderMonkeyNodeHost = !bootQuery.vfsImageUrl &&
+      !bootQuery.homebrewVfsDescriptorUrl &&
+      (demo === "node" || demo === "spidermonkey-node" || demo === "spidermonkey");
     const host = useSpiderMonkeyNodeHost
       ? await import("./kernel-host/live-spidermonkey-node-setup")
         .then(({ createLiveSpiderMonkeyNodeHost }) => createLiveSpiderMonkeyNodeHost(demo))
@@ -38,6 +45,7 @@ void (async () => {
         .then(({ createLiveHost }) => createLiveHost({
           demo,
           vfsUrl: bootQuery.vfsImageUrl,
+          homebrewVfsDescriptorUrl: bootQuery.homebrewVfsDescriptorUrl,
           fb: fbDemo === "test" ? "test" : "none",
         }));
     mount(host);

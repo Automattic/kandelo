@@ -89,6 +89,25 @@ export {
   HomebrewBottleFetchError,
   fetchHomebrewBottleBytes,
 } from "./homebrew-vfs-fetch";
+export {
+  HOMEBREW_VFS_DESCRIPTOR_ASSET,
+  HOMEBREW_VFS_IMAGE_ASSET,
+  MAX_HOMEBREW_VFS_DESCRIPTOR_BYTES,
+  MAX_HOMEBREW_VFS_IMAGE_BYTES,
+  HomebrewVfsReleaseError,
+  fetchHomebrewVfsReleaseDescriptor,
+  fetchVerifiedHomebrewVfsImage,
+  parseHomebrewVfsReleaseDescriptor,
+  resolveHomebrewVfsRelease,
+} from "./homebrew-vfs-release";
+export type {
+  HomebrewVfsAsset,
+  HomebrewVfsDefaultShell,
+  HomebrewVfsFetchOptions,
+  HomebrewVfsImageAsset,
+  HomebrewVfsReleaseDescriptor,
+  ResolvedHomebrewVfsRelease,
+} from "./homebrew-vfs-release";
 export { parseDylinkSection, loadSharedLibrary, loadSharedLibrarySync, DynamicLinker } from "./dylink";
 export type { DylinkMetadata, LoadedSharedLibrary, LoadSharedLibraryOptions } from "./dylink";
 export { WASM_PAGE_SIZE, CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";

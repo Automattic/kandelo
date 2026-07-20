@@ -443,10 +443,28 @@ precomposed `.vfs.zst`, boots those exact bytes in Node and Chromium, and runs
 the tap-selected smoke command. When the caller seals that dependency-bearing
 acceptance as required, the publisher stores the exact image, report, evidence,
 and `kandelo-homebrew-vfs.json` descriptor in the source tap's public,
-content-addressed `homebrew-vfs-sha256-<image-sha256>` release. The descriptor's
-`launch.value` is the anonymous image URL accepted by the normal browser
-`?vfs=<url>` path. The publisher anonymously reads every release asset back and
-verifies its digest and size before reporting success.
+content-addressed `homebrew-vfs-sha256-<image-sha256>` release. The publisher
+anonymously reads every release asset back and verifies its digest and size
+before reporting success.
+
+Kandelo consumes that stable descriptor with
+`?homebrewVfs=<descriptor-url>`. The shared Node/browser resolver bounds and
+validates schema 1, the conventional `owner/homebrew-name` repository and tap
+identity, Kandelo ABI, content-addressed release tag, asset URLs, image byte
+count, and image SHA-256. The browser records the resolved URL and integrity in
+the root image mount, then verifies the fetched bytes before VFS restoration.
+This interactive source also requires the descriptor and exact image to own the
+same valid `/etc/kandelo/shell.json` path and arguments; it fails visibly on a
+missing or mismatched contract instead of downloading the legacy shell
+binaries. `?vfs=<url>` remains the direct-image compatibility path and does not
+acquire integrity merely because its URL resembles a release URL.
+
+The resolver does not hardcode a first-party tap allowlist. A user may select a
+third-party public tap descriptor explicitly, but its repository, descriptor,
+and bytes remain untrusted input subject to the same validation and caps; they
+are not merged into first-party package or gallery trust. Node consumers use
+the same `resolveHomebrewVfsRelease()` implementation and can pass its verified
+`imageBytes` to `NodeKernelHost({ rootfsImage })`.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
