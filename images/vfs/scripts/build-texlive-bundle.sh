@@ -22,8 +22,9 @@ TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
 # snapshot of that year's final release; using it pins both halves of
 # the install (install-tl binary + the repository it pulls packages
 # from) to the same edition.
-TEXLIVE_INSTALL_URL="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final/install-tl-unx.tar.gz"
-TEXLIVE_REPOSITORY="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
+TEXLIVE_INSTALL_URL="https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final/install-tl-unx.tar.gz"
+TEXLIVE_INSTALL_SHA256="311df9f1477fd90c520159d1feddc2d6270f010d8349d1f6bdb9461a93b48a5c"
+TEXLIVE_REPOSITORY="https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
 
 TEXLIVE_DIR="$REPO_ROOT/packages/registry/texlive"
 HOST_PDFTEX="$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex"
@@ -51,6 +52,8 @@ if [ ! -d "$INSTALL_DIR/texmf-dist" ]; then
         curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
             -fsSL "$TEXLIVE_INSTALL_URL" \
             -o "/tmp/install-tl.tar.gz"
+        echo "==> Verifying install-tl sha256..."
+        echo "$TEXLIVE_INSTALL_SHA256  /tmp/install-tl.tar.gz" | shasum -a 256 -c -
         mkdir -p "$INSTALLER_DIR"
         tar xzf "/tmp/install-tl.tar.gz" -C "$INSTALLER_DIR" --strip-components=1
         rm "/tmp/install-tl.tar.gz"
