@@ -102,6 +102,7 @@ export function walkAndWrite(
 export interface SaveImageOptions {
   metadata?: VfsImageMetadata;
   kernelAbi?: number;
+  normalizeTimestampsMs?: number;
   skipWasmArtifactCheck?: boolean;
 }
 
@@ -205,7 +206,10 @@ export async function saveImage(
           kernelAbi,
           createdBy: "images/vfs/scripts/saveImage",
         };
-  const image = await fs.saveImage({ metadata });
+  const image = await fs.saveImage({
+    metadata,
+    normalizeTimestampsMs: options.normalizeTimestampsMs,
+  });
   // Level 19 — slow build, smaller download. Decompression speed is
   // unaffected by compression level, so this is a one-sided trade.
   const compressed = zstdCompressSync(image, {

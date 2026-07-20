@@ -9,20 +9,57 @@ set -euo pipefail
 #
 # Requires: host Erlang/OTP 28 in PATH (provided by scripts/dev-shell.sh).
 #
-# Output: erlang-install/bin/beam.smp.wasm + OTP libraries
+# Outputs: erlang.wasm plus a trimmed, relocatable OTP runtime archive.
+# Resolver and Homebrew callers own both the work and output directories.
 
-OTP_VERSION="${OTP_VERSION:-28.2}"
+OTP_VERSION="${WASM_POSIX_DEP_VERSION:-${OTP_VERSION:-28.2}}"
 OTP_TAG="OTP-${OTP_VERSION}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/erlang/otp/archive/refs/tags/${OTP_TAG}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-b984f9e02bb61637997a35daa9070ae8f41cea1667676416438c467fda3d141f}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+
+if [ "$TARGET_ARCH" != "wasm32" ]; then
+    echo "ERROR: Erlang/OTP currently supports only wasm32, got: $TARGET_ARCH" >&2
+    exit 1
+fi
+if ! [[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "ERROR: WASM_POSIX_DEP_SOURCE_SHA256 must be an exact lowercase sha256" >&2
+    exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/erlang-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/erlang-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/erlang-cross-build"
-INSTALL_DIR="$SCRIPT_DIR/erlang-install"
-SYSROOT="$REPO_ROOT/sysroot"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR}"
+ARTIFACT_DIR="$WORK_DIR/package-artifacts"
+SRC_DIR="$WORK_DIR/erlang-src"
+SOURCE_MARKER="$SRC_DIR/.kandelo-erlang-source"
+HOST_BUILD_DIR="$WORK_DIR/erlang-host-build"
+INSTALL_DIR="$WORK_DIR/erlang-install"
+DOWNLOAD_DIR="$WORK_DIR/downloads"
+SOURCE_ARCHIVE="$DOWNLOAD_DIR/otp-${OTP_VERSION}.tar.gz"
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+CONFIG_SITE="$WORK_DIR/config.site-wasm32-posix"
+
+mkdir -p "$WORK_DIR" "$OUT_DIR" "$ARTIFACT_DIR" "$DOWNLOAD_DIR"
+
+# Use the worktree-local SDK. A sealed publisher exposes the checkout and
+# sysroot read-only; every generated source, log, install tree, and package
+# output remains below the caller-owned work/output roots above.
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+PACKAGE_TAR=tar
+if command -v gtar >/dev/null 2>&1; then
+    PACKAGE_TAR=gtar
+fi
+PACKAGE_TAR_VERSION=$("$PACKAGE_TAR" --version 2>/dev/null | sed -n '1p')
+if [[ "$PACKAGE_TAR_VERSION" != *"GNU tar"* ]]; then
+    echo "ERROR: Erlang packaging requires GNU tar for deterministic archives" >&2
+    exit 1
+fi
 
 # --- Verify prerequisites ---
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -31,7 +68,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
@@ -49,19 +86,37 @@ fi
 
 echo "==> Host Erlang: OTP $HOST_OTP_REL ($(erl -eval 'io:format("~s", [erlang:system_info(version)]), halt().' -noshell))"
 
-# --- Download OTP source ---
+# --- Download and verify the exact declared OTP source ---
+EXPECTED_SOURCE_MARKER="${OTP_VERSION} ${SOURCE_URL} ${SOURCE_SHA256}"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$EXPECTED_SOURCE_MARKER" ]; then
+    echo "==> Existing OTP source does not match the declared identity; replacing it..."
+    rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$INSTALL_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Erlang/OTP ${OTP_VERSION}..."
-    TARBALL="otp_src_${OTP_VERSION}.tar.gz"
-    URL="https://github.com/erlang/otp/releases/download/${OTP_TAG}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    rm -f "$SOURCE_ARCHIVE"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+        -fsSL "$SOURCE_URL" -o "$SOURCE_ARCHIVE"
+    echo "$SOURCE_SHA256  $SOURCE_ARCHIVE" | shasum -a 256 -c -
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$SOURCE_ARCHIVE" -C "$SRC_DIR" --strip-components=1
+    printf '%s\n' "$EXPECTED_SOURCE_MARKER" > "$SOURCE_MARKER"
     echo "==> Source extracted to $SRC_DIR"
+else
+    # Reused caller-owned work roots still revalidate the cached source bytes.
+    if [ -f "$SOURCE_ARCHIVE" ]; then
+        echo "$SOURCE_SHA256  $SOURCE_ARCHIVE" | shasum -a 256 -c -
+    fi
 fi
 
 export ERL_TOP="$SRC_DIR"
+
+# Autoconf must be told both sides of the cross build. Derive the build
+# machine from OTP's own config.guess instead of baking in a runner-specific
+# Darwin or Linux triple. Without --build, configure can classify Kandelo's
+# permissively linked Wasm test executable as native and later try to execute
+# target-only build helpers such as yielding_c_fun on the publisher host.
+BUILD_TRIPLE="$("$SRC_DIR/make/autoconf/config.guess")"
 
 # --- Phase 1: Host bootstrap build ---
 # We use the system Erlang as bootstrap, but we need the source tree configured
@@ -87,7 +142,8 @@ if [ ! -f "$HOST_BUILD_DIR/bootstrap/bin/erlc" ]; then
 fi
 
 # --- Phase 2: Create config.site for cross-compilation ---
-CONFIG_SITE="$SCRIPT_DIR/config.site-wasm32-posix"
+# Keep the generated configure cache under the caller-owned work root. The
+# checked-in file documents the same answers but remains an immutable recipe.
 cat > "$CONFIG_SITE" << 'SITE_EOF'
 # config.site for Erlang/OTP cross-compilation to wasm32-posix
 #
@@ -288,8 +344,18 @@ echo "==> Created config.site: $CONFIG_SITE"
 echo "==> Phase 3: Cross-compiling Erlang/OTP for wasm32-posix..."
 cd "$SRC_DIR"
 
-# Clean build artifacts BUT preserve bootstrap (MAKE_CLEAN=clean, not make clean)
-make MAKE_CLEAN=clean 2>/dev/null || true
+# Clean target outputs while preserving the separately saved bootstrap tree.
+# MAKE_CLEAN is a recursive clean policy, not a make target; invoking make
+# with only that assignment silently rebuilds the previous configuration and
+# can retain stale objects across recipe/flag changes.
+make clean MAKE_CLEAN=clean >"$WORK_DIR/clean.log" 2>&1 || true
+# OTP source releases carry precompiled preloaded BEAM modules, and the top
+# clean target intentionally preserves them. They contain the release
+# producer's absolute source paths and would bypass this build's deterministic
+# compiler setting, so rebuild them from source with the saved native erlc.
+make -C erts/preloaded/src clean >>"$WORK_DIR/clean.log" 2>&1
+rm -rf "$INSTALL_DIR" "$ARTIFACT_DIR"
+mkdir -p "$INSTALL_DIR" "$ARTIFACT_DIR"
 
 # The key: OTP's cross-compilation needs --host to be a recognized config.sub triplet.
 # wasm32-unknown-wasi is recognized and closest to our platform.
@@ -300,11 +366,14 @@ AR="wasm32posix-ar" \
 RANLIB="wasm32posix-ranlib" \
 LD="wasm32posix-cc" \
 LDFLAGS="-Wl,--allow-multiple-definition" \
-CFLAGS="-O2 -DNO_JUMP_TABLE -fno-stack-protector -D__linux__ -D_GNU_SOURCE" \
+CFLAGS="-O2 -DNO_JUMP_TABLE -fno-stack-protector -D__linux__ -D_GNU_SOURCE \
+    -ffile-prefix-map=$SRC_DIR=/usr/src/erlang-otp-$OTP_VERSION \
+    -fdebug-prefix-map=$SRC_DIR=/usr/src/erlang-otp-$OTP_VERSION \
+    -fmacro-prefix-map=$SRC_DIR=/usr/src/erlang-otp-$OTP_VERSION" \
 LIBS="" \
 ./configure \
+    --build="$BUILD_TRIPLE" \
     --host=wasm32-unknown-wasi \
-    --build="$(uname -m)-apple-darwin" \
     --disable-jit \
     --disable-hipe \
     --without-termcap \
@@ -337,6 +406,7 @@ LIBS="" \
     --disable-kernel-poll \
     --disable-sctp \
     --disable-sharing-preserving \
+    --enable-deterministic-build \
     --prefix="$INSTALL_DIR" \
     erl_xcomp_sysroot="$SYSROOT" \
     erl_xcomp_bigendian=no \
@@ -353,7 +423,7 @@ LIBS="" \
     erl_xcomp_posix_memalign=yes \
     erl_xcomp_after_morecore_hook=no \
     erl_xcomp_code_model_small=no \
-    2>&1 | tee "$SCRIPT_DIR/configure.log" | tail -50
+    2>&1 | tee "$WORK_DIR/configure.log" | tail -50
 
 echo "==> Configure complete. Patching config.h files..."
 
@@ -419,12 +489,62 @@ print(f'Patched {count} defines in $config_h')
 }
 
 # Patch all config.h files generated by configure
-for ch in $(find "$SRC_DIR" -path "*/wasm32-unknown-wasi/config.h" 2>/dev/null); do
+while IFS= read -r -d '' ch; do
     patch_config_h "$ch"
-done
+done < <(find "$SRC_DIR" -path "*/wasm32-unknown-wasi/config.h" -print0 2>/dev/null)
 # Also patch the main ERTS config.h
 ERTS_CONFIG="$SRC_DIR/erts/wasm32-unknown-wasi/config.h"
 patch_config_h "$ERTS_CONFIG"
+
+# OTP deliberately records its complete compiler command line in config.h so
+# flag changes rebuild the emulator. That raw value includes the randomized
+# caller work root through generated -I flags. Preserve the rebuild sentinel
+# while replacing its user-visible diagnostic value with a stable identity;
+# the bottle must not retain a runner path.
+python3 - "$ERTS_CONFIG" "$OTP_VERSION" <<'PY'
+import re
+import sys
+
+path, version = sys.argv[1:]
+content = open(path, "r", encoding="utf-8").read()
+replacement = (
+    '#define ERTS_EMU_CMDLINE_FLAGS '
+    f'"Kandelo Erlang/OTP {version} wasm32 release build"'
+)
+content, count = re.subn(
+    r'^#define ERTS_EMU_CMDLINE_FLAGS .+$',
+    replacement,
+    content,
+    count=1,
+    flags=re.MULTILINE,
+)
+if count != 1:
+    raise SystemExit("ERTS_EMU_CMDLINE_FLAGS definition was not generated exactly once")
+open(path, "w", encoding="utf-8").write(content)
+PY
+
+# `erlang:system_info(compile_info)` embeds a generated copy of the literal
+# compiler/linker command lines. The prefix-map flags necessarily name this
+# invocation's private source root, even though Clang correctly rewrites all
+# compiled source/debug paths. Normalize only that user-facing build metadata
+# to a stable, truthful release description; actual CFLAGS in the Makefile are
+# unchanged and continue to drive compilation.
+EMU_MAKEFILE="$SRC_DIR/erts/emulator/wasm32-unknown-wasi/Makefile"
+python3 - "$EMU_MAKEFILE" "$OTP_VERSION" <<'PY'
+import sys
+
+path, version = sys.argv[1:]
+content = open(path, "r", encoding="utf-8").read()
+old = '-v CFLAGS "$(CFLAGS)" -v LDFLAGS "$(LDFLAGS)"'
+new = (
+    f'-v CFLAGS "Kandelo Erlang/OTP {version} wasm32 -O2 deterministic release" '
+    '-v LDFLAGS "Kandelo wasm32 release linker"'
+)
+count = content.count(old)
+if count != 2:
+    raise SystemExit(f"expected two OTP compile-info generator invocations, found {count}")
+open(path, "w", encoding="utf-8").write(content.replace(old, new))
+PY
 
 # Patch run_erl.c: LOG_ERR is NULL when syslog disabled, needs to be int
 RUN_ERL="$SRC_DIR/erts/etc/unix/run_erl.c"
@@ -442,35 +562,15 @@ if grep -q '    closelog();' "$EPMD_C" 2>/dev/null && ! grep -q 'HAVE_SYSLOG_H.*
     echo "==> Patched epmd.c closelog"
 fi
 
-# Patch sys_drivers.c: skip forker (fork+exec erl_child_setup) on wasm32
-SYS_DRIVERS="$SRC_DIR/erts/emulator/sys/unix/sys_drivers.c"
-if ! grep -q '__wasm32__' "$SYS_DRIVERS" 2>/dev/null; then
-    sed -i.bak '/forker_port = erts_drvport2id(port_num);/a\
-\
-#ifdef __wasm32__\
-    /* On wasm32, we cannot fork+exec erl_child_setup. */\
-    forker_fd = -1;\
-    return (ErlDrvData)port_num;\
-#endif\
-' "$SYS_DRIVERS"
-    echo "==> Patched sys_drivers.c to skip forker on wasm32"
-fi
-
 # Patch global.h: ESTACK/WSTACK explicit field initialization on wasm32.
 # LLVM's wasm32 backend miscompiles aggregate initialization of structs
-# containing pointers to shadow-stack local arrays at -O2.
+# containing pointers to shadow-stack local arrays at -O2. This is a compiler
+# portability boundary: the replacement performs the same field assignments
+# explicitly and does not change Kandelo syscall or POSIX behavior.
 GLOBAL_H="$SRC_DIR/erts/emulator/beam/global.h"
 if ! grep -q 'estack_make_default_' "$GLOBAL_H" 2>/dev/null; then
     python3 "$SCRIPT_DIR/patches/patch-global-h.py" "$GLOBAL_H"
     echo "==> Patched global.h ESTACK/WSTACK for wasm32"
-fi
-
-# Patch erl_db_util.c: Add wasm memory bounds checking to db_is_fully_bound.
-# Prevents OOB wasm traps when traversing corrupt Eterm values in ETS tables.
-DB_UTIL_C="$SRC_DIR/erts/emulator/beam/erl_db_util.c"
-if [ -f "$DB_UTIL_C" ] && ! grep -q 'wasm_db_ptr_valid' "$DB_UTIL_C"; then
-    python3 "$SCRIPT_DIR/patches/patch-db-bounds-check.py" "$DB_UTIL_C"
-    echo "==> Patched erl_db_util.c with wasm bounds checking"
 fi
 
 # Patch inet_drv.c and ram_file_drv.c: driver start function signatures.
@@ -526,8 +626,9 @@ fi
 
 # Patch Makefile: compile certain files at -O1.
 # LLVM's wasm32 backend miscompiles several BEAM files at -O2, causing
-# shadow-stack pointer corruption and incorrect aggregate initialization.
-EMU_MAKEFILE="$SRC_DIR/erts/emulator/wasm32-unknown-wasi/Makefile"
+# shadow-stack pointer corruption and incorrect aggregate initialization. Keep
+# this optimizer workaround bounded to the affected translation units; it must
+# not turn a runtime memory failure into synthetic success.
 if [ -f "$EMU_MAKEFILE" ] && ! grep -q 'erl_unicode.o:' "$EMU_MAKEFILE"; then
     sed -i.bak '/\$(OBJDIR)\/beam_emu\.o: beam\/emu\/beam_emu\.c/i\
 # wasm32: erl_unicode.c miscompiles at -O2 (iodata traversal returns garbage).\
@@ -553,7 +654,7 @@ fi
 echo "==> Starting build..."
 
 # Build
-make -j"$NPROC" 2>&1 | tee "$SCRIPT_DIR/build.log" | tail -50
+make -j"$NPROC" 2>&1 | tee "$WORK_DIR/build.log" | tail -50
 
 echo "==> Build complete. Creating release..."
 
@@ -561,12 +662,13 @@ echo "==> Build complete. Creating release..."
 make release RELEASE_ROOT="$INSTALL_DIR" 2>&1 | tail -20
 
 # Find the BEAM emulator
-BEAM_BIN=$(find "$INSTALL_DIR" -name "beam.smp" -o -name "beam" 2>/dev/null | head -1)
+BEAM_BIN=$(find "$INSTALL_DIR" -type f \( -name "beam.smp" -o -name "beam" \) -print -quit 2>/dev/null)
 if [ -n "$BEAM_BIN" ]; then
     echo "==> Erlang/OTP built successfully!"
     ls -lh "$BEAM_BIN"
-    cp "$BEAM_BIN" "$SCRIPT_DIR/beam.wasm"
-    echo "==> BEAM emulator: $SCRIPT_DIR/beam.wasm"
+    cp "$BEAM_BIN" "$ARTIFACT_DIR/erlang.wasm"
+    wasm-strip "$ARTIFACT_DIR/erlang.wasm"
+    echo "==> BEAM emulator: $ARTIFACT_DIR/erlang.wasm"
 else
     echo "==> Looking for BEAM in build tree..."
     find "$SRC_DIR/bin" "$SRC_DIR/erts" -name "beam*" -type f 2>/dev/null | head -10
@@ -577,45 +679,137 @@ fi
 echo "==> Erlang/OTP ${OTP_VERSION} build complete!"
 echo "==> Install directory: $INSTALL_DIR"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release. Multi-output: erlang.wasm
-# (renamed from beam.wasm) + erlang-otp.tar.zst. Both land under
-# local-binaries/programs/<arch>/erlang/ (multi-output subdir layout
-# matching the resolver's `place_binaries_symlinks` mirror).
-cp "$SCRIPT_DIR/beam.wasm" "$SCRIPT_DIR/erlang.wasm"
+# Validate and, when the real OTP forker imports fork(), instrument the final
+# BEAM module through Kandelo's normal continuation pipeline. The retired
+# wasm32 patch that disabled the forker is deliberately not applied.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary erlang "$SCRIPT_DIR/erlang.wasm"
+install_local_binary erlang "$ARTIFACT_DIR/erlang.wasm"
 
-# --- Pack OTP runtime tree for the erlang-vfs demo ---
-# erlang-vfs needs the compiled .beam files for the bundled OTP apps
-# (kernel, stdlib, erts, compiler) plus the boot script under
-# releases/28. These live in INSTALL_DIR after the cross build.
-# Bundle them as a second package output so a fetch-only checkout has
-# everything it needs without re-running this script.
+CURRENT_ABI=$(wasm_current_abi_version "$REPO_ROOT")
+prepare_runtime_wasm() {
+    local artifact="$1"
+    local instrumented
+    local artifact_abi
+
+    wasm-strip "$artifact"
+    if wasm_imports_kernel_fork "$artifact" && ! wasm_has_complete_fork_instrumentation "$artifact"; then
+        if wasm_has_any_wpk_fork_export "$artifact"; then
+            wasm_require_fork_instrumentation_if_needed "$artifact"
+            return 1
+        fi
+        instrumented=$(mktemp "$WORK_DIR/erlang-fork-instrument.XXXXXX.wasm")
+        "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$artifact" -o "$instrumented"
+        chmod 0755 "$instrumented"
+        mv "$instrumented" "$artifact"
+    fi
+    wasm_require_no_legacy_asyncify "$artifact"
+    wasm_require_fork_instrumentation_if_needed "$artifact"
+    artifact_abi=$(wasm_extract_abi_version "$artifact" || true)
+    if [ -z "$CURRENT_ABI" ] || [ "$artifact_abi" != "$CURRENT_ABI" ]; then
+        echo "ERROR: runtime helper ABI ${artifact_abi:-missing} does not match Kandelo ABI ${CURRENT_ABI:-missing}: $artifact" >&2
+        return 1
+    fi
+}
+
+# Fail before packaging if a compiler diagnostic or debug section retained a
+# caller checkout, work root, sysroot, or common CI scratch prefix.
+for forbidden in "$WORK_DIR" "$REPO_ROOT" "$SYSROOT" /private/tmp/ /Users/ /home/runner/work/ /home/runner/_work/ /nix/store/; do
+    if LC_ALL=C grep -aFq "$forbidden" "$ARTIFACT_DIR/erlang.wasm"; then
+        echo "ERROR: erlang.wasm embeds forbidden host path: $forbidden" >&2
+        exit 1
+    fi
+done
+
+# --- Pack the relocatable OTP runtime tree ---
+# The Homebrew keg and the legacy erlang-vfs image both consume this exact
+# output. It carries OTP applications and release boot files; executable ERTS
+# helpers are admitted only when they are valid Kandelo Wasm modules.
 echo "==> Packing OTP runtime tree (erlang-otp.tar.zst)..."
-OTP_STAGE=$(mktemp -d)
+OTP_STAGE=$(mktemp -d "$WORK_DIR/otp-stage.XXXXXX")
 trap 'rm -rf "$OTP_STAGE"' EXIT
-OTP_SUBDIRS=(
+OTP_APPS=(
     "lib/kernel-10.4.2"
     "lib/stdlib-7.1"
     "lib/erts-16.1.2"
     "lib/compiler-9.0.3"
-    "releases/28"
 )
-for sub in "${OTP_SUBDIRS[@]}"; do
-    src="$INSTALL_DIR/$sub"
-    if [ ! -d "$src" ]; then
-        echo "ERROR: expected OTP subdir not produced: $src" >&2
+for app in "${OTP_APPS[@]}"; do
+    if [ ! -d "$INSTALL_DIR/$app/ebin" ]; then
+        echo "ERROR: expected OTP application ebin not produced: $INSTALL_DIR/$app/ebin" >&2
         exit 1
     fi
-    mkdir -p "$OTP_STAGE/$(dirname "$sub")"
-    cp -R "$src" "$OTP_STAGE/$sub"
+    for component in ebin include priv; do
+        src="$INSTALL_DIR/$app/$component"
+        [ -d "$src" ] || continue
+        mkdir -p "$OTP_STAGE/$app"
+        cp -R "$src" "$OTP_STAGE/$app/$component"
+    done
 done
-OTP_TARBALL="$SCRIPT_DIR/erlang-otp.tar.zst"
+mkdir -p "$OTP_STAGE/releases"
+cp -R "$INSTALL_DIR/releases/28" "$OTP_STAGE/releases/28"
+
+# erlexec follows OTP's installed-tree contract and looks for the default boot
+# file at $ROOTDIR/bin/start.boot. `make release` leaves the release-specific
+# files below releases/28 and expects the final Install step to populate bin/.
+# Materialize the minimal (non-SASL) boot selection in the relocatable archive
+# without running Install, whose generated host shell launchers are not target
+# executables and would bake the private release root into the package.
+mkdir -p "$OTP_STAGE/bin"
+cp "$INSTALL_DIR/releases/28/start_clean.boot" "$OTP_STAGE/bin/start.boot"
+cp "$INSTALL_DIR/releases/28/start_clean.boot" "$OTP_STAGE/bin/start_clean.boot"
+cp "$INSTALL_DIR/releases/28/start_clean.script" "$OTP_STAGE/bin/start.script"
+cp "$INSTALL_DIR/releases/28/start_clean.script" "$OTP_STAGE/bin/start_clean.script"
+cp "$INSTALL_DIR/releases/28/no_dot_erlang.boot" "$OTP_STAGE/bin/no_dot_erlang.boot"
+
+ERTS_RUNTIME_DIR=$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -type d -name 'erts-*' -print -quit)
+if [ -z "$ERTS_RUNTIME_DIR" ] || [ ! -d "$ERTS_RUNTIME_DIR/bin" ]; then
+    echo "ERROR: OTP release did not produce its ERTS runtime bin directory" >&2
+    exit 1
+fi
+ERTS_RUNTIME_NAME=$(basename "$ERTS_RUNTIME_DIR")
+mkdir -p "$OTP_STAGE/$ERTS_RUNTIME_NAME/bin"
+while IFS= read -r -d '' helper; do
+    if ! wasm_is_binary "$helper"; then
+        continue
+    fi
+    staged="$OTP_STAGE/$ERTS_RUNTIME_NAME/bin/$(basename "$helper")"
+    cp "$helper" "$staged"
+    chmod 0755 "$staged"
+    prepare_runtime_wasm "$staged"
+done < <(find "$ERTS_RUNTIME_DIR/bin" -maxdepth 1 -type f -print0)
+
+if [ ! -x "$OTP_STAGE/$ERTS_RUNTIME_NAME/bin/erl_child_setup" ]; then
+    echo "ERROR: OTP release did not produce a Kandelo erl_child_setup helper" >&2
+    exit 1
+fi
+
+while IFS= read -r -d '' runtime_file; do
+    for forbidden in "$WORK_DIR" "$REPO_ROOT" "$SYSROOT" /private/tmp/ /Users/ /home/runner/work/ /home/runner/_work/ /nix/store/; do
+        if LC_ALL=C grep -aFq "$forbidden" "$runtime_file"; then
+            echo "ERROR: OTP runtime file embeds forbidden host path: $runtime_file ($forbidden)" >&2
+            exit 1
+        fi
+    done
+done < <(find "$OTP_STAGE" -type f -print0)
+
+OTP_TARBALL="$ARTIFACT_DIR/erlang-otp.tar.zst"
 rm -f "$OTP_TARBALL"
-tar --zstd -cf "$OTP_TARBALL" -C "$OTP_STAGE" .
+"$PACKAGE_TAR" --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+    --pax-option=delete=atime,delete=ctime --zstd -cf "$OTP_TARBALL" -C "$OTP_STAGE" .
 
 OTP_SIZE=$(wc -c < "$OTP_TARBALL" | tr -d ' ')
 echo "==> erlang-otp.tar.zst: $(echo "$OTP_SIZE" | numfmt --to=iec 2>/dev/null || echo "${OTP_SIZE} bytes")"
 
 install_local_binary erlang "$OTP_TARBALL"
+
+# Direct developer builds historically leave convenient copies beside the
+# recipe. Resolver and Homebrew callers instead receive the exact same bytes
+# through install_local_binary's caller-owned output contract above.
+if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$ARTIFACT_DIR/erlang.wasm" "$OUT_DIR/erlang.wasm"
+    cp "$OTP_TARBALL" "$OUT_DIR/erlang-otp.tar.zst"
+fi

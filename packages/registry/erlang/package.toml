@@ -1,10 +1,10 @@
 kind = "program"
 name = "erlang"
 version = "28.2"
-# rev2: package now ships erlang.wasm + erlang-otp.tar.zst (the trimmed
-# OTP runtime tree erlang-vfs needs). Multi-output, so artifacts land
+# rev3: the caller-owned build ships erlang.wasm + erlang-otp.tar.zst (the
+# trimmed OTP runtime tree Homebrew and erlang-vfs need). Multi-output artifacts land
 # under programs/<arch>/erlang/ instead of programs/<arch>/erlang.wasm.
-kernel_abi = 7
+kernel_abi = 41
 depends_on = []
 
 [source]
@@ -21,6 +21,7 @@ script_path = "packages/registry/erlang/build-erlang.sh"
 [[outputs]]
 name = "erlang"
 wasm = "erlang.wasm"
+fork_instrumentation = "auto"
 
 [[outputs]]
 name = "erlang-otp"

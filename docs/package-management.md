@@ -307,6 +307,40 @@ browser-gallery wording.
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.
 
+### Erlang/OTP target runtime contract
+
+The `erlang` package cross-builds OTP; the Erlang executable in the developer
+shell is a native OTP 28 bootstrap tool and is never a target artifact. The
+recipe produces two coupled outputs: the fork-instrumented `erlang.wasm` BEAM
+emulator and `erlang-otp.tar.zst`, a relocatable core OTP tree. The archive
+contains the kernel, stdlib, erts, and compiler applications, release boot
+files, the installed `$ROOTDIR/bin/start.boot` contract, and target ERTS
+helpers such as `erlexec` and `erl_child_setup`. Every Wasm helper carries the
+package's declared Kandelo ABI and passes the ordinary artifact guards.
+
+OTP's forker is part of the supported runtime path. Do not restore the retired
+wasm32 patch that disabled it, and do not make allocator or database bounds
+failures return synthetic success. BEAM starts the real forker, forks, and
+execs `erl_child_setup`; Node validation must observe that descendant. The
+remaining source changes are bounded compiler/portability workarounds (selected
+translation units at `-O1`, explicit shadow-stack aggregate initialization,
+and Wasm `call_indirect`-compatible driver signatures), not substitutes for
+Kandelo POSIX behavior.
+
+The trimmed core tree is an OTP embedded release. Launch it with
+`-mode embedded`; its packaged modules are loaded from the release boot tree
+instead of interactive code-server autoloading. This is not a claim that a
+complete interactive OTP installation or every optional OTP application is
+supported. A Homebrew Formula must test the exact keg through `erlexec` in
+both the generic Node and Chromium runners, and the Node proof must require the
+fork descendant rather than accepting output as a proxy for process exit.
+
+`erlang-vfs` consumes `erlang`'s declared runtime archive through the resolver;
+it does not read a recipe-directory install tree or user cache. The VFS image
+copies the complete archive under `/usr/local/lib/erlang`, preserves executable
+modes, includes ABI metadata, and therefore contains the same BEAM and forker
+helper bytes tested by the package and Formula paths.
+
 ### `arches`
 
 `arches = ["wasm32", "wasm64"]` declares which target architectures

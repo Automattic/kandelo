@@ -1,20 +1,18 @@
 kind = "program"
 name = "erlang-vfs"
 version = "0.1.0"
-kernel_abi = 7
-# Implicit dep: build-erlang-vfs-image.ts reads the OTP runtime files
-# from `packages/registry/erlang/erlang-install/` — populated as a side
-# effect of `build-erlang.sh`. Without this declaration a clean
-# source-build (e.g., during manual force-rebuild) fails. Folds
-# erlang's cache_key into ours so an erlang bump invalidates the
-# erlang-vfs cache.
+kernel_abi = 41
+# The resolver supplies erlang's declared `erlang-otp.tar.zst` output to this
+# transaction. The VFS build never reads a recipe-directory side effect or a
+# user cache. Folding erlang's cache key into this package also guarantees a
+# fresh image whenever the target runtime changes.
 depends_on = ["erlang@28.2"]
 
 # Pre-built VFS image containing Erlang/OTP 28 runtime files (kernel,
 # stdlib, erts, compiler, release boot scripts). Source at
 # images/vfs/scripts/build-erlang-vfs-image.ts.
 [source]
-url = "https://github.com/brandonpayton/kandelo"
+url = "https://github.com/Automattic/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
