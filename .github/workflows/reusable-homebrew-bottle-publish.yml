@@ -2696,7 +2696,7 @@ jobs:
               playwright_args=(
                 test test/kandelo-homebrew.spec.ts
                 --project=chromium
-                --grep "^Homebrew hello VFS image boots"
+                --grep "Homebrew hello VFS image boots in browser and runs hello --version$"
                 --reporter=json
               )
               export KANDELO_PLAYWRIGHT_PORT="$browser_port"

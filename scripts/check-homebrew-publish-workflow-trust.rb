@@ -24,7 +24,7 @@ PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "e718bb1228d750954ddb8150a7a2714d376f19b55b87965ea6ed8b8e997186c4"
+PUBLISHER_VERIFY_DIGEST = "f19c535fb80919e46fee438ba873b5124cb6af67a6a28e0034135327703b12f8"
 PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
 PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -3228,6 +3228,12 @@ def check_publisher(workflow)
   end
   browser_run = named_step(verify_steps,
                            "Build and strictly smoke the hello browser image").fetch("run")
+  hello_browser_test_title =
+    "Homebrew hello VFS image boots in browser and runs hello --version"
+  hello_browser_test_selector = "#{hello_browser_test_title}$"
+  hello_browser_test_source = File.read(
+    File.join(REPO_ROOT, "apps/browser-demos/test/kandelo-homebrew.spec.ts")
+  )
   [
     "bash -s <<'KANDELO_HOMEBREW_BROWSER_SMOKE'",
     "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
@@ -3239,6 +3245,9 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(browser_run.include?(fragment), "publisher strict browser smoke lacks #{fragment}")
   end
+  check(hello_browser_test_source.include?(%{test("#{hello_browser_test_title}", async}) &&
+        browser_run.include?(%{--grep "#{hello_browser_test_selector}"}),
+        "publisher strict browser smoke does not select its exact fully qualified Playwright test")
   check(!browser_run.include?("bash -c '"),
         "publisher strict browser smoke exposes its inner script to outer shell expansion")
   check(browser_run.scan("npx playwright install chromium --with-deps").length == 1 &&
