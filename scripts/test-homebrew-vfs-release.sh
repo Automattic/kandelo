@@ -304,14 +304,26 @@ if args[:2] == ["api", "--include"]:
         print("HTTP/1.1 404 Not Found\n")
         sys.exit(1)
     if "/releases/tags/" in endpoint:
+        if state["draft"]:
+            print("HTTP/1.1 404 Not Found\n")
+            sys.exit(1)
+        print("HTTP/1.1 200 OK\n")
+        print(json.dumps(release_json(state)))
+    elif "/releases/" in endpoint:
         print("HTTP/1.1 200 OK\n")
         print(json.dumps(release_json(state)))
     elif "/git/ref/tags/" in endpoint:
+        if state["draft"]:
+            print("HTTP/1.1 404 Not Found\n")
+            sys.exit(1)
         print("HTTP/1.1 200 OK\n")
         print(json.dumps({"ref": "refs/tags/" + state["tag"], "object": {"type": state.get("tag_type", "commit"), "sha": state.get("tag_sha", state["target"])}}))
     else:
         print("HTTP/1.1 404 Not Found\n")
         sys.exit(1)
+elif args[:3] == ["api", "--paginate", "--slurp"]:
+    state = load()
+    print(json.dumps([[release_json(state)]] if state is not None else [[]]))
 elif args[:3] == ["api", "--method", "POST"]:
     fields = {arg.split("=", 1)[0][2:]: arg.split("=", 1)[1] for arg in args if arg.startswith(("-f", "-F")) and "=" in arg}
     # gh receives -f and its value as separate arguments; parse those too.

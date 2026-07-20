@@ -118,13 +118,52 @@ export STATE_LOCK_OWNER_DETAIL="immutable Homebrew VFS ${FORMULA}/wasm32"
 )
 
 release_json="$TMP_ROOT/release.json"
-refresh_release() {
+release_id=""
+
+refresh_public_release() {
   GITHUB_API_CONTEXT=homebrew-publish-vfs-release \
     github_api_get_json "/repos/${TAP_REPOSITORY}/releases/tags/${tag}" "$release_json"
 }
 
+refresh_release() {
+  [ -n "$release_id" ] || {
+    echo "homebrew-publish-vfs-release: release id is unavailable" >&2
+    return 2
+  }
+  GITHUB_API_CONTEXT=homebrew-publish-vfs-release \
+    github_api_get_json "/repos/${TAP_REPOSITORY}/releases/${release_id}" "$release_json"
+}
+
+discover_draft_release() {
+  local pages="$TMP_ROOT/releases-pages.json"
+  local matches="$TMP_ROOT/releases-matches.json"
+  fetch_release_pages() {
+    gh api --paginate --slurp \
+      "/repos/${TAP_REPOSITORY}/releases?per_page=100" >"$pages" &&
+      jq -e 'type == "array" and all(.[]; type == "array")' "$pages" >/dev/null
+  }
+  retry fetch_release_pages || return 1
+  jq --arg tag "$tag" '[.[][] | select(.tag_name == $tag)]' \
+    "$pages" >"$matches"
+  case "$(jq -r 'length' "$matches")" in
+    0) return 44 ;;
+    1) jq '.[0]' "$matches" >"$release_json" ;;
+    *)
+      echo "homebrew-publish-vfs-release: release tag resolves to multiple releases" >&2
+      return 1
+      ;;
+  esac
+}
+
 release_rc=0
-refresh_release || release_rc=$?
+refresh_public_release || release_rc=$?
+if [ "$release_rc" -eq 44 ]; then
+  # GitHub's release-by-tag endpoint deliberately hides drafts. Search the
+  # authenticated release list before creating anything so an interrupted
+  # publication can resume from its exact draft.
+  release_rc=0
+  discover_draft_release || release_rc=$?
+fi
 if [ "$release_rc" -eq 44 ]; then
   create_json="$TMP_ROOT/create.json"
   if ! retry gh api --method POST "/repos/${TAP_REPOSITORY}/releases" \
@@ -135,12 +174,22 @@ if [ "$release_rc" -eq 44 ]; then
     -f make_latest=false \
     -F draft=true -F prerelease=false >"$create_json"
   then
-    # A lost create response is accepted only if the exact draft is now readable.
-    :
+    # A lost create response is accepted only if the exact draft is now
+    # discoverable through the authenticated release list.
+    release_rc=0
+    discover_draft_release || release_rc=$?
+  else
+    cp "$create_json" "$release_json"
+    release_rc=0
   fi
-  release_rc=0
-  refresh_release || release_rc=$?
 fi
+if [ "$release_rc" -ne 0 ]; then
+  echo "homebrew-publish-vfs-release: release state is uncertain" >&2
+  exit 1
+fi
+release_id="$(jq -er '.id | select(type == "number" and . > 0)' "$release_json")"
+release_rc=0
+refresh_release || release_rc=$?
 if [ "$release_rc" -ne 0 ]; then
   echo "homebrew-publish-vfs-release: release state is uncertain" >&2
   exit 1
@@ -182,7 +231,9 @@ validate_tag_target() {
     return 1
   }
 }
-validate_tag_target
+if [ "$(jq -r '.draft' "$release_json")" = false ]; then
+  validate_tag_target
+fi
 
 expected_names="$TMP_ROOT/expected-names.json"
 printf '%s\n' \
@@ -266,7 +317,6 @@ expected_names_value="$(jq -c . "$expected_names")"
 
 release_id="$(jq -er '.id' "$release_json")"
 if [ "$(jq -r '.draft' "$release_json")" = true ]; then
-  validate_tag_target
   if ! retry gh api --method PATCH "/repos/${TAP_REPOSITORY}/releases/${release_id}" \
     -f make_latest=false -F draft=false -F prerelease=false >/dev/null
   then
