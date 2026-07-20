@@ -22,9 +22,9 @@ DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a54
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "d4ad1ba3a3decdef5a6d32811c2e4eae1f79873b4bdb42cfa9207735c725ace7"
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
-PUBLISHER_UPLOAD_DIGEST = "c676e11e5f6b0b43289d9bf72ef1a1df049dbad3f65e7c62441a27860341aacc"
+PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "70d0a74c5c2cb7320acfba52be3e7ed874e329a801659d0e665cb2c8d5f08791"
-PUBLISHER_VERIFY_DIGEST = "bdbe364bafcc7e7e32305e6e19b0d95acffbdbb64dc2f3b37b12d39e042273bd"
+PUBLISHER_VERIFY_DIGEST = "c7354c3c13cecb28cbef5eb460ec7a49189af64af8e9e57ab3163f81ba5599e3"
 PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -1364,7 +1364,7 @@ def check_publisher(workflow)
         "dev shell globally preserves Homebrew resolved-tap state and invalidates package caches")
   resolved_taps_forwarding =
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
-  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 12,
+  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 14,
         "publisher does not explicitly carry immutable resolved taps across every consuming dev-shell boundary")
   check(!dev_shell.include?("--keep KANDELO_HOMEBREW_TAP_NAME"),
         "dev shell globally preserves caller-selected Homebrew tap identity")
@@ -2581,7 +2581,11 @@ def check_publisher(workflow)
   check_forbidden_root_args(upload_validate.fetch("run"),
                             "publisher uploader handoff validation", trusted_runner_roots)
   upload_receipt_validation = named_step(upload_steps, "Revalidate upload receipt as data")
-  check_forbidden_root_args(upload_receipt_validation.fetch("run"),
+  upload_receipt_validation_run = upload_receipt_validation.fetch("run")
+  check(upload_receipt_validation_run.include?("bash scripts/dev-shell.sh env \\") &&
+        upload_receipt_validation_run.include?(resolved_taps_forwarding),
+        "publisher uploader receipt validation drops immutable resolved taps at the dev-shell boundary")
+  check_forbidden_root_args(upload_receipt_validation_run,
                             "publisher uploader receipt validation", trusted_runner_roots)
   build_handoff_validator = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-validate-build-handoff.sh")
@@ -2878,6 +2882,9 @@ def check_publisher(workflow)
           run.include?('--out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"'),
           "publisher does not reconstruct canonical bottle JSON")
   end
+  check(canonical_receipt.include?("bash scripts/dev-shell.sh env \\") &&
+        canonical_receipt.include?(resolved_taps_forwarding),
+        "publisher verifier receipt validation drops immutable resolved taps at the dev-shell boundary")
   check_forbidden_root_args(canonical_build,
                             "publisher verifier handoff validation", trusted_runner_roots)
   check_forbidden_root_args(canonical_receipt,

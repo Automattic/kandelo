@@ -1367,7 +1367,9 @@ jobs:
             --forbidden-root "$RUNNER_TEMP"
             --forbidden-root "/home/kandelo-homebrew-build"
           )
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
 
       - name: Upload strict upload receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -1971,7 +1973,9 @@ jobs:
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
             receipt_args+=(--allow-dry-run)
           fi
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
 
       - name: Validate exact public Homebrew index traversal without credentials
         if: ${{ !inputs.dry-run && steps.index-publication.outcome == 'success' }}

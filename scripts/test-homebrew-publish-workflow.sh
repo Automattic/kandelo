@@ -601,6 +601,8 @@ make_build_handoff() {
   local bottle_stage="$source_dir/stage/hello/2.12.1"
   local tap_repository="${BUILD_HANDOFF_TAP_REPOSITORY:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${BUILD_HANDOFF_TAP_NAME:-kandelo-dev/tap-core}"
+  local tap_commit="${BUILD_HANDOFF_TAP_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  local kandelo_commit="${BUILD_HANDOFF_KANDELO_COMMIT:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
   local bottle_root="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
   local formula_key="${tap_name}/hello"
   local formula_path="Library/Taps/${tap_name%%/*}/homebrew-${tap_name#*/}/Formula/hello.rb"
@@ -639,6 +641,7 @@ EOF
   sha256="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
   jq -n --arg sha256 "$sha256" --arg formula_key "$formula_key" \
     --arg formula_path "$formula_path" --arg bottle_root "$bottle_root" \
+    --arg tap_commit "$tap_commit" \
     --slurpfile receipt "$bottle_stage/INSTALL_RECEIPT.json" '{
     ($formula_key): {
       formula: {
@@ -646,7 +649,7 @@ EOF
         path: $formula_path,
         pkg_version: "2.12.1",
         tap_git_path: "Formula/hello.rb",
-        tap_git_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        tap_git_revision: $tap_commit,
         desc: "this artifact-only field must not reach Homebrew merge"
       },
       bottle: {
@@ -678,13 +681,13 @@ EOF
     cp "$dependency_provenance_source" "$dependency_provenance"
   else
     jq -nS --arg tap_repository "$tap_repository" --arg tap_name "$tap_name" \
-      --arg bottle_root "$bottle_root" '{
+      --arg tap_commit "$tap_commit" --arg bottle_root "$bottle_root" '{
       schema: 2,
       formula: "hello",
       arch: "wasm32",
       tap_repository: $tap_repository,
       tap_name: $tap_name,
-      tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      tap_commit: $tap_commit,
       bottle_root_url: $bottle_root,
       bottle_tag: "wasm32_kandelo",
       dependencies: []
@@ -697,8 +700,8 @@ EOF
     --release-tag bottles-abi-v18 \
     --tap-repository "$tap_repository" \
     --tap-name "$tap_name" \
-    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --tap-commit "$tap_commit" \
+    --kandelo-commit "$kandelo_commit" \
     --bottle-root-url "$bottle_root" \
     --bottle "$bottle" \
     --bottle-json "$bottle_json" \
@@ -801,14 +804,25 @@ make_dry_upload_receipt() {
   local handoff="$1" receipt="$2"
   local mode="${3:-dry-run}"
   local sha256 bytes url layout canonical_sha
+  local bottle_root tap_repository tap_repository_lower tap_name tap_commit kandelo_commit
   sha256="$(jq -er '.bottle.sha256' "$handoff/manifest.json")"
   bytes="$(jq -er '.bottle.bytes' "$handoff/manifest.json")"
-  url="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:$sha256"
+  bottle_root="$(jq -er '.bottle_root_url' "$handoff/manifest.json")"
+  tap_repository="$(jq -er '.tap_repository' "$handoff/manifest.json")"
+  tap_repository_lower="$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
+  tap_name="$(jq -er '.tap_name' "$handoff/manifest.json")"
+  tap_commit="$(jq -er '.tap_commit' "$handoff/manifest.json")"
+  kandelo_commit="$(jq -er '.kandelo_commit' "$handoff/manifest.json")"
+  url="$bottle_root/hello/blobs/sha256:$sha256"
   layout="${receipt}.layout"
   jq -nS \
     --arg sha256 "$sha256" \
     --argjson bytes "$bytes" \
-    --arg url "$url" '{
+    --arg url "$url" \
+    --arg tap_repository "$tap_repository" \
+    --arg tap_name "$tap_name" \
+    --arg tap_commit "$tap_commit" \
+    --arg kandelo_commit "$kandelo_commit" '{
       schema: 2,
       kind: "child",
       formula: "hello",
@@ -820,10 +834,10 @@ make_dry_upload_receipt() {
       formula_source_sha256: ("1" * 64),
       formula_source_identity_sha256: ("2" * 64),
       source_closure_sha256: ("3" * 64),
-      tap_repository: "kandelo-dev/homebrew-tap-core",
-      tap_name: "kandelo-dev/tap-core",
-      tap_commit: ("a" * 40),
-      kandelo_commit: ("b" * 40),
+      tap_repository: $tap_repository,
+      tap_name: $tap_name,
+      tap_commit: $tap_commit,
+      kandelo_commit: $kandelo_commit,
       top_ref: "2.12.1",
       bottle: {sha256: $sha256, bytes: $bytes, url: $url},
       oci: {
@@ -843,16 +857,19 @@ make_dry_upload_receipt() {
   jq -nS \
     --slurpfile layout "$layout" \
     --arg canonical_sha "$canonical_sha" \
+    --arg tap_repository "$tap_repository" \
+    --arg tap_repository_lower "$tap_repository_lower" \
+    --arg tap_name "$tap_name" \
     --arg mode "$mode" '{
       schema: 3,
       kind: "child",
       formula: "hello",
-      tap_repository: "kandelo-dev/homebrew-tap-core",
-      tap_name: "kandelo-dev/tap-core",
+      tap_repository: $tap_repository,
+      tap_name: $tap_name,
       layout: $layout[0],
       layout_receipt_sha256: $canonical_sha,
       publication: {
-        remote: "ghcr.io/kandelo-dev/homebrew-tap-core/hello",
+        remote: ("ghcr.io/" + $tap_repository_lower + "/hello"),
         reference: ("sha256-" + ("6" * 64)),
         digest: ("sha256:" + ("6" * 64)),
         previous_digest: null,
@@ -1351,6 +1368,143 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --allow-dry-run >/dev/null 2>&1; then
     fail "upload receipt validator accepted a receipt larger than 64 KiB"
   fi
+}
+
+assert_cross_tap_upload_receipt_survives_dev_shell() {
+  local root="$TMPDIR/cross-tap-upload-receipt"
+  local primary="$root/primary"
+  local dependency="$root/core"
+  local provenance="$root/dependency-provenance.json"
+  local handoff="$root/handoff"
+  local receipt="$root/upload-receipt.json"
+  local resolved_taps="$root/resolved-taps.json"
+  local primary_commit dependency_commit formula_sha nix_bin candidate
+
+  make_tap "$dependency"
+  cat >"$dependency/Formula/dash.rb" <<'EOF'
+class Dash < Formula
+  desc "Cross-tap receipt fixture"
+end
+EOF
+  git -C "$dependency" add Formula/dash.rb
+  git -C "$dependency" commit -q -m "add exact dependency Formula"
+  dependency_commit="$(git -C "$dependency" rev-parse HEAD)"
+
+  make_tap "$primary"
+  cat >"$primary/Formula/hello.rb" <<'EOF'
+class Hello < Formula
+  desc "External tap consumer fixture"
+  depends_on "kandelo-dev/tap-core/dash"
+end
+EOF
+  jq -nS --arg dependency_commit "$dependency_commit" '{
+    schema: 1,
+    taps: [{
+      tap_name: "kandelo-dev/tap-core",
+      tap_repository: "kandelo-dev/homebrew-tap-core",
+      tap_commit: $dependency_commit
+    }]
+  }' >"$primary/Kandelo/dependency-taps.json"
+  git -C "$primary" add Formula/hello.rb Kandelo/dependency-taps.json
+  git -C "$primary" commit -q -m "declare exact core tap dependency"
+  primary_commit="$(git -C "$primary" rev-parse HEAD)"
+
+  python3 "$REPO_ROOT/scripts/homebrew-dependency-taps.py" resolve \
+    --tap-root "$primary" \
+    --tap-name example/tools \
+    --tap-repository example/homebrew-tools \
+    --tap-commit "$primary_commit" \
+    --dependency-root "kandelo-dev/tap-core=$dependency" \
+    --out "$resolved_taps"
+
+  formula_sha="$(sha256sum "$dependency/Formula/dash.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$dependency/Formula/dash.rb" | awk '{print $1}')"
+  jq -nS \
+    --arg primary_commit "$primary_commit" \
+    --arg dependency_commit "$dependency_commit" \
+    --arg formula_sha "$formula_sha" '{
+      schema: 3,
+      formula: "hello",
+      arch: "wasm32",
+      tap_repository: "example/homebrew-tools",
+      tap_name: "example/tools",
+      tap_commit: $primary_commit,
+      bottle_root_url: "https://ghcr.io/v2/example/homebrew-tools",
+      bottle_tag: "wasm32_kandelo",
+      dependencies: [{
+        name: "dash",
+        full_name: "kandelo-dev/tap-core/dash",
+        version: "0.5.12",
+        declared_directly: true,
+        formula: {
+          path: "Formula/dash.rb",
+          sha256: $formula_sha
+        },
+        bottle: {
+          cellar: "any_skip_relocation",
+          rebuild: 0,
+          sha256: ("c" * 64),
+          tag: "wasm32_kandelo",
+          url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + ("c" * 64))
+        },
+        receipt: {
+          built_as_bottle: true,
+          homebrew_version: "4.4.0",
+          installed_on_request: false,
+          path: "Cellar/dash/0.5.12/INSTALL_RECEIPT.json",
+          poured_from_bottle: true,
+          sha256: ("d" * 64),
+          source_tap: "kandelo-dev/tap-core",
+          source_tap_git_head: $dependency_commit
+        },
+        install_log: {
+          fetch: ["==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/manifests/0.5.12"],
+          pour: ["==> Pouring dash--0.5.12.wasm32_kandelo.bottle.tar.gz"],
+          source_build_absent: true
+        },
+        origin: {
+          bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+          tap_commit: $dependency_commit,
+          tap_name: "kandelo-dev/tap-core",
+          tap_repository: "kandelo-dev/homebrew-tap-core"
+        }
+      }]
+    }' >"$provenance"
+
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE="$provenance" \
+    BUILD_HANDOFF_TAP_REPOSITORY=example/homebrew-tools \
+    BUILD_HANDOFF_TAP_NAME=example/tools \
+    BUILD_HANDOFF_TAP_COMMIT="$primary_commit" \
+    make_build_handoff "$handoff"
+  make_dry_upload_receipt "$handoff" "$receipt"
+
+  nix_bin="$(command -v nix || true)"
+  if [ -z "$nix_bin" ]; then
+    for candidate in /nix/var/nix/profiles/default/bin/nix "$HOME/.nix-profile/bin/nix"; do
+      if [ -x "$candidate" ]; then
+        nix_bin="$candidate"
+        break
+      fi
+    done
+  fi
+  [ -n "$nix_bin" ] || fail "cannot exercise cross-tap receipt validation through the dev shell"
+
+  PATH="$(dirname "$nix_bin"):$PATH" \
+    bash "$REPO_ROOT/scripts/dev-shell.sh" env \
+      KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+      bash "$REPO_ROOT/scripts/homebrew-validate-upload-receipt.sh" \
+        --receipt "$receipt" \
+        --handoff "$handoff" \
+        --formula hello \
+        --arch wasm32 \
+        --release-tag bottles-abi-v18 \
+        --tap-repository example/homebrew-tools \
+        --tap-name example/tools \
+        --tap-commit "$primary_commit" \
+        --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        --bottle-root-url https://ghcr.io/v2/example/homebrew-tools \
+        --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+        --allow-dry-run >/dev/null
 }
 
 make_publish_dependency_provenance() {
@@ -5594,6 +5748,7 @@ assert_generic_tap_build_handoff_identity
 assert_build_handoff_is_minimal_and_validated
 assert_build_handoff_rejects_untrusted_content
 assert_upload_receipt_is_bound_to_build_handoff
+assert_cross_tap_upload_receipt_survives_dev_shell
 assert_publish_handoff_is_exact_inert_data
 assert_stale_bottle_rebuild_cannot_rewind_publication
 assert_publish_dependencies_are_source_bound
