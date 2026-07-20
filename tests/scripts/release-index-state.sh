@@ -77,6 +77,14 @@ case "$command_name" in
       exit 0
     fi
     if [[ "$endpoint" =~ /releases/([0-9]+)/assets\?per_page=([0-9]+)\&page=([0-9]+)$ ]]; then
+      if [ -f "$GH_STATE/asset-list-failures" ]; then
+        remaining=$(cat "$GH_STATE/asset-list-failures")
+        if [ "$remaining" -gt 0 ]; then
+          printf '%s\n' $((remaining - 1)) > "$GH_STATE/asset-list-failures"
+          printf '{"message":"temporary asset listing failure"}\n'
+          exit 1
+        fi
+      fi
       per="${BASH_REMATCH[2]}"; page="${BASH_REMATCH[3]}"
       all="$GH_STATE/all-assets.json"
       shopt -s nullglob
@@ -229,6 +237,20 @@ after=$(store_fingerprint "$STORE")
 [ "$before" = "$after" ]
 [ "$(cat "$TMP_ROOT/managed-snapshot.head")" = "$OLD_SHA" ]
 cmp "$OLD" "$TMP_ROOT/managed-snapshot.toml"
+
+# A failed GitHub API attempt can write a JSON error body to stdout. Retry
+# only exposes the successful attempt, so the error object cannot be combined
+# with the later asset array and misread as release state.
+STORE="$TMP_ROOT/transient-asset-list"
+cp -R "$TMP_ROOT/baseline" "$STORE"
+printf '2\n' > "$STORE/asset-list-failures"
+snapshot_state "$STORE" "$TMP_ROOT/transient.toml" "$TMP_ROOT/transient.head" \
+  >"$TMP_ROOT/transient.out" 2>"$TMP_ROOT/transient.err"
+[ "$(cat "$STORE/asset-list-failures")" = 0 ]
+[ "$(cat "$TMP_ROOT/transient.head")" = "$OLD_SHA" ]
+cmp "$OLD" "$TMP_ROOT/transient.toml"
+[ ! -s "$TMP_ROOT/transient.out" ]
+[ "$(grep -c 'GitHub command failed; retrying' "$TMP_ROOT/transient.err")" = 2 ]
 
 # Every process-death boundary converges on retry. Before the WAL, the old
 # head remains authoritative; at and after the WAL, recovery rolls forward.

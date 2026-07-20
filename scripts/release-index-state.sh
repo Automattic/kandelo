@@ -104,10 +104,18 @@ failpoint() {
 }
 
 gh_retry() {
-  local attempt=1 delay="$RETRY_DELAY_SECONDS"
+  local attempt=1 delay="$RETRY_DELAY_SECONDS" attempt_output
+  attempt_output=$(mktemp "$TMP_ROOT/gh-retry.XXXXXX")
   while true; do
-    if "$@"; then return 0; fi
-    if [ "$attempt" -ge 4 ]; then return 1; fi
+    if "$@" > "$attempt_output"; then
+      cat "$attempt_output"
+      rm -f "$attempt_output"
+      return 0
+    fi
+    if [ "$attempt" -ge 4 ]; then
+      rm -f "$attempt_output"
+      return 1
+    fi
     echo "release-index-state: GitHub command failed; retrying in ${delay}s: $*" >&2
     sleep "$delay"
     attempt=$((attempt + 1))
