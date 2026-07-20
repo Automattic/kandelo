@@ -9,13 +9,9 @@ kernel_abi = 7
 depends_on = ["zlib@1.3.1", "libpng@1.6.43"]
 
 [source]
-url = "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2025/texlive-20250308-source.tar.xz"
-# Source-tarball sha is intentionally a placeholder. The build
-# script's curl pulls this URL at Phase 0; the resolver chain only
-# verifies it when source-building, and a force-rebuild populates
-# whatever the upstream mirror returns. Will be filled in once an
-# archive ships through CI.
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+# pi.kwarc.info is one of TUG's documented mirrors of the historic archive.
+url = "https://pi.kwarc.info/historic/systems/texlive/2025/texlive-20250308-source.tar.xz"
+sha256 = "fffdb1a3d143c177a4398a2229a40d6a88f18098e5f6dcfd57648c9f2417490f"
 
 [license]
 spdx = "LicenseRef-TeXLive-Various"
