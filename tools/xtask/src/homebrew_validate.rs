@@ -1127,7 +1127,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let tap_root = dir.path().to_path_buf();
             let formula_text = concat!(
-                "class Hello < Formula\n",
+                "class What < Formula\n",
                 "  desc \"Fixture\"\n",
                 "\n",
                 "  bottle do\n",
@@ -1143,24 +1143,24 @@ mod tests {
                 format!("{:x}", hasher.finalize())
             };
 
-            write_text(&tap_root.join("Formula/hello.rb"), formula_text);
+            write_text(&tap_root.join("Formula/what.rb"), formula_text);
 
             let mut metadata =
                 load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/metadata.json");
             let mut formula =
-                load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/formula/hello.json");
+                load_repo_json("homebrew/homebrew-tap-core/Kandelo/examples/formula/what.json");
             let mut link = load_repo_json(
-                "homebrew/homebrew-tap-core/Kandelo/examples/link/hello-2.12.1-rebuild0-wasm32.json",
+                "homebrew/homebrew-tap-core/Kandelo/examples/link/what-15.0.0-rebuild0-wasm32.json",
             );
             let mut provenance = load_repo_json(
-                "homebrew/homebrew-tap-core/Kandelo/examples/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
+                "homebrew/homebrew-tap-core/Kandelo/examples/reports/what-15.0.0-rebuild0-wasm32.provenance.json",
             );
 
             let bottle_sha256 = string_at(&metadata, "/packages/0/bottles/0/sha256")
                 .unwrap()
                 .to_string();
             let bottle_url =
-                repository_bottle_url("kandelo-dev/homebrew-tap-core", "hello", &bottle_sha256);
+                repository_bottle_url("kandelo-dev/homebrew-tap-core", "what", &bottle_sha256);
             set(
                 &mut metadata,
                 "/packages/0/bottles/0/url",
@@ -1196,18 +1196,18 @@ mod tests {
         fn write(&self) {
             write_json(&self.tap_root.join("Kandelo/metadata.json"), &self.metadata);
             write_json(
-                &self.tap_root.join("Kandelo/formula/hello.json"),
+                &self.tap_root.join("Kandelo/formula/what.json"),
                 &self.formula,
             );
             write_json(
                 &self
                     .tap_root
-                    .join("Kandelo/link/hello-2.12.1-rebuild0-wasm32.json"),
+                    .join("Kandelo/link/what-15.0.0-rebuild0-wasm32.json"),
                 &self.link,
             );
 
             let mut provenance = self.provenance.clone();
-            let formula_sha = sha256_file(&self.tap_root.join("Formula/hello.rb")).unwrap();
+            let formula_sha = sha256_file(&self.tap_root.join("Formula/what.rb")).unwrap();
             set(&mut provenance, "/formula/sha256", json!(formula_sha));
             set(
                 &mut provenance,
@@ -1217,7 +1217,7 @@ mod tests {
             set(
                 &mut provenance,
                 "/metadata/formula_json/sha256",
-                json!(sha256_file(&self.tap_root.join("Kandelo/formula/hello.json")).unwrap()),
+                json!(sha256_file(&self.tap_root.join("Kandelo/formula/what.json")).unwrap()),
             );
             set(
                 &mut provenance,
@@ -1226,7 +1226,7 @@ mod tests {
                     sha256_file(
                         &self
                             .tap_root
-                            .join("Kandelo/link/hello-2.12.1-rebuild0-wasm32.json")
+                            .join("Kandelo/link/what-15.0.0-rebuild0-wasm32.json")
                     )
                     .unwrap()
                 ),
@@ -1245,7 +1245,7 @@ mod tests {
             write_json(
                 &self
                     .tap_root
-                    .join("Kandelo/reports/hello-2.12.1-rebuild0-wasm32.provenance.json"),
+                    .join("Kandelo/reports/what-15.0.0-rebuild0-wasm32.provenance.json"),
                 &provenance,
             );
         }
@@ -1302,7 +1302,7 @@ mod tests {
         let mut fixture = Fixture::new();
         set(&mut fixture.metadata, "/tap_name", json!("attacker/core"));
         set(&mut fixture.formula, "/tap_name", json!("attacker/core"));
-        let formula_path = fixture.tap_root.join("Formula/hello.rb");
+        let formula_path = fixture.tap_root.join("Formula/what.rb");
         let source = fs::read_to_string(&formula_path).unwrap();
         write_text(
             &formula_path,
@@ -1359,13 +1359,13 @@ mod tests {
             json!([
                 {
                     "type": "symlink",
-                    "source": "Cellar/hello/2.12.1/bin/hello",
-                    "target": "bin/hello"
+                    "source": "Cellar/what/15.0.0/bin/what",
+                    "target": "bin/what"
                 },
                 {
                     "type": "symlink",
-                    "source": "Cellar/hello/2.12.1/bin/hello-alias",
-                    "target": "bin/hello"
+                    "source": "Cellar/what/15.0.0/bin/what-alias",
+                    "target": "bin/what"
                 }
             ]),
         );
@@ -1380,7 +1380,7 @@ mod tests {
         set(
             &mut fixture.link,
             "/links/0/source",
-            json!("Cellar/hello/2.12.1/bin/["),
+            json!("Cellar/what/15.0.0/bin/["),
         );
         set(&mut fixture.link, "/links/0/target", json!("bin/["));
         fixture.write();
@@ -1400,7 +1400,7 @@ mod tests {
         set(
             &mut fixture.link,
             "/links/0/source",
-            json!(format!("Cellar/hello/2.12.1/{tex_path}")),
+            json!(format!("Cellar/what/15.0.0/{tex_path}")),
         );
         set(&mut fixture.link, "/links/0/target", json!(tex_path));
         fixture.write();
@@ -1412,7 +1412,7 @@ mod tests {
     #[test]
     fn rejects_dotdot_link_path() {
         let mut fixture = Fixture::new();
-        set(&mut fixture.link, "/links/0/target", json!("../bin/hello"));
+        set(&mut fixture.link, "/links/0/target", json!("../bin/what"));
         fixture.write();
         let report = fixture.validate();
         assert!(report.errors.join("\n").contains("not path-safe"));
@@ -1457,7 +1457,7 @@ mod tests {
     #[test]
     fn rejects_formula_bottle_tag_missing_from_metadata() {
         let fixture = Fixture::new();
-        let path = fixture.tap_root.join("Formula/hello.rb");
+        let path = fixture.tap_root.join("Formula/what.rb");
         let source = fs::read_to_string(&path).unwrap();
         write_text(
             &path,
@@ -1483,7 +1483,7 @@ mod tests {
     #[test]
     fn rejects_formula_bottle_digest_drift() {
         let fixture = Fixture::new();
-        let path = fixture.tap_root.join("Formula/hello.rb");
+        let path = fixture.tap_root.join("Formula/what.rb");
         let source = fs::read_to_string(&path).unwrap();
         write_text(
             &path,
@@ -1508,7 +1508,7 @@ mod tests {
         let sha256 = string_at(&fixture.metadata, "/packages/0/bottles/0/sha256")
             .unwrap()
             .to_string();
-        let old_root_url = repository_bottle_url("kandelo-dev/tap-core", "hello", &sha256);
+        let old_root_url = repository_bottle_url("kandelo-dev/tap-core", "what", &sha256);
         set(
             &mut fixture.metadata,
             "/packages/0/bottles/0/url",
@@ -1530,7 +1530,7 @@ mod tests {
         let report = fixture.validate();
         assert!(
             report.errors.join("\n").contains(
-                "success bottle URL \"https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:"
+                "success bottle URL \"https://ghcr.io/v2/kandelo-dev/tap-core/what/blobs/sha256:"
             ),
             "unexpected validation errors: {:#?}",
             report.errors,
@@ -1567,7 +1567,7 @@ mod tests {
             "last_attempt_by": "https://example.invalid/kandelo-dev/homebrew-tap-core/actions/runs/43",
             "fallback_url": repository_bottle_url(
                 "kandelo-dev/tap-core",
-                "hello",
+                "what",
                 fallback_sha256.as_str().unwrap(),
             ),
             "fallback_sha256": fallback_sha256,
@@ -1587,7 +1587,7 @@ mod tests {
         let report = fixture.validate();
         assert!(
             report.errors.join("\n").contains(
-                "fallback bottle URL \"https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:"
+                "fallback bottle URL \"https://ghcr.io/v2/kandelo-dev/tap-core/what/blobs/sha256:"
             ),
             "unexpected validation errors: {:#?}",
             report.errors,
@@ -1605,7 +1605,7 @@ mod tests {
     #[test]
     fn rejects_formula_bottle_root_drift() {
         let fixture = Fixture::new();
-        let path = fixture.tap_root.join("Formula/hello.rb");
+        let path = fixture.tap_root.join("Formula/what.rb");
         let source = fs::read_to_string(&path).unwrap();
         write_text(
             &path,
@@ -1627,7 +1627,7 @@ mod tests {
     #[test]
     fn rejects_extra_noncanonical_formula_bottle_call() {
         let fixture = Fixture::new();
-        let path = fixture.tap_root.join("Formula/hello.rb");
+        let path = fixture.tap_root.join("Formula/what.rb");
         let source = fs::read_to_string(&path).unwrap();
         let source_without_class_end = source.strip_suffix("end\n").unwrap();
         write_text(

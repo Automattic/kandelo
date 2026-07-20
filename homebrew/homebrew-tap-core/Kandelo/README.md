@@ -170,8 +170,8 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --arch wasm32 \
   --runtime node \
   --base-image target/platform-base.vfs.zst \
-  --out target/homebrew-hello.vfs.zst \
-  --report target/homebrew-hello.vfs-report.json
+  --out target/homebrew-tools.vfs.zst \
+  --report target/homebrew-tools.vfs-report.json
 ```
 
 For a third-party primary tap whose locked closure uses core, add
@@ -230,7 +230,7 @@ tests before publishing gallery or user-facing claims.
 In publisher validation, the package payload is the current Homebrew bottle:
 the local bottle for a dry run, or the exact anonymously read-back GHCR digest
 for a write run. Generic verification fetches only the declared base commands
-and rootfs as Kandelo platform prerequisites. The Hello gallery smoke
+and rootfs as Kandelo platform prerequisites. The file-formula gallery smoke
 separately prepares the supported interactive browser graph. None of those
 platform inputs is the source of the migrated package payload.
 
@@ -288,12 +288,12 @@ runtime flags, the exact Chromium run decides the gate, and no provisional
 ## Browser Gallery Assets
 
 The trusted publisher may expose a Homebrew-built image to the browser gallery
-only after the wasm32 bottle has browser validation evidence. For `hello`, the
+only after the wasm32 bottle has browser validation evidence. For `file-formula`, the
 workflow builds the VFS image, serves it from the browser demo, boots it with
 Playwright Chromium, and runs:
 
 ```bash
-/home/linuxbrew/.linuxbrew/bin/hello --version
+/home/linuxbrew/.linuxbrew/bin/file --version
 ```
 
 On success, sidecars record `runtime_support = ["node", "browser"]` and
@@ -303,10 +303,10 @@ assets are generated with:
 ```bash
 scripts/dev-shell.sh bash scripts/homebrew-create-browser-gallery.sh \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
-  --image target/homebrew-hello.vfs.zst \
-  --report target/homebrew-hello.vfs-report.json \
+  --image target/homebrew-file-formula.vfs.zst \
+  --report target/homebrew-file-formula.vfs-report.json \
   --out target/homebrew-gallery \
-  --formula hello
+  --formula file-formula
 ```
 
 The script writes `gallery.json`, `index.toml`, and a `.tar.zst` archive whose

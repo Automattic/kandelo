@@ -63,14 +63,14 @@ mod tests {
     fn homebrew_examples_validate_against_schemas() {
         let cases = [
             (schema_rel("metadata"), example_rel("metadata.json")),
-            (schema_rel("formula"), example_rel("formula/hello.json")),
+            (schema_rel("formula"), example_rel("formula/what.json")),
             (
                 schema_rel("link-manifest"),
-                example_rel("link/hello-2.12.1-rebuild0-wasm32.json"),
+                example_rel("link/what-15.0.0-rebuild0-wasm32.json"),
             ),
             (
                 schema_rel("provenance"),
-                example_rel("reports/hello-2.12.1-rebuild0-wasm32.provenance.json"),
+                example_rel("reports/what-15.0.0-rebuild0-wasm32.provenance.json"),
             ),
         ];
 
@@ -101,18 +101,18 @@ mod tests {
 
     #[test]
     fn link_manifest_rejects_absolute_link_targets() {
-        let instance = load_json(&example_rel("link/hello-2.12.1-rebuild0-wasm32.json"));
+        let instance = load_json(&example_rel("link/what-15.0.0-rebuild0-wasm32.json"));
         assert_invalid(&schema_rel("link-manifest"), instance, |value| {
             *value
                 .pointer_mut("/links/0/target")
-                .expect("link target fixture path") = json!("/bin/hello");
+                .expect("link target fixture path") = json!("/bin/what");
         });
     }
 
     #[test]
     fn link_manifest_accepts_posix_bracket_utility_paths() {
         let schema = compile_schema(&schema_rel("link-manifest"));
-        let mut instance = load_json(&example_rel("link/hello-2.12.1-rebuild0-wasm32.json"));
+        let mut instance = load_json(&example_rel("link/what-15.0.0-rebuild0-wasm32.json"));
         *instance
             .pointer_mut("/links/0/source")
             .expect("link source fixture path") =
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn link_manifest_accepts_upstream_filenames_with_commas() {
         let schema = compile_schema(&schema_rel("link-manifest"));
-        let mut instance = load_json(&example_rel("link/hello-2.12.1-rebuild0-wasm32.json"));
+        let mut instance = load_json(&example_rel("link/what-15.0.0-rebuild0-wasm32.json"));
         let tex_path = concat!(
             "share/texmf-dist/doc/latex/binarytree/examples/",
             "btree-5_up_0,0,0_3729359_7458719_655360_0.7_0.7_",
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn link_manifest_rejects_malformed_bottle_sha() {
-        let instance = load_json(&example_rel("link/hello-2.12.1-rebuild0-wasm32.json"));
+        let instance = load_json(&example_rel("link/what-15.0.0-rebuild0-wasm32.json"));
         assert_invalid(&schema_rel("link-manifest"), instance, |value| {
             *value
                 .pointer_mut("/bottle/sha256")

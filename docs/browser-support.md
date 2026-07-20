@@ -451,7 +451,7 @@ verifies its digest and size before reporting success.
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
 package image in the browser UI and runs its smoke command, such as
-`/home/linuxbrew/.linuxbrew/bin/hello --version`. Only then may generated
+`/home/linuxbrew/.linuxbrew/bin/file --version`. Only then may generated
 Homebrew sidecars and gallery `index.toml` set `browser_compatible = true`.
 Generic gallery archives are currently retained as run diagnostics rather than
 published as durable gallery releases.

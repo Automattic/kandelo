@@ -649,7 +649,7 @@ jobs:
     with:
       tap-repository: kandelo-dev/homebrew-tap-core
       tap-name: kandelo-dev/tap-core
-      formulae: hello
+      formulae: file-formula
       arches: wasm32
 ```
 
@@ -676,8 +676,8 @@ tap repository's `main` branch, and the caller repository must exactly equal
 the target tap repository. Non-dry calls may come from `publish-bottles.yml` or
 `maintain-bottles.yml`; dry calls must come from `dry-run-bottles.yml`. The
 first-party normal caller is displayed as
-**Publish Kandelo bottles**; do not restore the narrower legacy **Publish hello
-bottle** name. The three dispatch events are `publish-kandelo-bottles`,
+**Publish Kandelo bottles**; do not restore the narrower retired single-Formula
+workflow name. The three dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`. Publish and dry-run
 payloads must select at least one Formula and architecture; an absent or empty
 selection is an error, not a successful no-op.
@@ -967,7 +967,7 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
 4. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
    revalidates the build handoff and receipt, fetches only the declared Kandelo
    platform runtime for Formula tests, builds the VFS image, and runs the
-   runtime and browser gates. The `hello` browser-gallery smoke separately
+   runtime and browser gates. The `file-formula` browser-gallery smoke separately
    prepares the supported interactive-demo graph. That graph contains owned
    wasm32 and wasm64 process fixtures, so the verifier builds both sysroots in
    its isolated sysroot checkout and copies both exact outputs into the fresh
@@ -1343,8 +1343,8 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --arch wasm32 \
   --runtime node \
   --base-image target/platform-base.vfs.zst \
-  --out target/homebrew-hello.vfs.zst \
-  --report target/homebrew-hello.vfs-report.json
+  --out target/homebrew-tools.vfs.zst \
+  --report target/homebrew-tools.vfs-report.json
 ```
 
 `--dependency-tap-root owner/tap=/exact/checkout` is repeatable for lower-level
@@ -1510,32 +1510,32 @@ workflow log output and never shares the report file. The workflow parses the
 complete JSON document and checks its exact pass/fail statistics; it does not
 filter mixed stdout or discard setup lines to manufacture a parseable report.
 
-The Node smoke for the published `hello` bottle:
+The Node smoke for the published `file-formula` bottle:
 
 ```bash
-scripts/dev-shell.sh npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
+scripts/dev-shell.sh npx tsx packages/registry/file/test/homebrew-node-smoke.ts \
   --result-dir test-runs/homebrew-node-smoke \
   --tap-repository kandelo-dev/homebrew-tap-core
 ```
 
 It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
-`/home/linuxbrew/.linuxbrew/bin/hello --version` through `NodeKernelHost`, and
+`/home/linuxbrew/.linuxbrew/bin/file --version` through `NodeKernelHost`, and
 checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
-`hello` path, the trusted publisher builds a precomposed wasm32 VFS image,
+`file-formula` path, the trusted publisher builds a precomposed wasm32 VFS image,
 serves it through the browser demo, runs Chromium Playwright against
 `apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
 
 ```bash
-/home/linuxbrew/.linuxbrew/bin/hello --version
+/home/linuxbrew/.linuxbrew/bin/file --version
 ```
 
 Only after that smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.
 Packages without a successful browser smoke remain Node-only.
 
-The `hello` package bytes in this smoke come from the current Homebrew bottle:
+The `file-formula` package bytes in this smoke come from the current Homebrew bottle:
 from the local build in dry-run mode, or from the anonymously fetched GHCR blob
 in write mode. The browser demo still resolves Kandelo-owned ABI platform
 prerequisites such as `node.wasm` and `node-vfs.vfs.zst` through Kandelo's normal
@@ -1544,7 +1544,7 @@ fetch only the base command set and `rootfs`; their focused Vite input does not
 scan the interactive demo. Schema 2 acceptance also boots the image-owned
 default shell through the full machine UI, so the selected acceptance matrix
 entry materializes the supported interactive graph through
-`./run.sh --fetch-only prepare-browser` before that smoke. The `hello` gallery
+`./run.sh --fetch-only prepare-browser` before that smoke. The `file-formula` gallery
 smoke materializes the same graph. Browser preparation excludes packages whose
 demos are provided by the external software gallery. Those platform assets are
 not the migrated package under test, and unrelated gallery packages are not
@@ -1621,10 +1621,10 @@ Generate browser gallery assets only from browser-smoked wasm32 metadata:
 ```bash
 scripts/dev-shell.sh bash scripts/homebrew-create-browser-gallery.sh \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
-  --image target/homebrew-hello.vfs.zst \
-  --report target/homebrew-hello.vfs-report.json \
+  --image target/homebrew-file-formula.vfs.zst \
+  --report target/homebrew-file-formula.vfs-report.json \
   --out target/homebrew-gallery \
-  --formula hello
+  --formula file-formula
 ```
 
 The script writes `gallery.json`, `index.toml`, and a package-source-shaped
@@ -1686,14 +1686,14 @@ This is a repository rule, not a first-party naming exception. A public
 third-party repository `<owner>/homebrew-<repo>` has canonical tap name
 `<owner>/<repo>`, while its bottles publish below
 `ghcr.io/<owner>/homebrew-<repo>/<formula>`. For example, tap
-`brandonpayton/kandelo-canary` publishes `hello` as registry repository
-`ghcr.io/brandonpayton/homebrew-kandelo-canary/hello`.
+`brandonpayton/kandelo-canary` publishes `m4` as registry repository
+`ghcr.io/brandonpayton/homebrew-kandelo-canary/m4`.
 
 GitHub's package page may render only the final component, such as `zlib` or
-`hello`. That short display label does not change the package API name
+`m4`. That short display label does not change the package API name
 `<homebrew-repository>/<formula>` or its registry path. The first-party
-`zlib` API name is `homebrew-tap-core/zlib`; the third-party example's `hello`
-API name is `homebrew-kandelo-canary/hello`.
+`zlib` API name is `homebrew-tap-core/zlib`; the third-party example's `m4`
+API name is `homebrew-kandelo-canary/m4`.
 
 Do not derive the GHCR path from the canonical tap name. The earlier
 `ghcr.io/kandelo-dev/tap-core/<formula>` destination created private packages
@@ -1735,26 +1735,14 @@ created public, repository-linked package `homebrew-tap-core/zlib`; earlier
 remained private. The production anonymous readback is the continuing guard
 against a GitHub behavior or organization policy change.
 
-Normal first-party
-[publication run 29713069956](https://github.com/Kandelo-dev/homebrew-tap-core/actions/runs/29713069956)
-then created package `homebrew-tap-core/hello` (GitHub package ID `13483042`)
-with the production built-in-token path. GitHub reported it as public and linked
-to `kandelo-dev/homebrew-tap-core` at creation time. A credential-free GHCR
-read returned child manifest
-`sha256:f6007f0c3e2dc52fe4dfff7517c9764c29f2943030c802ede4530d7b11c3157f`,
-and a separate anonymous import traversed the complete `2.12.3` index at
-`sha256:484350d86280e99e236bde0df751ca9432bed81be900bcbad87ab32be351fff2`.
-
 The independent, user-owned
-[third-party canary run 29712579104](https://github.com/brandonpayton/homebrew-kandelo-canary/actions/runs/29712579104)
+[third-party canary run 29783196350](https://github.com/brandonpayton/homebrew-kandelo-canary/actions/runs/29783196350)
 used the same built-in-token path and created public, repository-linked package
-`homebrew-kandelo-canary/hello` (GitHub package ID `13482938`). Its anonymous
-manifest readback matched digest
-`sha256:24476ce607a183460c63f998c7a684469df885d40505dd6b1e95a33c252dc152`.
-That run later failed while preparing unrelated browser-demo package inputs, so
-it is package-creation and public-read evidence, not a completed end-to-end
-publication acceptance. It nevertheless demonstrates that public-by-default
-creation does not depend on a `Kandelo-dev`-specific policy exception.
+`homebrew-kandelo-canary/m4` (GitHub package ID `13494393`). Its anonymous
+bottle verification, tap finalization, Node and Chromium VFS acceptance, and
+immutable VFS release publication all passed. This demonstrates that
+public-by-default creation does not depend on a `Kandelo-dev`-specific policy
+exception.
 
 ### New tap bootstrap checklist
 

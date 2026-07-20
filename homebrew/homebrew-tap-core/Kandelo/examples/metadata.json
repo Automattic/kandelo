@@ -11,13 +11,13 @@
   "generator": "kandelo-homebrew-publish 1",
   "packages": [
     {
-      "name": "hello",
-      "full_name": "kandelo-dev/tap-core/hello",
-      "version": "2.12.1",
+      "name": "what",
+      "full_name": "kandelo-dev/tap-core/what",
+      "version": "15.0.0",
       "formula_revision": 0,
       "bottle_rebuild": 0,
-      "formula_path": "Formula/hello.rb",
-      "formula_metadata": "Kandelo/formula/hello.json",
+      "formula_path": "Formula/what.rb",
+      "formula_metadata": "Kandelo/formula/what.json",
       "dependencies": [],
       "bottles": [
         {
@@ -26,11 +26,11 @@
           "kandelo_abi": 15,
           "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
           "prefix": "/home/linuxbrew/.linuxbrew",
-          "url": "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm32_kandelo.bottle.tar.gz",
+          "url": "https://example.invalid/kandelo-homebrew/what-15.0.0-rebuild0-wasm32_kandelo.bottle.tar.gz",
           "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "bytes": 12345,
           "cache_key_sha": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-          "link_manifest": "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json",
+          "link_manifest": "Kandelo/link/what-15.0.0-rebuild0-wasm32.json",
           "runtime_support": ["node"],
           "browser_compatible": false,
           "fork_instrumentation": "not-required",

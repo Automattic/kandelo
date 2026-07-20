@@ -2088,7 +2088,7 @@ jobs:
           esac
 
       - name: Build Kandelo wasm64 sysroot for the interactive browser graph
-        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'hello' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
+        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2124,7 +2124,7 @@ jobs:
           '
 
       - name: Prepare the supported interactive browser demo graph
-        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'hello' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
+        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2622,8 +2622,8 @@ jobs:
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
             bash scripts/homebrew-generate-sidecars-from-env.sh
 
-      - name: Build and strictly smoke the hello browser image
-        if: ${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}
+      - name: Build and strictly smoke the file-formula browser image
+        if: ${{ matrix.formula == 'file-formula' && matrix.arch == 'wasm32' }}
         shell: bash
         env:
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
@@ -2671,16 +2671,16 @@ jobs:
             browser_gallery_root="$RUNNER_TEMP/homebrew-browser-gallery"
             browser_public_dir="$GITHUB_WORKSPACE/kandelo/apps/browser-demos/public/__kandelo-smoke"
             browser_port="${KANDELO_PLAYWRIGHT_PORT:-5401}"
-            browser_vfs="$browser_vfs_root/homebrew-hello.vfs.zst"
-            browser_report="$browser_vfs_root/homebrew-hello.vfs-report.json"
+            browser_vfs="$browser_vfs_root/homebrew-file-formula.vfs.zst"
+            browser_report="$browser_vfs_root/homebrew-file-formula.vfs-report.json"
             playwright_report="$browser_vfs_root/playwright-report.json"
-            browser_url="http://127.0.0.1:${browser_port}/__kandelo-smoke/homebrew-hello.vfs.zst"
+            browser_url="http://127.0.0.1:${browser_port}/__kandelo-smoke/homebrew-file-formula.vfs.zst"
             mkdir -p "$browser_vfs_root" "$browser_gallery_root" "$browser_public_dir"
 
             vfs_args=(
               --metadata "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/metadata.json"
               --tap-root "$KANDELO_HOMEBREW_SIDECAR_ROOT"
-              --package hello
+              --package file-formula
               --arch wasm32
               --runtime node
               --out "$browser_vfs"
@@ -2689,18 +2689,18 @@ jobs:
               --write-profile
             )
             npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts "${vfs_args[@]}"
-            cp "$browser_vfs" "$browser_public_dir/homebrew-hello.vfs.zst"
+            cp "$browser_vfs" "$browser_public_dir/homebrew-file-formula.vfs.zst"
 
             (
               cd apps/browser-demos
               playwright_args=(
                 test test/kandelo-homebrew.spec.ts
                 --project=chromium
-                --grep "^Homebrew hello VFS image boots"
+                --grep "Homebrew file-formula VFS image boots in browser and runs file --version$"
                 --reporter=json
               )
               export KANDELO_PLAYWRIGHT_PORT="$browser_port"
-              export KANDELO_BROWSER_HELLO_VFS_URL="$browser_url"
+              export KANDELO_BROWSER_FILE_FORMULA_VFS_URL="$browser_url"
               export KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1
               npx playwright "${playwright_args[@]}" >"$playwright_report"
             )
@@ -2719,7 +2719,7 @@ jobs:
               --arg arch "$KANDELO_HOMEBREW_ARCH" \
               --arg bottle_sha256 "$KANDELO_HOMEBREW_BOTTLE_SHA256" \
               --arg bottle_url "$KANDELO_HOMEBREW_BOTTLE_URL" \
-              --arg command "/home/linuxbrew/.linuxbrew/bin/hello --version" \
+              --arg command "/home/linuxbrew/.linuxbrew/bin/file --version" \
               '{schema: 1, formula: $formula, arch: $arch,
                 bottle_sha256: $bottle_sha256, bottle_url: $bottle_url,
                 runtime: "browser", engine: "chromium", status: "success",
@@ -2737,9 +2737,9 @@ jobs:
               --image "$browser_vfs"
               --report "$browser_report"
               --out "$browser_gallery_root"
-              --formula hello
-              --title "GNU hello Homebrew VFS"
-              --description "GNU hello poured from the published $KANDELO_HOMEBREW_TAP_NAME bottle into a browser-smoked Kandelo VFS image."
+              --formula file-formula
+              --title "file Homebrew VFS"
+              --description "file poured from the published $KANDELO_HOMEBREW_TAP_NAME bottle into a browser-smoked Kandelo VFS image."
             )
             bash scripts/homebrew-create-browser-gallery.sh "${gallery_args[@]}"
             gallery_validation_args=(

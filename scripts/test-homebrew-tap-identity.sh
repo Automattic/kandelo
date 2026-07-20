@@ -35,6 +35,8 @@ expect_identity_rejection "a mismatched third-party tap name" Acme/homebrew-tool
 expect_identity_rejection "a mismatched default tap name" \
   kandelo-dev/homebrew-tap-core kandelo-dev/homebrew-tap-core
 
+# These identity-only `hello` values are synthetic input. They do not resolve a
+# tap Formula, read GHCR, or describe a package retained by the active tap.
 provenance="$TMPDIR/dependency-provenance.json"
 jq -nS '{
   schema: 2,
@@ -102,7 +104,7 @@ python3 "$REPO_ROOT/scripts/homebrew-oci-layout.py" source-closure \
   --tap-root "$REPO_ROOT/homebrew/homebrew-tap-core" \
   --kandelo-root "$REPO_ROOT" \
   --tap-repository kandelo-dev/homebrew-tap-core \
-  --formula hello \
+  --formula what \
   --out "$TMPDIR/default-source-closure.json"
 
 echo "test-homebrew-tap-identity.sh: ok"

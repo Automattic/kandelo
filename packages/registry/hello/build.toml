@@ -1,7 +1,0 @@
-script_path = "packages/registry/hello/build-hello.sh"
-repo_url    = "https://github.com/Automattic/kandelo.git"
-commit      = "UNPUBLISHED"
-revision    = 1
-
-[binary]
-index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

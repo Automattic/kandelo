@@ -2,8 +2,10 @@
 
 The `kandelo-dev/tap-core` tap places Homebrew formulae here. Its GitHub
 repository is `kandelo-dev/homebrew-tap-core`. This
-main-repo scaffold includes `hello.rb` so formula, bottle, sidecar, and smoke
-logic can be reviewed alongside the Kandelo implementation that consumes it.
+main-repo scaffold includes a non-live `what.rb` fixture so Formula, bottle,
+sidecar, and smoke logic can be reviewed alongside the Kandelo implementation
+that consumes it. Live Formula sources belong in the tap repository rather than
+this fixture.
 
 Formulae should use normal Homebrew DSL, including `depends_on`, `bottle do`,
 `revision`, `rebuild`, and `test do`, while any Kandelo-specific VFS planning
