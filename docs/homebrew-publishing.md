@@ -349,6 +349,17 @@ header naming, and entry mtimes to the receipt's stable source-modified time.
 The completed gzip file is assigned that same stable mtime, which also makes
 Homebrew's raw bottle-JSON `bottle.date` stable.
 
+Bottle rebuild identity is reviewed tap state, not a value chosen from the
+runner's mutable Git history. Before Formula evaluation, the publisher parses
+the exact Formula statically: no `bottle do` block means rebuild zero, while a
+canonical positive `rebuild N` is preserved. It then invokes `brew bottle
+--keep-old` and requires Homebrew's raw bottle JSON to report that exact value.
+The publisher does not use Homebrew's automatic increment, and it does not use
+`--no-rebuild`, which would reset an explicit rebuild to zero. A maintainer who
+must replace bytes already published under an immutable reference first
+commits the next positive rebuild to the Formula, then dispatches publication;
+a changed root URL or a different emitted rebuild fails before handoff.
+
 Before archiving, the overlay requires the receipt's `source.tap` and exact
 lowercase 40-character `source.tap_git_head` to match the selected tap name and
 revision already resolved by `brew bottle`. It then assigns the temporary Tab a

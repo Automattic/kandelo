@@ -2239,6 +2239,12 @@ assert_bottle_build_installs_test_dependencies() {
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
   cat >"$tap/Formula/hello.rb" <<'EOF'
 class Hello < Formula
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    rebuild 1
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  end
+
   depends_on "cmake" => [:build, :test]
   depends_on "ninja" => :build
 end
@@ -2353,6 +2359,7 @@ JSON
     fi
     ;;
   bottle)
+    [ "$*" = 'bottle --json --keep-old --root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core kandelo-dev/tap-core/hello' ] || exit 55
     printf 'bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -2405,6 +2412,13 @@ for directory, names, files in os.walk(root):
   }
 }
 JSON
+    if [ "${FAKE_BOTTLE_REBUILD_DRIFT:-}" = "1" ]; then
+      jq '.[].bottle.rebuild = 2' \
+        hello--1.0.wasm32_kandelo.bottle.json \
+        >hello--1.0.wasm32_kandelo.bottle.drift.json
+      mv hello--1.0.wasm32_kandelo.bottle.drift.json \
+        hello--1.0.wasm32_kandelo.bottle.json
+    fi
     python3 -c 'import os, sys; os.utime(sys.argv[1], (1705948357, 1705948357))' \
       hello--1.0.wasm32_kandelo.bottle.json
     ;;
@@ -2485,6 +2499,49 @@ EOF
   )
   [ ! -e "${native_prefix%/p}" ] ||
     fail "bottle build retained its native prefix after successful cleanup"
+
+  local drift_out="$TMPDIR/bottle-rebuild-drift-out"
+  local drift_prefix="$TMPDIR/bottle-rebuild-drift-prefix"
+  local drift_log="$TMPDIR/bottle-rebuild-drift.log"
+  local drift_realm_log="$TMPDIR/bottle-rebuild-drift-realms.log"
+  local drift_lifecycle_log="$TMPDIR/bottle-rebuild-drift-lifecycle.log"
+  local drift_native_capture="$TMPDIR/bottle-rebuild-drift-native-prefix.txt"
+  local drift_provenance_capture="$TMPDIR/bottle-rebuild-drift-provenance.txt"
+  local drift_provenance_log="$TMPDIR/bottle-rebuild-drift-install.log"
+  local drift_err="$TMPDIR/bottle-rebuild-drift.err"
+  local drift_status
+  mkdir -p "$drift_prefix"
+  set +e
+  PATH="$fake_bin:$PATH" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$drift_provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$drift_provenance_log" \
+    FAKE_BREW_LOG="$drift_log" \
+    FAKE_REALM_COMMAND_LOG="$drift_realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$drift_lifecycle_log" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$drift_native_capture" \
+    FAKE_BUILD_TIME=1700000000 \
+    FAKE_BOTTLE_REBUILD_DRIFT=1 \
+    FAKE_BREW_PREFIX="$drift_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --arch wasm32 \
+      --out "$drift_out" \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$drift_err"
+  drift_status="$?"
+  set -e
+  [ "$drift_status" -eq 1 ] ||
+    fail "bottle build accepted Homebrew rebuild drift: $drift_status"
+  grep -F 'Homebrew bottle rebuild 2 differs from planned Formula rebuild 1' \
+    "$drift_err" >/dev/null ||
+    fail "bottle build did not explain Homebrew rebuild drift"
 
   # A later tap-only report commit and a different wall-clock build time must
   # not change the bottle layer. The fake Brew mirrors the patched publisher's
@@ -3627,6 +3684,40 @@ RUBY
     "$tap" kandelo-dev/tap-core root --direct)"
   [ "$output" = $'kandelo-dev/tap-core/dep-a\nkandelo-dev/tap-core/dep-recommended' ] ||
     fail "static Formula resolver did not produce only direct runtime dependencies: $output"
+  output="$(ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" kandelo-dev/tap-core root --bottle-identity-json)"
+  printf '%s\n' "$output" | jq -e '
+    keys == ["bottle", "formula", "full_name", "schema", "tap"] and
+    .schema == 1 and
+    .tap == "kandelo-dev/tap-core" and
+    .formula == "root" and
+    .full_name == "kandelo-dev/tap-core/root" and
+    .bottle == {"root_url": null, "rebuild": 0}
+  ' >/dev/null ||
+    fail "static Formula resolver did not preserve unbottled rebuild zero: $output"
+
+  cat >"$tap/Formula/rebuilt.rb" <<'RUBY'
+class Rebuilt < Formula
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    rebuild 7
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  end
+end
+RUBY
+  output="$(ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" kandelo-dev/tap-core rebuilt --bottle-identity-json)"
+  printf '%s\n' "$output" | jq -e '
+    .schema == 1 and
+    .tap == "kandelo-dev/tap-core" and
+    .formula == "rebuilt" and
+    .full_name == "kandelo-dev/tap-core/rebuilt" and
+    .bottle == {
+      "root_url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+      "rebuild": 7
+    }
+  ' >/dev/null ||
+    fail "static Formula resolver did not preserve a positive bottle rebuild: $output"
 
   cat >"$tap/Formula/rich-static.rb" <<'RUBY'
 class RichStatic < Formula

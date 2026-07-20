@@ -1236,6 +1236,7 @@ def check_publisher(workflow)
     'INSTALL_LOG="$CONTROL_DIR/brew-install.log"',
     'NATIVE_INSTALL_LOG="$CONTROL_DIR/native-brew-install.log"',
     'HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"',
+    'TARGET_BOTTLE_IDENTITY="$CONTROL_DIR/target-bottle-identity.json"',
     'HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"',
     'DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"',
     'BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"',
@@ -1267,6 +1268,8 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_snapshot_target_cellar_layout',
     'Formula test or bottle creation changed the planned target Cellar',
     'run_brew_for_kandelo_bottles "$BREW_BIN" bottle',
+    '--bottle-identity-json',
+    'Homebrew bottle rebuild $BOTTLE_REBUILD differs from planned Formula rebuild $EXPECTED_BOTTLE_REBUILD',
     'cp -p "$BOTTLE_SOURCE_JSON" "$OUT_DIR/bottles/"',
     'cp -p "${bottle_archives[0]}" "$OUT_DIR/bottles/"',
     "printf 'NATIVE_BUILD_ROOT=%q\\n' \"$NATIVE_BUILD_ROOT\"",
@@ -1275,9 +1278,10 @@ def check_publisher(workflow)
   end
   retained_receipt_bottle_command = <<~'SHELL'.chomp
     run_brew_for_kandelo_bottles "$BREW_BIN" bottle \
-        --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+        --json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
   SHELL
   check(bottle_builder.include?(retained_receipt_bottle_command) &&
+        !bottle_builder.include?("--no-rebuild") &&
         !bottle_builder.match?(/bottle \\\n\s+--only-json-tab/),
         "reviewed bottle builder no longer retains its embedded installation receipt")
   host_plan_index = bottle_builder.index("--host-dependencies-json")

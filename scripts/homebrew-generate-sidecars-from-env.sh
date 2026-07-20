@@ -717,7 +717,7 @@ manifest = {
                                 "passed": [
                                     "brew install --build-bottle",
                                     "brew test",
-                                    "brew bottle --json --no-rebuild",
+                                    "brew bottle --json --keep-old",
                                     "scripts/homebrew-merge-bottle-json.sh statically composed canonical bottle metadata",
                                 ],
                                 "failed": [],
