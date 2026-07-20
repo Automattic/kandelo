@@ -1299,6 +1299,8 @@ def check_publisher(workflow)
     KANDELO_HOMEBREW_BROWSER_EVIDENCE
   ].all? { |name| dev_shell.include?("--keep #{name}") },
         "dev shell drops exact Homebrew runtime evidence inputs")
+  check(dev_shell.include?("--keep KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"),
+        "dev shell drops the immutable resolved tap map")
   check(!dev_shell.include?("--keep KANDELO_HOMEBREW_TAP_NAME"),
         "dev shell globally preserves caller-selected Homebrew tap identity")
   flake = File.binread(File.join(REPO_ROOT, "flake.nix"))
@@ -1480,6 +1482,18 @@ def check_publisher(workflow)
     isolate_index = formula_runner.index("homebrew_patched_launcher_isolate")
     check(seed_index && isolate_index && seed_index < isolate_index,
           "Formula runner does not seed locked Bundler groups before isolation")
+    [
+      '.dependencies[] | [.tap_name, .root, .tap_commit] | @tsv',
+      '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
+      'tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"',
+      'locked_dependency_root="$(cd "$dependency_root" && pwd -P)"',
+      '[ "$tapped_dependency_root" != "$locked_dependency_root" ]',
+      '[ "$(git -C "$tapped_dependency_root" rev-parse HEAD)" = "$dependency_commit" ]',
+      '[ -z "$(git -C "$tapped_dependency_root" status --short --untracked-files=all)" ]',
+    ].each do |fragment|
+      check(formula_runner.include?(fragment),
+            "Formula runner immutable dependency tap binding lacks #{fragment}")
+    end
     [
       'NATIVE_PREFIX="$(homebrew_patched_launcher_native_prefix_path "$NATIVE_BASE")"',
       'NATIVE_CACHE="$NATIVE_BASE/c"',
@@ -2558,9 +2572,11 @@ def check_publisher(workflow)
     'if not validation_tap_root:',
     'fail("planned tap root requires a current tap root")',
     'if exact_git_head(planned_root, "planned tap root") != args.tap_commit:',
+    'if planned_root is not None and dependency_tap == normalized_tap:',
     'if sha256_file(planned_formula_path) != formula["sha256"]:',
     'Formula digest differs from the planned tap',
     'if current_formula_sha != formula["sha256"]:',
+    'elif current_formula_sha != formula["sha256"]:',
     'Formula differs from the planned tap outside canonical bottle metadata',
     'validate_parser.add_argument("--planned-tap-root")',
   ].each do |fragment|

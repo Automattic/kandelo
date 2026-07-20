@@ -69,7 +69,7 @@ python3 "$validator" resolve \
   --tap-commit "$PRIMARY_SHA" \
   --dependency-root "kandelo-dev/tap-core=$CORE" \
   --out "$resolved"
-[ "$(stat -f '%Lp' "$resolved" 2>/dev/null || stat -c '%a' "$resolved")" = "444" ]
+[ "$(python3 -c 'import os, sys; print(f"{os.stat(sys.argv[1]).st_mode & 0o777:o}")' "$resolved")" = "444" ]
 jq -e --arg primary "$PRIMARY_SHA" --arg core "$CORE_SHA" \
   --arg primary_root "$(cd "$PRIMARY" && pwd -P)" --arg core_root "$(cd "$CORE" && pwd -P)" '
     .schema == 1 and
