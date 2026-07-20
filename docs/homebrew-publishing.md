@@ -370,6 +370,12 @@ canonical block and its composer-owned separator blank line. This is a
 one-way normalization: a receipt with a replacement bottle block, changed
 comments or whitespace, added Ruby, or any other non-bottle drift is rejected.
 The comparison does not rely only on a bottle-excluded digest.
+The bounded inspector records the exact archived Formula digest after that
+comparison. Sidecar generation carries both identities independently: the
+selected tap Formula digest identifies the reviewed build source, while the
+inspector's archived digest is rechecked against the bottle when the sidecars
+are written. This prevents a later architecture's normal bottle-block removal
+from weakening the archive's byte-for-byte binding.
 
 The archived receipt used by static VFS composition intentionally has no
 `source.tap_git_head`. The VFS builder preserves those receipt bytes instead of

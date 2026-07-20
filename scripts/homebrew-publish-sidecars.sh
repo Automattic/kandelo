@@ -343,6 +343,7 @@ compose_publication_handoff() {
       .packages[0].bottles[0].bottle_tag == $tag and
       .packages[0].bottles[0].status == "success" and
       .packages[0].bottles[0].bottle_file == "../build/bottle.tar.gz" and
+      (.packages[0].bottles[0].archived_formula_sha256 | test("^[0-9a-f]{64}$")) and
       .packages[0].bottles[0].cache_key_sha == $sha and
       .packages[0].bottles[0].url == $url
     ' "$input" >/dev/null || {

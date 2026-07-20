@@ -1396,18 +1396,24 @@ make_publish_handoff() {
   local extra_link_count="${PUBLISH_HANDOFF_EXTRA_LINK_COUNT:-0}"
   local dependency_mode="${PUBLISH_HANDOFF_DEPENDENCY_MODE:-none}"
   local seed_dependency_sidecars="${PUBLISH_HANDOFF_SEED_DEPENDENCY_SIDECARS:-0}"
+  local selected_formula_source="${PUBLISH_HANDOFF_FORMULA_SOURCE:-}"
+  local archived_formula_source="${PUBLISH_HANDOFF_ARCHIVED_FORMULA_SOURCE:-}"
   local dependency_provenance_source="${handoff}.dependency-provenance.json"
   local composition_dependencies='[]'
-  local bottle_sha bottle_bytes bottle_url formula_sha
+  local bottle_sha bottle_bytes bottle_url formula_sha archived_formula_sha
 
   rm -rf "$handoff" "$tap_root" "$build_stage" "$dependency_provenance_source"
   mkdir -p "$tap_root/Formula" "$handoff/composition"
   if [ "$dependency_mode" = "none" ]; then
-    cat >"$tap_root/Formula/hello.rb" <<'EOF'
+    if [ -n "$selected_formula_source" ]; then
+      cp "$selected_formula_source" "$tap_root/Formula/hello.rb"
+    else
+      cat >"$tap_root/Formula/hello.rb" <<'EOF'
 class Hello < Formula
   desc "reviewed fixture"
 end
 EOF
+    fi
   else
     cat >"$tap_root/Formula/hello.rb" <<'EOF'
 class Hello < Formula
@@ -1445,11 +1451,19 @@ EOF
   fi
   formula_sha="$(sha256sum "$tap_root/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/hello.rb" | awk '{print $1}')"
   if [ "$dependency_mode" = "none" ]; then
-    make_build_handoff "$build_stage"
+    if [ -n "$archived_formula_source" ]; then
+      BUILD_HANDOFF_FORMULA_SOURCE="$archived_formula_source" \
+        make_build_handoff "$build_stage"
+      archived_formula_sha="$(sha256sum "$archived_formula_source" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$archived_formula_source" | awk '{print $1}')"
+    else
+      make_build_handoff "$build_stage"
+      archived_formula_sha="$formula_sha"
+    fi
   else
     BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE="$dependency_provenance_source" \
       BUILD_HANDOFF_FORMULA_SOURCE="$tap_root/Formula/hello.rb" \
       make_build_handoff "$build_stage"
+    archived_formula_sha="$formula_sha"
   fi
   mv "$build_stage" "$handoff/build"
   make_dry_upload_receipt "$handoff/build" "$handoff/receipt.json" already-present
@@ -1459,7 +1473,8 @@ EOF
   bottle_url="$(jq -r '.layout.bottle.url' "$handoff/receipt.json")"
   jq -nS \
     --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
-    --arg formula_sha "$formula_sha" --argjson dependencies "$composition_dependencies" '{
+    --arg formula_sha "$formula_sha" --arg archived_formula_sha "$archived_formula_sha" \
+    --argjson dependencies "$composition_dependencies" '{
       schema: 1,
       tap_repository: "kandelo-dev/homebrew-tap-core",
       tap_name: "kandelo-dev/tap-core",
@@ -1491,6 +1506,7 @@ EOF
           built_by: "https://example.invalid/actions/runs/1",
           built_at: "2026-07-12T00:00:00Z",
           bottle_file: "../build/bottle.tar.gz",
+          archived_formula_sha256: $archived_formula_sha,
           url: $url,
           cache_key_sha: $sha,
           payload_root: "hello/2.12.1",
@@ -1574,11 +1590,51 @@ set_publish_handoff_rebuild() {
 
 assert_publish_handoff_is_exact_inert_data() {
   local handoff tap_root tmp external before after err generated composed host link
+  local selected_formula archived_formula selected_formula_sha
 
   handoff="$TMPDIR/publish-handoff-valid"
   tap_root="$TMPDIR/publish-handoff-valid-tap"
   make_publish_handoff "$handoff" "$tap_root"
   validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+
+  selected_formula="$TMPDIR/publish-handoff-second-arch-selected.rb"
+  archived_formula="$TMPDIR/publish-handoff-second-arch-archived.rb"
+  cat >"$selected_formula" <<'RUBY'
+class Hello < Formula
+  desc "reviewed fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    sha256 cellar: :any_skip_relocation, wasm64_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
+  end
+
+end
+RUBY
+  cat >"$archived_formula" <<'RUBY'
+class Hello < Formula
+  desc "reviewed fixture"
+
+end
+RUBY
+  handoff="$TMPDIR/publish-handoff-second-arch"
+  tap_root="$TMPDIR/publish-handoff-second-arch-tap"
+  PUBLISH_HANDOFF_FORMULA_SOURCE="$selected_formula" \
+    PUBLISH_HANDOFF_ARCHIVED_FORMULA_SOURCE="$archived_formula" \
+    make_publish_handoff "$handoff" "$tap_root"
+  validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+  selected_formula_sha="$(sha256sum "$selected_formula" 2>/dev/null | awk '{print $1}' || \
+    shasum -a 256 "$selected_formula" | awk '{print $1}')"
+  tmp="$handoff/composition/sidecars-input.invalid-archive-sha.json"
+  jq --arg sha "$selected_formula_sha" \
+    '.packages[0].bottles[0].archived_formula_sha256 = $sha' \
+    "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
+  err="$TMPDIR/publish-handoff-second-arch.err"
+  if validate_publish_handoff "$handoff" "$tap_root" > /dev/null 2>"$err"; then
+    fail "publish handoff validator accepted the selected Formula digest as archived receipt evidence"
+  fi
+  grep -F "archived Formula sha256 differs from bounded inspection" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain archived Formula digest drift"
 
   handoff="$TMPDIR/publish-handoff-dry-run"
   tap_root="$TMPDIR/publish-handoff-dry-run-tap"
