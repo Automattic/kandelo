@@ -60,7 +60,12 @@ been validated; lock changes are not automatic publication outputs.
 The publish workflow generates this directory with:
 
 ```bash
-scripts/dev-shell.sh cargo xtask homebrew-sidecars \
+host_target="$(
+  bash scripts/dev-shell.sh rustc -vV |
+    awk '/^host/ {print $2}'
+)"
+bash scripts/dev-shell.sh cargo run --release -p xtask \
+  --target "$host_target" --quiet -- homebrew-sidecars \
   --tap-root /path/to/kandelo-homebrew \
   --input /path/to/sidecars-input.json \
   --previous-metadata /path/to/previous/Kandelo/metadata.json
@@ -98,6 +103,10 @@ The reusable maintenance workflow supports two operator paths:
 Package deletion is not normal rollback. Delete a GHCR/Homebrew package object
 only for legal, security, or retention emergencies, and record the deleted URL
 plus the reason in the rollback report.
+An unfinished public version index is also not a deletion case. Inspect the
+failed run, then use the
+[bounded forced-recovery procedure](../../../docs/homebrew-publishing.md#recovering-an-unfinished-public-version-index)
+only when live Formula and aggregate sidecars never finalized that identity.
 
 ## Validation Split
 
@@ -120,7 +129,12 @@ The semantic validator must still check cross-file and artifact facts:
 Run the repo-local validator against a generated tap checkout:
 
 ```bash
-scripts/dev-shell.sh cargo xtask homebrew-validate \
+host_target="$(
+  bash scripts/dev-shell.sh rustc -vV |
+    awk '/^host/ {print $2}'
+)"
+bash scripts/dev-shell.sh cargo run --release -p xtask \
+  --target "$host_target" --quiet -- homebrew-validate \
   --tap-root /path/to/kandelo-homebrew
 ```
 
@@ -284,6 +298,17 @@ Because this may be the closure's first browser smoke, browser eligibility is
 provisional only inside the verifier. The evidence retains the bottles' declared
 runtime flags, the exact Chromium run decides the gate, and no provisional
 `browser_compatible` value is written to the tap.
+
+When this gate is required, the publisher promotes the exact accepted image
+only after every verifier and tap finalizer succeeds. A repository
+administrator must first enable **Settings → Releases → Enable release
+immutability** for the source tap. The resulting content-addressed release
+contains the image, stable descriptor, VFS report, and separate Node and
+Chromium evidence. The descriptor is the durable machine-readable entry point;
+the release does not make every Formula browser-compatible or create a generic
+gallery. See
+[Durable Browser-Proven VFS Releases](../../../docs/homebrew-publishing.md#durable-browser-proven-vfs-releases)
+for exact assets, retry behavior, and direct-image launch URLs.
 
 ## Browser Gallery Assets
 

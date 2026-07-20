@@ -47,6 +47,12 @@ called by the tap repository after its formulae exist. The normal tap caller is
 The protected dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`; publish and dry-run
 requests must include nonempty Formula and architecture selections.
+All three first-party callers use one exact merged Kandelo commit. Follow the
+[caller-pin rotation procedure](../../docs/homebrew-publishing.md#rotating-the-caller-workflow-pin)
+when that commit changes; never rerun an old write run after a rotation. The
+first-party catalog uses the documented
+[dependency-ready dispatch and retry policy](../../docs/homebrew-publishing.md#dispatch-and-retry-policy)
+for bounded parallel rollout.
 
 The publisher keeps GitHub repository identity separate from canonical
 Homebrew tap identity. Every repository uses the conventional
@@ -59,11 +65,10 @@ same repository's reviewed `main` workflow.
 The caller grants the maximum permission ceiling. Production child and
 version-index writes use only that caller repository's scoped built-in
 `GITHUB_TOKEN` (`github.token`); the reusable workflow accepts no package PAT
-input or secret. Four fresh runner roles then downgrade it: a read-only
-build/test job, a `packages: write` uploader without tap write access, a
-read-only anonymous/runtime verifier, and a `contents: write` tap finalizer
-without package write access. Dry runs never schedule the uploader or
-finalizer. Jobs exchange strict, bounded data handoffs; Formula builds cannot
+input or secret. Fresh runner roles then downgrade it: read-only build/test and
+verification jobs, package writers without tap write access, and tap/release
+writers without package write access. Dry runs never schedule registry or tap
+writers. Jobs exchange strict, bounded data handoffs; Formula builds cannot
 pass scripts, environment files, or credentials to a privileged runner.
 Before GHCR credentials are exposed, the uploader validates the complete bottle
 archive as inert data. Every Wasm member, regardless of mode or path, must match
@@ -77,14 +82,16 @@ fetches only the declared base commands and rootfs as Kandelo platform
 prerequisites; the migrated package payload comes from the Homebrew bottle, not
 the package registry archive. The Hello gallery smoke separately prepares the
 supported interactive browser graph. The workflow retains browser gallery
-output as run-scoped diagnostics and does not publish sidecars or gallery
-assets to a GitHub Release.
+output as run-scoped diagnostics and does not publish sidecars or generic
+gallery assets to a GitHub Release. A required dependency-bearing VFS
+acceptance may separately publish its exact image and evidence through the
+[immutable VFS release path](../../docs/homebrew-publishing.md#durable-browser-proven-vfs-releases).
 
 Only after the complete package-scoped publication handoff is validated as
 inert data does the finalizer acquire the tap lock, refresh tap state, compose
 the selected static Formula bottle tag, and regenerate `Kandelo/` state. It
-does not execute Formula Ruby or Homebrew with tap write credentials. Failed attempts go
-under `Kandelo/reports/failures/` without replacing last-green
+does not execute Formula Ruby or Homebrew with tap write credentials. Failed
+attempts go under `Kandelo/reports/failures/` without replacing last-green
 `Kandelo/metadata.json`. The bottle root is always derived from the lowercase
 tap repository, including its `homebrew-` prefix; callers cannot override it.
 
@@ -95,10 +102,14 @@ already carries the expected cache key, unless the caller sets `force`.
 Rollback mode records a report under `Kandelo/reports/rollbacks/` while
 preserving last-green metadata; package deletion is exceptional and must be
 documented with both the deleted package URL and the operational reason.
+When a failed run already published an unfinished public version index, use the
+[bounded recovery procedure](../../docs/homebrew-publishing.md#recovering-an-unfinished-public-version-index)
+before dispatching a retry.
 
 The never-live private `tap-core/zlib` and `tap-core/bzip2` controls are a
-one-time migration cleanup: keep them through the repository-rooted zlib and
-fresh-package bzip2 production pilots, then follow the exact inventory,
+one-time migration cleanup. Their repository-rooted production pilots and
+anonymous public-index acceptance are complete; deletion remains a separate,
+explicitly authorized package-admin operation. Follow the exact inventory,
 deletion, verification, and restoration procedure in
 [Public Package Creation And Legacy Namespace Retirement](../../docs/homebrew-publishing.md#public-package-creation-and-legacy-namespace-retirement).
 
