@@ -2827,6 +2827,8 @@ jobs:
           public_dir="$GITHUB_WORKSPACE/kandelo/apps/browser-demos/public/__kandelo-acceptance"
           image="$acceptance_root/homebrew-brewfile.vfs.zst"
           report="$acceptance_root/homebrew-brewfile-report.json"
+          lazy_layer="$acceptance_root/kandelo-homebrew-shell-layer.zip"
+          lazy_layer_descriptor="$acceptance_root/kandelo-homebrew-shell-layer.json"
           node_evidence="$acceptance_root/node-evidence.json"
           browser_evidence="$acceptance_root/browser-evidence.json"
           playwright_report="$acceptance_root/playwright-report.json"
@@ -2933,7 +2935,10 @@ jobs:
             --out "$image"
             --report "$report"
             --bottle-cache "$RUNNER_TEMP/homebrew-bottle-cache"
+            --max-bytes 256MiB
             --no-fallback
+            --lazy-layer-out "$lazy_layer"
+            --lazy-layer-descriptor "$lazy_layer_descriptor"
           )
           vfs_args+=("${dependency_tap_args[@]}")
           if [ -n "$shell_config" ]; then
@@ -3154,6 +3159,8 @@ jobs:
             --report "$acceptance_root/homebrew-brewfile-report.json" \
             --node-evidence "$acceptance_root/node-evidence.json" \
             --browser-evidence "$acceptance_root/browser-evidence.json" \
+            --lazy-layer "$acceptance_root/kandelo-homebrew-shell-layer.zip" \
+            --lazy-layer-descriptor "$acceptance_root/kandelo-homebrew-shell-layer.json" \
             --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
@@ -3596,9 +3603,11 @@ jobs:
             --receipt "$RUNNER_TEMP/homebrew-vfs-release-receipt.json"
           descriptor_url="$(jq -er '.descriptor_url' "$RUNNER_TEMP/homebrew-vfs-release-receipt.json")"
           image_url="$(jq -er '.image.url' "$RUNNER_TEMP/homebrew-vfs-release-receipt.json")"
+          lazy_layer_descriptor_url="$(jq -er '.lazy_layer.descriptor_url' "$RUNNER_TEMP/homebrew-vfs-release-receipt.json")"
           {
             echo "descriptor-url=$descriptor_url"
             echo "image-url=$image_url"
+            echo "lazy-layer-descriptor-url=$lazy_layer_descriptor_url"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Public Homebrew VFS"
@@ -3606,6 +3615,8 @@ jobs:
             echo "Descriptor: $descriptor_url"
             echo
             echo "Browser launch input: \`?vfs=$image_url\`"
+            echo
+            echo "Lazy shell layer descriptor: $lazy_layer_descriptor_url"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload public VFS publication receipt

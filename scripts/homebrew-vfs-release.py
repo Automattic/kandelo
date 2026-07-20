@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import zipfile
 from typing import Any
 
 
@@ -35,13 +37,24 @@ REPORT_ASSET = "kandelo-homebrew-vfs-report.json"
 NODE_ASSET = "kandelo-homebrew-node-evidence.json"
 BROWSER_ASSET = "kandelo-homebrew-browser-evidence.json"
 DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json"
+LAZY_LAYER_ASSET = "kandelo-homebrew-shell-layer.zip"
+LAZY_LAYER_DESCRIPTOR_ASSET = "kandelo-homebrew-shell-layer.json"
 EXPECTED_ASSETS = {
     IMAGE_ASSET,
     REPORT_ASSET,
     NODE_ASSET,
     BROWSER_ASSET,
     DESCRIPTOR_ASSET,
+    LAZY_LAYER_ASSET,
+    LAZY_LAYER_DESCRIPTOR_ASSET,
 }
+MAX_LAZY_LAYER_ENTRIES = 100_000
+MAX_LAZY_LAYER_PATH_BYTES = 4096
+MAX_LAZY_LAYER_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+S_IFMT = 0o170000
+S_IFREG = 0o100000
+S_IFDIR = 0o040000
+S_IFLNK = 0o120000
 
 
 class ValidationError(Exception):
@@ -546,7 +559,281 @@ def validate_evidence(
         "executable": config["executable"],
         "argv": config["argv"],
         "default_shell": default_shell,
+        "report_packages": report_values,
     }
+
+
+def validate_lazy_layer(
+    result: dict[str, Any],
+    *,
+    archive_path: Path,
+    descriptor_path: Path,
+    tap_repository: str,
+    tap_name: str,
+    tap_commit: str,
+    kandelo_commit: str,
+) -> None:
+    archive_value = read_bytes(archive_path, "Homebrew lazy layer ZIP", MAX_VFS_BYTES)
+    descriptor_value, _ = read_json(
+        descriptor_path, "Homebrew lazy layer descriptor"
+    )
+    descriptor = record(descriptor_value, "Homebrew lazy layer descriptor")
+    expected_top_level = {
+        "schema", "kind", "arch", "mount_prefix", "tap", "kandelo",
+        "bottle_release_tag", "selection", "packages", "release",
+        "source_vfs", "archive", "entries",
+    }
+    if set(descriptor) != expected_top_level:
+        fail("Homebrew lazy layer descriptor has unexpected fields")
+    exact(descriptor.get("schema"), 1, "Homebrew lazy layer schema")
+    exact(
+        descriptor.get("kind"),
+        "kandelo-homebrew-lazy-archive",
+        "Homebrew lazy layer kind",
+    )
+    exact(descriptor.get("arch"), "wasm32", "Homebrew lazy layer architecture")
+    exact(descriptor.get("mount_prefix"), "/", "Homebrew lazy layer mount prefix")
+    exact(
+        descriptor.get("bottle_release_tag"),
+        result["release_tag"],
+        "Homebrew lazy layer bottle release tag",
+    )
+
+    tap = record(descriptor.get("tap"), "Homebrew lazy layer tap")
+    if set(tap) != {"repository", "name", "commit"}:
+        fail("Homebrew lazy layer tap has unexpected fields")
+    exact(tap.get("repository"), tap_repository, "Homebrew lazy layer tap repository")
+    exact(tap.get("name"), tap_name, "Homebrew lazy layer tap name")
+    exact(tap.get("commit"), tap_commit, "Homebrew lazy layer tap commit")
+
+    kandelo = record(descriptor.get("kandelo"), "Homebrew lazy layer Kandelo source")
+    if set(kandelo) != {"repository", "commit", "abi"}:
+        fail("Homebrew lazy layer Kandelo source has unexpected fields")
+    exact(
+        kandelo.get("repository"),
+        "Automattic/kandelo",
+        "Homebrew lazy layer Kandelo repository",
+    )
+    exact(kandelo.get("commit"), kandelo_commit, "Homebrew lazy layer Kandelo commit")
+    exact(kandelo.get("abi"), result["abi"], "Homebrew lazy layer Kandelo ABI")
+
+    selection = record(descriptor.get("selection"), "Homebrew lazy layer selection")
+    if set(selection) != {"requested_packages", "package_order"}:
+        fail("Homebrew lazy layer selection has unexpected fields")
+    exact(
+        selection.get("requested_packages"),
+        result["requested"],
+        "Homebrew lazy layer requested packages",
+    )
+    report_packages = [
+        record(value, f"VFS report package {index}")
+        for index, value in enumerate(result["report_packages"])
+    ]
+    package_order = [
+        string(package.get("full_name"), f"VFS report package {index} full name")
+        for index, package in enumerate(report_packages)
+    ]
+    exact(
+        selection.get("package_order"),
+        package_order,
+        "Homebrew lazy layer dependency-first package order",
+    )
+
+    expected_package_keys = {
+        "name", "full_name", "tap_repository", "tap_name", "tap_commit",
+        "version", "arch", "source_status", "metadata_status", "url",
+        "sha256", "bytes", "cache_key_sha", "link_manifest",
+    }
+    expected_packages: list[dict[str, Any]] = []
+    for index, package in enumerate(report_packages):
+        missing = expected_package_keys - set(package)
+        if missing:
+            fail(
+                f"VFS report package {index} is missing lazy-layer provenance fields: "
+                f"{sorted(missing)}"
+            )
+        expected_packages.append(
+            {key: package[key] for key in (
+                "name", "full_name", "tap_repository", "tap_name", "tap_commit",
+                "version", "arch", "source_status", "metadata_status", "url",
+                "sha256", "bytes", "cache_key_sha", "link_manifest",
+            )}
+        )
+    packages = array(descriptor.get("packages"), "Homebrew lazy layer packages")
+    for index, value in enumerate(packages):
+        package = record(value, f"Homebrew lazy layer package {index}")
+        if set(package) != expected_package_keys:
+            fail(f"Homebrew lazy layer package {index} has unexpected fields")
+    exact(packages, expected_packages, "Homebrew lazy layer package provenance")
+
+    release_tag = f"homebrew-vfs-sha256-{result['image_sha']}"
+    release_root = (
+        f"https://github.com/{tap_repository}/releases/download/{release_tag}"
+    )
+    release = record(descriptor.get("release"), "Homebrew lazy layer release")
+    if set(release) != {"repository", "tag"}:
+        fail("Homebrew lazy layer release has unexpected fields")
+    exact(release.get("repository"), tap_repository, "Homebrew lazy layer release repository")
+    exact(release.get("tag"), release_tag, "Homebrew lazy layer release tag")
+
+    source_vfs = record(descriptor.get("source_vfs"), "Homebrew lazy layer source VFS")
+    if set(source_vfs) != {"asset", "url", "sha256", "bytes"}:
+        fail("Homebrew lazy layer source VFS has unexpected fields")
+    exact(source_vfs.get("asset"), IMAGE_ASSET, "Homebrew lazy layer source VFS asset")
+    exact(
+        source_vfs.get("url"),
+        f"{release_root}/{IMAGE_ASSET}",
+        "Homebrew lazy layer source VFS URL",
+    )
+    exact(source_vfs.get("sha256"), result["image_sha"], "Homebrew lazy layer source VFS digest")
+    exact(source_vfs.get("bytes"), result["image_bytes"], "Homebrew lazy layer source VFS size")
+
+    archive = record(descriptor.get("archive"), "Homebrew lazy layer archive")
+    expected_archive_keys = {
+        "format", "asset", "url", "sha256", "bytes", "entry_count",
+        "uncompressed_bytes",
+    }
+    if set(archive) != expected_archive_keys:
+        fail("Homebrew lazy layer archive has unexpected fields")
+    exact(archive.get("format"), "zip", "Homebrew lazy layer archive format")
+    exact(archive.get("asset"), LAZY_LAYER_ASSET, "Homebrew lazy layer archive asset")
+    exact(
+        archive.get("url"),
+        f"{release_root}/{LAZY_LAYER_ASSET}",
+        "Homebrew lazy layer archive URL",
+    )
+    exact(
+        archive.get("sha256"),
+        digest_bytes(archive_value),
+        "Homebrew lazy layer archive digest",
+    )
+    exact(archive.get("bytes"), len(archive_value), "Homebrew lazy layer archive size")
+
+    entries = array(descriptor.get("entries"), "Homebrew lazy layer entries")
+    if not entries or len(entries) > MAX_LAZY_LAYER_ENTRIES:
+        fail(
+            f"Homebrew lazy layer entries must contain 1 to "
+            f"{MAX_LAZY_LAYER_ENTRIES} records"
+        )
+    validated_entries: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    uncompressed_bytes = 0
+    for index, value in enumerate(entries):
+        entry = record(value, f"Homebrew lazy layer entry {index}")
+        entry_type = entry.get("type")
+        expected_keys = {"path", "type", "mode", "size"}
+        if entry_type == "symlink":
+            expected_keys.add("target")
+        elif entry_type not in ("directory", "file"):
+            fail(f"Homebrew lazy layer entry {index} has an invalid type")
+        if set(entry) != expected_keys:
+            fail(f"Homebrew lazy layer entry {index} has unexpected fields")
+        path = string(
+            entry.get("path"),
+            f"Homebrew lazy layer entry {index} path",
+            maximum=MAX_LAZY_LAYER_PATH_BYTES,
+        )
+        components = path.split("/")
+        if path.startswith("/") or "\\" in path or any(
+            component in ("", ".", "..") for component in components
+        ):
+            fail(f"Homebrew lazy layer entry {index} has an unsafe path")
+        if path in seen_paths:
+            fail(f"Homebrew lazy layer entry {index} duplicates path {path}")
+        seen_paths.add(path)
+        mode = integer(entry.get("mode"), f"Homebrew lazy layer entry {index} mode")
+        if mode > 0o7777:
+            fail(f"Homebrew lazy layer entry {index} mode exceeds POSIX permission bits")
+        size = integer(entry.get("size"), f"Homebrew lazy layer entry {index} size")
+        if size > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
+            fail(f"Homebrew lazy layer entry {index} exceeds the size limit")
+        uncompressed_bytes += size
+        if uncompressed_bytes > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
+            fail("Homebrew lazy layer exceeds the uncompressed size limit")
+        if entry_type == "directory" and size != 0:
+            fail(f"Homebrew lazy layer directory {path} has nonzero size")
+        if entry_type == "symlink":
+            target = string(
+                entry.get("target"),
+                f"Homebrew lazy layer entry {index} target",
+                maximum=65_536,
+            )
+            validated_entries.append({**entry, "target": target})
+        else:
+            validated_entries.append(entry)
+    paths = [entry["path"] for entry in validated_entries]
+    if paths != sorted(paths):
+        fail("Homebrew lazy layer entries are not in canonical path order")
+    exact(
+        archive.get("entry_count"),
+        len(validated_entries),
+        "Homebrew lazy layer archive entry count",
+    )
+    exact(
+        archive.get("uncompressed_bytes"),
+        uncompressed_bytes,
+        "Homebrew lazy layer archive uncompressed size",
+    )
+    validate_lazy_layer_zip(archive_value, validated_entries)
+
+
+def validate_lazy_layer_zip(
+    archive_value: bytes, entries: list[dict[str, Any]]
+) -> None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_value), "r") as archive:
+            if archive.comment:
+                fail("Homebrew lazy layer ZIP has a non-empty archive comment")
+            infos = archive.infolist()
+            expected_names = [
+                f"{entry['path']}/" if entry["type"] == "directory" else entry["path"]
+                for entry in entries
+            ]
+            actual_names = [info.filename for info in infos]
+            if actual_names != expected_names or len(set(actual_names)) != len(actual_names):
+                fail("Homebrew lazy layer ZIP entries differ from the canonical index")
+            for index, (info, entry) in enumerate(zip(infos, entries, strict=True)):
+                if info.create_system != 3:
+                    fail(f"Homebrew lazy layer ZIP entry {index} is not Unix-authored")
+                if info.date_time != (1980, 1, 1, 0, 0, 0):
+                    fail(f"Homebrew lazy layer ZIP entry {index} has a non-canonical timestamp")
+                if info.comment or info.extra or (info.flag_bits & 1):
+                    fail(f"Homebrew lazy layer ZIP entry {index} has unsupported metadata")
+                if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    fail(f"Homebrew lazy layer ZIP entry {index} has unsupported compression")
+                expected_type = {
+                    "directory": S_IFDIR,
+                    "file": S_IFREG,
+                    "symlink": S_IFLNK,
+                }[entry["type"]]
+                mode = (info.external_attr >> 16) & 0xffff
+                if (mode & S_IFMT) != expected_type or (mode & 0o7777) != entry["mode"]:
+                    fail(f"Homebrew lazy layer ZIP entry {index} mode differs from its index")
+                exact(
+                    info.file_size,
+                    entry["size"],
+                    f"Homebrew lazy layer ZIP entry {index} size",
+                )
+                if entry["type"] == "symlink":
+                    value = archive.read(info)
+                    try:
+                        target = value.decode("utf-8")
+                    except UnicodeDecodeError:
+                        fail(f"Homebrew lazy layer ZIP symlink {index} is not UTF-8")
+                    exact(
+                        target,
+                        entry["target"],
+                        f"Homebrew lazy layer ZIP symlink {index} target",
+                    )
+                else:
+                    extracted = 0
+                    with archive.open(info, "r") as source:
+                        while chunk := source.read(1024 * 1024):
+                            extracted += len(chunk)
+                    if extracted != entry["size"]:
+                        fail(f"Homebrew lazy layer ZIP entry {index} extracted short")
+    except zipfile.BadZipFile as error:
+        fail(f"Homebrew lazy layer ZIP is invalid: {error}")
 
 
 def asset_record(repository: str, tag: str, name: str, value: bytes) -> dict[str, Any]:
@@ -625,7 +912,9 @@ def validate_bundle_dir(path: Path) -> None:
         regular_file(
             path / name,
             f"VFS release handoff {name}",
-            MAX_VFS_BYTES if name == IMAGE_ASSET else MAX_JSON_BYTES,
+            MAX_VFS_BYTES
+            if name in (IMAGE_ASSET, LAZY_LAYER_ASSET)
+            else MAX_JSON_BYTES,
         )
 
 
@@ -656,15 +945,28 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         REPORT_ASSET: Path(args.report),
         NODE_ASSET: Path(args.node_evidence),
         BROWSER_ASSET: Path(args.browser_evidence),
+        LAZY_LAYER_ASSET: Path(args.lazy_layer),
+        LAZY_LAYER_DESCRIPTOR_ASSET: Path(args.lazy_layer_descriptor),
     }
     for name, source in sources.items():
         read_bytes(
             source,
             f"release source {name}",
-            MAX_VFS_BYTES if name == IMAGE_ASSET else MAX_JSON_BYTES,
+            MAX_VFS_BYTES
+            if name in (IMAGE_ASSET, LAZY_LAYER_ASSET)
+            else MAX_JSON_BYTES,
         )
         shutil.copyfile(source, output / name, follow_symlinks=False)
     result = validate_evidence(**common_kwargs(args, output))
+    validate_lazy_layer(
+        result,
+        archive_path=output / LAZY_LAYER_ASSET,
+        descriptor_path=output / LAZY_LAYER_DESCRIPTOR_ASSET,
+        tap_repository=args.tap_repository,
+        tap_name=args.tap_name,
+        tap_commit=args.tap_commit,
+        kandelo_commit=args.kandelo_commit,
+    )
     image_value = read_bytes(output / IMAGE_ASSET, "VFS release image", MAX_VFS_BYTES)
     descriptor = build_descriptor(
         result,
@@ -684,6 +986,15 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     handoff = Path(args.handoff if hasattr(args, "handoff") else args.out)
     validate_bundle_dir(handoff)
     result = validate_evidence(**common_kwargs(args, handoff))
+    validate_lazy_layer(
+        result,
+        archive_path=handoff / LAZY_LAYER_ASSET,
+        descriptor_path=handoff / LAZY_LAYER_DESCRIPTOR_ASSET,
+        tap_repository=args.tap_repository,
+        tap_name=args.tap_name,
+        tap_commit=args.tap_commit,
+        kandelo_commit=args.kandelo_commit,
+    )
     image_value = read_bytes(handoff / IMAGE_ASSET, "VFS release image", MAX_VFS_BYTES)
     expected = build_descriptor(
         result,
@@ -738,6 +1049,8 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--report", required=True)
             sub.add_argument("--node-evidence", required=True)
             sub.add_argument("--browser-evidence", required=True)
+            sub.add_argument("--lazy-layer", required=True)
+            sub.add_argument("--lazy-layer-descriptor", required=True)
             sub.add_argument("--out", required=True)
         else:
             sub.add_argument("--handoff", required=True)

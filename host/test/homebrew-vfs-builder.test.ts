@@ -20,12 +20,17 @@ import {
   type HomebrewVfsBuildResult,
   type HomebrewVfsSelectionSource,
 } from "../src/homebrew-vfs-builder";
+import { buildHomebrewLazyLayer } from "../src/homebrew-lazy-layer";
 import {
   planHomebrewVfs,
   type HomebrewLinkManifest,
   type HomebrewTapMetadata,
 } from "../src/homebrew-vfs-planner";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  extractZipEntry,
+  parseZipCentralDirectory,
+} from "../src/vfs/zip";
 
 const PREFIX = "/home/linuxbrew/.linuxbrew";
 const CELLAR = `${PREFIX}/Cellar`;
@@ -335,6 +340,69 @@ function readVfsFile(fs: MemoryFileSystem, path: string): string {
 }
 
 describe("Homebrew VFS builder", () => {
+  it("builds a deterministic provenance-bound lazy ZIP from the verified closure", async () => {
+    const bytes = bottleTar(standardEntries());
+    const manifest = linkManifest(bytes);
+    const plan = await planHomebrewVfs(metadataForBottle(bytes), {
+      packages: ["hello"],
+      arch: "wasm32",
+      runtime: "node",
+      loadLinkManifest: () => manifest,
+    });
+    const sourceVfs = {
+      sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      bytes: 12345,
+    };
+    const build = () => buildHomebrewLazyLayer(plan, {
+      fs: MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024)),
+      sourceVfs,
+      loadBottleBytes: () => bytes,
+    });
+
+    const first = await build();
+    const second = await build();
+    expect(Array.from(first.archive)).toEqual(Array.from(second.archive));
+    expect(first.descriptor).toEqual(second.descriptor);
+    expect(first.descriptor.selection).toEqual({
+      requested_packages: ["hello"],
+      package_order: ["kandelo-dev/tap-core/hello"],
+    });
+    expect(first.descriptor.source_vfs).toMatchObject(sourceVfs);
+    expect(first.descriptor.release.tag).toBe(
+      `homebrew-vfs-sha256-${sourceVfs.sha256}`,
+    );
+    expect(first.descriptor.packages).toEqual([expect.objectContaining({
+      full_name: "kandelo-dev/tap-core/hello",
+      sha256: sha256(bytes),
+      link_manifest: "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json",
+    })]);
+
+    const entries = parseZipCentralDirectory(first.archive);
+    expect(entries.map((entry) => entry.fileName)).toEqual(
+      first.descriptor.entries.map((entry) =>
+        entry.type === "directory" ? `${entry.path}/` : entry.path
+      ),
+    );
+    const executable = entries.find(
+      (entry) => entry.fileName === "home/linuxbrew/.linuxbrew/Cellar/hello/2.12.1/bin/hello",
+    );
+    expect(executable?.mode & 0o7777).toBe(0o755);
+    expect(new TextDecoder().decode(extractZipEntry(first.archive, executable!)))
+      .toContain("echo hello");
+    const linked = entries.find(
+      (entry) => entry.fileName === "home/linuxbrew/.linuxbrew/bin/hello",
+    );
+    expect(linked?.isSymlink).toBe(true);
+    expect(new TextDecoder().decode(extractZipEntry(first.archive, linked!)))
+      .toBe(`${KEG}/bin/hello`);
+    expect(first.descriptor.entries).toContainEqual({
+      path: "etc/profile.d/kandelo-homebrew.sh",
+      type: "file",
+      mode: 0o644,
+      size: expect.any(Number),
+    });
+  });
+
   it("pours a verified bottle, creates its canonical opt link, and writes metadata", async () => {
     const bytes = bottleTar(standardEntries());
     const result = await buildFixture(bytes);

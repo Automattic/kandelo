@@ -197,6 +197,94 @@ jq -nS --arg image_sha "$image_sha" --arg kernel_sha "$kernel_sha" '
   }
   ' >"$source_root/browser.json"
 
+python3 - "$source_root" "$tap_commit" "$kandelo_commit" "$image_sha" \
+  "$image_bytes" "$file_sha" "$dash_sha" <<'PY'
+import hashlib, json, pathlib, stat, sys, zipfile
+
+root = pathlib.Path(sys.argv[1])
+tap_commit, kandelo_commit, image_sha = sys.argv[2:5]
+image_bytes = int(sys.argv[5])
+file_sha, dash_sha = sys.argv[6:8]
+archive_path = root / "layer.zip"
+entries = [
+    {"path": "etc/kandelo/homebrew-vfs.json", "type": "file", "mode": 0o644,
+     "size": len(b'{"schema":1}\n')},
+    {"path": "etc/profile.d/kandelo-homebrew.sh", "type": "file", "mode": 0o644,
+     "size": len(b'export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"\n')},
+    {"path": "home/linuxbrew/.linuxbrew", "type": "directory", "mode": 0o755, "size": 0},
+    {"path": "home/linuxbrew/.linuxbrew/bin", "type": "directory", "mode": 0o755, "size": 0},
+    {"path": "home/linuxbrew/.linuxbrew/bin/dash", "type": "symlink", "mode": 0o777,
+     "size": len(b'/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12/bin/dash'),
+     "target": "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12/bin/dash"},
+]
+payloads = {
+    entries[0]["path"]: b'{"schema":1}\n',
+    entries[1]["path"]: b'export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"\n',
+    entries[4]["path"]: entries[4]["target"].encode(),
+}
+with zipfile.ZipFile(archive_path, "w") as archive:
+    for entry in entries:
+        name = entry["path"] + ("/" if entry["type"] == "directory" else "")
+        info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        kind = {"directory": stat.S_IFDIR, "file": stat.S_IFREG,
+                "symlink": stat.S_IFLNK}[entry["type"]]
+        info.external_attr = (kind | entry["mode"]) << 16
+        info.compress_type = (zipfile.ZIP_STORED if entry["type"] != "file"
+                              else zipfile.ZIP_DEFLATED)
+        archive.writestr(info, payloads.get(entry["path"], b""))
+archive_bytes = archive_path.read_bytes()
+tag = "homebrew-vfs-sha256-" + image_sha
+release_root = (
+    "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/" + tag
+)
+packages = [
+    {
+        "name": "file-formula", "full_name": "kandelo-dev/tap-core/file-formula",
+        "tap_repository": "kandelo-dev/homebrew-tap-core",
+        "tap_name": "kandelo-dev/tap-core", "tap_commit": tap_commit,
+        "version": "5.46", "arch": "wasm32", "source_status": "success",
+        "metadata_status": "success",
+        "url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/file-formula/blobs/sha256:" + file_sha,
+        "sha256": file_sha, "bytes": 200, "cache_key_sha": file_sha,
+        "link_manifest": "Kandelo/links/file-formula.json",
+    },
+    {
+        "name": "dash", "full_name": "kandelo-dev/tap-core/dash",
+        "tap_repository": "kandelo-dev/homebrew-tap-core",
+        "tap_name": "kandelo-dev/tap-core", "tap_commit": tap_commit,
+        "version": "0.5.12", "arch": "wasm32", "source_status": "success",
+        "metadata_status": "success",
+        "url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + dash_sha,
+        "sha256": dash_sha, "bytes": 150, "cache_key_sha": dash_sha,
+        "link_manifest": "Kandelo/links/dash.json",
+    },
+]
+descriptor = {
+    "schema": 1, "kind": "kandelo-homebrew-lazy-archive", "arch": "wasm32",
+    "mount_prefix": "/",
+    "tap": {"repository": "kandelo-dev/homebrew-tap-core",
+            "name": "kandelo-dev/tap-core", "commit": tap_commit},
+    "kandelo": {"repository": "Automattic/kandelo", "commit": kandelo_commit,
+                "abi": 42},
+    "bottle_release_tag": "bottles-abi-v42",
+    "selection": {"requested_packages": ["file-formula", "dash"],
+                  "package_order": [package["full_name"] for package in packages]},
+    "packages": packages,
+    "release": {"repository": "kandelo-dev/homebrew-tap-core", "tag": tag},
+    "source_vfs": {"asset": "kandelo-homebrew.vfs.zst",
+                   "url": release_root + "/kandelo-homebrew.vfs.zst",
+                   "sha256": image_sha, "bytes": image_bytes},
+    "archive": {"format": "zip", "asset": "kandelo-homebrew-shell-layer.zip",
+                "url": release_root + "/kandelo-homebrew-shell-layer.zip",
+                "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                "bytes": len(archive_bytes), "entry_count": len(entries),
+                "uncompressed_bytes": sum(entry["size"] for entry in entries)},
+    "entries": entries,
+}
+(root / "layer.json").write_text(json.dumps(descriptor, sort_keys=True, indent=2) + "\n")
+PY
+
 common_identity_args=(
   --tap-root "$tap"
   --tap-repository kandelo-dev/homebrew-tap-core
@@ -216,6 +304,8 @@ python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
   --report "$source_root/report.json" \
   --node-evidence "$source_root/node.json" \
   --browser-evidence "$source_root/browser.json" \
+  --lazy-layer "$source_root/layer.zip" \
+  --lazy-layer-descriptor "$source_root/layer.json" \
   --out "$handoff" "${common_args[@]}" >/dev/null
 python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$handoff" "${common_args[@]}" >/dev/null
@@ -234,6 +324,13 @@ jq -e --arg image_sha "$image_sha" '
   .launch.query_parameter == "vfs" and .launch.value == .image.url and
   .default_shell.path == "/home/linuxbrew/.linuxbrew/bin/dash"
 ' "$handoff/kandelo-homebrew-vfs.json" >/dev/null || fail "descriptor contract changed"
+jq -e --arg image_sha "$image_sha" '
+  .schema == 1 and .kind == "kandelo-homebrew-lazy-archive" and
+  .source_vfs.sha256 == $image_sha and .mount_prefix == "/" and
+  .archive.asset == "kandelo-homebrew-shell-layer.zip" and
+  .archive.entry_count == (.entries | length)
+' "$handoff/kandelo-homebrew-shell-layer.json" >/dev/null ||
+  fail "lazy layer descriptor contract changed"
 
 negative="$TMP_ROOT/negative"
 cp -a "$handoff" "$negative"
@@ -247,6 +344,20 @@ jq '.image_sha256 = "00000000000000000000000000000000000000000000000000000000000
   "$negative/kandelo-homebrew-browser-evidence.json" >"$negative/browser.tmp"
 mv "$negative/browser.tmp" "$negative/kandelo-homebrew-browser-evidence.json"
 expect_failure "validator accepted browser evidence for different bytes" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+printf 'tamper' >>"$negative/kandelo-homebrew-shell-layer.zip"
+expect_failure "validator accepted a tampered lazy ZIP layer" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.entries[0].size += 1' "$negative/kandelo-homebrew-shell-layer.json" \
+  >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+expect_failure "validator accepted a lazy ZIP index that differs from its archive" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
@@ -418,7 +529,9 @@ run_publisher >/dev/null
 jq -e --arg image_sha "$image_sha" '
   .schema == 1 and .status == "success" and
   .visibility == "public-anonymous-readback" and
-  .image.sha256 == $image_sha and (.assets | length) == 5
+  .image.sha256 == $image_sha and
+  .lazy_layer.archive.asset == "kandelo-homebrew-shell-layer.zip" and
+  (.assets | length) == 7
 ' "$TMP_ROOT/receipt.json" >/dev/null || fail "publisher receipt contract changed"
 
 FAKE_CURL_FAIL_ONCE=kandelo-homebrew.vfs.zst run_publisher >/dev/null ||
@@ -439,13 +552,13 @@ expect_failure "publisher filled a missing asset in an existing public release" 
 cp "$fake_state/public-state.json" "$fake_state/state.json"
 
 # A partial exact draft is recoverable: the publisher fills only the missing
-# asset and publishes after all five authenticated checks succeed.
+# asset and publishes after all seven authenticated checks succeed.
 jq '.draft = true | del(.assets["kandelo-homebrew-browser-evidence.json"])' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
 : >"$fake_state/gh.log"
 run_publisher >/dev/null
-jq -e '.draft == false and (.assets | length) == 5' "$fake_state/state.json" >/dev/null ||
+jq -e '.draft == false and (.assets | length) == 7' "$fake_state/state.json" >/dev/null ||
   fail "publisher did not recover an exact partial draft"
 if ! jq -s -e '
   any(.[]; .[0:3] == ["api", "--paginate", "--slurp"]) and
