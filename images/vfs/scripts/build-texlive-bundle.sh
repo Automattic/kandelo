@@ -22,8 +22,10 @@ TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
 # snapshot of that year's final release; using it pins both halves of
 # the install (install-tl binary + the repository it pulls packages
 # from) to the same edition.
-TEXLIVE_INSTALL_URL="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final/install-tl-unx.tar.gz"
-TEXLIVE_REPOSITORY="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
+TEXLIVE_HISTORIC_BASE_URL="${TEXLIVE_HISTORIC_BASE_URL:-https://pi.kwarc.info/historic/systems/texlive/${TEXLIVE_VERSION}}"
+TEXLIVE_INSTALL_URL="${TEXLIVE_INSTALL_URL:-${TEXLIVE_HISTORIC_BASE_URL}/tlnet-final/install-tl-unx.tar.gz}"
+TEXLIVE_INSTALL_SHA512="${TEXLIVE_INSTALL_SHA512:-a307d7d11bcbd1f054ad0b0d476f7f12bc1a40d07445020edef8713b44453831d18a2f1722c3d2b0ea2e4fe6c06183a79d1c4049495113f412a9f5a570a8614d}"
+TEXLIVE_REPOSITORY="${TEXLIVE_REPOSITORY:-${TEXLIVE_HISTORIC_BASE_URL}/tlnet-final}"
 
 TEXLIVE_DIR="$REPO_ROOT/packages/registry/texlive"
 HOST_PDFTEX="$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex"
@@ -51,6 +53,8 @@ if [ ! -d "$INSTALL_DIR/texmf-dist" ]; then
         curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
             -fsSL "$TEXLIVE_INSTALL_URL" \
             -o "/tmp/install-tl.tar.gz"
+        echo "==> Verifying install-tl sha512..."
+        echo "$TEXLIVE_INSTALL_SHA512  /tmp/install-tl.tar.gz" | shasum -a 512 -c -
         mkdir -p "$INSTALLER_DIR"
         tar xzf "/tmp/install-tl.tar.gz" -C "$INSTALLER_DIR" --strip-components=1
         rm "/tmp/install-tl.tar.gz"
