@@ -266,6 +266,96 @@ function alignUp(value: number, align: number): number {
   return (value + align - 1) & ~(align - 1);
 }
 
+type WasmAddress = number | bigint;
+
+interface AddressedTable {
+  readonly length: WasmAddress;
+  grow(delta: WasmAddress): WasmAddress;
+  get(index: WasmAddress): Function | null;
+  set(index: WasmAddress, value: Function | null): void;
+}
+
+interface AddressedMemory {
+  grow(delta: WasmAddress): WasmAddress;
+}
+
+function wasmAddress(value: number, ptrWidth: 4 | 8, context: string): WasmAddress {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${context}: address is not an exact non-negative integer`);
+  }
+  return ptrWidth === 8 ? BigInt(value) : value;
+}
+
+function requireWasmAddress(
+  value: WasmAddress,
+  ptrWidth: 4 | 8,
+  context: string,
+): WasmAddress {
+  const expectedType = ptrWidth === 8 ? "bigint" : "number";
+  if (typeof value !== expectedType) {
+    throw new TypeError(`${context}: expected a ${ptrWidth * 8}-bit WebAssembly address`);
+  }
+  if (
+    (typeof value === "number" && (!Number.isSafeInteger(value) || value < 0))
+    || (typeof value === "bigint" && value < 0n)
+  ) {
+    throw new RangeError(`${context}: address is not an exact non-negative integer`);
+  }
+  return value;
+}
+
+function tableAddress(
+  table: WebAssembly.Table,
+  value: number,
+  context: string,
+): WasmAddress {
+  const rawLength = (table as unknown as AddressedTable).length;
+  const tableWidth = typeof rawLength === "bigint" ? 8 : 4;
+  return wasmAddress(value, tableWidth, context);
+}
+
+function tableLength(table: WebAssembly.Table): number {
+  const rawLength = (table as unknown as AddressedTable).length;
+  const tableWidth = typeof rawLength === "bigint" ? 8 : 4;
+  requireWasmAddress(rawLength, tableWidth, "dynamic-linker table length");
+  const length = Number(rawLength);
+  if (!Number.isSafeInteger(length)) {
+    throw new RangeError("dynamic-linker table length exceeds JavaScript's exact integer range");
+  }
+  return length;
+}
+
+function growTable(table: WebAssembly.Table, delta: number): void {
+  const addressed = table as unknown as AddressedTable;
+  addressed.grow(tableAddress(table, delta, "dynamic-linker table growth"));
+}
+
+function getTableEntry(
+  table: WebAssembly.Table,
+  index: number,
+): Function | null {
+  return (table as unknown as AddressedTable).get(
+    tableAddress(table, index, "dynamic-linker table index"),
+  );
+}
+
+function setTableEntry(
+  table: WebAssembly.Table,
+  index: number,
+  value: Function | null,
+): void {
+  (table as unknown as AddressedTable).set(
+    tableAddress(table, index, "dynamic-linker table index"),
+    value,
+  );
+}
+
+function growMemory(memory: WebAssembly.Memory, delta: number, ptrWidth: 4 | 8): void {
+  (memory as unknown as AddressedMemory).grow(
+    wasmAddress(delta, ptrWidth, "dynamic-linker memory growth"),
+  );
+}
+
 /**
  * Shared library instance loaded into a process's address space.
  */
@@ -367,7 +457,7 @@ export interface LoadSharedLibraryOptions {
   deallocateMemory?: (addr: number, size: number) => void;
   /** Global symbol table: name → function or WebAssembly.Global */
   globalSymbols: Map<string, Function | WebAssembly.Global>;
-  /** GOT entries: symbol name → mutable i32 WebAssembly.Global */
+  /** GOT entries: symbol name → mutable pointer-width WebAssembly.Global */
   got: Map<string, WebAssembly.Global>;
   /** Already-loaded libraries for dedup and dependency resolution */
   loadedLibraries: Map<string, LoadedSharedLibrary>;
@@ -557,6 +647,9 @@ function instantiateSharedLibrary(
   options: LoadSharedLibraryOptions,
   replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
+  validateLongjmpConfiguration(options);
+  const ptrWidth = options.ptrWidth ?? 4;
+  const pointerGlobalType = ptrWidth === 8 ? "i64" : "i32";
   const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
   const moduleImports = WebAssembly.Module.imports(module);
   const moduleExports = WebAssembly.Module.exports(module);
@@ -666,7 +759,7 @@ function instantiateSharedLibrary(
     options,
   );
 
-  const tableRollbackBase = options.table.length;
+  const tableRollbackBase = tableLength(options.table);
   const heapRollbackValue = options.heapPointer?.value;
   const symbolRollback = new Map(options.globalSymbols);
   const gotRollback = new Map(
@@ -715,7 +808,7 @@ function instantiateSharedLibrary(
         const neededPages = Math.ceil(options.heapPointer.value / 65536);
         const currentPages = options.memory.buffer.byteLength / 65536;
         if (neededPages > currentPages) {
-          options.memory.grow(neededPages - currentPages);
+          growMemory(options.memory, neededPages - currentPages, ptrWidth);
         }
       }
 
@@ -729,7 +822,7 @@ function instantiateSharedLibrary(
     // Reproduce the parent's exact table base, including null gaps left by a
     // failed dlopen. WebAssembly.Table cannot shrink, so successful archive
     // entries carry the next library's exact base and replay pads up to it.
-    let tableBase = options.table.length;
+    let tableBase = tableLength(options.table);
     if (replay) {
       if (!Number.isSafeInteger(replay.tableBase) || replay.tableBase < 0) {
         throw new Error(`${name}: invalid replay table base ${replay.tableBase}`);
@@ -740,11 +833,11 @@ function instantiateSharedLibrary(
         );
       }
       if (tableBase < replay.tableBase) {
-        options.table.grow(replay.tableBase - tableBase);
+        growTable(options.table, replay.tableBase - tableBase);
       }
       tableBase = replay.tableBase;
     }
-    if (metadata.tableSize > 0) options.table.grow(metadata.tableSize);
+    if (metadata.tableSize > 0) growTable(options.table, metadata.tableSize);
 
     let sideForkBufAddr = 0;
     if (importsFork) {
@@ -757,7 +850,9 @@ function instantiateSharedLibrary(
         options.heapPointer.value = sideForkBufAddr + FORK_SAVE_BUFFER_SIZE;
         const neededPages = Math.ceil(options.heapPointer.value / 65536);
         const currentPages = options.memory.buffer.byteLength / 65536;
-        if (neededPages > currentPages) options.memory.grow(neededPages - currentPages);
+        if (neededPages > currentPages) {
+          growMemory(options.memory, neededPages - currentPages, ptrWidth);
+        }
       }
       if (
         sideForkBufAddr <= 0
@@ -769,12 +864,17 @@ function instantiateSharedLibrary(
 
     // Create immutable globals for memory_base and table_base
     const memoryBaseGlobal = new WebAssembly.Global(
-      { value: "i32", mutable: false },
-      memoryBase,
+      { value: pointerGlobalType, mutable: false },
+      wasmAddress(memoryBase, ptrWidth, `${name}: memory base`),
     );
     const tableBaseGlobal = new WebAssembly.Global(
-      { value: "i32", mutable: false },
-      tableBase,
+      {
+        value: typeof (options.table as unknown as AddressedTable).length === "bigint"
+          ? "i64"
+          : "i32",
+        mutable: false,
+      },
+      tableAddress(options.table, tableBase, `${name}: table base`),
     );
 
     // Build GOT proxy for imports.
@@ -794,12 +894,13 @@ function instantiateSharedLibrary(
     // indirect_function_table and the GOT entry must hold its index.
     const tableIndexFor = (fn: Function): number => {
       const tbl = options.table;
-      for (let i = 0; i < tbl.length; i++) {
-        if (tbl.get(i) === fn) return i;
+      const length = tableLength(tbl);
+      for (let i = 0; i < length; i++) {
+        if (getTableEntry(tbl, i) === fn) return i;
       }
-      const idx = tbl.length;
-      tbl.grow(1);
-      tbl.set(idx, fn);
+      const idx = length;
+      growTable(tbl, 1);
+      setTableEntry(tbl, idx, fn);
       return idx;
     };
 
@@ -809,15 +910,32 @@ function instantiateSharedLibrary(
     ): WebAssembly.Global => {
       let entry = options.got.get(symName);
       if (!entry) {
-        let initial = 0;
+        let initial = wasmAddress(0, ptrWidth, `${name}: GOT.${kind}.${symName}`);
         const sym = options.globalSymbols.get(symName);
         if (kind === "mem" && sym instanceof WebAssembly.Global) {
-          initial = sym.value as number;
+          initial = requireWasmAddress(
+            sym.value as WasmAddress,
+            ptrWidth,
+            `${name}: GOT.mem.${symName}`,
+          );
         } else if (kind === "func" && typeof sym === "function") {
-          initial = tableIndexFor(sym);
+          initial = wasmAddress(
+            tableIndexFor(sym),
+            ptrWidth,
+            `${name}: GOT.func.${symName}`,
+          );
         }
-        entry = new WebAssembly.Global({ value: "i32", mutable: true }, initial);
+        entry = new WebAssembly.Global(
+          { value: pointerGlobalType, mutable: true },
+          initial,
+        );
         options.got.set(symName, entry);
+      } else {
+        requireWasmAddress(
+          entry.value as WasmAddress,
+          ptrWidth,
+          `${name}: existing GOT.${kind}.${symName}`,
+        );
       }
       return entry;
     };
@@ -835,7 +953,9 @@ function instantiateSharedLibrary(
       }
       const state = forkState();
       if (state === WPK_FORK_NORMAL) {
-        (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(sideForkBufAddr);
+        (instance.exports.wpk_fork_unwind_begin as (addr: WasmAddress) => void)(
+          wasmAddress(sideForkBufAddr, ptrWidth, `${name}: side-module fork save buffer`),
+        );
         if (forkState() !== WPK_FORK_UNWINDING) {
           throw new Error(`${name}: side-module fork failed to enter UNWINDING`);
         }
@@ -1060,13 +1180,17 @@ function instantiateSharedLibrary(
       const alreadyDefined = options.globalSymbols.has(exportName);
 
       if (typeof exportValue === "function") {
-        const tableIdx = options.table.length;
-        options.table.grow(1);
-        options.table.set(tableIdx, exportValue as unknown as Function);
+        const tableIdx = tableLength(options.table);
+        growTable(options.table, 1);
+        setTableEntry(options.table, tableIdx, exportValue as unknown as Function);
 
         const gotEntry = options.got.get(exportName);
         if (gotEntry && !alreadyDefined) {
-          gotEntry.value = tableIdx;
+          gotEntry.value = wasmAddress(
+            tableIdx,
+            ptrWidth,
+            `${name}: GOT.func.${exportName}`,
+          );
         }
         if (!alreadyDefined) {
           options.globalSymbols.set(exportName, exportValue as Function);
@@ -1075,7 +1199,11 @@ function instantiateSharedLibrary(
         const addr = (exportValue as WebAssembly.Global).value;
         const gotEntry = options.got.get(exportName);
         if (gotEntry && !alreadyDefined) {
-          gotEntry.value = addr as number;
+          gotEntry.value = requireWasmAddress(
+            addr as WasmAddress,
+            ptrWidth,
+            `${name}: GOT.mem.${exportName}`,
+          );
         }
         if (!alreadyDefined) {
           options.globalSymbols.set(exportName, exportValue);
@@ -1120,8 +1248,11 @@ function instantiateSharedLibrary(
     // Restore every mutable host-side linker structure we can. Table length and
     // Wasm memory cannot shrink, so clear newly-addressable table slots and let
     // the next successful archive entry record the resulting exact table base.
-    for (let i = tableRollbackBase; i < options.table.length; i++) {
-      try { options.table.set(i, null); } catch { /* best-effort for nullable funcref */ }
+    const rollbackTableEnd = tableLength(options.table);
+    for (let i = tableRollbackBase; i < rollbackTableEnd; i++) {
+      try {
+        setTableEntry(options.table, i, null);
+      } catch { /* best-effort for nullable funcref */ }
     }
     options.globalSymbols.clear();
     for (const [symbol, value] of symbolRollback) options.globalSymbols.set(symbol, value);
@@ -1277,16 +1408,17 @@ export class DynamicLinker {
     if (typeof exp === "function") {
       // Return the table index for this function (C function pointers are table indices)
       const table = this.options.table;
-      for (let i = 0; i < table.length; i++) {
-        if (table.get(i) === exp) {
+      const length = tableLength(table);
+      for (let i = 0; i < length; i++) {
+        if (getTableEntry(table, i) === exp) {
           this.lastError = null;
           return i;
         }
       }
       // Not in table yet — add it
-      const idx = table.length;
-      table.grow(1);
-      table.set(idx, exp as unknown as Function);
+      const idx = length;
+      growTable(table, 1);
+      setTableEntry(table, idx, exp as unknown as Function);
       this.lastError = null;
       return idx;
     }

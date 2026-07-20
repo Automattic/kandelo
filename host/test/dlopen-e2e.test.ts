@@ -16,13 +16,15 @@ import { NodePlatformIO } from "../src/platform/node";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = join(REPO_ROOT, "sysroot");
+const SYSROOT64 = join(REPO_ROOT, "sysroot64");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
+const hasSysroot64 = existsSync(join(SYSROOT64, "lib", "libc.a"));
 const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
   existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
-function hasCompiler(): boolean {
+function hasCompiler(compiler = "wasm32posix-cc"): boolean {
   try {
-    execFileSync("wasm32posix-cc", ["--version"], { stdio: "ignore" });
+    execFileSync(compiler, ["--version"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -32,22 +34,31 @@ function hasCompiler(): boolean {
 const BUILD_DIR = join(tmpdir(), "wasm-dlopen-e2e");
 
 /** Build a shared Wasm library (.so side module) from C source. */
-function buildSharedLib(source: string, name: string): string {
+function buildSharedLib(
+  source: string,
+  name: string,
+  compiler = "wasm32posix-cc",
+): string {
   const srcPath = join(BUILD_DIR, `${name}.c`);
   const soPath = join(BUILD_DIR, `${name}.so`);
   writeFileSync(srcPath, source);
-  execFileSync("wasm32posix-cc",
+  execFileSync(compiler,
     ["-shared", "-fPIC", "-O2", srcPath, "-o", soPath],
     { stdio: "pipe" });
   return soPath;
 }
 
 /** Build a main program with dlopen support. */
-function buildMainProgram(source: string, name: string, extraArgs: string[] = []): string {
+function buildMainProgram(
+  source: string,
+  name: string,
+  extraArgs: string[] = [],
+  compiler = "wasm32posix-cc",
+): string {
   const srcPath = join(BUILD_DIR, `${name}.c`);
   const wasmPath = join(BUILD_DIR, `${name}.wasm`);
   writeFileSync(srcPath, source);
-  execFileSync("wasm32posix-cc",
+  execFileSync(compiler,
     ["-O2", "-ldl", ...extraArgs, srcPath, "-o", wasmPath],
     { stdio: "pipe" });
   return wasmPath;
@@ -145,6 +156,58 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
     expect(result.stdout).toContain("multiply(5, 6) = 30");
     expect(result.stdout).toContain("done");
   });
+
+  it.skipIf(!hasSysroot64 || !hasCompiler("wasm64posix-cc"))(
+    "loads and resolves a memory64 shared library through dlopen/dlsym",
+    { timeout: 30_000 },
+    async () => {
+      const soPath = buildSharedLib(
+        `
+        long add(long a, long b) { return a + b; }
+        static long counter = 40;
+        long increment(void) { return ++counter; }
+        `,
+        "libmath64",
+        "wasm64posix-cc",
+      );
+      const wasmPath = buildMainProgram(
+        `
+        #include <dlfcn.h>
+        #include <stdio.h>
+
+        int main(int argc, char *argv[]) {
+          void *lib = dlopen(argv[1], RTLD_LAZY);
+          if (!lib) {
+            printf("dlopen failed: %s\\n", dlerror());
+            return 1;
+          }
+          long (*add)(long, long) = (long (*)(long, long))dlsym(lib, "add");
+          long (*increment)(void) = (long (*)(void))dlsym(lib, "increment");
+          if (!add || !increment) {
+            printf("dlsym failed: %s\\n", dlerror());
+            return 2;
+          }
+          printf("add=%ld counter=%ld\\n", add(20, 22), increment());
+          return dlclose(lib);
+        }
+        `,
+        "test-dlopen64",
+        [],
+        "wasm64posix-cc",
+      );
+
+      const result = await runCentralizedProgram({
+        programPath: wasmPath,
+        argv: ["test-dlopen64", soPath],
+        timeout: 10_000,
+        io: io(),
+      });
+
+      expect(result.exitCode, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+      expect(result.stdout).toBe("add=42 counter=41\n");
+      expect(result.stderr).toBe("");
+    },
+  );
 
   it("reports dlerror for missing library", async () => {
     const wasmPath = buildMainProgram(

@@ -159,6 +159,10 @@ wasm32posix-cc -ldl main.c -o main.wasm
 wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 ```
 
+Use `wasm64posix-cc` for both commands to build a memory64 executable and
+side module. Do not mix wasm32 and wasm64 artifacts in one process: memory and
+table imports, pointer globals, and GOT entries are width-specific.
+
 Executables that expose their own symbols to loaded modules or resolve them
 through `dlopen(NULL, ...)` / `dlsym(RTLD_DEFAULT, ...)` must also link with
 `-Wl,--export-dynamic`. Symbols intended for lookup must have default
