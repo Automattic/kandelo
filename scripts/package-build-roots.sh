@@ -207,3 +207,44 @@ kandelo_package_stage_verified_source() {
     fi
     rm -rf "$download_dir"
 }
+
+kandelo_package_git_apply_patch() {
+    local source_root="$1"
+    local patch_file="$2"
+    local mode="${3:-apply}"
+    local ceiling
+    local -a git_args=(apply)
+
+    source_root="$(kandelo_package_require_existing_real_dir \
+        "patch source root" "$source_root")" || return
+    case "$patch_file" in
+        /*) ;;
+        *)
+            echo "ERROR: patch file must be an absolute path: $patch_file" >&2
+            return 2
+            ;;
+    esac
+    if [ ! -f "$patch_file" ] || [ -L "$patch_file" ]; then
+        echo "ERROR: patch file must be a regular non-symlink file: $patch_file" >&2
+        return 2
+    fi
+    case "$mode" in
+        apply) ;;
+        check) git_args+=(--check) ;;
+        *)
+            echo "ERROR: unsupported git patch mode: $mode" >&2
+            return 2
+            ;;
+    esac
+
+    # A checksum-verified archive has no nested .git directory. When its
+    # writable copy lives below the Kandelo checkout, an ordinary `git apply`
+    # discovers the unrelated parent repository and resolves new-file paths
+    # against the wrong worktree. Stop discovery at the source parent so Git
+    # always applies archive patches relative to the staged source itself.
+    ceiling="$(dirname "$source_root")"
+    (
+        cd "$source_root"
+        GIT_CEILING_DIRECTORIES="$ceiling" git "${git_args[@]}" "$patch_file"
+    )
+}

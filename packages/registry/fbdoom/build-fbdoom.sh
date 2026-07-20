@@ -79,9 +79,10 @@ apply_patches() {
     for patch_file in "$HERE/patches/"*.patch; do
         [ -f "$patch_file" ] || continue
         name="$(basename "$patch_file")"
-        if (cd "$SRC" && git apply --check "$patch_file") >/dev/null 2>&1; then
+        if kandelo_package_git_apply_patch "$SRC" "$patch_file" check \
+            >/dev/null 2>&1; then
             echo "    $name"
-            (cd "$SRC" && git apply "$patch_file")
+            kandelo_package_git_apply_patch "$SRC" "$patch_file"
         elif [ "$mode" = "lenient" ]; then
             echo "    $name (already applied or superseded)"
         else

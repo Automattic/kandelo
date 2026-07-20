@@ -193,6 +193,40 @@ kandelo_package_stage_verified_source fixture "$archive_dest" "" \
 grep -Fx "archive-selected source" "$archive_dest/archive.txt" >/dev/null ||
     fail "source URL/hash archive was not selected and extracted"
 
+# A staged archive can live below an unrelated Git checkout during direct and
+# package-staging builds. Patch paths must remain relative to that source root,
+# including files introduced by a patch, rather than inheriting the parent
+# repository's worktree context.
+patch_parent="$TMP_ROOT/patch-parent"
+patch_source="$patch_parent/nested/source"
+patch_file="$TMP_ROOT/archive-source.patch"
+mkdir -p "$patch_source"
+git -C "$patch_parent" init -q
+printf 'before\n' >"$patch_source/existing.txt"
+printf '%s\n' \
+    '--- a/existing.txt' \
+    '+++ b/existing.txt' \
+    '@@ -1 +1 @@' \
+    '-before' \
+    '+after' \
+    '--- /dev/null' \
+    '+++ b/added.txt' \
+    '@@ -0,0 +1 @@' \
+    '+added inside staged source' \
+    >"$patch_file"
+kandelo_package_git_apply_patch "$patch_source" "$patch_file" check
+grep -Fx "before" "$patch_source/existing.txt" >/dev/null ||
+    fail "git patch check mutated the staged source"
+[ ! -e "$patch_source/added.txt" ] ||
+    fail "git patch check created a staged source file"
+kandelo_package_git_apply_patch "$patch_source" "$patch_file"
+grep -Fx "after" "$patch_source/existing.txt" >/dev/null ||
+    fail "git patch did not modify the staged source"
+grep -Fx "added inside staged source" "$patch_source/added.txt" >/dev/null ||
+    fail "git patch did not create a file in the staged source"
+[ ! -e "$patch_parent/added.txt" ] ||
+    fail "git patch escaped into the unrelated parent worktree"
+
 bad_dest="$TMP_ROOT/bad-hash-dest"
 err="$TMP_ROOT/bad-hash.err"
 if kandelo_package_stage_verified_source fixture "$bad_dest" "" \
