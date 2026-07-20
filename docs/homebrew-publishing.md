@@ -100,6 +100,30 @@ place them exclusively in the reviewed build/test realm. To update a locked
 dependency, first publish and validate its public bottle and sidecars, then
 review a primary-tap commit that changes only the exact SHA in this file.
 
+For a third-party tap, the complete operator sequence is:
+
+1. Choose a `kandelo-dev/homebrew-tap-core` commit whose required Formula,
+   bottle block, and generated `Kandelo/` sidecars are already public and
+   validated. Record the commit's full 40-character SHA; do not record
+   `main`, a tag, or an abbreviated SHA.
+2. Add or update `Kandelo/dependency-taps.json` in the third-party tap so its
+   core entry names that exact commit. Keep the entries sorted by `tap_name`.
+3. Declare a new dependency in the consuming Formula with its canonical full
+   name, for example `depends_on "kandelo-dev/tap-core/dash"`. Commit a new
+   Formula dependency and its lock together so publication cannot observe the
+   dependency without its source authorization.
+4. Pin the tap's caller workflow to a reviewed immutable Kandelo commit that
+   implements this lock schema, then dispatch the normal bottle publisher.
+   Do not pass a dependency repository or revision in the dispatch payload.
+5. Review the publication result and its Node/browser VFS acceptance evidence.
+   A later core update repeats steps 1 and 2 in a normal tap pull request; the
+   publisher never advances the lock automatically.
+
+The reusable workflow checks out the public core repository and reads its GHCR
+bottles anonymously. The third-party tap therefore needs no core-repository
+token and no core-package secret. Its own caller keeps only the normal scoped
+publication permissions for its own tap and package namespace.
+
 ## Artifact Model
 
 Homebrew publishing is a sibling to Kandelo package archive publishing:
