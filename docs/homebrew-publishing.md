@@ -320,15 +320,24 @@ stores, and home directories. The two services cannot access each other's
 mutable cache, temporary, configuration, or home state. The native service also
 cannot access the target prefix; the target service sees the native prefix only
 through a read-only mount. Both use the same reviewed Homebrew overlay as
-read-only source. Before any Formula Ruby executes, the static Formula parser
-derives a bounded plan from the selected Formula's direct `depends_on`
-declarations. An unqualified external dependency must be explicitly tagged
-`:build`, `:test`, or both. Untagged and `:recommended` external runtime
-dependencies fail because portable runtime dependencies must come from the
-primary tap or an exact dependency-tap lock; `:optional` dependencies are not
-selected. Qualified locked-tap dependencies remain in the target plan. The
-resulting control data also carries the sorted immutable target-tap set plus
-three native lists:
+read-only source.
+
+Homebrew's control plane always uses a protected host Git, even after a Kandelo
+`git` bottle installs a target executable under the canonical prefix. The
+launcher discards an inherited `HOMEBREW_GIT_PATH`, selects a regular,
+non-writable Git executable from the immutable Nix store, verifies its minimum
+supported version, and preserves that exact path in both isolated realms. A
+target Git can therefore remain ordinary bottle payload without shadowing the
+native Git that Homebrew uses to resolve and inspect taps.
+
+Before any Formula Ruby executes, the static Formula parser derives a bounded
+plan from the selected Formula's direct `depends_on` declarations. An
+unqualified external dependency must be explicitly tagged `:build`, `:test`,
+or both. Untagged and `:recommended` external runtime dependencies fail because
+portable runtime dependencies must come from the primary tap or an exact
+dependency-tap lock; `:optional` dependencies are not selected. Qualified
+locked-tap dependencies remain in the target plan. The resulting control data
+also carries the sorted immutable target-tap set plus three native lists:
 
 - `build` contains only direct native dependencies tagged `:build` (including
   `[:build, :test]`). The isolated Homebrew overlay uses this root-owned list
