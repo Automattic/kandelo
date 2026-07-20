@@ -427,12 +427,15 @@ receipt facts. Raw logs do not cross the runner boundary. Fresh verifier and
 finalizer runners rehash each dependency Formula from the exact planned tap
 before accepting the bounded provenance.
 
-Homebrew can omit `bottle_rebuild` from a runtime-dependency receipt when the
-dependency has no explicit bottle rebuild. The publisher treats only an absent
-field as rebuild zero. A present value must be a non-negative integer, and the
-normalized receipt value must still equal the rebuild derived from the exact
-dependency Formula. An omitted field therefore cannot authorize a nonzero
-rebuild, and `null`, strings, booleans, and negative values fail closed.
+Homebrew can omit `bottle_rebuild` from a runtime-dependency record because the
+installed dependency Formula receipt has had its bottle block removed. This can
+happen for a nonzero rebuild, so the publisher treats an absent field as
+unknown rather than as rebuild zero. The exact dependency Formula still
+provides the selected rebuild, digest, and URL, and bounded install-log evidence
+must show the matching rebuild-specific manifest reference and poured bottle
+filename. A present receipt value must be a non-negative integer and must equal
+the exact Formula rebuild; `null`, strings, booleans, negative values, and
+explicit stale rebuilds fail closed.
 
 Homebrew's `brew info --json=v2` can serialize the Ruby cellar symbols as
 `:any` or `:any_skip_relocation`. The provenance collector normalizes only

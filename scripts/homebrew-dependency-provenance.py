@@ -354,9 +354,11 @@ def formula_record(info: Any, expected_full_name: str, expected_name: str) -> di
     return record
 
 
-def target_receipt_bottle_rebuild(dependency: dict[str, Any], full_name: str) -> int:
+def target_receipt_bottle_rebuild(
+    dependency: dict[str, Any], full_name: str
+) -> int | None:
     if "bottle_rebuild" not in dependency:
-        return 0
+        return None
     rebuild = dependency["bottle_rebuild"]
     if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
         fail(
@@ -488,7 +490,7 @@ def capture(args: argparse.Namespace) -> None:
         rebuild = stable.get("rebuild")
         if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
             fail(f"dependency {full_name} bottle rebuild must be a non-negative integer")
-        if rebuild != receipt_bottle_rebuild:
+        if receipt_bottle_rebuild is not None and rebuild != receipt_bottle_rebuild:
             fail(
                 f"dependency {full_name} bottle rebuild differs between "
                 "the target receipt and exact Formula"

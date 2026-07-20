@@ -3483,7 +3483,8 @@ EOF
 ==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1-1
 ==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.1.tar.gz
 EOF
-  if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+  local omitted_rebuild_output="$root/omitted-nonzero-rebuild.json"
+  FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
     python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
       --brew-bin "$fake_brew" --tap-root "$tap" \
       --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
@@ -3491,9 +3492,35 @@ EOF
       --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
       --target-receipt "$root/target-receipt-rebuild0.json" \
       --expected-dependencies "$expected_dependencies" \
-      --install-log "$install_log" --out "$root/omitted-nonzero-rebuild.json" \
+      --install-log "$install_log" --out "$omitted_rebuild_output"
+  python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$omitted_rebuild_output" --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --tap-root "$tap"
+  jq -e '
+    .dependencies[0].bottle.rebuild == 1 and
+    .dependencies[0].install_log.fetch == [
+      "==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1-1"
+    ] and
+    .dependencies[0].install_log.pour == [
+      "==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.1.tar.gz"
+    ]
+  ' "$omitted_rebuild_output" >/dev/null ||
+    fail "dependency provenance did not bind an omitted receipt rebuild to exact pour evidence"
+
+  jq '.runtime_dependencies[0].bottle_rebuild = 0' \
+    "$root/target-receipt-rebuild0.json" >"$target_receipt"
+  if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --target-receipt "$target_receipt" --expected-dependencies "$expected_dependencies" \
+      --install-log "$install_log" --out "$root/explicit-stale-rebuild.json" \
       >/dev/null 2>&1; then
-    fail "dependency provenance treated an omitted nonzero bottle rebuild as matching"
+    fail "dependency provenance accepted an explicit stale bottle rebuild"
   fi
   jq '.runtime_dependencies[0].bottle_rebuild = 1' \
     "$root/target-receipt-rebuild0.json" >"$target_receipt"

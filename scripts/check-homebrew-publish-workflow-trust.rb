@@ -2391,11 +2391,12 @@ def check_publisher(workflow)
   end
   [
     'if "bottle_rebuild" not in dependency:',
+    'return None',
     'rebuild = dependency["bottle_rebuild"]',
     'or isinstance(rebuild, bool)',
     '"a non-negative integer when present"',
     'receipt_bottle_rebuild = target_receipt_bottle_rebuild(dependency, full_name)',
-    'if rebuild != receipt_bottle_rebuild:',
+    'if receipt_bottle_rebuild is not None and rebuild != receipt_bottle_rebuild:',
   ].each do |fragment|
     check(dependency_provenance.include?(fragment),
           "publisher dependency provenance weakens receipt rebuild validation: #{fragment}")
