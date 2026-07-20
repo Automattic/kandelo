@@ -1619,6 +1619,7 @@ jobs:
         shell: bash
         env:
           KANDELO_HOMEBREW_EXISTING_INDEX: ${{ steps.existing-index.outputs.layout }}
+          KANDELO_HOMEBREW_FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -1635,6 +1636,9 @@ jobs:
           [ "${#args[@]}" -gt 0 ] || { echo "::error::no validated OCI children"; exit 1; }
           existing="$KANDELO_HOMEBREW_EXISTING_INDEX"
           [ -z "$existing" ] || args+=(--existing-layout "$existing")
+          if [ "$KANDELO_HOMEBREW_FORCE" = "true" ]; then
+            args+=(--recover-unfinalized-tap-root "$GITHUB_WORKSPACE/tap")
+          fi
           bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py merge-index \
             "${args[@]}" \
             --out-layout "$RUNNER_TEMP/homebrew-complete-index/layout" \
@@ -2989,8 +2993,11 @@ jobs:
               KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON" \
               KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT" \
               KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS" \
-              npx playwright test test/homebrew-brewfile-vfs.spec.ts \
-                --project=chromium --reporter=json >"$playwright_report"
+              bash -c '
+                set -euo pipefail
+                npx playwright test test/homebrew-brewfile-vfs.spec.ts \
+                  --project=chromium --reporter=json >"$1"
+              ' kandelo-homebrew-vfs-playwright "$playwright_report"
           )
           jq -e '
             .stats.expected == 1 and .stats.unexpected == 0 and
@@ -3014,10 +3021,13 @@ jobs:
                 KANDELO_HOMEBREW_DEFAULT_SHELL_PATH="$KANDELO_HOMEBREW_DEFAULT_SHELL_PATH" \
                 KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0="$KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0" \
                 KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS" \
-                npx playwright test test/kandelo-homebrew.spec.ts \
-                  --project=chromium \
-                  --grep "an image-owned Homebrew shell boots without legacy shell downloads$" \
-                  --reporter=json >"$shell_playwright_report"
+                bash -c '
+                  set -euo pipefail
+                  npx playwright test test/kandelo-homebrew.spec.ts \
+                    --project=chromium \
+                    --grep "an image-owned Homebrew shell boots without legacy shell downloads$" \
+                    --reporter=json >"$1"
+                ' kandelo-homebrew-shell-playwright "$shell_playwright_report"
             )
             jq -e '
               .stats.expected == 1 and .stats.unexpected == 0 and

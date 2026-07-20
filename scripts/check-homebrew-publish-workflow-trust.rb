@@ -23,8 +23,8 @@ BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916d0f70d415"
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
-PUBLISHER_INDEX_DIGEST = "70d0a74c5c2cb7320acfba52be3e7ed874e329a801659d0e665cb2c8d5f08791"
-PUBLISHER_VERIFY_DIGEST = "0454effba08b41e79f29cd2dd34b1d6e1c8ae096c9829ec2b8717a7cfe7222d7"
+PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
+PUBLISHER_VERIFY_DIGEST = "6b20da43874c751640631bf957b5f991aa793476dd6da10d27cec6f3387fe140"
 PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
 PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -2894,13 +2894,35 @@ def check_publisher(workflow)
     check(index_import_tool.include?(fragment),
           "trusted anonymous version-index importer lacks #{fragment}")
   end
+  [
+    'def top_semantics_from_annotations(',
+    'def exact_clean_git_head(',
+    'def validate_unfinalized_recovery_tap(',
+    'head != receipt["tap_commit"]',
+    'unfinalized recovery is forbidden because the tap has a Formula sidecar',
+    'unfinalized recovery is forbidden because the tap aggregate metadata',
+    'existing_semantics = top_semantics_from_annotations(',
+    'existing_layout, descriptor, existing_semantics',
+    '"dev.kandelo.homebrew.tap_repository",',
+    'unfinalized recovery cannot change the fixed',
+    'transition_reason = "unfinalized-stale-source-identity"',
+  ].each do |fragment|
+    check(index_import_tool.include?(fragment),
+          "trusted unfinalized version-index recovery lacks #{fragment}")
+  end
   publication_limits = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-publication-limits.sh")
   )
   bottle_inspector = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-inspect-bottle.py")
   )
-  check(publication_limits.include?("readonly HOMEBREW_MAX_BOTTLE_BYTES=2147483648") &&
+  check(publication_limits.include?(
+          "readonly HOMEBREW_MAX_COMPOSITION_INPUT_BYTES=8388608"
+        ) &&
+        publication_limits.include?(
+          "readonly HOMEBREW_MAX_SIDECAR_JSON_BYTES=16777216"
+        ) &&
+        publication_limits.include?("readonly HOMEBREW_MAX_BOTTLE_BYTES=2147483648") &&
         publication_limits.include?(
           "readonly HOMEBREW_MAX_EXPANDED_BOTTLE_BYTES=17179869184"
         ) &&
@@ -2911,12 +2933,20 @@ def check_publisher(workflow)
         bottle_inspector.include?('"$HOMEBREW_MAX_EXPANDED_BOTTLE_BYTES"') &&
         !bottle_inspector.include?('MAX_COMPRESSED_BYTES = 2 * 1024') &&
         !bottle_inspector.include?('MAX_ARCHIVE_BYTES = 16 * 1024'),
-        "trusted OCI tooling does not use separate shared compressed and expanded limits")
+        "trusted publication limits or OCI archive bounds changed")
   index_compose_run = index_compose.fetch("run")
+  check(index_compose.keys.sort == %w[env name run shell] &&
+        index_compose["env"] == {
+          "KANDELO_HOMEBREW_EXISTING_INDEX" =>
+            "${{ steps.existing-index.outputs.layout }}",
+          "KANDELO_HOMEBREW_FORCE" => "${{ inputs.force }}",
+        }, "publisher unfinalized index recovery is not bound to force")
   [
     "credential-free index composer received $secret_name",
     'args+=(--child-layout "$layout" --child-receipt "$receipt")',
     'args+=(--existing-layout "$existing")',
+    'if [ "$KANDELO_HOMEBREW_FORCE" = "true" ]; then',
+    'args+=(--recover-unfinalized-tap-root "$GITHUB_WORKSPACE/tap")',
     "scripts/homebrew-oci-layout.py merge-index",
     '--out-layout "$RUNNER_TEMP/homebrew-complete-index/layout"',
     '--out-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json"',
@@ -3273,10 +3303,13 @@ def check_publisher(workflow)
     'KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS"',
     'bash ../../scripts/dev-shell.sh env',
     'test/homebrew-brewfile-vfs.spec.ts',
+    '--project=chromium --reporter=json >"$1"',
+    '\' kandelo-homebrew-vfs-playwright "$playwright_report"',
     'KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL="$KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL"',
     'KANDELO_HOMEBREW_DEFAULT_SHELL_PATH="$KANDELO_HOMEBREW_DEFAULT_SHELL_PATH"',
     'KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0="$KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0"',
     'test/kandelo-homebrew.spec.ts',
+    '\' kandelo-homebrew-shell-playwright "$shell_playwright_report"',
     'legacy_shell_downloads: 0',
     '.stats.expected == 1', '.stats.unexpected == 0',
     '.stats.flaky == 0', '.stats.skipped == 0',
@@ -3284,6 +3317,10 @@ def check_publisher(workflow)
     check(acceptance_run.include?(fragment),
           "publisher dependency-bearing VFS acceptance lacks #{fragment}")
   end
+  check(acceptance_run.scan('--reporter=json >"$1"').length == 2 &&
+        !acceptance_run.include?('--reporter=json >"$playwright_report"') &&
+        !acceptance_run.include?('--reporter=json >"$shell_playwright_report"'),
+        "publisher captures dev-shell setup stdout in a Playwright JSON report")
   check(acceptance_run.match?(
           /if \[ ! -e "\$config_candidate" \] && \[ ! -L "\$config_candidate" \]; then\n\s+if \[ "\$KANDELO_HOMEBREW_ACCEPTANCE_REQUIRED" = "true" \]; then\n\s+echo "::error::[^\n]+"\n\s+exit 1\n\s+fi\n\s+echo "::notice::[^\n]+no closure acceptance evidence was produced"\n\s+exit 0/
         ), "publisher does not preserve optional and required VFS acceptance semantics")
@@ -3544,6 +3581,19 @@ def check_publisher(workflow)
         !publish_run.include?("--sidecar-root"),
         "publisher finalizer bypasses under-lock package composition")
   finalizer_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-publish-sidecars.sh"))
+  expected_commit_subjects = {
+    'commit_and_push "Homebrew: Repair ${FORMULA} ${ARCH} bottle sidecars"' => 1,
+    'commit_and_push "Homebrew: Publish ${FORMULA} ${ARCH} bottle sidecars"' => 1,
+    'commit_and_push "Homebrew: Record ${FORMULA} ${ARCH} bottle failure"' => 2,
+    'commit_and_push "Homebrew: Roll back ${FORMULA} ${ARCH} bottle metadata"' => 1,
+    'commit_and_push "Homebrew: Record ${FORMULA} ${ARCH} bottle rollback"' => 1,
+  }
+  expected_commit_subjects.each do |subject, count|
+    check(finalizer_source.scan(subject).length == count,
+          "publisher finalizer changed a purpose-prefixed tap commit subject: #{subject}")
+  end
+  check(!finalizer_source.include?('commit_and_push "homebrew:'),
+        "publisher finalizer still generates a lowercase Homebrew commit prefix")
   [
     'PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap"',
     'git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit"',

@@ -2051,6 +2051,7 @@ set_publish_handoff_rebuild() {
 
 assert_publish_handoff_is_exact_inert_data() {
   local handoff tap_root tmp external before after err generated composed host link
+  local input input_bytes link_bytes padding
   local selected_formula archived_formula selected_formula_sha
 
   handoff="$TMPDIR/publish-handoff-valid"
@@ -2117,7 +2118,13 @@ RUBY
   tap_root="$TMPDIR/publish-handoff-large-valid-sidecar-tap"
   generated="$TMPDIR/publish-handoff-large-valid-sidecar-generated"
   composed="$TMPDIR/publish-handoff-large-valid-sidecar.rb"
-  PUBLISH_HANDOFF_EXTRA_LINK_COUNT=25000 make_publish_handoff "$handoff" "$tap_root"
+  PUBLISH_HANDOFF_EXTRA_LINK_COUNT=40000 make_publish_handoff "$handoff" "$tap_root"
+  input="$handoff/composition/sidecars-input.json"
+  input_bytes="$(wc -c <"$input" | tr -d '[:space:]')"
+  [ "$input_bytes" -gt 4194304 ] ||
+    fail "valid large composition input did not exceed the former 4 MiB bound"
+  [ "$input_bytes" -le "$HOMEBREW_MAX_COMPOSITION_INPUT_BYTES" ] ||
+    fail "valid large composition input exceeded the current 8 MiB bound"
   validate_publish_handoff "$handoff" "$tap_root" >/dev/null
   cp -a "$tap_root" "$generated"
   ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
@@ -2138,9 +2145,10 @@ RUBY
   ) >/dev/null
   link="$(find "$generated/Kandelo/link" -mindepth 1 -maxdepth 1 -type f -print -quit)"
   [ -n "$link" ] || fail "large sidecar fixture did not generate a link manifest"
-  [ "$(wc -c <"$link" | tr -d '[:space:]')" -gt 2097152 ] ||
-    fail "valid large link sidecar did not exceed the old 2 MiB bound"
-  [ "$(wc -c <"$link" | tr -d '[:space:]')" -le "$HOMEBREW_MAX_SIDECAR_JSON_BYTES" ] ||
+  link_bytes="$(wc -c <"$link" | tr -d '[:space:]')"
+  [ "$link_bytes" -gt 4194304 ] ||
+    fail "valid large link sidecar did not exceed 4 MiB"
+  [ "$link_bytes" -le "$HOMEBREW_MAX_SIDECAR_JSON_BYTES" ] ||
     fail "valid large link sidecar exceeded the current 16 MiB bound"
 
   handoff="$TMPDIR/publish-handoff-extra"
@@ -2203,13 +2211,26 @@ RUBY
     fail "publish handoff validator accepted bottle digest drift"
   fi
 
-  handoff="$TMPDIR/publish-handoff-large-input"
-  tap_root="$TMPDIR/publish-handoff-large-input-tap"
+  handoff="$TMPDIR/publish-handoff-composition-boundary"
+  tap_root="$TMPDIR/publish-handoff-composition-boundary-tap"
   make_publish_handoff "$handoff" "$tap_root"
-  truncate -s 4194305 "$handoff/composition/sidecars-input.json"
-  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted oversized composition input"
+  input="$handoff/composition/sidecars-input.json"
+  input_bytes="$(wc -c <"$input" | tr -d '[:space:]')"
+  padding="$((HOMEBREW_MAX_COMPOSITION_INPUT_BYTES - input_bytes))"
+  [ "$padding" -gt 0 ] || fail "composition boundary fixture already exceeds its bound"
+  head -c "$padding" /dev/zero | tr '\000' ' ' >>"$input"
+  [ "$(wc -c <"$input" | tr -d '[:space:]')" = \
+      "$HOMEBREW_MAX_COMPOSITION_INPUT_BYTES" ] ||
+    fail "composition boundary fixture did not reach the exact 8 MiB bound"
+  validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+  printf ' ' >>"$input"
+  err="$TMPDIR/publish-handoff-composition-boundary.err"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "publish handoff validator accepted the first byte beyond the composition bound"
   fi
+  grep -F "composition input exceeds $HOMEBREW_MAX_COMPOSITION_INPUT_BYTES bytes" \
+    "$err" >/dev/null ||
+    fail "publish handoff validator did not explain the composition size boundary"
 
   handoff="$TMPDIR/publish-handoff-tap-symlink"
   tap_root="$TMPDIR/publish-handoff-tap-symlink-tap"
@@ -2284,6 +2305,9 @@ assert_stale_bottle_rebuild_cannot_rewind_publication() {
   jq -e '.packages[] | select(.name == "hello") | .bottle_rebuild == 2' \
     "$tap_root/Kandelo/metadata.json" >/dev/null ||
     fail "new bottle rebuild fixture did not publish rebuild 2"
+  [ "$(git -C "$tap_root" log -1 --format=%s)" = \
+      "Homebrew: Publish hello wasm32 bottle sidecars" ] ||
+    fail "successful publication did not use the purpose-prefixed tap commit subject"
 
   before_formula="$(sha256sum "$tap_root/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/hello.rb" | awk '{print $1}')"
   before_metadata="$(sha256sum "$tap_root/Kandelo/metadata.json" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Kandelo/metadata.json" | awk '{print $1}')"
@@ -4856,6 +4880,9 @@ assert_failure_preserves_metadata() {
     --no-lock >/dev/null
   after="$(sha256sum "$tap/Kandelo/metadata.json" 2>/dev/null || shasum -a 256 "$tap/Kandelo/metadata.json")"
   [ "$before" = "$after" ] || fail "failure path modified metadata.json"
+  [ "$(git -C "$tap" log -1 --format=%s)" = \
+      "Homebrew: Record hello wasm32 bottle failure" ] ||
+    fail "failure publication did not use the purpose-prefixed tap commit subject"
   find "$tap/Kandelo/reports/failures" -type f -name '*-hello-wasm32.json' -print -quit |
     grep -q . || fail "failure path did not write failure report"
 }
@@ -5155,6 +5182,9 @@ assert_rollback_preserves_metadata() {
     --no-lock >/dev/null
   after="$(sha256sum "$tap/Kandelo/metadata.json" 2>/dev/null || shasum -a 256 "$tap/Kandelo/metadata.json")"
   [ "$before" = "$after" ] || fail "rollback path modified metadata.json"
+  [ "$(git -C "$tap" log -1 --format=%s)" = \
+      "Homebrew: Record hello wasm32 bottle rollback" ] ||
+    fail "rollback publication did not use the purpose-prefixed tap commit subject"
   report="$(find "$tap/Kandelo/reports/rollbacks" -type f -name '*-hello-wasm32.json' -print -quit)"
   [ -n "$report" ] || fail "rollback path did not write rollback report"
   jq -e '
@@ -5187,6 +5217,34 @@ assert_rollback_deletion_requires_reason() {
 
 assert_publisher_trust_contract() {
   ruby "$REPO_ROOT/scripts/check-homebrew-publish-workflow-trust.rb"
+}
+
+assert_playwright_json_capture_excludes_dev_shell_stdout() {
+  local wrapper="$TMPDIR/fake-dev-shell-with-stdout.sh"
+  local report="$TMPDIR/playwright-inner-report.json"
+  local wrapper_stdout
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'printf "%s\\n" "dev-shell setup chatter"' \
+    'exec "$@"' >"$wrapper"
+  chmod +x "$wrapper"
+  wrapper_stdout="$(
+    "$wrapper" env bash -c '
+      set -euo pipefail
+      printf "%s\n" \
+        "{\"stats\":{\"expected\":1,\"unexpected\":0,\"flaky\":0,\"skipped\":0}}" \
+        >"$1"
+    ' kandelo-homebrew-playwright "$report"
+  )"
+  [ "$wrapper_stdout" = "dev-shell setup chatter" ] ||
+    fail "Playwright capture fixture did not preserve dev-shell stdout separately"
+  jq -e '
+    .stats.expected == 1 and .stats.unexpected == 0 and
+    .stats.flaky == 0 and .stats.skipped == 0
+  ' "$report" >/dev/null ||
+    fail "inner Playwright capture did not produce an exact JSON-only report"
 }
 
 assert_index_artifact_download_topologies() {
@@ -5881,6 +5939,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"
 assert_formula_composition_is_static_and_lossless
 assert_formula_source_closure_is_bound
+assert_playwright_json_capture_excludes_dev_shell_stdout
 assert_publisher_trust_contract
 
 echo "test-homebrew-publish-workflow.sh: ok"

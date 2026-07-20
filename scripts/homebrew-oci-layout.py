@@ -1211,6 +1211,156 @@ def expected_top_annotations(semantics: dict[str, str], top_ref: str) -> dict[st
     }.items()))
 
 
+def top_semantics_from_annotations(
+    annotations: Any, top_ref: str
+) -> dict[str, str]:
+    semantic_keys = {
+        "dev.kandelo.homebrew.abi",
+        "dev.kandelo.homebrew.bottle_rebuild",
+        "dev.kandelo.homebrew.formula",
+        "dev.kandelo.homebrew.formula_revision",
+        "dev.kandelo.homebrew.formula_source_identity_sha256",
+        "dev.kandelo.homebrew.source_closure_sha256",
+        "dev.kandelo.homebrew.pkg_version",
+        "dev.kandelo.homebrew.tap_repository",
+    }
+    annotations = exact_keys(
+        annotations,
+        semantic_keys
+        | {
+            "com.github.package.type",
+            "org.opencontainers.image.ref.name",
+            "org.opencontainers.image.source",
+            "org.opencontainers.image.title",
+            "org.opencontainers.image.version",
+        },
+        "existing Homebrew top index annotations",
+    )
+    semantics = {key: annotations[key] for key in semantic_keys}
+    require_decimal_string(
+        semantics["dev.kandelo.homebrew.abi"], "existing Homebrew ABI", 1
+    )
+    rebuild = require_decimal_string(
+        semantics["dev.kandelo.homebrew.bottle_rebuild"],
+        "existing Homebrew bottle rebuild",
+    )
+    require_string(
+        semantics["dev.kandelo.homebrew.formula"],
+        "existing Homebrew formula",
+        FORMULA_NAME,
+    )
+    revision = require_decimal_string(
+        semantics["dev.kandelo.homebrew.formula_revision"],
+        "existing Homebrew Formula revision",
+    )
+    require_string(
+        semantics["dev.kandelo.homebrew.formula_source_identity_sha256"],
+        "existing Homebrew Formula source identity",
+        SHA256,
+    )
+    require_string(
+        semantics["dev.kandelo.homebrew.source_closure_sha256"],
+        "existing Homebrew source closure identity",
+        SHA256,
+    )
+    pkg_version = require_string(
+        semantics["dev.kandelo.homebrew.pkg_version"],
+        "existing Homebrew package version",
+        PKG_VERSION,
+    )
+    repository = require_string(
+        semantics["dev.kandelo.homebrew.tap_repository"],
+        "existing Homebrew tap repository",
+        TAP_REPOSITORY,
+    )
+    if repository != normalized_identity(repository):
+        fail("existing Homebrew tap repository identity is not canonical")
+    if revision != formula_revision(pkg_version):
+        fail("existing Homebrew Formula revision does not match its package version")
+    if top_reference(pkg_version, rebuild) != top_ref:
+        fail("existing Homebrew package version and rebuild do not match the top ref")
+    if annotations != expected_top_annotations(semantics, top_ref):
+        fail("existing Homebrew top index annotations are not canonical")
+    return semantics
+
+
+def exact_clean_git_head(root: pathlib.Path, label: str) -> tuple[pathlib.Path, str]:
+    root = real_directory(root, label).resolve()
+
+    def git(*arguments: str) -> bytes:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace")[:4096]
+            fail(f"cannot inspect {label}: {detail}")
+        return result.stdout
+
+    try:
+        git_root = pathlib.Path(
+            git("rev-parse", "--show-toplevel").decode().strip()
+        ).resolve()
+        head = git("rev-parse", "HEAD").decode("ascii", errors="strict").strip()
+    except (UnicodeDecodeError, OSError) as error:
+        fail(f"cannot decode {label} Git identity: {error}")
+    if git_root != root:
+        fail(f"{label} must be the exact Git worktree root")
+    require_string(head, f"{label} Git HEAD", COMMIT)
+    if git("status", "--porcelain=v1", "-z", "--untracked-files=all"):
+        fail(f"{label} has working-tree changes")
+    return root, head
+
+
+def validate_unfinalized_recovery_tap(
+    tap_root_name: str, receipt: dict[str, Any]
+) -> None:
+    tap_root, head = exact_clean_git_head(
+        pathlib.Path(tap_root_name), "unfinalized recovery tap root"
+    )
+    if head != receipt["tap_commit"]:
+        fail("unfinalized recovery tap HEAD does not match the selected child receipt")
+    kandelo_root = real_directory(tap_root / "Kandelo", "tap Kandelo metadata root")
+    formula_root = real_directory(
+        kandelo_root / "formula", "tap Formula sidecar root"
+    )
+    formula = receipt["formula"]
+    sidecar = formula_root / f"{formula}.json"
+    try:
+        sidecar.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        fail(
+            "unfinalized recovery is forbidden because the tap has a Formula sidecar "
+            f"for {formula}"
+        )
+
+    metadata = load_json(
+        kandelo_root / "metadata.json", "tap aggregate Homebrew metadata", MAX_RECEIPT_BYTES
+    )
+    require_bounded_json(metadata, "tap aggregate Homebrew metadata")
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("packages"), list):
+        fail("tap aggregate Homebrew metadata lacks a packages array")
+    matches = 0
+    for index, package in enumerate(metadata["packages"]):
+        if not isinstance(package, dict):
+            fail(f"tap aggregate Homebrew package {index} is not an object")
+        name = package.get("name")
+        if not isinstance(name, str) or FORMULA_NAME.fullmatch(name) is None:
+            fail(f"tap aggregate Homebrew package {index} has an invalid name")
+        matches += int(name == formula)
+    if matches:
+        fail(
+            "unfinalized recovery is forbidden because the tap aggregate metadata "
+            f"contains {formula}"
+        )
+
+
 def validate_manifest_descriptor(
     layout: pathlib.Path,
     descriptor: dict[str, Any],
@@ -1453,6 +1603,7 @@ def merge_index(args: argparse.Namespace) -> None:
     output = initialize_layout(pathlib.Path(args.out_layout))
     children: dict[str, tuple[pathlib.Path, dict[str, Any]]] = {}
     previous_top_digest: str | None = None
+    transition_reason: str | None = None
     if args.existing_layout:
         existing_layout = pathlib.Path(args.existing_layout)
         root = load_layout_root(existing_layout)
@@ -1471,16 +1622,51 @@ def merge_index(args: argparse.Namespace) -> None:
         )
         if top["mediaType"] != OCI_INDEX or top["schemaVersion"] != 2:
             fail("existing Homebrew top index media type or schema is invalid")
-        if top["annotations"] != expected_top_annotations(semantics, first["top_ref"]):
-            fail("existing Homebrew top index belongs to a stale Formula identity")
-        if not isinstance(top["manifests"], list):
-            fail("existing Homebrew top index lacks child manifests")
+        existing_semantics = top_semantics_from_annotations(
+            top["annotations"], first["top_ref"]
+        )
+        if not isinstance(top["manifests"], list) or not 1 <= len(top["manifests"]) <= 2:
+            fail("existing Homebrew top index must contain one or two child manifests")
+        existing_children: dict[str, dict[str, Any]] = {}
         for descriptor in top["manifests"]:
-            validated = validate_manifest_descriptor(existing_layout, descriptor, semantics)
+            validated = validate_manifest_descriptor(
+                existing_layout, descriptor, existing_semantics
+            )
             ref = validated["homebrew_ref"]
-            if ref in children:
+            if ref in existing_children:
                 fail(f"existing Homebrew top index repeats child ref {ref}")
-            children[ref] = (existing_layout, descriptor)
+            existing_children[ref] = descriptor
+
+        identity_changed = existing_semantics != semantics
+        if identity_changed:
+            if not args.recover_unfinalized_tap_root:
+                fail("existing Homebrew top index belongs to a stale Formula identity")
+            fixed_keys = {
+                "dev.kandelo.homebrew.abi",
+                "dev.kandelo.homebrew.bottle_rebuild",
+                "dev.kandelo.homebrew.formula",
+                "dev.kandelo.homebrew.formula_revision",
+                "dev.kandelo.homebrew.pkg_version",
+                "dev.kandelo.homebrew.tap_repository",
+            }
+            if any(existing_semantics[key] != semantics[key] for key in fixed_keys):
+                fail(
+                    "unfinalized recovery cannot change the fixed "
+                    "Formula/version/repository identity"
+                )
+            validate_unfinalized_recovery_tap(
+                args.recover_unfinalized_tap_root, first
+            )
+            transition_reason = "unfinalized-stale-source-identity"
+            print(
+                "homebrew-oci-layout.py: replacing an unfinalized stale source "
+                f"identity at {previous_top_digest}; discarded "
+                f"{len(existing_children)} old child manifest(s)",
+                file=sys.stderr,
+            )
+        else:
+            for ref, descriptor in existing_children.items():
+                children[ref] = (existing_layout, descriptor)
     for layout, _receipt, child in selected:
         ref = child["homebrew_ref"]
         existing = children.get(ref)
@@ -1549,6 +1735,7 @@ def merge_index(args: argparse.Namespace) -> None:
             "previous_digest": previous_top_digest,
             "ref": first["top_ref"],
             "size": top_descriptor["size"],
+            "transition_reason": transition_reason,
         },
     }
     write_json(pathlib.Path(args.out_receipt), receipt)
@@ -1620,10 +1807,18 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
         fail("OCI index receipt children are not uniquely and deterministically ordered")
     if len(set(child_arches)) != len(child_arches):
         fail("OCI index receipt repeats a Kandelo architecture")
-    top = exact_keys(root["top"], {"digest", "previous_digest", "ref", "size"}, "OCI top receipt")
+    top = exact_keys(
+        root["top"],
+        {"digest", "previous_digest", "ref", "size", "transition_reason"},
+        "OCI top receipt",
+    )
     digest_value(top["digest"], "OCI top receipt digest")
     if top["previous_digest"] is not None:
         digest_value(top["previous_digest"], "OCI previous top digest")
+    if top["transition_reason"] not in (None, "unfinalized-stale-source-identity"):
+        fail("OCI top receipt has an invalid transition reason")
+    if top["transition_reason"] is not None and top["previous_digest"] is None:
+        fail("OCI top receipt transition lacks a previous top digest")
     top_ref = require_string(top["ref"], "OCI top receipt ref", OCI_TAG)
     if top_ref != top_reference(pkg_version, rebuild):
         fail("OCI top receipt ref does not match pkg_version and rebuild")
@@ -2385,6 +2580,7 @@ def parser() -> argparse.ArgumentParser:
     merge.add_argument("--child-layout", action="append", default=[])
     merge.add_argument("--child-receipt", action="append", default=[])
     merge.add_argument("--existing-layout")
+    merge.add_argument("--recover-unfinalized-tap-root")
     merge.add_argument("--out-layout", required=True)
     merge.add_argument("--out-receipt", required=True)
     merge.set_defaults(handler=merge_index)
