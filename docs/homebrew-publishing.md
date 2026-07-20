@@ -839,7 +839,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    disabled. It also
    provisions a separate protected Playwright Chromium
    tree for the verifier identity. Runtime provenance remains limited to the
-   runtime-only closure. The target cache then starts empty, source fallback is
+   runtime-only closure. The builder and verifier pour that dependency closure
+   independently, so each records its own exact provenance and install-receipt
+   digests. Those evidence digests are validated and retained independently;
+   the handoff comparison requires the same ordered dependency names, versions,
+   bottle digests, and architecture tags rather than incorrectly requiring two
+   independent pours to produce byte-identical receipts. The target cache then
+   starts empty, source fallback is
    forbidden, and Homebrew itself must fetch, force-pour, inspect, and test the
    exact public bottle. For a GitHub Container Registry (GHCR) bottle, Homebrew
    normally logs the version/rebuild manifest endpoint that it fetches, such as
