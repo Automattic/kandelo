@@ -1418,9 +1418,18 @@ different identities:
   `homebrew-` prefix:
   `ghcr.io/kandelo-dev/homebrew-tap-core/<formula>`.
 
-GitHub's package page may render only the final component, such as `zlib`.
-That short display label does not change the API package name
-`homebrew-tap-core/zlib` or its registry path.
+This is a repository rule, not a first-party naming exception. A public
+third-party repository `<owner>/homebrew-<repo>` has canonical tap name
+`<owner>/<repo>`, while its bottles publish below
+`ghcr.io/<owner>/homebrew-<repo>/<formula>`. For example, tap
+`brandonpayton/kandelo-canary` publishes `hello` as registry repository
+`ghcr.io/brandonpayton/homebrew-kandelo-canary/hello`.
+
+GitHub's package page may render only the final component, such as `zlib` or
+`hello`. That short display label does not change the package API name
+`<homebrew-repository>/<formula>` or its registry path. The first-party
+`zlib` API name is `homebrew-tap-core/zlib`; the third-party example's `hello`
+API name is `homebrew-kandelo-canary/hello`.
 
 Do not derive the GHCR path from the canonical tap name. The earlier
 `ghcr.io/kandelo-dev/tap-core/<formula>` destination created private packages
@@ -1429,19 +1438,23 @@ repository.
 
 Normal production publication has the following contract:
 
-1. The caller runs from `Kandelo-dev/homebrew-tap-core@main` with
-   `packages: write` and passes its built-in `GITHUB_TOKEN` to the reviewed
-   reusable publisher. A PAT is not a production input.
+1. The caller runs from the public tap repository's protected default branch
+   with `packages: write` and passes its built-in `GITHUB_TOKEN` to the reviewed
+   reusable publisher. For the first-party tap that repository is
+   `Kandelo-dev/homebrew-tap-core@main`. A PAT is not a production input.
 2. The publisher derives, rather than accepts, the repository-rooted GHCR
    destination.
 3. Before the first push, the OCI index records
-   `org.opencontainers.image.source=https://github.com/kandelo-dev/homebrew-tap-core`.
-   That connects the package to the source repository at creation time.
-4. The `Kandelo-dev` organization permits members to create public packages
-   and keeps **Inherit access from source repository** enabled. The separate
-   **Private** package-creation checkbox may remain enabled; it grants permission
-   to create private packages and does not force this publisher's packages to
-   be private.
+   `org.opencontainers.image.source=https://github.com/<owner>/<repository>`
+   for that exact public caller repository. That connects the package to the
+   source repository at creation time.
+4. An organization owner permits members to create public packages and keeps
+   **Inherit access from source repository** enabled. The separate **Private**
+   package-creation checkbox may remain enabled; it grants permission to create
+   private packages and does not force this publisher's packages to be private.
+   A user-owned tap has no organization package-creation policy to configure,
+   but still needs the same public source repository, repository-rooted
+   destination, and exact source annotation.
 5. A write publication anonymously reads the exact uploaded digest and verifies
    its SHA-256 and byte count before Formula or sidecar state can be finalized.
    A private package therefore fails publication instead of becoming live tap
@@ -1457,6 +1470,56 @@ created public, repository-linked package `homebrew-tap-core/zlib`; earlier
 `tap-core/*` controls created with both a `GITHUB_TOKEN` and a package PAT
 remained private. The production anonymous readback is the continuing guard
 against a GitHub behavior or organization policy change.
+
+Normal first-party
+[publication run 29713069956](https://github.com/Kandelo-dev/homebrew-tap-core/actions/runs/29713069956)
+then created package `homebrew-tap-core/hello` (GitHub package ID `13483042`)
+with the production built-in-token path. GitHub reported it as public and linked
+to `kandelo-dev/homebrew-tap-core` at creation time. A credential-free GHCR
+read returned child manifest
+`sha256:f6007f0c3e2dc52fe4dfff7517c9764c29f2943030c802ede4530d7b11c3157f`,
+and a separate anonymous import traversed the complete `2.12.3` index at
+`sha256:484350d86280e99e236bde0df751ca9432bed81be900bcbad87ab32be351fff2`.
+
+The independent, user-owned
+[third-party canary run 29712579104](https://github.com/brandonpayton/homebrew-kandelo-canary/actions/runs/29712579104)
+used the same built-in-token path and created public, repository-linked package
+`homebrew-kandelo-canary/hello` (GitHub package ID `13482938`). Its anonymous
+manifest readback matched digest
+`sha256:24476ce607a183460c63f998c7a684469df885d40505dd6b1e95a33c252dc152`.
+That run later failed while preparing unrelated browser-demo package inputs, so
+it is package-creation and public-read evidence, not a completed end-to-end
+publication acceptance. It nevertheless demonstrates that public-by-default
+creation does not depend on a `Kandelo-dev`-specific policy exception.
+
+### New tap bootstrap checklist
+
+Use this checklist once for each new public tap repository:
+
+1. Name the public GitHub repository `homebrew-<repo>` and protect its default
+   branch. Record its canonical Homebrew name as `<owner>/<repo>`.
+2. For an organization-owned repository, allow public package creation and
+   enable source-repository access inheritance. It is not necessary to disable
+   permission to create private packages.
+3. Install the reviewed dispatch caller on the protected branch. Grant the
+   caller `actions: read`, `contents: write`, and `packages: write`; the reusable
+   publisher narrows those permissions per job.
+4. Pass the exact caller repository as `tap-repository` and the canonical tap
+   name as `tap-name`. Do not pass a bottle root: the publisher must derive
+   `https://ghcr.io/v2/<owner>/<homebrew-repository>`.
+5. Use only the caller's built-in `GITHUB_TOKEN`. Do not configure
+   `HOMEBREW_GITHUB_PACKAGES_TOKEN`, a package PAT, or a package-visibility API
+   call for the production publisher.
+6. Publish one Formula, then require the complete post-publication acceptance
+   below. In particular, inspect the package API record and anonymously import
+   the exact public index before treating the tap as ready for a wider rollout.
+
+For an organization-owned package, query
+`orgs/<owner>/packages/container/<url-encoded-package-name>`. For a user-owned
+package, query
+`users/<owner>/packages/container/<url-encoded-package-name>`. In both cases the
+record must say `visibility: public` and link to the exact source repository;
+the registry readback must still run without GitHub credentials.
 
 ### Post-publication acceptance
 
@@ -1476,6 +1539,13 @@ For a multi-architecture publication, require every architecture-specific
 matrix instance as well as the single Formula-level index job. A finalizer that
 successfully writes a failure report still concludes as a failed job and does
 not satisfy this gate.
+
+The workflow pins Kandelo source at planning time, while browser-graph package
+resolution reads the canonical ABI package index later in the run. If another
+merged change activates package archives between those steps, fetch-only
+resolution can reject the new index against the older pinned source. Treat that
+as a failed run and retry after activation settles. Do not use `--allow-stale`
+or omit browser verification to turn the mixed snapshot into an acceptance.
 
 Then validate a clean checkout of live tap `main`, verify the GitHub package is
 public and linked to the exact public repository, and anonymously import the
