@@ -1267,7 +1267,7 @@ make_publish_dependency_provenance() {
             source_tap_git_head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           },
           install_log: {
-            fetch: ["Downloading xz bottle 2222222222222222222222222222222222222222222222222222222222222222"],
+            fetch: ["==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/xz/manifests/5.6.2"],
             pour: ["Pouring xz--5.6.2.wasm32_kandelo.bottle.tar.gz"],
             source_build_absent: true
           }
@@ -1296,7 +1296,7 @@ make_publish_dependency_provenance() {
             source_tap_git_head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           },
           install_log: {
-            fetch: ["Downloading zlib bottle 1111111111111111111111111111111111111111111111111111111111111111"],
+            fetch: ["==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1"],
             pour: ["Pouring zlib--1.3.1.wasm32_kandelo.bottle.tar.gz"],
             source_build_absent: true
           }
@@ -3198,7 +3198,6 @@ EOF
   ln -s "$fake_brew_target" "$fake_brew"
   cat >"$install_log" <<EOF
 ==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1
-==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:$bottle_sha
 ==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.tar.gz
 EOF
 
@@ -3232,10 +3231,27 @@ EOF
     .dependencies[0].receipt.built_as_bottle == true and
     .dependencies[0].receipt.poured_from_bottle == true and
     .dependencies[0].receipt.installed_on_request == false and
-    (.dependencies[0].install_log.fetch | length) == 1 and
+    .dependencies[0].install_log.fetch == [
+      "==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1"
+    ] and
     (.dependencies[0].install_log.pour | length) == 1 and
     .dependencies[0].install_log.source_build_absent == true
   ' "$output" >/dev/null || fail "dependency provenance omitted exact bottle-pour evidence"
+
+  local exact_blob_output="$root/provenance-exact-blob.json"
+  jq --arg bottle_sha "$bottle_sha" '
+    .dependencies[0].install_log.fetch = [
+      ("==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:" + $bottle_sha)
+    ]
+  ' "$output" >"$exact_blob_output"
+  python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$exact_blob_output" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit "$tap_commit" \
+    --formula curl \
+    --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --tap-root "$tap"
 
   jq '.formulae[0].bottle.stable.files.wasm32_kandelo.cellar = ":unsupported"' \
     "$info" >"$bad"
@@ -3309,6 +3325,26 @@ EOF
     fail "dependency provenance validator accepted a suffixed bottle filename"
   fi
 
+  local malformed_fetch_line
+  for malformed_fetch_line in \
+    '==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1.extra' \
+    '==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1?query' \
+    '==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/bzip2/manifests/1.3.1' \
+    '==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.2' \
+    '==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1-1' \
+    '==> Fetching downloads for: zlib'; do
+    jq --arg line "$malformed_fetch_line" \
+      '.dependencies[0].install_log.fetch = [$line]' \
+      "$output" >"$bad"
+    if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+      --input "$bad" --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --tap-root "$tap" >/dev/null 2>&1; then
+      fail "dependency provenance validator accepted malformed fetch line $malformed_fetch_line"
+    fi
+  done
+
   local rebuild_output="$root/provenance-rebuild1.json"
   cp "$tap/Formula/zlib.rb" "$root/zlib-rebuild0.rb"
   cp "$info" "$root/zlib-info-rebuild0.json"
@@ -3331,7 +3367,7 @@ EOF
     .formulae[0].bottle.stable.rebuild = 1
   ' "$root/zlib-info-rebuild0.json" >"$info"
   cat >"$install_log" <<EOF
-==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:$bottle_sha
+==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1-1
 ==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.1.tar.gz
 EOF
   if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
@@ -3363,6 +3399,9 @@ EOF
     --tap-root "$tap"
   jq -e '
     .dependencies[0].bottle.rebuild == 1 and
+    .dependencies[0].install_log.fetch == [
+      "==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/manifests/1.3.1-1"
+    ] and
     .dependencies[0].install_log.pour == [
       "==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.1.tar.gz"
     ]

@@ -286,14 +286,32 @@ def line_names_bottle(line: str, bottle_filename: str) -> bool:
     return match is not None and match.group(1) == bottle_filename
 
 
+def public_manifest_url(
+    bottle_root_url: str, dependency: str, version: str, rebuild: int
+) -> str:
+    reference = f"{version}-{rebuild}" if rebuild else version
+    return f"{bottle_root_url}/{dependency}/manifests/{reference}"
+
+
+def line_fetches_reference(line: str, references: tuple[str, ...]) -> bool:
+    match = re.fullmatch(
+        r"(?:==>\s+)?(?:Downloading|Downloaded|Fetching)\s+(\S+)",
+        line,
+        re.IGNORECASE,
+    )
+    return match is not None and match.group(1) in references
+
+
 def selected_evidence(
     lines: list[str],
     dependency: str,
     bottle_url: str,
     bottle_sha: str,
+    bottle_manifest_url: str,
     bottle_filename: str,
 ) -> tuple[list[str], list[str]]:
     dependency_url = f"/{dependency}/blobs/sha256:{bottle_sha}"
+    fetch_references = (bottle_url, bottle_manifest_url)
     fetch: list[str] = []
     pour: list[str] = []
     source_build: list[str] = []
@@ -303,12 +321,11 @@ def selected_evidence(
             dependency.lower() in lowered
             or dependency_url in lowered
             or bottle_url.lower() in lowered
+            or bottle_manifest_url.lower() in lowered
         )
         if mentions_dependency and SOURCE_BUILD.search(line):
             source_build.append(line)
-        if bottle_url.lower() in lowered and re.search(
-            r"\b(?:downloading|downloaded|fetching)\b", line, re.I
-        ):
+        if line_fetches_reference(line, fetch_references):
             fetch.append(line)
         if line_names_bottle(line, bottle_filename):
             pour.append(line)
@@ -479,8 +496,16 @@ def capture(args: argparse.Namespace) -> None:
         bottle_filename = canonical_bottle_filename(
             name, version, bottle_tag, rebuild
         )
+        bottle_manifest_url = public_manifest_url(
+            args.bottle_root_url, name, version, rebuild
+        )
         fetch_lines, pour_lines = selected_evidence(
-            log_lines, name, bottle_url, bottle_sha, bottle_filename
+            log_lines,
+            name,
+            bottle_url,
+            bottle_sha,
+            bottle_manifest_url,
+            bottle_filename,
         )
         relative_receipt = f"Cellar/{name}/{version}/INSTALL_RECEIPT.json"
         selected[full_name] = {
@@ -554,7 +579,7 @@ def exact_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
     return value
 
 
-def validate_evidence(lines: Any, label: str, dependency: str, marker: str) -> None:
+def validate_fetch_evidence(lines: Any, label: str, references: tuple[str, ...]) -> None:
     if not isinstance(lines, list) or not lines or len(lines) > MAX_EVIDENCE_LINES:
         fail(f"{label} must contain 1-{MAX_EVIDENCE_LINES} lines")
     for index, line in enumerate(lines):
@@ -563,8 +588,8 @@ def validate_evidence(lines: Any, label: str, dependency: str, marker: str) -> N
             fail(f"{label}[{index}] exceeds {MAX_EVIDENCE_LINE_BYTES} bytes")
         if any(ord(character) < 0x20 and character != "\t" for character in line):
             fail(f"{label}[{index}] contains a control character")
-        if dependency not in line.lower() or marker not in line.lower():
-            fail(f"{label}[{index}] does not identify {dependency} and {marker}")
+        if not line_fetches_reference(line, references):
+            fail(f"{label}[{index}] does not identify an exact bottle fetch reference")
 
 
 def validate_pour_evidence(lines: Any, label: str, bottle_filename: str) -> None:
@@ -724,11 +749,13 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         )
         if install_log["source_build_absent"] is not True:
             fail(f"dependencies[{index}] lacks a no-source-build assertion")
-        validate_evidence(
+        bottle_manifest_url = public_manifest_url(
+            args.bottle_root_url, name, version, bottle["rebuild"]
+        )
+        validate_fetch_evidence(
             install_log["fetch"],
             f"dependencies[{index}].install_log.fetch",
-            name,
-            bottle_sha,
+            (bottle["url"], bottle_manifest_url),
         )
         validate_pour_evidence(
             install_log["pour"],
