@@ -204,13 +204,13 @@ jobs:
 
       - name: Checkout exact public core dependency tap
         if: ${{ steps.dependency-taps.outputs.core-tap-sha != '' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          token: ""
-          repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ steps.dependency-taps.outputs.core-tap-sha }}
-          path: dependency-taps/core
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ steps.dependency-taps.outputs.core-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core"
 
       - name: Verify immutable dependency tap checkouts
         shell: bash
@@ -473,13 +473,13 @@ jobs:
 
       - name: Checkout exact public core dependency tap for build
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          token: ""
-          repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          path: dependency-taps/core
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core"
 
       - name: Verify source snapshots
         shell: bash
@@ -952,13 +952,13 @@ jobs:
 
       - name: Checkout exact post-build core dependency tap source
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          token: ""
-          repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          path: dependency-taps/core-reviewed
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo-postbuild/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core-reviewed"
 
       - name: Recheck reviewed sources after Formula execution
         shell: bash
@@ -1182,13 +1182,13 @@ jobs:
 
       - name: Checkout exact public core dependency tap for upload validation
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          token: ""
-          repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          path: dependency-taps/core
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core"
 
       - name: Verify uploader source snapshot
         shell: bash
@@ -1420,13 +1420,13 @@ jobs:
 
       - name: Checkout exact public core dependency tap for index validation
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          token: ""
-          repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          path: dependency-taps/core
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core"
 
       - name: Materialize immutable dependency tap map for index validation
         shell: bash
@@ -1708,13 +1708,13 @@ jobs:
 
       - name: Checkout exact public core dependency tap for verification
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          token: ""
-          repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          path: dependency-taps/core
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core"
 
       - name: Verify fresh verifier source snapshots
         shell: bash
@@ -2179,9 +2179,10 @@ jobs:
           )
           bash scripts/dev-shell.sh bash scripts/homebrew-merge-bottle-json.sh "${merge_args[@]}"
           changed="$(git -C "$merged_tap" diff --name-only)"
-          [ "$changed" = "Formula/$FORMULA.rb" ] || {
-            echo "::error::bottle merge changed files outside Formula/$FORMULA.rb"; exit 1;
-          }
+          case "$changed" in
+            ""|"Formula/$FORMULA.rb") ;;
+            *) echo "::error::bottle merge changed files outside Formula/$FORMULA.rb"; exit 1 ;;
+          esac
           [ -z "$(git -C "$GITHUB_WORKSPACE/tap" status --short)" ] || {
             echo "::error::bottle merge modified the archived source tap"; exit 1;
           }
@@ -2487,13 +2488,13 @@ jobs:
 
       - name: Checkout exact post-verification core dependency tap source
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          token: ""
-          repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          path: dependency-taps/core-postverify
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo-postverify/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core-postverify"
 
       - name: Reconstruct the verified Formula with fresh trusted generators
         shell: bash
@@ -3226,13 +3227,13 @@ jobs:
 
       - name: Checkout exact public core dependency tap for finalization
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          token: ""
-          repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          path: dependency-taps/core
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core"
 
       - name: Verify finalizer source snapshots
         shell: bash
