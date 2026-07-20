@@ -279,6 +279,8 @@ const VIRTUAL_INTERFACES = [
 
 /** Ioctl syscall number */
 const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
+/** tcflush(3) passes its queue selector as an integer ioctl argument. */
+const TCFLSH = 0x540b;
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = ABI_SYSCALLS.Mmap;
@@ -3661,6 +3663,26 @@ export class CentralizedKernelWorker {
 
       for (const desc of argDescs) {
         const ptr = origArgs[desc.argIndex];
+        const scalarTcflushArg =
+          syscallNr === SYS_IOCTL &&
+          (origArgs[1] >>> 0) === TCFLSH &&
+          desc.argIndex === 2;
+        if (scalarTcflushArg) {
+          // ioctl's third argument is request-dependent. Most supported
+          // requests use a pointer and follow the descriptor below, but
+          // tcflush(fd, queue) sends TCIFLUSH/TCOFLUSH/TCIOFLUSH directly as
+          // the integer value 0/1/2. Materialize that scalar in kernel scratch
+          // instead of interpreting the value as a process-memory address.
+          const kernelPtr = dataStart + dataOffset;
+          new DataView(this.kernelMemory!.buffer).setInt32(
+            kernelPtr,
+            origArgs[2],
+            true,
+          );
+          adjustedArgs[2] = kernelPtr;
+          dataOffset = (dataOffset + 4 + 7) & ~7;
+          continue;
+        }
         const deferSchedGetaffinityOutputError =
           syscallNr === SYS_SCHED_GETAFFINITY
           && desc.argIndex === 2
@@ -4530,6 +4552,14 @@ export class CentralizedKernelWorker {
 
     for (const desc of argDescs) {
       const origPtr = origArgs[desc.argIndex];
+      if (
+        syscallNr === SYS_IOCTL &&
+        (origArgs[1] >>> 0) === TCFLSH &&
+        desc.argIndex === 2
+      ) {
+        // The guest supplied a scalar queue selector, not an output pointer.
+        continue;
+      }
       if (origPtr === 0) continue;
 
       let size: number;

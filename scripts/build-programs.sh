@@ -328,6 +328,16 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
             -o "$REPO_ROOT/examples/wait_lifecycle_test.wasm64.wasm"
     fi
 
+    # Terminal-attribute marshalling is pointer-width sensitive in the host,
+    # so browser-only and packed CI workspaces need the same memory64 guest
+    # fixture that the owning Vitest can build on demand.
+    terminal_attributes_src="$REPO_ROOT/examples/terminal_attributes_api_test.c"
+    if [ -f "$terminal_attributes_src" ]; then
+        echo "  Compiling terminal_attributes_api_test (wasm64)..."
+        "$CC" "${CFLAGS64[@]}" "$terminal_attributes_src" "${LINK_FLAGS64[@]}" \
+            -o "$REPO_ROOT/examples/terminal_attributes_api_test.wasm64.wasm"
+    fi
+
     # Fork continuation instrumentation is currently a wasm32 artifact
     # contract. Still cover the compiler's architecture-independent SjLj /
     # noexcept ordering on wasm64 with a raw fixture that omits the dormant

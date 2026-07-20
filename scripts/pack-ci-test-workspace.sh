@@ -28,6 +28,7 @@ for required in \
     examples/pthread_channel_reuse_test.wasm \
     examples/wait_lifecycle_test.wasm \
     examples/wait_lifecycle_test.wasm64.wasm \
+    examples/terminal_attributes_api_test.wasm64.wasm \
     benchmarks/wasm/pipe-throughput.wasm \
     benchmarks/wasm/file-throughput.wasm \
     benchmarks/wasm/syscall-latency.wasm \
