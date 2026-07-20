@@ -814,11 +814,11 @@ rm -f "$OTP_TARBALL"
 OTP_SIZE=$(wc -c < "$OTP_TARBALL" | tr -d ' ')
 echo "==> erlang-otp.tar.zst: $(echo "$OTP_SIZE" | numfmt --to=iec 2>/dev/null || echo "${OTP_SIZE} bytes")"
 
-install_local_binary erlang "$OTP_TARBALL"
+install_local_runtime_file erlang "$OTP_TARBALL"
 
 # Direct developer builds historically leave convenient copies beside the
 # recipe. Resolver and Homebrew callers instead receive the exact same bytes
-# through install_local_binary's caller-owned output contract above.
+# through the executable/runtime-file caller-owned output contract above.
 if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     cp "$ARTIFACT_DIR/erlang.wasm" "$OUT_DIR/erlang.wasm"
     cp "$OTP_TARBALL" "$OUT_DIR/erlang-otp.tar.zst"

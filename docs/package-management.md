@@ -311,8 +311,9 @@ formula, sidecar, GHCR, VFS, and runtime validation contract.
 
 The `erlang` package cross-builds OTP; the Erlang executable in the developer
 shell is a native OTP 28 bootstrap tool and is never a target artifact. The
-recipe produces two coupled outputs: the fork-instrumented `erlang.wasm` BEAM
-emulator and `erlang-otp.tar.zst`, a relocatable core OTP tree. The archive
+recipe produces two coupled artifacts: the fork-instrumented `erlang.wasm`
+executable output and `erlang-otp.tar.zst`, a declared runtime file containing
+a relocatable core OTP tree. The archive
 contains the kernel, stdlib, erts, and compiler applications, release boot
 files, the installed `$ROOTDIR/bin/start.boot` contract, and target ERTS
 helpers such as `erlexec` and `erl_child_setup`. Every Wasm helper carries the
