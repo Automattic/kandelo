@@ -349,6 +349,17 @@ header naming, and entry mtimes to the receipt's stable source-modified time.
 The completed gzip file is assigned that same stable mtime, which also makes
 Homebrew's raw bottle-JSON `bottle.date` stable.
 
+Bottle rebuild identity is reviewed tap state, not a value chosen from the
+runner's mutable Git history. Before Formula evaluation, the publisher parses
+the exact Formula statically: no `bottle do` block means rebuild zero, while a
+canonical positive `rebuild N` is preserved. It then invokes `brew bottle
+--keep-old` and requires Homebrew's raw bottle JSON to report that exact value.
+The publisher does not use Homebrew's automatic increment, and it does not use
+`--no-rebuild`, which would reset an explicit rebuild to zero. A maintainer who
+must replace bytes already published under an immutable reference first
+commits the next positive rebuild to the Formula, then dispatches publication;
+a changed root URL or a different emitted rebuild fails before handoff.
+
 Before archiving, the overlay requires the receipt's `source.tap` and exact
 lowercase 40-character `source.tap_git_head` to match the selected tap name and
 revision already resolved by `brew bottle`. It then assigns the temporary Tab a
@@ -370,6 +381,12 @@ canonical block and its composer-owned separator blank line. This is a
 one-way normalization: a receipt with a replacement bottle block, changed
 comments or whitespace, added Ruby, or any other non-bottle drift is rejected.
 The comparison does not rely only on a bottle-excluded digest.
+The bounded inspector records the exact archived Formula digest after that
+comparison. Sidecar generation carries both identities independently: the
+selected tap Formula digest identifies the reviewed build source, while the
+inspector's archived digest is rechecked against the bottle when the sidecars
+are written. This prevents a later architecture's normal bottle-block removal
+from weakening the archive's byte-for-byte binding.
 
 The archived receipt used by static VFS composition intentionally has no
 `source.tap_git_head`. The VFS builder preserves those receipt bytes instead of
@@ -833,7 +850,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    disabled. It also
    provisions a separate protected Playwright Chromium
    tree for the verifier identity. Runtime provenance remains limited to the
-   runtime-only closure. The target cache then starts empty, source fallback is
+   runtime-only closure. The builder and verifier pour that dependency closure
+   independently, so each records its own exact provenance and install-receipt
+   digests. Those evidence digests are validated and retained independently;
+   the handoff comparison requires the same ordered dependency names, versions,
+   bottle digests, and architecture tags rather than incorrectly requiring two
+   independent pours to produce byte-identical receipts. The target cache then
+   starts empty, source fallback is
    forbidden, and Homebrew itself must fetch, force-pour, inspect, and test the
    exact public bottle. For a GitHub Container Registry (GHCR) bottle, Homebrew
    normally logs the version/rebuild manifest endpoint that it fetches, such as

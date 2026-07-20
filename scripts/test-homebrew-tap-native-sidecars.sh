@@ -474,7 +474,8 @@ generate_sidecars() {
   local canonical_json="${out}-merge-bottle.json"
   local dependency_provenance="${out}-dependency-provenance.json"
   local runtime_evidence="${out}-runtime-evidence.json"
-  local tap_commit provenance_sha version
+  local tap_commit provenance_sha runtime_provenance_sha
+  local runtime_dependency_bottle_sha runtime_dependency_receipt_sha version
   bottle_filename="$(basename "$archive")"
   tap_commit="$(git -C "$TAP" rev-parse HEAD)"
   rm -rf "$merged_tap" "$out"
@@ -514,6 +515,9 @@ generate_sidecars() {
     --expected-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --expected-cellar any_skip_relocation >/dev/null
   provenance_sha="$(sha256_file "$dependency_provenance")"
+  runtime_provenance_sha="${SIDECAR_RUNTIME_PROVENANCE_SHA:-$provenance_sha}"
+  runtime_dependency_bottle_sha="${SIDECAR_RUNTIME_DEPENDENCY_BOTTLE_SHA:-}"
+  runtime_dependency_receipt_sha="${SIDECAR_RUNTIME_DEPENDENCY_RECEIPT_SHA:-}"
   version="$(jq -er --arg formula "$formula" '.[$formula].formula.pkg_version' \
     "$canonical_json")"
   jq -nS \
@@ -525,7 +529,9 @@ generate_sidecars() {
     --argjson bytes "$bytes" \
     --arg version "$version" \
     --arg bottle_filename "$bottle_filename" \
-    --arg provenance_sha "$provenance_sha" \
+    --arg provenance_sha "$runtime_provenance_sha" \
+    --arg runtime_dependency_bottle_sha "$runtime_dependency_bottle_sha" \
+    --arg runtime_dependency_receipt_sha "$runtime_dependency_receipt_sha" \
     --slurpfile provenance "$dependency_provenance" '{
       schema: 2,
       formula: $formula,
@@ -549,9 +555,21 @@ generate_sidecars() {
           $provenance[0].dependencies[] | {
             full_name: .full_name,
             version: .version,
-            sha256: .bottle.sha256,
+            sha256: (
+              if $runtime_dependency_bottle_sha == "" then
+                .bottle.sha256
+              else
+                $runtime_dependency_bottle_sha
+              end
+            ),
             tag: .bottle.tag,
-            receipt_sha256: .receipt.sha256
+            receipt_sha256: (
+              if $runtime_dependency_receipt_sha == "" then
+                .receipt.sha256
+              else
+                $runtime_dependency_receipt_sha
+              end
+            )
           }
         ]
       },
@@ -812,6 +830,14 @@ cp "$TMPDIR/sidecar-tool.original.rb" \
   "$TMPDIR/tool-stage/sidecar-tool/2.0_3/.brew/sidecar-tool.rb"
 generate_sidecars sidecar-tool "${tool_bottle[@]}" "$TOOL_OUT"
 SIDECAR_TEST_ARCH=wasm64 generate_sidecars sidecar-tool "${tool64_bottle[@]}" "$TOOL64_OUT"
+SIDECAR_RUNTIME_PROVENANCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+SIDECAR_RUNTIME_DEPENDENCY_RECEIPT_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  generate_sidecars sidecar-tool "${tool_bottle[@]}" \
+  "$TMPDIR/independent-runtime-dependency-evidence"
+SIDECAR_RUNTIME_DEPENDENCY_BOTTLE_SHA=0000000000000000000000000000000000000000000000000000000000000000 \
+  expect_generate_failure runtime-dependency-bottle-drift \
+  "runtime evidence dependency closure does not match" \
+  sidecar-tool "${tool_bottle[@]}" "$TMPDIR/runtime-dependency-bottle-drift"
 
 TOOL_HANDOFF="$TMPDIR/tool-publication-handoff"
 TOOL64_HANDOFF="$TMPDIR/tool64-publication-handoff"

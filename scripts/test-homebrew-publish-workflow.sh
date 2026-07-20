@@ -1396,18 +1396,24 @@ make_publish_handoff() {
   local extra_link_count="${PUBLISH_HANDOFF_EXTRA_LINK_COUNT:-0}"
   local dependency_mode="${PUBLISH_HANDOFF_DEPENDENCY_MODE:-none}"
   local seed_dependency_sidecars="${PUBLISH_HANDOFF_SEED_DEPENDENCY_SIDECARS:-0}"
+  local selected_formula_source="${PUBLISH_HANDOFF_FORMULA_SOURCE:-}"
+  local archived_formula_source="${PUBLISH_HANDOFF_ARCHIVED_FORMULA_SOURCE:-}"
   local dependency_provenance_source="${handoff}.dependency-provenance.json"
   local composition_dependencies='[]'
-  local bottle_sha bottle_bytes bottle_url formula_sha
+  local bottle_sha bottle_bytes bottle_url formula_sha archived_formula_sha
 
   rm -rf "$handoff" "$tap_root" "$build_stage" "$dependency_provenance_source"
   mkdir -p "$tap_root/Formula" "$handoff/composition"
   if [ "$dependency_mode" = "none" ]; then
-    cat >"$tap_root/Formula/hello.rb" <<'EOF'
+    if [ -n "$selected_formula_source" ]; then
+      cp "$selected_formula_source" "$tap_root/Formula/hello.rb"
+    else
+      cat >"$tap_root/Formula/hello.rb" <<'EOF'
 class Hello < Formula
   desc "reviewed fixture"
 end
 EOF
+    fi
   else
     cat >"$tap_root/Formula/hello.rb" <<'EOF'
 class Hello < Formula
@@ -1445,11 +1451,19 @@ EOF
   fi
   formula_sha="$(sha256sum "$tap_root/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/hello.rb" | awk '{print $1}')"
   if [ "$dependency_mode" = "none" ]; then
-    make_build_handoff "$build_stage"
+    if [ -n "$archived_formula_source" ]; then
+      BUILD_HANDOFF_FORMULA_SOURCE="$archived_formula_source" \
+        make_build_handoff "$build_stage"
+      archived_formula_sha="$(sha256sum "$archived_formula_source" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$archived_formula_source" | awk '{print $1}')"
+    else
+      make_build_handoff "$build_stage"
+      archived_formula_sha="$formula_sha"
+    fi
   else
     BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE="$dependency_provenance_source" \
       BUILD_HANDOFF_FORMULA_SOURCE="$tap_root/Formula/hello.rb" \
       make_build_handoff "$build_stage"
+    archived_formula_sha="$formula_sha"
   fi
   mv "$build_stage" "$handoff/build"
   make_dry_upload_receipt "$handoff/build" "$handoff/receipt.json" already-present
@@ -1459,7 +1473,8 @@ EOF
   bottle_url="$(jq -r '.layout.bottle.url' "$handoff/receipt.json")"
   jq -nS \
     --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
-    --arg formula_sha "$formula_sha" --argjson dependencies "$composition_dependencies" '{
+    --arg formula_sha "$formula_sha" --arg archived_formula_sha "$archived_formula_sha" \
+    --argjson dependencies "$composition_dependencies" '{
       schema: 1,
       tap_repository: "kandelo-dev/homebrew-tap-core",
       tap_name: "kandelo-dev/tap-core",
@@ -1491,6 +1506,7 @@ EOF
           built_by: "https://example.invalid/actions/runs/1",
           built_at: "2026-07-12T00:00:00Z",
           bottle_file: "../build/bottle.tar.gz",
+          archived_formula_sha256: $archived_formula_sha,
           url: $url,
           cache_key_sha: $sha,
           payload_root: "hello/2.12.1",
@@ -1574,11 +1590,51 @@ set_publish_handoff_rebuild() {
 
 assert_publish_handoff_is_exact_inert_data() {
   local handoff tap_root tmp external before after err generated composed host link
+  local selected_formula archived_formula selected_formula_sha
 
   handoff="$TMPDIR/publish-handoff-valid"
   tap_root="$TMPDIR/publish-handoff-valid-tap"
   make_publish_handoff "$handoff" "$tap_root"
   validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+
+  selected_formula="$TMPDIR/publish-handoff-second-arch-selected.rb"
+  archived_formula="$TMPDIR/publish-handoff-second-arch-archived.rb"
+  cat >"$selected_formula" <<'RUBY'
+class Hello < Formula
+  desc "reviewed fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    sha256 cellar: :any_skip_relocation, wasm64_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
+  end
+
+end
+RUBY
+  cat >"$archived_formula" <<'RUBY'
+class Hello < Formula
+  desc "reviewed fixture"
+
+end
+RUBY
+  handoff="$TMPDIR/publish-handoff-second-arch"
+  tap_root="$TMPDIR/publish-handoff-second-arch-tap"
+  PUBLISH_HANDOFF_FORMULA_SOURCE="$selected_formula" \
+    PUBLISH_HANDOFF_ARCHIVED_FORMULA_SOURCE="$archived_formula" \
+    make_publish_handoff "$handoff" "$tap_root"
+  validate_publish_handoff "$handoff" "$tap_root" >/dev/null
+  selected_formula_sha="$(sha256sum "$selected_formula" 2>/dev/null | awk '{print $1}' || \
+    shasum -a 256 "$selected_formula" | awk '{print $1}')"
+  tmp="$handoff/composition/sidecars-input.invalid-archive-sha.json"
+  jq --arg sha "$selected_formula_sha" \
+    '.packages[0].bottles[0].archived_formula_sha256 = $sha' \
+    "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
+  err="$TMPDIR/publish-handoff-second-arch.err"
+  if validate_publish_handoff "$handoff" "$tap_root" > /dev/null 2>"$err"; then
+    fail "publish handoff validator accepted the selected Formula digest as archived receipt evidence"
+  fi
+  grep -F "archived Formula sha256 differs from bounded inspection" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain archived Formula digest drift"
 
   handoff="$TMPDIR/publish-handoff-dry-run"
   tap_root="$TMPDIR/publish-handoff-dry-run-tap"
@@ -2183,6 +2239,12 @@ assert_bottle_build_installs_test_dependencies() {
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
   cat >"$tap/Formula/hello.rb" <<'EOF'
 class Hello < Formula
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    rebuild 1
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  end
+
   depends_on "cmake" => [:build, :test]
   depends_on "ninja" => :build
 end
@@ -2297,6 +2359,7 @@ JSON
     fi
     ;;
   bottle)
+    [ "$*" = 'bottle --json --keep-old --root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core kandelo-dev/tap-core/hello' ] || exit 55
     printf 'bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -2349,6 +2412,13 @@ for directory, names, files in os.walk(root):
   }
 }
 JSON
+    if [ "${FAKE_BOTTLE_REBUILD_DRIFT:-}" = "1" ]; then
+      jq '.[].bottle.rebuild = 2' \
+        hello--1.0.wasm32_kandelo.bottle.json \
+        >hello--1.0.wasm32_kandelo.bottle.drift.json
+      mv hello--1.0.wasm32_kandelo.bottle.drift.json \
+        hello--1.0.wasm32_kandelo.bottle.json
+    fi
     python3 -c 'import os, sys; os.utime(sys.argv[1], (1705948357, 1705948357))' \
       hello--1.0.wasm32_kandelo.bottle.json
     ;;
@@ -2429,6 +2499,49 @@ EOF
   )
   [ ! -e "${native_prefix%/p}" ] ||
     fail "bottle build retained its native prefix after successful cleanup"
+
+  local drift_out="$TMPDIR/bottle-rebuild-drift-out"
+  local drift_prefix="$TMPDIR/bottle-rebuild-drift-prefix"
+  local drift_log="$TMPDIR/bottle-rebuild-drift.log"
+  local drift_realm_log="$TMPDIR/bottle-rebuild-drift-realms.log"
+  local drift_lifecycle_log="$TMPDIR/bottle-rebuild-drift-lifecycle.log"
+  local drift_native_capture="$TMPDIR/bottle-rebuild-drift-native-prefix.txt"
+  local drift_provenance_capture="$TMPDIR/bottle-rebuild-drift-provenance.txt"
+  local drift_provenance_log="$TMPDIR/bottle-rebuild-drift-install.log"
+  local drift_err="$TMPDIR/bottle-rebuild-drift.err"
+  local drift_status
+  mkdir -p "$drift_prefix"
+  set +e
+  PATH="$fake_bin:$PATH" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$drift_provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$drift_provenance_log" \
+    FAKE_BREW_LOG="$drift_log" \
+    FAKE_REALM_COMMAND_LOG="$drift_realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$drift_lifecycle_log" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$drift_native_capture" \
+    FAKE_BUILD_TIME=1700000000 \
+    FAKE_BOTTLE_REBUILD_DRIFT=1 \
+    FAKE_BREW_PREFIX="$drift_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --arch wasm32 \
+      --out "$drift_out" \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$drift_err"
+  drift_status="$?"
+  set -e
+  [ "$drift_status" -eq 1 ] ||
+    fail "bottle build accepted Homebrew rebuild drift: $drift_status"
+  grep -F 'Homebrew bottle rebuild 2 differs from planned Formula rebuild 1' \
+    "$drift_err" >/dev/null ||
+    fail "bottle build did not explain Homebrew rebuild drift"
 
   # A later tap-only report commit and a different wall-clock build time must
   # not change the bottle layer. The fake Brew mirrors the patched publisher's
@@ -3571,6 +3684,40 @@ RUBY
     "$tap" kandelo-dev/tap-core root --direct)"
   [ "$output" = $'kandelo-dev/tap-core/dep-a\nkandelo-dev/tap-core/dep-recommended' ] ||
     fail "static Formula resolver did not produce only direct runtime dependencies: $output"
+  output="$(ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" kandelo-dev/tap-core root --bottle-identity-json)"
+  printf '%s\n' "$output" | jq -e '
+    keys == ["bottle", "formula", "full_name", "schema", "tap"] and
+    .schema == 1 and
+    .tap == "kandelo-dev/tap-core" and
+    .formula == "root" and
+    .full_name == "kandelo-dev/tap-core/root" and
+    .bottle == {"root_url": null, "rebuild": 0}
+  ' >/dev/null ||
+    fail "static Formula resolver did not preserve unbottled rebuild zero: $output"
+
+  cat >"$tap/Formula/rebuilt.rb" <<'RUBY'
+class Rebuilt < Formula
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    rebuild 7
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  end
+end
+RUBY
+  output="$(ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" kandelo-dev/tap-core rebuilt --bottle-identity-json)"
+  printf '%s\n' "$output" | jq -e '
+    .schema == 1 and
+    .tap == "kandelo-dev/tap-core" and
+    .formula == "rebuilt" and
+    .full_name == "kandelo-dev/tap-core/rebuilt" and
+    .bottle == {
+      "root_url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+      "rebuild": 7
+    }
+  ' >/dev/null ||
+    fail "static Formula resolver did not preserve a positive bottle rebuild: $output"
 
   cat >"$tap/Formula/rich-static.rb" <<'RUBY'
 class RichStatic < Formula

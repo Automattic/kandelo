@@ -266,6 +266,7 @@ if ! jq -e \
     .packages[0].bottles[0].bottle_tag == $tag and
     .packages[0].bottles[0].status == "success" and
     .packages[0].bottles[0].bottle_file == "../build/bottle.tar.gz" and
+    (.packages[0].bottles[0].archived_formula_sha256 | test("^[0-9a-f]{64}$")) and
     .packages[0].bottles[0].cache_key_sha == $sha and
     .packages[0].bottles[0].url == $url
   ' "$COMPOSITION_INPUT" >/dev/null; then
@@ -296,6 +297,7 @@ VERSION="$(jq -er '.packages[0].version | select(type == "string")' "$COMPOSITIO
 FORMULA_REVISION="$(jq -er '.packages[0].formula_revision | select(type == "number" and . >= 0 and floor == .)' "$COMPOSITION_INPUT")"
 BOTTLE_REBUILD="$(jq -er '.packages[0].bottle_rebuild | select(type == "number" and . >= 0 and floor == .)' "$COMPOSITION_INPUT")"
 FORMULA_SOURCE_SHA="$(jq -er '.packages[0].formula_source_sha256' "$COMPOSITION_INPUT")"
+ARCHIVED_FORMULA_SHA="$(jq -er '.packages[0].bottles[0].archived_formula_sha256' "$COMPOSITION_INPUT")"
 TAP_FORMULA="$TAP_ROOT/Formula/$FORMULA.rb"
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -313,14 +315,33 @@ if [ "$(sha256_file "$TAP_FORMULA")" != "$FORMULA_SOURCE_SHA" ]; then
   exit 1
 fi
 
+VALIDATION_TMP="$(mktemp -d)"
+cleanup() { rm -rf "$VALIDATION_TMP"; }
+trap cleanup EXIT
+INSPECTION_JSON="$VALIDATION_TMP/bottle-inspection.json"
+inspection_args=()
+for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
+  inspection_args+=(--forbidden-root "$forbidden_root")
+done
+python3 "$SCRIPT_ROOT/homebrew-inspect-bottle.py" \
+  --archive "$BUILD_ROOT/bottle.tar.gz" \
+  --formula "$FORMULA" \
+  --version "$VERSION" \
+  --expected-abi "$ABI_VERSION" \
+  --expected-arch "$ARCH" \
+  --selected-formula "$TAP_FORMULA" \
+  "${inspection_args[@]}" \
+  --out "$INSPECTION_JSON"
+if [ "$(jq -er '.formula_sha256' "$INSPECTION_JSON")" != "$ARCHIVED_FORMULA_SHA" ]; then
+  echo "homebrew-validate-publish-handoff.sh: archived Formula sha256 differs from bounded inspection" >&2
+  exit 1
+fi
+
 BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$BUILD_ROOT/manifest.json")"
 SIBLING_POLICY="$(homebrew_sibling_bottle_policy \
   "$TAP_ROOT/Kandelo/metadata.json" "$FORMULA" "$VERSION" "$FORMULA_REVISION" \
   "$BOTTLE_REBUILD" "$ABI_VERSION" "$BOTTLE_ROOT_URL" "$TAP_FORMULA" \
   "homebrew-validate-publish-handoff.sh")"
-VALIDATION_TMP="$(mktemp -d)"
-cleanup() { rm -rf "$VALIDATION_TMP"; }
-trap cleanup EXIT
 VALIDATION_TAP="$VALIDATION_TMP/tap"
 SELECTED_ROOT="$VALIDATION_TMP/selected"
 COMPOSED_FORMULA="$VALIDATION_TMP/composed-formula.rb"
@@ -474,7 +495,7 @@ if [ "$(jq -r --arg arch "$ARCH" '[.bottles[] | select(.arch == $arch)][0].link_
   exit 1
 fi
 
-FORMULA_SHA256="$FORMULA_SOURCE_SHA"
+FORMULA_SHA256="$ARCHIVED_FORMULA_SHA"
 
 if ! jq -e \
   --arg formula "$FORMULA" --arg arch "$ARCH" --arg version "$VERSION" \

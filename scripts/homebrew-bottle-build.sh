@@ -223,6 +223,7 @@ run_brew_for_kandelo_bottles() {
 INSTALL_LOG="$CONTROL_DIR/brew-install.log"
 NATIVE_INSTALL_LOG="$CONTROL_DIR/native-brew-install.log"
 HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"
+TARGET_BOTTLE_IDENTITY="$CONTROL_DIR/target-bottle-identity.json"
 HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"
 DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"
 BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"
@@ -233,6 +234,7 @@ DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
 : >"$INSTALL_LOG"
 : >"$NATIVE_INSTALL_LOG"
 : >"$HOST_DEPENDENCY_PLAN"
+: >"$TARGET_BOTTLE_IDENTITY"
 : >"$HOST_DEPENDENCY_LIST"
 : >"$DEPENDENCY_LIST"
 : >"$BUILD_TEST_DEPENDENCY_LIST"
@@ -243,7 +245,8 @@ for attempt in 1 2 3; do
   : >"$CONTROL_DIR/brew-install-attempt-${attempt}.log"
 done
 chmod 0600 "$INSTALL_LOG" "$NATIVE_INSTALL_LOG" \
-  "$HOST_DEPENDENCY_PLAN" "$HOST_DEPENDENCY_LIST" "$DEPENDENCY_LIST" \
+  "$HOST_DEPENDENCY_PLAN" "$TARGET_BOTTLE_IDENTITY" \
+  "$HOST_DEPENDENCY_LIST" "$DEPENDENCY_LIST" \
   "$BUILD_TEST_DEPENDENCY_LIST" "$DEPENDENCY_POUR_LIST" \
   "$TARGET_CELLAR_BEFORE_TEST" "$TARGET_CELLAR_AFTER_TEST" \
   "$CONTROL_DIR"/brew-install-attempt-*.log
@@ -262,6 +265,28 @@ validate_dependency_list() {
 # bounded list is the only input allowed to select core Formulae later under the
 # isolated native launcher.
 EXPECTED_PLAN_TAP="$TAP_NAME"
+ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+  "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --bottle-identity-json \
+  >"$TARGET_BOTTLE_IDENTITY"
+[ "$(wc -c <"$TARGET_BOTTLE_IDENTITY" | tr -d '[:space:]')" -le 4096 ] || {
+  echo "homebrew-bottle-build.sh: target bottle identity exceeds the size limit" >&2
+  exit 2
+}
+if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
+  --arg root "$BOTTLE_ROOT_URL" '
+    keys == ["bottle", "formula", "full_name", "schema", "tap"] and
+    .schema == 1 and
+    .tap == $tap and
+    .formula == $formula and
+    .full_name == ($tap + "/" + $formula) and
+    (.bottle | keys == ["rebuild", "root_url"]) and
+    (.bottle.rebuild | type == "number" and . >= 0 and floor == .) and
+    (.bottle.root_url == null or .bottle.root_url == $root)
+  ' "$TARGET_BOTTLE_IDENTITY" >/dev/null; then
+  echo "homebrew-bottle-build.sh: planned Formula bottle identity is invalid or uses a different root URL" >&2
+  exit 2
+fi
+EXPECTED_BOTTLE_REBUILD="$(jq -r '.bottle.rebuild' "$TARGET_BOTTLE_IDENTITY")"
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json \
   >"$HOST_DEPENDENCY_PLAN"
@@ -466,7 +491,7 @@ brew_install_build_bottle() {
     >"$TARGET_CELLAR_BEFORE_TEST"
   "$BREW_BIN" test "$FORMULA_REF"
   run_brew_for_kandelo_bottles "$BREW_BIN" bottle \
-    --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+    --json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
   homebrew_patched_launcher_snapshot_target_cellar_layout \
     >"$TARGET_CELLAR_AFTER_TEST"
   if ! cmp -s "$TARGET_CELLAR_BEFORE_TEST" "$TARGET_CELLAR_AFTER_TEST"; then
@@ -528,6 +553,10 @@ fi
 
 PKG_VERSION="$(jq -r --arg key "$FORMULA_KEY" '.[$key].formula.pkg_version' "$BOTTLE_SOURCE_JSON")"
 BOTTLE_REBUILD="$(jq -r --arg key "$FORMULA_KEY" '.[$key].bottle.rebuild' "$BOTTLE_SOURCE_JSON")"
+if [ "$BOTTLE_REBUILD" != "$EXPECTED_BOTTLE_REBUILD" ]; then
+  echo "homebrew-bottle-build.sh: Homebrew bottle rebuild $BOTTLE_REBUILD differs from planned Formula rebuild $EXPECTED_BOTTLE_REBUILD" >&2
+  exit 1
+fi
 BOTTLE_REBUILD_SUFFIX=""
 if [ "$BOTTLE_REBUILD" != "0" ]; then
   BOTTLE_REBUILD_SUFFIX=".$BOTTLE_REBUILD"

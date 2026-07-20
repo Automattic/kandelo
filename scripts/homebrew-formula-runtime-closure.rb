@@ -8,7 +8,7 @@ require "set"
 
 unless ARGV.length.between?(3, 4)
   abort "usage: homebrew-formula-runtime-closure.rb <tap-root> <owner/tap> <formula> " \
-        "[wasm32|wasm64|--direct|--declarations-json|--host-dependencies-json]"
+        "[wasm32|wasm64|--direct|--declarations-json|--host-dependencies-json|--bottle-identity-json]"
 end
 
 MAX_FORMULA_BYTES = 1_048_576
@@ -55,11 +55,12 @@ EXCLUDED_TAG_SETS = Set[
 tap_input, requested_tap_name, target, output_mode = ARGV
 abort "invalid tap name: #{requested_tap_name}" unless TAP_NAME.match?(requested_tap_name)
 abort "invalid target Formula: #{target}" unless FORMULA_NAME.match?(target)
-abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[wasm32 wasm64 --direct --declarations-json --host-dependencies-json].include?(output_mode)
+abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[wasm32 wasm64 --direct --declarations-json --host-dependencies-json --bottle-identity-json].include?(output_mode)
 direct_only = output_mode == "--direct"
 declarations_only = output_mode == "--declarations-json"
 host_dependencies_only = output_mode == "--host-dependencies-json"
-output_arch = direct_only || declarations_only || host_dependencies_only ? nil : output_mode
+bottle_identity_only = output_mode == "--bottle-identity-json"
+output_arch = direct_only || declarations_only || host_dependencies_only || bottle_identity_only ? nil : output_mode
 tap_name = requested_tap_name.downcase
 tap_owner, tap_repository = tap_name.split("/", 2)
 support_require_line = %(require (Tap.fetch("#{tap_owner}", "#{tap_repository}").path/"Kandelo/formula_support/kandelo_formula_support").to_s\n)
@@ -831,7 +832,7 @@ visit_formula = lambda do |name|
 end
 
 visit_formula.call(target)
-unless declarations_only || host_dependencies_only
+unless declarations_only || host_dependencies_only || bottle_identity_only
   unsupported_external = formula_runtime_declarations.flat_map do |formula, declarations|
     declarations.filter_map do |declaration|
       next if declaration.fetch("same_tap") || declaration.fetch("kind") == "optional"
@@ -853,6 +854,18 @@ if declarations_only
     "formula" => target,
     "full_name" => "#{tap_name}/#{target}",
     "dependencies" => records,
+  })
+elsif bottle_identity_only
+  bottle = formula_bottles.fetch(target)
+  puts JSON.generate({
+    "schema" => 1,
+    "tap" => tap_name,
+    "formula" => target,
+    "full_name" => "#{tap_name}/#{target}",
+    "bottle" => {
+      "root_url" => bottle&.fetch("root_url", nil),
+      "rebuild" => bottle.nil? ? 0 : bottle.fetch("rebuild"),
+    },
   })
 elsif host_dependencies_only
   build = Set.new

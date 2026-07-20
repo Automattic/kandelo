@@ -24,7 +24,7 @@ PUBLISHER_PLAN_DIGEST = "ff7bcc6ee9aba6907997f146d2a04b3a6ae272de65a51814b7a85c8
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
 PUBLISHER_UPLOAD_DIGEST = "1023843652029512072c79e0ceb8f09283b60d520fc01fe01e7d92d90c178fb7"
 PUBLISHER_INDEX_DIGEST = "9fe1633079f5bb32bb589ed941876ed6429a16ce66d70cf399a0727e98cb7752"
-PUBLISHER_VERIFY_DIGEST = "9c4424454c3c22a86055b6a41ae2103ab92eb6579290c74236cb3b630943d749"
+PUBLISHER_VERIFY_DIGEST = "4035d4b75b8c5b06d64c6ef0ce2f1ba26ab3abe42f7a21111861ad55ee880b82"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -1236,6 +1236,7 @@ def check_publisher(workflow)
     'INSTALL_LOG="$CONTROL_DIR/brew-install.log"',
     'NATIVE_INSTALL_LOG="$CONTROL_DIR/native-brew-install.log"',
     'HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"',
+    'TARGET_BOTTLE_IDENTITY="$CONTROL_DIR/target-bottle-identity.json"',
     'HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"',
     'DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"',
     'BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"',
@@ -1267,6 +1268,8 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_snapshot_target_cellar_layout',
     'Formula test or bottle creation changed the planned target Cellar',
     'run_brew_for_kandelo_bottles "$BREW_BIN" bottle',
+    '--bottle-identity-json',
+    'Homebrew bottle rebuild $BOTTLE_REBUILD differs from planned Formula rebuild $EXPECTED_BOTTLE_REBUILD',
     'cp -p "$BOTTLE_SOURCE_JSON" "$OUT_DIR/bottles/"',
     'cp -p "${bottle_archives[0]}" "$OUT_DIR/bottles/"',
     "printf 'NATIVE_BUILD_ROOT=%q\\n' \"$NATIVE_BUILD_ROOT\"",
@@ -1275,9 +1278,10 @@ def check_publisher(workflow)
   end
   retained_receipt_bottle_command = <<~'SHELL'.chomp
     run_brew_for_kandelo_bottles "$BREW_BIN" bottle \
-        --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+        --json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
   SHELL
   check(bottle_builder.include?(retained_receipt_bottle_command) &&
+        !bottle_builder.include?("--no-rebuild") &&
         !bottle_builder.match?(/bottle \\\n\s+--only-json-tab/),
         "reviewed bottle builder no longer retains its embedded installation receipt")
   host_plan_index = bottle_builder.index("--host-dependencies-json")
@@ -2667,8 +2671,19 @@ def check_publisher(workflow)
         browser_demo_step["if"] == "${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}",
         "publisher interactive browser graph is not scoped to hello/wasm32")
   browser_demo_run = browser_demo_step.fetch("run")
-  check(browser_demo_run.include?("bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser"),
-        "publisher hello verification does not prepare the supported fetch-only browser graph")
+  [
+    'sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/sysroot"',
+    'sysroot_destination="$GITHUB_WORKSPACE/kandelo/sysroot"',
+    '[ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ]',
+    '[ -f "$sysroot_source/lib/libc.a" ]',
+    '[ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ]',
+    'cp -a -- "$sysroot_source" "$sysroot_destination"',
+    '[ -f "$sysroot_destination/lib/libc.a" ]',
+    "bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser",
+  ].each do |fragment|
+    check(browser_demo_run.include?(fragment),
+          "publisher hello verification browser graph lacks #{fragment}")
+  end
   check(!browser_demo_run.include?("scripts/fetch-binaries.sh"),
         "publisher hello verification bypasses the supported browser package selection")
   verifier_runtime_step = named_step(verify_steps,
@@ -3733,6 +3748,14 @@ def self_test(publisher, maintenance, repository_canary)
       )
       step["run"] = step.fetch("run").sub(
         "./run.sh --fetch-only prepare-browser", "bash scripts/fetch-binaries.sh --fetch-only"
+      )
+    },
+    "missing exact browser sysroot handoff" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
+      )
+      step["run"] = step.fetch("run").sub(
+        'cp -a -- "$sysroot_source" "$sysroot_destination"', "true"
       )
     },
     "sidecar forbidden roots dropped at dev-shell boundary" => lambda { |w|
