@@ -1539,13 +1539,16 @@ The `hello` package bytes in this smoke come from the current Homebrew bottle:
 from the local build in dry-run mode, or from the anonymously fetched GHCR blob
 in write mode. The browser demo still resolves Kandelo-owned ABI platform
 prerequisites such as `node.wasm` and `node-vfs.vfs.zst` through Kandelo's normal
-binary release. Generic Formula and dependency-bearing VFS verification fetches
-only the base command set and `rootfs`; its focused Vite input does not scan the
-interactive demo. The `hello` gallery smoke additionally materializes the
-supported interactive graph through `./run.sh --fetch-only prepare-browser`,
-which excludes packages whose demos are provided by the external software
-gallery. Those platform assets are not the migrated package under test, and
-unrelated gallery packages are not bottle verification prerequisites.
+binary release. Generic Formula and schema 1 dependency-bearing VFS verification
+fetch only the base command set and `rootfs`; their focused Vite input does not
+scan the interactive demo. Schema 2 acceptance also boots the image-owned
+default shell through the full machine UI, so the selected acceptance matrix
+entry materializes the supported interactive graph through
+`./run.sh --fetch-only prepare-browser` before that smoke. The `hello` gallery
+smoke materializes the same graph. Browser preparation excludes packages whose
+demos are provided by the external software gallery. Those platform assets are
+not the migrated package under test, and unrelated gallery packages are not
+bottle verification prerequisites.
 
 ## Durable Browser-Proven VFS Releases
 

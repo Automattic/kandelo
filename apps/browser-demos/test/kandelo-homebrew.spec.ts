@@ -36,7 +36,12 @@ async function handleViteOverlay(page: Page, allowMissingBinary: boolean) {
   const overlay = page.locator("vite-error-overlay");
   if (!await overlay.count()) return;
   if (!allowMissingBinary) {
-    const detail = (await overlay.textContent())?.trim() || "unknown Vite import error";
+    const detail = await overlay.evaluate((element) =>
+      element.shadowRoot?.querySelector(".message-body")?.textContent?.trim()
+      || element.shadowRoot?.textContent?.trim()
+      || element.textContent?.trim()
+      || "unknown Vite import error"
+    );
     throw new Error(`Published Homebrew browser smoke hit a Vite error overlay: ${detail}`);
   }
   test.skip(true, "Required binary not built - Vite import error");
@@ -171,8 +176,15 @@ test.afterAll(async () => {
   await rm(FIXTURE_ROOT, { recursive: true, force: true });
 });
 
-test("strict Homebrew publisher smoke rejects Vite import overlays", async ({ page }) => {
-  await page.setContent("<vite-error-overlay>missing ABI node.wasm</vite-error-overlay>");
+test("strict Homebrew publisher smoke reads Vite shadow-root errors", async ({ page }) => {
+  await page.setContent("<vite-error-overlay></vite-error-overlay>");
+  await page.locator("vite-error-overlay").evaluate((element) => {
+    const root = element.attachShadow({ mode: "open" });
+    const message = document.createElement("span");
+    message.className = "message-body";
+    message.textContent = "missing ABI node.wasm";
+    root.append(message);
+  });
   await expect(handleViteOverlay(page, false)).rejects.toThrow(/missing ABI node\.wasm/);
 });
 
