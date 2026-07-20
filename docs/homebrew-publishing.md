@@ -609,6 +609,41 @@ by the publisher. Dynamic names, direct aliases, subdirectories, traversal,
 reassignment, reflection, and other direct path operations on the bound
 `runner` local remain forbidden.
 
+### Recovering an occupied immutable bottle identity
+
+A publication can upload an immutable public child and then fail while
+publishing the Formula-level index, verifying the bottle, or finalizing tap
+state. The overall run conclusion does not say whether the planned child
+identity is still free. Recover it in this order:
+
+1. Preserve the failed run, its failure report, build handoff, upload receipt,
+   and public-readback evidence. Determine the exact package version, rebuild,
+   architecture tag, bottle SHA-256, manifest digest, and byte count that
+   reached GHCR. Do not infer absence from a failed or cancelled run.
+2. If no child was published at the planned identity, fix the underlying
+   failure and submit a fresh dispatch. If a child exists, keep that identity
+   only when the complete bounded repeatability inputs above are unchanged and
+   the retained handoff proves that the retry expects the same bottle SHA.
+   Any changed input or unresolved doubt requires a new Formula revision or the
+   next positive bottle `rebuild`.
+3. Reserve a rebuild in a tap pull request before retrying. Change only the
+   canonical `bottle do` block, keep the repository-rooted `root_url`, select
+   the next rebuild, and carry the exact SHA-256 of each occupied public child
+   under its real architecture tag. Those old checksums are review evidence;
+   they are not claims that the old bytes belong to the new rebuild. Never use
+   a placeholder, copy a hash across architectures, or overwrite/delete the
+   occupied registry reference.
+4. Prove that the bottle-excluded Formula/support source is unchanged, check
+   the Formula's Ruby syntax and static bottle identity, run the tap trust test,
+   and run `homebrew-validate`. A temporary mismatch with existing last-green
+   sidecars may be documented only when it is the direct result of the reserved
+   rebuild; unrelated validator failures remain blocking.
+5. Merge the reservation, then submit a fresh `repository_dispatch` from that
+   tap commit. Never rerun the old Actions run or move its artifacts into the
+   new run. The trusted finalizer replaces the complete temporary bottle block
+   and publishes matching sidecars only after the new identity passes normal
+   verification.
+
 ## Trusted Publish Flow
 
 The reusable publisher is:
@@ -712,6 +747,68 @@ readback matched the pinned manifest digest. Earlier `GITHUB_TOKEN` and PAT
 uploads under `tap-core/*` both created private packages. Normal publication
 therefore uses the exact repository-rooted namespace and the scoped
 `github.token`; no visibility mutation or PAT is part of the production path.
+
+### Rotating the caller workflow pin
+
+The live tap callers are executable publication authority even though they are
+data-only. Pin them to one exact merged Kandelo commit; never point a write
+caller at a branch, tag, pull-request head, or abbreviated SHA. Rotate the pin
+only after the Kandelo change is on `Automattic/kandelo@main`:
+
+1. Copy the full 40-character merge commit from Kandelo `main`, not the pull
+   request's head commit.
+2. In one tap pull request, update only the reusable-workflow references in
+   `.github/workflows/publish-bottles.yml`,
+   `.github/workflows/dry-run-bottles.yml`, and
+   `.github/workflows/maintain-bottles.yml`, plus
+   `CURRENT_KANDELO_WORKFLOW_SHA` in
+   `Kandelo/test-workflow-trust.rb`. Publish and dry-run must name the publisher
+   at that commit; maintenance must name the maintenance workflow at the same
+   commit.
+3. Leave the repository-canary, retired-PAT, previous, and retired workflow
+   constants unchanged. They bind historical trust profiles and are not aliases
+   for the current publisher.
+4. From the tap root, validate the complete candidate contract:
+
+   ```bash
+   ruby -c Kandelo/test-workflow-trust.rb
+   bash Kandelo/test-workflow-trust.sh
+   git diff --check
+   ```
+
+   The trust test must prove that all three live callers and the current
+   constant use the same exact SHA and that no PAT-backed caller was restored.
+5. Require the candidate-owned `publisher-trust` check to pass. The
+   base-controlled `publisher-trust-base` check is expected to fail closed for
+   an intentional caller or trust-root change and identify the first changed
+   base-owned path. That failure is the signal for an explicit human review and
+   merge; it does not replace the green candidate check.
+6. After the tap pin merges, submit a fresh `repository_dispatch`. Do not rerun
+   an older Actions run: a rerun retains its original caller definition,
+   reusable-workflow pin, immutable plan, and run-local receipts.
+
+### Dispatch and retry policy
+
+The reusable publisher accepts multiple Formulae, but the first-party catalog
+rollout uses one Formula per write dispatch. Keep no more than eight write runs
+queued or in progress at once. This is a soft operational throttle, not a
+correctness boundary: Formula-scoped index concurrency serializes writes to one
+Formula, and the tap-wide finalizer lock composes successful peer and sibling
+architecture state before each tap update.
+
+Dispatch only dependency-ready Formulae. Every same-tap build, test, or runtime
+dependency needed for an architecture must already have a current successful
+bottle on live tap `main`, for the active Kandelo ABI and repository-rooted
+namespace. A failed Formula blocks its downstream dependents; it does not block
+unrelated ready Formulae from using an available slot. This preserves parallel
+throughput without turning an expected dependency failure into several
+occupied child identities.
+
+After any failure, inspect upload/public-readback evidence before retrying. Fix
+or reserve the identity as described above, merge any required Formula or
+caller-pin change, and submit a fresh dispatch from current tap `main`. Never
+use **Re-run jobs** for a failed write publication and never copy run artifacts
+between attempts.
 
 After a read-only planning job resolves the immutable Kandelo commit, tap
 commit, ABI namespace, derived bottle root, and formula matrix, each
@@ -1041,7 +1138,12 @@ mutable `gh release upload --clobber` path.
 Generate sidecars with:
 
 ```bash
-scripts/dev-shell.sh cargo xtask homebrew-sidecars \
+host_target="$(
+  bash scripts/dev-shell.sh rustc -vV |
+    awk '/^host/ {print $2}'
+)"
+bash scripts/dev-shell.sh cargo run --release -p xtask \
+  --target "$host_target" --quiet -- homebrew-sidecars \
   --tap-root /path/to/kandelo-homebrew \
   --input /path/to/sidecars-input.json \
   --previous-metadata /path/to/previous/Kandelo/metadata.json
@@ -1050,7 +1152,12 @@ scripts/dev-shell.sh cargo xtask homebrew-sidecars \
 Validate generated tap metadata with:
 
 ```bash
-scripts/dev-shell.sh cargo xtask homebrew-validate \
+host_target="$(
+  bash scripts/dev-shell.sh rustc -vV |
+    awk '/^host/ {print $2}'
+)"
+bash scripts/dev-shell.sh cargo run --release -p xtask \
+  --target "$host_target" --quiet -- homebrew-validate \
   --tap-root /path/to/kandelo-homebrew
 ```
 
@@ -1680,12 +1787,17 @@ set -euo pipefail
 formula=zlib
 acceptance_root="$(mktemp -d)"
 trap 'rm -rf "$acceptance_root"' EXIT
+host_target="$(
+  bash scripts/dev-shell.sh rustc -vV |
+    awk '/^host/ {print $2}'
+)"
 
 git clone --branch main --single-branch \
   https://github.com/Kandelo-dev/homebrew-tap-core.git \
   "$acceptance_root/tap"
 
-bash scripts/dev-shell.sh cargo xtask homebrew-validate \
+bash scripts/dev-shell.sh cargo run --release -p xtask \
+  --target "$host_target" --quiet -- homebrew-validate \
   --tap-root "$acceptance_root/tap"
 
 gh api \
@@ -1738,69 +1850,32 @@ gate independently for every Formula selected by a rollout.
 
 The two legacy private controls are not production bottle locations:
 
-| Package API name | State on 2026-07-18 | Purpose |
+| Package API name | State verified on 2026-07-20 | Purpose |
 |---|---|---|
 | `tap-core/zlib` | private; last updated `2026-07-18T03:46:46Z` | old-root creation control |
 | `tap-core/bzip2` | private; last updated `2026-07-18T05:20:07Z` | old-root creation control |
-| `homebrew-tap-core/zlib` | public; created by canary run `29652866481` | repository-rooted positive control and production destination |
-| `homebrew-tap-core/bzip2` | public and repository-linked; created by failed production run `29660666019` | fresh-package child-upload proof; full production pilot still required |
+| `homebrew-tap-core/zlib` | public and repository-linked; complete wasm32/wasm64 run `29731335304` succeeded | production destination |
+| `homebrew-tap-core/bzip2` | public and repository-linked; complete wasm32 run `29701320996` succeeded | production destination |
 
-[Run `29660666019`](https://github.com/Kandelo-dev/homebrew-tap-core/actions/runs/29660666019)
-was a partial success, not a completed bzip2 pilot. Its `plan`,
-`build-and-test`, and `upload-bottle` jobs succeeded. The upload created the
-previously absent package with public, source-repository-linked access and
-completed anonymous readback of the immutable child. The
-`publish-bottle-index` job then failed because its downloaded artifact layout
-was not discovered, so `verify-bottle` was skipped and `finalize-tap` recorded
-a failed attempt. That run proves fresh public child-package creation through
-the normal production credential path, but it does not prove the complete
-publication path. A later bzip2 pilot is therefore a retry against an existing
-public package, not another fresh-package test.
+The one-time cutover gates are satisfied. The repository-rooted publisher and
+matching tap caller/trust changes are on both default branches. All plan,
+build, upload, version-index, verifier, and finalizer jobs passed in
+[zlib run `29731335304`](https://github.com/Kandelo-dev/homebrew-tap-core/actions/runs/29731335304)
+and
+[bzip2 run `29701320996`](https://github.com/Kandelo-dev/homebrew-tap-core/actions/runs/29701320996).
+Both package API records report `visibility: public` and repository
+`kandelo-dev/homebrew-tap-core`; a clean live-tap validation and credential-free
+import of each complete public index passed on 2026-07-20. Active Formula and
+sidecar state use the repository-rooted destination. The two private controls'
+`updated_at` values still equal the baselines above, so there is no evidence of
+a remaining writer to the old namespace.
 
-Do not delete the two private controls merely because the public zlib canary
-passed. Keep them until all of these cutover gates are satisfied:
-
-1. The repository-rooted publisher is merged to `Automattic/kandelo@main`, and
-   the matching caller and trust-generation changes are merged to
-   `Kandelo-dev/homebrew-tap-core@main`.
-2. A zlib production pilot completes the full path against the existing public
-   `homebrew-tap-core/zlib` package.
-3. A separate bzip2 production pilot completes the full path against the public
-   `homebrew-tap-core/bzip2` package created by the partial run above. The
-   earlier child upload is the fresh-package creation proof; the retry must
-   prove index publication, verification, and tap finalization.
-4. Both package records report `visibility: public` and repository
-   `kandelo-dev/homebrew-tap-core`, and both successful workflow receipts contain
-   the exact credential-free digest readback evidence.
-5. The live Formulae and generated sidecars validate and contain only the
-   repository-rooted GHCR destination. Historical failure and rollback reports
-   may retain old URLs as audit evidence.
-6. The two legacy package `updated_at` values still equal the baselines in the
-   table. A changed timestamp means some writer still targets the old namespace
-   and must be investigated before deletion.
-
-Dispatch the pilots concurrently as two separate calls through the reviewed
-tap caller. Their builds and package writes are independent, and the tap-wide
-lock serializes their final tap updates. Do not open the broader rollout gate
-until both pilots have completed the post-publication acceptance above.
-
-```bash
-gh api --method POST \
-  'repos/Kandelo-dev/homebrew-tap-core/dispatches' --input - <<'JSON'
-{
-  "event_type": "publish-kandelo-bottles",
-  "client_payload": {"formulae": "zlib", "arches": "wasm32"}
-}
-JSON
-
-gh api --method POST \
-  'repos/Kandelo-dev/homebrew-tap-core/dispatches' --input - <<'JSON'
-{
-  "event_type": "publish-kandelo-bottles",
-  "client_payload": {"formulae": "bzip2", "arches": "wasm32"}
-}
-JSON
-```
+No additional zlib or bzip2 pilot is required for this migration. Deletion is
+still a separate destructive package-admin operation, not an automatic
+publisher step. Leaving the private controls in place does not affect the live
+tap. Delete them only after an operator explicitly authorizes cleanup and a
+fresh inventory reconfirms every fact above; a changed legacy timestamp or an
+active old-root match blocks deletion.
 
 Inventory the four exact package objects with an organization/package-admin
 GitHub CLI identity. A slash inside a package name is `%2F`-encoded in the REST
@@ -1831,6 +1906,9 @@ In a clean checkout of live tap `main`, require no active old-root matches and
 validate the repository-rooted Formula and sidecar state:
 
 ```bash
+tap_root="$PWD"
+kandelo_root=/path/to/kandelo
+
 rg -n 'ghcr\.io(?:/v2)?/kandelo-dev/tap-core' \
   Formula Kandelo .github -g '!Kandelo/reports/**'
 # Expected: no matches.
@@ -1839,14 +1917,24 @@ rg -n 'https://ghcr\.io/v2/kandelo-dev/homebrew-tap-core' \
   Formula Kandelo -g '!Kandelo/reports/**'
 # Expected: the successful zlib and bzip2 Formula/sidecar references.
 
-/path/to/kandelo/scripts/dev-shell.sh cargo xtask homebrew-validate \
-  --tap-root "$PWD"
+host_target="$(
+  cd "$kandelo_root"
+  bash scripts/dev-shell.sh rustc -vV |
+    awk '/^host/ {print $2}'
+)"
+(
+  cd "$kandelo_root"
+  bash scripts/dev-shell.sh cargo run --release -p xtask \
+    --target "$host_target" --quiet -- homebrew-validate \
+    --tap-root "$tap_root"
+)
 ```
 
-Once every gate passes, delete only the two exact legacy package objects. This
-is destructive and requires package-admin access. A classic PAT used by `gh`
-needs `read:packages` and `delete:packages`; the package settings **Danger
-Zone** is the UI alternative.
+After the fresh pre-delete inventory, namespace scan, and live-tap validator
+all pass, delete only the two exact legacy package objects. This is destructive
+and requires package-admin access. A classic PAT used by `gh` needs
+`read:packages` and `delete:packages`; the package settings **Danger Zone** is
+the UI alternative.
 
 ```bash
 gh api --method DELETE \
@@ -1886,6 +1974,31 @@ The implemented path covers a trusted bottle build, public repository-rooted
 GHCR package creation plus anonymous readback, sidecar validation, verified VFS
 image building, browser smoke, diagnostic gallery gating, and lossless
 under-lock tap composition with Formula source-closure drift rejection.
-Immutable gallery release publication, broader package coverage, general guest
-`brew install`, and broader release/gallery operator runbooks remain separate
-work.
+
+Two end-to-end evidence gates remain open at the 2026-07-20 migration
+checkpoint:
+
+- The immutable dependency-tap schema, static resolver, provenance binding, and
+  federated VFS planner are merged, but no external third-party consumer has yet
+  completed the full production and Node/Chromium acceptance path. External M4
+  canary run
+  [`29739171222`](https://github.com/brandonpayton/homebrew-kandelo-canary/actions/runs/29739171222)
+  stopped in planning while checking out its public core dependency tap, before
+  any build or upload. A fresh run must pass planning, anonymous dependency
+  reads, publication/finalization, and the exact dependency-bearing Node and
+  Chromium image gate before federated third-party publication is claimed.
+- The first-party tap has selected schema 2 VFS/default-shell policy, but the
+  selected `file-formula` publication has not produced accepted generated
+  sidecars. Run
+  [`29739037026`](https://github.com/Kandelo-dev/homebrew-tap-core/actions/runs/29739037026)
+  built the image but exposed a missing canonical `opt/libmagic` path before
+  the required acceptance could pass. A fresh required run must complete the
+  exact Node and Chromium command probes, full browser-machine shell boot, and
+  zero-legacy-shell-download assertion before the image-owned default shell is
+  reported as accepted.
+
+Queued, in-progress, and failed publications remain pending regardless of
+which earlier jobs are green; only the finalized live Formula/sidecars and the
+post-publication gate establish current support. Immutable gallery release
+publication, broader package coverage, general guest `brew install`, and
+broader release/gallery operator runbooks remain separate work.

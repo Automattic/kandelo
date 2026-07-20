@@ -60,7 +60,12 @@ been validated; lock changes are not automatic publication outputs.
 The publish workflow generates this directory with:
 
 ```bash
-scripts/dev-shell.sh cargo xtask homebrew-sidecars \
+host_target="$(
+  bash scripts/dev-shell.sh rustc -vV |
+    awk '/^host/ {print $2}'
+)"
+bash scripts/dev-shell.sh cargo run --release -p xtask \
+  --target "$host_target" --quiet -- homebrew-sidecars \
   --tap-root /path/to/kandelo-homebrew \
   --input /path/to/sidecars-input.json \
   --previous-metadata /path/to/previous/Kandelo/metadata.json
@@ -120,7 +125,12 @@ The semantic validator must still check cross-file and artifact facts:
 Run the repo-local validator against a generated tap checkout:
 
 ```bash
-scripts/dev-shell.sh cargo xtask homebrew-validate \
+host_target="$(
+  bash scripts/dev-shell.sh rustc -vV |
+    awk '/^host/ {print $2}'
+)"
+bash scripts/dev-shell.sh cargo run --release -p xtask \
+  --target "$host_target" --quiet -- homebrew-validate \
   --tap-root /path/to/kandelo-homebrew
 ```
 

@@ -47,6 +47,12 @@ called by the tap repository after its formulae exist. The normal tap caller is
 The protected dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`; publish and dry-run
 requests must include nonempty Formula and architecture selections.
+All three callers use one exact merged Kandelo commit. Follow the
+[caller-pin rotation procedure](../../docs/homebrew-publishing.md#rotating-the-caller-workflow-pin)
+when that commit changes; an old run must never be rerun after a rotation.
+The first-party catalog uses the documented
+[dependency-ready dispatch and retry policy](../../docs/homebrew-publishing.md#dispatch-and-retry-policy)
+for bounded parallel rollout.
 
 The publisher keeps GitHub repository identity separate from canonical
 Homebrew tap identity. Every repository uses the conventional
@@ -95,10 +101,14 @@ already carries the expected cache key, unless the caller sets `force`.
 Rollback mode records a report under `Kandelo/reports/rollbacks/` while
 preserving last-green metadata; package deletion is exceptional and must be
 documented with both the deleted package URL and the operational reason.
+When a failed run already uploaded a public immutable child, use the
+[occupied-identity recovery procedure](../../docs/homebrew-publishing.md#recovering-an-occupied-immutable-bottle-identity)
+before dispatching a retry.
 
 The never-live private `tap-core/zlib` and `tap-core/bzip2` controls are a
-one-time migration cleanup: keep them through the repository-rooted zlib and
-fresh-package bzip2 production pilots, then follow the exact inventory,
+one-time migration cleanup. Their repository-rooted production pilots and
+anonymous public-index acceptance are complete; deletion remains a separate,
+explicitly authorized package-admin operation. Follow the exact inventory,
 deletion, verification, and restoration procedure in
 [Public Package Creation And Legacy Namespace Retirement](../../docs/homebrew-publishing.md#public-package-creation-and-legacy-namespace-retirement).
 
