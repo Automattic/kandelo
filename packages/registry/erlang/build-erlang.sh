@@ -338,8 +338,10 @@ make clean MAKE_CLEAN=clean >"$WORK_DIR/clean.log" 2>&1 || true
 # OTP source releases carry precompiled preloaded BEAM modules, and the top
 # clean target intentionally preserves them. They contain the release
 # producer's absolute source paths and would bypass this build's deterministic
-# compiler setting, so rebuild them from source with the saved native erlc.
-make -C erts/preloaded/src clean >>"$WORK_DIR/clean.log" 2>&1
+# compiler setting, so remove their exact output directory before configure.
+# The recursive clean target cannot run yet because configure owns the
+# host-triple otp.mk file that its Makefile includes.
+rm -rf "$SRC_DIR/erts/preloaded/ebin"
 rm -rf "$INSTALL_DIR" "$ARTIFACT_DIR"
 mkdir -p "$INSTALL_DIR" "$ARTIFACT_DIR"
 
