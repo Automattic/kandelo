@@ -285,9 +285,13 @@ pins current.
 `libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
 `build.sh`, Vitest, or conformance tests.
 
-PR titles, PR descriptions, and commit messages should lead with the purpose of
-the work: the platform contract, user-visible behavior, system invariant, or
-project capability being changed or protected. Every PR description must put a
+PR titles and commit subjects must begin with a concise purpose prefix in the
+form `Area: Purpose`, such as `Homebrew:`, `Kernel:`, `POSIX:`, `CI:`,
+`Browser:`, or `Docs:`. Choose the area that best identifies the contract or
+capability a reader should notice; the prefix is a routing hint, not a substitute
+for a purpose-led title. PR descriptions and commit messages should then lead
+with the platform contract, user-visible behavior, system invariant, or project
+capability being changed or protected. Every PR description must put a
 plain-language `## Why` section before `## What changed`, implementation
 details, or validation. Explain the current problem, who or what it affects,
 and why fixing it matters before describing the mechanics.
