@@ -290,8 +290,13 @@ jobs:
           esac
           jq -e '
             type == "object" and
-            keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"] and
-            .schema == 1 and
+            (
+              (.schema == 1 and
+                keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"]) or
+              (.schema == 2 and
+                keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema", "shell_config"] and
+                (.shell_config | type == "string" and length > 0 and length <= 255))
+            ) and
             (.formula | type == "string" and test("^[a-z0-9][a-z0-9._-]*$")) and
             (.brewfile | type == "string" and length > 0 and length <= 255) and
             (.executable | type == "string" and test("^/([A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$")) and
@@ -328,6 +333,39 @@ jobs:
             "$tap_root"/*) ;;
             *) echo "::error::Brewfile resolved outside the exact tap checkout"; exit 2 ;;
           esac
+          if [ "$(jq -r '.schema' "$config")" = "2" ]; then
+            shell_config_rel="$(jq -er '.shell_config' "$config")"
+            case "$shell_config_rel" in
+              /*|../*|*/../*|*/..) echo "::error::default-shell config path escapes the tap"; exit 2 ;;
+            esac
+            shell_config_candidate="$GITHUB_WORKSPACE/tap/$shell_config_rel"
+            [ -f "$shell_config_candidate" ] && [ ! -L "$shell_config_candidate" ] || {
+              echo "::error::tap default-shell config must be a regular non-symlink file"; exit 2;
+            }
+            shell_config="$(realpath "$shell_config_candidate")"
+            case "$shell_config" in
+              "$tap_root"/*) ;;
+              *) echo "::error::default-shell config resolved outside the exact tap checkout"; exit 2 ;;
+            esac
+            shell_config_bytes="$(wc -c <"$shell_config" | tr -d '[:space:]')"
+            if [ "$shell_config_bytes" -le 0 ] || [ "$shell_config_bytes" -gt 65536 ]; then
+              echo "::error::default-shell config must contain 1 to 65536 bytes"; exit 2
+            fi
+            jq -e '
+              type == "object" and keys == ["argv", "path", "version"] and
+              .version == 1 and
+              (.path | type == "string" and
+                test("^/home/linuxbrew/\\.linuxbrew/(bin|sbin)/[A-Za-z0-9._@%+=:-]+$") and
+                utf8bytelength <= 4096) and
+              (.argv | type == "array" and length > 0 and length <= 64 and
+                all(.[]; type == "string" and length > 0 and
+                  utf8bytelength <= 4096 and contains("\u0000") == false) and
+                (.[0] | test("^[A-Za-z0-9][A-Za-z0-9._@%+=:-]*$")) and
+                (tojson | utf8bytelength <= 65536))
+            ' "$shell_config" >/dev/null || {
+              echo "::error::tap default-shell config is invalid"; exit 2;
+            }
+          fi
           selection="$(ruby kandelo/scripts/homebrew-brewfile-selection.rb "$brewfile")"
           expected_tap="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
           jq -e --arg formula "$selected_formula" --arg tap "$expected_tap" \
@@ -2415,8 +2453,13 @@ jobs:
           esac
           jq -e '
             type == "object" and
-            keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"] and
-            .schema == 1 and
+            (
+              (.schema == 1 and
+                keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"]) or
+              (.schema == 2 and
+                keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema", "shell_config"] and
+                (.shell_config | type == "string" and length > 0 and length <= 255))
+            ) and
             (.formula | type == "string" and test("^[a-z0-9][a-z0-9._-]*$")) and
             (.brewfile | type == "string" and length > 0 and length <= 255) and
             (.executable | type == "string" and test("^/([A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$")) and
@@ -2454,6 +2497,7 @@ jobs:
           node_evidence="$acceptance_root/node-evidence.json"
           browser_evidence="$acceptance_root/browser-evidence.json"
           playwright_report="$acceptance_root/playwright-report.json"
+          shell_playwright_report="$acceptance_root/shell-playwright-report.json"
           mkdir -p "$acceptance_root" "$public_dir"
           cp -a "$GITHUB_WORKSPACE/tap-postverify" "$acceptance_tap"
           rsync -a "$RUNNER_TEMP/homebrew-sidecars/Formula/" "$acceptance_tap/Formula/"
@@ -2472,6 +2516,40 @@ jobs:
             "$tap_root"/*) ;;
             *) echo "::error::Brewfile resolved outside the exact tap checkout"; exit 2 ;;
           esac
+          shell_config=""
+          if [ "$(jq -r '.schema' "$config")" = "2" ]; then
+            shell_config_rel="$(jq -er '.shell_config' "$config")"
+            case "$shell_config_rel" in
+              /*|../*|*/../*|*/..) echo "::error::default-shell config path escapes the tap"; exit 2 ;;
+            esac
+            shell_config_candidate="$GITHUB_WORKSPACE/tap-postverify/$shell_config_rel"
+            [ -f "$shell_config_candidate" ] && [ ! -L "$shell_config_candidate" ] || {
+              echo "::error::tap default-shell config must be a regular non-symlink file"; exit 2;
+            }
+            shell_config="$(realpath "$shell_config_candidate")"
+            case "$shell_config" in
+              "$tap_root"/*) ;;
+              *) echo "::error::default-shell config resolved outside the exact tap checkout"; exit 2 ;;
+            esac
+            shell_config_bytes="$(wc -c <"$shell_config" | tr -d '[:space:]')"
+            if [ "$shell_config_bytes" -le 0 ] || [ "$shell_config_bytes" -gt 65536 ]; then
+              echo "::error::default-shell config must contain 1 to 65536 bytes"; exit 2
+            fi
+            jq -e '
+              type == "object" and keys == ["argv", "path", "version"] and
+              .version == 1 and
+              (.path | type == "string" and
+                test("^/home/linuxbrew/\\.linuxbrew/(bin|sbin)/[A-Za-z0-9._@%+=:-]+$") and
+                utf8bytelength <= 4096) and
+              (.argv | type == "array" and length > 0 and length <= 64 and
+                all(.[]; type == "string" and length > 0 and
+                  utf8bytelength <= 4096 and contains("\u0000") == false) and
+                (.[0] | test("^[A-Za-z0-9][A-Za-z0-9._@%+=:-]*$")) and
+                (tojson | utf8bytelength <= 65536))
+            ' "$shell_config" >/dev/null || {
+              echo "::error::tap default-shell config is invalid"; exit 2;
+            }
+          fi
 
           base_image="$(bash scripts/resolve-binary.sh programs/rootfs.vfs)"
           kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"
@@ -2496,6 +2574,9 @@ jobs:
             --bottle-cache "$RUNNER_TEMP/homebrew-bottle-cache"
             --no-fallback
           )
+          if [ -n "$shell_config" ]; then
+            vfs_args+=(--write-profile --shell-config "$shell_config")
+          fi
           bash scripts/dev-shell.sh npx tsx \
             images/vfs/scripts/build-homebrew-vfs-image.ts "${vfs_args[@]}"
 
@@ -2518,6 +2599,9 @@ jobs:
             --expect-stdout "$expected_stdout"
             --evidence "$node_evidence"
           )
+          if [ -n "$shell_config" ]; then
+            node_args+=(--shell-config "$shell_config")
+          fi
           bash scripts/dev-shell.sh npx tsx \
             scripts/homebrew-vfs-acceptance-smoke.ts "${node_args[@]}"
 
@@ -2558,6 +2642,34 @@ jobs:
           ' "$playwright_report" >/dev/null || {
             echo "::error::exact-byte Chromium Homebrew VFS smoke did not report one pass"; exit 1;
           }
+          if [ -n "$shell_config" ]; then
+            shell_path="$(jq -er '.path' "$shell_config")"
+            shell_argv0="$(jq -er '.argv[0]' "$shell_config")"
+            (
+              cd apps/browser-demos
+              export KANDELO_PLAYWRIGHT_PORT="$browser_port"
+              export KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL="$browser_url"
+              export KANDELO_HOMEBREW_DEFAULT_SHELL_PATH="$shell_path"
+              export KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0="$shell_argv0"
+              export KANDELO_BROWSER_DEMO_INPUTS="main,kandelo"
+              bash ../../scripts/dev-shell.sh env \
+                KANDELO_PLAYWRIGHT_PORT="$KANDELO_PLAYWRIGHT_PORT" \
+                KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL="$KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL" \
+                KANDELO_HOMEBREW_DEFAULT_SHELL_PATH="$KANDELO_HOMEBREW_DEFAULT_SHELL_PATH" \
+                KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0="$KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0" \
+                KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS" \
+                npx playwright test test/kandelo-homebrew.spec.ts \
+                  --project=chromium \
+                  --grep "an image-owned Homebrew shell boots without legacy shell downloads$" \
+                  --reporter=json >"$shell_playwright_report"
+            )
+            jq -e '
+              .stats.expected == 1 and .stats.unexpected == 0 and
+              .stats.flaky == 0 and .stats.skipped == 0
+            ' "$shell_playwright_report" >/dev/null || {
+              echo "::error::exact-image Homebrew default-shell smoke did not report one pass"; exit 1;
+            }
+          fi
           jq -nS \
             --arg image_sha256 "$image_sha256" \
             --arg kernel_sha256 "$kernel_sha256" \
@@ -2566,6 +2678,16 @@ jobs:
             '{schema: 1, status: "success", runtime: "browser", engine: "chromium",
               image_sha256: $image_sha256, kernel_sha256: $kernel_sha256,
               executable: $executable, argv: $argv}' >"$browser_evidence"
+          if [ -n "$shell_config" ]; then
+            jq -S \
+              --arg path "$shell_path" \
+              --argjson argv "$(jq -c '.argv' "$shell_config")" \
+              '.default_shell = {
+                path: $path, argv: $argv, interactive: true,
+                legacy_shell_downloads: 0
+              }' "$browser_evidence" >"$browser_evidence.tmp"
+            mv "$browser_evidence.tmp" "$browser_evidence"
+          fi
 
       - name: Validate generated sidecars against the exact base tap
         shell: bash

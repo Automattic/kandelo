@@ -344,7 +344,7 @@ make_tool_bottle() {
   (func (export "wpk_fork_state")))
 WAT
   wat2wasm "$TMPDIR/sidecar-tool.wat" -o "$stage/bin/sidecar-tool"
-  printf '#!/bin/sh\necho helper\n' >"$stage/bin/sidecar-tool-helper"
+  cp "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
   chmod +x "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
   printf '#define SIDECAR_TOOL 1\n' >"$stage/include/sidecar-tool.h"
   printf 'archive\n' >"$stage/lib/libsidecar-tool.a"
@@ -424,7 +424,8 @@ make_tool_wasm64_bottle() {
 WAT
   wat2wasm --enable-memory64 "$TMPDIR/sidecar-tool-wasm64.wat" \
     -o "$stage/bin/sidecar-tool"
-  chmod +x "$stage/bin/sidecar-tool"
+  cp "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
+  chmod +x "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
   tar -czf "$archive" -C "$stage_parent" sidecar-tool
   local sha bytes
   sha="$(sha256_file "$archive")"
@@ -945,8 +946,8 @@ printf '\357\273\277' > "$SHELL_CONFIG"
 cat >> "$SHELL_CONFIG" <<'EOF'
 {
   "version": 1,
-  "path": "/home/linuxbrew/.linuxbrew/bin/sidecar-tool",
-  "argv": ["sidecar-tool", "--interactive"]
+  "path": "/home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper",
+  "argv": ["sidecar-tool-helper", "--interactive"]
 }
 EOF
 SHELL_CONFIG_SHA256="$(sha256_file "$SHELL_CONFIG")"
@@ -1192,8 +1193,8 @@ jq -e '
     "bytes":$brewfile_bytes
   } and
   .default_shell == {
-    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool",
-    "argv":["sidecar-tool","--interactive"],
+    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper",
+    "argv":["sidecar-tool-helper","--interactive"],
     "config_sha256":$shell_config_sha,
     "config_bytes":$shell_config_bytes
   } and
@@ -1263,8 +1264,8 @@ jq -e '
     }
   } and
   .metadata.homebrew.defaultShell == {
-    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool",
-    "argv":["sidecar-tool","--interactive"],
+    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper",
+    "argv":["sidecar-tool-helper","--interactive"],
     "configSha256":$shell_config_sha
   } and
   ($requested_sha | test("^[0-9a-f]{64}$")) and
@@ -1298,7 +1299,15 @@ cat >"$TMPDIR/validate-homebrew-vfs-acceptance.ts" <<EOF
 import { writeFileSync } from "node:fs";
 import { validateHomebrewVfsAcceptance } from "$REPO_ROOT/scripts/homebrew-vfs-acceptance-smoke.ts";
 
-const [metadataPath, tapRoot, brewfilePath, expectedRootPackage, executablePath, evidencePath] = process.argv.slice(2);
+const [
+  metadataPath,
+  tapRoot,
+  brewfilePath,
+  expectedRootPackage,
+  executablePath,
+  evidencePath,
+  reviewedShellConfigPath,
+] = process.argv.slice(2);
 validateHomebrewVfsAcceptance({
   metadataPath,
   tapRoot,
@@ -1314,6 +1323,7 @@ validateHomebrewVfsAcceptance({
   argv: [expectedRootPackage, "--version"],
   expectedStdout: expectedRootPackage,
   timeoutMs: 120000,
+  shellConfigPath: reviewedShellConfigPath ?? "$SHELL_CONFIG",
 }).then((validated) => {
   writeFileSync(evidencePath, JSON.stringify(validated.evidence));
 }).catch((error) => {
@@ -1343,8 +1353,61 @@ jq -e '
   .platform_inputs[0].origin == "kandelo-package-registry" and
   .platform_inputs[1].role == "kernel" and
   .platform_inputs[1].origin == "worktree-build" and
+  .default_shell == {
+    "config_artifact":"shell.json",
+    "config_sha256":$shell_config_sha,
+    "config_bytes":$shell_config_bytes,
+    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper",
+    "argv":["sidecar-tool-helper","--interactive"],
+    "bottle_package":"sidecar-tool"
+  } and
   (.image.sha256 | test("^[0-9a-f]{64}$"))
-' "$ACCEPTANCE_EVIDENCE" >/dev/null
+' --arg shell_config_sha "$SHELL_CONFIG_SHA256" \
+  --argjson shell_config_bytes "$SHELL_CONFIG_BYTES" \
+  "$ACCEPTANCE_EVIDENCE" >/dev/null
+
+MISMATCHED_SHELL_CONFIG="$TMPDIR/mismatched-shell.json"
+jq '.argv[1] = "--different"' "$SHELL_CONFIG" >"$MISMATCHED_SHELL_CONFIG"
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
+  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$TMPDIR/mismatched-shell-evidence.json" "$MISMATCHED_SHELL_CONFIG" \
+  > /dev/null 2>"$TMPDIR/mismatched-shell.err"; then
+  echo "Homebrew VFS acceptance accepted a shell config different from the composed image" >&2
+  exit 1
+fi
+grep -F "VFS report default shell.argv does not match" \
+  "$TMPDIR/mismatched-shell.err" >/dev/null
+
+SYMLINK_SHELL_CONFIG="$TMPDIR/symlink-shell.json"
+ln -s "$SHELL_CONFIG" "$SYMLINK_SHELL_CONFIG"
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
+  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$TMPDIR/symlink-shell-evidence.json" "$SYMLINK_SHELL_CONFIG" \
+  > /dev/null 2>"$TMPDIR/symlink-shell.err"; then
+  echo "Homebrew VFS acceptance accepted a symlink shell config" >&2
+  exit 1
+fi
+grep -F "shell config must be a non-empty regular file" \
+  "$TMPDIR/symlink-shell.err" >/dev/null
+
+NO_SHELL_OWNER_TAP="$TMPDIR/no-shell-owner-tap"
+cp -a "$ACCEPTANCE_TAP" "$NO_SHELL_OWNER_TAP"
+NO_SHELL_OWNER_LINK="$NO_SHELL_OWNER_TAP/Kandelo/link/sidecar-tool-2.0_3-rebuild1-wasm32.json"
+jq '.links |= map(select(.target != "bin/sidecar-tool-helper"))' \
+  "$NO_SHELL_OWNER_LINK" >"$NO_SHELL_OWNER_LINK.tmp"
+mv "$NO_SHELL_OWNER_LINK.tmp" "$NO_SHELL_OWNER_LINK"
+if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
+  "$NO_SHELL_OWNER_TAP/Kandelo/metadata.json" "$NO_SHELL_OWNER_TAP" "$BREWFILE" \
+  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  "$TMPDIR/no-shell-owner-evidence.json" \
+  > /dev/null 2>"$TMPDIR/no-shell-owner.err"; then
+  echo "Homebrew VFS acceptance accepted a shell not owned by a selected bottle" >&2
+  exit 1
+fi
+grep -F "default shell /home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper must be linked by exactly one selected Homebrew bottle" \
+  "$TMPDIR/no-shell-owner.err" >/dev/null
 
 DEP_ONLY_BREWFILE="$TMPDIR/dependency-only.Brewfile"
 cat >"$DEP_ONLY_BREWFILE" <<'EOF'
