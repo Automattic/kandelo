@@ -119,8 +119,10 @@ export ERL_TOP="$SRC_DIR"
 BUILD_TRIPLE="$("$SRC_DIR/make/autoconf/config.guess")"
 
 # --- Phase 1: Host bootstrap build ---
-# We use the system Erlang as bootstrap, but we need the source tree configured
-# for cross-compilation. First, build a host bootstrap from the same source.
+# Build the native generators from the same verified source, then copy the
+# complete bootstrap outside the source tree. OTP's target clean/configure
+# transition removes the in-tree bootstrap on Linux; keeping only a symlink to
+# that tree therefore leaves the cross build without a usable erl/erlc.
 if [ ! -f "$HOST_BUILD_DIR/bootstrap/bin/erlc" ]; then
     echo "==> Phase 1: Building host bootstrap..."
     mkdir -p "$HOST_BUILD_DIR"
@@ -134,9 +136,9 @@ if [ ! -f "$HOST_BUILD_DIR/bootstrap/bin/erlc" ]; then
         echo "ERROR: Bootstrap build failed — erlc not found" >&2
         exit 1
     fi
-    # Mark as done
     mkdir -p "$HOST_BUILD_DIR"
-    ln -sf "$SRC_DIR/bootstrap" "$HOST_BUILD_DIR/bootstrap"
+    rm -rf "$HOST_BUILD_DIR/bootstrap"
+    cp -a "$SRC_DIR/bootstrap" "$HOST_BUILD_DIR/bootstrap"
     echo "==> Host bootstrap complete."
     cd "$SCRIPT_DIR"
 fi
@@ -653,13 +655,21 @@ fi
 
 echo "==> Starting build..."
 
-# Build
-make -j"$NPROC" 2>&1 | tee "$WORK_DIR/build.log" | tail -50
+# OTP's cross-check and target generators prepend BOOTSTRAP_ROOT/bootstrap/bin
+# to PATH. Point that contract at the caller-owned copy preserved above rather
+# than the cleaned target source tree.
+if [ ! -x "$HOST_BUILD_DIR/bootstrap/bin/erl" ] || [ ! -x "$HOST_BUILD_DIR/bootstrap/bin/erlc" ]; then
+    echo "ERROR: preserved native OTP bootstrap is incomplete: $HOST_BUILD_DIR/bootstrap" >&2
+    exit 1
+fi
+make -j"$NPROC" BOOTSTRAP_ROOT="$HOST_BUILD_DIR" \
+    2>&1 | tee "$WORK_DIR/build.log" | tail -50
 
 echo "==> Build complete. Creating release..."
 
-# Create release
-make release RELEASE_ROOT="$INSTALL_DIR" 2>&1 | tail -20
+# Create release through the same preserved native-generator contract.
+make release RELEASE_ROOT="$INSTALL_DIR" BOOTSTRAP_ROOT="$HOST_BUILD_DIR" \
+    2>&1 | tail -20
 
 # Find the BEAM emulator
 BEAM_BIN=$(find "$INSTALL_DIR" -type f \( -name "beam.smp" -o -name "beam" \) -print -quit 2>/dev/null)
