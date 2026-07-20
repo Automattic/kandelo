@@ -1576,6 +1576,56 @@ rebind_publish_handoff_tap_commit() {
   mv "$tmp" "$handoff/build/manifest.json"
 }
 
+prepare_publish_dependency_drift_fixture() {
+  local handoff="$1" tap_root="$2" planned
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=valid \
+    PUBLISH_HANDOFF_SEED_DEPENDENCY_SIDECARS=1 \
+    make_publish_handoff "$handoff" "$tap_root"
+  git -C "$tap_root" init -q
+  git -C "$tap_root" config user.name "Kandelo Test"
+  git -C "$tap_root" config user.email "kandelo-test@example.invalid"
+  git -C "$tap_root" add .
+  git -C "$tap_root" commit -q -m "planned dependency closure"
+  planned="$(git -C "$tap_root" rev-parse HEAD)"
+  rebind_publish_handoff_tap_commit "$handoff" "$planned"
+  printf '%s\n' "$planned"
+}
+
+add_publish_dependency_sibling_bottle() {
+  local tap_root="$1"
+  local formula="$tap_root/Formula/zlib.rb"
+  local metadata="$tap_root/Kandelo/metadata.json"
+  local updated="$tap_root/Formula/zlib.updated.rb"
+  ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$formula" "$formula" \
+    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    0 wasm64_kandelo any_skip_relocation \
+    3333333333333333333333333333333333333333333333333333333333333333 \
+    preserve \
+    "$updated"
+  mv "$updated" "$formula"
+  printf '{}\n' >"$tap_root/Kandelo/link/zlib-1.3.1-rebuild0-wasm64.json"
+  jq -S '
+    (.packages[] | select(.name == "zlib").bottles) += [
+      (.packages[] | select(.name == "zlib").bottles[0] |
+        .arch = "wasm64" |
+        .bottle_tag = "wasm64_kandelo" |
+        .fallback_url = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:3333333333333333333333333333333333333333333333333333333333333333" |
+        .fallback_sha256 = "3333333333333333333333333333333333333333333333333333333333333333" |
+        .fallback_cache_key_sha = "3333333333333333333333333333333333333333333333333333333333333333" |
+        .fallback_link_manifest = "Kandelo/link/zlib-1.3.1-rebuild0-wasm64.json")
+    ]
+  ' "$metadata" >"$metadata.tmp"
+  mv "$metadata.tmp" "$metadata"
+  jq -S '{
+    schema, tap_repository, tap_name, tap_commit, kandelo_abi,
+    source_metadata: "Kandelo/metadata.json"
+  } + (.packages[] | select(.name == "zlib") | del(.formula_metadata))' \
+    "$metadata" >"$tap_root/Kandelo/formula/zlib.json"
+  git -C "$tap_root" add Formula/zlib.rb Kandelo
+  git -C "$tap_root" commit -q -m "publish dependency sibling bottle"
+}
+
 set_publish_handoff_rebuild() {
   local handoff="$1" rebuild="$2" tmp
   tmp="$handoff/build/bottle.updated.json"
@@ -1855,7 +1905,7 @@ assert_stale_bottle_rebuild_cannot_rewind_publication() {
 }
 
 assert_publish_dependencies_are_source_bound() {
-  local handoff tap_root tmp err planned dep_sha file
+  local handoff tap_root tmp err planned
 
   handoff="$TMPDIR/publish-dependencies-valid"
   tap_root="$TMPDIR/publish-dependencies-valid-tap"
@@ -1939,36 +1989,38 @@ assert_publish_dependencies_are_source_bound() {
   grep -F "declared_directly differs from the exact Formula" "$err" >/dev/null ||
     fail "publish handoff validator did not explain forged true directness"
 
-  handoff="$TMPDIR/publish-dependencies-concurrent-drift"
-  tap_root="$TMPDIR/publish-dependencies-concurrent-drift-tap"
-  err="$TMPDIR/publish-dependencies-concurrent-drift.err"
-  PUBLISH_HANDOFF_DEPENDENCY_MODE=valid \
-    PUBLISH_HANDOFF_SEED_DEPENDENCY_SIDECARS=1 \
-    make_publish_handoff "$handoff" "$tap_root"
-  git -C "$tap_root" init -q
-  git -C "$tap_root" config user.name "Kandelo Test"
-  git -C "$tap_root" config user.email "kandelo-test@example.invalid"
-  git -C "$tap_root" add .
-  git -C "$tap_root" commit -q -m "planned dependency closure"
-  planned="$(git -C "$tap_root" rev-parse HEAD)"
+  handoff="$TMPDIR/publish-dependencies-concurrent-bottle"
+  tap_root="$TMPDIR/publish-dependencies-concurrent-bottle-tap"
+  err="$TMPDIR/publish-dependencies-concurrent-bottle.err"
+  planned="$(prepare_publish_dependency_drift_fixture "$handoff" "$tap_root")"
+  add_publish_dependency_sibling_bottle "$tap_root"
+  if ! bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication-handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    cat "$err" >&2
+    fail "under-lock publisher rejected concurrent sibling bottle metadata"
+  fi
 
-  while IFS= read -r file; do
-    tmp="${file}.updated"
-    sed "s/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/$planned/g" "$file" >"$tmp"
-    mv "$tmp" "$file"
-  done < <(find "$handoff" -type f -name '*.json' -print)
-  dep_sha="$(sha256sum "$handoff/build/dependency-provenance.json" 2>/dev/null | awk '{print $1}' || \
-    shasum -a 256 "$handoff/build/dependency-provenance.json" | awk '{print $1}')"
-  tmp="$handoff/build/manifest.updated.json"
-  jq --arg sha "$dep_sha" '.dependency_provenance.sha256 = $sha' \
-    "$handoff/build/manifest.json" >"$tmp"
-  mv "$tmp" "$handoff/build/manifest.json"
-
-  sed 's/desc "direct dependency fixture"/desc "concurrently changed dependency source"/' \
+  handoff="$TMPDIR/publish-dependencies-concurrent-whitespace"
+  tap_root="$TMPDIR/publish-dependencies-concurrent-whitespace-tap"
+  err="$TMPDIR/publish-dependencies-concurrent-whitespace.err"
+  planned="$(prepare_publish_dependency_drift_fixture "$handoff" "$tap_root")"
+  add_publish_dependency_sibling_bottle "$tap_root"
+  tmp="$tap_root/Formula/zlib.updated.rb"
+  sed 's/desc "direct dependency fixture"/desc  "direct dependency fixture"/' \
     "$tap_root/Formula/zlib.rb" >"$tmp"
   mv "$tmp" "$tap_root/Formula/zlib.rb"
   git -C "$tap_root" add Formula/zlib.rb
-  git -C "$tap_root" commit -q -m "change only dependency source"
+  git -C "$tap_root" commit -q -m "change dependency Formula whitespace"
   if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --kandelo-root "$REPO_ROOT" \
     --tap-root "$tap_root" \
@@ -1981,10 +2033,68 @@ assert_publish_dependencies_are_source_bound() {
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --dry-run \
     --no-lock >/dev/null 2>"$err"; then
-    fail "under-lock publisher accepted concurrent dependency Formula drift"
+    fail "under-lock publisher accepted concurrent dependency Formula whitespace drift"
   fi
-  grep -F "Formula digest differs from the exact tap" "$err" >/dev/null ||
-    fail "under-lock publisher did not explain concurrent dependency Formula drift"
+  grep -F "Formula differs from the planned tap outside canonical bottle metadata" "$err" >/dev/null ||
+    fail "under-lock publisher did not explain dependency Formula whitespace drift"
+
+  handoff="$TMPDIR/publish-dependencies-concurrent-recipe"
+  tap_root="$TMPDIR/publish-dependencies-concurrent-recipe-tap"
+  err="$TMPDIR/publish-dependencies-concurrent-recipe.err"
+  planned="$(prepare_publish_dependency_drift_fixture "$handoff" "$tap_root")"
+  add_publish_dependency_sibling_bottle "$tap_root"
+  tmp="$tap_root/Formula/zlib.updated.rb"
+  sed 's/desc "direct dependency fixture"/desc "concurrently changed dependency source"/' \
+    "$tap_root/Formula/zlib.rb" >"$tmp"
+  mv "$tmp" "$tap_root/Formula/zlib.rb"
+  git -C "$tap_root" add Formula/zlib.rb
+  git -C "$tap_root" commit -q -m "change dependency recipe"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication-handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    fail "under-lock publisher accepted concurrent dependency recipe drift"
+  fi
+  grep -F "Formula differs from the planned tap outside canonical bottle metadata" "$err" >/dev/null ||
+    fail "under-lock publisher did not explain concurrent dependency recipe drift"
+
+  handoff="$TMPDIR/publish-dependencies-concurrent-edge"
+  tap_root="$TMPDIR/publish-dependencies-concurrent-edge-tap"
+  err="$TMPDIR/publish-dependencies-concurrent-edge.err"
+  planned="$(prepare_publish_dependency_drift_fixture "$handoff" "$tap_root")"
+  add_publish_dependency_sibling_bottle "$tap_root"
+  tmp="$tap_root/Formula/zlib.updated.rb"
+  sed '/depends_on "kandelo-dev\/tap-core\/xz"/d' "$tap_root/Formula/zlib.rb" >"$tmp"
+  mv "$tmp" "$tap_root/Formula/zlib.rb"
+  git -C "$tap_root" add Formula/zlib.rb
+  git -C "$tap_root" commit -q -m "change dependency edge"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication-handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    fail "under-lock publisher accepted concurrent dependency-edge drift"
+  fi
+  if ! grep -F "bottle metadata differs from the exact tap" "$err" >/dev/null &&
+     ! grep -F "dependency provenance does not match the exact tap's static runtime closure" \
+       "$err" >/dev/null; then
+    fail "under-lock publisher did not explain concurrent dependency-edge drift"
+  fi
 }
 
 assert_bottle_build_trusts_selected_tap() {

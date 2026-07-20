@@ -423,9 +423,11 @@ its `INSTALL_RECEIPT.json`. The installed dependency receipt must say
 `installed_on_request: false`, and its source tap commit must match the exact
 planned tap. The selected Formula's `wasm32_kandelo` or `wasm64_kandelo`
 bottle digest and bounded fetch/pour log lines are recorded alongside those
-receipt facts. Raw logs do not cross the runner boundary. Fresh verifier and
-finalizer runners rehash each dependency Formula from the exact planned tap
-before accepting the bounded provenance.
+receipt facts. Raw logs do not cross the runner boundary. A fresh verifier
+rehashes each dependency Formula from the exact planned tap. The finalizer
+materializes that same planned commit beside refreshed tap `main`, rebinds the
+recorded digest to the planned Formula, and compares the two Formulae before
+accepting the bounded provenance.
 
 Homebrew can omit `bottle_rebuild` from a runtime-dependency record because the
 installed dependency Formula receipt has had its bottle block removed. This can
@@ -453,10 +455,18 @@ different version, rebuild, package, or suffixed URL fails closed.
 
 While holding the tap state lock, the finalizer repeats the complete static
 dependency-closure derivation against refreshed `main`. Every recorded
-dependency Formula digest and selected-architecture bottle tuple must still
-match. A dependency Formula or bottle change after planning therefore causes a
-truthful stale-build failure instead of publishing a consumer against a newer
-dependency graph.
+dependency Formula digest must match the exact planned commit, and every
+selected-architecture bottle tuple must still match refreshed `main`. A
+concurrent finalizer may have added or updated only a dependency Formula's
+canonical `bottle do` block—for example, by adding a `wasm64_kandelo` sibling
+to a Formula whose `wasm32_kandelo` bottle the consumer used. The finalizer
+accepts that bounded case only when the existing structural Formula comparator
+proves that every byte outside the canonical bottle block is unchanged and the
+selected bottle tuple still matches. Recipe text, dependency declarations,
+comments, and whitespace outside the composer-owned block remain
+provenance-bearing and fail closed. A real dependency Formula or selected
+bottle change after planning therefore causes a truthful stale-build failure
+instead of publishing a consumer against a newer dependency graph.
 
 The exact same-tap closure resolved before installation must equal the closure
 recorded in the target receipt. A missing or unexpected receipt entry fails the
@@ -897,7 +907,11 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    and rechecks both the Formula's bottle-excluded source digest and any required
    `Kandelo/formula_support` tree against that commit. It also rederives and
    revalidates the complete dependency Formula and bottle closure against the
-   refreshed tap while the lock is held. It then statically composes the
+   refreshed tap while the lock is held. For each dependency, a detached
+   checkout of the exact planned tap binds the recorded raw Formula digest;
+   refreshed Formula bytes may differ only by the structurally canonical
+   bottle block, and the selected architecture's bottle metadata must remain
+   exact. It then statically composes the
    selected bottle tag and regenerates aggregate sidecars from refreshed tap
    metadata. A sibling-architecture tag is retained only when the refreshed
    metadata proves the same ABI, version, formula revision, and bottle rebuild.

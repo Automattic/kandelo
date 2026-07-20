@@ -2425,6 +2425,22 @@ def check_publisher(workflow)
     check(dependency_provenance.include?(fragment),
           "publisher dependency provenance weakens exact manifest fetch evidence: #{fragment}")
   end
+  [
+    'def exact_git_head(root: pathlib.Path, label: str) -> str:',
+    'def formulae_equivalent_excluding_bottle(',
+    '"--equivalent-excluding-bottle",',
+    'if not validation_tap_root:',
+    'fail("planned tap root requires a current tap root")',
+    'if exact_git_head(planned_root, "planned tap root") != args.tap_commit:',
+    'if sha256_file(planned_formula_path) != formula["sha256"]:',
+    'Formula digest differs from the planned tap',
+    'if current_formula_sha != formula["sha256"]:',
+    'Formula differs from the planned tap outside canonical bottle metadata',
+    'validate_parser.add_argument("--planned-tap-root")',
+  ].each do |fragment|
+    check(dependency_provenance.include?(fragment),
+          "publisher dependency drift validation lacks #{fragment}")
+  end
   check(upload_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") } &&
         upload_steps.count { |step| step["uses"] == UPLOAD_ACTION } == 1,
         "credentialed uploader publishes diagnostics")
@@ -3006,6 +3022,34 @@ def check_publisher(workflow)
         publish_run.include?('--publication-handoff "$RUNNER_TEMP/homebrew-publish-handoff"') &&
         !publish_run.include?("--sidecar-root"),
         "publisher finalizer bypasses under-lock package composition")
+  finalizer_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-publish-sidecars.sh"))
+  [
+    'PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap"',
+    'git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit"',
+    'assert_static_tap_tree "$PLANNED_TAP_ROOT" "planned composition tap"',
+    '[ "$(git -C "$PLANNED_TAP_ROOT" rev-parse HEAD)" = "$input_tap_commit" ]',
+    '--planned-tap-root "$PLANNED_TAP_ROOT"',
+    'git -C "$TAP_ROOT" worktree remove --force "$PLANNED_TAP_ROOT"',
+  ].each do |fragment|
+    check(finalizer_source.include?(fragment),
+          "publisher finalizer lacks planned dependency checkout binding: #{fragment}")
+  end
+  check(finalizer_source.scan('--planned-tap-root "$PLANNED_TAP_ROOT"').length == 1,
+        "publisher finalizer passes an ambiguous planned dependency checkout")
+  publisher_test_source = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
+  )
+  [
+    'add_publish_dependency_sibling_bottle "$tap_root"',
+    'under-lock publisher rejected concurrent sibling bottle metadata',
+    'under-lock publisher accepted concurrent dependency Formula whitespace drift',
+    'under-lock publisher accepted concurrent dependency recipe drift',
+    'under-lock publisher accepted concurrent dependency-edge drift',
+    'Formula differs from the planned tap outside canonical bottle metadata',
+  ].each do |fragment|
+    check(publisher_test_source.include?(fragment),
+          "publisher workflow tests do not cover dependency drift: #{fragment}")
+  end
   check(!finalize_steps.filter_map { |step| step["run"] }.join("\n").match?(/(?:^|\s)brew(?:\s|$)/) &&
         !finalize_steps.filter_map { |step| step["run"] }.join("\n").include?(
           "homebrew-generate-sidecars-from-env.sh"

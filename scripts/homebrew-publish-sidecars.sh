@@ -30,6 +30,7 @@ NO_LOCK=0
 PUBLISH_BRANCH=""
 COMPOSE_PARENT=""
 COMPOSE_ROOT=""
+PLANNED_TAP_ROOT=""
 
 usage() {
   cat >&2 <<'EOF'
@@ -372,6 +373,13 @@ compose_publication_handoff() {
     echo "homebrew-publish-sidecars.sh: planned tap commit is not an ancestor of refreshed tap main" >&2
     exit 1
   fi
+  PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap"
+  git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit" >/dev/null
+  assert_static_tap_tree "$PLANNED_TAP_ROOT" "planned composition tap"
+  [ "$(git -C "$PLANNED_TAP_ROOT" rev-parse HEAD)" = "$input_tap_commit" ] || {
+    echo "homebrew-publish-sidecars.sh: planned composition tap differs from the handoff" >&2
+    exit 1
+  }
 
   bash "$KANDELO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
     --tap-root "$COMPOSE_ROOT" \
@@ -391,7 +399,8 @@ compose_publication_handoff() {
     --tap-name "$TAP_NAME" \
     --tap-commit "$input_tap_commit" \
     --bottle-root-url "$bottle_root" \
-    --tap-root "$COMPOSE_ROOT"
+    --tap-root "$COMPOSE_ROOT" \
+    --planned-tap-root "$PLANNED_TAP_ROOT"
 
   planned_formula="$COMPOSE_PARENT/planned-formula.rb"
   composed_formula="$COMPOSE_PARENT/composed-formula.rb"
@@ -635,6 +644,9 @@ write_rollback_report() {
 }
 
 cleanup() {
+  if [ -n "$PLANNED_TAP_ROOT" ] && [ -d "$PLANNED_TAP_ROOT" ]; then
+    git -C "$TAP_ROOT" worktree remove --force "$PLANNED_TAP_ROOT" >/dev/null 2>&1 || true
+  fi
   if [ -n "$COMPOSE_ROOT" ] && [ -d "$COMPOSE_ROOT" ]; then
     git -C "$TAP_ROOT" worktree remove --force "$COMPOSE_ROOT" >/dev/null 2>&1 || true
   fi
