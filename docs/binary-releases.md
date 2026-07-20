@@ -26,11 +26,13 @@ see [docs/package-sources.md](package-sources.md).
 Homebrew bottles use a separate publication model. Bottle tarballs are
 Homebrew-native artifacts published through the `kandelo-dev/homebrew-tap-core`
 tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and
-provenance publish as tap git state. Browser gallery output is currently
-run-scoped diagnostic evidence, not a durable release asset. These artifacts
-do not appear in the main repository's `binaries-abi-v<N>` `index.toml`
+provenance publish as tap git state. A required dependency-bearing acceptance
+run also publishes its exact Node-and-Chromium-proven VFS image and evidence in
+the source tap repository under `homebrew-vfs-sha256-<image-sha256>`; generic
+browser gallery output remains run-scoped diagnostic evidence. None of these
+artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
-authoring and operations.
+authoring, the immutable VFS descriptor contract, and operations.
 
 The unprivileged Homebrew build job fetch-only materializes the wasm32 Dash,
 Coreutils, Grep, and Sed artifacts from `binaries-abi-v<N>` so Formula tests can
@@ -376,11 +378,16 @@ Homebrew sidecars use the ABI namespace:
 bottles-abi-v<ABI_VERSION>
 ```
 
-The current Homebrew publisher commits sidecars and provenance reports to tap
-git and retains browser-gallery output as run diagnostics. It does not create
-or mutate a GitHub Release for this namespace. Homebrew state is intentionally
-separate from package archive releases because bottle selection is governed by
-Formula metadata and Homebrew bottle tags, not by Kandelo's package resolver.
+The Homebrew publisher commits sidecars and provenance reports to tap git and
+retains generic browser-gallery output as run diagnostics. It does not create
+or mutate a GitHub Release for the `bottles-abi-v<N>` namespace. An explicitly
+required dependency-bearing acceptance run instead creates a separate public,
+content-addressed `homebrew-vfs-sha256-<image-sha256>` release in the source tap
+repository. That release contains one exact VFS image, its machine-readable
+descriptor, report, and Node/browser evidence; public releases are never
+clobbered. Homebrew state remains separate from package archive releases
+because bottle selection is governed by Formula metadata and Homebrew bottle
+tags, not by Kandelo's package resolver.
 
 The ABI version appears in the namespace because its metadata is tied to a
 specific kernel ABI. Programs from `binaries-abi-v10` cannot run

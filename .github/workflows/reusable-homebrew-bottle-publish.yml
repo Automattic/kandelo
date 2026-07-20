@@ -57,6 +57,7 @@ jobs:
       kandelo-sha: ${{ steps.source-commits.outputs.kandelo-sha }}
       tap-sha: ${{ steps.source-commits.outputs.tap-sha }}
       core-dependency-tap-sha: ${{ steps.dependency-taps.outputs.core-tap-sha }}
+      vfs-acceptance-formula: ${{ steps.vfs-acceptance.outputs.formula }}
     steps:
       - name: Validate caller trust boundary
         id: trust
@@ -306,6 +307,7 @@ jobs:
           echo "$matrix" | jq .
 
       - name: Validate dependency-bearing VFS acceptance selection
+        id: vfs-acceptance
         shell: bash
         env:
           DRY_RUN: ${{ inputs.dry-run }}
@@ -440,6 +442,7 @@ jobs:
           elif [ "$DRY_RUN" = "true" ] || [ "$target_planned" != "true" ]; then
             echo "::notice::this invocation will produce no dependency-bearing VFS acceptance evidence"
           fi
+          echo "formula=$selected_formula" >> "$GITHUB_OUTPUT"
 
   build-and-test:
     needs: [plan]
@@ -3119,6 +3122,45 @@ jobs:
             echo "::error::runtime validation modified reviewed Homebrew source"; exit 1;
           }
 
+      - name: Prepare exact browser-proven VFS release handoff
+        if: ${{ !inputs.dry-run && inputs.require-vfs-acceptance && matrix.arch == 'wasm32' && matrix.formula == needs.plan.outputs.vfs-acceptance-formula }}
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_ABI: ${{ needs.plan.outputs.abi }}
+          KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          acceptance_root="$RUNNER_TEMP/homebrew-vfs-acceptance"
+          python3 kandelo-postverify/scripts/homebrew-vfs-release.py prepare \
+            --image "$acceptance_root/homebrew-brewfile.vfs.zst" \
+            --report "$acceptance_root/homebrew-brewfile-report.json" \
+            --node-evidence "$acceptance_root/node-evidence.json" \
+            --browser-evidence "$acceptance_root/browser-evidence.json" \
+            --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
+            --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
+            --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT" \
+            --abi "$KANDELO_HOMEBREW_ABI" \
+            --bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG" \
+            --out "$RUNNER_TEMP/homebrew-vfs-release-handoff"
+
+      - name: Upload exact browser-proven VFS release handoff
+        if: ${{ !inputs.dry-run && inputs.require-vfs-acceptance && matrix.arch == 'wasm32' && matrix.formula == needs.plan.outputs.vfs-acceptance-formula }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-vfs-release-handoff-${{ matrix.formula }}-wasm32-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-vfs-release-handoff
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Package validated data-only publication handoff
         shell: bash
         env:
@@ -3432,3 +3474,131 @@ jobs:
         if: ${{ always() && (steps.publish-handoff.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
         shell: bash
         run: exit 1
+
+  publish-vfs-release:
+    needs: [plan, verify-bottle, finalize-tap]
+    if: ${{ always() && !cancelled() && !inputs.dry-run && inputs.require-vfs-acceptance && needs.plan.result == 'success' && needs.verify-bottle.result == 'success' && needs.finalize-tap.result == 'success' && needs.plan.outputs.vfs-acceptance-formula != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout exact Kandelo VFS release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.kandelo-sha }}
+          path: kandelo
+          submodules: false
+
+      - name: Checkout exact VFS source tap without credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ needs.plan.outputs.tap-sha }}
+          path: tap-base
+          fetch-depth: 0
+
+      - name: Verify VFS release source snapshots
+        shell: bash
+        env:
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git -C kandelo rev-parse HEAD)" = "$KANDELO_SHA" ] || {
+            echo "::error::Kandelo VFS release source differs from the plan"; exit 2;
+          }
+          [ -z "$(git -C kandelo status --short --untracked-files=all)" ] || {
+            echo "::error::Kandelo VFS release source is dirty"; exit 2;
+          }
+          [ "$(git -C tap-base rev-parse HEAD)" = "$TAP_SHA" ] || {
+            echo "::error::VFS source tap differs from the plan"; exit 2;
+          }
+          [ -z "$(git -C tap-base status --short --untracked-files=all)" ] || {
+            echo "::error::VFS source tap is dirty"; exit 2;
+          }
+
+      - name: Download exact browser-proven VFS release handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-vfs-release-handoff-${{ needs.plan.outputs.vfs-acceptance-formula }}-wasm32-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-vfs-release-handoff
+
+      - name: Validate VFS release handoff without credentials
+        id: validate-vfs-release
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_ABI: ${{ needs.plan.outputs.abi }}
+          KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
+          KANDELO_HOMEBREW_FORMULA: ${{ needs.plan.outputs.vfs-acceptance-formula }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
+            echo "::error::a credential reached VFS handoff validation"; exit 2;
+          }
+          python3 kandelo/scripts/homebrew-vfs-release.py validate \
+            --handoff "$RUNNER_TEMP/homebrew-vfs-release-handoff" \
+            --tap-root "$GITHUB_WORKSPACE/tap-base" \
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
+            --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
+            --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT" \
+            --abi "$KANDELO_HOMEBREW_ABI" \
+            --bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG"
+
+      - name: Publish and anonymously read back the immutable VFS release
+        id: publish-vfs-release
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_ABI: ${{ needs.plan.outputs.abi }}
+          KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_HOMEBREW_FORMULA: ${{ needs.plan.outputs.vfs-acceptance-formula }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+          KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          STATE_LOCK_OWNER_DETAIL: public VFS release
+        run: |
+          set -euo pipefail
+          bash kandelo/scripts/homebrew-publish-vfs-release.sh \
+            --handoff "$RUNNER_TEMP/homebrew-vfs-release-handoff" \
+            --tap-root "$GITHUB_WORKSPACE/tap-base" \
+            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+            --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
+            --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
+            --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT" \
+            --abi "$KANDELO_HOMEBREW_ABI" \
+            --bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG" \
+            --receipt "$RUNNER_TEMP/homebrew-vfs-release-receipt.json"
+          descriptor_url="$(jq -er '.descriptor_url' "$RUNNER_TEMP/homebrew-vfs-release-receipt.json")"
+          image_url="$(jq -er '.image.url' "$RUNNER_TEMP/homebrew-vfs-release-receipt.json")"
+          {
+            echo "descriptor-url=$descriptor_url"
+            echo "image-url=$image_url"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Public Homebrew VFS"
+            echo
+            echo "Descriptor: $descriptor_url"
+            echo
+            echo "Browser launch input: \`?vfs=$image_url\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload public VFS publication receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-vfs-release-receipt-${{ needs.plan.outputs.vfs-acceptance-formula }}-wasm32-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-vfs-release-receipt.json
+          if-no-files-found: error
+          retention-days: 14

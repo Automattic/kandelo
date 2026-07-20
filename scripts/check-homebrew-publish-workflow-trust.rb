@@ -20,12 +20,13 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "d4ad1ba3a3decdef5a6d32811c2e4eae1f79873b4bdb42cfa9207735c725ace7"
+PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916d0f70d415"
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "70d0a74c5c2cb7320acfba52be3e7ed874e329a801659d0e665cb2c8d5f08791"
-PUBLISHER_VERIFY_DIGEST = "c7354c3c13cecb28cbef5eb460ec7a49189af64af8e9e57ab3163f81ba5599e3"
+PUBLISHER_VERIFY_DIGEST = "0454effba08b41e79f29cd2dd34b1d6e1c8ae096c9829ec2b8717a7cfe7222d7"
 PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
+PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
@@ -527,7 +528,7 @@ def check_publisher(workflow)
         "publisher still accepts a caller secret")
 
   jobs = workflow_jobs(workflow)
-  check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index upload-bottle verify-bottle],
+  check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index publish-vfs-release upload-bottle verify-bottle],
         "publisher has an unexpected job set")
   plan = jobs.fetch("plan")
   build = jobs.fetch("build-and-test")
@@ -535,6 +536,7 @@ def check_publisher(workflow)
   index = jobs.fetch("publish-bottle-index")
   verify = jobs.fetch("verify-bottle")
   finalize = jobs.fetch("finalize-tap")
+  vfs_release = jobs.fetch("publish-vfs-release")
 
   check(plan.keys.sort == %w[outputs permissions runs-on steps],
         "publisher plan contract changed")
@@ -545,6 +547,8 @@ def check_publisher(workflow)
   end
   check(index.keys.sort == %w[concurrency if needs permissions runs-on steps strategy timeout-minutes],
         "publisher version-index job contract changed")
+  check(vfs_release.keys.sort == %w[if needs permissions runs-on steps timeout-minutes],
+        "publisher VFS release job contract changed")
   check(plan["runs-on"] == "ubuntu-latest" &&
         exact_permissions?(plan["permissions"], { "contents" => "read" }),
         "publisher plan authority changed")
@@ -568,6 +572,10 @@ def check_publisher(workflow)
   check(finalize["runs-on"] == "ubuntu-latest" && finalize["timeout-minutes"] == 120 &&
         exact_permissions?(finalize["permissions"], { "actions" => "read", "contents" => "write" }),
         "publisher finalizer authority changed")
+  check(vfs_release["runs-on"] == "ubuntu-latest" && vfs_release["timeout-minutes"] == 60 &&
+        exact_permissions?(vfs_release["permissions"], {
+          "actions" => "read", "contents" => "write",
+        }), "publisher VFS release authority changed")
 
   matrix_strategy = {
     "fail-fast" => false,
@@ -603,6 +611,13 @@ def check_publisher(workflow)
         finalize["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
                            "needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}",
         "publisher finalization graph or dry-run isolation changed")
+  check(vfs_release["needs"] == %w[plan verify-bottle finalize-tap] &&
+        vfs_release["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
+                               "inputs.require-vfs-acceptance && needs.plan.result == 'success' && " \
+                               "needs.verify-bottle.result == 'success' && " \
+                               "needs.finalize-tap.result == 'success' && " \
+                               "needs.plan.outputs.vfs-acceptance-formula != '' }}",
+        "publisher VFS release graph or evidence gate changed")
 
   plan_steps = job_steps(plan, "publisher plan")
   build_steps = job_steps(build, "publisher build")
@@ -610,6 +625,7 @@ def check_publisher(workflow)
   index_steps = job_steps(index, "publisher version index")
   verify_steps = job_steps(verify, "publisher verification")
   finalize_steps = job_steps(finalize, "publisher finalization")
+  vfs_release_steps = job_steps(vfs_release, "publisher VFS release")
 
   validation = named_step(plan_steps, "Validate caller trust boundary")
   check(plan_steps.first.equal?(validation), "publisher trust validation must be first")
@@ -683,7 +699,8 @@ def check_publisher(workflow)
   vfs_selection = named_step(
     plan_steps, "Validate dependency-bearing VFS acceptance selection"
   )
-  check(vfs_selection.keys.sort == %w[env name run shell] &&
+  check(vfs_selection.keys.sort == %w[env id name run shell] &&
+        vfs_selection["id"] == "vfs-acceptance" &&
         vfs_selection["shell"] == "bash" && vfs_selection["env"] == {
           "DRY_RUN" => "${{ inputs.dry-run }}",
           "PLANNED_MATRIX" => "${{ steps.matrix.outputs.matrix }}",
@@ -724,6 +741,7 @@ def check_publisher(workflow)
     'any(.[]; .formula == $formula and .arch == "wasm32")',
     'required dependency-bearing VFS acceptance needs a non-dry-run publication',
     'use force when its bottle is already current',
+    'echo "formula=$selected_formula" >> "$GITHUB_OUTPUT"',
   ].each do |fragment|
     check(vfs_selection_run.include?(fragment),
           "publisher VFS acceptance planning lacks #{fragment}")
@@ -834,14 +852,15 @@ def check_publisher(workflow)
     "kandelo-sha" => "${{ steps.source-commits.outputs.kandelo-sha }}",
     "tap-sha" => "${{ steps.source-commits.outputs.tap-sha }}",
     "core-dependency-tap-sha" => "${{ steps.dependency-taps.outputs.core-tap-sha }}",
+    "vfs-acceptance-formula" => "${{ steps.vfs-acceptance.outputs.formula }}",
   }, "publisher plan outputs changed")
 
   expected_uses = [
-    *Array.new(21, CHECKOUT_ACTION),
+    *Array.new(23, CHECKOUT_ACTION),
     *Array.new(5, NIX_ACTION),
     *Array.new(2, MAGIC_NIX_ACTION),
-    *Array.new(7, UPLOAD_ACTION),
-    *Array.new(9, DOWNLOAD_ACTION),
+    *Array.new(9, UPLOAD_ACTION),
+    *Array.new(10, DOWNLOAD_ACTION),
   ].sort
   check(values_for_key(workflow, "uses").sort == expected_uses,
         "publisher action set or pin changed")
@@ -1057,6 +1076,26 @@ def check_publisher(workflow)
       },
     },
   ], "publisher finalizer checkout wiring changed")
+  check(checkout_view.call(vfs_release_steps) == [
+    {
+      "name" => "Checkout exact Kandelo VFS release source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+        "path" => "kandelo", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout exact VFS source tap without credentials", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-base",
+        "fetch-depth" => 0,
+      },
+    },
+  ], "publisher VFS release checkout wiring changed")
 
   public_core_checkout.call(
     plan_steps,
@@ -1167,6 +1206,18 @@ def check_publisher(workflow)
   ] && finalizer_credential_steps.all? do |step|
     step.fetch("env").slice(*credential_names) == { "GH_TOKEN" => "${{ github.token }}" }
   end, "publisher finalizer credentials escape tap write steps")
+  vfs_release_credential_steps = vfs_release_steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(vfs_release_credential_steps.map { |step| step["name"] } == [
+    "Publish and anonymously read back the immutable VFS release",
+  ] && vfs_release_credential_steps.first.fetch("env").slice(*credential_names) == {
+    "GH_TOKEN" => "${{ github.token }}",
+  }, "publisher VFS release credential escapes the sole write step")
+  vfs_release_checkout_steps = vfs_release_steps.select { |step| step["uses"] == CHECKOUT_ACTION }
+  check(vfs_release_checkout_steps.all? do |step|
+    step.dig("with", "persist-credentials") == false
+  end, "publisher VFS release persists checkout credentials")
 
   build_handoff_name =
     "homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
@@ -1178,6 +1229,10 @@ def check_publisher(workflow)
     "homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
   index_publication_name =
     "homebrew-index-publication-${{ matrix.formula }}-attempt-${{ github.run_attempt }}"
+  vfs_release_handoff_name =
+    "homebrew-vfs-release-handoff-${{ matrix.formula }}-wasm32-attempt-${{ github.run_attempt }}"
+  vfs_release_receipt_name =
+    "homebrew-vfs-release-receipt-${{ needs.plan.outputs.vfs-acceptance-formula }}-wasm32-attempt-${{ github.run_attempt }}"
   build_handoff_upload = named_step(build_steps, "Upload strict bottle build handoff")
   check(build_handoff_upload["uses"] == UPLOAD_ACTION && build_handoff_upload["with"] == {
     "name" => build_handoff_name,
@@ -1274,6 +1329,36 @@ def check_publisher(workflow)
           "name" => publish_handoff_name,
           "path" => "${{ runner.temp }}/homebrew-publish-handoff",
         }, "publisher publication handoff download contract changed")
+  vfs_handoff_upload = named_step(
+    verify_steps, "Upload exact browser-proven VFS release handoff"
+  )
+  vfs_handoff_condition = "${{ !inputs.dry-run && inputs.require-vfs-acceptance && " \
+                          "matrix.arch == 'wasm32' && matrix.formula == " \
+                          "needs.plan.outputs.vfs-acceptance-formula }}"
+  check(vfs_handoff_upload["uses"] == UPLOAD_ACTION &&
+        vfs_handoff_upload["if"] == vfs_handoff_condition &&
+        vfs_handoff_upload["with"] == {
+          "name" => vfs_release_handoff_name,
+          "path" => "${{ runner.temp }}/homebrew-vfs-release-handoff",
+          "compression-level" => 0,
+          "if-no-files-found" => "error", "retention-days" => 2,
+        }, "publisher VFS release handoff artifact contract changed")
+  vfs_handoff_download = named_step(
+    vfs_release_steps, "Download exact browser-proven VFS release handoff"
+  )
+  check(vfs_handoff_download["uses"] == DOWNLOAD_ACTION &&
+        vfs_handoff_download["with"] == {
+          "name" => "homebrew-vfs-release-handoff-" \
+                    "${{ needs.plan.outputs.vfs-acceptance-formula }}-wasm32-attempt-" \
+                    "${{ github.run_attempt }}",
+          "path" => "${{ runner.temp }}/homebrew-vfs-release-handoff",
+        }, "publisher VFS release handoff download contract changed")
+  vfs_receipt_upload = named_step(vfs_release_steps, "Upload public VFS publication receipt")
+  check(vfs_receipt_upload["uses"] == UPLOAD_ACTION && vfs_receipt_upload["with"] == {
+    "name" => vfs_release_receipt_name,
+    "path" => "${{ runner.temp }}/homebrew-vfs-release-receipt.json",
+    "if-no-files-found" => "error", "retention-days" => 14,
+  }, "publisher VFS release receipt artifact contract changed")
 
   build_run = named_step(build_steps,
                          "Build and test Homebrew bottle without publisher credentials").fetch("run")
@@ -3273,6 +3358,136 @@ def check_publisher(workflow)
           "publisher verifier source recheck lacks #{fragment}")
   end
 
+  vfs_prepare = named_step(verify_steps, "Prepare exact browser-proven VFS release handoff")
+  vfs_prepare_run = vfs_prepare.fetch("run")
+  vfs_handoff_upload = named_step(
+    verify_steps, "Upload exact browser-proven VFS release handoff"
+  )
+  check(vfs_prepare["if"] == vfs_handoff_condition &&
+        vfs_prepare["env"] == {
+          "KANDELO_HOMEBREW_ABI" => "${{ needs.plan.outputs.abi }}",
+          "KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG" => "${{ needs.plan.outputs.release-tag }}",
+          "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
+          "KANDELO_HOMEBREW_KANDELO_COMMIT" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "KANDELO_HOMEBREW_TAP_COMMIT" => "${{ needs.plan.outputs.tap-sha }}",
+          "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
+          "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+        }, "publisher VFS handoff preparation mapping changed")
+  [
+    "kandelo-postverify/scripts/homebrew-vfs-release.py prepare",
+    '--image "$acceptance_root/homebrew-brewfile.vfs.zst"',
+    '--report "$acceptance_root/homebrew-brewfile-report.json"',
+    '--node-evidence "$acceptance_root/node-evidence.json"',
+    '--browser-evidence "$acceptance_root/browser-evidence.json"',
+    '--tap-root "$GITHUB_WORKSPACE/tap-postverify"',
+    '--tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"',
+    '--abi "$KANDELO_HOMEBREW_ABI"',
+    '--bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG"',
+    '--out "$RUNNER_TEMP/homebrew-vfs-release-handoff"',
+  ].each do |fragment|
+    check(vfs_prepare_run.include?(fragment), "publisher VFS handoff preparation lacks #{fragment}")
+  end
+  check(verify_steps.index(source_recheck) < verify_steps.index(vfs_prepare) &&
+        verify_steps.index(vfs_prepare) < verify_steps.index(vfs_handoff_upload),
+        "publisher packages VFS evidence outside the post-runtime source boundary")
+
+  vfs_snapshot = named_step(vfs_release_steps, "Verify VFS release source snapshots")
+  [
+    'git -C kandelo rev-parse HEAD', 'git -C kandelo status --short --untracked-files=all',
+    'git -C tap-base rev-parse HEAD', 'git -C tap-base status --short --untracked-files=all',
+  ].each do |fragment|
+    check(vfs_snapshot.fetch("run").include?(fragment),
+          "publisher VFS release snapshot verification lacks #{fragment}")
+  end
+  vfs_validate = named_step(vfs_release_steps, "Validate VFS release handoff without credentials")
+  check(vfs_validate["id"] == "validate-vfs-release" &&
+        vfs_validate["env"] == {
+          "KANDELO_HOMEBREW_ABI" => "${{ needs.plan.outputs.abi }}",
+          "KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG" => "${{ needs.plan.outputs.release-tag }}",
+          "KANDELO_HOMEBREW_FORMULA" => "${{ needs.plan.outputs.vfs-acceptance-formula }}",
+          "KANDELO_HOMEBREW_KANDELO_COMMIT" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "KANDELO_HOMEBREW_TAP_COMMIT" => "${{ needs.plan.outputs.tap-sha }}",
+          "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
+          "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+        } &&
+        vfs_validate.fetch("run").include?('[ -z "${GH_TOKEN:-}" ]') &&
+        vfs_validate.fetch("run").include?('[ -z "${GITHUB_TOKEN:-}" ]') &&
+        vfs_validate.fetch("run").include?("homebrew-vfs-release.py validate") &&
+        vfs_validate.fetch("run").include?('--abi "$KANDELO_HOMEBREW_ABI"') &&
+        vfs_validate.fetch("run").include?(
+          '--bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG"'
+        ) &&
+        !vfs_validate.fetch("env", {}).key?("GH_TOKEN"),
+        "publisher VFS handoff is not revalidated without credentials")
+  vfs_publish = named_step(
+    vfs_release_steps, "Publish and anonymously read back the immutable VFS release"
+  )
+  check(vfs_release_steps.index(vfs_validate) < vfs_release_steps.index(vfs_publish) &&
+        vfs_publish["id"] == "publish-vfs-release" &&
+        vfs_publish["env"] == {
+          "KANDELO_HOMEBREW_ABI" => "${{ needs.plan.outputs.abi }}",
+          "KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG" => "${{ needs.plan.outputs.release-tag }}",
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_HOMEBREW_FORMULA" => "${{ needs.plan.outputs.vfs-acceptance-formula }}",
+          "KANDELO_HOMEBREW_KANDELO_COMMIT" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "KANDELO_HOMEBREW_TAP_COMMIT" => "${{ needs.plan.outputs.tap-sha }}",
+          "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
+          "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "STATE_LOCK_OWNER_DETAIL" => "public VFS release",
+        } &&
+        vfs_publish.fetch("run").include?("homebrew-publish-vfs-release.sh") &&
+        vfs_publish.fetch("run").include?('--abi "$KANDELO_HOMEBREW_ABI"') &&
+        vfs_publish.fetch("run").include?(
+          '--bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG"'
+        ) &&
+        vfs_publish.fetch("run").include?('--receipt "$RUNNER_TEMP/homebrew-vfs-release-receipt.json"') &&
+        vfs_publish.fetch("run").include?('echo "descriptor-url=$descriptor_url"') &&
+        vfs_publish.fetch("run").include?('echo "Browser launch input: \\`?vfs=$image_url\\`"'),
+        "publisher VFS write step does not preserve validation, receipt, and launch outputs")
+
+  vfs_validator_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-vfs-release.py"))
+  [
+    'EXPECTED_ASSETS = {', 'homebrew-vfs-sha256-', 'validate_bundle_dir',
+    'exact(actual, expected, "VFS release descriptor")', 'Node evidence image digest',
+    'browser image digest', 'selected formula tap commit', 'Node dependency edge',
+    'expected Kandelo ABI', 'expected bottle release tag',
+    'browser legacy shell downloads', 'query_parameter": "vfs"',
+  ].each do |fragment|
+    check(vfs_validator_source.include?(fragment),
+          "Homebrew VFS release validator lacks #{fragment}")
+  end
+  vfs_publisher_source = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-publish-vfs-release.sh")
+  )
+  [
+    'env -u GH_TOKEN -u GITHUB_TOKEN python3', 'state-lock.sh',
+    'homebrew-vfs-sha256-', 'draft=true', 'assert_asset_names_are_bounded',
+    'existing release identity is malformed or mismatched',
+    'public release is not protected by GitHub immutable releases',
+    'public release is missing immutable asset', 'Accept: application/octet-stream',
+    'retry env -u GH_TOKEN -u GITHUB_TOKEN', 'curl --disable',
+    'publish response was ambiguous; reconciling',
+    'anonymous readback failed', '.object.type == "commit"',
+    'visibility: "public-anonymous-readback"',
+  ].each do |fragment|
+    check(vfs_publisher_source.include?(fragment),
+          "Homebrew VFS release publisher lacks #{fragment}")
+  end
+  vfs_test_source = File.read(File.join(REPO_ROOT, "scripts/test-homebrew-vfs-release.sh"))
+  [
+    "validator accepted a tampered VFS image", "browser evidence for different bytes",
+    "validator accepted a symlinked handoff entry", "dirty exact tap checkout",
+    "idempotent public retry mutated the release", "recover an exact partial draft",
+    "filled a missing asset in an existing public release",
+    "overwrote a mismatched public asset", "accepted an unexpected release asset",
+    "failed anonymous digest readback", "release tag at the wrong commit",
+    "transient anonymous release propagation", "ambiguous successful publish",
+    "public release without GitHub immutability",
+    "Kandelo ABI outside the trusted plan", "bottle release tag outside the trusted plan",
+  ].each do |fragment|
+    check(vfs_test_source.include?(fragment), "Homebrew VFS release tests lack #{fragment}")
+  end
+
   package_handoff = named_step(verify_steps,
                                "Package validated data-only publication handoff")
   package_handoff_run = package_handoff.fetch("run")
@@ -3362,6 +3577,7 @@ def check_publisher(workflow)
     'under-lock publisher accepted concurrent dependency recipe drift',
     'under-lock publisher accepted concurrent dependency-edge drift',
     'Formula differs from the planned tap outside canonical bottle metadata',
+    'bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"',
   ].each do |fragment|
     check(publisher_test_source.include?(fragment),
           "publisher workflow tests do not cover dependency drift: #{fragment}")
@@ -3402,6 +3618,8 @@ def check_publisher(workflow)
         "publisher verification step contract changed")
   check(contract_digest(finalize_steps) == PUBLISHER_FINALIZE_DIGEST,
         "publisher finalization step contract changed")
+  check(contract_digest(vfs_release_steps) == PUBLISHER_VFS_RELEASE_DIGEST,
+        "publisher VFS release step contract changed")
 end
 
 def check_maintenance(workflow)
@@ -3759,6 +3977,9 @@ def self_test(publisher, maintenance, repository_canary)
     "finalizer dependency bypass" => lambda { |w|
       w.fetch("jobs").fetch("finalize-tap")["needs"] = ["plan", "verify-bottle"]
     },
+    "VFS release finalizer dependency bypass" => lambda { |w|
+      w.fetch("jobs").fetch("publish-vfs-release")["needs"] = ["plan", "verify-bottle"]
+    },
     "build authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("build-and-test").fetch("permissions")["packages"] = "write"
     },
@@ -3796,6 +4017,9 @@ def self_test(publisher, maintenance, repository_canary)
     "finalizer authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("finalize-tap").fetch("permissions")["packages"] = "write"
     },
+    "VFS release package authority" => lambda { |w|
+      w.fetch("jobs").fetch("publish-vfs-release").fetch("permissions")["packages"] = "write"
+    },
     "dry-run bottle upload" => lambda { |w|
       job = w.fetch("jobs").fetch("upload-bottle")
       job["if"] = job.fetch("if").sub(" && !inputs.dry-run", "")
@@ -3807,6 +4031,22 @@ def self_test(publisher, maintenance, repository_canary)
     "dry-run tap finalization" => lambda { |w|
       job = w.fetch("jobs").fetch("finalize-tap")
       job["if"] = job.fetch("if").sub(" && !inputs.dry-run", "")
+    },
+    "dry-run VFS release publication" => lambda { |w|
+      job = w.fetch("jobs").fetch("publish-vfs-release")
+      job["if"] = job.fetch("if").sub(" && !inputs.dry-run", "")
+    },
+    "VFS release validation receives token" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-vfs-release", "Validate VFS release handoff without credentials"
+      )
+      step.fetch("env")["GH_TOKEN"] = "${{ github.token }}"
+    },
+    "VFS release uses mutable tap source" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-vfs-release", "Checkout exact VFS source tap without credentials"
+      )
+      step.fetch("with")["ref"] = "main"
     },
     "unreviewed Kandelo ref" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Checkout Kandelo workflow source")

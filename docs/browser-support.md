@@ -437,12 +437,24 @@ root-owned `01777` sticky directory.
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
 
-Homebrew-derived browser images are published through the package-source
-gallery path, not bundled into the app. The trusted Homebrew publisher first
-pours a wasm32 bottle into a precomposed `.vfs.zst`, boots that image in the
-browser UI, and runs the package smoke command, such as
-`/home/linuxbrew/.linuxbrew/bin/hello --version`. Only then may the generated
+Homebrew-derived browser images are external artifacts, not bundled into the
+app. The trusted Homebrew publisher first pours wasm32 bottles into a
+precomposed `.vfs.zst`, boots those exact bytes in Node and Chromium, and runs
+the tap-selected smoke command. When the caller seals that dependency-bearing
+acceptance as required, the publisher stores the exact image, report, evidence,
+and `kandelo-homebrew-vfs.json` descriptor in the source tap's public,
+content-addressed `homebrew-vfs-sha256-<image-sha256>` release. The descriptor's
+`launch.value` is the anonymous image URL accepted by the normal browser
+`?vfs=<url>` path. The publisher anonymously reads every release asset back and
+verifies its digest and size before reporting success.
+
+That direct release proves only its configured acceptance image; it does not
+set generic package browser flags. The separate gallery path first boots a
+package image in the browser UI and runs its smoke command, such as
+`/home/linuxbrew/.linuxbrew/bin/hello --version`. Only then may generated
 Homebrew sidecars and gallery `index.toml` set `browser_compatible = true`.
+Generic gallery archives are currently retained as run diagnostics rather than
+published as durable gallery releases.
 
 A Homebrew gallery entry is visible only when its `index.toml` package record
 is wasm32 success, has an `archive_url`, and sets
