@@ -337,11 +337,9 @@ async function runProcessLifecycle(): Promise<Record<string, number>> {
   // existing hello.wasm; pre-stage it at /bin/hello via registerLazyFiles
   // so libc-side path resolution finds it. Distinct from exec_ms (no
   // exec exists on the browser bench page anyway) and fork_ms.
-  const helloHead = await fetch(helloWasmUrl, { method: "HEAD" });
-  const helloSize = parseInt(helloHead.headers.get("content-length") ?? "0", 10) || 1 << 20;
   const spawnBenchBytes = await fetchWasm(spawnBenchWasmUrl);
   const spawn = await runProgramWithExecMap(spawnBenchBytes, ["spawn-bench"], [
-    { path: "/bin/hello", url: helloWasmUrl, size: helloSize },
+    { path: "/bin/hello", url: helloWasmUrl, size: helloBytes.byteLength },
   ]);
   if (spawn.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawn.stdout}`);
   Object.assign(results, parseMetrics(spawn.stdout));

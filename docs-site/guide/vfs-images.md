@@ -77,7 +77,7 @@ Common fields:
 | --- | --- | --- |
 | `src=<path>` | file | Use a source file other than `sourceTree/<path>`. |
 | `lazy_url=<url>` | file | Register a URL-backed file stub. |
-| `lazy_size=<n>` | file | Required with `lazy_url`. |
+| `lazy_size=<n>` | file | Required with `lazy_url`; exact decoded bytes, up to 1 GiB. |
 | `target=<path>` | symlink | Symlink target. |
 | `major=<n>` / `minor=<n>` | device | Device numbers. |
 
@@ -186,8 +186,25 @@ If metadata changes for a package-backed image, bump that package's `build.toml`
 
 ## Lazy Files And Lazy Archives
 
-Lazy files and archives keep initial downloads small. A VFS image can contain a stub for a large file or archive. The real bytes are fetched only when the guest accesses the path.
+Lazy files and archives keep initial downloads small. A VFS image can contain
+an empty stub for a large executable or runtime tree. The real bytes are
+fetched when the guest first executes a path backed by that lazy artifact.
 
-Use lazy files for a few large binaries. Use lazy archives for runtime trees with many files, such as Vim runtime data or Python standard-library content.
+Use lazy files for independent binaries. Use one lazy ZIP archive for an
+executable plus everything it will read synchronously after launch, such as a
+language runtime and standard library. Executing any regular member verifies
+and materializes the complete group, after which Node and browser hosts read
+the same concrete VFS bytes without refetching.
+
+`lazy_size` is an integrity declaration, not a download estimate. Kandelo
+rejects short, long, or over-limit bodies without changing the stub, and the
+next access may retry. New lazy archive builders must likewise register both
+`compressedBytes` (the exact ZIP response body size) and `sha256` (lowercase
+SHA-256 of those bytes). Kandelo checks both before ZIP parsing and validates
+all declared member types and expanded sizes before replacing any archive
+stub. Older images without archive digests remain readable for compatibility,
+but should not be used as the source of newly published remote artifacts. The
+archive digest binds bytes to the VFS declaration; it does not make an
+untrusted VFS image trustworthy by itself.
 
 When hosting an image, host every lazy asset at the URLs encoded in the image, or boot with a `lazyUrlBase` that resolves relative URLs correctly.

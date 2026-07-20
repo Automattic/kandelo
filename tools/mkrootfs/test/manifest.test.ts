@@ -53,6 +53,18 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
     it("rejects lazy files combined with src=", () => {
       expect(() => parseManifest("/usr/bin/find  f  0755  0  0  src=find.wasm  lazy_url=binaries/find.wasm  lazy_size=12345\n")).toThrow(/cannot combine/);
     });
+
+    it("accepts zero logical bytes and rejects unsafe lazy sizes", () => {
+      expect(parseManifest(
+        "/usr/share/empty f 0644 0 0 lazy_url=binaries/empty lazy_size=0\n",
+      )[0]).toMatchObject({ lazySize: 0 });
+      expect(() => parseManifest(
+        "/usr/bin/find f 0755 0 0 lazy_url=binaries/find.wasm lazy_size=9007199254740992\n",
+      )).toThrow(/safe range/);
+      expect(() => parseManifest(
+        "/usr/bin/find f 0755 0 0 lazy_url=binaries/find.wasm lazy_size=1073741825\n",
+      )).toThrow(/exceeds 1073741824 bytes/);
+    });
   });
 
   describe("symlinks", () => {

@@ -647,7 +647,9 @@ assembly instead of producing an incomplete filesystem.
 
 ### Lazy Files
 
-`MemoryFileSystem` supports **lazy files** — files registered with a URL and declared size that are only fetched on first access. This enables loading large binaries (e.g., nginx, PHP-FPM, coreutils) without fetching everything upfront — they are only fetched when a process exec's them.
+`MemoryFileSystem` supports **lazy files** — files registered with a URL and
+exact decoded-body size that are fetched on first executable access. This
+enables loading large binaries without fetching everything up front.
 
 ```typescript
 // Register a lazy file (creates empty stub, fetches on demand)
@@ -656,6 +658,28 @@ const ino = mfs.registerLazyFile("/usr/bin/php", "https://cdn.example.com/php.wa
 // Later, materialize before sync access (avoids sync XHR deadlock with service workers)
 await mfs.ensureMaterialized("/usr/bin/php");
 ```
+
+Materialization is an integrity boundary. The host streams at most the declared
+size (and never more than 1 GiB), rejects short or long responses, and replaces
+the empty stub only after the complete body passes validation. A failure leaves
+the stub and metadata intact so a later attempt can retry. Concurrent requests
+for one inode share one fetch. Node and browser hosts both write verified bytes
+into the kernel-owned VFS before exec; a successful executable is not fetched
+again for the lifetime of that filesystem.
+
+Lazy ZIP archives group an executable with the files it will read
+synchronously after launch. New builders bind each group to both the exact ZIP
+body size (`compressedBytes`) and its lowercase SHA-256 (`sha256`). The runtime
+verifies those values before parsing or writing members, validates every
+declared member against the central directory and expanded size before
+replacing any stub, and coalesces concurrent requests for the group. The two
+integrity fields are optional only so older images remain readable; newly
+published remote archives must provide both. This binds a fetched archive to
+its image declaration; the VFS image still needs its normal trusted,
+content-addressed distribution path.
+Because ordinary guest file reads are synchronous, a lazy language/runtime
+archive must contain the executable and its complete runtime closure—the
+executable access is what asynchronously materializes the group.
 
 Lazy file metadata (`path`, hard-link aliases, `url`, `size`, `ino`, inode
 generation, and data-mutation sequence) can be transferred between instances
@@ -696,6 +720,11 @@ under the same namespace transaction as the filesystem bytes, including names
 changed by another worker. `materializeAll: true` resolves both standalone and
 archive-backed entries and fails instead of emitting an image that still
 depends on a deferred URL.
+
+Restore treats lazy metadata as untrusted input: section lengths, entry/group
+counts, paths, URLs, sizes, inode generations, mutation sequences, and archive
+integrity pairs are validated before registration. Unknown image flags,
+truncated sections, inconsistent flags, and trailing bytes are rejected.
 
 **Restore from an image:**
 
