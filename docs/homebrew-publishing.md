@@ -423,6 +423,14 @@ those two known spellings to the canonical `any` and `any_skip_relocation`
 values used by the static Formula resolver. Unknown symbolic spellings and all
 other unsupported cellar values fail closed.
 
+When Homebrew pours a same-tap dependency from GHCR, its install log can name
+the exact version/rebuild manifest instead of the selected layer's digest URL.
+The collector accepts only that exact manifest endpoint or the exact
+digest-bound blob URL as fetch evidence. It still independently requires the
+exact Formula to select the recorded digest, the installed receipt to prove a
+bottle pour, and the log to name the exact canonical bottle filename. A
+different version, rebuild, package, or suffixed URL fails closed.
+
 While holding the tap state lock, the finalizer repeats the complete static
 dependency-closure derivation against refreshed `main`. Every recorded
 dependency Formula digest and selected-architecture bottle tuple must still

@@ -2399,6 +2399,20 @@ def check_publisher(workflow)
     check(dependency_provenance.include?(fragment),
           "publisher dependency provenance weakens brew info cellar normalization: #{fragment}")
   end
+  [
+    'def public_manifest_url(',
+    'reference = f"{version}-{rebuild}" if rebuild else version',
+    'return f"{bottle_root_url}/{dependency}/manifests/{reference}"',
+    'def line_fetches_reference(line: str, references: tuple[str, ...]) -> bool:',
+    'return match is not None and match.group(1) in references',
+    'fetch_references = (bottle_url, bottle_manifest_url)',
+    'if line_fetches_reference(line, fetch_references):',
+    'validate_fetch_evidence(',
+    '(bottle["url"], bottle_manifest_url)',
+  ].each do |fragment|
+    check(dependency_provenance.include?(fragment),
+          "publisher dependency provenance weakens exact manifest fetch evidence: #{fragment}")
+  end
   check(upload_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") } &&
         upload_steps.count { |step| step["uses"] == UPLOAD_ACTION } == 1,
         "credentialed uploader publishes diagnostics")
