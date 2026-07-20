@@ -297,6 +297,86 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
   expect(legacyShellFetches).toEqual([]);
 });
 
+test("Homebrew release mounts do not inherit colliding built-in profile policy", async ({
+  page,
+}) => {
+  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+
+  const profiles = await page.evaluate(async (abiVersion) => {
+    const { profileForDescriptor } = await import(
+      "/pages/kandelo/kernel-host/live-setup.ts"
+    );
+    const imageUrl =
+      "https://github.com/Example/homebrew-tools/releases/download/" +
+      `homebrew-vfs-sha256-${"a".repeat(64)}/kandelo-homebrew.vfs.zst`;
+    const descriptorUrl = imageUrl.replace(
+      "kandelo-homebrew.vfs.zst",
+      "kandelo-homebrew-vfs.json",
+    );
+    return ["shell", "wordpress-sqlite"].map((id) => {
+      const profile = profileForDescriptor({
+        version: 1,
+        id,
+        title: "Known-ID Homebrew shell",
+        base: `kandelo:shell@abi${abiVersion}`,
+        runtime: {
+          arch: "wasm32",
+          kernel: "kernel@local",
+          memoryPages: 2048,
+          features: ["shared-array-buffer", "pty"],
+          time: "real",
+        },
+        packages: [],
+        mounts: [{
+          path: "/",
+          source: "image",
+          ref: imageUrl,
+          resolver: {
+            kind: "homebrew-vfs-release",
+            descriptorUrl,
+            requireDefaultShell: true,
+          },
+          integrity: {
+            algorithm: "sha256",
+            digest: "a".repeat(64),
+            bytes: 4096,
+          },
+          readonly: false,
+        }],
+        boot: {
+          argv: ["dash", "-l", "-i"],
+          cwd: "/home/user",
+          env: { HOME: "/home/user" },
+          uid: 1000,
+          gid: 1000,
+        },
+      }, "none", {
+        path: "/home/linuxbrew/.linuxbrew/bin/dash",
+        argv: ["dash", "-l", "-i"],
+      });
+      return {
+        requestedId: id,
+        profileId: profile.id,
+        vfsUrl: profile.vfsUrl,
+        hasBuiltInVfsSource: Object.hasOwn(profile, "vfsSource"),
+        hasBuiltInInit: Object.hasOwn(profile, "init"),
+        expectedImageShell: profile.expectedImageShell,
+      };
+    });
+  }, ABI_VERSION);
+
+  for (const profile of profiles) {
+    expect(profile.profileId).toBe(profile.requestedId);
+    expect(profile.vfsUrl).toContain("/Example/homebrew-tools/releases/download/");
+    expect(profile.hasBuiltInVfsSource).toBe(false);
+    expect(profile.hasBuiltInInit).toBe(false);
+    expect(profile.expectedImageShell).toEqual({
+      path: "/home/linuxbrew/.linuxbrew/bin/dash",
+      argv: ["dash", "-l", "-i"],
+    });
+  }
+});
+
 test("an immutable Homebrew release boots its exact shell and rejects shell drift", async ({
   page,
 }) => {

@@ -773,9 +773,11 @@ async function resolveBootDescriptorImage(
   return {
     descriptor: {
       ...descriptor,
-      id: genericQueryDescriptor
-        ? homebrewVfsId(release.tap.name, release.formula)
-        : descriptor.id,
+      // A shared descriptor is untrusted input. Derive the runtime profile ID
+      // from the verified Homebrew identity so a caller cannot select built-in
+      // demo setup (including its VFS source, init process, or image patches)
+      // by reusing an ID such as "shell" or "wordpress-sqlite".
+      id: homebrewVfsId(release.tap.name, release.formula),
       title: genericQueryDescriptor
         ? `${release.formula} Homebrew VFS`
         : descriptor.title,
@@ -794,7 +796,7 @@ function homebrewVfsId(tapName: string, formula: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-function profileForDescriptor(
+export function profileForDescriptor(
   desc: BootDescriptor,
   fb?: FbDemo,
   expectedImageShell?: HomebrewVfsDefaultShell,
@@ -802,7 +804,12 @@ function profileForDescriptor(
   const vfsUrl = vfsImageUrlFromDescriptor(desc);
   if (!vfsUrl) return profileFor(desc.id, fb);
 
-  const knownDemo = normalizeDemoId(desc.id);
+  // Resolver-backed mounts never inherit built-in demo behavior from an
+  // untrusted descriptor ID. The resolved release URL and image-owned policy
+  // are authoritative for this machine.
+  const knownDemo = vfsImageResolverFromDescriptor(desc)
+    ? null
+    : normalizeDemoId(desc.id);
   const profile = knownDemo
     ? profileFor(knownDemo, fb)
     : customVfsProfile(desc, vfsUrl, fb);

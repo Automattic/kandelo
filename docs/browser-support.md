@@ -462,9 +462,12 @@ acquire integrity merely because its URL resembles a release URL.
 The resolver does not hardcode a first-party tap allowlist. A user may select a
 third-party public tap descriptor explicitly, but its repository, descriptor,
 and bytes remain untrusted input subject to the same validation and caps; they
-are not merged into first-party package or gallery trust. Node consumers use
-the same `resolveHomebrewVfsRelease()` implementation and can pass its verified
-`imageBytes` to `NodeKernelHost({ rootfsImage })`.
+are not merged into first-party package or gallery trust. The resolved machine
+ID is derived from the validated tap and Formula identity, so an untrusted boot
+descriptor cannot select a built-in demo's VFS source, init process, or image
+patches by reusing an ID such as `shell` or `wordpress-sqlite`. Node consumers
+use the same `resolveHomebrewVfsRelease()` implementation and can pass its
+verified `imageBytes` to `NodeKernelHost({ rootfsImage })`.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
