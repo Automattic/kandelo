@@ -1599,9 +1599,12 @@ path:
 The release publisher never uses `--clobber`. A content-tag state lock
 serializes writers. An absent release starts as a draft; an interrupted exact
 draft may be completed, while unexpected assets or existing bytes with a
-different digest fail closed. Once public, the release is never mutated. The
-tag must be a direct commit reference to the exact tap source commit, and
-success requires GitHub-enforced release immutability plus anonymous
+different digest fail closed. GitHub's release-by-tag and Git-ref endpoints do
+not expose a draft, so recovery discovers the unique pending tag through the
+authenticated, paginated release list and refreshes that draft by its database
+ID. Once public, the release is never mutated. Publication creates the tag,
+after which it must be a direct commit reference to the exact tap source
+commit. Success requires GitHub-enforced release immutability plus anonymous
 digest-and-size readback of all five assets. The run retains a small publication
 receipt with the descriptor and direct-image URLs, but that Actions artifact is
 only a receipt; the release assets are the durable public product.

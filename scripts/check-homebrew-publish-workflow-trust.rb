@@ -3516,6 +3516,11 @@ def check_publisher(workflow)
   [
     'env -u GH_TOKEN -u GITHUB_TOKEN python3', 'state-lock.sh',
     'homebrew-vfs-sha256-', 'draft=true', 'assert_asset_names_are_bounded',
+    'gh api --paginate --slurp', 'releases?per_page=100',
+    'type == "array" and all(.[]; type == "array")',
+    '[.[][] | select(.tag_name == $tag)]',
+    'github_api_get_json "/repos/${TAP_REPOSITORY}/releases/${release_id}"',
+    ".id | select(type == \"number\" and . > 0)",
     'existing release identity is malformed or mismatched',
     'public release is not protected by GitHub immutable releases',
     'public release is missing immutable asset', 'Accept: application/octet-stream',
@@ -3527,11 +3532,24 @@ def check_publisher(workflow)
     check(vfs_publisher_source.include?(fragment),
           "Homebrew VFS release publisher lacks #{fragment}")
   end
+  draft_tag_guard = <<~'SHELL'.strip
+    if [ "$(jq -r '.draft' "$release_json")" = false ]; then
+      validate_tag_target
+    fi
+  SHELL
+  guard_index = vfs_publisher_source.index(draft_tag_guard)
+  final_tag_index = vfs_publisher_source.rindex("\nvalidate_tag_target\n")
+  public_index = vfs_publisher_source.index("release did not become public")
+  check(!guard_index.nil? && !final_tag_index.nil? && !public_index.nil? &&
+        vfs_publisher_source.scan("\nvalidate_tag_target\n").length == 1 &&
+        guard_index < public_index && final_tag_index > public_index,
+        "Homebrew VFS release publisher requires a tag ref while the release is still draft")
   vfs_test_source = File.read(File.join(REPO_ROOT, "scripts/test-homebrew-vfs-release.sh"))
   [
     "validator accepted a tampered VFS image", "browser evidence for different bytes",
     "validator accepted a symlinked handoff entry", "dirty exact tap checkout",
     "idempotent public retry mutated the release", "recover an exact partial draft",
+    "replaced an exact partial draft instead of discovering it by authenticated release list",
     "filled a missing asset in an existing public release",
     "overwrote a mismatched public asset", "accepted an unexpected release asset",
     "failed anonymous digest readback", "release tag at the wrong commit",

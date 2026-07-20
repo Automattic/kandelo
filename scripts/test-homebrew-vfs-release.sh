@@ -443,9 +443,16 @@ cp "$fake_state/public-state.json" "$fake_state/state.json"
 jq '.draft = true | del(.assets["kandelo-homebrew-browser-evidence.json"])' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
+: >"$fake_state/gh.log"
 run_publisher >/dev/null
 jq -e '.draft == false and (.assets | length) == 5' "$fake_state/state.json" >/dev/null ||
   fail "publisher did not recover an exact partial draft"
+if ! jq -s -e '
+  any(.[]; .[0:3] == ["api", "--paginate", "--slurp"]) and
+  all(.[]; .[0:3] != ["api", "--method", "POST"])
+' "$fake_state/gh.log" >/dev/null; then
+  fail "publisher replaced an exact partial draft instead of discovering it by authenticated release list"
+fi
 
 # Existing public bytes are immutable and never overwritten.
 asset_file="$(jq -r '.assets["kandelo-homebrew.vfs.zst"].file' "$fake_state/state.json")"
