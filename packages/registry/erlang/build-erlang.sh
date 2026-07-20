@@ -3,9 +3,8 @@ set -euo pipefail
 
 # Build Erlang/OTP BEAM VM for wasm32-posix-kernel.
 #
-# Two-step cross-compilation:
-#   1. Host bootstrap: builds from source to generate bootstrap erlc
-#   2. Cross build: uses wasm32posix SDK toolchain
+# Cross-compilation uses the declared same-release host Erlang/OTP for native
+# generators and the wasm32posix SDK toolchain for target artifacts.
 #
 # Requires: host Erlang/OTP 28 in PATH (provided by scripts/dev-shell.sh).
 #
@@ -34,7 +33,7 @@ OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR}"
 ARTIFACT_DIR="$WORK_DIR/package-artifacts"
 SRC_DIR="$WORK_DIR/erlang-src"
 SOURCE_MARKER="$SRC_DIR/.kandelo-erlang-source"
-HOST_BUILD_DIR="$WORK_DIR/erlang-host-build"
+HOST_BOOTSTRAP_ROOT="$WORK_DIR/erlang-host-path"
 INSTALL_DIR="$WORK_DIR/erlang-install"
 DOWNLOAD_DIR="$WORK_DIR/downloads"
 SOURCE_ARCHIVE="$DOWNLOAD_DIR/otp-${OTP_VERSION}.tar.gz"
@@ -72,25 +71,27 @@ if ! command -v wasm32posix-cc &>/dev/null; then
     exit 1
 fi
 
-if ! command -v erl &>/dev/null; then
-    echo "ERROR: host Erlang not found. Run through scripts/dev-shell.sh." >&2
+if ! command -v erl &>/dev/null || ! command -v erlc &>/dev/null; then
+    echo "ERROR: host Erlang erl/erlc not found. Run through scripts/dev-shell.sh." >&2
     exit 1
 fi
 
 # Verify host Erlang is OTP 28
-HOST_OTP_REL=$(erl -eval 'io:format("~s", [erlang:system_info(otp_release)]), halt().' -noshell)
+HOST_OTP_REL=$(erl -boot start_clean \
+    -eval 'io:format("~s", [erlang:system_info(otp_release)]), halt().' \
+    -noshell -noinput)
 if [ "$HOST_OTP_REL" != "28" ]; then
     echo "ERROR: Host Erlang is OTP $HOST_OTP_REL, need OTP 28" >&2
     exit 1
 fi
 
-echo "==> Host Erlang: OTP $HOST_OTP_REL ($(erl -eval 'io:format("~s", [erlang:system_info(version)]), halt().' -noshell))"
+echo "==> Host Erlang: OTP $HOST_OTP_REL ($(erl -boot start_clean -eval 'io:format("~s", [erlang:system_info(version)]), halt().' -noshell -noinput))"
 
 # --- Download and verify the exact declared OTP source ---
 EXPECTED_SOURCE_MARKER="${OTP_VERSION} ${SOURCE_URL} ${SOURCE_SHA256}"
 if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$EXPECTED_SOURCE_MARKER" ]; then
     echo "==> Existing OTP source does not match the declared identity; replacing it..."
-    rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$INSTALL_DIR"
+    rm -rf "$SRC_DIR" "$HOST_BOOTSTRAP_ROOT" "$INSTALL_DIR"
 fi
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Erlang/OTP ${OTP_VERSION}..."
@@ -118,30 +119,13 @@ export ERL_TOP="$SRC_DIR"
 # target-only build helpers such as yielding_c_fun on the publisher host.
 BUILD_TRIPLE="$("$SRC_DIR/make/autoconf/config.guess")"
 
-# --- Phase 1: Host bootstrap build ---
-# Build the native generators from the same verified source, then copy the
-# complete bootstrap outside the source tree. OTP's target clean/configure
-# transition removes the in-tree bootstrap on Linux; keeping only a symlink to
-# that tree therefore leaves the cross build without a usable erl/erlc.
-if [ ! -f "$HOST_BUILD_DIR/bootstrap/bin/erlc" ]; then
-    echo "==> Phase 1: Building host bootstrap..."
-    mkdir -p "$HOST_BUILD_DIR"
-    cd "$SRC_DIR"
-
-    ./configure --enable-bootstrap-only 2>&1 | tail -10
-    make -j"$NPROC" 2>&1 | tail -10
-
-    # The bootstrap artifacts are in $ERL_TOP/bootstrap/
-    if [ ! -f "$SRC_DIR/bootstrap/bin/erlc" ]; then
-        echo "ERROR: Bootstrap build failed — erlc not found" >&2
-        exit 1
-    fi
-    mkdir -p "$HOST_BUILD_DIR"
-    rm -rf "$HOST_BUILD_DIR/bootstrap"
-    cp -a "$SRC_DIR/bootstrap" "$HOST_BUILD_DIR/bootstrap"
-    echo "==> Host bootstrap complete."
-    cd "$SCRIPT_DIR"
-fi
+# OTP's documented cross-build path supports a compatible same-release OTP in
+# PATH. Keep BOOTSTRAP_ROOT's prepended bin directory intentionally empty so
+# OTP finds the declared dev-shell erl/erlc. Copying an in-tree bootstrap does
+# not work: its launchers embed the original ROOTDIR and BINDIR, which the
+# target clean/configure transition removes.
+rm -rf "$HOST_BOOTSTRAP_ROOT"
+mkdir -p "$HOST_BOOTSTRAP_ROOT/bootstrap/bin"
 
 # --- Phase 2: Create config.site for cross-compilation ---
 # Keep the generated configure cache under the caller-owned work root. The
@@ -655,20 +639,19 @@ fi
 
 echo "==> Starting build..."
 
-# OTP's cross-check and target generators prepend BOOTSTRAP_ROOT/bootstrap/bin
-# to PATH. Point that contract at the caller-owned copy preserved above rather
-# than the cleaned target source tree.
-if [ ! -x "$HOST_BUILD_DIR/bootstrap/bin/erl" ] || [ ! -x "$HOST_BUILD_DIR/bootstrap/bin/erlc" ]; then
-    echo "ERROR: preserved native OTP bootstrap is incomplete: $HOST_BUILD_DIR/bootstrap" >&2
+# OTP prepends BOOTSTRAP_ROOT/bootstrap/bin to PATH. It must remain empty so a
+# non-relocatable in-tree launcher cannot shadow the verified host OTP.
+if find "$HOST_BOOTSTRAP_ROOT/bootstrap/bin" -mindepth 1 -print -quit | grep -q .; then
+    echo "ERROR: host OTP bootstrap prefix must remain empty: $HOST_BOOTSTRAP_ROOT" >&2
     exit 1
 fi
-make -j"$NPROC" BOOTSTRAP_ROOT="$HOST_BUILD_DIR" \
+make -j"$NPROC" BOOTSTRAP_ROOT="$HOST_BOOTSTRAP_ROOT" \
     2>&1 | tee "$WORK_DIR/build.log" | tail -50
 
 echo "==> Build complete. Creating release..."
 
-# Create release through the same preserved native-generator contract.
-make release RELEASE_ROOT="$INSTALL_DIR" BOOTSTRAP_ROOT="$HOST_BUILD_DIR" \
+# Create the release through the same verified host-generator contract.
+make release RELEASE_ROOT="$INSTALL_DIR" BOOTSTRAP_ROOT="$HOST_BOOTSTRAP_ROOT" \
     2>&1 | tail -20
 
 # Find the BEAM emulator
