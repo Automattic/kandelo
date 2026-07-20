@@ -2378,6 +2378,27 @@ def check_publisher(workflow)
     check(dependency_provenance.include?(fragment),
           "publisher dependency provenance allows external target receipts: #{fragment}")
   end
+  [
+    'if "bottle_rebuild" not in dependency:',
+    'rebuild = dependency["bottle_rebuild"]',
+    'or isinstance(rebuild, bool)',
+    '"a non-negative integer when present"',
+    'receipt_bottle_rebuild = target_receipt_bottle_rebuild(dependency, full_name)',
+    'if rebuild != receipt_bottle_rebuild:',
+  ].each do |fragment|
+    check(dependency_provenance.include?(fragment),
+          "publisher dependency provenance weakens receipt rebuild validation: #{fragment}")
+  end
+  [
+    '":any": "any"',
+    '":any_skip_relocation": "any_skip_relocation"',
+    'cellar = BREW_INFO_SYMBOLIC_CELLARS.get(cellar, cellar)',
+    'if cellar not in BOTTLE_CELLARS:',
+    'bottle_cellar = normalized_brew_info_cellar(tag.get("cellar"), full_name)',
+  ].each do |fragment|
+    check(dependency_provenance.include?(fragment),
+          "publisher dependency provenance weakens brew info cellar normalization: #{fragment}")
+  end
   check(upload_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") } &&
         upload_steps.count { |step| step["uses"] == UPLOAD_ACTION } == 1,
         "credentialed uploader publishes diagnostics")

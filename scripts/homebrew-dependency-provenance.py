@@ -28,6 +28,11 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 TAP_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SOURCE_BUILD = re.compile(r"\b(?:building|built)\b.*\bfrom source\b", re.IGNORECASE)
+BOTTLE_CELLARS = ("any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar")
+BREW_INFO_SYMBOLIC_CELLARS = {
+    ":any": "any",
+    ":any_skip_relocation": "any_skip_relocation",
+}
 
 
 class ProvenanceError(RuntimeError):
@@ -332,6 +337,26 @@ def formula_record(info: Any, expected_full_name: str, expected_name: str) -> di
     return record
 
 
+def target_receipt_bottle_rebuild(dependency: dict[str, Any], full_name: str) -> int:
+    if "bottle_rebuild" not in dependency:
+        return 0
+    rebuild = dependency["bottle_rebuild"]
+    if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
+        fail(
+            f"runtime dependency {full_name} bottle_rebuild must be "
+            "a non-negative integer when present"
+        )
+    return rebuild
+
+
+def normalized_brew_info_cellar(value: Any, full_name: str) -> str:
+    cellar = require_string(value, f"dependency {full_name} bottle cellar")
+    cellar = BREW_INFO_SYMBOLIC_CELLARS.get(cellar, cellar)
+    if cellar not in BOTTLE_CELLARS:
+        fail(f"dependency {full_name} has unsupported bottle cellar {cellar}")
+    return cellar
+
+
 def capture(args: argparse.Namespace) -> None:
     repository = args.tap_repository
     require_string(repository, "tap repository", TAP_REPOSITORY)
@@ -389,16 +414,7 @@ def capture(args: argparse.Namespace) -> None:
             dependency.get("declared_directly"),
             f"runtime dependency {full_name} declared_directly",
         )
-        receipt_bottle_rebuild = dependency.get("bottle_rebuild")
-        if (
-            not isinstance(receipt_bottle_rebuild, int)
-            or isinstance(receipt_bottle_rebuild, bool)
-            or receipt_bottle_rebuild < 0
-        ):
-            fail(
-                f"runtime dependency {full_name} bottle_rebuild must be "
-                "a non-negative integer"
-            )
+        receipt_bottle_rebuild = target_receipt_bottle_rebuild(dependency, full_name)
         version = dependency.get("pkg_version") or dependency.get("version")
         version = require_string(version, f"runtime dependency {full_name} version", PKG_VERSION)
 
@@ -451,9 +467,7 @@ def capture(args: argparse.Namespace) -> None:
         expected_url = f"{args.bottle_root_url}/{name}/blobs/sha256:{bottle_sha}"
         if bottle_url != expected_url:
             fail(f"dependency {full_name} bottle URL does not match {expected_url}")
-        bottle_cellar = require_string(tag.get("cellar"), f"dependency {full_name} bottle cellar")
-        if bottle_cellar not in ("any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"):
-            fail(f"dependency {full_name} has unsupported bottle cellar {bottle_cellar}")
+        bottle_cellar = normalized_brew_info_cellar(tag.get("cellar"), full_name)
         rebuild = stable.get("rebuild")
         if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
             fail(f"dependency {full_name} bottle rebuild must be a non-negative integer")
