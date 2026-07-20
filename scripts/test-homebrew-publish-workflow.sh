@@ -3153,7 +3153,6 @@ EOF
     version: "1.3.1",
     pkg_version: "1.3.1",
     revision: 0,
-    bottle_rebuild: 0,
     declared_directly: true
   }]}' >"$target_receipt"
   printf '%s\n' 'kandelo-dev/tap-core/zlib' >"$expected_dependencies"
@@ -3165,7 +3164,7 @@ EOF
       bottle: {stable: {
         rebuild: 0,
         files: {wasm32_kandelo: {
-          cellar: "any_skip_relocation",
+          cellar: ":any_skip_relocation",
           url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:" + $bottle_sha),
           sha256: $bottle_sha
         }}
@@ -3228,6 +3227,8 @@ EOF
     (.dependencies | length) == 1 and
     .dependencies[0].name == "zlib" and
     .dependencies[0].bottle.sha256 == $bottle_sha and
+    .dependencies[0].bottle.cellar == "any_skip_relocation" and
+    .dependencies[0].bottle.rebuild == 0 and
     .dependencies[0].receipt.built_as_bottle == true and
     .dependencies[0].receipt.poured_from_bottle == true and
     .dependencies[0].receipt.installed_on_request == false and
@@ -3235,6 +3236,37 @@ EOF
     (.dependencies[0].install_log.pour | length) == 1 and
     .dependencies[0].install_log.source_build_absent == true
   ' "$output" >/dev/null || fail "dependency provenance omitted exact bottle-pour evidence"
+
+  jq '.formulae[0].bottle.stable.files.wasm32_kandelo.cellar = ":unsupported"' \
+    "$info" >"$bad"
+  if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$bad" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --target-receipt "$target_receipt" --expected-dependencies "$expected_dependencies" \
+      --install-log "$install_log" --out "$root/unsupported-symbolic-cellar.json" \
+      >/dev/null 2>&1; then
+    fail "dependency provenance accepted an unknown symbolic brew info cellar"
+  fi
+
+  local malformed_rebuild
+  for malformed_rebuild in 'null' '"0"' 'true' '-1'; do
+    jq --argjson value "$malformed_rebuild" \
+      '.runtime_dependencies[0].bottle_rebuild = $value' "$target_receipt" >"$bad"
+    if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+      python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+        --brew-bin "$fake_brew" --tap-root "$tap" \
+        --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+        --formula curl --arch wasm32 \
+        --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+        --target-receipt "$bad" --expected-dependencies "$expected_dependencies" \
+        --install-log "$install_log" --out "$root/malformed-receipt-rebuild.json" \
+        >/dev/null 2>&1; then
+      fail "dependency provenance accepted malformed target receipt bottle_rebuild $malformed_rebuild"
+    fi
+  done
 
   jq '.runtime_dependencies[0].bottle_rebuild = 1' "$target_receipt" >"$bad"
   if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
@@ -3298,12 +3330,24 @@ EOF
     .formulae[0].ruby_source_checksum.sha256 = $formula_sha |
     .formulae[0].bottle.stable.rebuild = 1
   ' "$root/zlib-info-rebuild0.json" >"$info"
-  jq '.runtime_dependencies[0].bottle_rebuild = 1' \
-    "$root/target-receipt-rebuild0.json" >"$target_receipt"
   cat >"$install_log" <<EOF
 ==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:$bottle_sha
 ==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.1.tar.gz
 EOF
+  if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --target-receipt "$root/target-receipt-rebuild0.json" \
+      --expected-dependencies "$expected_dependencies" \
+      --install-log "$install_log" --out "$root/omitted-nonzero-rebuild.json" \
+      >/dev/null 2>&1; then
+    fail "dependency provenance treated an omitted nonzero bottle rebuild as matching"
+  fi
+  jq '.runtime_dependencies[0].bottle_rebuild = 1' \
+    "$root/target-receipt-rebuild0.json" >"$target_receipt"
   FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
     python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
       --brew-bin "$fake_brew" --tap-root "$tap" \

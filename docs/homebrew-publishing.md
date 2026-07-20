@@ -410,6 +410,19 @@ receipt facts. Raw logs do not cross the runner boundary. Fresh verifier and
 finalizer runners rehash each dependency Formula from the exact planned tap
 before accepting the bounded provenance.
 
+Homebrew can omit `bottle_rebuild` from a runtime-dependency receipt when the
+dependency has no explicit bottle rebuild. The publisher treats only an absent
+field as rebuild zero. A present value must be a non-negative integer, and the
+normalized receipt value must still equal the rebuild derived from the exact
+dependency Formula. An omitted field therefore cannot authorize a nonzero
+rebuild, and `null`, strings, booleans, and negative values fail closed.
+
+Homebrew's `brew info --json=v2` can serialize the Ruby cellar symbols as
+`:any` or `:any_skip_relocation`. The provenance collector normalizes only
+those two known spellings to the canonical `any` and `any_skip_relocation`
+values used by the static Formula resolver. Unknown symbolic spellings and all
+other unsupported cellar values fail closed.
+
 While holding the tap state lock, the finalizer repeats the complete static
 dependency-closure derivation against refreshed `main`. Every recorded
 dependency Formula digest and selected-architecture bottle tuple must still
