@@ -308,6 +308,23 @@ impl TerminalState {
         !self.cooked_buffer.is_empty()
     }
 
+    /// Take every byte already accepted by the canonical line discipline.
+    ///
+    /// Completed lines precede the current partial line, preserving input
+    /// order. Canonical editing has already been applied to `line_buffer`, so
+    /// the resulting bytes are the terminal's authoritative pending input.
+    pub fn take_pending_canonical_input(&mut self) -> Vec<u8> {
+        let mut pending = core::mem::take(&mut self.cooked_buffer);
+        pending.append(&mut self.line_buffer);
+        pending
+    }
+
+    /// Discard all input received by the line discipline but not yet read.
+    pub fn flush_input(&mut self) {
+        self.line_buffer.clear();
+        self.cooked_buffer.clear();
+    }
+
     /// Get VMIN value (minimum bytes for raw read).
     pub fn vmin(&self) -> u8 {
         self.c_cc[VMIN]

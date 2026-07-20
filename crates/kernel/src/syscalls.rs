@@ -12240,7 +12240,7 @@ pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), 
 
 /// tcsetattr -- set terminal attributes (custom syscall 71).
 /// Uses kernel's 48-byte format for backward compat: 4×u32 flags + c_cc[32].
-pub fn sys_tcsetattr(proc: &mut Process, fd: i32, _action: u32, buf: &[u8]) -> Result<(), Errno> {
+pub fn sys_tcsetattr(proc: &mut Process, fd: i32, action: u32, buf: &[u8]) -> Result<(), Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -12253,21 +12253,27 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, _action: u32, buf: &[u8]) -> R
     if buf.len() < 48 {
         return Err(Errno::EINVAL);
     }
+    let next_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+    let discard_input = action == crate::terminal::TCSAFLUSH;
     match ofd.file_type {
         FileType::PtyMaster | FileType::PtySlave => {
             let pty_idx = ofd.host_handle as usize;
             let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            pty.prepare_termios_change(next_lflag, discard_input);
             pty.terminal.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
             pty.terminal.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
             pty.terminal.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-            pty.terminal.c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+            pty.terminal.c_lflag = next_lflag;
             pty.terminal.c_cc.copy_from_slice(&buf[16..48]);
         }
         _ => {
+            if discard_input {
+                proc.terminal.flush_input();
+            }
             proc.terminal.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
             proc.terminal.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
             proc.terminal.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-            proc.terminal.c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+            proc.terminal.c_lflag = next_lflag;
             proc.terminal.c_cc.copy_from_slice(&buf[16..48]);
         }
     }
@@ -12559,30 +12565,19 @@ pub fn sys_ioctl(
             if buf.len() < TERMIOS_SIZE {
                 return Err(Errno::EINVAL);
             }
-            // TCSETSF: also flush input queue
-            if request == TCSETSF {
-                match file_type {
-                    FileType::PtyMaster | FileType::PtySlave => {
-                        let pty_idx = host_handle as usize;
-                        if let Some(pty) = crate::pty::get_pty(pty_idx) {
-                            pty.input_buf.clear();
-                            pty.terminal.line_buffer.clear();
-                            pty.terminal.cooked_buffer.clear();
-                        }
-                    }
-                    _ => {
-                        proc.terminal.line_buffer.clear();
-                        proc.terminal.cooked_buffer.clear();
-                    }
-                }
-            }
+            let next_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+            let discard_input = request == TCSETSF;
             match file_type {
                 FileType::PtyMaster | FileType::PtySlave => {
                     let pty_idx = host_handle as usize;
                     let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+                    pty.prepare_termios_change(next_lflag, discard_input);
                     pty.terminal.read_termios(buf);
                 }
                 _ => {
+                    if discard_input {
+                        proc.terminal.flush_input();
+                    }
                     proc.terminal.read_termios(buf);
                 }
             }
@@ -12700,9 +12695,7 @@ pub fn sys_ioctl(
                     if let Some(pty) = crate::pty::get_pty(pty_idx) {
                         if queue == 0 || queue == 2 {
                             // TCIFLUSH or TCIOFLUSH
-                            pty.input_buf.clear();
-                            pty.terminal.line_buffer.clear();
-                            pty.terminal.cooked_buffer.clear();
+                            pty.flush_input();
                         }
                         if queue == 1 || queue == 2 {
                             // TCOFLUSH or TCIOFLUSH
@@ -12712,8 +12705,7 @@ pub fn sys_ioctl(
                 }
                 _ => {
                     if queue == 0 || queue == 2 {
-                        proc.terminal.line_buffer.clear();
-                        proc.terminal.cooked_buffer.clear();
+                        proc.terminal.flush_input();
                     }
                     // Output flush is a no-op for non-PTY terminals
                 }
@@ -22572,6 +22564,143 @@ mod tests {
         sys_tcgetattr(&mut proc, 0, &mut buf2).unwrap();
         let c_lflag2 = u32::from_le_bytes([buf2[12], buf2[13], buf2[14], buf2[15]]);
         assert_eq!(c_lflag2 & 0o0010, 0); // ECHO cleared
+    }
+
+    #[test]
+    fn test_tcsetattr_tcsaflush_discards_pending_char_device_input() {
+        let mut proc = terminal_process(1);
+        for &byte in b"pending" {
+            proc.terminal.process_input_byte(byte);
+        }
+        assert_eq!(proc.terminal.line_buffer, b"pending");
+
+        let mut attrs = [0u8; 48];
+        sys_tcgetattr(&mut proc, 0, &mut attrs).unwrap();
+        sys_tcsetattr(&mut proc, 0, crate::terminal::TCSAFLUSH, &attrs).unwrap();
+
+        assert!(proc.terminal.line_buffer.is_empty());
+        assert!(proc.terminal.cooked_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_tcsetattr_tcsadrain_preserves_pending_pty_input() {
+        let mut proc = Process::new(1);
+        let pty_idx = crate::pty::alloc_pty().unwrap();
+        let pty = crate::pty::get_pty(pty_idx).unwrap();
+        pty.master_refs = 1;
+        pty.slave_refs = 1;
+        pty.terminal.c_lflag &= !crate::terminal::ECHO;
+        for &byte in b"first\nq" {
+            pty.process_master_input(byte);
+        }
+        let ofd_idx = proc.ofd_table.create(
+            FileType::PtySlave,
+            O_RDWR,
+            pty_idx as i64,
+            format!("/dev/pts/{pty_idx}").into_bytes(),
+        );
+        let fd = proc
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut attrs = [0u8; 48];
+        sys_tcgetattr(&mut proc, fd, &mut attrs).unwrap();
+        let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+        attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
+        sys_tcsetattr(&mut proc, fd, crate::terminal::TCSADRAIN, &attrs).unwrap();
+
+        let pty = crate::pty::get_pty(pty_idx).unwrap();
+        let mut input = [0u8; 16];
+        let n = pty.slave_read(&mut input);
+        assert_eq!(&input[..n], b"first\nq");
+        crate::pty::free_pty(pty_idx);
+    }
+
+    #[test]
+    fn test_tcsetattr_tcsaflush_discards_pending_pty_input() {
+        let mut proc = Process::new(1);
+        let pty_idx = crate::pty::alloc_pty().unwrap();
+        let pty = crate::pty::get_pty(pty_idx).unwrap();
+        pty.master_refs = 1;
+        pty.slave_refs = 1;
+        pty.terminal.c_lflag &= !crate::terminal::ECHO;
+        for &byte in b"first\nq" {
+            pty.process_master_input(byte);
+        }
+        let ofd_idx = proc.ofd_table.create(
+            FileType::PtySlave,
+            O_RDWR,
+            pty_idx as i64,
+            format!("/dev/pts/{pty_idx}").into_bytes(),
+        );
+        let fd = proc
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut attrs = [0u8; 48];
+        sys_tcgetattr(&mut proc, fd, &mut attrs).unwrap();
+        let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+        attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
+        sys_tcsetattr(&mut proc, fd, crate::terminal::TCSAFLUSH, &attrs).unwrap();
+
+        let pty = crate::pty::get_pty(pty_idx).unwrap();
+        assert!(!pty.slave_has_data());
+        assert!(pty.input_buf.is_empty());
+        assert!(pty.terminal.cooked_buffer.is_empty());
+        assert!(pty.terminal.line_buffer.is_empty());
+        crate::pty::free_pty(pty_idx);
+    }
+
+    #[test]
+    fn test_ioctl_tcsetsw_preserves_pending_pty_input() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let pty_idx = crate::pty::alloc_pty().unwrap();
+        let pty = crate::pty::get_pty(pty_idx).unwrap();
+        pty.master_refs = 1;
+        pty.slave_refs = 1;
+        pty.terminal.c_lflag &= !crate::terminal::ECHO;
+        for &byte in b"first\nq" {
+            pty.process_master_input(byte);
+        }
+        let ofd_idx = proc.ofd_table.create(
+            FileType::PtySlave,
+            O_RDWR,
+            pty_idx as i64,
+            format!("/dev/pts/{pty_idx}").into_bytes(),
+        );
+        let fd = proc
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut attrs = [0u8; crate::terminal::TERMIOS_SIZE];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            crate::terminal::TCGETS,
+            &mut attrs,
+        )
+        .unwrap();
+        let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+        attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            crate::terminal::TCSETSW,
+            &mut attrs,
+        )
+        .unwrap();
+
+        let pty = crate::pty::get_pty(pty_idx).unwrap();
+        let mut input = [0u8; 16];
+        let n = pty.slave_read(&mut input);
+        assert_eq!(&input[..n], b"first\nq");
+        crate::pty::free_pty(pty_idx);
     }
 
     #[test]

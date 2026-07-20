@@ -89,6 +89,39 @@ impl PtyPair {
         None
     }
 
+    /// Prepare unread input for a terminal attribute change.
+    ///
+    /// POSIX attribute changes preserve input except for TCSAFLUSH. When
+    /// ICANON is disabled, bytes already held by the canonical line
+    /// discipline must become immediately readable from the raw queue.
+    pub fn prepare_termios_change(&mut self, next_lflag: u32, discard_input: bool) {
+        if discard_input {
+            self.flush_input();
+            return;
+        }
+
+        let was_canonical = self.terminal.is_canonical();
+        let will_be_canonical = next_lflag & crate::terminal::ICANON != 0;
+        if was_canonical && !will_be_canonical {
+            self.input_buf
+                .extend(self.terminal.take_pending_canonical_input());
+        } else if !was_canonical && will_be_canonical {
+            // Match Linux's EOF-push behavior: bytes already queued in
+            // noncanonical mode become immediately readable in canonical
+            // mode. They were received without canonical editing, so keep
+            // them verbatim and start a fresh line for subsequent input.
+            while let Some(byte) = self.input_buf.pop_front() {
+                self.terminal.cooked_buffer.push(byte);
+            }
+        }
+    }
+
+    /// Discard all master-to-slave input that has not yet been read.
+    pub fn flush_input(&mut self) {
+        self.input_buf.clear();
+        self.terminal.flush_input();
+    }
+
     /// Read from the slave side. In canonical mode, reads from cooked buffer.
     /// In raw mode, reads from input_buf directly.
     pub fn slave_read(&mut self, buf: &mut [u8]) -> usize {
@@ -283,6 +316,67 @@ mod tests {
         assert_eq!(&buf[..n], b"hi\r\n"); // echo with ONLCR: \n → \r\n
 
         reset_table();
+    }
+
+    #[test]
+    fn test_pty_canonical_to_raw_preserves_pending_input_order() {
+        let mut pty = PtyPair::new();
+        pty.terminal.c_lflag &= !crate::terminal::ECHO;
+
+        for &byte in b"first\nq" {
+            pty.process_master_input(byte);
+        }
+        assert_eq!(pty.terminal.cooked_buffer, b"first\n");
+        assert_eq!(pty.terminal.line_buffer, b"q");
+
+        let next_lflag = pty.terminal.c_lflag & !crate::terminal::ICANON;
+        pty.prepare_termios_change(next_lflag, false);
+        pty.terminal.c_lflag = next_lflag;
+
+        let mut buf = [0u8; 16];
+        let n = pty.slave_read(&mut buf);
+        assert_eq!(&buf[..n], b"first\nq");
+        assert!(pty.terminal.cooked_buffer.is_empty());
+        assert!(pty.terminal.line_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_pty_tcsaflush_discards_pending_input() {
+        let mut pty = PtyPair::new();
+        pty.terminal.c_lflag &= !crate::terminal::ECHO;
+
+        for &byte in b"first\nq" {
+            pty.process_master_input(byte);
+        }
+
+        let next_lflag = pty.terminal.c_lflag & !crate::terminal::ICANON;
+        pty.prepare_termios_change(next_lflag, true);
+        pty.terminal.c_lflag = next_lflag;
+
+        assert!(!pty.slave_has_data());
+        assert!(pty.input_buf.is_empty());
+        assert!(pty.terminal.cooked_buffer.is_empty());
+        assert!(pty.terminal.line_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_pty_raw_to_canonical_makes_unread_input_immediately_readable() {
+        let mut pty = PtyPair::new();
+        pty.terminal.c_lflag &= !(crate::terminal::ICANON | crate::terminal::ECHO);
+        pty.process_master_input(b'q');
+        pty.process_master_input(0);
+
+        let next_lflag = pty.terminal.c_lflag | crate::terminal::ICANON;
+        pty.prepare_termios_change(next_lflag, false);
+        pty.terminal.c_lflag = next_lflag;
+        assert!(pty.slave_has_data());
+        let mut buf = [0u8; 8];
+        let n = pty.slave_read(&mut buf);
+        assert_eq!(&buf[..n], b"q\0");
+
+        pty.process_master_input(b'\n');
+        let n = pty.slave_read(&mut buf);
+        assert_eq!(&buf[..n], b"\n");
     }
 
     #[test]
