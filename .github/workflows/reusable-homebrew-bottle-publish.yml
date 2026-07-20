@@ -1854,6 +1854,20 @@ jobs:
         if: ${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}
         shell: bash
         run: |
+          set -euo pipefail
+          sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/sysroot"
+          sysroot_destination="$GITHUB_WORKSPACE/kandelo/sysroot"
+          [ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ] && \
+            [ -f "$sysroot_source/lib/libc.a" ] || {
+            echo "::error::exact browser sysroot handoff is missing or invalid"; exit 1;
+          }
+          [ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ] || {
+            echo "::error::browser verifier sysroot destination already exists"; exit 1;
+          }
+          cp -a -- "$sysroot_source" "$sysroot_destination"
+          [ -f "$sysroot_destination/lib/libc.a" ] || {
+            echo "::error::browser verifier sysroot handoff is incomplete"; exit 1;
+          }
           cd kandelo
           bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
 
