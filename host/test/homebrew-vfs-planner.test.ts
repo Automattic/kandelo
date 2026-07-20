@@ -15,6 +15,8 @@ const SHA_D = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 const TAP_COMMIT = "1111111111111111111111111111111111111111";
 const EXTERNAL_TAP_COMMIT = "3333333333333333333333333333333333333333";
 const KANDELO_COMMIT = "2222222222222222222222222222222222222222";
+const BOTTLE_TAP_COMMIT = "4444444444444444444444444444444444444444";
+const BOTTLE_KANDELO_COMMIT = "5555555555555555555555555555555555555555";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -613,6 +615,30 @@ describe("federated Homebrew VFS planner", () => {
     ]);
   });
 
+  it("keeps package build provenance distinct from heterogeneous metadata provenance", async () => {
+    const documents = successfulMetadata();
+    const dashBuiltFrom = documents[1].packages[0].bottles[0].built_from as Record<string, unknown>;
+    dashBuiltFrom.tap_commit = BOTTLE_TAP_COMMIT;
+    dashBuiltFrom.kandelo_commit = BOTTLE_KANDELO_COMMIT;
+
+    const plan = await planFederatedHomebrewVfs(documents, {
+      rootTapName: EXTERNAL_TAP.name,
+      packages: ["m4"],
+      arch: "wasm32",
+      runtime: "node",
+      allowFallback: false,
+      loadLinkManifest: federatedManifestMap(successfulManifests()),
+    });
+
+    const dash = plan.packages.find((pkg) => pkg.fullName === `${CORE_TAP.name}/dash`);
+    expect(dash).toMatchObject({
+      tapCommit: BOTTLE_TAP_COMMIT,
+      kandeloCommit: BOTTLE_KANDELO_COMMIT,
+    });
+    expect(plan.taps.find((tap) => tap.tapName === CORE_TAP.name)?.tapCommit)
+      .toBe(CORE_TAP.commit);
+  });
+
   it("rejects an external dependency absent from the locked metadata set", async () => {
     await expect(planFederatedHomebrewVfs([successfulMetadata()[0]], {
       rootTapName: EXTERNAL_TAP.name,
@@ -624,7 +650,7 @@ describe("federated Homebrew VFS planner", () => {
     );
   });
 
-  it("rejects repository-root and immutable build-source tampering", async () => {
+  it("rejects repository-root and malformed build-source identities", async () => {
     const badRoot = clone(successfulMetadata());
     badRoot[1].packages[0].bottles[0].url =
       federatedBottleUrl(EXTERNAL_TAP, "dash");
@@ -636,13 +662,13 @@ describe("federated Homebrew VFS planner", () => {
     })).rejects.toThrow("does not match repository-rooted GHCR URL");
 
     const badCommit = clone(successfulMetadata());
-    badCommit[1].packages[0].bottles[0].built_from.tap_commit = EXTERNAL_TAP.commit;
+    badCommit[1].packages[0].bottles[0].built_from.tap_commit = "not-a-commit";
     await expect(planFederatedHomebrewVfs(badCommit, {
       rootTapName: EXTERNAL_TAP.name,
       packages: ["m4"],
       arch: "wasm32",
       loadLinkManifest: federatedManifestMap(successfulManifests()),
-    })).rejects.toThrow("built_from tap commit does not match metadata");
+    })).rejects.toThrow("built_from tap commit must be a lowercase 40-char git sha");
   });
 
   it("rejects cross-tap dependency cycles", async () => {

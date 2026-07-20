@@ -215,6 +215,13 @@ interface PlanPackageOptions {
   loadLinkManifest: (tapRelativePath: string) => unknown | Promise<unknown>;
 }
 
+interface HomebrewBottleBuildSource {
+  tapRepository: string;
+  tapCommit: string;
+  kandeloRepository: string;
+  kandeloCommit: string;
+}
+
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -853,9 +860,14 @@ async function planPackage(
       `package ${quote(pkg.name)} cache_key_sha ${quote(selected.cacheKeySha)} does not match expected ${quote(expectedCacheKey)}`,
     );
   }
-  if (options.requireRepositoryRoot) {
-    validateFederatedBottleSource(metadata, pkg, bottle, selected);
-  }
+  const bottleBuildSource = options.requireRepositoryRoot
+    ? validateFederatedBottleSource(metadata, pkg, bottle, selected)
+    : undefined;
+  // A failed current attempt carries its own built_from record while the
+  // selected fallback bytes belong to an older publication. Until sidecars
+  // carry fallback-specific build provenance, retain the metadata-document
+  // identity for fallback plans rather than misattributing the older bottle.
+  const selectedBuildSource = selected.sourceStatus === "success" ? bottleBuildSource : undefined;
 
   validateTapRelativePath(selected.linkManifestPath, `package ${quote(pkg.name)} link_manifest`);
   const linkManifest = parseLinkManifest(
@@ -867,11 +879,11 @@ async function planPackage(
   return {
     name: pkg.name,
     fullName: pkg.full_name,
-    tapRepository: metadata.tap_repository,
+    tapRepository: selectedBuildSource?.tapRepository ?? metadata.tap_repository,
     tapName: metadata.tap_name,
-    tapCommit: metadata.tap_commit,
-    kandeloRepository: metadata.kandelo_repository,
-    kandeloCommit: metadata.kandelo_commit,
+    tapCommit: selectedBuildSource?.tapCommit ?? metadata.tap_commit,
+    kandeloRepository: selectedBuildSource?.kandeloRepository ?? metadata.kandelo_repository,
+    kandeloCommit: selectedBuildSource?.kandeloCommit ?? metadata.kandelo_commit,
     version: pkg.version,
     formulaRevision: pkg.formula_revision,
     bottleRebuild: pkg.bottle_rebuild,
@@ -901,7 +913,7 @@ function validateFederatedBottleSource(
   pkg: HomebrewMetadataPackage,
   bottle: HomebrewMetadataBottle,
   selected: SelectedBottle,
-): void {
+): HomebrewBottleBuildSource {
   const repository = metadata.tap_repository.toLowerCase();
   const expectedUrl =
     `https://ghcr.io/v2/${repository}/${pkg.name}/blobs/sha256:${selected.sha256}`;
@@ -929,28 +941,26 @@ function validateFederatedBottleSource(
   if (tapRepository.toLowerCase() !== repository) {
     fail(`package ${quote(pkg.full_name)} bottle built_from tap repository does not match metadata`);
   }
-  if (
-    requiredString(
-      builtFrom,
-      "tap_commit",
-      `package ${quote(pkg.full_name)} bottle built_from`,
-    ) !== metadata.tap_commit
-  ) {
-    fail(`package ${quote(pkg.full_name)} bottle built_from tap commit does not match metadata`);
+  const tapCommit = requiredString(
+    builtFrom,
+    "tap_commit",
+    `package ${quote(pkg.full_name)} bottle built_from`,
+  );
+  if (!GIT_SHA_RE.test(tapCommit)) {
+    fail(`package ${quote(pkg.full_name)} bottle built_from tap commit must be a lowercase 40-char git sha`);
   }
   if (kandeloRepository.toLowerCase() !== metadata.kandelo_repository.toLowerCase()) {
     fail(
       `package ${quote(pkg.full_name)} bottle built_from Kandelo repository does not match metadata`,
     );
   }
-  if (
-    requiredString(
-      builtFrom,
-      "kandelo_commit",
-      `package ${quote(pkg.full_name)} bottle built_from`,
-    ) !== metadata.kandelo_commit
-  ) {
-    fail(`package ${quote(pkg.full_name)} bottle built_from Kandelo commit does not match metadata`);
+  const kandeloCommit = requiredString(
+    builtFrom,
+    "kandelo_commit",
+    `package ${quote(pkg.full_name)} bottle built_from`,
+  );
+  if (!GIT_SHA_RE.test(kandeloCommit)) {
+    fail(`package ${quote(pkg.full_name)} bottle built_from Kandelo commit must be a lowercase 40-char git sha`);
   }
   validateSha256(
     requiredString(
@@ -960,6 +970,12 @@ function validateFederatedBottleSource(
     ),
     `package ${quote(pkg.full_name)} bottle built_from formula_sha256`,
   );
+  return {
+    tapRepository: metadata.tap_repository,
+    tapCommit,
+    kandeloRepository: metadata.kandelo_repository,
+    kandeloCommit,
+  };
 }
 
 function validateBottleIdentity(

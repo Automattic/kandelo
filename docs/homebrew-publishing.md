@@ -1163,9 +1163,10 @@ tap-identity drift, duplicate roots or metadata, cache-key drift, missing
 packages, dependency cycles, unsafe paths, and link-manifest bottle drift
 before any bottle bytes are extracted. The federated planner keys packages and
 edges by canonical `owner/tap/formula`, requires each package's bottle URL and
-`built_from` identity to match its metadata document, rejects duplicate Cellar
-short names across taps, and resolves the closure in deterministic
-dependency-first order.
+`built_from` repositories to match its metadata document, validates the exact
+package-specific build commits independently of the document-generation
+commits, rejects duplicate Cellar short names across taps, and resolves the
+closure in deterministic dependency-first order.
 Guest-relative link-manifest paths admit literal square brackets so standard
 POSIX utility names such as `bin/[` remain representable. They still reject
 absolute paths, empty and `.`/`..` segments, backslashes, and whitespace. Tap
