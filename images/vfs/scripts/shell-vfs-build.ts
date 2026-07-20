@@ -13,6 +13,7 @@
  * their base image and keep its lazy metadata intact.
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
@@ -491,6 +492,16 @@ function resolveLazyArchivePath(programRel: string, legacyPublicRel: string): st
   return null;
 }
 
+function lazyArchiveIntegrity(bytes: Uint8Array): {
+  compressedBytes: number;
+  sha256: string;
+} {
+  return {
+    compressedBytes: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
 function populateVimArchive(fs: MemoryFileSystem): void {
   const path = resolveLazyArchivePath("programs/vim.zip", "apps/browser-demos/public/vim.zip");
   if (!path) {
@@ -498,9 +509,15 @@ function populateVimArchive(fs: MemoryFileSystem): void {
       "vim.zip not found. Run: bash images/vfs/scripts/build-vim-zip.sh",
     );
   }
-  const zipBytes = readFileSync(path);
-  const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
-  fs.registerLazyArchiveFromEntries("vim.zip", entries, "/usr/");
+  const zipBytes = new Uint8Array(readFileSync(path));
+  const entries = parseZipCentralDirectory(zipBytes);
+  fs.registerLazyArchiveFromEntries(
+    "vim.zip",
+    entries,
+    "/usr/",
+    undefined,
+    lazyArchiveIntegrity(zipBytes),
+  );
 }
 
 function populateNetHackArchive(fs: MemoryFileSystem): void {
@@ -510,7 +527,13 @@ function populateNetHackArchive(fs: MemoryFileSystem): void {
       "nethack.zip not found. Run: bash images/vfs/scripts/build-nethack-zip.sh",
     );
   }
-  const zipBytes = readFileSync(path);
-  const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
-  fs.registerLazyArchiveFromEntries("nethack.zip", entries, "/usr/");
+  const zipBytes = new Uint8Array(readFileSync(path));
+  const entries = parseZipCentralDirectory(zipBytes);
+  fs.registerLazyArchiveFromEntries(
+    "nethack.zip",
+    entries,
+    "/usr/",
+    undefined,
+    lazyArchiveIntegrity(zipBytes),
+  );
 }

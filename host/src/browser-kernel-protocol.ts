@@ -213,7 +213,16 @@ export interface RegisterPtyOutputMessage {
 export interface RegisterLazyFilesMessage {
   type: "register_lazy_files";
   requestId?: number;
-  entries: Array<{ ino: number; path: string; url: string; size: number }>;
+  /** Exact decoded logical bytes, capped at the VFS's 1 GiB content limit. */
+  entries: Array<{
+    ino: number;
+    generation?: number;
+    dataSequence?: number;
+    path: string;
+    paths?: string[];
+    url: string;
+    size: number;
+  }>;
 }
 
 /**
@@ -250,13 +259,21 @@ export interface RegisterLazyArchivesMessage {
   entries: Array<{
     url: string;
     mountPrefix: string;
+    /** Exact decoded ZIP response bytes; present together with sha256. */
+    compressedBytes?: number;
+    /** Lowercase SHA-256 of the exact decoded ZIP response body. */
+    sha256?: string;
     materialized: boolean;
     entries: Array<{
       vfsPath: string;
       ino: number;
+      generation?: number;
+      dataSequence?: number;
       size: number;
       isSymlink: boolean;
       deleted: boolean;
+      materialized?: boolean;
+      archivePath?: string;
     }>;
   }>;
 }

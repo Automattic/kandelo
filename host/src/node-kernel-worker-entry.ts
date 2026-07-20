@@ -14,10 +14,21 @@
  *                  pty_output, resolve_exec
  */
 import { parentPort } from "node:worker_threads";
-import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  assertExpectedByteLength,
+  assertValidLazyContentSize,
+  readFetchBody,
+} from "./vfs/lazy-fetch";
 import {
   CAPTURED_STDIO,
   CentralizedKernelWorker,
@@ -469,7 +480,17 @@ async function resolveExecFromRootfs(path: string): Promise<ArrayBuffer | null> 
 
   const lazy = rootfsMemfs.getLazyEntry(path);
   if (lazy) {
-    return readLazyExecBytes(lazy.url);
+    await rootfsMemfs.materializeLazyFileFrom(lazy.path, (current) =>
+      readLazyArtifactBytes(current.url, current.path, current.size)
+    );
+  } else {
+    await rootfsMemfs.materializeLazyArchiveFrom(path, (request) =>
+      readLazyArtifactBytes(
+        request.url,
+        request.mountPrefix,
+        request.compressedBytes,
+      )
+    );
   }
 
   try {
@@ -493,18 +514,41 @@ async function resolveExecFromRootfs(path: string): Promise<ArrayBuffer | null> 
   }
 }
 
-async function readLazyExecBytes(url: string): Promise<ArrayBuffer | null> {
+async function readLazyArtifactBytes(
+  url: string,
+  guestPath: string,
+  expectedBytes?: number,
+): Promise<Uint8Array> {
   if (/^https?:\/\//.test(url)) {
     const resp = await fetch(url);
-    if (!resp.ok) return null;
-    return await resp.arrayBuffer();
+    if (!resp.ok) {
+      throw new Error(
+        `lazy artifact fetch failed for ${guestPath} from ${url}: HTTP ${resp.status}`,
+      );
+    }
+    return readFetchBody(resp, {
+      label: guestPath,
+      expectedBytes,
+    });
   }
 
-  const path = url.startsWith("file://")
+  const backingPath = url.startsWith("file://")
     ? fileURLToPath(url)
     : join(findRepoRoot(), url.replace(/^\/+/, ""));
-  if (!existsSync(path)) return null;
-  return bufferToArrayBuffer(readFileSync(path));
+  if (!existsSync(backingPath)) {
+    throw new Error(
+      `lazy artifact backing path missing for ${guestPath}: ${backingPath}`,
+    );
+  }
+  const statBytes = statSync(backingPath).size;
+  assertValidLazyContentSize(guestPath, statBytes);
+  if (expectedBytes !== undefined) {
+    assertExpectedByteLength(guestPath, expectedBytes, statBytes);
+  }
+  const bytes = readFileSync(backingPath);
+  assertValidLazyContentSize(guestPath, bytes.byteLength);
+  assertExpectedByteLength(guestPath, statBytes, bytes.byteLength);
+  return bytes;
 }
 
 async function resolveExec(path: string): Promise<ArrayBuffer | null> {
