@@ -21,6 +21,7 @@ import {
   builtinDemoPresentation,
   nodeGuide,
 } from "../src/demo-guides";
+import { parseKandeloShellConfig } from "../src/shell-config";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
@@ -335,6 +336,74 @@ describe("LiveKernelHost: shell command queue", () => {
 
     expect(outputPids).toEqual([37]);
     expect(writePids).toEqual([37]);
+  });
+
+  it("starts an image-owned shell from the VFS without redundant program bytes", async () => {
+    const spawnFromVfs = vi.fn(async () => ({
+      pid: 41,
+      exit: new Promise<number>(() => {}),
+    }));
+    const spawn = vi.fn();
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawn,
+        spawnFromVfs,
+        onPtyOutput() {},
+        ptyResize() {},
+        ptyWrite() {},
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/home/linuxbrew/.linuxbrew/bin/dash",
+      argv: ["dash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+      uid: 1000,
+      gid: 1000,
+    });
+
+    await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+
+    expect(spawnFromVfs).toHaveBeenCalledWith(
+      "/home/linuxbrew/.linuxbrew/bin/dash",
+      ["dash", "-l", "-i"],
+      expect.objectContaining({
+        pty: true,
+        cwd: "/home/user",
+        uid: 1000,
+        gid: 1000,
+        ptyCols: 100,
+        ptyRows: 30,
+      }),
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a default shell without a VFS path or fallback bytes", () => {
+    const host = new LiveKernelHost();
+    expect(() => host.setDefaultShell({
+      argv: ["sh", "-i"],
+    })).toThrow("requires programPath or programBytes");
+  });
+
+  it("reports when a VFS-only shell is used with a kernel that cannot spawn it", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawn: vi.fn(),
+        onPtyOutput() {},
+        ptyResize() {},
+        ptyWrite() {},
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/sh",
+      argv: ["sh", "-i"],
+    });
+
+    await expect(host.attachPty("/dev/pts/0", { cols: 80, rows: 24 }))
+      .rejects.toThrow("does not support spawnFromVfs");
   });
 
   it("does not treat heredoc continuation prompts as command completion", async () => {
@@ -1022,5 +1091,54 @@ describe("Kandelo demo config", () => {
     expect(config).not.toBeNull();
 
     expect(resolveDemoPresentation(config!, "missing")).toBeNull();
+  });
+});
+
+describe("Kandelo default shell image configuration", () => {
+  it("accepts one exact VFS executable and interactive argv", () => {
+    expect(parseKandeloShellConfig(JSON.stringify({
+      version: 1,
+      path: "/home/linuxbrew/.linuxbrew/bin/dash",
+      argv: ["dash", "-l", "-i"],
+    }))).toEqual({
+      version: 1,
+      path: "/home/linuxbrew/.linuxbrew/bin/dash",
+      argv: ["dash", "-l", "-i"],
+    });
+  });
+
+  it("rejects executable paths that can escape or drift", () => {
+    expect(() => parseKandeloShellConfig(JSON.stringify({
+      version: 1,
+      path: "/home/linuxbrew/../bin/dash",
+      argv: ["dash", "-l", "-i"],
+    }))).toThrow("normalized");
+    expect(() => parseKandeloShellConfig(JSON.stringify({
+      version: 1,
+      path: "home/linuxbrew/bin/dash",
+      argv: ["dash", "-l", "-i"],
+    }))).toThrow("absolute guest file path");
+  });
+
+  it("rejects executable fields and oversized argv", () => {
+    expect(() => parseKandeloShellConfig(JSON.stringify({
+      version: 1,
+      path: "/bin/sh",
+      argv: ["sh", "-i"],
+      env: { PATH: "/tmp" },
+    }))).toThrow("exactly version, path, and argv");
+    expect(() => parseKandeloShellConfig(JSON.stringify({
+      version: 1,
+      path: "/bin/sh",
+      argv: Array.from({ length: 65 }, () => "sh"),
+    }))).toThrow("exceeds 64 arguments");
+  });
+
+  it("returns null for an unsupported version", () => {
+    expect(parseKandeloShellConfig(JSON.stringify({
+      version: 2,
+      path: "/bin/sh",
+      argv: ["sh", "-i"],
+    }))).toBeNull();
   });
 });

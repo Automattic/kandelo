@@ -185,6 +185,10 @@ function populateSystem(fs: MemoryFileSystem): void {
     "alias grep='grep --color=auto'",
     "export USER=player",
     "export NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'",
+    "for kandelo_profile in /etc/profile.d/*.sh; do",
+    "  [ -r \"$kandelo_profile\" ] && . \"$kandelo_profile\"",
+    "done",
+    "unset kandelo_profile",
     "",
   ].join("\n");
   writeVfsFile(fs, "/etc/profile", profile);
@@ -224,6 +228,10 @@ function populateShellOverlay(fs: MemoryFileSystem): void {
     "alias grep='grep --color=auto'",
     "export USER=player",
     "export NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'",
+    "for kandelo_profile in /etc/profile.d/*.sh; do",
+    "  [ -r \"$kandelo_profile\" ] && . \"$kandelo_profile\"",
+    "done",
+    "unset kandelo_profile",
     "",
   ].join("\n");
   writeVfsFile(fs, "/etc/profile", profile);

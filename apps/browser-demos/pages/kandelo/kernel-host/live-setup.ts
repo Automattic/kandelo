@@ -53,6 +53,13 @@ import {
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import {
+  KANDELO_SHELL_CONFIG_PATH,
+  MAX_KANDELO_SHELL_CONFIG_BYTES,
+  MAX_KANDELO_SHELL_EXECUTABLE_BYTES,
+  parseKandeloShellConfig,
+  type KandeloShellConfig,
+} from "../../../../../web-libs/kandelo-session/src/shell-config";
+import {
   builtinDemoAssets,
   builtinDemoGuide,
   builtinDemoPresentation,
@@ -1065,11 +1072,9 @@ async function bootProfile(
 
   tick("service worker active and cross-origin isolated");
   tick(`loading ${profile.id} profile...`);
-  const [kernelBytes, vfsBytes, bashBytes, dashBytes, softwareBinaries] = await Promise.all([
+  const [kernelBytes, vfsBytes, softwareBinaries] = await Promise.all([
     fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((r) => r.arrayBuffer()),
     loadVfsImageBytes(profile),
-    fetch(bashWasmUrl).then(failOn("bash.wasm")).then((r) => r.arrayBuffer()),
-    fetch(dashWasmUrl).then(failOn("dash.wasm")).then((r) => r.arrayBuffer()),
     loadSoftwareBinaries(profile.software),
   ]);
   assertCurrent();
@@ -1090,6 +1095,7 @@ async function bootProfile(
   const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
     maxByteLength: profile.maxVfsByteLength,
   });
+  const shellConfig = readImageShellConfig(buildFs);
   if (
     profile.id === "nginx-php" ||
     profile.id === "wordpress-sqlite" ||
@@ -1122,7 +1128,18 @@ async function bootProfile(
   // worker takes ownership. In the legacy path these were written into a
   // main-thread-shared memfs *after* boot via `kernel.fs`; the kernel-owned FS
   // has no main-thread handle, so they must be part of the image bytes.
-  stageShellUtilities(buildFs, dashBytes, bashBytes);
+  let shellProgramBytes: ArrayBuffer | undefined;
+  if (shellConfig) {
+    assertImageShellExecutable(buildFs, shellConfig.path);
+  } else {
+    const [bashBytes, dashBytes] = await Promise.all([
+      fetch(bashWasmUrl).then(failOn("bash.wasm")).then((r) => r.arrayBuffer()),
+      fetch(dashWasmUrl).then(failOn("dash.wasm")).then((r) => r.arrayBuffer()),
+    ]);
+    assertCurrent();
+    stageShellUtilities(buildFs, dashBytes, bashBytes);
+    shellProgramBytes = bashBytes;
+  }
   stageSoftwareBinaries(buildFs, softwareBinaries);
   const hasDinitctl = vfsPathExists(buildFs, DINITCTL_PATH);
   const imageConfig = readImageConfig(buildFs);
@@ -1204,9 +1221,9 @@ async function bootProfile(
     host.attachKernel(kernel);
     const shellIdentity = shellIdentityForProfile(profile, profile.init ? undefined : effectiveBoot);
     host.setDefaultShell({
-      programPath: "/bin/bash",
-      programBytes: bashBytes,
-      argv: ["bash", "-l", "-i"],
+      programPath: shellConfig?.path ?? "/bin/bash",
+      ...(shellProgramBytes ? { programBytes: shellProgramBytes } : {}),
+      argv: shellConfig?.argv ?? ["bash", "-l", "-i"],
       env: shellIdentity.env,
       cwd: shellIdentity.cwd,
       uid: shellIdentity.uid,
@@ -1304,7 +1321,7 @@ async function bootProfile(
       ], "fbtest.wasm");
       void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
     } else if (presentation?.autoCommand) {
-      tick("starting configured command from bash...");
+      tick("starting configured command from the default shell...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {
         tick(`configured command failed: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -2297,6 +2314,52 @@ function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
 
 function isLiveDemoId(id: string): id is LiveDemoId {
   return Object.hasOwn(LIVE_PROFILE_SPECS, id);
+}
+
+function readImageShellConfig(fs: MemoryFileSystem): KandeloShellConfig | null {
+  let stat;
+  try {
+    stat = fs.lstat(KANDELO_SHELL_CONFIG_PATH);
+  } catch (err) {
+    if (isMissingVfsPath(err)) return null;
+    throw err;
+  }
+  if ((stat.mode & 0xf000) !== 0x8000) {
+    throw new Error(`${KANDELO_SHELL_CONFIG_PATH} must be a regular file`);
+  }
+  if (stat.size > MAX_KANDELO_SHELL_CONFIG_BYTES) {
+    throw new Error(
+      `${KANDELO_SHELL_CONFIG_PATH} exceeds ${MAX_KANDELO_SHELL_CONFIG_BYTES} bytes`,
+    );
+  }
+  const json = new TextDecoder("utf-8", { fatal: true }).decode(
+    new Uint8Array(readVfsFile(fs, KANDELO_SHELL_CONFIG_PATH)),
+  );
+  const config = parseKandeloShellConfig(json);
+  if (!config) {
+    throw new Error(`VFS image has unsupported ${KANDELO_SHELL_CONFIG_PATH} version`);
+  }
+  return config;
+}
+
+function assertImageShellExecutable(fs: MemoryFileSystem, path: string): void {
+  let stat;
+  try {
+    stat = fs.stat(path);
+  } catch {
+    throw new Error(`VFS image default shell is missing: ${path}`);
+  }
+  if ((stat.mode & 0xf000) !== 0x8000) {
+    throw new Error(`VFS image default shell is not a regular file: ${path}`);
+  }
+  if ((stat.mode & 0o111) === 0) {
+    throw new Error(`VFS image default shell is not executable: ${path}`);
+  }
+  if (stat.size > MAX_KANDELO_SHELL_EXECUTABLE_BYTES) {
+    throw new Error(
+      `VFS image default shell exceeds ${MAX_KANDELO_SHELL_EXECUTABLE_BYTES} bytes: ${path}`,
+    );
+  }
 }
 
 function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {

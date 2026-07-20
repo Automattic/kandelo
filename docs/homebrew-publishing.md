@@ -1071,8 +1071,8 @@ and must not already carry Homebrew composition metadata or
 `/etc/kandelo/homebrew-vfs.json`; merging independently composed Homebrew
 prefixes would lose package provenance, so it fails closed. Existing files
 remain unchanged except for requested bottle/link paths and the builder-owned
-Homebrew manifest (plus the optional profile fragment); path collisions fail
-through the normal staging checks.
+Homebrew manifest (plus the optional profile and default-shell files); path
+collisions fail through the normal staging checks.
 
 The output image metadata binds the exact base input with a bounded object:
 SHA-256, byte count, and declared kernel ABI. It also records the selected tap
@@ -1132,6 +1132,36 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --out target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json
 ```
+
+`--shell-config` is optional and is intended for an image whose interactive
+shell comes from the selected Homebrew closure. It accepts the bounded,
+versioned `/etc/kandelo/shell.json` shape documented in
+[Browser Support](browser-support.md#image-owned-default-shells), verifies that
+the declared path is an executable regular file no larger than 64 MiB after
+composition, and copies the exact reviewed config into the image. The report
+binds its SHA-256, byte count, path, and argv; the bounded image metadata
+records the same shell
+selection and config digest. The option requires `--write-profile`, because a
+Homebrew login shell must source the builder-generated
+`/etc/profile.d/kandelo-homebrew.sh` rather than start with a browser-hardcoded
+Homebrew prefix. The platform base `/etc/profile` sources readable profile
+fragments through ordinary POSIX shell syntax.
+
+For example, a Dash shell image can use:
+
+```json
+{
+  "version": 1,
+  "path": "/home/linuxbrew/.linuxbrew/bin/dash",
+  "argv": ["dash", "-l", "-i"]
+}
+```
+
+The config is image policy, not package inference: the composer must name the
+executable and startup arguments explicitly. The browser remains independent
+of the selected Formula and executes the declared VFS path normally. Add
+`--write-profile --shell-config /path/to/shell.json` to the builder command
+when the Brewfile actually includes that declared shell.
 
 Repeatable `--package <name>` remains available for lower-level tooling and
 focused tests. It preserves the provided root order and uses the same planner,

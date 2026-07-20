@@ -1,6 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
+import {
+  ensureDirRecursive,
+  writeVfsBinary,
+  writeVfsFile,
+} from "../../../host/src/vfs/image-helpers";
+import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import {
+  KANDELO_SHELL_CONFIG_PATH,
+} from "../../../web-libs/kandelo-session/src/shell-config";
 
 const FIXTURE_BASE_PATH = "/__kandelo-homebrew-test";
 const FIXTURE_ROOT = new URL("../public/__kandelo-homebrew-test/", import.meta.url);
@@ -117,6 +127,46 @@ function packageNameForEntry(entry: FixtureEntry): string {
   return `hello-homebrew-${entry.id}`;
 }
 
+async function writeHomebrewDefaultShellFixture(): Promise<string> {
+  const rootfsPath = tryResolveBinary("rootfs.vfs")
+    ?? tryResolveBinary("programs/rootfs.vfs");
+  const dashPath = tryResolveBinary("programs/dash.wasm");
+  if (!rootfsPath || !dashPath) {
+    throw new Error("Homebrew default-shell smoke requires rootfs.vfs and dash.wasm");
+  }
+
+  const rootfsBytes = new Uint8Array(await readFile(rootfsPath));
+  const dashBytes = new Uint8Array(await readFile(dashPath));
+  const profile = await readFile(
+    new URL("../../../images/rootfs/etc/profile", import.meta.url),
+    "utf8",
+  );
+  const fs = MemoryFileSystem.fromImage(rootfsBytes);
+  const shellPath = "/home/linuxbrew/.linuxbrew/bin/dash";
+  ensureDirRecursive(fs, "/home/linuxbrew/.linuxbrew/bin");
+  writeVfsBinary(fs, shellPath, dashBytes, 0o755);
+  ensureDirRecursive(fs, "/etc/profile.d");
+  writeVfsFile(fs, "/etc/profile", profile, 0o644);
+  writeVfsFile(
+    fs,
+    "/etc/profile.d/kandelo-homebrew.sh",
+    'PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"\nexport PATH\n',
+    0o644,
+  );
+  ensureDirRecursive(fs, "/etc/kandelo");
+  writeVfsFile(fs, KANDELO_SHELL_CONFIG_PATH, JSON.stringify({
+    version: 1,
+    path: shellPath,
+    argv: ["dash", "-l", "-i"],
+  }), 0o644);
+
+  const fixtureDir = new URL("default-shell/", FIXTURE_ROOT);
+  const fixtureName = "homebrew-default-shell.vfs";
+  await mkdir(fixtureDir, { recursive: true });
+  await writeFile(new URL(fixtureName, fixtureDir), await fs.saveImage());
+  return `${FIXTURE_BASE_PATH}/default-shell/${fixtureName}`;
+}
+
 test.afterAll(async () => {
   await rm(FIXTURE_ROOT, { recursive: true, force: true });
 });
@@ -176,4 +226,37 @@ test("Homebrew hello VFS image boots in browser and runs hello --version", async
     /hello \(GNU Hello\) 2\.12\.3/,
     180_000,
   );
+});
+
+test("an image-owned Homebrew shell boots without legacy shell downloads", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(240_000);
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const fixturePath = await writeHomebrewDefaultShellFixture();
+  const vfsUrl = new URL(fixturePath, baseURL).href;
+  const legacyShellFetches: string[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (
+      request.resourceType() === "fetch"
+      && /\/(?:bash|dash)\.wasm(?:\?|$)/.test(url)
+      && !url.includes("?import&url")
+    ) {
+      legacyShellFetches.push(url);
+    }
+  });
+
+  await gotoOrSkip(page, `/?vfs=${encodeURIComponent(vfsUrl)}`, false);
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  await waitForTerminalContent(page, /kandelo\$\s*$/, 180_000);
+  await runTerminalCommand(
+    page,
+    "printf 'HOMEBREW_DEFAULT_SHELL:%s:%s:%s\\n' \"$0\" \"$(command -v dash)\" \"${PATH%%:*}\"",
+    "HOMEBREW_DEFAULT_SHELL:dash:/home/linuxbrew/.linuxbrew/bin/dash:/home/linuxbrew/.linuxbrew/bin",
+    120_000,
+  );
+
+  expect(legacyShellFetches).toEqual([]);
 });

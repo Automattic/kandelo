@@ -705,7 +705,11 @@ export interface LiveKernelHostOptions {
    */
   shell?: {
     programPath?: string;
-    programBytes: ArrayBuffer;
+    /**
+     * Fallback bytes for kernels that cannot spawn programPath from their VFS.
+     * VFS-backed shells do not need a redundant main-thread copy.
+     */
+    programBytes?: ArrayBuffer;
     argv: string[];
     env?: string[];
     cwd?: string;
@@ -887,6 +891,9 @@ export class LiveKernelHost implements KernelHost {
 
   /** Configure the program attachPty spawns by default. */
   setDefaultShell(shell: NonNullable<LiveKernelHostOptions["shell"]>): void {
+    if (!shell.programPath && !shell.programBytes) {
+      throw new Error("LiveKernelHost.setDefaultShell requires programPath or programBytes");
+    }
     this.shell = shell;
     this.refreshTerminalAvailability();
   }
@@ -1166,7 +1173,7 @@ export class LiveKernelHost implements KernelHost {
     if (!this.shell) {
       throw new Error(
         "LiveKernelHost.attachPty: no default shell configured. " +
-        "Call setDefaultShell({ programBytes, argv, env, cwd }) before attachPty()."
+        "Call setDefaultShell({ programPath or programBytes, argv, env, cwd }) before attachPty()."
       );
     }
     const kernel = this.kernel;
@@ -1254,6 +1261,12 @@ export class LiveKernelHost implements KernelHost {
         pid = spawned.pid;
         exitPromise = spawned.exit;
       } else {
+        if (!shell.programBytes) {
+          throw new Error(
+            "LiveKernelHost.attachPty: the configured default shell is VFS-only, " +
+            "but this kernel does not support spawnFromVfs().",
+          );
+        }
         let resolveStarted!: (pid: number) => void;
         let rejectStarted!: (reason?: unknown) => void;
         const started = new Promise<number>((resolve, reject) => {
