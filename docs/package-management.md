@@ -240,6 +240,17 @@ a complete fetched package, but local, fetched, and installed-package tiers
 are never combined. If artifacts exist but no tier has the complete accepted
 closure, resolution fails loudly.
 
+Build scripts register executable outputs with `install_local_binary` and
+declared data with `install_local_runtime_file`. Normal local builds mirror
+both into `local-binaries/`. A sealed publisher instead sets
+`WASM_POSIX_INSTALL_LOCAL_MIRROR=0`, provides
+`WASM_POSIX_DEP_OUT_DIR`, and supplies the reviewed fork-instrumentation policy
+for executable outputs. In that mode the helpers copy the exact declared
+artifacts only into caller-owned resolver scratch; they do not write into the
+checkout or probe `rustc`, Cargo, or `xtask` merely to discover a local mirror
+path. The resolver still validates every output against `package.toml` before
+it can enter an archive.
+
 Top-level keys are closed-schema: misspellings such as `[[runtime_file]]`
 (singular) are rejected instead of silently dropping a runtime dependency.
 Package names, versions, dependency names, and exact dependency-version tokens

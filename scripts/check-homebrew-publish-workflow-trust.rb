@@ -3671,6 +3671,7 @@ def check_publisher(workflow)
     'under-lock publisher accepted concurrent dependency recipe drift',
     'under-lock publisher accepted concurrent dependency-edge drift',
     'Formula differs from the planned tap outside canonical bottle metadata',
+    'bash "$REPO_ROOT/scripts/test-install-local-binary-sealed.sh"',
     'bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"',
   ].each do |fragment|
     check(publisher_test_source.include?(fragment),
