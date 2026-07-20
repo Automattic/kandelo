@@ -49,6 +49,57 @@ name only for this protected default, and derives `kandelo-dev/tap-core` through
 the same conventional rule. Other repositories must state the derived tap name
 explicitly so an omitted input cannot silently change publication identity.
 
+## Immutable Dependency Taps
+
+A tap may depend on public Kandelo bottles owned by another tap, but the source
+set is tap-owned and immutable. The primary tap commits
+`Kandelo/dependency-taps.json` with this exact schema:
+
+```json
+{
+  "schema": 1,
+  "taps": [
+    {
+      "tap_name": "kandelo-dev/tap-core",
+      "tap_repository": "kandelo-dev/homebrew-tap-core",
+      "tap_commit": "0123456789abcdef0123456789abcdef01234567"
+    }
+  ]
+}
+```
+
+Entries are uniquely sorted by normalized `owner/tap`, repositories must use
+the matching conventional `owner/homebrew-tap` identity, and commits must be
+exact lowercase 40-character SHAs. Branches, tags, workflow inputs, dispatch
+payloads, and free-form repository JSON cannot add or replace dependency taps.
+The current reviewed policy intentionally permits only the public
+`kandelo-dev/tap-core` repository; adding another source repository requires a
+Kandelo code change and review.
+
+Every workflow role independently checks out each dependency tap at the locked
+SHA without a GitHub token, verifies its clean Git identity, and materializes a
+bounded read-only resolved map for the static resolver. Before Formula code
+runs, Homebrew clones the locked taps into its isolated target prefix. The
+original dependency checkouts are then inaccessible to both target and native
+Formula processes. Fresh post-execution checkouts reconstruct the map and
+revalidate all later provenance, sidecar, and VFS work. Bottle reads use each
+source repository's public repository-rooted GHCR namespace; no dependency-tap
+package credential is accepted or required.
+
+The protected publisher plan repeats every target tap as a sorted immutable
+identity record containing its normalized tap name, conventional repository,
+and exact commit. The plan must equal the root-generated resolved map. Homebrew
+suppresses Linux-native global dependency injection only for those exact taps;
+an undeclared tap retains normal Homebrew behavior, while a mutable revision or
+mismatched repository fails before Formula evaluation.
+
+Runtime dependencies crossing a tap boundary must use a fully qualified
+literal such as `depends_on "kandelo-dev/tap-core/dash"`. Unqualified runtime
+dependencies remain native host Formulae and are rejected unless their tags
+place them exclusively in the reviewed build/test realm. To update a locked
+dependency, first publish and validate its public bottle and sidecars, then
+review a primary-tap commit that changes only the exact SHA in this file.
+
 ## Artifact Model
 
 Homebrew publishing is a sibling to Kandelo package archive publishing:
@@ -62,6 +113,7 @@ Homebrew publishing is a sibling to Kandelo package archive publishing:
 | `Kandelo/link/*.json` | Same as metadata | VFS builder pour/link plan. |
 | `Kandelo/reports/*.provenance.json` | Same as metadata | Durable publication and validation evidence. |
 | `Kandelo/vfs-acceptance.json` and its Brewfile | Tap git repository | Optional tap-owned dependency-bearing acceptance selection. |
+| `Kandelo/dependency-taps.json` | Primary tap git repository | Exact reviewed public tap source lock. |
 | Browser gallery assets | Run-scoped diagnostic artifact | Review evidence only; not a durable public gallery. |
 
 Do not publish Homebrew bottles into Kandelo's `binaries-abi-v<N>` package
@@ -221,10 +273,10 @@ Ruby.
 
 ## Dependency-First Bottles
 
-Publish same-tap runtime dependencies before their consumers. The bottle
-builder resolves the selected Formula's recursive runtime closure in
-topological order, filters it to the selected canonical tap name, and installs
-each dependency separately with `--force-bottle --as-dependency
+Publish every locked runtime dependency before its consumers. The bottle
+builder resolves the selected Formula's recursive immutable-tap runtime closure
+in topological order and installs each dependency separately with
+`--force-bottle --as-dependency
 --ignore-dependencies`. A missing Kandelo bottle therefore fails before the
 consumer source build; Homebrew is not allowed to silently replace a prior
 library bottle with a dependency source build.
@@ -249,9 +301,10 @@ derives a bounded plan from the selected Formula's direct `depends_on`
 declarations. An unqualified external dependency must be explicitly tagged
 `:build`, `:test`, or both. Untagged and `:recommended` external runtime
 dependencies fail because portable runtime dependencies must come from the
-selected Kandelo tap; `:optional` dependencies are not selected. Same-tap
-dependencies remain in the target plan. The resulting control data has three
-lists:
+primary tap or an exact dependency-tap lock; `:optional` dependencies are not
+selected. Qualified locked-tap dependencies remain in the target plan. The
+resulting control data also carries the sorted immutable target-tap set plus
+three native lists:
 
 - `build` contains only direct native dependencies tagged `:build` (including
   `[:build, :test]`). The isolated Homebrew overlay uses this root-owned list
@@ -307,18 +360,19 @@ provided by the host can still be detected and used, but Homebrew cannot fetch
 unplanned native code into the target Cellar after isolation begins. Native
 Homebrew has no target plan and retains its normal sandbox dependency behavior.
 The publisher also suppresses Homebrew's Linux-only global dependencies while
-it loads any Formula from the selected Kandelo tap. Homebrew recursively loads
-same-tap dependencies when it writes the target receipt; without this
-tap-scoped guard, native Bubblewrap or libcap could be recorded as a Kandelo
-guest runtime dependency. Formulae from other taps and the separate native
-Homebrew prefix retain Homebrew's normal Linux dependency behavior.
+it loads any Formula from the selected immutable Kandelo tap set. Homebrew
+recursively loads locked-tap dependencies when it writes the target receipt;
+without this guard, native Bubblewrap or libcap could be recorded as a Kandelo
+guest runtime dependency. Formulae outside the exact target-tap set and the
+separate native Homebrew prefix retain Homebrew's normal Linux dependency
+behavior.
 The dedicated build identity, transient systemd service, `NoNewPrivileges`,
 immutable inputs, and teardown checks remain the publisher's primary process
 boundary when the host cannot create a rootless Bubblewrap sandbox. The builder
 also snapshots the planned target Cellar after installation and rejects any
 Formula test or bottle command that adds or removes a rack or keg.
 
-The publisher force-pours the planned same-tap Kandelo bottles into the target
+The publisher force-pours the planned immutable-tap Kandelo bottles into the target
 prefix. It then runs the selected target install with
 `--ignore-dependencies`: the builder combines that flag with `--build-bottle`,
 while the verifier combines it with `--force-bottle`. Homebrew therefore uses
@@ -417,17 +471,21 @@ republished under a new supported immutable bottle identity; its existing
 registry reference must never be overwritten. Neither publisher change by
 itself requires an ABI version bump or a `build.toml` package revision change.
 
-After building the consumer, the builder checks every same-tap dependency in
+After building the consumer, the builder checks every immutable-tap dependency in
 its `INSTALL_RECEIPT.json`. The installed dependency receipt must say
 `built_as_bottle: true`, `poured_from_bottle: true`, and
-`installed_on_request: false`, and its source tap commit must match the exact
-planned tap. The selected Formula's `wasm32_kandelo` or `wasm64_kandelo`
+`installed_on_request: false`, and its source tap commit must match that
+dependency's exact locked tap. The selected Formula's `wasm32_kandelo` or
+`wasm64_kandelo`
 bottle digest and bounded fetch/pour log lines are recorded alongside those
-receipt facts. Raw logs do not cross the runner boundary. A fresh verifier
-rehashes each dependency Formula from the exact planned tap. The finalizer
-materializes that same planned commit beside refreshed tap `main`, rebinds the
-recorded digest to the planned Formula, and compares the two Formulae before
-accepting the bounded provenance.
+receipt facts. Raw logs do not cross the runner boundary. Fresh verifier and
+finalizer runners rehash each dependency Formula from that dependency's exact
+planned tap before accepting the bounded provenance. For dependencies in the
+selected primary tap, the finalizer materializes that same planned commit
+beside refreshed tap `main`, rebinds the recorded digest to the planned
+Formula, and compares the two Formulae. Dependencies from external taps remain
+bound to their exact immutable checkouts in the resolved tap map and are never
+looked up in the primary tap.
 
 Homebrew can omit `bottle_rebuild` from a runtime-dependency record because the
 installed dependency Formula receipt has had its bottle block removed. This can
@@ -445,7 +503,7 @@ those two known spellings to the canonical `any` and `any_skip_relocation`
 values used by the static Formula resolver. Unknown symbolic spellings and all
 other unsupported cellar values fail closed.
 
-When Homebrew pours a same-tap dependency from GHCR, its install log can name
+When Homebrew pours an immutable-tap dependency from GHCR, its install log can name
 the exact version/rebuild manifest instead of the selected layer's digest URL.
 The collector accepts only that exact manifest endpoint or the exact
 digest-bound blob URL as fetch evidence. It still independently requires the
@@ -468,28 +526,29 @@ provenance-bearing and fail closed. A real dependency Formula or selected
 bottle change after planning therefore causes a truthful stale-build failure
 instead of publishing a consumer against a newer dependency graph.
 
-The exact same-tap closure resolved before installation must equal the closure
+The exact immutable-tap closure resolved before installation must equal the closure
 recorded in the target receipt. A missing or unexpected receipt entry fails the
 build before any publication handoff is created. A target receipt entry outside
-the selected tap is rejected rather than omitted from provenance: native tools
+the resolved tap set is rejected rather than omitted from provenance: native tools
 belong only to the sealed host realm, and a Linux executable must never become a
 Kandelo bottle's declared runtime dependency.
 
 Fresh verifier and finalizer validation independently derive that closure from
-the exact tap without evaluating Formula Ruby. Same-tap dependencies must use
-direct Formula class-body literal declarations such as `depends_on
+the exact tap set without evaluating Formula Ruby. Runtime dependencies must
+use direct Formula class-body tap-qualified literals such as `depends_on
 "kandelo-dev/tap-core/zlib"`. The static resolver includes untagged and
 `:recommended` dependencies, excludes the canonical `:build`, `:test`, and
-`:optional` forms, and recursively resolves explicit same-tap references.
+`:optional` forms, and recursively resolves references across the locked taps.
 Conditional, interpolated, helper-hidden, unknown-tag, duplicate, and cyclic
 dependency declarations fail closed. The submitted provenance dependency set
 must exactly equal this independently derived closure, including for an empty
 root-package closure.
 
-The finalizer also independently derives the root Formula's direct same-tap
+The finalizer also independently derives the root Formula's direct immutable-tap
 runtime dependencies. Each provenance record's `declared_directly` value must
-match that source-derived set, and the composition handoff's `{name, version}`
-dependency array must exactly equal the direct provenance records. Missing,
+match that source-derived set, and the composition handoff's
+`{name, full_name, version}` dependency array must exactly equal the direct
+provenance records. Missing,
 extra, duplicate, wrong-version, or forged-directness entries fail before
 sidecars are generated.
 
@@ -498,10 +557,10 @@ For every closure member, the resolver also reads the canonical static
 digest, tag, and digest-bound URL. Fresh validation requires the submitted
 prior-bottle record to equal that exact tap data; a closure member with no
 selected-architecture bottle fails validation.
-Required or recommended dependencies outside the selected Kandelo tap are not
-portable runtime inputs and fail validation anywhere in the closure. Optional
-external declarations may remain static Formula metadata, but selecting one in
-an installed bottle receipt also fails closed.
+Required or recommended dependencies outside the immutable resolved tap set are
+not portable runtime inputs and fail validation anywhere in the closure.
+Optional external declarations may remain static Formula metadata, but
+selecting one in an installed bottle receipt also fails closed.
 
 This non-evaluating boundary permits normal static Formula structure without
 executing it. `patch do` and `resource do` are limited to canonical literal
@@ -643,10 +702,12 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    separate ephemeral prefix, preventing their Cellar racks from colliding
    with Kandelo target Formulae. Within that read-only build, all
    Formula-evaluating Homebrew commands run as a distinct
-   unprivileged user. The original Kandelo and tap checkouts remain hidden from
-   that identity. Each transient service receives root-created, read-only bind
-   aliases for those exact trees, and the Kandelo SDK environment points only
-   at the alias. The patched Homebrew source is recursively non-writable and
+   unprivileged user. The original Kandelo, primary-tap, and dependency-tap
+   checkouts remain hidden from that identity. Each transient service receives
+   root-created, read-only bind aliases for the Kandelo and primary-tap trees,
+   and the Kandelo SDK environment points only at the alias. The locked
+   dependency taps have already been cloned into Homebrew's isolated prefix.
+   The patched Homebrew source is recursively non-writable and
    non-replaceable; only a root-provisioned shared temporary root, Homebrew
    cache/temp, prefix, and build home are writable. Dependency lists and install
    logs used by the workflow identity live in a separate mode-0700 control
@@ -658,7 +719,7 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    slice stop, UID-scoped termination, and privileged zero-process check occur
    before bottle artifacts are read. CI then deletes the dedicated account
    before fresh validator checkouts begin. Homebrew uses a build-local,
-   read-only XDG configuration store and trusts only the reviewed selected tap
+   read-only XDG configuration store and trusts only the reviewed immutable taps
    before evaluating its dependency Formulae. Root owns the store; directories
    are mode `0555`, and its JSON and lock files are mode `0444` so the isolated
    identity can read but cannot mutate them. The publisher-only Homebrew patch
@@ -685,18 +746,19 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    for a wasm64 matrix entry. Formula builds use the selected target sysroot,
    and generated sidecars fingerprint that target's `libc.a`. The job executes the
    Formula build and test without publisher credentials. The Kandelo bottle tag
-   is scoped to same-tap dependency pours and final bottle creation. Homebrew
-   resolves both the runtime-only same-tap closure used for provenance and the
-   complete same-tap build/test closure. A static direct-host plan separately
+   is scoped to immutable-tap dependency pours and final bottle creation.
+   Homebrew resolves both the runtime-only immutable-tap closure used for
+   provenance and the complete immutable-tap build/test closure. A static
+   direct-host plan separately
    selects native build and test tools. Native Homebrew installs their full
    closure in its own state realm, the publisher validates their canonical
    `homebrew/core` identities, and each sealed direct tool receives a canonical
    read-only proxy keg in the target prefix. Plain-name `brew list` must
-   recognize every proxy before the target build starts. The bounded same-tap
-   union is then force-poured as Kandelo
+   recognize every proxy before the target build starts. The bounded
+   immutable-tap union is then force-poured as Kandelo
    bottles, and the target Formula is built with dependency resolution
    disabled. Native tools therefore do not inherit a Kandelo target tag, and no
-   same-tap dependency can fall back to a source build. The workflow also
+   locked dependency can fall back to a source build. The workflow also
    fetches the Dash, coreutils, grep, and sed test-runtime archives without
    source fallback. The resolver normally links those outputs to its
    workflow-user cache, which the isolated Formula identity cannot access, so
@@ -852,13 +914,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    composes the selected bottle block from reconstructed canonical metadata.
    In an isolated identity it then runs the reviewed pinned Homebrew
    implementation with the Kandelo platform patch. The
-   verifier independently resolves the runtime-only same-tap closure and the
+   verifier independently resolves the runtime-only immutable-tap closure and the
    complete runtime/test closure. Its static direct-host plan excludes pure
    build tools, then native Homebrew installs the remaining runtime/test tools
    and their complete closure under the separate native state realm. After
    canonical core validation, only the sealed direct tools receive read-only
    proxy kegs in the target prefix, and plain-name `brew list` must recognize
-   them there. The verifier then force-pours the same-tap portion from prior
+   them there. The verifier then force-pours the immutable-tap portion from prior
    Kandelo bottles and pours the target bottle with dependency resolution
    disabled. It also
    provisions a separate protected Playwright Chromium
@@ -1093,13 +1155,17 @@ contains retired Asyncify instrumentation. The bootstrap image does not prove
 that a formula was built from, published as, or poured from a Homebrew bottle;
 those claims require the trusted publish and bottle validation paths below.
 
-The shared planner is `planHomebrewVfs()` in
-`host/src/homebrew-vfs-planner.ts`. It consumes `Kandelo/metadata.json` plus a
-caller-provided link-manifest loader and rejects bad ABI, unsupported arch,
+The shared planner provides `planHomebrewVfs()` for one metadata document and
+`planFederatedHomebrewVfs()` for an explicit immutable tap set in
+`host/src/homebrew-vfs-planner.ts`. Both consume `Kandelo/metadata.json` plus a
+caller-provided link-manifest loader and reject bad ABI, unsupported arch,
 tap-identity drift, duplicate roots or metadata, cache-key drift, missing
 packages, dependency cycles, unsafe paths, and link-manifest bottle drift
-before any bottle bytes are extracted. It resolves the requested roots and
-their single-tap dependency closure in deterministic dependency-first order.
+before any bottle bytes are extracted. The federated planner keys packages and
+edges by canonical `owner/tap/formula`, requires each package's bottle URL and
+`built_from` identity to match its metadata document, rejects duplicate Cellar
+short names across taps, and resolves the closure in deterministic
+dependency-first order.
 Guest-relative link-manifest paths admit literal square brackets so standard
 POSIX utility names such as `bin/[` remain representable. They still reject
 absolute paths, empty and `.`/`..` segments, backslashes, and whitespace. Tap
@@ -1110,7 +1176,8 @@ The Node-side builder is `buildHomebrewVfs()` in
 `host/src/homebrew-vfs-builder.ts`. It verifies bottle byte count and sha256,
 extracts supported tar entries, stages kegs under the declared prefix,
 validates receipts, applies link manifests, writes
-`/etc/kandelo/homebrew-vfs.json`, and emits a build report.
+`/etc/kandelo/homebrew-vfs.json`, and emits a build report. Each package record
+retains its full Formula name, tap repository, tap name, and exact tap commit.
 
 The CLI starts with an empty VFS by default. Pass `--base-image` to overlay the
 same verified bottle plan onto an explicit platform-only `.vfs` or `.vfs.zst`
@@ -1123,9 +1190,9 @@ Homebrew manifest (plus the optional profile and default-shell files); path
 collisions fail through the normal staging checks.
 
 The output image metadata binds the exact base input with a bounded object:
-SHA-256, byte count, and declared kernel ABI. It also records the selected tap
-repository and canonical tap name. The JSON report carries the same binding
-plus the base's full source metadata for auditing. Base signatures,
+SHA-256, byte count, and declared kernel ABI. It also records the primary tap
+and each package's source-tap identity. The JSON report carries the same
+binding plus the base's full source metadata for auditing. Base signatures,
 attestations, and other metadata are not copied onto the mutated output, and
 large source metadata is not nested into each new image.
 
@@ -1147,17 +1214,18 @@ brew "kandelo-dev/tap-core/xz"
 The subset accepts blank lines, comments, exactly one literal canonical
 lowercase `tap "owner/tap"`, and between 1 and 128 literal `brew` entries.
 Entries may use a bare formula name or a fully qualified name from that exact
-tap. Bare and qualified forms normalize to the same root, so duplicates fail.
-The selected tap must exactly match `metadata.json`, and the complete resolved
-closure is limited to 128 packages.
+primary tap. Bare and qualified forms normalize to the same root, so duplicates
+fail. The selected tap must exactly match the primary `metadata.json`, and the
+complete resolved closure is limited to 128 packages.
 
 The parser uses Ripper to inspect the syntax tree and never evaluates the file.
 Options, interpolation, conditionals, variables, nested Ruby, `cask`, `mas`,
 `service`, and every other Homebrew Bundle entry are rejected. Full Bundle DSL
 belongs to real Homebrew running inside a Kandelo guest; it is not a safe or
-deterministic host-side image specification. This builder intentionally accepts
-only one tap, so a root or required dependency from another tap must fail until
-multi-tap composition has an explicit metadata and provenance contract.
+deterministic host-side image specification. The Brewfile intentionally selects
+roots from one primary tap. Cross-tap closure edges come only from
+`full_name`-qualified sidecars and separately supplied immutable dependency-tap
+metadata; the Brewfile cannot add an undeclared tap.
 
 This path does not read `Brewfile.lock.json`; Homebrew Bundle does not define a
 lock-file contract. Reproducibility instead comes from the exact Brewfile
@@ -1171,8 +1239,10 @@ Build a precomposed image with:
 
 ```bash
 scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
-  --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
-  --tap-root /path/to/kandelo-homebrew \
+  --metadata /path/to/homebrew-tools/Kandelo/metadata.json \
+  --tap-root /path/to/homebrew-tools \
+  --dependency-tap-root \
+    kandelo-dev/tap-core=/path/to/homebrew-tap-core \
   --brewfile /path/to/Brewfile \
   --arch wasm32 \
   --runtime node \
@@ -1180,6 +1250,11 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --out target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json
 ```
+
+`--dependency-tap-root owner/tap=/exact/checkout` is repeatable for lower-level
+federated planning. The publisher derives these arguments only from the
+committed dependency-tap lock and its exact checkouts; callers must not use the
+flag to broaden the reviewed source set.
 
 `--shell-config` is optional and is intended for an image whose interactive
 shell comes from the selected Homebrew closure. It accepts the bounded,

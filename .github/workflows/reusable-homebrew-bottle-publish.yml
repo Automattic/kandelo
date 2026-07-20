@@ -56,6 +56,7 @@ jobs:
       bottle-root-prefix: ${{ steps.release.outputs.bottle-root-prefix }}
       kandelo-sha: ${{ steps.source-commits.outputs.kandelo-sha }}
       tap-sha: ${{ steps.source-commits.outputs.tap-sha }}
+      core-dependency-tap-sha: ${{ steps.dependency-taps.outputs.core-tap-sha }}
     steps:
       - name: Validate caller trust boundary
         id: trust
@@ -180,6 +181,58 @@ jobs:
             echo "kandelo-sha=$kandelo_sha"
             echo "tap-sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Validate committed dependency tap lock
+        id: dependency-taps
+        shell: bash
+        env:
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          lock="$RUNNER_TEMP/homebrew-dependency-taps.json"
+          python3 kandelo/scripts/homebrew-dependency-taps.py validate \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --out "$lock"
+          core_sha="$(jq -r '
+            [.taps[] | select(.tap_name == "kandelo-dev/tap-core") | .tap_commit] |
+            if length == 0 then "" elif length == 1 then .[0] else error("duplicate core tap") end
+          ' "$lock")"
+          echo "core-tap-sha=$core_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact public core dependency tap
+        if: ${{ steps.dependency-taps.outputs.core-tap-sha != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          token: ""
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ steps.dependency-taps.outputs.core-tap-sha }}
+          path: dependency-taps/core
+
+      - name: Verify immutable dependency tap checkouts
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ steps.dependency-taps.outputs.core-tap-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ steps.source-commits.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          dependency_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
+          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$RUNNER_TEMP/homebrew-resolved-taps.json"
 
       - name: Resolve release and bottle root
         id: release
@@ -418,6 +471,16 @@ jobs:
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap
 
+      - name: Checkout exact public core dependency tap for build
+        if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          token: ""
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          path: dependency-taps/core
+
       - name: Verify source snapshots
         shell: bash
         env:
@@ -437,6 +500,30 @@ jobs:
           [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap build checkout differs from the validated plan"; exit 2;
           }
+
+      - name: Materialize immutable dependency tap map for build
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
+          dependency_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
+          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
 
       - name: Checkout reviewed Homebrew implementation
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -861,9 +948,20 @@ jobs:
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap-reviewed
 
+      - name: Checkout exact post-build core dependency tap source
+        if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          token: ""
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          path: dependency-taps/core-reviewed
+
       - name: Recheck reviewed sources after Formula execution
         shell: bash
         env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           FORMULA: ${{ matrix.formula }}
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
@@ -878,6 +976,29 @@ jobs:
           [ "$(git -C "$GITHUB_WORKSPACE/tap-reviewed" rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::post-build tap source differs from the plan"; exit 2;
           }
+          dependency_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            for root in "$GITHUB_WORKSPACE/dependency-taps/core" \
+              "$GITHUB_WORKSPACE/dependency-taps/core-reviewed"; do
+              [ "$(git -C "$root" rev-parse HEAD)" = "$CORE_TAP_SHA" ] || {
+                echo "::error::post-build core dependency tap differs from the lock"; exit 2;
+              }
+              [ -z "$(git -C "$root" status --short --untracked-files=no)" ] || {
+                echo "::error::Formula execution modified the core dependency tap"; exit 2;
+              }
+            done
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core-reviewed")
+          fi
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps-postbuild.json"
+          python3 "$GITHUB_WORKSPACE/kandelo-postbuild/scripts/homebrew-dependency-taps.py" resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap-reviewed" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
           brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
           [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
             echo "::error::Homebrew moved during formula execution"; exit 2;
@@ -1043,6 +1164,24 @@ jobs:
           path: kandelo
           submodules: false
 
+      - name: Checkout exact tap source for upload validation
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ needs.plan.outputs.tap-sha }}
+          path: tap
+
+      - name: Checkout exact public core dependency tap for upload validation
+        if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          token: ""
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          path: dependency-taps/core
+
       - name: Verify uploader source snapshot
         shell: bash
         env:
@@ -1055,6 +1194,30 @@ jobs:
           [ "$(git -C kandelo rev-parse HEAD)" = "$KANDELO_SHA" ] || {
             echo "::error::uploader source differs from the validated plan"; exit 2;
           }
+
+      - name: Materialize immutable dependency tap map for upload validation
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
+          dependency_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
+          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
@@ -1236,6 +1399,48 @@ jobs:
           ref: ${{ needs.plan.outputs.kandelo-sha }}
           path: kandelo
           submodules: false
+
+      - name: Checkout exact tap source for index validation
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ needs.plan.outputs.tap-sha }}
+          path: tap
+
+      - name: Checkout exact public core dependency tap for index validation
+        if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          token: ""
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          path: dependency-taps/core
+
+      - name: Materialize immutable dependency tap map for index validation
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
+          dependency_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
+          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
@@ -1491,6 +1696,16 @@ jobs:
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap
 
+      - name: Checkout exact public core dependency tap for verification
+        if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          token: ""
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          path: dependency-taps/core
+
       - name: Verify fresh verifier source snapshots
         shell: bash
         env:
@@ -1509,6 +1724,30 @@ jobs:
           [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap verifier source differs from the plan"; exit 2;
           }
+
+      - name: Materialize immutable dependency tap map for verification
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
+          dependency_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
+          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
 
       - name: Checkout reviewed Homebrew implementation for bottle verification
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -2219,11 +2458,24 @@ jobs:
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap-postverify
 
+      - name: Checkout exact post-verification core dependency tap source
+        if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          token: ""
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          path: dependency-taps/core-postverify
+
       - name: Reconstruct the verified Formula with fresh trusted generators
         shell: bash
         env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
@@ -2239,6 +2491,28 @@ jobs:
           [ -z "$(git -C tap-postverify status --short)" ] || {
             echo "::error::post-verification tap checkout is dirty"; exit 2;
           }
+          dependency_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            for root in dependency-taps/core dependency-taps/core-postverify; do
+              [ "$(git -C "$root" rev-parse HEAD)" = "$CORE_TAP_SHA" ] || {
+                echo "::error::post-verification core dependency tap differs from the lock"; exit 2;
+              }
+              [ -z "$(git -C "$root" status --short --untracked-files=no)" ] || {
+                echo "::error::runtime verification modified the core dependency tap"; exit 2;
+              }
+            done
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core-postverify")
+          fi
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps-postverify.json"
+          python3 kandelo-postverify/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
           brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
           [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
             echo "::error::Homebrew moved during exact-bottle verification"; exit 2;
@@ -2271,6 +2545,7 @@ jobs:
       - name: Generate sidecars from the selected bottle
         shell: bash
         env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
         run: |
           set -euo pipefail
@@ -2576,6 +2851,14 @@ jobs:
             *) echo "::error::verification kernel did not resolve from the exact worktree build"; exit 2 ;;
           esac
 
+          dependency_tap_args=()
+          while IFS=$'\t' read -r dependency_tap dependency_root; do
+            [ -n "$dependency_tap" ] && [ -n "$dependency_root" ] || continue
+            dependency_tap_args+=(--dependency-tap-root \
+              "$dependency_tap=$dependency_root")
+          done < <(jq -r '.dependencies[] | [.tap_name, .root] | @tsv' \
+            "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE")
+
           vfs_args=(
             --metadata "$acceptance_tap/Kandelo/metadata.json"
             --tap-root "$acceptance_tap"
@@ -2588,6 +2871,7 @@ jobs:
             --bottle-cache "$RUNNER_TEMP/homebrew-bottle-cache"
             --no-fallback
           )
+          vfs_args+=("${dependency_tap_args[@]}")
           if [ -n "$shell_config" ]; then
             vfs_args+=(--write-profile --shell-config "$shell_config")
           fi
@@ -2613,6 +2897,7 @@ jobs:
             --expect-stdout "$expected_stdout"
             --evidence "$node_evidence"
           )
+          node_args+=("${dependency_tap_args[@]}")
           if [ -n "$shell_config" ]; then
             node_args+=(--shell-config "$shell_config")
           fi
@@ -2722,6 +3007,7 @@ jobs:
       - name: Recheck trusted verifier sources after runtime execution
         shell: bash
         env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
@@ -2761,6 +3047,16 @@ jobs:
           [ -z "$(git -C tap-postverify status --short --untracked-files=no)" ] || {
             echo "::error::runtime validation modified fresh tap files"; exit 1;
           }
+          if [ -n "$CORE_TAP_SHA" ]; then
+            for root in dependency-taps/core dependency-taps/core-postverify; do
+              [ "$(git -C "$root" rev-parse HEAD)" = "$CORE_TAP_SHA" ] || {
+                echo "::error::core dependency tap moved during runtime validation"; exit 1;
+              }
+              [ -z "$(git -C "$root" status --short --untracked-files=no)" ] || {
+                echo "::error::runtime validation modified core dependency tap files"; exit 1;
+              }
+            done
+          fi
           brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
           [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
             echo "::error::reviewed Homebrew source moved during runtime validation"; exit 1;
@@ -2877,6 +3173,16 @@ jobs:
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap-base
 
+      - name: Checkout exact public core dependency tap for finalization
+        if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          token: ""
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          path: dependency-taps/core
+
       - name: Verify finalizer source snapshots
         shell: bash
         env:
@@ -2890,6 +3196,30 @@ jobs:
           [ "$(git -C tap-base rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap finalizer base differs from the plan"; exit 2;
           }
+
+      - name: Materialize immutable dependency tap map for finalization
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
+          dependency_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
+          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap-base" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22

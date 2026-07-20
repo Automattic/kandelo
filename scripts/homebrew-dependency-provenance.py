@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture and validate bounded evidence for same-tap Homebrew dependency pours."""
+"""Capture and validate bounded evidence for immutable-tap Homebrew dependency pours."""
 
 from __future__ import annotations
 
@@ -175,17 +175,128 @@ def selected_tap_name(args: argparse.Namespace) -> str:
     return selected
 
 
-def parse_expected_dependencies(contents: str, label: str, normalized_tap: str) -> set[str]:
+def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
+    primary_name = selected_tap_name(args)
+    primary_repository = normalized_tap_name(args.tap_repository)
+    primary_root_value = getattr(args, "tap_root", None)
+    primary_root = pathlib.Path(primary_root_value).resolve() if primary_root_value else None
+    contexts: dict[str, dict[str, Any]] = {
+        primary_name: {
+            "tap_name": primary_name,
+            "tap_repository": primary_repository,
+            "tap_commit": args.tap_commit,
+            "root": primary_root,
+            "bottle_root_url": f"https://ghcr.io/v2/{primary_repository}",
+        }
+    }
+    resolved_path_value = os.environ.get("KANDELO_HOMEBREW_RESOLVED_TAPS_FILE", "")
+    if not resolved_path_value:
+        return contexts
+    resolved_path = regular_file(
+        pathlib.Path(resolved_path_value), "resolved dependency tap map", 65_536
+    )
+    if resolved_path.stat().st_mode & 0o022:
+        fail("resolved dependency tap map must not be group- or world-writable")
+    try:
+        document = json.loads(resolved_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"resolved dependency tap map is not valid UTF-8 JSON: {error}")
+    root = exact_keys(
+        document,
+        {"schema", "primary", "dependencies"},
+        "resolved dependency tap map",
+    )
+    if root["schema"] != 1 or not isinstance(root["dependencies"], list) or len(root["dependencies"]) > 8:
+        fail("resolved dependency tap map has an unexpected schema")
+    records = [root["primary"], *root["dependencies"]]
+    parsed: dict[str, dict[str, Any]] = {}
+    for index, raw in enumerate(records):
+        record = exact_keys(
+            raw,
+            {"tap_name", "tap_repository", "tap_commit", "root"},
+            f"resolved dependency tap map context {index}",
+        )
+        tap_name = normalized_tap_name(record["tap_name"])
+        if record["tap_name"] != tap_name:
+            fail(f"resolved dependency tap map context {index} is not normalized")
+        repository = normalized_tap_name(record["tap_repository"])
+        owner, repository_name = repository.split("/", 1)
+        if not repository_name.startswith("homebrew-") or tap_name != f"{owner}/{repository_name.removeprefix('homebrew-')}":
+            fail(f"resolved dependency tap map context {index} has a nonconventional identity")
+        commit = require_string(
+            record["tap_commit"],
+            f"resolved dependency tap map context {index} commit",
+            COMMIT,
+        )
+        root_path = pathlib.Path(require_string(record["root"], f"resolved dependency tap map context {index} root"))
+        if not root_path.is_absolute() or root_path.is_symlink() or not root_path.is_dir():
+            fail(f"resolved dependency tap map context {index} root must be a real absolute directory")
+        root_path = root_path.resolve()
+        if index == 0 and primary_root is not None:
+            root_path = primary_root
+        if tap_name in parsed:
+            fail(f"resolved dependency tap map repeats {tap_name}")
+        try:
+            head = subprocess.run(
+                ["git", "-C", str(root_path), "rev-parse", "HEAD"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+            status = subprocess.run(
+                ["git", "-C", str(root_path), "status", "--short", "--untracked-files=no"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+            fail(f"could not inspect resolved tap {tap_name}: {error}")
+        if head.returncode != 0 or head.stdout.decode("ascii", errors="replace").strip() != commit:
+            fail(f"resolved tap {tap_name} HEAD differs from {commit}")
+        if status.returncode != 0 or (index != 0 and status.stdout):
+            fail(f"resolved tap {tap_name} has tracked modifications")
+        parsed[tap_name] = {
+            "tap_name": tap_name,
+            "tap_repository": repository,
+            "tap_commit": commit,
+            "root": root_path,
+            "bottle_root_url": f"https://ghcr.io/v2/{repository}",
+        }
+    if primary_name not in parsed:
+        fail("resolved dependency tap map omits the selected primary tap")
+    primary = parsed[primary_name]
+    if (
+        primary["tap_repository"] != primary_repository
+        or primary["tap_commit"] != args.tap_commit
+    ):
+        fail("resolved dependency tap map primary identity differs from the build")
+    return parsed
+
+
+def split_full_name(full_name: str, label: str) -> tuple[str, str]:
+    parts = full_name.split("/")
+    if len(parts) != 3:
+        fail(f"{label} must be a tap-qualified owner/name/formula")
+    tap_name = normalized_tap_name("/".join(parts[:2]))
+    name = require_string(parts[2], f"{label} formula", FORMULA_NAME)
+    if full_name != f"{tap_name}/{name}":
+        fail(f"{label} must be normalized lowercase")
+    return tap_name, name
+
+
+def parse_expected_dependencies(
+    contents: str, label: str, contexts: dict[str, dict[str, Any]]
+) -> set[str]:
     expected: set[str] = set()
-    prefix = f"{normalized_tap}/"
     for index, raw in enumerate(contents.splitlines()):
         full_name = raw.strip()
         if not full_name:
             continue
-        if full_name != full_name.lower() or not full_name.startswith(prefix):
-            fail(f"{label} line {index + 1} is not from the selected tap")
-        name = full_name.removeprefix(prefix)
-        require_string(name, f"{label} line {index + 1}", FORMULA_NAME)
+        tap_name, _name = split_full_name(full_name, f"{label} line {index + 1}")
+        if tap_name not in contexts:
+            fail(f"{label} line {index + 1} is not from an immutable resolved tap")
         if full_name in expected:
             fail(f"duplicate {label} entry: {full_name}")
         expected.add(full_name)
@@ -194,17 +305,23 @@ def parse_expected_dependencies(contents: str, label: str, normalized_tap: str) 
     return expected
 
 
-def expected_dependencies(path: pathlib.Path, normalized_tap: str) -> set[str]:
+def expected_dependencies(
+    path: pathlib.Path, contexts: dict[str, dict[str, Any]]
+) -> set[str]:
     regular_file(path, "expected dependency list", MAX_DEPENDENCY_LIST_BYTES)
     try:
         contents = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         fail(f"expected dependency list is not UTF-8: {error}")
-    return parse_expected_dependencies(contents, "expected dependency", normalized_tap)
+    return parse_expected_dependencies(contents, "expected dependency", contexts)
 
 
 def exact_tap_dependencies(
-    tap_root: pathlib.Path, tap_name: str, formula: str, arch: str, bottle_root_url: str
+    tap_root: pathlib.Path,
+    tap_name: str,
+    formula: str,
+    arch: str,
+    contexts: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     resolver = pathlib.Path(__file__).with_name("homebrew-formula-runtime-closure.rb")
     regular_file(resolver, "static Formula dependency resolver", MAX_JSON_BYTES)
@@ -230,17 +347,17 @@ def exact_tap_dependencies(
     if not isinstance(document, dict) or len(document) > MAX_DEPENDENCIES:
         fail(f"static Formula dependency metadata must contain at most {MAX_DEPENDENCIES} entries")
 
-    normalized_tap = normalized_tap_name(tap_name)
     expected_tag = f"{arch}_kandelo"
     dependencies: dict[str, dict[str, Any]] = {}
     prior_full_name = ""
     for full_name, raw_bottle in document.items():
         require_string(full_name, "static dependency full name")
-        names = parse_expected_dependencies(full_name, "static dependency", normalized_tap)
+        names = parse_expected_dependencies(full_name, "static dependency", contexts)
         if len(names) != 1 or full_name <= prior_full_name:
             fail("static Formula dependency metadata must be uniquely sorted by full name")
         prior_full_name = full_name
-        name = full_name.removeprefix(f"{normalized_tap}/")
+        dependency_tap, name = split_full_name(full_name, "static dependency")
+        dependency_context = contexts[dependency_tap]
         bottle = exact_keys(
             raw_bottle,
             {"cellar", "rebuild", "sha256", "tag", "url"},
@@ -251,8 +368,11 @@ def exact_tap_dependencies(
         )
         if bottle["tag"] != expected_tag:
             fail(f"static dependency {full_name} bottle tag does not match {expected_tag}")
-        if bottle["url"] != f"{bottle_root_url}/{name}/blobs/sha256:{bottle_sha}":
-            fail(f"static dependency {full_name} bottle URL does not match the selected root")
+        expected_url = (
+            f"{dependency_context['bottle_root_url']}/{name}/blobs/sha256:{bottle_sha}"
+        )
+        if bottle["url"] != expected_url:
+            fail(f"static dependency {full_name} bottle URL does not match its source repository")
         if bottle["cellar"] not in (
             "any",
             "any_skip_relocation",
@@ -270,7 +390,10 @@ def exact_tap_dependencies(
 
 
 def exact_direct_dependencies(
-    tap_root: pathlib.Path, tap_name: str, formula: str
+    tap_root: pathlib.Path,
+    tap_name: str,
+    formula: str,
+    contexts: dict[str, dict[str, Any]],
 ) -> set[str]:
     resolver = pathlib.Path(__file__).with_name("homebrew-formula-runtime-closure.rb")
     regular_file(resolver, "static Formula dependency resolver", MAX_JSON_BYTES)
@@ -297,7 +420,7 @@ def exact_direct_dependencies(
     except UnicodeDecodeError as error:
         fail(f"static direct Formula dependency list is not UTF-8: {error}")
     return parse_expected_dependencies(
-        contents, "static direct dependency", normalized_tap_name(tap_name)
+        contents, "static direct dependency", contexts
     )
 
 
@@ -455,25 +578,24 @@ def capture(args: argparse.Namespace) -> None:
         fail("target receipt has an unreasonable dependency count")
     log_lines = read_log_lines(pathlib.Path(args.install_log))
     bottle_tag = f"{args.arch}_kandelo"
-    expected = expected_dependencies(pathlib.Path(args.expected_dependencies), normalized_tap)
+    contexts = resolved_tap_contexts(args)
+    expected = expected_dependencies(pathlib.Path(args.expected_dependencies), contexts)
 
     selected: dict[str, dict[str, Any]] = {}
-    prefix = f"{normalized_tap}/"
     for index, dependency in enumerate(runtime_dependencies):
         if not isinstance(dependency, dict):
             fail(f"runtime_dependencies[{index}] must be an object")
         full_name = require_string(
             dependency.get("full_name"), f"runtime_dependencies[{index}].full_name"
         ).lower()
-        if not full_name.startswith(prefix):
-            fail(
-                f"target receipt runtime dependency {full_name!r} is outside "
-                f"selected tap {normalized_tap}"
-            )
-        name = full_name.removeprefix(prefix)
-        require_string(name, f"runtime dependency name {name!r}", FORMULA_NAME)
+        dependency_tap, name = split_full_name(
+            full_name, f"runtime_dependencies[{index}].full_name"
+        )
+        context = contexts.get(dependency_tap)
+        if context is None:
+            fail(f"target receipt runtime dependency {full_name!r} is outside immutable resolved taps")
         if full_name in selected:
-            fail(f"duplicate same-tap runtime dependency: {full_name}")
+            fail(f"duplicate immutable-tap runtime dependency: {full_name}")
         declared_directly = require_bool(
             dependency.get("declared_directly"),
             f"runtime dependency {full_name} declared_directly",
@@ -499,17 +621,20 @@ def capture(args: argparse.Namespace) -> None:
         source = receipt.get("source")
         if not isinstance(source, dict):
             fail(f"dependency {full_name} receipt source must be an object")
-        if str(source.get("tap", "")).lower() != normalized_tap:
+        if str(source.get("tap", "")).lower() != dependency_tap:
             fail(f"dependency {full_name} receipt came from a different tap")
-        if source.get("tap_git_head") != args.tap_commit:
-            fail(f"dependency {full_name} receipt is not bound to tap commit {args.tap_commit}")
+        if source.get("tap_git_head") != context["tap_commit"]:
+            fail(
+                f"dependency {full_name} receipt is not bound to tap commit "
+                f"{context['tap_commit']}"
+            )
         homebrew_version = require_string(
             receipt.get("homebrew_version"), f"dependency {full_name} Homebrew version"
         )
         if len(homebrew_version.encode("utf-8")) > 256:
             fail(f"dependency {full_name} Homebrew version is too long")
 
-        formula_path = tap_root / "Formula" / f"{name}.rb"
+        formula_path = pathlib.Path(context["root"]) / "Formula" / f"{name}.rb"
         regular_file(formula_path, f"dependency {full_name} Formula", MAX_JSON_BYTES)
         formula_sha = sha256_file(formula_path)
         try:
@@ -528,7 +653,8 @@ def capture(args: argparse.Namespace) -> None:
             fail(f"dependency {full_name} has no {bottle_tag} bottle")
         bottle_sha = require_string(tag.get("sha256"), f"dependency {full_name} bottle sha256", SHA256)
         bottle_url = require_string(tag.get("url"), f"dependency {full_name} bottle URL")
-        expected_url = f"{args.bottle_root_url}/{name}/blobs/sha256:{bottle_sha}"
+        dependency_root_url = context["bottle_root_url"]
+        expected_url = f"{dependency_root_url}/{name}/blobs/sha256:{bottle_sha}"
         if bottle_url != expected_url:
             fail(f"dependency {full_name} bottle URL does not match {expected_url}")
         bottle_cellar = normalized_brew_info_cellar(tag.get("cellar"), full_name)
@@ -544,7 +670,7 @@ def capture(args: argparse.Namespace) -> None:
             name, version, bottle_tag, rebuild
         )
         bottle_manifest_url = public_manifest_url(
-            args.bottle_root_url, name, version, rebuild
+            dependency_root_url, name, version, rebuild
         )
         fetch_lines, pour_lines = selected_evidence(
             log_lines,
@@ -582,27 +708,40 @@ def capture(args: argparse.Namespace) -> None:
                 "path": relative_receipt,
                 "poured_from_bottle": True,
                 "sha256": sha256_file(receipt_path),
-                "source_tap": normalized_tap,
-                "source_tap_git_head": args.tap_commit,
+                "source_tap": dependency_tap,
+                "source_tap_git_head": context["tap_commit"],
             },
             "version": version,
+        }
+
+        selected[full_name]["origin"] = {
+            "bottle_root_url": dependency_root_url,
+            "tap_commit": context["tap_commit"],
+            "tap_name": dependency_tap,
+            "tap_repository": context["tap_repository"],
         }
 
     if set(selected) != expected:
         missing = sorted(expected - set(selected))
         unexpected = sorted(set(selected) - expected)
         fail(
-            "target receipt does not match the resolved same-tap dependency closure "
+            "target receipt does not match the resolved immutable-tap dependency closure "
             f"(missing={missing}, unexpected={unexpected})"
         )
 
+    cross_tap = any(
+        record["origin"]["tap_name"] != normalized_tap for record in selected.values()
+    )
+    if not cross_tap:
+        for record in selected.values():
+            record.pop("origin")
     output = {
         "arch": args.arch,
         "bottle_root_url": args.bottle_root_url,
         "bottle_tag": bottle_tag,
         "dependencies": [selected[name] for name in sorted(selected)],
         "formula": args.formula,
-        "schema": 2,
+        "schema": 3 if cross_tap else 2,
         "tap_commit": args.tap_commit,
         "tap_name": normalized_tap,
         "tap_repository": repository,
@@ -668,12 +807,13 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         },
         "dependency provenance",
     )
-    if root["schema"] != 2:
-        fail("dependency provenance schema must be 2")
+    if root["schema"] not in (2, 3):
+        fail("dependency provenance schema must be 2 or 3")
     if root["formula"] != args.formula or root["arch"] != args.arch:
         fail("dependency provenance formula or architecture does not match the build")
     normalized_repository = normalized_tap_name(args.tap_repository)
     normalized_tap = selected_tap_name(args)
+    contexts = resolved_tap_contexts(args)
     expected_root = f"https://ghcr.io/v2/{normalized_repository}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
@@ -704,12 +844,13 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             normalized_tap,
             args.formula,
             args.arch,
-            args.bottle_root_url,
+            contexts,
         )
         static_direct_dependencies = exact_direct_dependencies(
             pathlib.Path(validation_tap_root),
             normalized_tap,
             args.formula,
+            contexts,
         )
     if planned_tap_root:
         if not validation_tap_root:
@@ -718,24 +859,49 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         if exact_git_head(planned_root, "planned tap root") != args.tap_commit:
             fail("planned tap root does not match the provenance tap commit")
     for index, dependency in enumerate(dependencies):
+        expected_dependency_keys = {
+            "bottle",
+            "declared_directly",
+            "formula",
+            "full_name",
+            "install_log",
+            "name",
+            "receipt",
+            "version",
+        }
+        if root["schema"] == 3:
+            expected_dependency_keys.add("origin")
         dependency = exact_keys(
             dependency,
-            {
-                "bottle",
-                "declared_directly",
-                "formula",
-                "full_name",
-                "install_log",
-                "name",
-                "receipt",
-                "version",
-            },
+            expected_dependency_keys,
             f"dependencies[{index}]",
         )
         name = require_string(dependency["name"], f"dependencies[{index}].name", FORMULA_NAME)
         full_name = require_string(dependency["full_name"], f"dependencies[{index}].full_name")
-        if full_name != f"{normalized_tap}/{name}":
-            fail(f"dependencies[{index}] is not from the selected tap")
+        dependency_tap, full_name_name = split_full_name(
+            full_name, f"dependencies[{index}].full_name"
+        )
+        if full_name_name != name:
+            fail(f"dependencies[{index}] name differs from full_name")
+        context = contexts.get(dependency_tap)
+        if context is None:
+            fail(f"dependencies[{index}] is not from an immutable resolved tap")
+        if root["schema"] == 2 and dependency_tap != normalized_tap:
+            fail(f"dependencies[{index}] schema 2 dependency is not from the selected tap")
+        if root["schema"] == 3:
+            origin = exact_keys(
+                dependency["origin"],
+                {"bottle_root_url", "tap_commit", "tap_name", "tap_repository"},
+                f"dependencies[{index}].origin",
+            )
+            expected_origin = {
+                "bottle_root_url": context["bottle_root_url"],
+                "tap_commit": context["tap_commit"],
+                "tap_name": dependency_tap,
+                "tap_repository": context["tap_repository"],
+            }
+            if origin != expected_origin:
+                fail(f"dependencies[{index}] origin differs from the immutable tap map")
         if full_name in seen or full_name <= prior_full_name:
             fail("dependency provenance must be uniquely sorted by full_name")
         seen.add(full_name)
@@ -762,7 +928,8 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         bottle_sha = require_string(bottle["sha256"], f"dependencies[{index}].bottle.sha256", SHA256)
         if bottle["tag"] != expected_tag:
             fail(f"dependencies[{index}] bottle tag does not match")
-        if bottle["url"] != f"{args.bottle_root_url}/{name}/blobs/sha256:{bottle_sha}":
+        dependency_root_url = context["bottle_root_url"]
+        if bottle["url"] != f"{dependency_root_url}/{name}/blobs/sha256:{bottle_sha}":
             fail(f"dependencies[{index}] bottle URL is not digest-bound")
         if bottle["cellar"] not in ("any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"):
             fail(f"dependencies[{index}] bottle cellar is invalid")
@@ -795,8 +962,11 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             fail(f"dependencies[{index}] receipt path is not canonical")
         require_string(receipt["sha256"], f"dependencies[{index}].receipt.sha256", SHA256)
         require_string(receipt["homebrew_version"], f"dependencies[{index}].receipt.homebrew_version")
-        if receipt["source_tap"] != normalized_tap or receipt["source_tap_git_head"] != args.tap_commit:
-            fail(f"dependencies[{index}] receipt source is not the exact selected tap")
+        if (
+            receipt["source_tap"] != dependency_tap
+            or receipt["source_tap_git_head"] != context["tap_commit"]
+        ):
+            fail(f"dependencies[{index}] receipt source is not the exact immutable tap")
         install_log = exact_keys(
             dependency["install_log"],
             {"fetch", "pour", "source_build_absent"},
@@ -805,7 +975,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         if install_log["source_build_absent"] is not True:
             fail(f"dependencies[{index}] lacks a no-source-build assertion")
         bottle_manifest_url = public_manifest_url(
-            args.bottle_root_url, name, version, bottle["rebuild"]
+            dependency_root_url, name, version, bottle["rebuild"]
         )
         validate_fetch_evidence(
             install_log["fetch"],
@@ -818,10 +988,10 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             bottle_filename,
         )
         if validation_tap_root:
-            formula_path = pathlib.Path(validation_tap_root) / "Formula" / f"{name}.rb"
+            formula_path = pathlib.Path(context["root"]) / "Formula" / f"{name}.rb"
             regular_file(formula_path, f"dependencies[{index}] exact Formula", MAX_JSON_BYTES)
             current_formula_sha = sha256_file(formula_path)
-            if planned_root is not None:
+            if planned_root is not None and dependency_tap == normalized_tap:
                 planned_formula_path = planned_root / "Formula" / f"{name}.rb"
                 regular_file(
                     planned_formula_path,
@@ -845,7 +1015,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             missing = sorted(static_names - seen)
             unexpected = sorted(seen - static_names)
             fail(
-                "dependency provenance does not match the exact tap's static runtime closure "
+                "dependency provenance does not match the exact immutable-tap runtime closure "
                 f"(missing={missing}, unexpected={unexpected})"
             )
 

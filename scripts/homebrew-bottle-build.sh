@@ -227,7 +227,9 @@ TARGET_BOTTLE_IDENTITY="$CONTROL_DIR/target-bottle-identity.json"
 HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"
 DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"
 BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"
-DEPENDENCY_POUR_LIST="$CONTROL_DIR/same-tap-pour-dependencies.txt"
+DEPENDENCY_POUR_LIST="$CONTROL_DIR/target-pour-dependencies.txt"
+ALLOWED_TARGET_TAPS="$CONTROL_DIR/allowed-target-taps.txt"
+STATIC_RUNTIME_DEPENDENCIES="$CONTROL_DIR/static-runtime-dependencies.txt"
 TARGET_CELLAR_BEFORE_TEST="$CONTROL_DIR/target-cellar-before-test.txt"
 TARGET_CELLAR_AFTER_TEST="$CONTROL_DIR/target-cellar-after-test.txt"
 DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
@@ -239,6 +241,8 @@ DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
 : >"$DEPENDENCY_LIST"
 : >"$BUILD_TEST_DEPENDENCY_LIST"
 : >"$DEPENDENCY_POUR_LIST"
+: >"$ALLOWED_TARGET_TAPS"
+: >"$STATIC_RUNTIME_DEPENDENCIES"
 : >"$TARGET_CELLAR_BEFORE_TEST"
 : >"$TARGET_CELLAR_AFTER_TEST"
 for attempt in 1 2 3; do
@@ -248,6 +252,7 @@ chmod 0600 "$INSTALL_LOG" "$NATIVE_INSTALL_LOG" \
   "$HOST_DEPENDENCY_PLAN" "$TARGET_BOTTLE_IDENTITY" \
   "$HOST_DEPENDENCY_LIST" "$DEPENDENCY_LIST" \
   "$BUILD_TEST_DEPENDENCY_LIST" "$DEPENDENCY_POUR_LIST" \
+  "$ALLOWED_TARGET_TAPS" "$STATIC_RUNTIME_DEPENDENCIES" \
   "$TARGET_CELLAR_BEFORE_TEST" "$TARGET_CELLAR_AFTER_TEST" \
   "$CONTROL_DIR"/brew-install-attempt-*.log
 
@@ -287,6 +292,10 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   exit 2
 fi
 EXPECTED_BOTTLE_REBUILD="$(jq -r '.bottle.rebuild' "$TARGET_BOTTLE_IDENTITY")"
+[ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ] || {
+  echo "homebrew-bottle-build.sh: immutable resolved tap map is required" >&2
+  exit 2
+}
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json \
   >"$HOST_DEPENDENCY_PLAN"
@@ -294,9 +303,10 @@ ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   echo "homebrew-bottle-build.sh: host dependency plan exceeds the size limit" >&2
   exit 2
 }
-jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" '
-  keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap"] and
-  .schema == 2 and
+jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
+  --slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" '
+  keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap", "target_taps"] and
+  .schema == 3 and
   .tap == $tap and
   .formula == $formula and
   .full_name == ($tap + "/" + $formula) and
@@ -306,6 +316,17 @@ jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" '
   (.build == (.build | sort | unique)) and
   (.build_and_test == (.build_and_test | sort | unique)) and
   (.runtime_and_test == (.runtime_and_test | sort | unique)) and
+  (.target_taps == (
+    [$resolved[0].primary, $resolved[0].dependencies[]] |
+    map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)
+  )) and
+  (.target_taps | all(.[];
+    keys == ["tap_commit", "tap_name", "tap_repository"] and
+    (.tap_name | type == "string" and test("^[a-z0-9._-]+/[a-z0-9._-]+$")) and
+    (.tap_repository | type == "string" and test("^[a-z0-9._-]+/homebrew-[a-z0-9._-]+$")) and
+    (.tap_commit | type == "string" and test("^[0-9a-f]{40}$"))
+  )) and
+  (.target_taps | map(.tap_name) | index($tap) != null) and
   ((.build - .build_and_test) | length) == 0 and
   ((.runtime_and_test - .build_and_test) | length) == 0 and
   all(.build[]; type == "string" and test("^[a-z0-9][a-z0-9@+_.-]*$")) and
@@ -321,10 +342,43 @@ homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 
-# Trust only the reviewed tap. The publisher-only Homebrew patch suppresses
-# automatic persistence of redundant item entries for that already-trusted
-# tap, so this store can remain immutable during Formula evaluation.
+printf '%s\n' "$TAP_NAME" >"$ALLOWED_TARGET_TAPS"
+DEPENDENCY_TAP_ROOTS=()
+if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
+  while IFS=$'\t' read -r dependency_tap dependency_root dependency_commit; do
+    [ -n "$dependency_tap" ] && [ -n "$dependency_root" ] && \
+      [ -n "$dependency_commit" ] || {
+      echo "homebrew-bottle-build.sh: resolved dependency tap is incomplete" >&2
+      exit 2
+    }
+    "$BREW_BIN" tap "$dependency_tap" "$dependency_root"
+    tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"
+    tapped_dependency_root="$(cd "$tapped_dependency_root" && pwd -P)"
+    locked_dependency_root="$(cd "$dependency_root" && pwd -P)"
+    [ "$tapped_dependency_root" != "$locked_dependency_root" ] && \
+      [ "$(git -C "$tapped_dependency_root" rev-parse HEAD)" = "$dependency_commit" ] && \
+      [ -z "$(git -C "$tapped_dependency_root" status --short --untracked-files=all)" ] || {
+      echo "homebrew-bottle-build.sh: Homebrew did not clone dependency tap $dependency_tap at its locked commit cleanly" >&2
+      exit 1
+    }
+    printf '%s\n' "$dependency_tap" >>"$ALLOWED_TARGET_TAPS"
+    DEPENDENCY_TAP_ROOTS+=("$dependency_root")
+  done < <(jq -er '.dependencies[] | [.tap_name, .root, .tap_commit] | @tsv' \
+    "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE")
+fi
+LC_ALL=C sort -u -o "$ALLOWED_TARGET_TAPS" "$ALLOWED_TARGET_TAPS"
+validate_dependency_list "$ALLOWED_TARGET_TAPS" "allowed target tap list"
+
+# Trust only the reviewed primary tap and its immutable dependency tap
+# checkouts. The publisher-only Homebrew patch suppresses automatic
+# persistence of redundant item entries for already-trusted taps, so this
+# store can remain immutable during Formula evaluation.
 "$BREW_BIN" trust --tap "$TAP_NAME"
+if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
+  while IFS= read -r dependency_tap; do
+    [ "$dependency_tap" = "$TAP_NAME" ] || "$BREW_BIN" trust --tap "$dependency_tap"
+  done <"$ALLOWED_TARGET_TAPS"
+fi
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
@@ -344,7 +398,8 @@ if [ -n "$BUILD_USER" ]; then
   # the checkout; the isolated build identity receives no source write access.
   rm -rf "$KANDELO_ROOT/host/dist"
   homebrew_patched_launcher_isolate "$BUILD_USER" \
-    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR" "$KANDELO_ROOT"
+    "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR" "$KANDELO_ROOT" \
+    "${DEPENDENCY_TAP_ROOTS[@]}"
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-bottle-build.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
@@ -404,18 +459,38 @@ run_native_brew_logged missing
 # The later dependency query sees the native tree read-only and cannot plant
 # configuration or state for a subsequent native invocation.
 # `brew install --build-bottle` forces only the selected formula to build from
-# source. Preserve the runtime-only same-tap closure for published provenance,
-# but separately resolve build and test dependencies so every same-tap Formula
-# is force-poured before the selected target is built.
+# source. Preserve the runtime-only locked-tap closure for published
+# provenance, but separately resolve build and test dependencies so every
+# target Formula is force-poured before the selected target is built.
+filter_target_dependencies() {
+  awk '
+    NR == FNR { allowed[$0] = 1; next }
+    NF {
+      value = tolower($0)
+      count = split(value, parts, "/")
+      tap = parts[1] "/" parts[2]
+      if (count == 3 && allowed[tap] && !seen[value]++) print value
+    }
+  ' "$ALLOWED_TARGET_TAPS" -
+}
+
+ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+  "$TAP_ROOT" "$TAP_NAME" "$FORMULA" "$ARCH" |
+  jq -r 'keys[]' >"$STATIC_RUNTIME_DEPENDENCIES"
 "$BREW_BIN" deps --topological --full-name --formula "$FORMULA_REF" |
-  awk -v prefix="$TAP_NAME/" '
-    index(tolower($0), prefix) == 1 && !seen[tolower($0)]++ { print tolower($0) }
-  ' >"$DEPENDENCY_LIST"
+  filter_target_dependencies >"$DEPENDENCY_LIST"
+if ! diff -u \
+  <(LC_ALL=C sort -u "$STATIC_RUNTIME_DEPENDENCIES") \
+  <(LC_ALL=C sort -u "$DEPENDENCY_LIST") >/dev/null; then
+  echo "homebrew-bottle-build.sh: Homebrew runtime dependency graph differs from the static locked-tap graph" >&2
+  diff -u \
+    <(LC_ALL=C sort -u "$STATIC_RUNTIME_DEPENDENCIES") \
+    <(LC_ALL=C sort -u "$DEPENDENCY_LIST") >&2 || true
+  exit 1
+fi
 "$BREW_BIN" deps --topological --full-name --include-build --include-test \
   --formula "$FORMULA_REF" |
-  awk -v prefix="$TAP_NAME/" '
-    index(tolower($0), prefix) == 1 && !seen[tolower($0)]++ { print tolower($0) }
-  ' >"$BUILD_TEST_DEPENDENCY_LIST"
+  filter_target_dependencies >"$BUILD_TEST_DEPENDENCY_LIST"
 awk 'NF && !seen[$0]++ { print }' \
   "$DEPENDENCY_LIST" "$BUILD_TEST_DEPENDENCY_LIST" >"$DEPENDENCY_POUR_LIST"
 
@@ -446,10 +521,11 @@ done
 
 while IFS= read -r dependency; do
   [ -n "$dependency" ] || continue
-  dependency_name="${dependency#"$TAP_NAME/"}"
-  if [ "$dependency_name" = "$dependency" ] || \
+  dependency_tap="${dependency%/*}"
+  dependency_name="${dependency##*/}"
+  if ! grep -Fx "$dependency_tap" "$ALLOWED_TARGET_TAPS" >/dev/null || \
      ! [[ "$dependency_name" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
-    echo "homebrew-bottle-build.sh: invalid same-tap dependency: $dependency" >&2
+    echo "homebrew-bottle-build.sh: invalid locked-tap dependency: $dependency" >&2
     exit 2
   fi
   run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install \

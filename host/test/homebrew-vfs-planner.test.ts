@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ABI_VERSION } from "../src/generated/abi";
 import {
+  planFederatedHomebrewVfs,
   planHomebrewVfs,
   type HomebrewLinkManifest,
   type HomebrewTapMetadata,
+  type HomebrewVfsTapIdentity,
 } from "../src/homebrew-vfs-planner";
 
 const SHA_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -11,6 +13,7 @@ const SHA_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 const SHA_C = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const SHA_D = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const TAP_COMMIT = "1111111111111111111111111111111111111111";
+const EXTERNAL_TAP_COMMIT = "3333333333333333333333333333333333333333";
 const KANDELO_COMMIT = "2222222222222222222222222222222222222222";
 
 function clone<T>(value: T): T {
@@ -131,6 +134,99 @@ function manifestMap(
   return (path: string) => {
     const found = values[path];
     if (!found) throw new Error(`unexpected link manifest request ${path}`);
+    return found;
+  };
+}
+
+interface FederatedTapFixture {
+  repository: string;
+  name: string;
+  commit: string;
+}
+
+const CORE_TAP: FederatedTapFixture = {
+  repository: "kandelo-dev/homebrew-tap-core",
+  name: "kandelo-dev/tap-core",
+  commit: TAP_COMMIT,
+};
+const EXTERNAL_TAP: FederatedTapFixture = {
+  repository: "brandonpayton/homebrew-kandelo-canary",
+  name: "brandonpayton/kandelo-canary",
+  commit: EXTERNAL_TAP_COMMIT,
+};
+
+function federatedBottleUrl(tap: FederatedTapFixture, name: string, sha256 = SHA_B): string {
+  return `https://ghcr.io/v2/${tap.repository}/${name}/blobs/sha256:${sha256}`;
+}
+
+function federatedBottle(
+  tap: FederatedTapFixture,
+  name: string,
+  version: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return bottle(name, version, {
+    url: federatedBottleUrl(tap, name),
+    built_from: {
+      kandelo_repository: "Automattic/kandelo",
+      kandelo_commit: KANDELO_COMMIT,
+      tap_repository: tap.repository,
+      tap_commit: tap.commit,
+      formula_sha256: SHA_A,
+    },
+    ...overrides,
+  });
+}
+
+function federatedPackageEntry(
+  tap: FederatedTapFixture,
+  name: string,
+  version: string,
+  dependencies: Array<Record<string, unknown>> = [],
+  bottles: Array<Record<string, unknown>> = [federatedBottle(tap, name, version)],
+): Record<string, unknown> {
+  return {
+    ...packageEntry(name, version, dependencies, bottles),
+    full_name: `${tap.name}/${name}`,
+  };
+}
+
+function federatedMetadata(
+  tap: FederatedTapFixture,
+  packages: Array<Record<string, unknown>>,
+): HomebrewTapMetadata {
+  return metadata(packages, {
+    tap_repository: tap.repository,
+    tap_name: tap.name,
+    tap_commit: tap.commit,
+  });
+}
+
+function federatedLinkManifest(
+  tap: FederatedTapFixture,
+  name: string,
+  version: string,
+  overrides: Record<string, unknown> = {},
+): HomebrewLinkManifest {
+  return linkManifest(name, version, {
+    bottle: {
+      url: federatedBottleUrl(tap, name),
+      sha256: SHA_B,
+      bytes: 123,
+      cache_key_sha: SHA_C,
+      payload_root: `${name}/${version}`,
+    },
+    ...overrides,
+  });
+}
+
+function federatedManifestMap(
+  values: Record<string, HomebrewLinkManifest>,
+): (tap: HomebrewVfsTapIdentity, path: string) => HomebrewLinkManifest {
+  return (tap, path) => {
+    const key = `${tap.tapName}:${path}`;
+    const found = values[key];
+    if (!found) throw new Error(`unexpected federated link manifest request ${key}`);
     return found;
   };
 }
@@ -441,5 +537,171 @@ describe("Homebrew VFS planner", () => {
     expect(plan.packages[0].sourceStatus).toBe("fallback");
     expect(plan.packages[0].url).toBe("https://example.invalid/hello.last-green.bottle.tar.gz");
     expect(plan.packages[0].sha256).toBe(SHA_D);
+  });
+});
+
+describe("federated Homebrew VFS planner", () => {
+  const m4ManifestPath = "Kandelo/link/m4-1.4.21-rebuild0-wasm32.json";
+  const dashManifestPath = "Kandelo/link/dash-0.5.12-rebuild0-wasm32.json";
+
+  function m4Dependency(): Record<string, unknown> {
+    return {
+      name: "dash",
+      full_name: "kandelo-dev/tap-core/dash",
+      version: "0.5.12",
+    };
+  }
+
+  function successfulMetadata(): HomebrewTapMetadata[] {
+    return [
+      federatedMetadata(EXTERNAL_TAP, [
+        federatedPackageEntry(EXTERNAL_TAP, "m4", "1.4.21", [m4Dependency()]),
+      ]),
+      federatedMetadata(CORE_TAP, [
+        federatedPackageEntry(CORE_TAP, "dash", "0.5.12"),
+      ]),
+    ];
+  }
+
+  function successfulManifests(): Record<string, HomebrewLinkManifest> {
+    return {
+      [`${EXTERNAL_TAP.name}:${m4ManifestPath}`]:
+        federatedLinkManifest(EXTERNAL_TAP, "m4", "1.4.21"),
+      [`${CORE_TAP.name}:${dashManifestPath}`]:
+        federatedLinkManifest(CORE_TAP, "dash", "0.5.12"),
+    };
+  }
+
+  it("plans a locked external m4 to core dash closure by full Formula identity", async () => {
+    const plan = await planFederatedHomebrewVfs(successfulMetadata(), {
+      rootTapName: EXTERNAL_TAP.name,
+      packages: ["m4"],
+      arch: "wasm32",
+      runtime: "node",
+      allowFallback: false,
+      expectedCacheKeys: {
+        [`${EXTERNAL_TAP.name}/m4`]: SHA_C,
+        [`${CORE_TAP.name}/dash`]: SHA_C,
+      },
+      loadLinkManifest: federatedManifestMap(successfulManifests()),
+    });
+
+    expect(plan.tapName).toBe(EXTERNAL_TAP.name);
+    expect(plan.tapCommit).toBe(EXTERNAL_TAP.commit);
+    expect(plan.requestedPackages).toEqual(["m4"]);
+    expect(plan.requestedFullNames).toEqual([`${EXTERNAL_TAP.name}/m4`]);
+    expect(plan.taps.map((tap) => [tap.tapName, tap.tapRepository, tap.tapCommit])).toEqual([
+      [EXTERNAL_TAP.name, EXTERNAL_TAP.repository, EXTERNAL_TAP.commit],
+      [CORE_TAP.name, CORE_TAP.repository, CORE_TAP.commit],
+    ]);
+    expect(plan.packages.map((pkg) => pkg.fullName)).toEqual([
+      `${CORE_TAP.name}/dash`,
+      `${EXTERNAL_TAP.name}/m4`,
+    ]);
+    expect(plan.packages.map((pkg) => [pkg.tapName, pkg.tapRepository, pkg.tapCommit])).toEqual([
+      [CORE_TAP.name, CORE_TAP.repository, CORE_TAP.commit],
+      [EXTERNAL_TAP.name, EXTERNAL_TAP.repository, EXTERNAL_TAP.commit],
+    ]);
+    expect(plan.packages[1].dependencies).toEqual([{
+      name: "dash",
+      full_name: `${CORE_TAP.name}/dash`,
+      version: "0.5.12",
+    }]);
+    expect(plan.packages.map((pkg) => pkg.url)).toEqual([
+      federatedBottleUrl(CORE_TAP, "dash"),
+      federatedBottleUrl(EXTERNAL_TAP, "m4"),
+    ]);
+  });
+
+  it("rejects an external dependency absent from the locked metadata set", async () => {
+    await expect(planFederatedHomebrewVfs([successfulMetadata()[0]], {
+      rootTapName: EXTERNAL_TAP.name,
+      packages: ["m4"],
+      arch: "wasm32",
+      loadLinkManifest: federatedManifestMap({}),
+    })).rejects.toThrow(
+      `dependency "${CORE_TAP.name}/dash" is absent from locked tap metadata`,
+    );
+  });
+
+  it("rejects repository-root and immutable build-source tampering", async () => {
+    const badRoot = clone(successfulMetadata());
+    badRoot[1].packages[0].bottles[0].url =
+      federatedBottleUrl(EXTERNAL_TAP, "dash");
+    await expect(planFederatedHomebrewVfs(badRoot, {
+      rootTapName: EXTERNAL_TAP.name,
+      packages: ["m4"],
+      arch: "wasm32",
+      loadLinkManifest: federatedManifestMap(successfulManifests()),
+    })).rejects.toThrow("does not match repository-rooted GHCR URL");
+
+    const badCommit = clone(successfulMetadata());
+    badCommit[1].packages[0].bottles[0].built_from.tap_commit = EXTERNAL_TAP.commit;
+    await expect(planFederatedHomebrewVfs(badCommit, {
+      rootTapName: EXTERNAL_TAP.name,
+      packages: ["m4"],
+      arch: "wasm32",
+      loadLinkManifest: federatedManifestMap(successfulManifests()),
+    })).rejects.toThrow("built_from tap commit does not match metadata");
+  });
+
+  it("rejects cross-tap dependency cycles", async () => {
+    const external = federatedMetadata(EXTERNAL_TAP, [
+      federatedPackageEntry(EXTERNAL_TAP, "m4", "1.4.21", [m4Dependency()]),
+    ]);
+    const core = federatedMetadata(CORE_TAP, [
+      federatedPackageEntry(CORE_TAP, "dash", "0.5.12", [{
+        name: "m4",
+        full_name: `${EXTERNAL_TAP.name}/m4`,
+        version: "1.4.21",
+      }]),
+    ]);
+
+    await expect(planFederatedHomebrewVfs([external, core], {
+      rootTapName: EXTERNAL_TAP.name,
+      packages: ["m4"],
+      arch: "wasm32",
+      loadLinkManifest: federatedManifestMap({}),
+    })).rejects.toThrow(
+      `federated dependency cycle: ${EXTERNAL_TAP.name}/m4 -> ` +
+      `${CORE_TAP.name}/dash -> ${EXTERNAL_TAP.name}/m4`,
+    );
+  });
+
+  it("rejects duplicate short Cellar names across selected taps", async () => {
+    const external = federatedMetadata(EXTERNAL_TAP, [
+      federatedPackageEntry(EXTERNAL_TAP, "m4", "1.4.21", [
+        { name: "dash", version: "1.0" },
+        m4Dependency(),
+      ]),
+      federatedPackageEntry(EXTERNAL_TAP, "dash", "1.0"),
+    ]);
+    const core = federatedMetadata(CORE_TAP, [
+      federatedPackageEntry(CORE_TAP, "dash", "0.5.12"),
+    ]);
+
+    await expect(planFederatedHomebrewVfs([external, core], {
+      rootTapName: EXTERNAL_TAP.name,
+      packages: ["m4"],
+      arch: "wasm32",
+      loadLinkManifest: federatedManifestMap({}),
+    })).rejects.toThrow(
+      `duplicate Cellar package name "dash": "${EXTERNAL_TAP.name}/dash" and ` +
+      `"${CORE_TAP.name}/dash"`,
+    );
+  });
+
+  it("rejects a package identity assigned to a different metadata tap", async () => {
+    const external = federatedMetadata(EXTERNAL_TAP, [
+      federatedPackageEntry(EXTERNAL_TAP, "m4", "1.4.21"),
+    ]);
+    external.packages[0].full_name = `${CORE_TAP.name}/m4`;
+
+    await expect(planFederatedHomebrewVfs([external], {
+      rootTapName: EXTERNAL_TAP.name,
+      packages: ["m4"],
+      arch: "wasm32",
+      loadLinkManifest: federatedManifestMap({}),
+    })).rejects.toThrow("does not match tap identity");
   });
 });

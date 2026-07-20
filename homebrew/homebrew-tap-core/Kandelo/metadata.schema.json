@@ -218,6 +218,10 @@
       "required": ["name"],
       "properties": {
         "name": { "$ref": "#/$defs/packageName" },
+        "full_name": {
+          "type": "string",
+          "pattern": "^[a-z0-9._-]+/[a-z0-9._-]+/[a-z0-9._-]+$"
+        },
         "version": { "type": "string", "minLength": 1 }
       }
     },

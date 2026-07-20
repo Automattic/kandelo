@@ -280,14 +280,18 @@ if ! jq -e --slurpfile provenance "$BUILD_ROOT/dependency-provenance.json" '
   ($actual | type) == "array" and
   all($actual[];
     type == "object" and
-    keys == ["name", "version"] and
+    keys == ["full_name", "name", "version"] and
     (.name | type == "string" and test("^[a-z0-9][a-z0-9._-]*$")) and
+    (. as $dependency |
+      .full_name | type == "string" and
+      test("^[a-z0-9._-]+/[a-z0-9._-]+/[a-z0-9._-]+$") and
+      endswith("/" + $dependency.name)) and
     (.version | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$"))) and
-  (($actual | map(.name) | length) == ($actual | map(.name) | unique | length)) and
-  (($actual | sort_by(.name, .version)) ==
+  (($actual | map(.full_name) | length) == ($actual | map(.full_name) | unique | length)) and
+  (($actual | sort_by(.full_name, .version)) ==
     ($provenance[0].dependencies |
-      map(select(.declared_directly) | {name, version}) |
-      sort_by(.name, .version)))
+      map(select(.declared_directly) | {name, full_name, version}) |
+      sort_by(.full_name, .version)))
 ' "$COMPOSITION_INPUT" >/dev/null; then
   echo "homebrew-validate-publish-handoff.sh: composition dependencies do not match exact direct dependency provenance" >&2
   exit 1

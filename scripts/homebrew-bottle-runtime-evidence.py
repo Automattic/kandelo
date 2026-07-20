@@ -199,7 +199,6 @@ def dependency_closure_identity(
     bottles = evidence["bottles"]
     if not isinstance(bottles, list) or len(bottles) > 128:
         fail(f"{label} bottles must be an array of at most 128 entries")
-    expected_prefix = f"{normalized_tap_name(args)}/"
     expected_tag = f"{args.arch}_kandelo"
     prior_full_name = ""
     identity: list[dict[str, str]] = []
@@ -209,16 +208,17 @@ def dependency_closure_identity(
             {"full_name", "version", "sha256", "tag", "receipt_sha256"},
             f"{label} bottles[{index}]",
         )
-        full_name = require_string(
+        raw_full_name = require_string(
             bottle["full_name"], f"{label} bottles[{index}].full_name"
-        ).lower()
-        if not full_name.startswith(expected_prefix):
-            fail(f"{label} bottles[{index}] is outside the selected tap")
-        require_string(
-            full_name.removeprefix(expected_prefix),
-            f"{label} bottles[{index}] Formula name",
-            FORMULA_NAME,
         )
+        if raw_full_name != raw_full_name.lower():
+            fail(f"{label} bottles[{index}] is not normalized lowercase")
+        full_name = raw_full_name
+        parts = full_name.split("/")
+        if len(parts) != 3:
+            fail(f"{label} bottles[{index}] is not tap-qualified")
+        normalized_identity("/".join(parts[:2]), f"{label} bottles[{index}] tap")
+        require_string(parts[2], f"{label} bottles[{index}] Formula name", FORMULA_NAME)
         if full_name <= prior_full_name:
             fail(f"{label} bottles must be uniquely sorted by full_name")
         prior_full_name = full_name

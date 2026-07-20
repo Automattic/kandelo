@@ -534,10 +534,15 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 2,
+  "schema" => 3,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
+  "target_taps" => [{
+    "tap_name" => "kandelo-dev/tap-core",
+    "tap_repository" => "kandelo-dev/homebrew-tap-core",
+    "tap_commit" => "1111111111111111111111111111111111111111",
+  }],
   "build" => [],
   "build_and_test" => [],
   "runtime_and_test" => [],
@@ -727,10 +732,22 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 2,
+  "schema" => 3,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
+  "target_taps" => [
+    {
+      "tap_name" => "acme/tools",
+      "tap_repository" => "acme/homebrew-tools",
+      "tap_commit" => "1111111111111111111111111111111111111111",
+    },
+    {
+      "tap_name" => "kandelo-dev/tap-core",
+      "tap_repository" => "kandelo-dev/homebrew-tap-core",
+      "tap_commit" => "2222222222222222222222222222222222222222",
+    },
+  ],
   "build" => ["binaryen", "wabt"],
   "build_and_test" => ["binaryen", "pkgconf", "wabt"],
   "runtime_and_test" => ["pkgconf"],
@@ -744,6 +761,7 @@ deps = [
   FixtureDependency.new("pkgconf"),
   FixtureDependency.new("binaryen", build: true),
   FixtureDependency.new("bubblewrap", build: true, implicit: true),
+  FixtureDependency.new("acme/tools/dash", build: true),
   FixtureDependency.new("kandelo-dev/tap-core/zlib", build: true),
 ]
 build = Build.new(FixtureFormula.new(deps), [], args: FixtureArgs.new)
@@ -845,10 +863,22 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 2,
+  "schema" => 3,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
+  "target_taps" => [
+    {
+      "tap_name" => "acme/tools",
+      "tap_repository" => "acme/homebrew-tools",
+      "tap_commit" => "1111111111111111111111111111111111111111",
+    },
+    {
+      "tap_name" => "kandelo-dev/tap-core",
+      "tap_repository" => "kandelo-dev/homebrew-tap-core",
+      "tap_commit" => "2222222222222222222222222222222222222222",
+    },
+  ],
   "build" => ["wabt"],
   "build_and_test" => ["wabt"],
   "runtime_and_test" => [],
@@ -872,6 +902,14 @@ unless global_dependencies(same_tap_dependency).empty?
   raise "recursive same-tap Formula retained native Linux global dependencies"
 end
 
+locked_tap_dependency = Formula.new(
+  name: "dash",
+  full_name: "acme/tools/dash",
+)
+unless global_dependencies(locked_tap_dependency).empty?
+  raise "recursive locked-tap Formula retained native Linux global dependencies"
+end
+
 other_tap = Formula.new(
   name: "zlib",
   full_name: "example/other/zlib",
@@ -884,6 +922,35 @@ native = Formula.new(name: "cmake", full_name: "homebrew/core/cmake")
 unless global_dependencies(native) == [:bubblewrap]
   raise "protected publisher plan changed native Homebrew global dependencies"
 end
+
+mutable_plan = JSON.parse(JSON.generate(plan))
+mutable_plan.fetch("target_taps").first["tap_commit"] = "main"
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(mutable_plan))
+plan_path.chmod(0o444)
+begin
+  global_dependencies(target)
+  raise "mutable target tap revision suppressed Linux global dependencies"
+rescue RuntimeError => e
+  raise unless e.message.include?("invalid target taps")
+end
+
+mismatched_repository_plan = JSON.parse(JSON.generate(plan))
+mismatched_repository_plan.fetch("target_taps").first["tap_repository"] =
+  "example/homebrew-other"
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(mismatched_repository_plan))
+plan_path.chmod(0o444)
+begin
+  global_dependencies(target)
+  raise "mismatched target tap repository suppressed Linux global dependencies"
+rescue RuntimeError => e
+  raise unless e.message.include?("invalid target taps")
+end
+
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(plan))
+plan_path.chmod(0o444)
 
 plan_path.delete
 inactive_target = Formula.new(
@@ -922,10 +989,15 @@ HOMEBREW_PREFIX = Pathname(ARGV.fetch(0))/"sandbox-prefix"
 HOMEBREW_PREFIX.mkpath
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 2,
+  "schema" => 3,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
+  "target_taps" => [{
+    "tap_name" => "kandelo-dev/tap-core",
+    "tap_repository" => "kandelo-dev/homebrew-tap-core",
+    "tap_commit" => "1111111111111111111111111111111111111111",
+  }],
   "build" => [],
   "build_and_test" => [],
   "runtime_and_test" => [],

@@ -63,18 +63,91 @@ bottle_identity_only = output_mode == "--bottle-identity-json"
 output_arch = direct_only || declarations_only || host_dependencies_only || bottle_identity_only ? nil : output_mode
 tap_name = requested_tap_name.downcase
 tap_owner, tap_repository = tap_name.split("/", 2)
-support_require_line = %(require (Tap.fetch("#{tap_owner}", "#{tap_repository}").path/"Kandelo/formula_support/kandelo_formula_support").to_s\n)
-allowed_top_level_requires = Set[
-  "require \"digest\"\n",
-  "require \"shellwords\"\n",
-  support_require_line,
-].freeze
 
 tap_path = Pathname.new(tap_input)
 abort "tap root must be a real directory: #{tap_input}" if tap_path.symlink? || !tap_path.directory?
 tap_root = tap_path.realpath
-formula_dir = tap_root/"Formula"
-abort "Formula directory must be a real directory: #{formula_dir}" if formula_dir.symlink? || !formula_dir.directory?
+primary_formula_dir = tap_root/"Formula"
+abort "Formula directory must be a real directory: #{primary_formula_dir}" if primary_formula_dir.symlink? || !primary_formula_dir.directory?
+
+repository_for_tap = lambda do |name|
+  owner, short_name = name.split("/", 2)
+  "#{owner}/homebrew-#{short_name}"
+end
+
+tap_contexts = {
+  tap_name => {
+    "tap_name" => tap_name,
+    "tap_repository" => repository_for_tap.call(tap_name),
+    "tap_commit" => nil,
+    "root" => tap_root,
+  },
+}
+resolved_taps_path = ENV["KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"]
+unless resolved_taps_path.nil? || resolved_taps_path.empty?
+  resolved_path = Pathname.new(resolved_taps_path)
+  if resolved_path.symlink? || !resolved_path.file? || resolved_path.size > 65_536
+    abort "resolved tap map must be a bounded regular non-symlink file: #{resolved_path}"
+  end
+  if (resolved_path.stat.mode & 0o022) != 0
+    abort "resolved tap map must not be group- or world-writable: #{resolved_path}"
+  end
+  begin
+    resolved_document = JSON.parse(resolved_path.binread)
+  rescue JSON::ParserError => e
+    abort "resolved tap map is not valid JSON: #{e.message}"
+  end
+  unless resolved_document.is_a?(Hash) && resolved_document.keys.sort == %w[dependencies primary schema] &&
+         resolved_document["schema"] == 1 && resolved_document["dependencies"].is_a?(Array) &&
+         resolved_document["dependencies"].length <= 8
+    abort "resolved tap map has an unexpected schema"
+  end
+  contexts = [resolved_document["primary"], *resolved_document["dependencies"]]
+  contexts.each_with_index do |context, index|
+    unless context.is_a?(Hash) && context.keys.sort == %w[root tap_commit tap_name tap_repository]
+      abort "resolved tap map context #{index} has an unexpected schema"
+    end
+    context_name = context["tap_name"]
+    context_repository = context["tap_repository"]
+    context_commit = context["tap_commit"]
+    unless context_name.is_a?(String) && context_name == context_name.downcase &&
+           TAP_NAME.match?(context_name) &&
+           context_repository == repository_for_tap.call(context_name) &&
+           context_commit.is_a?(String) && context_commit.match?(/\A[0-9a-f]{40}\z/)
+      abort "resolved tap map context #{index} has an invalid immutable identity"
+    end
+    unless context["root"].is_a?(String) && Pathname.new(context["root"]).absolute?
+      abort "resolved tap map context #{index} root must be absolute"
+    end
+    context_path = Pathname.new(context["root"])
+    if context_path.symlink? || !context_path.directory?
+      abort "resolved tap map context #{index} root must be a real directory"
+    end
+    context_root = context_path.realpath
+    formula_dir = context_root/"Formula"
+    if formula_dir.symlink? || !formula_dir.directory?
+      abort "resolved tap map context #{index} Formula directory must be real"
+    end
+    if tap_contexts.key?(context_name) && index != 0
+      abort "resolved tap map repeats tap #{context_name}"
+    end
+    tap_contexts[context_name] = {
+      "tap_name" => context_name,
+      "tap_repository" => context_repository,
+      "tap_commit" => context_commit,
+      "root" => context_root,
+    }
+  end
+  primary = tap_contexts.fetch(tap_name)
+  unless resolved_document["primary"]["tap_name"] == tap_name &&
+         resolved_document["primary"]["tap_repository"] == repository_for_tap.call(tap_name)
+    abort "resolved tap map primary identity differs from the selected tap"
+  end
+  # The publication verifier reconstructs the selected Formula in a separate
+  # bounded tap tree at the same base commit. Keep the caller-provided primary
+  # root authoritative while retaining exact external roots from the map.
+  primary["root"] = tap_root
+end
 
 call_name = nil
 call_name = lambda do |node|
@@ -408,11 +481,13 @@ find_forbidden_support_token = lambda do |node, allowed_nodes = Set.new|
   found
 end
 
-support_validated = false
-validate_support = lambda do
-  next if support_validated
+support_validated = Set.new
+validate_support = lambda do |context|
+  context_tap_name = context.fetch("tap_name")
+  next if support_validated.include?(context_tap_name)
 
-  kandelo_dir = tap_root/"Kandelo"
+  context_root = context.fetch("root")
+  kandelo_dir = context_root/"Kandelo"
   support_dir = kandelo_dir/"formula_support"
   support_path = support_dir/"kandelo_formula_support.rb"
   [kandelo_dir, support_dir].each do |directory|
@@ -612,15 +687,20 @@ validate_support = lambda do
       abort "Kandelo Formula support contains executable module structure: #{support_path}"
     end
   end
-  support_validated = true
+  support_validated.add(context_tap_name)
 end
 
 formula_bottles = {}
 formula_runtime_declarations = {}
 formula_dependency_declarations = {}
-parse_formula = lambda do |name|
+parse_formula = lambda do |full_name|
+  formula_tap_name, separator, name = full_name.rpartition("/")
+  abort "invalid dependency Formula identity: #{full_name}" if separator.empty?
+  context = tap_contexts[formula_tap_name]
+  abort "dependency Formula uses an undeclared tap: #{full_name}" if context.nil?
   abort "invalid dependency Formula: #{name}" unless FORMULA_NAME.match?(name)
-  path = tap_root/"Formula"/"#{name}.rb"
+  context_root = context.fetch("root")
+  path = context_root/"Formula"/"#{name}.rb"
   abort "dependency Formula must be a regular non-symlink file: #{path}" if path.symlink? || !path.file?
   abort "dependency Formula exceeds #{MAX_FORMULA_BYTES} bytes: #{path}" if path.size > MAX_FORMULA_BYTES
 
@@ -651,6 +731,13 @@ parse_formula = lambda do |name|
   abort "Formula source has no canonical top-level body: #{path}" unless top_level.is_a?(Array)
   seen_class = false
   seen_requires = Set.new
+  context_owner, context_tap = formula_tap_name.split("/", 2)
+  support_require_line = %(require (Tap.fetch("#{context_owner}", "#{context_tap}").path/"Kandelo/formula_support/kandelo_formula_support").to_s\n)
+  allowed_top_level_requires = Set[
+    "require \"digest\"\n",
+    "require \"shellwords\"\n",
+    support_require_line,
+  ]
   top_level.each do |statement|
     unless statement.is_a?(Array)
       abort "Formula source contains a malformed top-level statement: #{path}"
@@ -670,7 +757,7 @@ parse_formula = lambda do |name|
     abort "Formula source repeats a top-level require: #{path}" unless seen_requires.add?(line)
   end
   abort "Formula class must be a direct top-level statement: #{path}" unless seen_class
-  validate_support.call if seen_requires.include?(support_require_line)
+  validate_support.call(context) if seen_requires.include?(support_require_line)
 
   class_bodystmt = selected_class[3]
   unless class_bodystmt.is_a?(Array) && class_bodystmt.first == :bodystmt &&
@@ -694,7 +781,7 @@ parse_formula = lambda do |name|
         unless line_number.is_a?(Integer) && lines.fetch(line_number - 1) == "  include KandeloFormulaSupport\n"
           abort "Formula may include only KandeloFormulaSupport: #{path}"
         end
-        validate_support.call
+        validate_support.call(context)
       end
     when :method_add_block
       method = call_name.call(statement)
@@ -765,7 +852,7 @@ parse_formula = lambda do |name|
     abort "duplicate dependency #{dependency.inspect} at #{path}:#{line_number}" unless seen.add?(dependency)
     next if [Set[:build], Set[:test], Set[:build, :test]].include?(tags)
 
-    prefix = "#{tap_name}/"
+    prefix = "#{formula_tap_name}/"
     if dependency.downcase.start_with?(prefix) && dependency != dependency.downcase
       abort "same-tap dependency must be normalized lowercase at #{path}:#{line_number}"
     end
@@ -791,14 +878,30 @@ parse_formula = lambda do |name|
     }
     abort "Formula runtime declarations exceed #{MAX_DEPENDENCIES} entries: #{path}" if runtime_declarations.length > MAX_DEPENDENCIES
 
-    next unless same_tap
     next if kind == "optional"
 
-    selected << child
+    selected_full_name = nil
+    if same_tap
+      selected_full_name = "#{formula_tap_name}/#{child}"
+    elsif dependency.include?("/")
+      dependency_tap, dependency_separator, dependency_name = dependency.rpartition("/")
+      unless !dependency_separator.empty? && dependency == dependency.downcase &&
+             TAP_NAME.match?(dependency_tap) && FORMULA_NAME.match?(dependency_name)
+        abort "invalid external tap-qualified dependency at #{path}:#{line_number}"
+      end
+      unless tap_contexts.key?(dependency_tap)
+        if declarations_only || bottle_identity_only
+          next
+        end
+        abort "required dependency uses an undeclared tap at #{path}:#{line_number}: #{dependency}"
+      end
+      selected_full_name = dependency
+    end
+    selected << selected_full_name unless selected_full_name.nil?
   end
-  formula_bottles[name] = bottle
-  formula_runtime_declarations[name] = runtime_declarations
-  formula_dependency_declarations[name] = declarations.map do |_line_number, dependency, tags|
+  formula_bottles[full_name] = bottle
+  formula_runtime_declarations[full_name] = runtime_declarations
+  formula_dependency_declarations[full_name] = declarations.map do |_line_number, dependency, tags|
     {"name" => dependency, "tags" => tags}
   end
   dependencies
@@ -809,35 +912,46 @@ states = {}
 stack = []
 target_direct_dependencies = nil
 visit_formula = nil
-visit_formula = lambda do |name|
-  case states[name]
+visit_formula = lambda do |full_name|
+  case states[full_name]
   when :done
     next
   when :visiting
-    cycle_start = stack.index(name) || 0
-    abort "same-tap dependency cycle: #{(stack[cycle_start..] + [name]).join(" -> ")}"
+    cycle_start = stack.index(full_name) || 0
+    abort "tap dependency cycle: #{(stack[cycle_start..] + [full_name]).join(" -> ")}"
   end
 
-  states[name] = :visiting
-  stack << name
-  dependencies = parse_formula.call(name)
-  target_direct_dependencies = dependencies.dup if name == target
+  states[full_name] = :visiting
+  stack << full_name
+  dependencies = parse_formula.call(full_name)
+  target_direct_dependencies = dependencies.dup if full_name == "#{tap_name}/#{target}"
   dependencies.each do |dependency|
-    closure.add("#{tap_name}/#{dependency}")
-    abort "same-tap dependency closure exceeds #{MAX_DEPENDENCIES} entries" if closure.length > MAX_DEPENDENCIES
+    closure.add(dependency)
+    abort "tap dependency closure exceeds #{MAX_DEPENDENCIES} entries" if closure.length > MAX_DEPENDENCIES
     visit_formula.call(dependency)
   end
   stack.pop
-  states[name] = :done
+  states[full_name] = :done
 end
 
-visit_formula.call(target)
+target_full_name = "#{tap_name}/#{target}"
+visit_formula.call(target_full_name)
+short_names = [target_full_name, *closure.to_a].group_by do |full_name|
+  full_name.rpartition("/").last
+end
+duplicate_short_names = short_names.each_with_object([]) do |(name, full_names), duplicates|
+  duplicates << "#{name}:#{full_names.sort.join(",")}" if full_names.length > 1
+end
+unless duplicate_short_names.empty?
+  abort "tap dependency closure contains duplicate Cellar names: #{duplicate_short_names.sort.inspect}"
+end
 unless declarations_only || host_dependencies_only || bottle_identity_only
   unsupported_external = formula_runtime_declarations.flat_map do |formula, declarations|
-    declarations.filter_map do |declaration|
-      next if declaration.fetch("same_tap") || declaration.fetch("kind") == "optional"
+    declarations.each_with_object([]) do |declaration, unsupported|
+      next if declaration.fetch("same_tap") || declaration.fetch("kind") == "optional" ||
+              declaration.fetch("name").include?("/")
 
-      "#{formula}:#{declaration.fetch("name")}"
+      unsupported << "#{formula}:#{declaration.fetch("name")}"
     end
   end.sort
   unless unsupported_external.empty?
@@ -845,7 +959,7 @@ unless declarations_only || host_dependencies_only || bottle_identity_only
   end
 end
 if declarations_only
-  records = formula_runtime_declarations.fetch(target).sort_by do |record|
+  records = formula_runtime_declarations.fetch(target_full_name).sort_by do |record|
     [record.fetch("name").downcase, record.fetch("name"), record.fetch("kind")]
   end
   puts JSON.generate({
@@ -856,7 +970,7 @@ if declarations_only
     "dependencies" => records,
   })
 elsif bottle_identity_only
-  bottle = formula_bottles.fetch(target)
+  bottle = formula_bottles.fetch(target_full_name)
   puts JSON.generate({
     "schema" => 1,
     "tap" => tap_name,
@@ -872,7 +986,7 @@ elsif host_dependencies_only
   build_and_test = Set.new
   runtime_and_test = Set.new
   prefix = "#{tap_name}/"
-  formula_dependency_declarations.fetch(target).each do |declaration|
+  formula_dependency_declarations.fetch(target_full_name).each do |declaration|
     dependency = declaration.fetch("name")
     tags = declaration.fetch("tags")
     next if tags == Set[:optional]
@@ -886,7 +1000,15 @@ elsif host_dependencies_only
       next
     end
     if dependency.include?("/")
-      abort "external tap-qualified host dependency is unsupported: #{dependency.inspect}"
+      dependency_tap, dependency_separator, dependency_name = dependency.rpartition("/")
+      unless !dependency_separator.empty? && dependency == dependency.downcase &&
+             TAP_NAME.match?(dependency_tap) && FORMULA_NAME.match?(dependency_name)
+        abort "invalid external tap-qualified dependency: #{dependency.inspect}"
+      end
+      unless tap_contexts.key?(dependency_tap)
+        abort "external tap-qualified dependency is not locked: #{dependency.inspect}"
+      end
+      next
     end
     unless HOST_FORMULA_NAME.match?(dependency)
       abort "invalid host Formula dependency: #{dependency.inspect}"
@@ -902,24 +1024,36 @@ elsif host_dependencies_only
       abort "host Formula dependency plan exceeds #{MAX_DEPENDENCIES} entries"
     end
   end
+  immutable_target_taps = tap_contexts.values.sort_by { |context| context.fetch("tap_name") }.map do |context|
+    commit = context.fetch("tap_commit")
+    unless commit.is_a?(String) && commit.match?(/\A[0-9a-f]{40}\z/)
+      abort "host dependency plan requires an immutable resolved tap map"
+    end
+    {
+      "tap_name" => context.fetch("tap_name"),
+      "tap_repository" => context.fetch("tap_repository"),
+      "tap_commit" => commit,
+    }
+  end
   puts JSON.generate({
-    "schema" => 2,
+    "schema" => 3,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => "#{tap_name}/#{target}",
+    "target_taps" => immutable_target_taps,
     "build" => build.sort,
     "build_and_test" => build_and_test.sort,
     "runtime_and_test" => runtime_and_test.sort,
   })
 elsif direct_only
-  puts target_direct_dependencies.map { |name| "#{tap_name}/#{name}" }.sort
+  puts target_direct_dependencies.sort
 elsif output_arch.nil?
   puts closure.sort
 else
   output_tag = "#{output_arch}_kandelo"
   records = closure.sort.to_h do |full_name|
-    name = full_name.delete_prefix("#{tap_name}/")
-    bottle = formula_bottles[name]
+    _dependency_tap, _separator, name = full_name.rpartition("/")
+    bottle = formula_bottles[full_name]
     abort "dependency Formula has no canonical bottle block: #{name}" if bottle.nil?
     selected = bottle.fetch("tags")[output_tag]
     abort "dependency Formula has no #{output_tag} bottle: #{name}" if selected.nil?

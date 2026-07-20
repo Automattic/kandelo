@@ -22,6 +22,7 @@ metadata.schema.json
 formula.schema.json
 link-manifest.schema.json
 provenance.schema.json
+dependency-taps.json                               # optional exact public-tap lock
 vfs-acceptance.json                                # optional tap-owned gate selection
 vfs-acceptance.Brewfile                           # optional selected static roots
 vfs-acceptance-shell.json                         # optional reviewed image shell policy
@@ -38,6 +39,21 @@ validator development. It is not published metadata.
 `vfs-acceptance.json` and its referenced Brewfile are reviewed tap policy, not
 generated sidecars. The publisher reads them from the exact tap commit and
 never rewrites them.
+
+`dependency-taps.json` is also reviewed tap policy. It contains only schema 1
+and a uniquely sorted `taps` array of exact `{tap_name, tap_repository,
+tap_commit}` records. Commits are lowercase 40-character SHAs; repository and
+tap names must be the matching conventional identities. The reusable workflow
+does not accept a dependency-tap branch, tag, dispatch override, or free-form
+JSON input. The current Kandelo validator allowlists only the public
+`kandelo-dev/tap-core` source. Its checkout and GHCR bottles are read without a
+dependency-tap credential.
+
+A cross-tap runtime edge must be a fully qualified static Formula declaration,
+for example `depends_on "kandelo-dev/tap-core/dash"`. Generated dependency
+sidecars retain both the Cellar `name` and canonical `full_name`. Update the
+lock only after the new dependency commit's public bottles and sidecars have
+been validated; lock changes are not automatic publication outputs.
 
 ## Generation
 
@@ -116,13 +132,18 @@ Ruby.
 ## VFS Planning
 
 Host VFS tooling plans a Homebrew-prefix image with
-`planHomebrewVfs(metadata, options)` from the host package. The planner is
-shared by Node and browser callers. It consumes parsed `Kandelo/metadata.json`
+`planHomebrewVfs(metadata, options)` for one tap or
+`planFederatedHomebrewVfs(metadataDocuments, options)` for an explicit exact
+tap set. The planners are shared by Node and browser callers. They consume
+parsed `Kandelo/metadata.json`
 and a caller-provided link-manifest loader, resolves requested packages plus
 their dependency closure in dependency-first order, and rejects bad ABI,
 unsupported arch, tap-identity drift, duplicate roots or metadata, cache-key
 drift, missing packages, dependency cycles, unsafe paths, and link-manifest
-bottle URL/sha/byte/cache-key drift before any bottle bytes are extracted.
+bottle URL/sha/byte/cache-key drift before any bottle bytes are extracted. The
+federated path keys dependencies by `owner/tap/formula`, validates each
+package's source repository and commit independently, and rejects duplicate
+Cellar names across taps.
 
 For `failed`, `pending`, or `building` bottle entries, the planner uses the
 complete last-green fallback fields when available. Without a complete fallback,
@@ -153,12 +174,23 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --report target/homebrew-hello.vfs-report.json
 ```
 
+For a third-party primary tap whose locked closure uses core, add
+`--dependency-tap-root
+kandelo-dev/tap-core=/path/to/homebrew-tap-core`. The flag is repeatable for
+lower-level tooling, but publisher invocations derive it only from the
+committed lock and exact checkouts. The protected publisher plan binds each
+target tap's normalized name, conventional repository, and exact commit to that
+resolved map; mutable refs and undeclared taps cannot gain target authority.
+
 This is a deliberately small, non-executing Brewfile subset: blank lines,
 comments, exactly one literal lowercase `tap "owner/tap"`, and 1 to 128 literal
 `brew` entries. A formula may be bare or fully qualified under that exact tap;
 duplicates after normalization are rejected. Ripper validates the syntax tree,
 and the builder never evaluates the file. Options, interpolation, conditionals,
-variables, nested Ruby, other entry types, and multi-tap selection are rejected.
+variables, nested Ruby, other entry types, and multi-tap root selection are
+rejected. A dependency may still cross into a separately supplied immutable
+tap when its generated sidecar names the exact `full_name`; the Brewfile cannot
+select or authorize that tap.
 Use real Homebrew inside a running Kandelo guest when full Homebrew Bundle DSL
 behavior is required.
 

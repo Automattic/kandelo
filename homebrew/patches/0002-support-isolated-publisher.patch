@@ -29,9 +29,10 @@ populate the build child's environment with only the matching direct native
 build dependencies. Do not recursively expand them. Every selected dependency
 must already be present as a proxy keg, so a missing proxy still fails closed.
 Use that same protected plan to suppress Linux global dependencies for the
-identified Kandelo target and every Formula in its selected tap while Homebrew
-derives the recursive target receipt. Formulae from other taps and the separate
-native Homebrew prefix retain normal Linux dependency resolution.
+identified Kandelo target and every Formula in its exact immutable target taps
+while Homebrew derives the recursive target receipt. Formulae from other taps
+and the separate native Homebrew prefix retain normal Linux dependency
+resolution.
 While that plan is active, also prevent `brew test` from automatically pouring
 Bubblewrap into the target Cellar. A usable host Bubblewrap can still be used,
 but an unavailable sandbox cannot bypass the publisher's reviewed native plan.
@@ -48,14 +49,14 @@ against an immutable publisher store.
 This patch is applied only to the publisher's temporary Homebrew overlay. Guest
 Homebrew keeps its normal repository, trust, and dependency behavior.
 ---
- Library/Homebrew/build.rb                   | 24 +++++++++++++++++++++++-
+ Library/Homebrew/build.rb                   | 25 ++++++++++++++++++++++++--
  Library/Homebrew/dev-cmd/bottle.rb          | 12 ++++++++++++
  Library/Homebrew/diagnostic.rb              |  1 +
  Library/Homebrew/extend/os/linux/formula.rb |  4 ++++
  Library/Homebrew/extend/os/linux/sandbox.rb |  4 +++-
- Library/Homebrew/kandelo_publisher.rb       | 105 ++++++++++++++++++++++++++++
+ Library/Homebrew/kandelo_publisher.rb       | 127 +++++++++++++++++++++++++++++
  Library/Homebrew/trust.rb                   |  1 +
- 7 files changed, 149 insertions(+), 2 deletions(-)
+ 7 files changed, 172 insertions(+), 2 deletions(-)
 
 diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb
 index be833176c0..465cf63438 100644
@@ -69,7 +70,7 @@ index be833176c0..465cf63438 100644
  require "keg"
  require "extend/ENV"
  require "fcntl"
-@@ -43,12 +44,33 @@ class Build
+@@ -43,12 +44,34 @@ class Build
      @deps = T.let([], T::Array[Dependency])
      @reqs = T.let(Requirements.new, Requirements)
 
@@ -88,9 +89,10 @@ index be833176c0..465cf63438 100644
 +    plan = KandeloPublisher.dependency_plan(formula)
 +    return [] if plan.nil?
 +
-+    tap_prefix = "#{plan.fetch("tap")}/"
++    target_tap_prefixes = plan.fetch("target_taps").map { |tap| "#{tap.fetch("tap_name")}/" }
 +    direct_native_build_dependencies = formula.deps.select do |dependency|
-+      dependency.build? && !dependency.implicit? && !dependency.name.start_with?(tap_prefix)
++      dependency.build? && !dependency.implicit? &&
++        target_tap_prefixes.none? { |prefix| dependency.name.start_with?(prefix) }
 +    end
 +    expected_names = plan.fetch("build")
 +    actual_names = direct_native_build_dependencies.map(&:name).sort
@@ -196,7 +198,7 @@ new file mode 100644
 index 0000000000..ff90519c8
 --- /dev/null
 +++ b/Library/Homebrew/kandelo_publisher.rb
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,127 @@
 +# typed: false
 +# frozen_string_literal: true
 +
@@ -207,8 +209,10 @@ index 0000000000..ff90519c8
 +module KandeloPublisher
 +  PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"
 +  MAX_PLAN_BYTES = 65_536
-+  PLAN_KEYS = %w[build build_and_test formula full_name runtime_and_test schema tap].freeze
++  PLAN_KEYS = %w[build build_and_test formula full_name runtime_and_test schema tap target_taps].freeze
 +  DEPENDENCY_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
++  TAP_NAME = /\A[a-z0-9._-]+\/[a-z0-9._-]+\z/
++  TAP_REPOSITORY = /\A[a-z0-9._-]+\/homebrew-[a-z0-9._-]+\z/
 +  GNU_TAR_ENV = "HOMEBREW_KANDELO_GNU_TAR"
 +  GNU_TAR_PATH = ENV.fetch(GNU_TAR_ENV, "").dup.freeze
 +  NIX_GNU_TAR_PATH = %r{\A/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar\z}
@@ -222,7 +226,9 @@ index 0000000000..ff90519c8
 +    plan = dependency_plan(nil)
 +    return false if plan.nil?
 +
-+    formula.full_name.start_with?("#{plan.fetch("tap")}/")
++    plan.fetch("target_taps").any? do |tap|
++      formula.full_name.start_with?("#{tap.fetch("tap_name")}/")
++    end
 +  end
 +
 +  def self.reproducible_gnu_tar
@@ -274,10 +280,28 @@ index 0000000000..ff90519c8
 +    end
 +
 +    plan = JSON.parse(contents)
-+    identified_plan = plan.is_a?(Hash) && plan.keys.sort == PLAN_KEYS && plan["schema"] == 2 &&
++    identified_plan = plan.is_a?(Hash) && plan.keys.sort == PLAN_KEYS && plan["schema"] == 3 &&
 +                      plan["tap"].is_a?(String) && plan["formula"].is_a?(String) &&
 +                      plan["full_name"] == "#{plan["tap"]}/#{plan["formula"]}"
 +    raise "Kandelo publisher dependency plan has an invalid identity" unless identified_plan
++    target_taps = plan["target_taps"]
++    valid_target_taps = target_taps.is_a?(Array) && target_taps.length <= 9 &&
++                        target_taps.all? do |tap|
++      next false unless tap.is_a?(Hash) &&
++                        tap.keys.sort == %w[tap_commit tap_name tap_repository]
++
++      tap_name = tap["tap_name"]
++      tap_repository = tap["tap_repository"]
++      owner, short_name = tap_name.split("/", 2) if tap_name.is_a?(String)
++      tap_name.is_a?(String) && tap_repository.is_a?(String) &&
++        tap["tap_commit"].is_a?(String) &&
++        TAP_NAME.match?(tap_name) && TAP_REPOSITORY.match?(tap_repository) &&
++        tap_repository == "#{owner}/homebrew-#{short_name}" &&
++        TAP_GIT_HEAD.match?(tap["tap_commit"])
++    end
++    target_names = valid_target_taps ? target_taps.map { |tap| tap.fetch("tap_name") } : []
++    valid_target_taps &&= target_names == target_names.sort.uniq && target_names.include?(plan["tap"])
++    raise "Kandelo publisher dependency plan has invalid target taps" unless valid_target_taps
 +
 +    arrays = %w[build build_and_test runtime_and_test].to_h do |key|
 +      value = plan[key]

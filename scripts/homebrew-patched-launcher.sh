@@ -1457,12 +1457,13 @@ homebrew_patched_launcher_seed_bundler_groups() {
 # to a dedicated user inside a transient systemd service. KillMode=control-group
 # makes double-forked or session-detached descendants part of the call lifecycle.
 homebrew_patched_launcher_isolate() {
-  if [ "$#" -ne 6 ]; then
-    echo "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR KANDELO_ROOT TAP_ROOT OUTPUT_ROOT SYSROOT_BUILD_ROOT" >&2
+  if [ "$#" -lt 6 ]; then
+    echo "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR KANDELO_ROOT TAP_ROOT OUTPUT_ROOT SYSROOT_BUILD_ROOT [ADDITIONAL_PROTECTED_ROOT ...]" >&2
     return 2
   fi
   local build_user="$1" work_dir="$2" kandelo_root="$3" tap_root="$4" output_root="$5"
   local sysroot_build_root="$6" sysroot
+  shift 6
   local build_group build_home protected_brew protected_audit
   local wrapper_source wrapper_path audit_source native_runner_source native_runner_path
   local mutable_root protected_root target_state_root native_reported_prefix native_reported_repo
@@ -1472,6 +1473,7 @@ homebrew_patched_launcher_isolate() {
   local build_uid systemd_slice unit_prefix source_alias_dir
   local config_root config_file unsafe_config_entry trust_file trust_lock
   local -a preserved_variables native_preserved_variables mutable_roots
+  local -a additional_protected_roots=("$@")
 
   if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
     physical_repo="$(cd "$HOMEBREW_PATCHED_REPO" && pwd -P)" || return 2
@@ -1615,11 +1617,16 @@ homebrew_patched_launcher_isolate() {
   homebrew_assert_tree_symlinks_contained "$sysroot" sysroot || return
 
   for protected_root in "$kandelo_root" "$tap_root" "$output_root" \
-    "$sysroot_build_root"; do
+    "$sysroot_build_root" "${additional_protected_roots[@]}"; do
     if [ ! -d "$protected_root" ] || [ -L "$protected_root" ]; then
       echo "homebrew-patched-launcher: protected root is not a real directory: $protected_root" >&2
       return 2
     fi
+    protected_root="$(cd "$protected_root" && pwd -P)" || return 2
+    [ "$protected_root" != "/" ] || {
+      echo "homebrew-patched-launcher: protected root cannot be the filesystem root" >&2
+      return 2
+    }
     case "$protected_root" in
       *:*)
         echo "homebrew-patched-launcher: protected root cannot contain ':' for a systemd bind: $protected_root" >&2
@@ -1633,7 +1640,7 @@ homebrew_patched_launcher_isolate() {
       "$HOMEBREW_PATCHED_NATIVE_CACHE" "$HOMEBREW_PATCHED_NATIVE_TEMP" \
       "$HOMEBREW_PATCHED_NATIVE_CONFIG" "$HOMEBREW_PATCHED_NATIVE_HOME"; do
       for protected_root in "$work_dir" "$kandelo_root" "$tap_root" "$output_root" \
-        "$sysroot_build_root" "$build_home"; do
+        "$sysroot_build_root" "$build_home" "${additional_protected_roots[@]}"; do
         if [ "$mutable_root" = "$protected_root" ]; then
           echo "homebrew-patched-launcher: native and target execution roots must differ: $mutable_root" >&2
           return 2
@@ -1688,6 +1695,9 @@ homebrew_patched_launcher_isolate() {
         return 2
         ;;
     esac
+  done
+  for protected_root in "${additional_protected_roots[@]}"; do
+    homebrew_assert_tree_not_replaceable_by_user "$build_user" "$protected_root" || return
   done
   for target_state_root in "$HOMEBREW_PATCHED_PREFIX/Cellar" \
     "$HOMEBREW_PATCHED_PREFIX/opt"; do
@@ -1843,8 +1853,12 @@ homebrew_patched_launcher_isolate() {
     printf '    *) echo "homebrew-patched-launcher: protected source mount is writable: $source_alias" >&2; exit 1 ;;\n'
     printf '  esac\ndone\n'
     homebrew_patched_launcher_emit_sysroot_access_audit
-    printf 'for hidden_root in %q %q %q %q; do\n' \
-      "$kandelo_root" "$tap_root" "$output_root" "$sysroot_build_root"
+    printf 'hidden_roots=('
+    for protected_root in "$kandelo_root" "$tap_root" "$output_root" \
+      "$sysroot_build_root" "${additional_protected_roots[@]}"; do
+      printf ' %q' "$protected_root"
+    done
+    printf ')\nfor hidden_root in "${hidden_roots[@]}"; do\n'
     printf '  if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then\n'
     printf '    echo "homebrew-patched-launcher: original protected root is usable by Formula execution: $hidden_root" >&2\n'
     printf '    exit 1\n  fi\n'
@@ -1922,6 +1936,9 @@ homebrew_patched_launcher_isolate() {
        [ "$sysroot_build_root" != "$output_root" ]; then
       printf ' %q' "--property=InaccessiblePaths=$sysroot_build_root"
     fi
+    for protected_root in "${additional_protected_roots[@]}"; do
+      printf ' %q' "--property=InaccessiblePaths=$protected_root"
+    done
     if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
       printf ' %q' \
         "--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX" \
@@ -1978,6 +1995,9 @@ homebrew_patched_launcher_isolate() {
          [ "$sysroot_build_root" != "$output_root" ]; then
         printf ' %q' "--property=InaccessiblePaths=$sysroot_build_root"
       fi
+      for protected_root in "${additional_protected_roots[@]}"; do
+        printf ' %q' "--property=InaccessiblePaths=$protected_root"
+      done
       printf ' --working-directory="$working_directory" -- %q -i' "$env_bin"
       printf ' %q' "HOME=$HOMEBREW_PATCHED_NATIVE_HOME" \
         "USER=$build_user" "LOGNAME=$build_user" \

@@ -7,6 +7,7 @@ export type HomebrewBottleSourceStatus = "success" | "fallback";
 
 export interface HomebrewDependency {
   name: string;
+  full_name?: string;
   version?: string;
 }
 
@@ -107,9 +108,38 @@ export interface HomebrewVfsPlanOptions {
   loadLinkManifest: (tapRelativePath: string) => unknown | Promise<unknown>;
 }
 
+export interface HomebrewVfsTapIdentity {
+  tapRepository: string;
+  tapName: string;
+  tapCommit: string;
+  kandeloRepository: string;
+  kandeloCommit: string;
+  kandeloAbi: number;
+  releaseTag: string;
+}
+
+export interface HomebrewFederatedVfsPlanOptions {
+  packages: string[];
+  rootTapName: string;
+  arch: HomebrewBottleArch;
+  expectedAbi?: number;
+  runtime?: HomebrewRuntime;
+  expectedCacheKeys?: Record<string, string>;
+  allowFallback?: boolean;
+  loadLinkManifest: (
+    tap: HomebrewVfsTapIdentity,
+    tapRelativePath: string,
+  ) => unknown | Promise<unknown>;
+}
+
 export interface HomebrewVfsPackagePlan {
   name: string;
   fullName: string;
+  tapRepository: string;
+  tapName: string;
+  tapCommit: string;
+  kandeloRepository: string;
+  kandeloCommit: string;
   version: string;
   formulaRevision: number;
   bottleRebuild: number;
@@ -146,6 +176,11 @@ export interface HomebrewVfsPlan {
   packages: HomebrewVfsPackagePlan[];
 }
 
+export interface HomebrewFederatedVfsPlan extends HomebrewVfsPlan {
+  requestedFullNames: string[];
+  taps: HomebrewVfsTapIdentity[];
+}
+
 export class HomebrewVfsPlanError extends Error {
   constructor(message: string) {
     super(message);
@@ -164,6 +199,22 @@ interface SelectedBottle {
   builtAt?: string;
 }
 
+interface FederatedPackageSource {
+  metadata: HomebrewTapMetadata;
+  pkg: HomebrewMetadataPackage;
+}
+
+interface PlanPackageOptions {
+  arch: HomebrewBottleArch;
+  expectedAbi: number;
+  runtime?: HomebrewRuntime;
+  expectedCacheKeys?: Record<string, string>;
+  allowFallback?: boolean;
+  dependencies?: HomebrewDependency[];
+  requireRepositoryRoot?: boolean;
+  loadLinkManifest: (tapRelativePath: string) => unknown | Promise<unknown>;
+}
+
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -176,6 +227,7 @@ const MAX_REQUESTED_PACKAGES = 128;
 const MAX_RESOLVED_PACKAGES = 128;
 const MAX_METADATA_PACKAGES = 4096;
 const MAX_PACKAGE_DEPENDENCIES = 128;
+const MAX_FEDERATED_TAPS = 16;
 
 export async function planHomebrewVfs(
   metadataValue: unknown,
@@ -208,6 +260,94 @@ export async function planHomebrewVfs(
     kandeloAbi: metadata.kandelo_abi,
     releaseTag: metadata.release_tag,
     requestedPackages,
+    packages: planned,
+  };
+}
+
+/**
+ * Plan a root Formula and its closure across an explicit set of immutable tap
+ * metadata documents. Each document remains authoritative only for packages
+ * whose full_name belongs to that document's canonical tap identity.
+ */
+export async function planFederatedHomebrewVfs(
+  metadataValues: readonly unknown[],
+  options: HomebrewFederatedVfsPlanOptions,
+): Promise<HomebrewFederatedVfsPlan> {
+  if (!Array.isArray(metadataValues) || metadataValues.length === 0) {
+    fail("federated Homebrew VFS plan requires at least one tap metadata document");
+  }
+  if (metadataValues.length > MAX_FEDERATED_TAPS) {
+    fail(`federated Homebrew VFS plan accepts at most ${MAX_FEDERATED_TAPS} tap metadata documents`);
+  }
+  validateCanonicalTapName(options.rootTapName, "root tap name");
+
+  const expectedAbi = options.expectedAbi ?? ABI_VERSION;
+  const metadataDocuments = metadataValues.map((value) => parseTapMetadata(value));
+  const tapsByName = new Map<string, HomebrewTapMetadata>();
+  const tapNamesByRepository = new Map<string, string>();
+  for (const metadata of metadataDocuments) {
+    validateExpectedAbi(metadata, expectedAbi);
+    if (tapsByName.has(metadata.tap_name)) {
+      fail(`federated metadata has duplicate tap ${quote(metadata.tap_name)}`);
+    }
+    const normalizedRepository = metadata.tap_repository.toLowerCase();
+    const priorTapName = tapNamesByRepository.get(normalizedRepository);
+    if (priorTapName !== undefined) {
+      fail(
+        `federated metadata repository ${quote(normalizedRepository)} is duplicated by taps ` +
+        `${quote(priorTapName)} and ${quote(metadata.tap_name)}`,
+      );
+    }
+    tapsByName.set(metadata.tap_name, metadata);
+    tapNamesByRepository.set(normalizedRepository, metadata.tap_name);
+  }
+
+  const rootMetadata = tapsByName.get(options.rootTapName);
+  if (rootMetadata === undefined) {
+    fail(`federated metadata does not contain root tap ${quote(options.rootTapName)}`);
+  }
+  const arch = validateRequestedArch(options.arch);
+  const requestedPackages = validateRequestedPackages(options.packages);
+  const packageIndex = indexFederatedPackages(metadataDocuments);
+  const requestedFullNames = requestedPackages.map(
+    (name) => `${rootMetadata.tap_name}/${name}`,
+  );
+  const packages = resolveFederatedPackageClosure(packageIndex, requestedFullNames);
+  validateUniqueCellarPackageNames(packages);
+
+  const planned: HomebrewVfsPackagePlan[] = [];
+  for (const source of packages) {
+    const dependencies = source.pkg.dependencies.map((dependency) => ({
+      ...dependency,
+      full_name: federatedDependencyFullName(source.metadata, dependency),
+    }));
+    const tap = tapIdentity(source.metadata);
+    planned.push(await planPackage(source.metadata, source.pkg, {
+      arch,
+      expectedAbi,
+      runtime: options.runtime,
+      expectedCacheKeys: options.expectedCacheKeys,
+      allowFallback: options.allowFallback,
+      dependencies,
+      requireRepositoryRoot: true,
+      loadLinkManifest: (path) => options.loadLinkManifest(tap, path),
+    }));
+  }
+
+  return {
+    schema: 1,
+    tapRepository: rootMetadata.tap_repository,
+    tapName: rootMetadata.tap_name,
+    tapCommit: rootMetadata.tap_commit,
+    kandeloRepository: rootMetadata.kandelo_repository,
+    kandeloCommit: rootMetadata.kandelo_commit,
+    kandeloAbi: rootMetadata.kandelo_abi,
+    releaseTag: rootMetadata.release_tag,
+    requestedPackages,
+    requestedFullNames,
+    taps: metadataDocuments.map(tapIdentity).sort((left, right) =>
+      left.tapName.localeCompare(right.tapName)
+    ),
     packages: planned,
   };
 }
@@ -286,10 +426,11 @@ function parseMetadataPackage(value: unknown, label: string): HomebrewMetadataPa
   );
   const seenDependencies = new Set<string>();
   for (const dependency of dependencies) {
-    if (seenDependencies.has(dependency.name)) {
-      fail(`${label}.dependencies has duplicate package ${quote(dependency.name)}`);
+    const identity = dependency.full_name ?? dependency.name;
+    if (seenDependencies.has(identity)) {
+      fail(`${label}.dependencies has duplicate package ${quote(identity)}`);
     }
-    seenDependencies.add(dependency.name);
+    seenDependencies.add(identity);
   }
   const bottles = requiredArray(pkg, "bottles", label).map((bottle, index) =>
     parseMetadataBottle(bottle, `${label}.bottles[${index}]`)
@@ -313,8 +454,21 @@ function parseDependency(value: unknown, label: string): HomebrewDependency {
   const dep = requireRecord(value, label);
   const name = requiredString(dep, "name", label);
   validatePackageName(name, `${label}.name`);
+  const fullName = optionalString(dep, "full_name", label);
+  if (fullName !== undefined) {
+    const parsed = parseFullFormulaName(fullName, `${label}.full_name`);
+    if (parsed.name !== name) {
+      fail(
+        `${label}.full_name ${quote(fullName)} does not match dependency name ${quote(name)}`,
+      );
+    }
+  }
   const version = optionalString(dep, "version", label);
-  return version === undefined ? { name } : { name, version };
+  return {
+    name,
+    ...(fullName === undefined ? {} : { full_name: fullName }),
+    ...(version === undefined ? {} : { version }),
+  };
 }
 
 function parseMetadataBottle(value: unknown, label: string): HomebrewMetadataBottle {
@@ -441,6 +595,42 @@ function validateExpectedTapName(
   }
 }
 
+function validateCanonicalTapName(tapName: string, label: string): void {
+  if (!TAP_NAME_RE.test(tapName)) {
+    fail(`${label} ${quote(tapName)} is not a canonical lowercase owner/tap name`);
+  }
+}
+
+function parseFullFormulaName(
+  fullName: string,
+  label: string,
+): { tapName: string; name: string } {
+  const parts = fullName.split("/");
+  if (parts.length !== 3) {
+    fail(`${label} ${quote(fullName)} must be a canonical owner/tap/formula name`);
+  }
+  const tapName = `${parts[0]}/${parts[1]}`;
+  const name = parts[2];
+  validateCanonicalTapName(tapName, `${label} tap`);
+  validatePackageName(name, `${label} Formula`);
+  if (fullName !== `${tapName}/${name}`) {
+    fail(`${label} ${quote(fullName)} must be normalized lowercase`);
+  }
+  return { tapName, name };
+}
+
+function tapIdentity(metadata: HomebrewTapMetadata): HomebrewVfsTapIdentity {
+  return {
+    tapRepository: metadata.tap_repository,
+    tapName: metadata.tap_name,
+    tapCommit: metadata.tap_commit,
+    kandeloRepository: metadata.kandelo_repository,
+    kandeloCommit: metadata.kandelo_commit,
+    kandeloAbi: metadata.kandelo_abi,
+    releaseTag: metadata.release_tag,
+  };
+}
+
 function validateTapIdentity(tapRepository: string, tapName: string): void {
   const normalizedRepository = tapRepository.toLowerCase();
   const [owner, repositoryName] = normalizedRepository.split("/", 2);
@@ -521,6 +711,13 @@ function resolvePackageClosure(
     state.set(name, "visiting");
     stack.push(name);
     for (const dep of pkg.dependencies) {
+      const fullName = dep.full_name ?? `${metadata.tap_name}/${dep.name}`;
+      if (fullName !== `${metadata.tap_name}/${dep.name}`) {
+        fail(
+          `package ${quote(pkg.name)} dependency ${quote(fullName)} belongs to another tap; ` +
+          "use planFederatedHomebrewVfs",
+        );
+      }
       const depPkg = index.get(dep.name);
       if (!depPkg) {
         fail(`package ${quote(pkg.name)} dependency ${quote(dep.name)} is not present`);
@@ -541,21 +738,123 @@ function resolvePackageClosure(
   return ordered;
 }
 
+function indexFederatedPackages(
+  metadataDocuments: HomebrewTapMetadata[],
+): Map<string, FederatedPackageSource> {
+  const index = new Map<string, FederatedPackageSource>();
+  for (const metadata of metadataDocuments) {
+    for (const pkg of metadata.packages) {
+      const prior = index.get(pkg.full_name);
+      if (prior !== undefined) {
+        fail(`federated metadata has duplicate package ${quote(pkg.full_name)}`);
+      }
+      index.set(pkg.full_name, { metadata, pkg });
+    }
+  }
+  return index;
+}
+
+function resolveFederatedPackageClosure(
+  index: Map<string, FederatedPackageSource>,
+  requestedFullNames: string[],
+): FederatedPackageSource[] {
+  const ordered: FederatedPackageSource[] = [];
+  const state = new Map<string, "visiting" | "done">();
+  const stack: string[] = [];
+
+  function visit(fullName: string, requiredBy?: string): void {
+    const currentState = state.get(fullName);
+    if (currentState === "done") return;
+    if (currentState === "visiting") {
+      const start = stack.indexOf(fullName);
+      const cycle = [...stack.slice(start < 0 ? 0 : start), fullName];
+      fail(`federated dependency cycle: ${cycle.join(" -> ")}`);
+    }
+
+    const source = index.get(fullName);
+    if (source === undefined) {
+      if (requiredBy !== undefined) {
+        fail(
+          `package ${quote(requiredBy)} dependency ${quote(fullName)} is absent from locked tap metadata`,
+        );
+      }
+      fail(`requested package ${quote(fullName)} is absent from root tap metadata`);
+    }
+    if (state.size >= MAX_RESOLVED_PACKAGES) {
+      fail(`federated Homebrew VFS dependency closure exceeds ${MAX_RESOLVED_PACKAGES} packages`);
+    }
+
+    state.set(fullName, "visiting");
+    stack.push(fullName);
+    for (const dependency of source.pkg.dependencies) {
+      const dependencyFullName = federatedDependencyFullName(source.metadata, dependency);
+      const dependencySource = index.get(dependencyFullName);
+      if (dependencySource === undefined) {
+        fail(
+          `package ${quote(fullName)} dependency ${quote(dependencyFullName)} ` +
+          "is absent from locked tap metadata",
+        );
+      }
+      if (
+        dependency.version !== undefined &&
+        dependencySource.pkg.version !== dependency.version
+      ) {
+        fail(
+          `package ${quote(fullName)} dependency ${quote(dependencyFullName)} requires version ` +
+          `${quote(dependency.version)}, metadata has ${quote(dependencySource.pkg.version)}`,
+        );
+      }
+      visit(dependencyFullName, fullName);
+    }
+    stack.pop();
+    state.set(fullName, "done");
+    ordered.push(source);
+  }
+
+  for (const fullName of requestedFullNames) visit(fullName);
+  return ordered;
+}
+
+function federatedDependencyFullName(
+  metadata: HomebrewTapMetadata,
+  dependency: HomebrewDependency,
+): string {
+  return dependency.full_name ?? `${metadata.tap_name}/${dependency.name}`;
+}
+
+function validateUniqueCellarPackageNames(packages: FederatedPackageSource[]): void {
+  const fullNameByPackageName = new Map<string, string>();
+  for (const { pkg } of packages) {
+    const priorFullName = fullNameByPackageName.get(pkg.name);
+    if (priorFullName !== undefined && priorFullName !== pkg.full_name) {
+      fail(
+        `federated dependency closure has duplicate Cellar package name ${quote(pkg.name)}: ` +
+        `${quote(priorFullName)} and ${quote(pkg.full_name)}`,
+      );
+    }
+    fullNameByPackageName.set(pkg.name, pkg.full_name);
+  }
+}
+
 async function planPackage(
   metadata: HomebrewTapMetadata,
   pkg: HomebrewMetadataPackage,
-  options: HomebrewVfsPlanOptions & { expectedAbi: number },
+  options: PlanPackageOptions,
 ): Promise<HomebrewVfsPackagePlan> {
   const bottle = pkg.bottles.find((candidate) => candidate.arch === options.arch);
   if (!bottle) fail(`package ${quote(pkg.name)} has no ${options.arch} bottle`);
   validateBottleIdentity(pkg, bottle, metadata.kandelo_abi, options.runtime);
 
   const selected = selectBottle(pkg, bottle, options.allowFallback ?? true);
-  const expectedCacheKey = options.expectedCacheKeys?.[pkg.name];
+  const expectedCacheKey =
+    options.expectedCacheKeys?.[pkg.full_name] ?? options.expectedCacheKeys?.[pkg.name];
   if (expectedCacheKey !== undefined && selected.cacheKeySha !== expectedCacheKey) {
     fail(
       `package ${quote(pkg.name)} cache_key_sha ${quote(selected.cacheKeySha)} does not match expected ${quote(expectedCacheKey)}`,
     );
+  }
+  if (options.requireRepositoryRoot) {
+    validateFederatedBottleSource(metadata, pkg, bottle, selected);
   }
 
   validateTapRelativePath(selected.linkManifestPath, `package ${quote(pkg.name)} link_manifest`);
@@ -568,6 +867,11 @@ async function planPackage(
   return {
     name: pkg.name,
     fullName: pkg.full_name,
+    tapRepository: metadata.tap_repository,
+    tapName: metadata.tap_name,
+    tapCommit: metadata.tap_commit,
+    kandeloRepository: metadata.kandelo_repository,
+    kandeloCommit: metadata.kandelo_commit,
     version: pkg.version,
     formulaRevision: pkg.formula_revision,
     bottleRebuild: pkg.bottle_rebuild,
@@ -586,10 +890,76 @@ async function planPackage(
     payloadRoot: linkManifest.bottle.payload_root,
     linkManifestPath: selected.linkManifestPath,
     linkManifest,
-    dependencies: pkg.dependencies,
+    dependencies: options.dependencies ?? pkg.dependencies,
     runtimeSupport: bottle.runtime_support,
     browserCompatible: bottle.browser_compatible,
   };
+}
+
+function validateFederatedBottleSource(
+  metadata: HomebrewTapMetadata,
+  pkg: HomebrewMetadataPackage,
+  bottle: HomebrewMetadataBottle,
+  selected: SelectedBottle,
+): void {
+  const repository = metadata.tap_repository.toLowerCase();
+  const expectedUrl =
+    `https://ghcr.io/v2/${repository}/${pkg.name}/blobs/sha256:${selected.sha256}`;
+  if (selected.url !== expectedUrl) {
+    fail(
+      `package ${quote(pkg.full_name)} bottle URL ${quote(selected.url)} ` +
+      `does not match repository-rooted GHCR URL ${quote(expectedUrl)}`,
+    );
+  }
+
+  const builtFrom = requireRecord(
+    bottle.built_from,
+    `package ${quote(pkg.full_name)} bottle built_from`,
+  );
+  const tapRepository = requiredString(
+    builtFrom,
+    "tap_repository",
+    `package ${quote(pkg.full_name)} bottle built_from`,
+  );
+  const kandeloRepository = requiredString(
+    builtFrom,
+    "kandelo_repository",
+    `package ${quote(pkg.full_name)} bottle built_from`,
+  );
+  if (tapRepository.toLowerCase() !== repository) {
+    fail(`package ${quote(pkg.full_name)} bottle built_from tap repository does not match metadata`);
+  }
+  if (
+    requiredString(
+      builtFrom,
+      "tap_commit",
+      `package ${quote(pkg.full_name)} bottle built_from`,
+    ) !== metadata.tap_commit
+  ) {
+    fail(`package ${quote(pkg.full_name)} bottle built_from tap commit does not match metadata`);
+  }
+  if (kandeloRepository.toLowerCase() !== metadata.kandelo_repository.toLowerCase()) {
+    fail(
+      `package ${quote(pkg.full_name)} bottle built_from Kandelo repository does not match metadata`,
+    );
+  }
+  if (
+    requiredString(
+      builtFrom,
+      "kandelo_commit",
+      `package ${quote(pkg.full_name)} bottle built_from`,
+    ) !== metadata.kandelo_commit
+  ) {
+    fail(`package ${quote(pkg.full_name)} bottle built_from Kandelo commit does not match metadata`);
+  }
+  validateSha256(
+    requiredString(
+      builtFrom,
+      "formula_sha256",
+      `package ${quote(pkg.full_name)} bottle built_from`,
+    ),
+    `package ${quote(pkg.full_name)} bottle built_from formula_sha256`,
+  );
 }
 
 function validateBottleIdentity(

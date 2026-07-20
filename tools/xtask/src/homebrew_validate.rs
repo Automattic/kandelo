@@ -173,8 +173,9 @@ impl Validator<'_> {
         self.report.packages = packages.len();
 
         let package_index = self.package_index(packages);
+        let metadata_tap_name = string_at(&metadata, "/tap_name").unwrap_or("");
         for package in packages {
-            self.validate_dependency_closure(package, &package_index);
+            self.validate_dependency_closure(package, &package_index, metadata_tap_name);
             self.validate_package(package, &metadata);
         }
 
@@ -228,6 +229,7 @@ impl Validator<'_> {
         &mut self,
         package: &Value,
         package_index: &BTreeMap<String, &Value>,
+        metadata_tap_name: &str,
     ) {
         let package_name = string_at(package, "/name").unwrap_or("<unknown>");
         let dependencies = match package.get("dependencies").and_then(Value::as_array) {
@@ -239,6 +241,26 @@ impl Validator<'_> {
             let Some(dep_name) = string_at(dependency, "/name") else {
                 continue;
             };
+            let declared_full_name = dependency
+                .get("full_name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{metadata_tap_name}/{dep_name}"));
+            let expected_suffix = format!("/{dep_name}");
+            if !declared_full_name.ends_with(&expected_suffix) {
+                self.err(format!(
+                    "metadata package {package_name}: dependency full_name {declared_full_name:?} does not identify name {dep_name:?}"
+                ));
+                continue;
+            }
+            let dependency_tap = declared_full_name
+                .strip_suffix(&expected_suffix)
+                .unwrap_or_default();
+            if dependency_tap != metadata_tap_name {
+                // An external dependency is closed only when the consumer
+                // supplies its separately validated immutable tap metadata.
+                continue;
+            }
             let Some(dep_package) = package_index.get(dep_name) else {
                 self.err(format!(
                     "metadata package {package_name}: dependency {dep_name:?} is not present in metadata packages"

@@ -325,6 +325,22 @@ if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   fail "validator accepted an extra runtime-evidence field"
 fi
 
+jq '.dependencies.bottles = [{
+  full_name: "Kandelo-dev/tap-core/zlib",
+  version: "1.3.1",
+  sha256: ("a" * 64),
+  tag: "wasm32_kandelo",
+  receipt_sha256: ("b" * 64)
+}]' "$evidence" >"$TMPDIR/mixed-case-dependency.json"
+if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$TMPDIR/mixed-case-dependency.json" "${validate_args[@]}" \
+  > /dev/null 2>"$TMPDIR/mixed-case-dependency.err"; then
+  fail "validator accepted a mixed-case runtime dependency identity"
+fi
+grep -F 'runtime dependency evidence bottles[0] is not normalized lowercase' \
+  "$TMPDIR/mixed-case-dependency.err" >/dev/null ||
+  fail "mixed-case runtime dependency did not report its normalization failure"
+
 jq --arg url "$bottle_root/hello/manifests/2.0" \
   '.target.install_log.fetch = [("==> Downloading " + $url)]' \
   "$evidence" >"$TMPDIR/wrong-manifest-evidence.json"

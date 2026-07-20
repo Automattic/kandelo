@@ -51,6 +51,7 @@ export {
 } from "./binary-resolver";
 export {
   HomebrewVfsPlanError,
+  planFederatedHomebrewVfs,
   planHomebrewVfs,
 } from "./homebrew-vfs-planner";
 export type {
@@ -58,6 +59,8 @@ export type {
   HomebrewBottleSourceStatus,
   HomebrewBottleStatus,
   HomebrewDependency,
+  HomebrewFederatedVfsPlan,
+  HomebrewFederatedVfsPlanOptions,
   HomebrewLinkEntry,
   HomebrewLinkManifest,
   HomebrewMetadataBottle,
@@ -67,6 +70,7 @@ export type {
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,
   HomebrewVfsPlanOptions,
+  HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
 export {
   HomebrewVfsBuildError,
