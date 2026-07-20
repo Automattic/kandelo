@@ -340,6 +340,17 @@ EXPECTED_PLAN_TAP="$TAP_NAME"
   echo "homebrew-verify-poured-bottle.sh: immutable resolved tap map is required" >&2
   exit 2
 }
+# The selected target Formula is reconstructed with its exact bottle block in
+# TAP_ROOT, so that checkout is intentionally tracked-dirty. Dependency
+# provenance stays bound to the immutable, clean primary checkout from the
+# resolved map; the reconstructed checkout remains authoritative for the
+# actual target bottle pour and Formula test below.
+PROVENANCE_TAP_ROOT="$(jq -er --arg tap "$TAP_NAME" '
+  .primary |
+  select(.tap_name == $tap) |
+  .root |
+  select(type == "string" and startswith("/"))
+' "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE")"
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json \
   >"$HOST_DEPENDENCY_PLAN"
@@ -682,7 +693,7 @@ fi
 
 python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
   --brew-bin "$BREW_BIN" \
-  --tap-root "$TAP_ROOT" \
+  --tap-root "$PROVENANCE_TAP_ROOT" \
   --tap-repository "$TAP_REPOSITORY" \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
@@ -713,6 +724,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --tap-root "$TAP_ROOT" \
+  --dependency-tap-root "$PROVENANCE_TAP_ROOT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
   --bottle-json "$BOTTLE_JSON" \
   --bottle-url "$BOTTLE_URL" \
