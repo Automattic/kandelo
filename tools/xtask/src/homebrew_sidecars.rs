@@ -196,6 +196,8 @@ struct BottleInput {
     #[serde(default)]
     bottle_file: Option<String>,
     #[serde(default)]
+    archived_formula_sha256: Option<String>,
+    #[serde(default)]
     url: Option<String>,
     #[serde(default)]
     cache_key_sha: Option<String>,
@@ -724,6 +726,16 @@ impl Generator<'_> {
         let cache_key_sha =
             required_field(&bottle.cache_key_sha, package, bottle, "cache_key_sha")?;
         let bottle_file = required_field(&bottle.bottle_file, package, bottle, "bottle_file")?;
+        let expected_archived_formula_sha = required_field(
+            &bottle.archived_formula_sha256,
+            package,
+            bottle,
+            "archived_formula_sha256",
+        )?;
+        require_sha256(
+            expected_archived_formula_sha,
+            "archived_formula_sha256",
+        )?;
         let payload_root = required_field(&bottle.payload_root, package, bottle, "payload_root")?;
         let build = bottle.build.as_ref().ok_or_else(|| {
             bottle_error(package, bottle, "success bottle requires build evidence")
@@ -746,13 +758,12 @@ impl Generator<'_> {
         let bottle_path = self.resolve_input_relative(bottle_file);
         let archived_formula_sha =
             verify_bottle_payload(package, bottle, &bottle_path, payload_root)?;
-        if archived_formula_sha != package.formula_source_sha256 {
+        if archived_formula_sha != expected_archived_formula_sha {
             return Err(bottle_error(
                 package,
                 bottle,
                 &format!(
-                    "archived formula sha256 {archived_formula_sha} does not match build-source sha256 {}",
-                    package.formula_source_sha256
+                    "archived formula sha256 {archived_formula_sha} does not match inspected sha256 {expected_archived_formula_sha}",
                 ),
             ));
         }
@@ -1429,6 +1440,8 @@ mod tests {
         });
         if status == "success" {
             bottle["bottle_file"] = json!(bottle_file);
+            bottle["archived_formula_sha256"] =
+                json!(sha256_bytes(FORMULA_TEXT.as_bytes()));
             bottle["url"] = json!(repository_bottle_url(
                 "kandelo-dev/homebrew-tap-core",
                 "hello",
@@ -1680,7 +1693,9 @@ mod tests {
             &current_bottle_sha,
         ));
         input["kandelo_commit"] = json!("4444444444444444444444444444444444444444");
-        input["packages"][0]["formula_source_sha256"] = json!(current_formula_sha.clone());
+        input["packages"][0]["formula_source_sha256"] = json!(current_tap_formula_sha);
+        input["packages"][0]["bottles"][0]["archived_formula_sha256"] =
+            json!(current_formula_sha.clone());
         write_json_value(&current.input_path, &input);
 
         current.run(Some(&previous.tap_root.join("Kandelo/metadata.json")));
@@ -1918,7 +1933,7 @@ mod tests {
     fn success_generation_rejects_formula_archive_from_a_different_source() {
         let fixture = Fixture::new("success");
         let mut input = load_json(&fixture.input_path).unwrap();
-        input["packages"][0]["formula_source_sha256"] =
+        input["packages"][0]["bottles"][0]["archived_formula_sha256"] =
             json!(sha256_bytes(CURRENT_ARCHIVED_FORMULA_TEXT.as_bytes()));
         write_json_value(&fixture.input_path, &input);
 
@@ -1931,7 +1946,7 @@ mod tests {
         .unwrap_err();
         assert!(
             error.contains("archived formula sha256")
-                && error.contains("does not match build-source sha256"),
+                && error.contains("does not match inspected sha256"),
             "unexpected error: {error}"
         );
     }

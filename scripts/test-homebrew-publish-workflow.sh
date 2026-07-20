@@ -1491,6 +1491,7 @@ EOF
           built_by: "https://example.invalid/actions/runs/1",
           built_at: "2026-07-12T00:00:00Z",
           bottle_file: "../build/bottle.tar.gz",
+          archived_formula_sha256: $formula_sha,
           url: $url,
           cache_key_sha: $sha,
           payload_root: "hello/2.12.1",

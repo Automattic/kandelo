@@ -673,6 +673,7 @@ manifest = {
                     "built_by": os.environ["RUN_URL"],
                     "built_at": os.environ["GENERATED_AT"],
                     "bottle_file": os.environ["KANDELO_HOMEBREW_BOTTLE_ARCHIVE"],
+                    "archived_formula_sha256": inspection["formula_sha256"],
                     "url": os.environ["KANDELO_HOMEBREW_BOTTLE_URL"],
                     "cache_key_sha": os.environ["CACHE_KEY_SHA"],
                     "payload_root": payload_root,
