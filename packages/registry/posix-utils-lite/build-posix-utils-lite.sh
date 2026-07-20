@@ -6,9 +6,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC="$SCRIPT_DIR/src/posix-utils-lite.c"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+kandelo_package_select_source_root "$REPO_ROOT"
+SOURCE_ROOT="$KANDELO_PACKAGE_SOURCE_ROOT"
+SRC="$SOURCE_ROOT/packages/registry/posix-utils-lite/src/posix-utils-lite.c"
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+
+if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
+  echo "ERROR: posix-utils-lite source must be a regular file: $SRC" >&2
+  exit 1
+fi
 
 # Keep direct and resolver-driven builds pinned to this worktree's SDK.
 source "$REPO_ROOT/sdk/activate.sh"
@@ -33,6 +44,13 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 mkdir -p "$BIN_DIR"
+
+# A resolver/Formula caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+  export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+  export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+fi
 
 echo "==> Building posix-utils-lite multicall binary..."
 wasm32posix-cc \

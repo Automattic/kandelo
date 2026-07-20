@@ -7,11 +7,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC="$REPO_ROOT/examples/lsof.c"
-OUT_BIN="$SCRIPT_DIR/lsof.wasm"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+kandelo_package_select_source_root "$REPO_ROOT"
+SOURCE_ROOT="$KANDELO_PACKAGE_SOURCE_ROOT"
+SRC="$SOURCE_ROOT/examples/lsof.c"
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+OUT_BIN="$WORK_DIR/lsof.wasm"
 
-if [ ! -f "$SRC" ]; then
-    echo "ERROR: source not found at $SRC" >&2
+# A resolver/Formula caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
+
+if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
+    echo "ERROR: lsof source must be a regular file: $SRC" >&2
     exit 1
 fi
 

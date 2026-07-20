@@ -1,4 +1,9 @@
 script_path = "packages/registry/posix-utils-lite/build-posix-utils-lite.sh"
+inputs = [
+  "packages/registry/posix-utils-lite/build-posix-utils-lite.sh",
+  "packages/registry/posix-utils-lite/src/posix-utils-lite.c",
+  "scripts/package-build-roots.sh",
+]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 revision    = 4

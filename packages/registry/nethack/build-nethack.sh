@@ -17,19 +17,55 @@ set -euo pipefail
 # rebuilt with the wasm toolchain. Everything util/ already produced
 # (headers in include/, nhdat in dat/) is kept.
 #
-# Output:
+# Output for a direct build:
 #   packages/registry/nethack/bin/nethack.wasm
 #   packages/registry/nethack/runtime/share/nethack/nhdat   (and symbols/license)
-
-NETHACK_VERSION="${NETHACK_VERSION:-3.6.7}"
-NETHACK_SHORT="367"  # Upstream tarballs drop the dots: "nethack-367-src.tgz"
+# Resolver and Formula builds instead write only below their declared work and
+# output roots.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/nethack-src"
-BIN_DIR="$SCRIPT_DIR/bin"
-RUNTIME_DIR="$SCRIPT_DIR/runtime"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/nethack-src"
+BIN_DIR="$WORK_DIR/bin"
+RUNTIME_DIR="$WORK_DIR/runtime"
 SYSROOT="$REPO_ROOT/sysroot"
+NETHACK_VERSION="${WASM_POSIX_DEP_VERSION:-${NETHACK_VERSION:-3.6.7}}"
+NETHACK_SHORT="${NETHACK_VERSION//./}" # Upstream tarballs drop the dots.
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.nethack.org/download/${NETHACK_VERSION}/nethack-${NETHACK_SHORT}-src.tgz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-98cf67df6debf9668a61745aa84c09bcab362e5d33f5b944ec5155d44d2aacb2}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+NETHACK_HACKDIR="${NETHACK_HACKDIR:-/usr/share/nethack}"
+NETHACK_VAR_PLAYGROUND="${NETHACK_VAR_PLAYGROUND:-/home/.nethack}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-nethack-source"
+
+validate_guest_path() {
+    local label="$1"
+    local value="$2"
+    if [[ "$value" != /* || "$value" == *'"'* || "$value" == *'\\'* || \
+          "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+        echo "ERROR: $label must be an absolute guest path without C-string escapes: $value" >&2
+        exit 2
+    fi
+    if [[ "/${value#/}/" == *'/../'* || "/${value#/}/" == *'/./'* || \
+          "/${value#/}/" == *'//'* ]]; then
+        echo "ERROR: $label must be normalized: $value" >&2
+        exit 2
+    fi
+}
+
+validate_guest_path NETHACK_HACKDIR "$NETHACK_HACKDIR"
+validate_guest_path NETHACK_VAR_PLAYGROUND "$NETHACK_VAR_PLAYGROUND"
+
+# A resolver/Formula caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -59,16 +95,19 @@ echo "==> ncurses at $NCURSES_PREFIX"
 export CPPFLAGS="${CPPFLAGS:-} -I$NCURSES_PREFIX/include"
 export LDFLAGS="${LDFLAGS:-} -L$NCURSES_PREFIX/lib"
 
-# --- Download NetHack source ---
+# --- Stage verified NetHack source ---
+expected_source_marker="$(printf '%s\n%s\n%s\n%s\n%s' \
+    "$NETHACK_VERSION" "$SOURCE_URL" "$SOURCE_SHA256" \
+    "$NETHACK_HACKDIR" "$NETHACK_VAR_PLAYGROUND")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR" "$RUNTIME_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading NetHack $NETHACK_VERSION..."
-    TARBALL="nethack-${NETHACK_SHORT}-src.tgz"
-    URL="https://www.nethack.org/download/${NETHACK_VERSION}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/${TARBALL}"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified NetHack $NETHACK_VERSION source..."
+    kandelo_package_stage_verified_source nethack "$SRC_DIR" "$VERIFIED_SOURCE_DIR" \
+        "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
+    echo "==> Source staged at $SRC_DIR"
 fi
 
 cd "$SRC_DIR"
@@ -121,8 +160,9 @@ fi
 
 # --- Patch include/unixconf.h ---
 #
-# Override HACKDIR and add VAR_PLAYGROUND so read-only data lives under
-# /usr/share/nethack and writable saves/scores under /home/.nethack.
+# Override HACKDIR and add VAR_PLAYGROUND so a Formula can compile the exact
+# poured opt-prefix data path while a direct registry build retains its
+# historical /usr/share/nethack default.
 UNIXCONF_H="include/unixconf.h"
 if [ -f "$UNIXCONF_H" ] && ! grep -q "wasm32posix patch" "$UNIXCONF_H"; then
     echo "==> Patching include/unixconf.h..."
@@ -132,11 +172,11 @@ if [ -f "$UNIXCONF_H" ] && ! grep -q "wasm32posix patch" "$UNIXCONF_H"; then
         -e 's|^#define VAR_PLAYGROUND.*|/* VAR_PLAYGROUND overridden below */|' \
         "$UNIXCONF_H"
 
-    cat >> "$UNIXCONF_H" <<'EOF'
+    cat >> "$UNIXCONF_H" <<EOF
 
 /* wasm32posix patch */
-#define HACKDIR "/usr/share/nethack"
-#define VAR_PLAYGROUND "/home/.nethack"
+#define HACKDIR "$NETHACK_HACKDIR"
+#define VAR_PLAYGROUND "$NETHACK_VAR_PLAYGROUND"
 EOF
     rm -f "$UNIXCONF_H.bak"
 fi
@@ -340,8 +380,8 @@ if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
 
     # Drop -DSYSCF and -DSECURE. Those enable the multi-user / setuid-games
     # mode that expects a sysconf file under HACKDIR; we ship a single-user
-    # shell-demo build where /usr/share/nethack is read-only and there is
-    # no sysconf file to consult.
+    # shell-demo build where the compiled HACKDIR is read-only and there is no
+    # sysconf file to consult.
     sed -i.bak -E \
         -e 's|^CFLAGS\+=-DSYSCF -DSYSCF_FILE=.*|# -DSYSCF disabled for wasm32 single-user build|' \
         -e 's|^CFLAGS\+=-DCONFIG_ERROR_SECURE=.*|# -DCONFIG_ERROR_SECURE disabled for wasm32|' \
