@@ -148,7 +148,7 @@ jobs:
   #
   # Mirrors prepare-merge.yml's preflight + toolchain-cache +
   # matrix-build + test-gate, with one adjustment: preflight reads
-  # `INPUT_FORCE_PACKAGES` and force-includes listed packages in the
+  # `INPUT_PACKAGES` and force-includes listed packages in the
   # matrix even if their cache_key_sha is already published. This is
   # the D3 bypass. Each matrix-build job publishes its own archive +
   # index entry atomically via `scripts/index-update.sh`.
@@ -212,7 +212,7 @@ jobs:
         id: compute
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_FORCE_PACKAGES: ${{ inputs.packages }}
+          INPUT_PACKAGES: ${{ inputs.packages }}
           INPUT_ARCHES: ${{ inputs.arches }}
         run: |
           bash scripts/dev-shell.sh bash -c '
@@ -232,11 +232,11 @@ jobs:
             # bypassed. `all` means every package; a name list narrows.
             FORCE_ALL=0
             FORCE_LIST=""
-            if [ "$INPUT_FORCE_PACKAGES" = "all" ]; then
+            if [ "$INPUT_PACKAGES" = "all" ]; then
               FORCE_ALL=1
             else
               # Normalise (strip whitespace, drop empties).
-              IFS="," read -ra _names <<< "$INPUT_FORCE_PACKAGES"
+              IFS="," read -ra _names <<< "$INPUT_PACKAGES"
               for n in "${_names[@]}"; do
                 n="${n#"${n%%[![:space:]]*}"}"
                 n="${n%"${n##*[![:space:]]}"}"
