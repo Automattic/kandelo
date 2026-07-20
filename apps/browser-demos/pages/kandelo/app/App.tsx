@@ -59,7 +59,7 @@ export const App: React.FC = () => {
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
-  const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: false });
+  const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: true });
   const [demoGuideOpen, setDemoGuideOpen] = React.useState(demoGuide !== null);
   const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
