@@ -3543,7 +3543,12 @@ pub fn sys_read(
                         return Err(Errno::EAGAIN);
                     }
                     // Non-canonical mode: pass through raw bytes from host
-                    // VMIN/VTIME semantics are approximated
+                    // after draining bytes that had already entered the
+                    // canonical line discipline before the mode change.
+                    if proc.terminal.has_cooked_data() {
+                        return Ok(proc.terminal.read_cooked(buf));
+                    }
+                    // VMIN/VTIME semantics are approximated.
                     let n = host.host_read(0, buf)?;
                     return Ok(n);
                 }
@@ -12253,6 +12258,14 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, action: u32, buf: &[u8]) -> Re
     if buf.len() < 48 {
         return Err(Errno::EINVAL);
     }
+    if !matches!(
+        action,
+        crate::terminal::TCSANOW
+            | crate::terminal::TCSADRAIN
+            | crate::terminal::TCSAFLUSH
+    ) {
+        return Err(Errno::EINVAL);
+    }
     let next_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
     let discard_input = action == crate::terminal::TCSAFLUSH;
     match ofd.file_type {
@@ -12267,9 +12280,8 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, action: u32, buf: &[u8]) -> Re
             pty.terminal.c_cc.copy_from_slice(&buf[16..48]);
         }
         _ => {
-            if discard_input {
-                proc.terminal.flush_input();
-            }
+            proc.terminal
+                .prepare_termios_change(next_lflag, discard_input);
             proc.terminal.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
             proc.terminal.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
             proc.terminal.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
@@ -12575,9 +12587,8 @@ pub fn sys_ioctl(
                     pty.terminal.read_termios(buf);
                 }
                 _ => {
-                    if discard_input {
-                        proc.terminal.flush_input();
-                    }
+                    proc.terminal
+                        .prepare_termios_change(next_lflag, discard_input);
                     proc.terminal.read_termios(buf);
                 }
             }
@@ -12689,6 +12700,9 @@ pub fn sys_ioctl(
                 return Err(Errno::EINVAL);
             }
             let queue = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            if !matches!(queue, 0..=2) {
+                return Err(Errno::EINVAL);
+            }
             match file_type {
                 FileType::PtyMaster | FileType::PtySlave => {
                     let pty_idx = host_handle as usize;
@@ -14947,6 +14961,186 @@ mod tests {
 
     fn terminal_process(pid: u32) -> Process {
         Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
+    }
+
+    struct PtyFixture {
+        _pty_table: std::sync::MutexGuard<'static, ()>,
+        proc: Process,
+        host: MockHostIO,
+        pty_idx: usize,
+        master_fd: i32,
+        slave_fd: i32,
+    }
+
+    impl PtyFixture {
+        fn new() -> Self {
+            let pty_table = crate::pty::test_table_lock();
+            let mut proc = Process::new(1);
+            let pty_idx = crate::pty::alloc_pty().expect("test PTY allocation");
+            let pty = crate::pty::get_pty(pty_idx).expect("allocated test PTY");
+            pty.locked = false;
+            pty.master_refs = 1;
+            pty.slave_refs = 1;
+            pty.terminal.c_lflag &= !crate::terminal::ECHO;
+
+            let master_ofd = proc.ofd_table.create(
+                FileType::PtyMaster,
+                O_RDWR,
+                pty_idx as i64,
+                b"/dev/ptmx".to_vec(),
+            );
+            let master_fd = proc
+                .fd_table
+                .alloc(crate::fd::OpenFileDescRef(master_ofd), 0)
+                .unwrap();
+            let slave_ofd = proc.ofd_table.create(
+                FileType::PtySlave,
+                O_RDWR,
+                pty_idx as i64,
+                format!("/dev/pts/{pty_idx}").into_bytes(),
+            );
+            let slave_fd = proc
+                .fd_table
+                .alloc(crate::fd::OpenFileDescRef(slave_ofd), 0)
+                .unwrap();
+
+            Self {
+                _pty_table: pty_table,
+                proc,
+                host: MockHostIO::new(),
+                pty_idx,
+                master_fd,
+                slave_fd,
+            }
+        }
+
+        fn fd(&self, use_master: bool) -> i32 {
+            if use_master {
+                self.master_fd
+            } else {
+                self.slave_fd
+            }
+        }
+
+        fn write_input(&mut self, data: &[u8]) {
+            assert_eq!(
+                sys_write(&mut self.proc, &mut self.host, self.master_fd, data),
+                Ok(data.len()),
+            );
+        }
+
+        fn write_output(&mut self, data: &[u8]) {
+            assert_eq!(
+                sys_write(&mut self.proc, &mut self.host, self.slave_fd, data),
+                Ok(data.len()),
+            );
+        }
+
+        fn read_slave(&mut self, len: usize) -> Result<Vec<u8>, Errno> {
+            let mut bytes = vec![0; len];
+            let n = sys_read(
+                &mut self.proc,
+                &mut self.host,
+                self.slave_fd,
+                &mut bytes,
+            )?;
+            bytes.truncate(n);
+            Ok(bytes)
+        }
+
+        fn read_master(&mut self, len: usize) -> Result<Vec<u8>, Errno> {
+            let mut bytes = vec![0; len];
+            let n = sys_read(
+                &mut self.proc,
+                &mut self.host,
+                self.master_fd,
+                &mut bytes,
+            )?;
+            bytes.truncate(n);
+            Ok(bytes)
+        }
+
+        fn custom_attrs(&mut self, fd: i32) -> [u8; 48] {
+            let mut attrs = [0; 48];
+            sys_tcgetattr(&mut self.proc, fd, &mut attrs).unwrap();
+            attrs
+        }
+
+        fn ioctl_attrs(&mut self, fd: i32) -> [u8; crate::terminal::TERMIOS_SIZE] {
+            let mut attrs = [0; crate::terminal::TERMIOS_SIZE];
+            sys_ioctl(
+                &mut self.proc,
+                &mut self.host,
+                fd,
+                crate::terminal::TCGETS,
+                &mut attrs,
+            )
+            .unwrap();
+            attrs
+        }
+
+        fn set_custom_canonical(
+            &mut self,
+            fd: i32,
+            canonical: bool,
+            action: u32,
+        ) -> Result<(), Errno> {
+            let mut attrs = self.custom_attrs(fd);
+            let mut lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+            if canonical {
+                lflag |= crate::terminal::ICANON;
+            } else {
+                lflag &= !crate::terminal::ICANON;
+            }
+            attrs[12..16].copy_from_slice(&lflag.to_le_bytes());
+            sys_tcsetattr(&mut self.proc, fd, action, &attrs)
+        }
+
+        fn set_ioctl_canonical(
+            &mut self,
+            fd: i32,
+            canonical: bool,
+            request: u32,
+        ) -> Result<(), Errno> {
+            let mut attrs = self.ioctl_attrs(fd);
+            let mut lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+            if canonical {
+                lflag |= crate::terminal::ICANON;
+            } else {
+                lflag &= !crate::terminal::ICANON;
+            }
+            attrs[12..16].copy_from_slice(&lflag.to_le_bytes());
+            sys_ioctl(&mut self.proc, &mut self.host, fd, request, &mut attrs)
+        }
+
+        fn available(&mut self) -> i32 {
+            let mut available = [0; 4];
+            sys_ioctl(
+                &mut self.proc,
+                &mut self.host,
+                self.slave_fd,
+                0x541B,
+                &mut available,
+            )
+            .unwrap();
+            i32::from_le_bytes(available)
+        }
+
+        fn slave_revents(&mut self) -> i16 {
+            let mut fds = [WasmPollFd {
+                fd: self.slave_fd,
+                events: POLLIN,
+                revents: 0,
+            }];
+            sys_poll(&mut self.proc, &mut self.host, &mut fds, 0).unwrap();
+            fds[0].revents
+        }
+    }
+
+    impl Drop for PtyFixture {
+        fn drop(&mut self) {
+            crate::pty::free_pty(self.pty_idx);
+        }
     }
 
     /// Mutex to serialize tests that access the global Unix socket registry.
@@ -22567,140 +22761,650 @@ mod tests {
     }
 
     #[test]
-    fn test_tcsetattr_tcsaflush_discards_pending_char_device_input() {
+    fn test_legacy_termios_round_trip_preserves_all_flags_and_control_bytes() {
         let mut proc = terminal_process(1);
-        for &byte in b"pending" {
+        let mut attrs = [0u8; 48];
+        attrs[0..4].copy_from_slice(&0x0102_0304u32.to_le_bytes());
+        attrs[4..8].copy_from_slice(&0x1112_1314u32.to_le_bytes());
+        attrs[8..12].copy_from_slice(&0x2122_2324u32.to_le_bytes());
+        attrs[12..16].copy_from_slice(&0x3132_3334u32.to_le_bytes());
+        for (index, byte) in attrs[16..48].iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+
+        sys_tcsetattr(
+            &mut proc,
+            0,
+            crate::terminal::TCSANOW,
+            &attrs,
+        )
+        .unwrap();
+        let mut observed = [0u8; 48];
+        sys_tcgetattr(&mut proc, 0, &mut observed).unwrap();
+        assert_eq!(observed, attrs);
+    }
+
+    #[test]
+    fn test_ioctl_termios_round_trip_preserves_full_musl_layout() {
+        let mut proc = terminal_process(1);
+        let mut host = MockHostIO::new();
+        let mut attrs = [0u8; crate::terminal::TERMIOS_SIZE];
+        attrs[0..4].copy_from_slice(&0x0102_0304u32.to_le_bytes());
+        attrs[4..8].copy_from_slice(&0x1112_1314u32.to_le_bytes());
+        attrs[8..12].copy_from_slice(&0x2122_2324u32.to_le_bytes());
+        attrs[12..16].copy_from_slice(&0x3132_3334u32.to_le_bytes());
+        attrs[16] = 7;
+        for (index, byte) in attrs[17..49].iter_mut().enumerate() {
+            *byte = (0x80 + index) as u8;
+        }
+        attrs[52..56].copy_from_slice(&0x4142_4344u32.to_le_bytes());
+        attrs[56..60].copy_from_slice(&0x5152_5354u32.to_le_bytes());
+
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            0,
+            crate::terminal::TCSETS,
+            &mut attrs,
+        )
+        .unwrap();
+        let mut observed = [0u8; crate::terminal::TERMIOS_SIZE];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            0,
+            crate::terminal::TCGETS,
+            &mut observed,
+        )
+        .unwrap();
+        assert_eq!(observed, attrs);
+    }
+
+    #[test]
+    fn test_termios_entry_points_have_symmetric_buffer_fd_and_type_errors() {
+        let mut proc = terminal_process(1);
+        let mut host = MockHostIO::new();
+        let bad_fd = 99;
+        let regular = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDWR, 0).unwrap();
+
+        // The legacy API requires its complete 48-byte layout for get and
+        // every set action.
+        assert_eq!(sys_tcgetattr(&mut proc, 0, &mut [0; 47]), Err(Errno::EINVAL));
+        for action in [
+            crate::terminal::TCSANOW,
+            crate::terminal::TCSADRAIN,
+            crate::terminal::TCSAFLUSH,
+        ] {
+            assert_eq!(
+                sys_tcsetattr(&mut proc, 0, action, &[0; 47]),
+                Err(Errno::EINVAL),
+            );
+        }
+
+        // The ioctl API requires all 60 termios bytes, and TCFLSH requires
+        // its four-byte scalar materialization.
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                0,
+                crate::terminal::TCGETS,
+                &mut [0; crate::terminal::TERMIOS_SIZE - 1],
+            ),
+            Err(Errno::EINVAL),
+        );
+        for request in [
+            crate::terminal::TCSETS,
+            crate::terminal::TCSETSW,
+            crate::terminal::TCSETSF,
+        ] {
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    0,
+                    request,
+                    &mut [0; crate::terminal::TERMIOS_SIZE - 1],
+                ),
+                Err(Errno::EINVAL),
+            );
+        }
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                0,
+                crate::terminal::TCFLSH,
+                &mut [0; 3],
+            ),
+            Err(Errno::EINVAL),
+        );
+
+        // Bad descriptors are symmetric across legacy get/set and ioctl
+        // get/set/flush.
+        assert_eq!(
+            sys_tcgetattr(&mut proc, bad_fd, &mut [0; 48]),
+            Err(Errno::EBADF),
+        );
+        for action in [
+            crate::terminal::TCSANOW,
+            crate::terminal::TCSADRAIN,
+            crate::terminal::TCSAFLUSH,
+        ] {
+            assert_eq!(
+                sys_tcsetattr(&mut proc, bad_fd, action, &[0; 48]),
+                Err(Errno::EBADF),
+            );
+        }
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                bad_fd,
+                crate::terminal::TCGETS,
+                &mut [0; crate::terminal::TERMIOS_SIZE],
+            ),
+            Err(Errno::EBADF),
+        );
+        for request in [
+            crate::terminal::TCSETS,
+            crate::terminal::TCSETSW,
+            crate::terminal::TCSETSF,
+        ] {
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    bad_fd,
+                    request,
+                    &mut [0; crate::terminal::TERMIOS_SIZE],
+                ),
+                Err(Errno::EBADF),
+            );
+        }
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                bad_fd,
+                crate::terminal::TCFLSH,
+                &mut 0i32.to_le_bytes(),
+            ),
+            Err(Errno::EBADF),
+        );
+
+        // A valid regular descriptor is consistently ENOTTY.
+        assert_eq!(
+            sys_tcgetattr(&mut proc, regular, &mut [0; 48]),
+            Err(Errno::ENOTTY),
+        );
+        for action in [
+            crate::terminal::TCSANOW,
+            crate::terminal::TCSADRAIN,
+            crate::terminal::TCSAFLUSH,
+        ] {
+            assert_eq!(
+                sys_tcsetattr(&mut proc, regular, action, &[0; 48]),
+                Err(Errno::ENOTTY),
+            );
+        }
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                regular,
+                crate::terminal::TCGETS,
+                &mut [0; crate::terminal::TERMIOS_SIZE],
+            ),
+            Err(Errno::ENOTTY),
+        );
+        for request in [
+            crate::terminal::TCSETS,
+            crate::terminal::TCSETSW,
+            crate::terminal::TCSETSF,
+        ] {
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    regular,
+                    request,
+                    &mut [0; crate::terminal::TERMIOS_SIZE],
+                ),
+                Err(Errno::ENOTTY),
+            );
+        }
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                regular,
+                crate::terminal::TCFLSH,
+                &mut 0i32.to_le_bytes(),
+            ),
+            Err(Errno::ENOTTY),
+        );
+    }
+
+    #[test]
+    fn test_char_device_tcsetattr_action_matrix_preserves_or_flushes_input() {
+        for action in [
+            crate::terminal::TCSANOW,
+            crate::terminal::TCSADRAIN,
+            crate::terminal::TCSAFLUSH,
+        ] {
+            let mut proc = terminal_process(1);
+            let mut host = MockHostIO::new();
+            for &byte in b"first\nq" {
+                proc.terminal.process_input_byte(byte);
+            }
+
+            let mut attrs = [0; 48];
+            sys_tcgetattr(&mut proc, 0, &mut attrs).unwrap();
+            let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+            attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
+            sys_tcsetattr(&mut proc, 0, action, &attrs).unwrap();
+
+            if action == crate::terminal::TCSAFLUSH {
+                assert!(proc.terminal.cooked_buffer.is_empty());
+                assert!(proc.terminal.line_buffer.is_empty());
+
+                // Exercise the destructive action in the reverse direction,
+                // with bytes accepted before raw mode and still unread there.
+                attrs[12..16]
+                    .copy_from_slice(&(lflag | crate::terminal::ICANON).to_le_bytes());
+                sys_tcsetattr(
+                    &mut proc,
+                    0,
+                    crate::terminal::TCSANOW,
+                    &attrs,
+                )
+                .unwrap();
+                for &byte in b"raw" {
+                    proc.terminal.process_input_byte(byte);
+                }
+                attrs[12..16]
+                    .copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
+                sys_tcsetattr(
+                    &mut proc,
+                    0,
+                    crate::terminal::TCSANOW,
+                    &attrs,
+                )
+                .unwrap();
+                attrs[12..16]
+                    .copy_from_slice(&(lflag | crate::terminal::ICANON).to_le_bytes());
+                sys_tcsetattr(&mut proc, 0, action, &attrs).unwrap();
+                assert!(proc.terminal.cooked_buffer.is_empty());
+                continue;
+            }
+
+            let mut prefix = [0; 2];
+            assert_eq!(sys_read(&mut proc, &mut host, 0, &mut prefix), Ok(2));
+            assert_eq!(&prefix, b"fi");
+
+            attrs[12..16].copy_from_slice(&(lflag | crate::terminal::ICANON).to_le_bytes());
+            sys_tcsetattr(&mut proc, 0, action, &attrs).unwrap();
+            let mut remaining = [0; 16];
+            let n = sys_read(&mut proc, &mut host, 0, &mut remaining).unwrap();
+            assert_eq!(&remaining[..n], b"rst\nq");
+        }
+    }
+
+    #[test]
+    fn test_char_device_invalid_tcsetattr_is_non_mutating() {
+        let mut proc = terminal_process(1);
+        for &byte in b"line\npartial" {
             proc.terminal.process_input_byte(byte);
         }
-        assert_eq!(proc.terminal.line_buffer, b"pending");
+        let cooked_before = proc.terminal.cooked_buffer.clone();
+        let line_before = proc.terminal.line_buffer.clone();
+        let mut attrs_before = [0; 48];
+        sys_tcgetattr(&mut proc, 0, &mut attrs_before).unwrap();
+        let mut changed = attrs_before;
+        let lflag = u32::from_le_bytes(changed[12..16].try_into().unwrap());
+        changed[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
 
-        let mut attrs = [0u8; 48];
-        sys_tcgetattr(&mut proc, 0, &mut attrs).unwrap();
-        sys_tcsetattr(&mut proc, 0, crate::terminal::TCSAFLUSH, &attrs).unwrap();
-
-        assert!(proc.terminal.line_buffer.is_empty());
-        assert!(proc.terminal.cooked_buffer.is_empty());
+        assert_eq!(
+            sys_tcsetattr(&mut proc, 0, u32::MAX, &changed),
+            Err(Errno::EINVAL),
+        );
+        let mut attrs_after = [0; 48];
+        sys_tcgetattr(&mut proc, 0, &mut attrs_after).unwrap();
+        assert_eq!(attrs_after, attrs_before);
+        assert_eq!(proc.terminal.cooked_buffer, cooked_before);
+        assert_eq!(proc.terminal.line_buffer, line_before);
     }
 
     #[test]
-    fn test_tcsetattr_tcsadrain_preserves_pending_pty_input() {
-        let mut proc = Process::new(1);
-        let pty_idx = crate::pty::alloc_pty().unwrap();
-        let pty = crate::pty::get_pty(pty_idx).unwrap();
-        pty.master_refs = 1;
-        pty.slave_refs = 1;
-        pty.terminal.c_lflag &= !crate::terminal::ECHO;
-        for &byte in b"first\nq" {
-            pty.process_master_input(byte);
+    fn test_char_device_tcflush_selector_matrix_and_invalid_nonmutation() {
+        for queue in [0i32, 1, 2, 99] {
+            let mut proc = terminal_process(1);
+            let mut host = MockHostIO::new();
+            for &byte in b"line\npartial" {
+                proc.terminal.process_input_byte(byte);
+            }
+            let cooked_before = proc.terminal.cooked_buffer.clone();
+            let line_before = proc.terminal.line_buffer.clone();
+            let mut arg = queue.to_le_bytes();
+
+            let result = sys_ioctl(
+                &mut proc,
+                &mut host,
+                0,
+                crate::terminal::TCFLSH,
+                &mut arg,
+            );
+            if queue == 99 {
+                assert_eq!(result, Err(Errno::EINVAL));
+            } else {
+                assert_eq!(result, Ok(()));
+            }
+
+            if queue == 0 || queue == 2 {
+                assert!(proc.terminal.cooked_buffer.is_empty());
+                assert!(proc.terminal.line_buffer.is_empty());
+            } else {
+                // TCOFLUSH is intentionally a no-op for a CharDevice because
+                // its output is host-owned; an invalid selector is also
+                // completely non-mutating.
+                assert_eq!(proc.terminal.cooked_buffer, cooked_before);
+                assert_eq!(proc.terminal.line_buffer, line_before);
+            }
         }
-        let ofd_idx = proc.ofd_table.create(
-            FileType::PtySlave,
-            O_RDWR,
-            pty_idx as i64,
-            format!("/dev/pts/{pty_idx}").into_bytes(),
-        );
-        let fd = proc
-            .fd_table
-            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
-            .unwrap();
-
-        let mut attrs = [0u8; 48];
-        sys_tcgetattr(&mut proc, fd, &mut attrs).unwrap();
-        let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
-        attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
-        sys_tcsetattr(&mut proc, fd, crate::terminal::TCSADRAIN, &attrs).unwrap();
-
-        let pty = crate::pty::get_pty(pty_idx).unwrap();
-        let mut input = [0u8; 16];
-        let n = pty.slave_read(&mut input);
-        assert_eq!(&input[..n], b"first\nq");
-        crate::pty::free_pty(pty_idx);
     }
 
     #[test]
-    fn test_tcsetattr_tcsaflush_discards_pending_pty_input() {
-        let mut proc = Process::new(1);
-        let pty_idx = crate::pty::alloc_pty().unwrap();
-        let pty = crate::pty::get_pty(pty_idx).unwrap();
-        pty.master_refs = 1;
-        pty.slave_refs = 1;
-        pty.terminal.c_lflag &= !crate::terminal::ECHO;
-        for &byte in b"first\nq" {
-            pty.process_master_input(byte);
-        }
-        let ofd_idx = proc.ofd_table.create(
-            FileType::PtySlave,
-            O_RDWR,
-            pty_idx as i64,
-            format!("/dev/pts/{pty_idx}").into_bytes(),
-        );
-        let fd = proc
-            .fd_table
-            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
-            .unwrap();
-
-        let mut attrs = [0u8; 48];
-        sys_tcgetattr(&mut proc, fd, &mut attrs).unwrap();
-        let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
-        attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
-        sys_tcsetattr(&mut proc, fd, crate::terminal::TCSAFLUSH, &attrs).unwrap();
-
-        let pty = crate::pty::get_pty(pty_idx).unwrap();
-        assert!(!pty.slave_has_data());
-        assert!(pty.input_buf.is_empty());
-        assert!(pty.terminal.cooked_buffer.is_empty());
-        assert!(pty.terminal.line_buffer.is_empty());
-        crate::pty::free_pty(pty_idx);
-    }
-
-    #[test]
-    fn test_ioctl_tcsetsw_preserves_pending_pty_input() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let pty_idx = crate::pty::alloc_pty().unwrap();
-        let pty = crate::pty::get_pty(pty_idx).unwrap();
-        pty.master_refs = 1;
-        pty.slave_refs = 1;
-        pty.terminal.c_lflag &= !crate::terminal::ECHO;
-        for &byte in b"first\nq" {
-            pty.process_master_input(byte);
-        }
-        let ofd_idx = proc.ofd_table.create(
-            FileType::PtySlave,
-            O_RDWR,
-            pty_idx as i64,
-            format!("/dev/pts/{pty_idx}").into_bytes(),
-        );
-        let fd = proc
-            .fd_table
-            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
-            .unwrap();
-
-        let mut attrs = [0u8; crate::terminal::TERMIOS_SIZE];
-        sys_ioctl(
-            &mut proc,
-            &mut host,
-            fd,
-            crate::terminal::TCGETS,
-            &mut attrs,
-        )
-        .unwrap();
-        let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
-        attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
-        sys_ioctl(
-            &mut proc,
-            &mut host,
-            fd,
+    fn test_char_device_ioctl_action_matrix_preserves_or_flushes_input() {
+        for request in [
+            crate::terminal::TCSETS,
             crate::terminal::TCSETSW,
-            &mut attrs,
-        )
-        .unwrap();
+            crate::terminal::TCSETSF,
+        ] {
+            let mut proc = terminal_process(1);
+            let mut host = MockHostIO::new();
+            for &byte in b"first\nq" {
+                proc.terminal.process_input_byte(byte);
+            }
 
-        let pty = crate::pty::get_pty(pty_idx).unwrap();
-        let mut input = [0u8; 16];
-        let n = pty.slave_read(&mut input);
-        assert_eq!(&input[..n], b"first\nq");
-        crate::pty::free_pty(pty_idx);
+            let mut attrs = [0; crate::terminal::TERMIOS_SIZE];
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                0,
+                crate::terminal::TCGETS,
+                &mut attrs,
+            )
+            .unwrap();
+            let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+            attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
+            sys_ioctl(&mut proc, &mut host, 0, request, &mut attrs).unwrap();
+
+            if request == crate::terminal::TCSETSF {
+                assert!(proc.terminal.cooked_buffer.is_empty());
+                assert!(proc.terminal.line_buffer.is_empty());
+
+                attrs[12..16]
+                    .copy_from_slice(&(lflag | crate::terminal::ICANON).to_le_bytes());
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    0,
+                    crate::terminal::TCSETS,
+                    &mut attrs,
+                )
+                .unwrap();
+                for &byte in b"raw" {
+                    proc.terminal.process_input_byte(byte);
+                }
+                attrs[12..16]
+                    .copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    0,
+                    crate::terminal::TCSETS,
+                    &mut attrs,
+                )
+                .unwrap();
+                attrs[12..16]
+                    .copy_from_slice(&(lflag | crate::terminal::ICANON).to_le_bytes());
+                sys_ioctl(&mut proc, &mut host, 0, request, &mut attrs).unwrap();
+                assert!(proc.terminal.cooked_buffer.is_empty());
+                continue;
+            }
+
+            let mut prefix = [0; 2];
+            assert_eq!(sys_read(&mut proc, &mut host, 0, &mut prefix), Ok(2));
+            assert_eq!(&prefix, b"fi");
+
+            attrs[12..16].copy_from_slice(&(lflag | crate::terminal::ICANON).to_le_bytes());
+            sys_ioctl(&mut proc, &mut host, 0, request, &mut attrs).unwrap();
+            let mut remaining = [0; 16];
+            let n = sys_read(&mut proc, &mut host, 0, &mut remaining).unwrap();
+            assert_eq!(&remaining[..n], b"rst\nq");
+        }
+    }
+
+    #[test]
+    fn test_tcsetattr_action_matrix_covers_both_pty_mode_transitions() {
+        for use_master in [false, true] {
+            for action in [
+                crate::terminal::TCSANOW,
+                crate::terminal::TCSADRAIN,
+                crate::terminal::TCSAFLUSH,
+            ] {
+                let mut pty = PtyFixture::new();
+                let terminal_fd = pty.fd(use_master);
+
+                pty.write_input(b"line\nq");
+                pty.write_output(b"screen");
+                assert_eq!(pty.read_slave(32), Ok(b"line\n".to_vec()));
+                assert_eq!(pty.available(), 0);
+                assert_eq!(pty.slave_revents() & POLLIN, 0);
+
+                pty.set_custom_canonical(terminal_fd, false, action)
+                    .unwrap();
+                if action == crate::terminal::TCSAFLUSH {
+                    assert_eq!(pty.available(), 0);
+                    assert_eq!(pty.slave_revents() & POLLIN, 0);
+                    assert_eq!(pty.read_slave(8), Err(Errno::EAGAIN));
+                } else {
+                    assert_eq!(pty.available(), 1);
+                    assert_ne!(pty.slave_revents() & POLLIN, 0);
+                    assert_eq!(pty.read_slave(8), Ok(b"q".to_vec()));
+                }
+                // TCSAFLUSH discards unread input, never terminal output.
+                assert_eq!(pty.read_master(16), Ok(b"screen".to_vec()));
+
+                pty.write_input(b"xyz");
+                assert_eq!(pty.read_slave(1), Ok(b"x".to_vec()));
+                assert_eq!(pty.available(), 2);
+
+                pty.set_custom_canonical(terminal_fd, true, action)
+                    .unwrap();
+                if action == crate::terminal::TCSAFLUSH {
+                    assert_eq!(pty.available(), 0);
+                    assert_eq!(pty.slave_revents() & POLLIN, 0);
+                    assert_eq!(pty.read_slave(8), Err(Errno::EAGAIN));
+                } else {
+                    assert_eq!(pty.available(), 2);
+                    assert_ne!(pty.slave_revents() & POLLIN, 0);
+                    assert_eq!(pty.read_slave(8), Ok(b"yz".to_vec()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_ioctl_termios_action_matrix_covers_both_pty_mode_transitions() {
+        for use_master in [false, true] {
+            for request in [
+                crate::terminal::TCSETS,
+                crate::terminal::TCSETSW,
+                crate::terminal::TCSETSF,
+            ] {
+                let mut pty = PtyFixture::new();
+                let terminal_fd = pty.fd(use_master);
+
+                pty.write_input(b"line\nq");
+                pty.write_output(b"screen");
+                assert_eq!(pty.read_slave(32), Ok(b"line\n".to_vec()));
+                pty.set_ioctl_canonical(terminal_fd, false, request)
+                    .unwrap();
+
+                if request == crate::terminal::TCSETSF {
+                    assert_eq!(pty.available(), 0);
+                    assert_eq!(pty.read_slave(8), Err(Errno::EAGAIN));
+                } else {
+                    assert_eq!(pty.available(), 1);
+                    assert_ne!(pty.slave_revents() & POLLIN, 0);
+                    assert_eq!(pty.read_slave(8), Ok(b"q".to_vec()));
+                }
+                assert_eq!(pty.read_master(16), Ok(b"screen".to_vec()));
+
+                pty.write_input(b"xyz");
+                assert_eq!(pty.read_slave(1), Ok(b"x".to_vec()));
+                pty.set_ioctl_canonical(terminal_fd, true, request)
+                    .unwrap();
+
+                if request == crate::terminal::TCSETSF {
+                    assert_eq!(pty.available(), 0);
+                    assert_eq!(pty.slave_revents() & POLLIN, 0);
+                    assert_eq!(pty.read_slave(8), Err(Errno::EAGAIN));
+                } else {
+                    assert_eq!(pty.available(), 2);
+                    assert_ne!(pty.slave_revents() & POLLIN, 0);
+                    assert_eq!(pty.read_slave(8), Ok(b"yz".to_vec()));
+                }
+
+                // Attributes set through either endpoint are shared by the pair.
+                let opposite_fd = pty.fd(!use_master);
+                let attrs = pty.ioctl_attrs(opposite_fd);
+                let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+                assert_ne!(lflag & crate::terminal::ICANON, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_pty_transition_preserves_partially_read_delimited_and_edited_input() {
+        let mut pty = PtyFixture::new();
+        pty.write_input(b"first\x04garbage\x15secondx\x7f!");
+
+        // VEOF completed "first"; consume only a prefix before changing mode.
+        assert_eq!(pty.read_slave(2), Ok(b"fi".to_vec()));
+        assert_eq!(pty.available(), 3);
+
+        pty.set_ioctl_canonical(pty.master_fd, false, crate::terminal::TCSETSW)
+            .unwrap();
+
+        // The unread VEOF-delimited suffix precedes the canonical line after
+        // VKILL and VERASE have already edited it.
+        assert_eq!(pty.available(), 10);
+        assert_ne!(pty.slave_revents() & POLLIN, 0);
+        assert_eq!(pty.read_slave(32), Ok(b"rstsecond!".to_vec()));
+    }
+
+    #[test]
+    fn test_tcsetattr_invalid_action_is_non_mutating_on_both_pty_endpoints() {
+        for use_master in [false, true] {
+            let mut pty = PtyFixture::new();
+            let terminal_fd = pty.fd(use_master);
+            pty.write_input(b"line\nq");
+            pty.write_output(b"screen");
+
+            let before = pty.custom_attrs(terminal_fd);
+            let mut changed = before;
+            let lflag = u32::from_le_bytes(changed[12..16].try_into().unwrap());
+            changed[12..16]
+                .copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
+
+            assert_eq!(
+                sys_tcsetattr(&mut pty.proc, terminal_fd, u32::MAX, &changed),
+                Err(Errno::EINVAL),
+            );
+            assert_eq!(pty.custom_attrs(pty.fd(!use_master)), before);
+            assert_eq!(pty.available(), 5);
+            assert_ne!(pty.slave_revents() & POLLIN, 0);
+            assert_eq!(pty.read_slave(16), Ok(b"line\n".to_vec()));
+            assert_eq!(pty.read_master(16), Ok(b"screen".to_vec()));
+
+            // The partial canonical line was not lost or made readable.
+            assert_eq!(pty.available(), 0);
+            pty.set_custom_canonical(
+                terminal_fd,
+                false,
+                crate::terminal::TCSANOW,
+            )
+            .unwrap();
+            assert_eq!(pty.read_slave(8), Ok(b"q".to_vec()));
+        }
+    }
+
+    #[test]
+    fn test_tcflush_selector_matrix_and_invalid_selector_are_non_mutating() {
+        for use_master in [false, true] {
+            for queue in [0i32, 1, 2, 99] {
+                let mut pty = PtyFixture::new();
+                let terminal_fd = pty.fd(use_master);
+                pty.write_input(b"line\npartial");
+                pty.write_output(b"screen");
+                let mut arg = queue.to_le_bytes();
+
+                let result = sys_ioctl(
+                    &mut pty.proc,
+                    &mut pty.host,
+                    terminal_fd,
+                    crate::terminal::TCFLSH,
+                    &mut arg,
+                );
+                if queue == 99 {
+                    assert_eq!(result, Err(Errno::EINVAL));
+                } else {
+                    assert_eq!(result, Ok(()));
+                }
+
+                let input_preserved = queue == 1 || queue == 99;
+                let output_preserved = queue == 0 || queue == 99;
+                assert_eq!(pty.available(), if input_preserved { 5 } else { 0 });
+                assert_eq!(
+                    pty.slave_revents() & POLLIN != 0,
+                    input_preserved,
+                );
+                if output_preserved {
+                    assert_eq!(pty.read_master(16), Ok(b"screen".to_vec()));
+                } else {
+                    assert_eq!(pty.read_master(16), Err(Errno::EAGAIN));
+                }
+
+                if input_preserved {
+                    assert_eq!(pty.read_slave(16), Ok(b"line\n".to_vec()));
+                    pty.set_ioctl_canonical(
+                        terminal_fd,
+                        false,
+                        crate::terminal::TCSETS,
+                    )
+                    .unwrap();
+                    assert_eq!(pty.read_slave(16), Ok(b"partial".to_vec()));
+                } else {
+                    assert_eq!(pty.read_slave(16), Err(Errno::EAGAIN));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_pty_slave_poll_and_read_report_master_hangup_after_mode_changes() {
+        let mut pty = PtyFixture::new();
+        pty.set_ioctl_canonical(pty.slave_fd, false, crate::terminal::TCSETS)
+            .unwrap();
+        pty.set_ioctl_canonical(pty.master_fd, true, crate::terminal::TCSETSW)
+            .unwrap();
+
+        sys_close(&mut pty.proc, &mut pty.host, pty.master_fd).unwrap();
+        assert_ne!(pty.slave_revents() & POLLHUP, 0);
+        assert_eq!(pty.read_slave(8), Ok(Vec::new()));
     }
 
     #[test]

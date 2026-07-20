@@ -319,6 +319,25 @@ impl TerminalState {
         pending
     }
 
+    /// Prepare unread input owned by this terminal for an attribute change.
+    ///
+    /// Character-device stdin has no separate PTY raw queue. Keep bytes that
+    /// already entered the canonical line discipline in `cooked_buffer`, which
+    /// acts as the mode-neutral unread queue until `read` drains it. This makes
+    /// canonical-to-raw-to-canonical round trips preserve accepted bytes while
+    /// leaving host-owned bytes that have not entered the kernel untouched.
+    pub fn prepare_termios_change(&mut self, next_lflag: u32, discard_input: bool) {
+        if discard_input {
+            self.flush_input();
+            return;
+        }
+
+        if self.is_canonical() && next_lflag & ICANON == 0 {
+            let pending = self.take_pending_canonical_input();
+            self.cooked_buffer = pending;
+        }
+    }
+
     /// Discard all input received by the line discipline but not yet read.
     pub fn flush_input(&mut self) {
         self.line_buffer.clear();

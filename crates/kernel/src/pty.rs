@@ -230,6 +230,16 @@ pub fn free_pty(idx: usize) {
     }
 }
 
+/// Serialize host-target tests that access the process-global PTY table.
+///
+/// The production kernel enters this table under its global kernel lock, but
+/// Rust's test harness runs independent unit tests on multiple host threads.
+#[cfg(test)]
+pub(crate) fn test_table_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Reset all PTY slots (for testing).
 #[cfg(test)]
 fn reset_table() {
@@ -245,6 +255,7 @@ mod tests {
 
     #[test]
     fn test_alloc_pty() {
+        let _pty_table = test_table_lock();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -266,6 +277,7 @@ mod tests {
 
     #[test]
     fn test_pty_data_flow_raw_mode() {
+        let _pty_table = test_table_lock();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -293,6 +305,7 @@ mod tests {
 
     #[test]
     fn test_pty_canonical_mode() {
+        let _pty_table = test_table_lock();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -381,6 +394,7 @@ mod tests {
 
     #[test]
     fn test_pty_onlcr() {
+        let _pty_table = test_table_lock();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -398,6 +412,7 @@ mod tests {
 
     #[test]
     fn test_pty_isig_canonical() {
+        let _pty_table = test_table_lock();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -425,6 +440,7 @@ mod tests {
 
     #[test]
     fn test_pty_isig_raw_mode() {
+        let _pty_table = test_table_lock();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -444,6 +460,7 @@ mod tests {
 
     #[test]
     fn test_pty_isig_disabled_raw_mode() {
+        let _pty_table = test_table_lock();
         reset_table();
 
         let idx = alloc_pty().unwrap();
