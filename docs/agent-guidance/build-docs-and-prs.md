@@ -133,12 +133,36 @@ libc behavior.
 
 ## Documentation And PRs
 
-PR titles, PR descriptions, and commit messages should lead with the purpose of
-the work: the platform contract, user-visible behavior, system invariant, or
-project capability being changed or protected. Every PR description must begin
-its substance with a plain-language `## Why` section. Put `## What changed`,
-implementation details, validation, and rollout information after it. The Why
-section must explain:
+PR titles and commit subjects must begin with a concise purpose prefix in the
+form `Area: Purpose`. Use the primary contract or capability affected, not a
+mechanical verb or team name. Common prefixes include:
+
+- `ABI:` for the host/kernel binary contract and versioning.
+- `Browser:` for browser-only product or presentation behavior.
+- `CI:` for repository validation, release, and automation infrastructure.
+- `Docs:` for documentation-only changes.
+- `Homebrew:` for tap, bottle, publisher, and Homebrew VFS work.
+- `Host:` for shared Node.js/browser host-runtime behavior.
+- `Kernel:` for kernel implementation and internal process state.
+- `Libc:` for musl and libc glue.
+- `Packages:` for the general package system and package recipes.
+- `Performance:` for measured performance work.
+- `POSIX:` for externally observable POSIX semantics and conformance.
+- `SDK:` for cross-compilation and SDK behavior.
+
+Choose the prefix that gives a reviewer the most useful first routing signal.
+For cross-cutting work, prefer the primary user-visible purpose instead of
+stacking several prefixes. Use another clear area when the examples do not fit.
+Keep the same semantic prefix when a PR is squash-merged so the resulting
+commit remains identifiable in history; purpose-prefix substantive intermediate
+commits as well.
+
+The prefix does not replace a purpose-led title. PR titles, PR descriptions,
+and commit messages should lead with the platform contract, user-visible
+behavior, system invariant, or project capability being changed or protected.
+Every PR description must begin its substance with a plain-language `## Why`
+section. Put `## What changed`, implementation details, validation, and rollout
+information after it. The Why section must explain:
 
 - what currently fails, is risky, or is unnecessarily difficult;
 - who or what is affected; and
