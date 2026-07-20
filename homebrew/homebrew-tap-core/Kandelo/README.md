@@ -12,7 +12,9 @@ titles, Brewfiles, and sidecar tap fields use the canonical tap identity
 namespace `https://ghcr.io/v2/kandelo-dev/homebrew-tap-core`, retaining the
 repository's `homebrew-` prefix. Production child and version-index writes use
 only the caller repository's scoped built-in `GITHUB_TOKEN` (`github.token`);
-the workflow accepts no package PAT and finalizes sidecars only after anonymous
+the sealed uploader may map that ephemeral token to Homebrew's
+`HOMEBREW_GITHUB_PACKAGES_TOKEN` process variable, but the workflow accepts no
+package PAT secret and finalizes sidecars only after anonymous
 bottle readback.
 
 ## Files

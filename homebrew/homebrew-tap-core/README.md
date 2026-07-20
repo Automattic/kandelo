@@ -65,7 +65,9 @@ same repository's reviewed `main` workflow.
 The caller grants the maximum permission ceiling. Production child and
 version-index writes use only that caller repository's scoped built-in
 `GITHUB_TOKEN` (`github.token`); the reusable workflow accepts no package PAT
-input or secret. Fresh runner roles then downgrade it: read-only build/test and
+input or secret. A sealed upload step may map that same ephemeral token to
+Homebrew's `HOMEBREW_GITHUB_PACKAGES_TOKEN` process variable; no long-lived PAT
+secret is required. Fresh runner roles then downgrade it: read-only build/test and
 verification jobs, package writers without tap write access, and tap/release
 writers without package write access. Dry runs never schedule registry or tap
 writers. Jobs exchange strict, bounded data handoffs; Formula builds cannot

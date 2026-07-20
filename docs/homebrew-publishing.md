@@ -976,8 +976,11 @@ bounded setup or cleanup actions:
 - Explicitly authorize destructive deletion of a legacy or emergency package
   after a fresh inventory. Deletion is not ordinary retry or rollback.
 
-None of these gates requires a per-package visibility toggle. The live caller
-accepts no `HOMEBREW_GITHUB_PACKAGES_TOKEN`; a configured PAT is unused by the
+None of these gates requires a per-package visibility toggle. Production uses
+the caller's ephemeral `github.token` with `packages: write`; the sealed upload
+step may expose that same token to Homebrew as
+`HOMEBREW_GITHUB_PACKAGES_TOKEN`. That environment-variable name does not mean
+a repository PAT secret is consumed. A configured PAT is unused by the
 production workflow and should not be treated as a fallback if public creation
 or anonymous readback fails.
 
@@ -2026,9 +2029,10 @@ Use this checklist once for each new public tap repository:
 4. Pass the exact caller repository as `tap-repository` and the canonical tap
    name as `tap-name`. Do not pass a bottle root: the publisher must derive
    `https://ghcr.io/v2/<owner>/<homebrew-repository>`.
-5. Use only the caller's built-in `GITHUB_TOKEN`. Do not configure
-   `HOMEBREW_GITHUB_PACKAGES_TOKEN`, a package PAT, or a package-visibility API
-   call for the production publisher.
+5. Use only the caller's built-in `GITHUB_TOKEN`. The sealed upload step maps
+   `github.token` to Homebrew's `HOMEBREW_GITHUB_PACKAGES_TOKEN` process
+   variable when needed; do not configure a repository secret or long-lived
+   package PAT with that name, and do not add a package-visibility API call.
 6. If the tap will require a durable VFS acceptance release, have a repository
    administrator enable **Settings → Releases → Enable release
    immutability** before the first required run. The workflow cannot enable or
