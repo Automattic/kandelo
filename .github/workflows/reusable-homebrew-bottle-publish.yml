@@ -1367,7 +1367,9 @@ jobs:
             --forbidden-root "$RUNNER_TEMP"
             --forbidden-root "/home/kandelo-homebrew-build"
           )
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
 
       - name: Upload strict upload receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -1971,7 +1973,9 @@ jobs:
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
             receipt_args+=(--allow-dry-run)
           fi
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
 
       - name: Validate exact public Homebrew index traversal without credentials
         if: ${{ !inputs.dry-run && steps.index-publication.outcome == 'success' }}
@@ -2650,7 +2654,7 @@ jobs:
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
-            bash -c '
+            bash -s <<'KANDELO_HOMEBREW_BROWSER_SMOKE'
             set -euo pipefail
             browser_vfs_root="$RUNNER_TEMP/homebrew-browser-vfs"
             browser_gallery_root="$RUNNER_TEMP/homebrew-browser-gallery"
@@ -2733,7 +2737,7 @@ jobs:
               --index "$browser_gallery_root/index.toml"
             )
             node scripts/validate-software-gallery.mjs "${gallery_validation_args[@]}"
-          '
+          KANDELO_HOMEBREW_BROWSER_SMOKE
 
       - name: Boot an exact dependency-bearing Brewfile image on Node and Chromium
         shell: bash

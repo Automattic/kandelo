@@ -161,7 +161,7 @@ case "${1:-}" in
       case "$env_name" in
         HOME|USER|LOGNAME|TMPDIR|XDG_CONFIG_HOME|HOMEBREW_CACHE|HOMEBREW_TEMP|PATH|PWD|OLDPWD|SHLVL|_) ;;
         CI|GITHUB_ACTIONS|RUNNER_OS|LANG|LC_ALL|TZ|SOURCE_DATE_EPOCH) ;;
-        HOMEBREW_NO_AUTO_UPDATE|HOMEBREW_NO_INSTALL_CLEANUP|HOMEBREW_NO_ANALYTICS|HOMEBREW_DEVELOPER) ;;
+        HOMEBREW_NO_AUTO_UPDATE|HOMEBREW_NO_INSTALL_CLEANUP|HOMEBREW_NO_ANALYTICS|HOMEBREW_DEVELOPER|HOMEBREW_GIT_PATH) ;;
         HOMEBREW_RELOCATE_BUILD_PREFIX) ;;
         NIX_SSL_CERT_FILE|SSL_CERT_FILE) ;;
         *) echo "unexpected native Homebrew environment: $env_name" >&2; exit 1 ;;
@@ -200,6 +200,13 @@ case "${1:-}" in
     [ "${HOMEBREW_KANDELO_GNU_TAR:-}" = "$2" ]
     [ -f "$2" ] && [ -x "$2" ] && [ ! -L "$2" ]
     [ ! -w "$2" ] && [ ! -w "${2%/*}" ]
+    ;;
+  assert-protected-git)
+    [ "$#" -eq 2 ]
+    [ "${HOMEBREW_GIT_PATH:-}" = "$2" ]
+    [ -f "$2" ] && [ -x "$2" ] && [ ! -L "$2" ]
+    [ ! -w "$2" ] && [ ! -w "${2%/*}" ]
+    [[ "$("$2" --version)" =~ ^git\ version\ ([0-9]+)\.([0-9]+) ]]
     ;;
   assert-target-native-boundary)
     [ "$#" -eq 7 ]
@@ -1047,6 +1054,38 @@ homebrew_patched_launcher_remove_staged_input
   fail "protected input cleanup retry left staged state"
 HOMEBREW_PATCHED_SUDO_BIN=""
 
+for supported_git_version in \
+  "git version 2.7.0" "git version 2.51.2" "git version 3.0.0"; do
+  homebrew_patched_launcher_git_version_is_supported "$supported_git_version" ||
+    fail "protected Git version parser rejected $supported_git_version"
+done
+for unsupported_git_version in \
+  "git version 2.6.9" "git version 1.99.0" "git version unknown"; do
+  if homebrew_patched_launcher_git_version_is_supported "$unsupported_git_version"; then
+    fail "protected Git version parser accepted $unsupported_git_version"
+  fi
+done
+untrusted_git_dir="$TMPDIR/untrusted-git/bin"
+mkdir -p "$untrusted_git_dir"
+cat >"$untrusted_git_dir/git" <<'EOF'
+#!/usr/bin/env bash
+printf 'git version 99.0.0\n'
+EOF
+chmod +x "$untrusted_git_dir/git"
+if PATH="$untrusted_git_dir:$PATH" \
+    homebrew_patched_launcher_select_host_git >/dev/null 2>&1; then
+  fail "host Git selection accepted an executable outside the Nix store"
+fi
+caller_git_poison="$TMPDIR/caller-selected-git"
+HOMEBREW_GIT_PATH="$caller_git_poison"
+export HOMEBREW_GIT_PATH
+homebrew_patched_launcher_select_host_git
+[ "$HOMEBREW_GIT_PATH" != "$caller_git_poison" ] &&
+  [[ "$HOMEBREW_GIT_PATH" =~ ^/nix/store/[0-9a-z]{32}-git-[^/]+/bin/git$ ]] &&
+  [ -f "$HOMEBREW_GIT_PATH" ] && [ -x "$HOMEBREW_GIT_PATH" ] &&
+  [ ! -L "$HOMEBREW_GIT_PATH" ] && [ ! -w "$HOMEBREW_GIT_PATH" ] ||
+  fail "host Git selection did not replace caller state with protected Nix Git"
+
 if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
    [ -x /usr/bin/systemd-run ] && [ -x /usr/bin/systemctl ] && \
    [ -x /usr/bin/getent ] && [ -x /usr/bin/pgrep ] && [ -x /usr/bin/pkill ] && \
@@ -1304,6 +1343,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-protected-gnu-tar \
     "$HOMEBREW_KANDELO_GNU_TAR"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-protected-git \
+    "$HOMEBREW_GIT_PATH"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-immutable-trust reviewed-trust
   "$HOMEBREW_PATCHED_BREW_BIN" assert-dependency-plan \
@@ -1350,6 +1391,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
       "$XDG_CONFIG_HOME" "$isolated_home" "$isolated_work" "$isolated_kandelo" \
       "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner" \
       "$isolated_dependency_tap"
+  homebrew_patched_launcher_run_native assert-protected-git \
+    "$HOMEBREW_GIT_PATH"
   homebrew_patched_launcher_run_native spawn-daemon \
     "$native_daemon_marker" "$native_daemon_started"
   /usr/bin/sudo -n -- test -e "$native_daemon_started" ||

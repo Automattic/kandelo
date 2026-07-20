@@ -84,6 +84,12 @@ export interface HomebrewVfsPackageReport {
   staged_symlinks: number;
   receipts: string[];
   links: string[];
+  opt_link: HomebrewVfsOptLinkReport;
+}
+
+export interface HomebrewVfsOptLinkReport {
+  path: string;
+  target: string;
 }
 
 export interface HomebrewVfsBuildReport {
@@ -163,8 +169,11 @@ export async function buildHomebrewVfs(
       staged_symlinks: staged.symlinks,
       receipts: [...pkg.linkManifest.receipts],
       links,
+      opt_link: canonicalOptLink(pkg),
     });
   }
+
+  applyCanonicalOptLinks(fs, plan.packages);
 
   const report: HomebrewVfsBuildReport = {
     schema: 1,
@@ -206,6 +215,7 @@ export async function buildHomebrewVfs(
         link_manifest: pkg.link_manifest,
         prefix: pkg.prefix,
         keg: pkg.keg,
+        opt_link: pkg.opt_link,
         env: plan.packages.find((planned) => planned.fullName === pkg.full_name)?.linkManifest.env ?? {},
       })),
     }, null, 2) + "\n",
@@ -388,6 +398,40 @@ function applyLinks(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): string[]
   }
 
   return linkedTargets;
+}
+
+function applyCanonicalOptLinks(
+  fs: MemoryFileSystem,
+  packages: readonly HomebrewVfsPackagePlan[],
+): void {
+  for (const pkg of packages) {
+    const link = canonicalOptLink(pkg);
+    const optDirectory = joinGuestPath(pkg.prefix, "opt");
+    const optDirectoryStat = tryLstat(fs, optDirectory);
+    if (optDirectoryStat === null) {
+      ensureDirRecursive(fs, optDirectory);
+    } else if (kind(optDirectoryStat) !== S_IFDIR) {
+      fail(pkg, `canonical opt directory is not a real directory at ${optDirectory}`);
+    }
+    const targetPath = joinGuestPath(pkg.prefix, link.path);
+    if (tryLstat(fs, targetPath) !== null) {
+      fail(pkg, `canonical opt link ${link.path} already exists at ${targetPath}`);
+    }
+    fs.symlink(link.target, targetPath);
+  }
+}
+
+function canonicalOptLink(pkg: HomebrewVfsPackagePlan): HomebrewVfsOptLinkReport {
+  const path = `opt/${pkg.name}`;
+  const targetPath = joinGuestPath(pkg.prefix, path);
+  const target = relativeGuestPath(dirnameGuestPath(targetPath), pkg.keg);
+  if (target.length === 0) {
+    fail(pkg, `canonical opt link ${path} cannot target its own parent directory`);
+  }
+  return {
+    path,
+    target,
+  };
 }
 
 function applyLinkEntry(
@@ -702,6 +746,23 @@ function joinGuestPath(base: string, rel: string): string {
 function dirnameGuestPath(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash <= 0 ? "/" : path.slice(0, slash);
+}
+
+function relativeGuestPath(fromDirectory: string, targetPath: string): string {
+  const fromParts = fromDirectory.split("/").filter(Boolean);
+  const targetParts = targetPath.split("/").filter(Boolean);
+  let shared = 0;
+  while (
+    shared < fromParts.length &&
+    shared < targetParts.length &&
+    fromParts[shared] === targetParts[shared]
+  ) {
+    shared += 1;
+  }
+  return [
+    ...fromParts.slice(shared).map(() => ".."),
+    ...targetParts.slice(shared),
+  ].join("/");
 }
 
 function ensureParentDir(fs: MemoryFileSystem, path: string): void {

@@ -63,6 +63,13 @@ HOMEBREW_PATCHED_PREFIX=""
 HOMEBREW_PATCHED_NATIVE_PREFIX=""
 HOMEBREW_PATCHED_NATIVE_HOME=""
 
+homebrew_patched_launcher_select_host_git() {
+  unset HOMEBREW_GIT_PATH
+  HOMEBREW_GIT_PATH="$(command -v git || true)"
+  [ -n "$HOMEBREW_GIT_PATH" ] || return 2
+  export HOMEBREW_GIT_PATH
+}
+
 homebrew_patched_launcher_prepare() {
   HOMEBREW_PATCHED_BREW_BIN="$1"
   HOMEBREW_PATCHED_PREFIX="${FAKE_BREW_PREFIX:?}"
@@ -184,6 +191,104 @@ make_primary_resolved_tap_map() {
 JSON
   chmod 0444 "$output"
   printf '%s\n' "$output"
+}
+
+assert_resolved_primary_override_is_bounded() {
+  local root="$TMPDIR/resolved-primary-override"
+  local planned="$root/planned"
+  local current="$root/current"
+  local dirty="$root/dirty"
+  local unrelated="$root/unrelated"
+  local provenance="$root/provenance.json"
+  local resolved_taps planned_commit err
+
+  mkdir -p "$root"
+  make_tap "$planned"
+  planned_commit="$(git -C "$planned" rev-parse HEAD)"
+  resolved_taps="$(make_primary_resolved_tap_map "$planned")"
+  jq -nS --arg tap_commit "$planned_commit" '{
+    schema: 2,
+    tap_repository: "kandelo-dev/homebrew-tap-core",
+    tap_name: "kandelo-dev/tap-core",
+    tap_commit: $tap_commit,
+    bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+    bottle_tag: "wasm32_kandelo",
+    formula: "hello",
+    arch: "wasm32",
+    dependencies: []
+  }' >"$provenance"
+
+  git clone -q "$planned" "$current"
+  git -C "$current" config user.name "Kandelo Test"
+  git -C "$current" config user.email "kandelo-test@example.invalid"
+  printf 'safe concurrent tap state\n' >"$current/Kandelo/current-state.txt"
+  git -C "$current" add Kandelo/current-state.txt
+  git -C "$current" commit -q -m "advance current tap"
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+      --input "$provenance" \
+      --tap-root "$current" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$planned_commit" \
+      --formula hello \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core
+
+  printf 'untracked drift\n' >"$current/Kandelo/untracked-state.txt"
+  err="$root/untracked.err"
+  if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+      --input "$provenance" \
+      --tap-root "$current" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$planned_commit" \
+      --formula hello \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$err"; then
+    fail "dependency provenance accepted an untracked primary tap override"
+  fi
+  grep -F "primary tap override has working-tree changes" "$err" >/dev/null ||
+    fail "dependency provenance did not explain an untracked primary tap override"
+
+  git clone -q "$planned" "$dirty"
+  printf '# tracked drift\n' >>"$dirty/Formula/hello.rb"
+  err="$root/dirty.err"
+  if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+      --input "$provenance" \
+      --tap-root "$dirty" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$planned_commit" \
+      --formula hello \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$err"; then
+    fail "dependency provenance accepted a dirty primary tap override"
+  fi
+  grep -F "primary tap override has working-tree changes" "$err" >/dev/null ||
+    fail "dependency provenance did not explain a dirty primary tap override"
+
+  make_tap "$unrelated"
+  printf '{"unrelated":true}\n' >"$unrelated/Kandelo/metadata.json"
+  git -C "$unrelated" add Kandelo/metadata.json
+  git -C "$unrelated" commit -q --amend --no-edit
+  err="$root/unrelated.err"
+  if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+      --input "$provenance" \
+      --tap-root "$unrelated" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$planned_commit" \
+      --formula hello \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$err"; then
+    fail "dependency provenance accepted an unrelated primary tap override"
+  fi
+  grep -F "primary tap override HEAD is not a descendant of planned tap commit $planned_commit" \
+    "$err" >/dev/null ||
+    fail "dependency provenance did not explain an unrelated primary tap override"
 }
 
 assert_matrix() {
@@ -496,6 +601,8 @@ make_build_handoff() {
   local bottle_stage="$source_dir/stage/hello/2.12.1"
   local tap_repository="${BUILD_HANDOFF_TAP_REPOSITORY:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${BUILD_HANDOFF_TAP_NAME:-kandelo-dev/tap-core}"
+  local tap_commit="${BUILD_HANDOFF_TAP_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  local kandelo_commit="${BUILD_HANDOFF_KANDELO_COMMIT:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
   local bottle_root="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
   local formula_key="${tap_name}/hello"
   local formula_path="Library/Taps/${tap_name%%/*}/homebrew-${tap_name#*/}/Formula/hello.rb"
@@ -534,6 +641,7 @@ EOF
   sha256="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
   jq -n --arg sha256 "$sha256" --arg formula_key "$formula_key" \
     --arg formula_path "$formula_path" --arg bottle_root "$bottle_root" \
+    --arg tap_commit "$tap_commit" \
     --slurpfile receipt "$bottle_stage/INSTALL_RECEIPT.json" '{
     ($formula_key): {
       formula: {
@@ -541,7 +649,7 @@ EOF
         path: $formula_path,
         pkg_version: "2.12.1",
         tap_git_path: "Formula/hello.rb",
-        tap_git_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        tap_git_revision: $tap_commit,
         desc: "this artifact-only field must not reach Homebrew merge"
       },
       bottle: {
@@ -573,13 +681,13 @@ EOF
     cp "$dependency_provenance_source" "$dependency_provenance"
   else
     jq -nS --arg tap_repository "$tap_repository" --arg tap_name "$tap_name" \
-      --arg bottle_root "$bottle_root" '{
+      --arg tap_commit "$tap_commit" --arg bottle_root "$bottle_root" '{
       schema: 2,
       formula: "hello",
       arch: "wasm32",
       tap_repository: $tap_repository,
       tap_name: $tap_name,
-      tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      tap_commit: $tap_commit,
       bottle_root_url: $bottle_root,
       bottle_tag: "wasm32_kandelo",
       dependencies: []
@@ -592,8 +700,8 @@ EOF
     --release-tag bottles-abi-v18 \
     --tap-repository "$tap_repository" \
     --tap-name "$tap_name" \
-    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --tap-commit "$tap_commit" \
+    --kandelo-commit "$kandelo_commit" \
     --bottle-root-url "$bottle_root" \
     --bottle "$bottle" \
     --bottle-json "$bottle_json" \
@@ -696,14 +804,25 @@ make_dry_upload_receipt() {
   local handoff="$1" receipt="$2"
   local mode="${3:-dry-run}"
   local sha256 bytes url layout canonical_sha
+  local bottle_root tap_repository tap_repository_lower tap_name tap_commit kandelo_commit
   sha256="$(jq -er '.bottle.sha256' "$handoff/manifest.json")"
   bytes="$(jq -er '.bottle.bytes' "$handoff/manifest.json")"
-  url="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:$sha256"
+  bottle_root="$(jq -er '.bottle_root_url' "$handoff/manifest.json")"
+  tap_repository="$(jq -er '.tap_repository' "$handoff/manifest.json")"
+  tap_repository_lower="$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
+  tap_name="$(jq -er '.tap_name' "$handoff/manifest.json")"
+  tap_commit="$(jq -er '.tap_commit' "$handoff/manifest.json")"
+  kandelo_commit="$(jq -er '.kandelo_commit' "$handoff/manifest.json")"
+  url="$bottle_root/hello/blobs/sha256:$sha256"
   layout="${receipt}.layout"
   jq -nS \
     --arg sha256 "$sha256" \
     --argjson bytes "$bytes" \
-    --arg url "$url" '{
+    --arg url "$url" \
+    --arg tap_repository "$tap_repository" \
+    --arg tap_name "$tap_name" \
+    --arg tap_commit "$tap_commit" \
+    --arg kandelo_commit "$kandelo_commit" '{
       schema: 2,
       kind: "child",
       formula: "hello",
@@ -715,10 +834,10 @@ make_dry_upload_receipt() {
       formula_source_sha256: ("1" * 64),
       formula_source_identity_sha256: ("2" * 64),
       source_closure_sha256: ("3" * 64),
-      tap_repository: "kandelo-dev/homebrew-tap-core",
-      tap_name: "kandelo-dev/tap-core",
-      tap_commit: ("a" * 40),
-      kandelo_commit: ("b" * 40),
+      tap_repository: $tap_repository,
+      tap_name: $tap_name,
+      tap_commit: $tap_commit,
+      kandelo_commit: $kandelo_commit,
       top_ref: "2.12.1",
       bottle: {sha256: $sha256, bytes: $bytes, url: $url},
       oci: {
@@ -738,16 +857,19 @@ make_dry_upload_receipt() {
   jq -nS \
     --slurpfile layout "$layout" \
     --arg canonical_sha "$canonical_sha" \
+    --arg tap_repository "$tap_repository" \
+    --arg tap_repository_lower "$tap_repository_lower" \
+    --arg tap_name "$tap_name" \
     --arg mode "$mode" '{
       schema: 3,
       kind: "child",
       formula: "hello",
-      tap_repository: "kandelo-dev/homebrew-tap-core",
-      tap_name: "kandelo-dev/tap-core",
+      tap_repository: $tap_repository,
+      tap_name: $tap_name,
       layout: $layout[0],
       layout_receipt_sha256: $canonical_sha,
       publication: {
-        remote: "ghcr.io/kandelo-dev/homebrew-tap-core/hello",
+        remote: ("ghcr.io/" + $tap_repository_lower + "/hello"),
         reference: ("sha256-" + ("6" * 64)),
         digest: ("sha256:" + ("6" * 64)),
         previous_digest: null,
@@ -1248,6 +1370,143 @@ assert_upload_receipt_is_bound_to_build_handoff() {
   fi
 }
 
+assert_cross_tap_upload_receipt_survives_dev_shell() {
+  local root="$TMPDIR/cross-tap-upload-receipt"
+  local primary="$root/primary"
+  local dependency="$root/core"
+  local provenance="$root/dependency-provenance.json"
+  local handoff="$root/handoff"
+  local receipt="$root/upload-receipt.json"
+  local resolved_taps="$root/resolved-taps.json"
+  local primary_commit dependency_commit formula_sha nix_bin candidate
+
+  make_tap "$dependency"
+  cat >"$dependency/Formula/dash.rb" <<'EOF'
+class Dash < Formula
+  desc "Cross-tap receipt fixture"
+end
+EOF
+  git -C "$dependency" add Formula/dash.rb
+  git -C "$dependency" commit -q -m "add exact dependency Formula"
+  dependency_commit="$(git -C "$dependency" rev-parse HEAD)"
+
+  make_tap "$primary"
+  cat >"$primary/Formula/hello.rb" <<'EOF'
+class Hello < Formula
+  desc "External tap consumer fixture"
+  depends_on "kandelo-dev/tap-core/dash"
+end
+EOF
+  jq -nS --arg dependency_commit "$dependency_commit" '{
+    schema: 1,
+    taps: [{
+      tap_name: "kandelo-dev/tap-core",
+      tap_repository: "kandelo-dev/homebrew-tap-core",
+      tap_commit: $dependency_commit
+    }]
+  }' >"$primary/Kandelo/dependency-taps.json"
+  git -C "$primary" add Formula/hello.rb Kandelo/dependency-taps.json
+  git -C "$primary" commit -q -m "declare exact core tap dependency"
+  primary_commit="$(git -C "$primary" rev-parse HEAD)"
+
+  python3 "$REPO_ROOT/scripts/homebrew-dependency-taps.py" resolve \
+    --tap-root "$primary" \
+    --tap-name example/tools \
+    --tap-repository example/homebrew-tools \
+    --tap-commit "$primary_commit" \
+    --dependency-root "kandelo-dev/tap-core=$dependency" \
+    --out "$resolved_taps"
+
+  formula_sha="$(sha256sum "$dependency/Formula/dash.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$dependency/Formula/dash.rb" | awk '{print $1}')"
+  jq -nS \
+    --arg primary_commit "$primary_commit" \
+    --arg dependency_commit "$dependency_commit" \
+    --arg formula_sha "$formula_sha" '{
+      schema: 3,
+      formula: "hello",
+      arch: "wasm32",
+      tap_repository: "example/homebrew-tools",
+      tap_name: "example/tools",
+      tap_commit: $primary_commit,
+      bottle_root_url: "https://ghcr.io/v2/example/homebrew-tools",
+      bottle_tag: "wasm32_kandelo",
+      dependencies: [{
+        name: "dash",
+        full_name: "kandelo-dev/tap-core/dash",
+        version: "0.5.12",
+        declared_directly: true,
+        formula: {
+          path: "Formula/dash.rb",
+          sha256: $formula_sha
+        },
+        bottle: {
+          cellar: "any_skip_relocation",
+          rebuild: 0,
+          sha256: ("c" * 64),
+          tag: "wasm32_kandelo",
+          url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + ("c" * 64))
+        },
+        receipt: {
+          built_as_bottle: true,
+          homebrew_version: "4.4.0",
+          installed_on_request: false,
+          path: "Cellar/dash/0.5.12/INSTALL_RECEIPT.json",
+          poured_from_bottle: true,
+          sha256: ("d" * 64),
+          source_tap: "kandelo-dev/tap-core",
+          source_tap_git_head: $dependency_commit
+        },
+        install_log: {
+          fetch: ["==> Downloading https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/manifests/0.5.12"],
+          pour: ["==> Pouring dash--0.5.12.wasm32_kandelo.bottle.tar.gz"],
+          source_build_absent: true
+        },
+        origin: {
+          bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+          tap_commit: $dependency_commit,
+          tap_name: "kandelo-dev/tap-core",
+          tap_repository: "kandelo-dev/homebrew-tap-core"
+        }
+      }]
+    }' >"$provenance"
+
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE="$provenance" \
+    BUILD_HANDOFF_TAP_REPOSITORY=example/homebrew-tools \
+    BUILD_HANDOFF_TAP_NAME=example/tools \
+    BUILD_HANDOFF_TAP_COMMIT="$primary_commit" \
+    make_build_handoff "$handoff"
+  make_dry_upload_receipt "$handoff" "$receipt"
+
+  nix_bin="$(command -v nix || true)"
+  if [ -z "$nix_bin" ]; then
+    for candidate in /nix/var/nix/profiles/default/bin/nix "$HOME/.nix-profile/bin/nix"; do
+      if [ -x "$candidate" ]; then
+        nix_bin="$candidate"
+        break
+      fi
+    done
+  fi
+  [ -n "$nix_bin" ] || fail "cannot exercise cross-tap receipt validation through the dev shell"
+
+  PATH="$(dirname "$nix_bin"):$PATH" \
+    bash "$REPO_ROOT/scripts/dev-shell.sh" env \
+      KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+      bash "$REPO_ROOT/scripts/homebrew-validate-upload-receipt.sh" \
+        --receipt "$receipt" \
+        --handoff "$handoff" \
+        --formula hello \
+        --arch wasm32 \
+        --release-tag bottles-abi-v18 \
+        --tap-repository example/homebrew-tools \
+        --tap-name example/tools \
+        --tap-commit "$primary_commit" \
+        --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        --bottle-root-url https://ghcr.io/v2/example/homebrew-tools \
+        --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+        --allow-dry-run >/dev/null
+}
+
 make_publish_dependency_provenance() {
   local tap_root="$1" output="$2" directness="$3"
   local xz_direct=false zlib_direct=true xz_formula_sha zlib_formula_sha
@@ -1623,6 +1882,13 @@ prepare_publish_dependency_drift_fixture() {
   printf '%s\n' "$planned"
 }
 
+make_publish_planned_resolved_tap_map() {
+  local tap_root="$1" planned="$2"
+  local immutable_root="${tap_root}-resolved-planned"
+  git -C "$tap_root" worktree add --detach "$immutable_root" "$planned" >/dev/null
+  make_primary_resolved_tap_map "$immutable_root"
+}
+
 add_publish_dependency_sibling_bottle() {
   local tap_root="$1"
   local formula="$tap_root/Formula/zlib.rb"
@@ -1937,7 +2203,7 @@ assert_stale_bottle_rebuild_cannot_rewind_publication() {
 }
 
 assert_publish_dependencies_are_source_bound() {
-  local handoff tap_root tmp err planned
+  local handoff tap_root tmp err planned resolved_taps
 
   handoff="$TMPDIR/publish-dependencies-valid"
   tap_root="$TMPDIR/publish-dependencies-valid-tap"
@@ -2029,8 +2295,10 @@ assert_publish_dependencies_are_source_bound() {
   tap_root="$TMPDIR/publish-dependencies-concurrent-bottle-tap"
   err="$TMPDIR/publish-dependencies-concurrent-bottle.err"
   planned="$(prepare_publish_dependency_drift_fixture "$handoff" "$tap_root")"
+  resolved_taps="$(make_publish_planned_resolved_tap_map "$tap_root" "$planned")"
   add_publish_dependency_sibling_bottle "$tap_root"
-  if ! bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+  if ! KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --kandelo-root "$REPO_ROOT" \
     --tap-root "$tap_root" \
     --publication-handoff "$handoff" \
@@ -2050,6 +2318,7 @@ assert_publish_dependencies_are_source_bound() {
   tap_root="$TMPDIR/publish-dependencies-concurrent-whitespace-tap"
   err="$TMPDIR/publish-dependencies-concurrent-whitespace.err"
   planned="$(prepare_publish_dependency_drift_fixture "$handoff" "$tap_root")"
+  resolved_taps="$(make_publish_planned_resolved_tap_map "$tap_root" "$planned")"
   add_publish_dependency_sibling_bottle "$tap_root"
   tmp="$tap_root/Formula/zlib.updated.rb"
   sed 's/desc "direct dependency fixture"/desc  "direct dependency fixture"/' \
@@ -2057,7 +2326,8 @@ assert_publish_dependencies_are_source_bound() {
   mv "$tmp" "$tap_root/Formula/zlib.rb"
   git -C "$tap_root" add Formula/zlib.rb
   git -C "$tap_root" commit -q -m "change dependency Formula whitespace"
-  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+  if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --kandelo-root "$REPO_ROOT" \
     --tap-root "$tap_root" \
     --publication-handoff "$handoff" \
@@ -2078,6 +2348,7 @@ assert_publish_dependencies_are_source_bound() {
   tap_root="$TMPDIR/publish-dependencies-concurrent-recipe-tap"
   err="$TMPDIR/publish-dependencies-concurrent-recipe.err"
   planned="$(prepare_publish_dependency_drift_fixture "$handoff" "$tap_root")"
+  resolved_taps="$(make_publish_planned_resolved_tap_map "$tap_root" "$planned")"
   add_publish_dependency_sibling_bottle "$tap_root"
   tmp="$tap_root/Formula/zlib.updated.rb"
   sed 's/desc "direct dependency fixture"/desc "concurrently changed dependency source"/' \
@@ -2085,7 +2356,8 @@ assert_publish_dependencies_are_source_bound() {
   mv "$tmp" "$tap_root/Formula/zlib.rb"
   git -C "$tap_root" add Formula/zlib.rb
   git -C "$tap_root" commit -q -m "change dependency recipe"
-  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+  if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --kandelo-root "$REPO_ROOT" \
     --tap-root "$tap_root" \
     --publication-handoff "$handoff" \
@@ -2106,13 +2378,15 @@ assert_publish_dependencies_are_source_bound() {
   tap_root="$TMPDIR/publish-dependencies-concurrent-edge-tap"
   err="$TMPDIR/publish-dependencies-concurrent-edge.err"
   planned="$(prepare_publish_dependency_drift_fixture "$handoff" "$tap_root")"
+  resolved_taps="$(make_publish_planned_resolved_tap_map "$tap_root" "$planned")"
   add_publish_dependency_sibling_bottle "$tap_root"
   tmp="$tap_root/Formula/zlib.updated.rb"
   sed '/depends_on "kandelo-dev\/tap-core\/xz"/d' "$tap_root/Formula/zlib.rb" >"$tmp"
   mv "$tmp" "$tap_root/Formula/zlib.rb"
   git -C "$tap_root" add Formula/zlib.rb
   git -C "$tap_root" commit -q -m "change dependency edge"
-  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+  if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
+    bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --kandelo-root "$REPO_ROOT" \
     --tap-root "$tap_root" \
     --publication-handoff "$handoff" \
@@ -2395,7 +2669,7 @@ assert_bottle_build_installs_test_dependencies() {
   local provenance_capture="$TMPDIR/bottle-test-dependency-provenance.txt"
   local provenance_log_capture="$TMPDIR/bottle-test-dependency-install.log"
   local native_prefix_capture="$TMPDIR/bottle-test-dependency-native-prefix.txt"
-  local native_prefix real_python3 gnu_tar_bin
+  local native_prefix real_python3 gnu_tar_bin host_git_bin
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
@@ -2498,6 +2772,12 @@ case "${1:-}" in
         cat >"$FAKE_BREW_PREFIX/INSTALL_RECEIPT.json" <<JSON
 {"source":{"path":"Formula/hello.rb","tap":"kandelo-dev/tap-core","tap_git_head":"$tap_head","versions":{"stable":"1.0"}},"built_as_bottle":false,"poured_from_bottle":false}
 JSON
+        mkdir -p "$FAKE_BREW_PREFIX/bin"
+        cat >"$FAKE_BREW_PREFIX/bin/git" <<'TARGET_GIT'
+#!/usr/bin/env bash
+exit 86
+TARGET_GIT
+        chmod +x "$FAKE_BREW_PREFIX/bin/git"
         ;;
       *) exit 43 ;;
     esac
@@ -2524,6 +2804,14 @@ JSON
     ;;
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] || exit 46
+    if [ "${FAKE_ASSERT_GIT_CONTROL_PLANE:-}" = 1 ]; then
+      [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
+      [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 57
+      [ "$HOMEBREW_GIT_PATH" != "$FAKE_BREW_PREFIX/bin/git" ] || exit 58
+      "$HOMEBREW_GIT_PATH" --version >/dev/null || exit 59
+      "$HOMEBREW_GIT_PATH" -C "$FAKE_TAP_ROOT" rev-parse HEAD >/dev/null || exit 60
+      [ "$(grep -c '^trust --tap kandelo-dev/tap-core$' "$FAKE_BREW_LOG")" -eq 1 ] || exit 61
+    fi
     if [ "${FAKE_INSTALL_IMPLICIT_NATIVE:-}" = "1" ]; then
       mkdir -p "$FAKE_BREW_PREFIX/Cellar/bubblewrap/0.11.2"
     fi
@@ -2599,6 +2887,7 @@ EOF
 
   real_python3="$(command -v python3)"
   gnu_tar_bin="$(command -v tar)"
+  host_git_bin="$(command -v git)"
   cat >"$fake_bin/python3" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2635,6 +2924,8 @@ EOF
     FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_NATIVE_PREFIX_CAPTURE="$native_prefix_capture" \
     FAKE_BUILD_TIME=1700000000 \
+    FAKE_ASSERT_GIT_CONTROL_PLANE=1 \
+    FAKE_EXPECTED_HOST_GIT="$host_git_bin" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
@@ -2642,6 +2933,7 @@ EOF
     HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
     KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
     HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
+    HOMEBREW_GIT_PATH=caller-poison \
     GITHUB_ACTIONS= \
     bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
       --tap-root "$tap" \
@@ -2943,6 +3235,7 @@ EOF
 assert_bottle_verifier_installs_test_dependencies() {
   local root="$TMPDIR/bottle-verifier-test-dependencies"
   local tap="$root/tap"
+  local provenance_tap="$root/provenance-tap"
   local tapped_tap="$root/tapped-tap"
   local brew_repo="$root/brew-repo"
   local brew_prefix="$root/brew-prefix"
@@ -2971,7 +3264,7 @@ assert_bottle_verifier_installs_test_dependencies() {
   local shared_temp="$root/shared-temp"
   local renamed_err="$root/renamed-bottle.err"
   local nested_target_err="$root/nested-target.err"
-  local bottle_sha bottle_bytes tap_commit native_prefix real_python3 real_rm
+  local bottle_sha bottle_bytes tap_commit native_prefix real_python3 real_rm host_git_bin
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
 
   make_tap "$tap"
@@ -2998,7 +3291,8 @@ EOF
   git -C "$tap" add Formula
   git -C "$tap" commit -q -m "add verifier dependencies"
   tap_commit="$(git -C "$tap" rev-parse HEAD)"
-  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap")"
+  git clone -q "$tap" "$provenance_tap"
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$provenance_tap")"
   export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   printf '\n# reconstructed bottle metadata\n' >>"$tap/Formula/hello.rb"
 
@@ -3137,6 +3431,12 @@ case "${1:-}" in
           "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
           >>"$FAKE_BREW_LOG"
         cp "$FAKE_BOTTLE" "$HOMEBREW_CACHE/selected-bottle.tar.gz"
+        mkdir -p "$FAKE_BREW_PREFIX/bin"
+        cat >"$FAKE_BREW_PREFIX/bin/git" <<'TARGET_GIT'
+#!/usr/bin/env bash
+exit 86
+TARGET_GIT
+        chmod +x "$FAKE_BREW_PREFIX/bin/git"
         : >"$FAKE_STATE/target"
         ;;
       *) exit 47 ;;
@@ -3169,6 +3469,16 @@ case "${1:-}" in
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] && \
       [ -f "$FAKE_STATE/target" ] || exit 50
+    [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 54
+    [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 55
+    [ "$HOMEBREW_GIT_PATH" != "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
+    "$HOMEBREW_GIT_PATH" --version >/dev/null || exit 57
+    trusted_remote="$("$HOMEBREW_GIT_PATH" -C "$FAKE_TAP_ROOT" \
+      config --local --get remote.origin.url)"
+    trusted_remote="${trusted_remote#file://}"
+    [ "$(cd "$trusted_remote" && pwd -P)" = \
+      "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 58
+    [ "$(grep -c '^trust --tap kandelo-dev/tap-core$' "$FAKE_BREW_LOG")" -eq 1 ] || exit 59
     printf 'test-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -3181,6 +3491,7 @@ EOF
 
   real_python3="$(command -v python3)"
   real_rm="$(command -v rm)"
+  host_git_bin="$(command -v git)"
   cat >"$fake_bin/python3" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -3197,12 +3508,16 @@ out=""
 install_log=""
 target_prefix=""
 target_receipt=""
+tap_root=""
+dependency_tap_root=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-dependencies) expected="${2:-}"; shift 2 ;;
     --install-log) install_log="${2:-}"; shift 2 ;;
     --target-prefix) target_prefix="${2:-}"; shift 2 ;;
     --target-receipt) target_receipt="${2:-}"; shift 2 ;;
+    --tap-root) tap_root="${2:-}"; shift 2 ;;
+    --dependency-tap-root) dependency_tap_root="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
@@ -3211,8 +3526,14 @@ done
 cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
 if [ "$tool" = homebrew-dependency-provenance.py ]; then
   [ -n "$expected" ] || exit 62
+  [ "$(cd "$tap_root" && pwd -P)" = \
+    "$(cd "$FAKE_PROVENANCE_TAP_ROOT" && pwd -P)" ] || exit 65
   cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
 else
+  [ "$(cd "$tap_root" && pwd -P)" = \
+    "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 66
+  [ "$(cd "$dependency_tap_root" && pwd -P)" = \
+    "$(cd "$FAKE_PROVENANCE_TAP_ROOT" && pwd -P)" ] || exit 67
   [ "$target_prefix" = "$FAKE_TARGET_PREFIX" ] || exit 63
   [ "$target_receipt" = "$FAKE_TARGET_PREFIX/INSTALL_RECEIPT.json" ] || exit 64
 fi
@@ -3252,10 +3573,12 @@ EOF
       FAKE_BREW_REPOSITORY="$brew_repo" \
       FAKE_TAP_ROOT="$tapped_tap" \
       FAKE_RECONSTRUCTED_TAP="$tap" \
+      FAKE_EXPECTED_HOST_GIT="$host_git_bin" \
       FAKE_TARGET_OPT_PREFIX="$target_opt_prefix" \
       FAKE_TARGET_PREFIX="$target_prefix" \
       FAKE_STATE="$state" \
       FAKE_BOTTLE="$bottle" \
+      FAKE_PROVENANCE_TAP_ROOT="$provenance_tap" \
       FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
       FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
       HOMEBREW_BREW_FILE="$fake_brew" \
@@ -3267,6 +3590,7 @@ EOF
       HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
       KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
       HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
+      HOMEBREW_GIT_PATH=caller-poison \
       GITHUB_ACTIONS= \
       bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
         --tap-root "$tap" \
@@ -3936,6 +4260,24 @@ EOF
     ]
   ' "$cross_output" >/dev/null ||
     fail "cross-tap dependency provenance lost its exact external origin"
+
+  printf 'untracked external tap drift\n' >"$cross_core/Formula/untracked.rb"
+  if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$cross_resolved" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+      --input "$cross_output" \
+      --tap-root "$cross_primary" \
+      --tap-name example/tools \
+      --tap-repository example/homebrew-tools \
+      --tap-commit "$cross_primary_commit" \
+      --formula m4 \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/example/homebrew-tools \
+      >/dev/null 2>"$root/cross-untracked.err"; then
+    fail "dependency provenance accepted an untracked external resolved tap"
+  fi
+  grep -F "resolved tap kandelo-dev/tap-core has working-tree changes" \
+    "$root/cross-untracked.err" >/dev/null ||
+    fail "dependency provenance did not explain an untracked external resolved tap"
 
   jq '.poured_from_bottle = false' "$cellar/INSTALL_RECEIPT.json" >"$bad"
   mv "$bad" "$cellar/INSTALL_RECEIPT.json"
@@ -5387,6 +5729,7 @@ make_formula_runner_fixture
 assert_ghcr_auth_env_does_not_cross_dev_shell
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
+assert_resolved_primary_override_is_bounded
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-publisher-overlay-patch.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
@@ -5405,6 +5748,7 @@ assert_generic_tap_build_handoff_identity
 assert_build_handoff_is_minimal_and_validated
 assert_build_handoff_rejects_untrusted_content
 assert_upload_receipt_is_bound_to_build_handoff
+assert_cross_tap_upload_receipt_survives_dev_shell
 assert_publish_handoff_is_exact_inert_data
 assert_stale_bottle_rebuild_cannot_rewind_publication
 assert_publish_dependencies_are_source_bound

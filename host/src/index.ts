@@ -80,6 +80,7 @@ export type {
   HomebrewVfsBuildOptions,
   HomebrewVfsBuildReport,
   HomebrewVfsBuildResult,
+  HomebrewVfsOptLinkReport,
   HomebrewVfsPackageReport,
   HomebrewVfsSelectionReport,
   HomebrewVfsSelectionSource,

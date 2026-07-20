@@ -22,9 +22,9 @@ DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a54
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "d4ad1ba3a3decdef5a6d32811c2e4eae1f79873b4bdb42cfa9207735c725ace7"
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
-PUBLISHER_UPLOAD_DIGEST = "c676e11e5f6b0b43289d9bf72ef1a1df049dbad3f65e7c62441a27860341aacc"
+PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "70d0a74c5c2cb7320acfba52be3e7ed874e329a801659d0e665cb2c8d5f08791"
-PUBLISHER_VERIFY_DIGEST = "6bac81ffb6313cb0c1192da1d436fb21693b080aa20e865ee179ae4e0cd1f1a2"
+PUBLISHER_VERIFY_DIGEST = "c7354c3c13cecb28cbef5eb460ec7a49189af64af8e9e57ab3163f81ba5599e3"
 PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -1364,7 +1364,7 @@ def check_publisher(workflow)
         "dev shell globally preserves Homebrew resolved-tap state and invalidates package caches")
   resolved_taps_forwarding =
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
-  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 12,
+  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 14,
         "publisher does not explicitly carry immutable resolved taps across every consuming dev-shell boundary")
   check(!dev_shell.include?("--keep KANDELO_HOMEBREW_TAP_NAME"),
         "dev shell globally preserves caller-selected Homebrew tap identity")
@@ -1520,6 +1520,24 @@ def check_publisher(workflow)
     check(bottle_verifier.include?(fragment),
           "reviewed bottle verifier protected sysroot contract lacks #{fragment}")
   end
+  [
+    'PROVENANCE_TAP_ROOT="$(jq -er --arg tap "$TAP_NAME"',
+    'select(.tap_name == $tap)',
+    'select(type == "string" and startswith("/"))',
+    '--tap-root "$PROVENANCE_TAP_ROOT"',
+    '--dependency-tap-root "$PROVENANCE_TAP_ROOT"',
+  ].each do |fragment|
+    check(bottle_verifier.include?(fragment),
+          "reviewed bottle verifier clean provenance tap binding lacks #{fragment}")
+  end
+  provenance_capture = bottle_verifier.index(
+    'homebrew-dependency-provenance.py" capture'
+  )
+  clean_provenance_root = bottle_verifier.index(
+    '--tap-root "$PROVENANCE_TAP_ROOT"', provenance_capture || 0
+  )
+  check(provenance_capture && clean_provenance_root,
+        "reviewed bottle verifier captures provenance from its reconstructed dirty tap")
   check(!bottle_verifier.include?('SYSROOT_BUILD_ROOT="${KANDELO_ROOT') &&
         !bottle_verifier.include?('SYSROOT_BUILD_ROOT="$KANDELO_ROOT"'),
         "reviewed bottle verifier falls back to the pristine source checkout for its sysroot")
@@ -2563,7 +2581,11 @@ def check_publisher(workflow)
   check_forbidden_root_args(upload_validate.fetch("run"),
                             "publisher uploader handoff validation", trusted_runner_roots)
   upload_receipt_validation = named_step(upload_steps, "Revalidate upload receipt as data")
-  check_forbidden_root_args(upload_receipt_validation.fetch("run"),
+  upload_receipt_validation_run = upload_receipt_validation.fetch("run")
+  check(upload_receipt_validation_run.include?("bash scripts/dev-shell.sh env \\") &&
+        upload_receipt_validation_run.include?(resolved_taps_forwarding),
+        "publisher uploader receipt validation drops immutable resolved taps at the dev-shell boundary")
+  check_forbidden_root_args(upload_receipt_validation_run,
                             "publisher uploader receipt validation", trusted_runner_roots)
   build_handoff_validator = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-validate-build-handoff.sh")
@@ -2582,6 +2604,16 @@ def check_publisher(workflow)
   dependency_provenance = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-dependency-provenance.py")
   )
+  runtime_evidence = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-bottle-runtime-evidence.py")
+  )
+  [
+    'args.dependency_tap_root',
+    'parser.add_argument("--dependency-tap-root", required=True)',
+  ].each do |fragment|
+    check(runtime_evidence.include?(fragment),
+          "publisher runtime evidence drops the clean dependency tap root: #{fragment}")
+  end
   [
     "contexts = resolved_tap_contexts(args)",
     "context = contexts.get(dependency_tap)",
@@ -2648,6 +2680,32 @@ def check_publisher(workflow)
     check(dependency_provenance.include?(fragment),
           "publisher dependency drift validation lacks #{fragment}")
   end
+  [
+    'immutable_root = root_path.resolve()',
+    '["git", "-C", str(immutable_root), "rev-parse", "HEAD"]',
+    '["git", "-C", str(immutable_root), "status", "--short", "--untracked-files=all"]',
+    'status.returncode != 0 or (index != 0 and status.stdout)',
+    'fail(f"resolved tap {tap_name} has working-tree changes")',
+    'def exact_clean_git_root_head(root: pathlib.Path, label: str) -> str:',
+    '["git", "-C", str(resolved_root), "rev-parse", "--show-toplevel"]',
+    '"--untracked-files=all",',
+    'fail(f"{label} must be the exact Git worktree root")',
+    'fail(f"{label} has working-tree changes")',
+    'return exact_git_head(resolved_root, label)',
+    'def require_git_ancestor(',
+    '["git", "-C", str(root), "merge-base", "--is-ancestor", ancestor, descendant]',
+    'fail(f"{label} HEAD is not a descendant of planned tap commit {ancestor}")',
+    'current_head = exact_clean_git_root_head(',
+    'context_root = primary_root',
+    '"root": context_root',
+  ].each do |fragment|
+    check(dependency_provenance.include?(fragment),
+          "publisher refreshed-primary validation lacks #{fragment}")
+  end
+  override_check = dependency_provenance.index('current_head = exact_clean_git_root_head(')
+  override_assignment = dependency_provenance.index('context_root = primary_root')
+  check(override_check && override_assignment && override_check < override_assignment,
+        "publisher replaces the primary tap root before validating its clean ancestry")
   check(upload_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") } &&
         upload_steps.count { |step| step["uses"] == UPLOAD_ACTION } == 1,
         "credentialed uploader publishes diagnostics")
@@ -2824,6 +2882,9 @@ def check_publisher(workflow)
           run.include?('--out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"'),
           "publisher does not reconstruct canonical bottle JSON")
   end
+  check(canonical_receipt.include?("bash scripts/dev-shell.sh env \\") &&
+        canonical_receipt.include?(resolved_taps_forwarding),
+        "publisher verifier receipt validation drops immutable resolved taps at the dev-shell boundary")
   check_forbidden_root_args(canonical_build,
                             "publisher verifier handoff validation", trusted_runner_roots)
   check_forbidden_root_args(canonical_receipt,
@@ -2993,6 +3054,8 @@ def check_publisher(workflow)
   fingerprint_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-sysroot-fingerprint.sh"))
   merge_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-merge-bottle-json.sh"))
   check_sidecar_sysroot_binding(verifier_source, fingerprint_source)
+  check(verifier_source.include?('--dependency-tap-root "$FORMULA_SOURCE_ROOT"'),
+        "sidecar generator validates dependency provenance from its reconstructed dirty tap")
   check(verifier_source.include?('KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON') &&
         verifier_source.include?('forbidden_roots = json.loads') &&
         verifier_source.include?('inspection_command.extend(("--forbidden-root", forbidden_root))'),
@@ -3041,13 +3104,18 @@ def check_publisher(workflow)
   browser_run = named_step(verify_steps,
                            "Build and strictly smoke the hello browser image").fetch("run")
   [
-    "bash -c", "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
+    "bash -s <<'KANDELO_HOMEBREW_BROWSER_SMOKE'",
+    "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
     'KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo-sysroot-build"',
+    "'{schema: 1, formula: $formula, arch: $arch,",
+    "KANDELO_HOMEBREW_BROWSER_SMOKE\n",
     "--reporter=json", ".stats.expected == 1", ".stats.unexpected == 0",
     ".stats.flaky == 0", ".stats.skipped == 0",
   ].each do |fragment|
     check(browser_run.include?(fragment), "publisher strict browser smoke lacks #{fragment}")
   end
+  check(!browser_run.include?("bash -c '"),
+        "publisher strict browser smoke exposes its inner script to outer shell expansion")
   forbidden_root_json_fragments.each do |fragment|
     check(browser_run.include?(fragment),
           "publisher browser sidecar regeneration lacks trusted forbidden-root source #{fragment}")
@@ -3279,6 +3347,16 @@ def check_publisher(workflow)
   )
   [
     'add_publish_dependency_sibling_bottle "$tap_root"',
+    'make_publish_planned_resolved_tap_map "$tap_root" "$planned"',
+    'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps"',
+    'assert_resolved_primary_override_is_bounded',
+    'safe concurrent tap state',
+    'dependency provenance accepted an untracked primary tap override',
+    'dependency provenance accepted a dirty primary tap override',
+    'dependency provenance accepted an unrelated primary tap override',
+    'FAKE_PROVENANCE_TAP_ROOT="$provenance_tap"',
+    '$(cd "$dependency_tap_root" && pwd -P)',
+    '$(cd "$FAKE_PROVENANCE_TAP_ROOT" && pwd -P)',
     'under-lock publisher rejected concurrent sibling bottle metadata',
     'under-lock publisher accepted concurrent dependency Formula whitespace drift',
     'under-lock publisher accepted concurrent dependency recipe drift',
@@ -4100,6 +4178,13 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
       step["run"] = step.fetch("run").sub("KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
                                              "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=0")
+    },
+    "browser smoke inner variables exposed to outer shell expansion" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
+      step["run"] = step.fetch("run").sub(
+        "bash -s <<'KANDELO_HOMEBREW_BROWSER_SMOKE'",
+        "bash -s <<KANDELO_HOMEBREW_BROWSER_SMOKE"
+      )
     },
     "skipped browser smoke accepted" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")

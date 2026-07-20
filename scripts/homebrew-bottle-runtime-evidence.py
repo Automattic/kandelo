@@ -157,7 +157,7 @@ def validate_dependency_provenance(args: argparse.Namespace) -> dict[str, Any]:
         "--bottle-root-url",
         args.bottle_root_url,
         "--tap-root",
-        args.tap_root,
+        args.dependency_tap_root,
     ]
     result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
@@ -743,6 +743,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tap-name")
     parser.add_argument("--tap-commit", required=True)
     parser.add_argument("--tap-root", required=True)
+    parser.add_argument("--dependency-tap-root", required=True)
     parser.add_argument("--bottle-root-url", required=True)
     parser.add_argument("--bottle-json", required=True)
     parser.add_argument("--bottle-url", required=True)

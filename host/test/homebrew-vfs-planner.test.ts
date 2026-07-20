@@ -457,6 +457,32 @@ describe("Homebrew VFS planner", () => {
     })).rejects.toThrow("must be a safe relative path");
   });
 
+  it("accepts upstream payload filenames containing commas", async () => {
+    const texPath = [
+      "share/texmf-dist/doc/latex/binarytree/examples",
+      "btree-5_up_0,0,0_3729359_7458719_655360_0.7_0.7_-lrr-x--_-llrr-x--_-rll-x--_-rrll-x--.pdf",
+    ].join("/");
+    const manifest = linkManifest("texlive", "2025", {
+      links: [{
+        type: "symlink",
+        source: `Cellar/texlive/2025/${texPath}`,
+        target: texPath,
+      }],
+    });
+    const plan = await planHomebrewVfs(metadata([
+      packageEntry("texlive", "2025"),
+    ]), {
+      packages: ["texlive"],
+      arch: "wasm32",
+      loadLinkManifest: () => manifest,
+    });
+
+    expect(plan.packages[0].linkManifest.links[0]).toMatchObject({
+      source: `Cellar/texlive/2025/${texPath}`,
+      target: texPath,
+    });
+  });
+
   it("rejects dependency cycles", async () => {
     const tapMetadata = metadata([
       packageEntry("alpha", "1.0", [{ name: "beta", version: "1.0" }]),

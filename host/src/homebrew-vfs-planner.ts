@@ -228,7 +228,7 @@ const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SAFE_TAP_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
-const SAFE_GUEST_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:\[\]-]+$/;
+const SAFE_GUEST_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=,:\[\]-]+$/;
 const MAX_PACKAGE_NAME_BYTES = 255;
 const MAX_REQUESTED_PACKAGES = 128;
 const MAX_RESOLVED_PACKAGES = 128;

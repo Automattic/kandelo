@@ -1390,6 +1390,26 @@ mod tests {
     }
 
     #[test]
+    fn accepts_upstream_filenames_with_commas() {
+        let mut fixture = Fixture::new();
+        let tex_path = concat!(
+            "share/texmf-dist/doc/latex/binarytree/examples/",
+            "btree-5_up_0,0,0_3729359_7458719_655360_0.7_0.7_",
+            "-lrr-x--_-llrr-x--_-rll-x--_-rrll-x--.pdf"
+        );
+        set(
+            &mut fixture.link,
+            "/links/0/source",
+            json!(format!("Cellar/hello/2.12.1/{tex_path}")),
+        );
+        set(&mut fixture.link, "/links/0/target", json!(tex_path));
+        fixture.write();
+
+        let report = fixture.validate();
+        assert_eq!(report.errors, Vec::<String>::new());
+    }
+
+    #[test]
     fn rejects_dotdot_link_path() {
         let mut fixture = Fixture::new();
         set(&mut fixture.link, "/links/0/target", json!("../bin/hello"));

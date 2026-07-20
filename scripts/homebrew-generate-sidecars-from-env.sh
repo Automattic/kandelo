@@ -149,6 +149,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --tap-root "$KANDELO_HOMEBREW_TAP_ROOT" \
+  --dependency-tap-root "$FORMULA_SOURCE_ROOT" \
   --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
   --bottle-json "$KANDELO_HOMEBREW_BOTTLE_JSON" \
   --bottle-url "$KANDELO_HOMEBREW_BOTTLE_URL" \

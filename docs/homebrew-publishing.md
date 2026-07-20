@@ -320,15 +320,24 @@ stores, and home directories. The two services cannot access each other's
 mutable cache, temporary, configuration, or home state. The native service also
 cannot access the target prefix; the target service sees the native prefix only
 through a read-only mount. Both use the same reviewed Homebrew overlay as
-read-only source. Before any Formula Ruby executes, the static Formula parser
-derives a bounded plan from the selected Formula's direct `depends_on`
-declarations. An unqualified external dependency must be explicitly tagged
-`:build`, `:test`, or both. Untagged and `:recommended` external runtime
-dependencies fail because portable runtime dependencies must come from the
-primary tap or an exact dependency-tap lock; `:optional` dependencies are not
-selected. Qualified locked-tap dependencies remain in the target plan. The
-resulting control data also carries the sorted immutable target-tap set plus
-three native lists:
+read-only source.
+
+Homebrew's control plane always uses a protected host Git, even after a Kandelo
+`git` bottle installs a target executable under the canonical prefix. The
+launcher discards an inherited `HOMEBREW_GIT_PATH`, selects a regular,
+non-writable Git executable from the immutable Nix store, verifies its minimum
+supported version, and preserves that exact path in both isolated realms. A
+target Git can therefore remain ordinary bottle payload without shadowing the
+native Git that Homebrew uses to resolve and inspect taps.
+
+Before any Formula Ruby executes, the static Formula parser derives a bounded
+plan from the selected Formula's direct `depends_on` declarations. An
+unqualified external dependency must be explicitly tagged `:build`, `:test`,
+or both. Untagged and `:recommended` external runtime dependencies fail because
+portable runtime dependencies must come from the primary tap or an exact
+dependency-tap lock; `:optional` dependencies are not selected. Qualified
+locked-tap dependencies remain in the target plan. The resulting control data
+also carries the sorted immutable target-tap set plus three native lists:
 
 - `build` contains only direct native dependencies tagged `:build` (including
   `[:build, :test]`). The isolated Homebrew overlay uses this root-owned list
@@ -1194,18 +1203,24 @@ edges by canonical `owner/tap/formula`, requires each package's bottle URL and
 package-specific build commits independently of the document-generation
 commits, rejects duplicate Cellar short names across taps, and resolves the
 closure in deterministic dependency-first order.
-Guest-relative link-manifest paths admit literal square brackets so standard
-POSIX utility names such as `bin/[` remain representable. They still reject
-absolute paths, empty and `.`/`..` segments, backslashes, and whitespace. Tap
-metadata references use a separate, narrower path grammar and do not inherit
-the guest filename allowance.
+Guest-relative link-manifest paths admit literal square brackets and commas so
+standard POSIX utility names such as `bin/[` and upstream payload filenames
+such as TeX Live's comma-delimited examples remain representable. They still
+reject absolute paths, empty and `.`/`..` segments, backslashes, and whitespace.
+Tap metadata references use a separate, narrower path grammar and do not
+inherit the guest filename allowances.
 
 The Node-side builder is `buildHomebrewVfs()` in
 `host/src/homebrew-vfs-builder.ts`. It verifies bottle byte count and sha256,
 extracts supported tar entries, stages kegs under the declared prefix,
-validates receipts, applies link manifests, writes
-`/etc/kandelo/homebrew-vfs.json`, and emits a build report. Each package record
-retains its full Formula name, tap repository, tap name, and exact tap commit.
+validates receipts, applies link manifests, and creates the canonical
+`opt/<formula>` symlink for every selected package. The `opt` link is
+builder-owned rather than a link-manifest entry: its relative target is derived
+from the package's validated prefix and exact keg, and any pre-existing path at
+that package's `opt` location fails composition instead of being overwritten.
+The builder writes `/etc/kandelo/homebrew-vfs.json` and emits a build report;
+both record each `opt_link` path and target. Each package record retains its
+full Formula name, tap repository, tap name, and exact tap commit.
 
 The CLI starts with an empty VFS by default. Pass `--base-image` to overlay the
 same verified bottle plan onto an explicit platform-only `.vfs` or `.vfs.zst`

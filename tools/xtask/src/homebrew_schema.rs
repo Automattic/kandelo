@@ -130,6 +130,31 @@ mod tests {
     }
 
     #[test]
+    fn link_manifest_accepts_upstream_filenames_with_commas() {
+        let schema = compile_schema(&schema_rel("link-manifest"));
+        let mut instance = load_json(&example_rel("link/hello-2.12.1-rebuild0-wasm32.json"));
+        let tex_path = concat!(
+            "share/texmf-dist/doc/latex/binarytree/examples/",
+            "btree-5_up_0,0,0_3729359_7458719_655360_0.7_0.7_",
+            "-lrr-x--_-llrr-x--_-rll-x--_-rrll-x--.pdf"
+        );
+        *instance
+            .pointer_mut("/links/0/source")
+            .expect("link source fixture path") =
+            json!(format!("Cellar/texlive/2025/{tex_path}"));
+        *instance
+            .pointer_mut("/links/0/target")
+            .expect("link target fixture path") = json!(tex_path);
+
+        let errors = validation_errors(&schema, &instance);
+        assert!(
+            errors.is_empty(),
+            "upstream filenames containing commas should validate:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    #[test]
     fn link_manifest_rejects_malformed_bottle_sha() {
         let instance = load_json(&example_rel("link/hello-2.12.1-rebuild0-wasm32.json"));
         assert_invalid(&schema_rel("link-manifest"), instance, |value| {

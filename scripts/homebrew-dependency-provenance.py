@@ -105,6 +105,65 @@ def exact_git_head(root: pathlib.Path, label: str) -> str:
     return head
 
 
+def exact_clean_git_root_head(root: pathlib.Path, label: str) -> str:
+    if root.is_symlink() or not root.is_dir():
+        fail(f"{label} must be a real directory")
+    resolved_root = root.resolve()
+    try:
+        top_level = subprocess.run(
+            ["git", "-C", str(resolved_root), "rev-parse", "--show-toplevel"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        status = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(resolved_root),
+                "status",
+                "--short",
+                "--untracked-files=all",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+        fail(f"{label} Git checkout check failed: {error}")
+    top_level_path = top_level.stdout.decode("utf-8", errors="replace").strip()
+    if top_level.returncode != 0 or not top_level_path:
+        detail = top_level.stderr.decode("utf-8", errors="replace")[:2_048]
+        fail(f"{label} is not a Git worktree: {detail}")
+    if pathlib.Path(top_level_path).resolve() != resolved_root:
+        fail(f"{label} must be the exact Git worktree root")
+    if status.returncode != 0:
+        detail = status.stderr.decode("utf-8", errors="replace")[:2_048]
+        fail(f"{label} tracked-state check failed: {detail}")
+    if status.stdout:
+        fail(f"{label} has working-tree changes")
+    return exact_git_head(resolved_root, label)
+
+
+def require_git_ancestor(
+    root: pathlib.Path, ancestor: str, descendant: str, label: str
+) -> None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", ancestor, descendant],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+        fail(f"{label} ancestry check failed: {error}")
+    if result.returncode != 0:
+        fail(f"{label} HEAD is not a descendant of planned tap commit {ancestor}")
+
+
 def formulae_equivalent_excluding_bottle(
     planned_formula: pathlib.Path, current_formula: pathlib.Path, label: str
 ) -> None:
@@ -179,7 +238,12 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
     primary_name = selected_tap_name(args)
     primary_repository = normalized_tap_name(args.tap_repository)
     primary_root_value = getattr(args, "tap_root", None)
-    primary_root = pathlib.Path(primary_root_value).resolve() if primary_root_value else None
+    primary_root_path = pathlib.Path(primary_root_value) if primary_root_value else None
+    if primary_root_path is not None and (
+        primary_root_path.is_symlink() or not primary_root_path.is_dir()
+    ):
+        fail("primary tap override must be a real directory")
+    primary_root = primary_root_path.resolve() if primary_root_path is not None else None
     contexts: dict[str, dict[str, Any]] = {
         primary_name: {
             "tap_name": primary_name,
@@ -231,21 +295,19 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
         root_path = pathlib.Path(require_string(record["root"], f"resolved dependency tap map context {index} root"))
         if not root_path.is_absolute() or root_path.is_symlink() or not root_path.is_dir():
             fail(f"resolved dependency tap map context {index} root must be a real absolute directory")
-        root_path = root_path.resolve()
-        if index == 0 and primary_root is not None:
-            root_path = primary_root
+        immutable_root = root_path.resolve()
         if tap_name in parsed:
             fail(f"resolved dependency tap map repeats {tap_name}")
         try:
             head = subprocess.run(
-                ["git", "-C", str(root_path), "rev-parse", "HEAD"],
+                ["git", "-C", str(immutable_root), "rev-parse", "HEAD"],
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=30,
             )
             status = subprocess.run(
-                ["git", "-C", str(root_path), "status", "--short", "--untracked-files=no"],
+                ["git", "-C", str(immutable_root), "status", "--short", "--untracked-files=all"],
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -256,12 +318,27 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
         if head.returncode != 0 or head.stdout.decode("ascii", errors="replace").strip() != commit:
             fail(f"resolved tap {tap_name} HEAD differs from {commit}")
         if status.returncode != 0 or (index != 0 and status.stdout):
-            fail(f"resolved tap {tap_name} has tracked modifications")
+            fail(f"resolved tap {tap_name} has working-tree changes")
+        # The resolved map remains the immutable identity proof for every tap.
+        # Finalization may separately validate the primary Formula closure from
+        # a newer, clean descendant after taking the publication lock.
+        context_root = immutable_root
+        if index == 0 and primary_root is not None:
+            current_head = exact_clean_git_root_head(
+                primary_root, "primary tap override"
+            )
+            require_git_ancestor(
+                primary_root,
+                commit,
+                current_head,
+                "primary tap override",
+            )
+            context_root = primary_root
         parsed[tap_name] = {
             "tap_name": tap_name,
             "tap_repository": repository,
             "tap_commit": commit,
-            "root": root_path,
+            "root": context_root,
             "bottle_root_url": f"https://ghcr.io/v2/{repository}",
         }
     if primary_name not in parsed:
