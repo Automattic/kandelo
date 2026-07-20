@@ -150,6 +150,7 @@ prepared_files=(
     examples/pthread_channel_reuse_test.wasm
     examples/wait_lifecycle_test.wasm
     examples/wait_lifecycle_test.wasm64.wasm
+    examples/terminal_attributes_api_test.wasm64.wasm
 )
 for benchmark in \
     pipe-throughput.wasm \
