@@ -85,6 +85,51 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def exact_git_head(root: pathlib.Path, label: str) -> str:
+    if root.is_symlink() or not root.is_dir():
+        fail(f"{label} must be a real directory")
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+        fail(f"{label} Git identity check failed: {error}")
+    head = result.stdout.decode("ascii", errors="replace").strip()
+    if result.returncode != 0 or COMMIT.fullmatch(head) is None:
+        detail = result.stderr.decode("utf-8", errors="replace")[:2_048]
+        fail(f"{label} is not an exact Git checkout: {detail}")
+    return head
+
+
+def formulae_equivalent_excluding_bottle(
+    planned_formula: pathlib.Path, current_formula: pathlib.Path, label: str
+) -> None:
+    comparator = pathlib.Path(__file__).with_name("homebrew-formula-source-digest.rb")
+    regular_file(comparator, "Formula source comparator", MAX_JSON_BYTES)
+    try:
+        result = subprocess.run(
+            [
+                "ruby",
+                str(comparator),
+                "--equivalent-excluding-bottle",
+                str(planned_formula),
+                str(current_formula),
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+        fail(f"{label} Formula source comparison failed: {error}")
+    if result.returncode != 0 or result.stdout != b"equivalent\n":
+        fail(f"{label} Formula differs from the planned tap outside canonical bottle metadata")
+
+
 def run_brew(brew_bin: pathlib.Path, *arguments: str) -> str:
     try:
         result = subprocess.run(
@@ -354,9 +399,11 @@ def formula_record(info: Any, expected_full_name: str, expected_name: str) -> di
     return record
 
 
-def target_receipt_bottle_rebuild(dependency: dict[str, Any], full_name: str) -> int:
+def target_receipt_bottle_rebuild(
+    dependency: dict[str, Any], full_name: str
+) -> int | None:
     if "bottle_rebuild" not in dependency:
-        return 0
+        return None
     rebuild = dependency["bottle_rebuild"]
     if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
         fail(
@@ -488,7 +535,7 @@ def capture(args: argparse.Namespace) -> None:
         rebuild = stable.get("rebuild")
         if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
             fail(f"dependency {full_name} bottle rebuild must be a non-negative integer")
-        if rebuild != receipt_bottle_rebuild:
+        if receipt_bottle_rebuild is not None and rebuild != receipt_bottle_rebuild:
             fail(
                 f"dependency {full_name} bottle rebuild differs between "
                 "the target receipt and exact Formula"
@@ -647,8 +694,10 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     seen: set[str] = set()
     prior_full_name = ""
     validation_tap_root = getattr(args, "tap_root", None)
+    planned_tap_root = getattr(args, "planned_tap_root", None)
     static_dependencies = None
     static_direct_dependencies = None
+    planned_root = None
     if validation_tap_root:
         static_dependencies = exact_tap_dependencies(
             pathlib.Path(validation_tap_root),
@@ -662,6 +711,12 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             normalized_tap,
             args.formula,
         )
+    if planned_tap_root:
+        if not validation_tap_root:
+            fail("planned tap root requires a current tap root")
+        planned_root = pathlib.Path(planned_tap_root)
+        if exact_git_head(planned_root, "planned tap root") != args.tap_commit:
+            fail("planned tap root does not match the provenance tap commit")
     for index, dependency in enumerate(dependencies):
         dependency = exact_keys(
             dependency,
@@ -765,7 +820,23 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         if validation_tap_root:
             formula_path = pathlib.Path(validation_tap_root) / "Formula" / f"{name}.rb"
             regular_file(formula_path, f"dependencies[{index}] exact Formula", MAX_JSON_BYTES)
-            if sha256_file(formula_path) != formula["sha256"]:
+            current_formula_sha = sha256_file(formula_path)
+            if planned_root is not None:
+                planned_formula_path = planned_root / "Formula" / f"{name}.rb"
+                regular_file(
+                    planned_formula_path,
+                    f"dependencies[{index}] planned Formula",
+                    MAX_JSON_BYTES,
+                )
+                if sha256_file(planned_formula_path) != formula["sha256"]:
+                    fail(f"dependencies[{index}] Formula digest differs from the planned tap")
+                if current_formula_sha != formula["sha256"]:
+                    formulae_equivalent_excluding_bottle(
+                        planned_formula_path,
+                        formula_path,
+                        f"dependencies[{index}]",
+                    )
+            elif current_formula_sha != formula["sha256"]:
                 fail(f"dependencies[{index}] Formula digest differs from the exact tap")
 
     if static_dependencies is not None:
@@ -809,6 +880,7 @@ def parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser("validate", parents=[common])
     validate_parser.add_argument("--input", required=True)
     validate_parser.add_argument("--tap-root")
+    validate_parser.add_argument("--planned-tap-root")
     validate_parser.set_defaults(handler=validate)
     return root
 
