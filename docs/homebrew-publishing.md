@@ -1192,6 +1192,35 @@ policy, not Kandelo platform policy. A minimal configuration has this shape:
 }
 ```
 
+Schema 1 proves the selected executable and dependency closure. Schema 2 adds
+one reviewed `shell_config` path inside the same tap:
+
+```json
+{
+  "schema": 2,
+  "formula": "consumer",
+  "brewfile": "Kandelo/vfs-acceptance.Brewfile",
+  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "argv": ["consumer", "--version"],
+  "expected_stdout": "consumer",
+  "shell_config": "Kandelo/vfs-acceptance-shell.json"
+}
+```
+
+The referenced file uses the bounded `/etc/kandelo/shell.json` contract. The
+planner requires a regular, non-symlink tap file and a canonical Homebrew
+`bin` or `sbin` path. The verifier copies those exact reviewed bytes into the
+image, binds the config in the report and image metadata, and requires exactly
+one bottle in the selected Brewfile closure to own the linked shell
+executable. A base-image shell therefore cannot satisfy this acceptance rung.
+
+After the exact-byte Node and Chromium executable probes, schema 2 also boots
+the same composed image through the full browser machine UI. The interactive
+shell must start from its VFS path, source the Homebrew profile fragment, and
+resolve itself from the Homebrew prefix without downloading the legacy Bash or
+Dash assets. The retained browser evidence names the shell path and argv and
+records zero legacy-shell downloads.
+
 The acceptance gate parses the static Brewfile, requires at least one real
 dependency edge reachable from the selected Formula, and resolves the same
 dependency-first plan for Node and browser. Every package must select a current

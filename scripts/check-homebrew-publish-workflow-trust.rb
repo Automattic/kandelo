@@ -20,11 +20,11 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "45b3551a20a8dd1d545b0aefec5fc142c1f298d3ef9db44a021b62a36f8c1938"
+PUBLISHER_PLAN_DIGEST = "ff7bcc6ee9aba6907997f146d2a04b3a6ae272de65a51814b7a85c83d263d521"
 PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
 PUBLISHER_UPLOAD_DIGEST = "1023843652029512072c79e0ceb8f09283b60d520fc01fe01e7d92d90c178fb7"
 PUBLISHER_INDEX_DIGEST = "9fe1633079f5bb32bb589ed941876ed6429a16ce66d70cf399a0727e98cb7752"
-PUBLISHER_VERIFY_DIGEST = "9d726b44d62982c080c2c8a95fb6a91772d476db8ccdeba207c82e4e4b71123c"
+PUBLISHER_VERIFY_DIGEST = "9c4424454c3c22a86055b6a41ae2103ab92eb6579290c74236cb3b630943d749"
 PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -702,6 +702,7 @@ def check_publisher(workflow)
     'this invocation will produce no closure acceptance evidence',
     'tap VFS acceptance configuration must be a regular non-symlink file',
     'keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"]',
+    'keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema", "shell_config"]',
     'contains("\u000a") == false', 'contains("\u000d") == false',
     'config="$(realpath "$config_candidate")"',
     'tap VFS acceptance configuration resolved outside the exact tap checkout',
@@ -711,6 +712,12 @@ def check_publisher(workflow)
     'brewfile_candidate="$GITHUB_WORKSPACE/tap/$brewfile_rel"',
     '[ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ]',
     'brewfile="$(realpath "$brewfile_candidate")"',
+    'shell_config_candidate="$GITHUB_WORKSPACE/tap/$shell_config_rel"',
+    'tap default-shell config must be a regular non-symlink file',
+    'default-shell config resolved outside the exact tap checkout',
+    'default-shell config must contain 1 to 65536 bytes',
+    'keys == ["argv", "path", "version"]',
+    '/home/linuxbrew/', '(bin|sbin)',
     'ruby kandelo/scripts/homebrew-brewfile-selection.rb "$brewfile"',
     'expected_tap="$(printf \'%s\' "$TAP_NAME" | tr \'[:upper:]\' \'[:lower:]\')"',
     '.tap_name == $tap and (.packages | index($formula) != null)',
@@ -2781,6 +2788,7 @@ def check_publisher(workflow)
     'config="$(realpath "$config_candidate")"',
     'tap VFS acceptance configuration resolved outside the exact tap checkout',
     'keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema"]',
+    'keys == ["argv", "brewfile", "executable", "expected_stdout", "formula", "schema", "shell_config"]',
     'contains("\u000a") == false', 'contains("\u000d") == false',
     'required dependency-bearing VFS acceptance cannot run in dry-run mode',
     'anonymous reads of published GHCR bottles',
@@ -2790,6 +2798,12 @@ def check_publisher(workflow)
     'brewfile_candidate="$GITHUB_WORKSPACE/tap-postverify/$brewfile_rel"',
     '[ -f "$brewfile_candidate" ] && [ ! -L "$brewfile_candidate" ]',
     'brewfile="$(realpath "$brewfile_candidate")"',
+    'shell_config_candidate="$GITHUB_WORKSPACE/tap-postverify/$shell_config_rel"',
+    'tap default-shell config must be a regular non-symlink file',
+    'default-shell config resolved outside the exact tap checkout',
+    'default-shell config must contain 1 to 65536 bytes',
+    'vfs_args+=(--write-profile --shell-config "$shell_config")',
+    'node_args+=(--shell-config "$shell_config")',
     'base_image="$(bash scripts/resolve-binary.sh programs/rootfs.vfs)"',
     'platform base did not resolve from the Kandelo package registry tree',
     'kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"',
@@ -2804,6 +2818,11 @@ def check_publisher(workflow)
     'KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS"',
     'bash ../../scripts/dev-shell.sh env',
     'test/homebrew-brewfile-vfs.spec.ts',
+    'KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL="$KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL"',
+    'KANDELO_HOMEBREW_DEFAULT_SHELL_PATH="$KANDELO_HOMEBREW_DEFAULT_SHELL_PATH"',
+    'KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0="$KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0"',
+    'test/kandelo-homebrew.spec.ts',
+    'legacy_shell_downloads: 0',
     '.stats.expected == 1', '.stats.unexpected == 0',
     '.stats.flaky == 0', '.stats.skipped == 0',
   ].each do |fragment|
@@ -2834,6 +2853,9 @@ def check_publisher(workflow)
     "is not a Brewfile root", "is not a link owned by acceptance formula",
     "base VFS ABI", "kernel Wasm ABI", "Node acceptance stdout did not contain",
     "expected stdout must be a single-line string",
+    "does not match the reviewed shell config",
+    "default shell", "must be linked by exactly one selected Homebrew bottle",
+    '"--shell-config"',
   ].each do |fragment|
     check(acceptance_source.include?(fragment),
           "Homebrew VFS acceptance verifier lacks #{fragment}")
@@ -2853,6 +2875,14 @@ def check_publisher(workflow)
         browser_acceptance_test.include?("expect(result.kernelSha256).toBe(kernelSha256)") &&
         browser_acceptance_test.include?("expect(result.exitCode, result.stderr).toBe(0)"),
         "browser Homebrew VFS acceptance test does not bind exact artifacts and command success")
+  default_shell_test = File.read(
+    File.join(REPO_ROOT, "apps/browser-demos/test/kandelo-homebrew.spec.ts")
+  )
+  check(default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL") &&
+        default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_PATH") &&
+        default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0") &&
+        default_shell_test.include?("expect(legacyShellFetches).toEqual([])"),
+        "browser Homebrew default-shell acceptance does not bind the exact image shell path")
   diagnostics = named_step(verify_steps, "Upload read-only verification diagnostics")
   check(diagnostics.dig("with", "path").include?(
           "${{ runner.temp }}/homebrew-vfs-acceptance/**"

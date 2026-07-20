@@ -28,6 +28,12 @@ import {
   type HomebrewVfsPlan,
 } from "../host/src/homebrew-vfs-planner";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
+import {
+  KANDELO_SHELL_CONFIG_PATH,
+  MAX_KANDELO_SHELL_CONFIG_BYTES,
+  parseKandeloShellConfig,
+  type KandeloShellConfig,
+} from "../web-libs/kandelo-session/src/shell-config";
 
 const MAX_JSON_BYTES = 16 * 1024 * 1024;
 const MAX_BREWFILE_BYTES = 64 * 1024;
@@ -59,6 +65,7 @@ export interface HomebrewVfsAcceptanceOptions {
   argv: string[];
   expectedStdout: string;
   timeoutMs: number;
+  shellConfigPath?: string;
 }
 
 export interface HomebrewVfsAcceptanceValidation {
@@ -106,6 +113,14 @@ export interface HomebrewVfsAcceptanceEvidence {
     bytes: number;
     kernel_abi: number;
   };
+  default_shell?: {
+    config_artifact: string;
+    config_sha256: string;
+    config_bytes: number;
+    path: string;
+    argv: string[];
+    bottle_package: string;
+  };
   node?: {
     executable: string;
     argv: string[];
@@ -121,6 +136,13 @@ interface BrewfileSelection {
   sha256: string;
   bytes: number;
   packages: string[];
+}
+
+interface LoadedShellConfig {
+  path: string;
+  bytes: Uint8Array;
+  config: KandeloShellConfig;
+  sha256: string;
 }
 
 interface CliOptions extends HomebrewVfsAcceptanceOptions {
@@ -147,6 +169,9 @@ export async function validateHomebrewVfsAcceptance(
 
   const metadata = readJson(options.metadataPath, "tap metadata");
   const brewfile = readBrewfileSelection(options.brewfilePath);
+  const shellConfig = options.shellConfigPath
+    ? readShellConfig(options.shellConfigPath)
+    : undefined;
   if (!PACKAGE_NAME_RE.test(options.expectedRootPackage)) {
     fail(`expected root package is invalid: ${JSON.stringify(options.expectedRootPackage)}`);
   }
@@ -185,7 +210,7 @@ export async function validateHomebrewVfsAcceptance(
   assertGhcrBottleSources(plan);
 
   const report = requireRecord(readJson(options.reportPath, "VFS report"), "VFS report");
-  assertReportMatchesPlan(report, plan, brewfile);
+  assertReportMatchesPlan(report, plan, brewfile, shellConfig);
 
   const baseImageBytes = readArtifact(options.baseImagePath, "base VFS");
   const baseFs = MemoryFileSystem.fromImagePreservingCapacity(baseImageBytes);
@@ -198,7 +223,7 @@ export async function validateHomebrewVfsAcceptance(
 
   const imageBytes = readArtifact(options.imagePath, "composed VFS");
   const imageFs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
-  assertImageMetadata(imageFs, plan, brewfile, baseImageBytes, baseAbi);
+  assertImageMetadata(imageFs, plan, brewfile, baseImageBytes, baseAbi, shellConfig);
   assertGuestManifest(imageFs, plan, brewfile);
 
   const executableBytes = readVfsFile(imageFs, options.executablePath);
@@ -213,6 +238,31 @@ export async function validateHomebrewVfsAcceptance(
   );
   if (executableFailures.length > 0) {
     fail(`guest executable is not a current Kandelo program: ${executableFailures.join("; ")}`);
+  }
+
+  let defaultShellEvidence: HomebrewVfsAcceptanceEvidence["default_shell"];
+  if (shellConfig) {
+    const imageConfigBytes = readVfsFile(imageFs, KANDELO_SHELL_CONFIG_PATH);
+    if (!bytesEqual(imageConfigBytes, shellConfig.bytes)) {
+      fail(`composed VFS ${KANDELO_SHELL_CONFIG_PATH} does not match the reviewed shell config`);
+    }
+    const bottlePackage = requireUniqueBottleLinkOwner(plan, shellConfig.config.path);
+    const shellBytes = readVfsFile(imageFs, shellConfig.config.path);
+    const shellFailures = describeWasmArtifactPolicyFailures(
+      toArrayBuffer(shellBytes),
+      { expectedAbi: plan.kandeloAbi, requiredExports: ["__abi_version", "_start"] },
+    );
+    if (shellFailures.length > 0) {
+      fail(`default shell is not a current Kandelo program: ${shellFailures.join("; ")}`);
+    }
+    defaultShellEvidence = {
+      config_artifact: basename(shellConfig.path),
+      config_sha256: shellConfig.sha256,
+      config_bytes: shellConfig.bytes.byteLength,
+      path: shellConfig.config.path,
+      argv: [...shellConfig.config.argv],
+      bottle_package: bottlePackage,
+    };
   }
 
   const kernelBytes = readArtifact(options.kernelPath, "kernel Wasm");
@@ -271,6 +321,7 @@ export async function validateHomebrewVfsAcceptance(
         bytes: imageBytes.byteLength,
         kernel_abi: plan.kandeloAbi,
       },
+      ...(defaultShellEvidence ? { default_shell: defaultShellEvidence } : {}),
     },
   };
 }
@@ -449,6 +500,7 @@ function assertReportMatchesPlan(
   report: Record<string, unknown>,
   plan: HomebrewVfsPlan,
   brewfile: BrewfileSelection,
+  shellConfig?: LoadedShellConfig,
 ): void {
   expectEqual(report, "schema", 1, "VFS report");
   const metadata = requiredRecord(report, "metadata", "VFS report");
@@ -473,6 +525,26 @@ function assertReportMatchesPlan(
   expectEqual(brewfileReport, "parser", "kandelo-static-brewfile-v1", "VFS report Brewfile");
   expectEqual(brewfileReport, "sha256", brewfile.sha256, "VFS report Brewfile");
   expectEqual(brewfileReport, "bytes", brewfile.bytes, "VFS report Brewfile");
+
+  if (shellConfig) {
+    const shell = requiredRecord(report, "default_shell", "VFS report");
+    expectEqual(shell, "path", shellConfig.config.path, "VFS report default shell");
+    expectStringArray(
+      shell,
+      "argv",
+      shellConfig.config.argv,
+      "VFS report default shell",
+    );
+    expectEqual(shell, "config_sha256", shellConfig.sha256, "VFS report default shell");
+    expectEqual(
+      shell,
+      "config_bytes",
+      shellConfig.bytes.byteLength,
+      "VFS report default shell",
+    );
+  } else if (Object.hasOwn(report, "default_shell")) {
+    fail("VFS report unexpectedly declares a default shell");
+  }
 
   const packages = requiredArray(report, "packages", "VFS report");
   if (packages.length !== plan.packages.length) {
@@ -517,6 +589,7 @@ function assertImageMetadata(
   brewfile: BrewfileSelection,
   baseBytes: Uint8Array,
   baseAbi: number,
+  shellConfig?: LoadedShellConfig,
 ): void {
   const metadata = requireRecord(fs.getImageMetadata(), "composed VFS metadata");
   expectEqual(metadata, "version", 1, "composed VFS metadata");
@@ -553,6 +626,24 @@ function assertImageMetadata(
   const source = requiredRecord(selection, "brewfile", "composed VFS selection");
   expectEqual(source, "sha256", brewfile.sha256, "composed VFS Brewfile");
   expectEqual(source, "bytes", brewfile.bytes, "composed VFS Brewfile");
+  if (shellConfig) {
+    const shell = requiredRecord(homebrew, "defaultShell", "composed VFS Homebrew metadata");
+    expectEqual(shell, "path", shellConfig.config.path, "composed VFS default shell");
+    expectStringArray(
+      shell,
+      "argv",
+      shellConfig.config.argv,
+      "composed VFS default shell",
+    );
+    expectEqual(
+      shell,
+      "configSha256",
+      shellConfig.sha256,
+      "composed VFS default shell",
+    );
+  } else if (Object.hasOwn(homebrew, "defaultShell")) {
+    fail("composed VFS metadata unexpectedly declares a default shell");
+  }
   const packages = requiredArray(homebrew, "packages", "composed VFS Homebrew metadata");
   assertPackageRecords(packages, plan, "composed VFS package", (pkg) => ({
     name: pkg.name,
@@ -653,6 +744,19 @@ function assertExecutableBelongsToBottle(
   }
 }
 
+function requireUniqueBottleLinkOwner(plan: HomebrewVfsPlan, path: string): string {
+  const owners = plan.packages.filter((pkg) =>
+    pkg.linkManifest.links.some((link) => joinGuestPath(pkg.prefix, link.target) === path)
+  );
+  if (owners.length !== 1) {
+    fail(
+      `default shell ${path} must be linked by exactly one selected Homebrew bottle; ` +
+        `found ${owners.map((pkg) => pkg.name).join(", ") || "none"}`,
+    );
+  }
+  return owners[0]!.name;
+}
+
 function platformEvidence(
   role: "base-vfs" | "kernel",
   origin: PlatformInputOrigin,
@@ -692,6 +796,26 @@ function readBrewfileSelection(path: string): BrewfileSelection {
     fail("static Brewfile parser returned invalid provenance");
   }
   return { tapName, sha256: digest, bytes, packages };
+}
+
+function readShellConfig(path: string): LoadedShellConfig {
+  const stat = lstatSync(path);
+  if (
+    stat.isSymbolicLink() ||
+    !stat.isFile() ||
+    stat.size <= 0 ||
+    stat.size > MAX_KANDELO_SHELL_CONFIG_BYTES
+  ) {
+    fail(
+      `shell config must be a non-empty regular file no larger than ` +
+        `${MAX_KANDELO_SHELL_CONFIG_BYTES} bytes`,
+    );
+  }
+  const bytes = new Uint8Array(readFileSync(path));
+  const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const config = parseKandeloShellConfig(source);
+  if (!config) fail("shell config has an unsupported version");
+  return { path, bytes, config, sha256: sha256(bytes) };
 }
 
 function readArtifact(path: string, label: string): Uint8Array {
@@ -751,7 +875,7 @@ function parseArgs(args: string[]): CliOptions {
   const allowed = new Set([
     "--metadata", "--tap-root", "--brewfile", "--base-image", "--base-origin",
     "--image", "--report", "--kernel", "--kernel-origin", "--formula", "--executable",
-    "--argv-json", "--expect-stdout", "--timeout-ms", "--evidence",
+    "--argv-json", "--expect-stdout", "--timeout-ms", "--evidence", "--shell-config",
   ]);
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
@@ -760,7 +884,7 @@ function parseArgs(args: string[]): CliOptions {
     values.set(flag, value);
   }
   for (const flag of allowed) {
-    if (flag === "--timeout-ms") continue;
+    if (flag === "--timeout-ms" || flag === "--shell-config") continue;
     if (!values.has(flag)) usage(`missing ${flag}`);
   }
   let argv: unknown;
@@ -787,6 +911,7 @@ function parseArgs(args: string[]): CliOptions {
     argv: argv as string[],
     expectedStdout: values.get("--expect-stdout")!,
     timeoutMs: parsePositiveInteger(values.get("--timeout-ms") ?? "120000", "--timeout-ms"),
+    shellConfigPath: values.get("--shell-config"),
     evidencePath: values.get("--evidence")!,
   };
 }
@@ -873,6 +998,11 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
 function requestedPackagesSha256(packages: string[]): string {
   return sha256(new TextEncoder().encode(JSON.stringify(packages)));
 }
@@ -895,7 +1025,8 @@ function usage(message: string): never {
   --image <composed.vfs.zst> --report <report.json> \\
   --kernel <kernel.wasm> --kernel-origin <origin> --formula <root> \\
   --executable </guest/path> --argv-json <json-array> \\
-  --expect-stdout <literal> [--timeout-ms <milliseconds>] --evidence <out.json>`);
+  --expect-stdout <literal> [--timeout-ms <milliseconds>] \\
+  [--shell-config <shell.json>] --evidence <out.json>`);
   process.exit(2);
 }
 

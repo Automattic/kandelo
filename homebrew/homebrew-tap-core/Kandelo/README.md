@@ -24,6 +24,7 @@ link-manifest.schema.json
 provenance.schema.json
 vfs-acceptance.json                                # optional tap-owned gate selection
 vfs-acceptance.Brewfile                           # optional selected static roots
+vfs-acceptance-shell.json                         # optional reviewed image shell policy
 
 metadata.json                                      # generated tap state
 formula/<name>.json                               # generated tap state
@@ -220,6 +221,13 @@ single-line stdout substring:
   "expected_stdout": "consumer"
 }
 ```
+
+Schema 2 may additionally name `shell_config`, a regular non-symlink file in
+the tap using the `/etc/kandelo/shell.json` contract. The shell must be linked
+by exactly one bottle in the selected Brewfile closure. The publisher then
+boots the same exact image through the full browser machine UI and proves the
+VFS-owned shell starts with the Homebrew profile without fetching legacy shell
+assets.
 
 The publisher overlays the current generated sidecars on the exact tap
 checkout, rejects fallback and non-GHCR package sources, composes the bottles

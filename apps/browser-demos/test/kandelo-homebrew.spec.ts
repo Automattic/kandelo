@@ -234,8 +234,25 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
 }) => {
   test.setTimeout(240_000);
   if (!baseURL) throw new Error("Playwright baseURL is required");
-  const fixturePath = await writeHomebrewDefaultShellFixture();
-  const vfsUrl = new URL(fixturePath, baseURL).href;
+  const configuredVfsUrl = process.env.KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL;
+  const configuredShellPath = process.env.KANDELO_HOMEBREW_DEFAULT_SHELL_PATH;
+  const configuredShellArgv0 = process.env.KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0;
+  const configured = [
+    configuredVfsUrl,
+    configuredShellPath,
+    configuredShellArgv0,
+  ].some((value) => value !== undefined);
+  if (configured && (!configuredVfsUrl || !configuredShellPath || !configuredShellArgv0)) {
+    throw new Error(
+      "KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL, " +
+      "KANDELO_HOMEBREW_DEFAULT_SHELL_PATH, and " +
+      "KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0 must be configured together",
+    );
+  }
+  const shellPath = configuredShellPath ?? "/home/linuxbrew/.linuxbrew/bin/dash";
+  const shellArgv0 = configuredShellArgv0 ?? "dash";
+  const fixturePath = configuredVfsUrl ? undefined : await writeHomebrewDefaultShellFixture();
+  const vfsUrl = configuredVfsUrl ?? new URL(fixturePath!, baseURL).href;
   const legacyShellFetches: string[] = [];
   page.on("request", (request) => {
     const url = request.url();
@@ -253,8 +270,8 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
   await waitForTerminalContent(page, /kandelo\$\s*$/, 180_000);
   await runTerminalCommand(
     page,
-    "printf 'HOMEBREW_DEFAULT_SHELL:%s:%s:%s\\n' \"$0\" \"$(command -v dash)\" \"${PATH%%:*}\"",
-    "HOMEBREW_DEFAULT_SHELL:dash:/home/linuxbrew/.linuxbrew/bin/dash:/home/linuxbrew/.linuxbrew/bin",
+    "printf 'HOMEBREW_DEFAULT_SHELL:%s:%s:%s\\n' \"$0\" \"$(command -v \"$0\")\" \"${PATH%%:*}\"",
+    `HOMEBREW_DEFAULT_SHELL:${shellArgv0}:${shellPath}:/home/linuxbrew/.linuxbrew/bin`,
     120_000,
   );
 
