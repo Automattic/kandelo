@@ -2742,6 +2742,9 @@ def check_publisher(workflow)
   bottle_inspector_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-inspect-bottle.sh")
   )
+  formula_digest_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-oci-layout.sh")
+  )
   fingerprint_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-sysroot-fingerprint.sh"))
   merge_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-merge-bottle-json.sh"))
   check_sidecar_sysroot_binding(verifier_source, fingerprint_source)
@@ -2757,7 +2760,12 @@ def check_publisher(workflow)
         formula_digest_source.include?(
           'return nil if selected.bottle_range.nil? || !receipt.bottle_range.nil?'
         ) &&
-        formula_digest_source.include?('source_identity_without_bottle(selected) == receipt.source'),
+        formula_digest_source.include?('removal_end = selected.bottle_range.end') &&
+        formula_digest_source.include?('lines[removal_end + 1] == "\\n"') &&
+        formula_digest_source.include?(
+          'lines.slice!(selected.bottle_range.begin..removal_end)'
+        ) &&
+        formula_digest_source.include?('lines.join == receipt.source'),
         "sidecar generator does not enforce one-way canonical Formula receipt normalization")
   [
     "SELECTED_WASM32_BOTTLE_FORMULA",
@@ -2767,6 +2775,16 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(bottle_inspector_test.include?(fragment),
           "Formula receipt normalization regression coverage lacks #{fragment}")
+  end
+  [
+    "mid-class-archived.rb",
+    "mid-class-selected.rb",
+    "mid-class-extra-blank.rb",
+    "Formula receipt rejected Homebrew's canonical mid-class bottle-block removal",
+    "Formula receipt ignored non-Homebrew whitespace after a mid-class bottle block",
+  ].each do |fragment|
+    check(formula_digest_test.include?(fragment),
+          "Formula identity regression coverage lacks #{fragment}")
   end
   [verifier_source, merge_source].each do |source|
     check(!source.include?("HOMEBREW_BREW_FILE") &&

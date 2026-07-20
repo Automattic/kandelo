@@ -204,6 +204,52 @@ printf 'class Hello < Formula\n  desc "fixture"\n\nend\n' \
   >"$TMP_ROOT/source-identity/one-blank.rb"
 printf 'class Hello < Formula\n  desc "fixture"\n\n\nend\n' \
   >"$TMP_ROOT/source-identity/two-blanks.rb"
+cat >"$TMP_ROOT/source-identity/mid-class-archived.rb" <<'RUBY'
+class Hello < Formula
+  desc "fixture"
+
+  depends_on "zlib"
+
+  def install
+    bin.install "hello"
+  end
+end
+RUBY
+cat >"$TMP_ROOT/source-identity/mid-class-selected.rb" <<'RUBY'
+class Hello < Formula
+  desc "fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    rebuild 1
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "0000000000000000000000000000000000000000000000000000000000000000"
+  end
+
+  depends_on "zlib"
+
+  def install
+    bin.install "hello"
+  end
+end
+RUBY
+cat >"$TMP_ROOT/source-identity/mid-class-extra-blank.rb" <<'RUBY'
+class Hello < Formula
+  desc "fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    rebuild 1
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "0000000000000000000000000000000000000000000000000000000000000000"
+  end
+
+
+  depends_on "zlib"
+
+  def install
+    bin.install "hello"
+  end
+end
+RUBY
 identity_no_blank="$(ruby "$SOURCE_IDENTITY_TOOL" --identity-excluding-bottle \
   "$TMP_ROOT/source-identity/no-blank.rb")"
 identity_one_blank="$(ruby "$SOURCE_IDENTITY_TOOL" --identity-excluding-bottle \
@@ -218,6 +264,32 @@ identity_two_blanks="$(ruby "$SOURCE_IDENTITY_TOOL" --identity-excluding-bottle 
   echo "Formula identity ignored provenance-bearing extra whitespace" >&2
   exit 1
 }
+identity_mid_class_archived="$(ruby "$SOURCE_IDENTITY_TOOL" --identity-excluding-bottle \
+  "$TMP_ROOT/source-identity/mid-class-archived.rb")"
+identity_mid_class_selected="$(ruby "$SOURCE_IDENTITY_TOOL" --identity-excluding-bottle \
+  "$TMP_ROOT/source-identity/mid-class-selected.rb")"
+identity_mid_class_extra_blank="$(ruby "$SOURCE_IDENTITY_TOOL" --identity-excluding-bottle \
+  "$TMP_ROOT/source-identity/mid-class-extra-blank.rb")"
+[ "$identity_mid_class_archived" = "$identity_mid_class_selected" ] || {
+  echo "Formula identity changed when Homebrew removed a mid-class bottle block" >&2
+  exit 1
+}
+[ "$identity_mid_class_archived" != "$identity_mid_class_extra_blank" ] || {
+  echo "Formula identity ignored non-composer whitespace after a mid-class bottle block" >&2
+  exit 1
+}
+[ "$(ruby "$SOURCE_IDENTITY_TOOL" --receipt-equivalent \
+  "$TMP_ROOT/source-identity/mid-class-selected.rb" \
+  "$TMP_ROOT/source-identity/mid-class-archived.rb")" = "bottle-block-removed" ] || {
+  echo "Formula receipt rejected Homebrew's canonical mid-class bottle-block removal" >&2
+  exit 1
+}
+if ruby "$SOURCE_IDENTITY_TOOL" --receipt-equivalent \
+  "$TMP_ROOT/source-identity/mid-class-extra-blank.rb" \
+  "$TMP_ROOT/source-identity/mid-class-archived.rb" >/dev/null 2>&1; then
+  echo "Formula receipt ignored non-Homebrew whitespace after a mid-class bottle block" >&2
+  exit 1
+fi
 for source in no-blank two-blanks; do
   ruby "$FORMULA_COMPOSER" \
     "$TMP_ROOT/source-identity/$source.rb" \
