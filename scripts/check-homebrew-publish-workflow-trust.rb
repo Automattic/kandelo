@@ -1837,6 +1837,9 @@ def check_publisher(workflow)
         '[ ! -L "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ]'
       ) &&
       bottle_verifier.include?(
+        "case \"${#source_tap_changes[@]}\" in\n  0) ;;\n  1)"
+      ) &&
+      bottle_verifier.include?(
         '"${source_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE"'
       ) &&
       bottle_verifier.include?('[ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ]') &&
@@ -1845,6 +1848,9 @@ def check_publisher(workflow)
       ) &&
       bottle_verifier.include?(
         '[ ! -L "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ]'
+      ) &&
+      bottle_verifier.include?(
+        "case \"${#selected_tap_changes[@]}\" in\n  0) ;;\n  1)"
       ) &&
       bottle_verifier.include?(
         '"${selected_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE"'
