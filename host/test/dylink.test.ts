@@ -26,9 +26,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 
-function hasCompiler(): boolean {
+function hasCompiler(compiler = "wasm32posix-cc"): boolean {
   try {
-    execFileSync("wasm32posix-cc", ["--version"], { stdio: "ignore" });
+    execFileSync(compiler, ["--version"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -36,13 +36,17 @@ function hasCompiler(): boolean {
 }
 
 /** Build a shared Wasm library from C source. */
-function buildSharedLib(source: string, name: string): Uint8Array {
+function buildSharedLib(
+  source: string,
+  name: string,
+  compiler = "wasm32posix-cc",
+): Uint8Array {
   const dir = join(tmpdir(), "wasm-dylink-test");
   mkdirSync(dir, { recursive: true });
   const srcPath = join(dir, `${name}.c`);
   const soPath = join(dir, `${name}.so`);
   writeFileSync(srcPath, source);
-  execFileSync("wasm32posix-cc",
+  execFileSync(compiler,
     ["-shared", "-fPIC", "-O2", srcPath, "-o", soPath],
     { stdio: "pipe" });
   return new Uint8Array(readFileSync(soPath));
@@ -473,6 +477,110 @@ describe.skipIf(!hasCompiler())("shared library loading", () => {
   });
 });
 
+function hasMemory64Runtime(): boolean {
+  try {
+    new WebAssembly.Memory({
+      initial: 1n,
+      maximum: 2n,
+      shared: true,
+      address: "i64",
+    } as unknown as WebAssembly.MemoryDescriptor);
+    new WebAssembly.Table({
+      initial: 1n,
+      element: "anyfunc",
+      address: "i64",
+    } as unknown as WebAssembly.TableDescriptor);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe.skipIf(!hasCompiler("wasm64posix-cc") || !hasMemory64Runtime())(
+  "memory64 shared library loading",
+  () => {
+    function createLoadOptions(): LoadSharedLibraryOptions {
+      const memory = new WebAssembly.Memory({
+        initial: 1n,
+        maximum: 100n,
+        shared: true,
+        address: "i64",
+      } as unknown as WebAssembly.MemoryDescriptor);
+      const table = new WebAssembly.Table({
+        initial: 1n,
+        element: "anyfunc",
+        address: "i64",
+      } as unknown as WebAssembly.TableDescriptor);
+      return {
+        memory,
+        table,
+        stackPointer: new WebAssembly.Global(
+          { value: "i64", mutable: true },
+          65536n,
+        ),
+        // Force the standalone-linker fallback across a memory64 page boundary.
+        heapPointer: { value: 65535 },
+        globalSymbols: new Map(),
+        got: new Map(),
+        loadedLibraries: new Map(),
+        ptrWidth: 8,
+      };
+    }
+
+    it("uses i64 bases, GOT entries, table indices, and memory growth", () => {
+      const providerBytes = buildSharedLib(
+        `
+        long external_data = 41;
+        long external_function(long value) { return value + 1; }
+        `,
+        "memory64-provider",
+        "wasm64posix-cc",
+      );
+      const consumerBytes = buildSharedLib(
+        `
+        extern long external_data;
+        extern long external_function(long value);
+
+        static long increment(long value) { return value + 1; }
+        static long double_value(long value) { return value * 2; }
+        typedef long (*operation)(long);
+        static operation operations[] = { increment, double_value };
+
+        long read_external(void) { return external_data; }
+        long call_external(void) { return external_function(external_data); }
+        operation external_pointer(void) { return external_function; }
+        long call_local_pointer(unsigned index, long value) {
+          return operations[index & 1](value);
+        }
+        `,
+        "memory64-consumer",
+        "wasm64posix-cc",
+      );
+
+      const options = createLoadOptions();
+      const linker = new DynamicLinker(options);
+      const providerHandle = linker.dlopenSync("libmemory64-provider.so", providerBytes);
+      expect(providerHandle, linker.dlerror() ?? "provider failed without dlerror").toBeGreaterThan(0);
+      const consumerHandle = linker.dlopenSync("libmemory64-consumer.so", consumerBytes);
+      expect(consumerHandle, linker.dlerror() ?? "consumer failed without dlerror").toBeGreaterThan(0);
+
+      const consumer = options.loadedLibraries.get("libmemory64-consumer.so");
+      expect(consumer).toBeDefined();
+      expect((consumer!.exports.read_external as Function)()).toBe(41n);
+      expect((consumer!.exports.call_external as Function)()).toBe(42n);
+      expect((consumer!.exports.call_local_pointer as Function)(0, 10n)).toBe(11n);
+      expect((consumer!.exports.call_local_pointer as Function)(1, 10n)).toBe(20n);
+      expect((consumer!.exports.external_pointer as Function)()).toBeTypeOf("bigint");
+
+      const symbol = linker.dlsym(consumerHandle, "call_external");
+      expect(symbol).toBeTypeOf("number");
+      expect(symbol).toBeGreaterThan(0);
+      expect(options.memory.buffer.byteLength).toBeGreaterThan(65536);
+      expect((options.table as unknown as { length: bigint }).length).toBeGreaterThan(1n);
+    });
+  },
+);
+
 describe.skipIf(!hasCompiler())("synchronous loading (loadSharedLibrarySync)", () => {
   function createLoadOptions(): LoadSharedLibraryOptions {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
@@ -882,14 +990,13 @@ describe("dylink replay layout and rollback", () => {
   it("restores an i64 TLS-base global for the 64-bit pointer contract", () => {
     const tlsSide = buildDylinkWat(`
       (module
-        (import "env" "memory" (memory 1 100 shared))
-        (import "env" "__memory_base" (global $memory_base i32))
+        (import "env" "memory" (memory i64 1 100 shared))
+        (import "env" "__memory_base" (global $memory_base i64))
         (global $tls_base (export "__tls_base") (mut i64) (i64.const 0))
-        (global (export "__tls_size") i32 (i32.const 4))
-        (global (export "__tls_align") i32 (i32.const 4))
-        (func $init_tls (param $base i32)
+        (global (export "__tls_size") i64 (i64.const 4))
+        (global (export "__tls_align") i64 (i64.const 4))
+        (func $init_tls (param $base i64)
           local.get $base
-          i64.extend_i32_u
           global.set $tls_base
           local.get $base
           i32.const 17
@@ -903,28 +1010,43 @@ describe("dylink replay layout and rollback", () => {
             i32.const 2
             i32.store
             global.get $memory_base
-            i32.const 8
-            i32.add
+            i64.const 8
+            i64.add
             call $init_tls
           end)
         (start $start)
         (func (export "get_tls") (result i32)
           global.get $tls_base
-          i32.wrap_i64
           i32.load)
         (func (export "set_tls") (param $value i32)
           global.get $tls_base
-          i32.wrap_i64
           local.get $value
           i32.store))
-    `, "replay-live-tls-i64", undefined, 0, 16);
-    const parent = createSideForkLoadOptions();
-    parent.ptrWidth = 8;
+    `, "replay-live-tls-i64", undefined, 0, 16, ["--enable-memory64"]);
+    const memory64Options = (): LoadSharedLibraryOptions => ({
+      memory: new WebAssembly.Memory({
+        initial: 1n,
+        maximum: 100n,
+        shared: true,
+        address: "i64",
+      } as unknown as WebAssembly.MemoryDescriptor),
+      table: new WebAssembly.Table({
+        initial: 1n,
+        element: "anyfunc",
+        address: "i64",
+      } as unknown as WebAssembly.TableDescriptor),
+      stackPointer: new WebAssembly.Global({ value: "i64", mutable: true }, 65536n),
+      heapPointer: { value: 1024 },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+      ptrWidth: 8,
+    });
+    const parent = memory64Options();
     const loaded = loadSharedLibrarySync("libtls64.so", tlsSide, parent);
     (loaded.exports.set_tls as Function)(71);
 
-    const child = createSideForkLoadOptions();
-    child.ptrWidth = 8;
+    const child = memory64Options();
     new Uint8Array(child.memory.buffer).set(new Uint8Array(parent.memory.buffer));
     const replayed = loadSharedLibrarySync("libtls64.so", tlsSide, child, {
       memoryBase: loaded.memoryBase,
