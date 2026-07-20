@@ -20,12 +20,12 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "9a7a17e2df77b08649bc6fdc4b54eaa5a28d509484ac958876a6fca9791c5298"
-PUBLISHER_BUILD_DIGEST = "5aff321eb902bb169f203c3e54db399fee85482f015adf12166920ee712df65b"
-PUBLISHER_UPLOAD_DIGEST = "9d6452d17deae0c7c5914ea3eeeee76846f742c48cf7ef24dfd8319ec798a320"
-PUBLISHER_INDEX_DIGEST = "be6a78a2b02f0769d072b09022f0de08afa34c2d2bf5cba8dd13ad1c22e47679"
-PUBLISHER_VERIFY_DIGEST = "d66a39301c3676de788f56d8928f42a208e2db7ffb8e5a79f031d34d8a490d65"
-PUBLISHER_FINALIZE_DIGEST = "ce29dbe810001b5a9ea0a570a739a5e1871d342d7eb6f54d34ebb20e516465a5"
+PUBLISHER_PLAN_DIGEST = "d4ad1ba3a3decdef5a6d32811c2e4eae1f79873b4bdb42cfa9207735c725ace7"
+PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
+PUBLISHER_UPLOAD_DIGEST = "c676e11e5f6b0b43289d9bf72ef1a1df049dbad3f65e7c62441a27860341aacc"
+PUBLISHER_INDEX_DIGEST = "70d0a74c5c2cb7320acfba52be3e7ed874e329a801659d0e665cb2c8d5f08791"
+PUBLISHER_VERIFY_DIGEST = "6bac81ffb6313cb0c1192da1d436fb21693b080aa20e865ee179ae4e0cd1f1a2"
+PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
@@ -794,6 +794,37 @@ def check_publisher(workflow)
     check(dependency_taps_source.include?(fragment),
           "publisher immutable dependency-tap resolver lacks #{fragment}")
   end
+  public_tap_checkout_path = File.join(
+    REPO_ROOT, "scripts/homebrew-checkout-public-tap.sh"
+  )
+  public_tap_checkout_source = File.read(public_tap_checkout_path)
+  check((File.stat(public_tap_checkout_path).mode & 0o111).positive?,
+        "public dependency-tap checkout helper is not executable")
+  [
+    '[ "$repository" = "kandelo-dev/homebrew-tap-core" ]',
+    '[[ "$commit" =~ ^[0-9a-f]{40}$ ]]',
+    'destination must be an immediate child of GITHUB_WORKSPACE/dependency-taps',
+    'dependency-taps path is not owned by the runner user',
+    'dependency-taps path must have mode 0700',
+    '/usr/bin/env -i',
+    'GIT_CONFIG_NOSYSTEM=1',
+    'GIT_CONFIG_GLOBAL=/dev/null',
+    'GIT_TERMINAL_PROMPT=0',
+    '-c credential.helper=',
+    '-c core.askPass=',
+    '-c http.https://github.com/.extraheader=',
+    'fetch \\',
+    '--no-tags --no-recurse-submodules --depth=1 origin "$commit"',
+    '[ "$fetched_commit" = "$commit" ]',
+    '[ "$head_commit" = "$commit" ]',
+    'status --porcelain=v1 --untracked-files=all',
+  ].each do |fragment|
+    check(public_tap_checkout_source.include?(fragment),
+          "public dependency-tap checkout helper lacks #{fragment}")
+  end
+  publisher_source = File.read(PUBLISHER_PATH)
+  check(publisher_source.lines.none? { |line| line.match?(/^\s+token: ""\s*$/) },
+        "publisher still uses an empty actions/checkout token")
   check(plan["outputs"] == {
     "matrix" => "${{ steps.matrix.outputs.matrix }}",
     "formula-matrix" => "${{ steps.matrix.outputs.formula-matrix }}",
@@ -806,7 +837,7 @@ def check_publisher(workflow)
   }, "publisher plan outputs changed")
 
   expected_uses = [
-    *Array.new(29, CHECKOUT_ACTION),
+    *Array.new(21, CHECKOUT_ACTION),
     *Array.new(5, NIX_ACTION),
     *Array.new(2, MAGIC_NIX_ACTION),
     *Array.new(7, UPLOAD_ACTION),
@@ -820,15 +851,22 @@ def check_publisher(workflow)
       { "name" => step["name"], "if" => step["if"], "with" => step["with"] }
     end
   end
-  core_checkout = lambda do |name, condition, ref, path|
-    {
-      "name" => name, "if" => condition,
-      "with" => {
-        "persist-credentials" => false, "token" => "",
-        "repository" => "kandelo-dev/homebrew-tap-core",
-        "ref" => ref, "path" => path,
-      },
-    }
+  public_core_checkout = lambda do |steps, name, condition, ref, path, source_root|
+    step = named_step(steps, name)
+    slash = "\\"
+    expected_run = [
+      "/usr/bin/bash #{source_root}/scripts/homebrew-checkout-public-tap.sh #{slash}",
+      "  kandelo-dev/homebrew-tap-core \"$CORE_TAP_SHA\" #{slash}",
+      "  \"$GITHUB_WORKSPACE/#{path}\"",
+      "",
+    ].join("\n")
+    check(step == {
+      "name" => name,
+      "if" => condition,
+      "shell" => "bash",
+      "env" => { "CORE_TAP_SHA" => ref },
+      "run" => expected_run,
+    }, "publisher public core checkout #{name.inspect} changed")
   end
   check(checkout_view.call(plan_steps) == [
     {
@@ -848,11 +886,6 @@ def check_publisher(workflow)
         "ref" => "${{ steps.trust.outputs.tap-ref }}", "path" => "tap",
       },
     },
-    core_checkout.call(
-      "Checkout exact public core dependency tap",
-      "${{ steps.dependency-taps.outputs.core-tap-sha != '' }}",
-      "${{ steps.dependency-taps.outputs.core-tap-sha }}", "dependency-taps/core"
-    ),
   ], "publisher plan checkout wiring changed")
   check(checkout_view.call(build_steps) == [
     {
@@ -872,11 +905,6 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
       },
     },
-    core_checkout.call(
-      "Checkout exact public core dependency tap for build",
-      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
-      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
-    ),
     {
       "name" => "Checkout reviewed Homebrew implementation", "if" => nil,
       "with" => {
@@ -901,12 +929,6 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-reviewed",
       },
     },
-    core_checkout.call(
-      "Checkout exact post-build core dependency tap source",
-      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
-      "${{ needs.plan.outputs.core-dependency-tap-sha }}",
-      "dependency-taps/core-reviewed"
-    ),
   ], "publisher build checkout wiring changed")
   check(checkout_view.call(upload_steps) == [
     {
@@ -926,11 +948,6 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
       },
     },
-    core_checkout.call(
-      "Checkout exact public core dependency tap for upload validation",
-      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
-      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
-    ),
   ], "publisher uploader checkout wiring changed")
   check(checkout_view.call(index_steps) == [
     {
@@ -950,11 +967,6 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
       },
     },
-    core_checkout.call(
-      "Checkout exact public core dependency tap for index validation",
-      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
-      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
-    ),
   ], "publisher version-index checkout wiring changed")
   check(checkout_view.call(verify_steps) == [
     {
@@ -983,11 +995,6 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
       },
     },
-    core_checkout.call(
-      "Checkout exact public core dependency tap for verification",
-      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
-      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
-    ),
     {
       "name" => "Checkout reviewed Homebrew implementation for bottle verification", "if" => nil,
       "with" => {
@@ -1012,12 +1019,6 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-postverify",
       },
     },
-    core_checkout.call(
-      "Checkout exact post-verification core dependency tap source",
-      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
-      "${{ needs.plan.outputs.core-dependency-tap-sha }}",
-      "dependency-taps/core-postverify"
-    ),
   ], "publisher verifier checkout wiring changed")
 
   failure_condition = "${{ always() && (steps.publish-handoff.outcome != 'success' || " \
@@ -1040,11 +1041,6 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-base",
       },
     },
-    core_checkout.call(
-      "Checkout exact public core dependency tap for finalization",
-      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
-      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
-    ),
     {
       "name" => "Checkout tap publication branch after payload validation",
       "if" => "${{ steps.validate-payload.outcome == 'success' }}",
@@ -1061,6 +1057,71 @@ def check_publisher(workflow)
       },
     },
   ], "publisher finalizer checkout wiring changed")
+
+  public_core_checkout.call(
+    plan_steps,
+    "Checkout exact public core dependency tap",
+    "${{ steps.dependency-taps.outputs.core-tap-sha != '' }}",
+    "${{ steps.dependency-taps.outputs.core-tap-sha }}",
+    "dependency-taps/core",
+    "kandelo"
+  )
+  public_core_checkout.call(
+    build_steps,
+    "Checkout exact public core dependency tap for build",
+    "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+    "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+    "dependency-taps/core",
+    "kandelo"
+  )
+  public_core_checkout.call(
+    build_steps,
+    "Checkout exact post-build core dependency tap source",
+    "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+    "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+    "dependency-taps/core-reviewed",
+    "kandelo-postbuild"
+  )
+  public_core_checkout.call(
+    upload_steps,
+    "Checkout exact public core dependency tap for upload validation",
+    "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+    "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+    "dependency-taps/core",
+    "kandelo"
+  )
+  public_core_checkout.call(
+    index_steps,
+    "Checkout exact public core dependency tap for index validation",
+    "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+    "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+    "dependency-taps/core",
+    "kandelo"
+  )
+  public_core_checkout.call(
+    verify_steps,
+    "Checkout exact public core dependency tap for verification",
+    "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+    "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+    "dependency-taps/core",
+    "kandelo"
+  )
+  public_core_checkout.call(
+    verify_steps,
+    "Checkout exact post-verification core dependency tap source",
+    "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+    "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+    "dependency-taps/core-postverify",
+    "kandelo-postverify"
+  )
+  public_core_checkout.call(
+    finalize_steps,
+    "Checkout exact public core dependency tap for finalization",
+    "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+    "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+    "dependency-taps/core",
+    "kandelo"
+  )
 
   credential_names = %w[
     GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN
@@ -2778,7 +2839,7 @@ def check_publisher(workflow)
     '--expected-sha256 "$BOTTLE_SHA256"', '--expected-root-url "$BOTTLE_ROOT_URL"',
     'merged_tap="$RUNNER_TEMP/homebrew-merged-tap"',
     'cp -a "$GITHUB_WORKSPACE/tap" "$merged_tap"',
-    '[ "$changed" = "Formula/$FORMULA.rb" ]',
+    '""|"Formula/$FORMULA.rb") ;;',
     'bottle merge modified the archived source tap',
   ].each do |fragment|
     check(merge_run.include?(fragment), "publisher canonical bottle merge lacks #{fragment}")
