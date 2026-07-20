@@ -422,7 +422,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Demo | Image | Build command | What's inside |
 |------|-------|--------------|---------------|
 | Python | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
-| Erlang | `erlang.vfs.zst` | `bash images/vfs/scripts/build-erlang-vfs-image.sh` | OTP runtime |
+| Erlang | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `bash images/vfs/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |

@@ -3,8 +3,8 @@ inputs = [
   "packages/registry/cpython/build-cpython.sh",
   "packages/registry/cpython/config.site-wasm32-posix",
 ]
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
 revision    = 2
 
 [binary]

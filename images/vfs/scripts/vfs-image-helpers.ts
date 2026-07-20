@@ -102,7 +102,6 @@ export function walkAndWrite(
 export interface SaveImageOptions {
   metadata?: VfsImageMetadata;
   kernelAbi?: number;
-  normalizeTimestampsMs?: number;
   skipWasmArtifactCheck?: boolean;
   /** Normalize all serialized inode times for reproducible product images. */
   normalizeTimestampsMs?: number;
