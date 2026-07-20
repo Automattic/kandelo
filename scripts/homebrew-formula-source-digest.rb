@@ -139,13 +139,24 @@ def receipt_match_kind(selected, receipt)
   return "exact" if selected.source == receipt.source
   return nil if selected.bottle_range.nil? || !receipt.bottle_range.nil?
 
-  if source_identity_without_bottle(selected) == receipt.source
+  lines = selected.lines.dup
+  removal_end = selected.bottle_range.end
+  removal_end += 1 if lines[removal_end + 1] == "\n"
+  lines.slice!(selected.bottle_range.begin..removal_end)
+  if lines.join == receipt.source
     "bottle-block-removed"
   end
 end
 
 def source_identity_without_bottle(parsed)
+  bottle_range = parsed.bottle_range
   lines = source_without_bottle(parsed).lines
+  if bottle_range && lines[bottle_range.begin] == "\n"
+    # The composer owns exactly one separator after its bottle block. Remove
+    # that separator at the former insertion point while retaining every
+    # other whitespace byte as provenance-bearing Formula source.
+    lines.delete_at(bottle_range.begin)
+  end
   method_name = nil
   method_name = lambda do |node|
     next nil unless node.is_a?(Array)
@@ -207,12 +218,6 @@ def source_identity_without_bottle(parsed)
   class_end = candidates.fetch(0)
   blank_start = class_end
   blank_start -= 1 while blank_start.positive? && lines[blank_start - 1] == "\n"
-  if parsed.bottle_range && blank_start < class_end
-    # The composer always owns one blank after its bottle block. Removing only
-    # that separator preserves every additional provenance-bearing blank.
-    lines.delete_at(class_end - 1)
-    class_end -= 1
-  end
   lines.insert(class_end, "\n") if blank_start == class_end
   lines.join
 end
