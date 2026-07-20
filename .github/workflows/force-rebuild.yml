@@ -258,7 +258,7 @@ jobs:
 
             existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
             echo "existing-assets:"
-            echo "$existing_assets" | jq -r ".[]" | head -20
+            echo "$existing_assets" | jq -r ".[0:20][]"
             echo "..."
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
