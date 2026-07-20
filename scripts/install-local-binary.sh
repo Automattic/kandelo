@@ -42,6 +42,9 @@
 # Arch is taken from $WASM_POSIX_DEP_TARGET_ARCH (set by the resolver
 # while running build scripts) and falls back to "wasm32" for direct
 # build-script invocations like `bash packages/registry/dash/build-dash.sh`.
+# Sealed callers that only consume $WASM_POSIX_DEP_OUT_DIR can set
+# WASM_POSIX_INSTALL_LOCAL_MIRROR=0 to retain all writes in caller-owned
+# scratch space while preserving the normal artifact guards below.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wasm-artifact-guards.sh"
 
@@ -76,6 +79,20 @@ install_local_binary() {
     src_basename="$(basename "$src")"
     local host_target
     host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+    local install_local_mirror="${WASM_POSIX_INSTALL_LOCAL_MIRROR:-1}"
+    case "$install_local_mirror" in
+        0)
+            if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+                echo "install_local_binary: WASM_POSIX_INSTALL_LOCAL_MIRROR=0 requires WASM_POSIX_DEP_OUT_DIR" >&2
+                return 2
+            fi
+            ;;
+        1) ;;
+        *)
+            echo "install_local_binary: unsupported WASM_POSIX_INSTALL_LOCAL_MIRROR='$install_local_mirror' (expected 0 or 1)" >&2
+            return 2
+            ;;
+    esac
 
     if ! wasm_require_no_legacy_asyncify "$src"; then
         return 1
@@ -119,48 +136,50 @@ install_local_binary() {
             ;;
     esac
 
-    # Take everything from the FIRST dot in the source basename onward
-    # so compound extensions like `.vfs.zst` round-trip intact (matches
-    # the resolver's `place_binaries_symlinks` extension handling).
-    local src_ext=""
-    case "$src_basename" in
-        *.*) src_ext=".${src_basename#*.}" ;;
-    esac
+    if [ "$install_local_mirror" = "1" ]; then
+        # Take everything from the FIRST dot in the source basename onward
+        # so compound extensions like `.vfs.zst` round-trip intact (matches
+        # the resolver's `place_binaries_symlinks` extension handling).
+        local src_ext=""
+        case "$src_basename" in
+            *.*) src_ext=".${src_basename#*.}" ;;
+        esac
 
-    # Ask xtask for the package.toml-driven destination relative path.
-    # On hit, that's the canonical location matching the resolver's
-    # symlink layout (tools/xtask/src/build_deps.rs `place_binaries_symlinks`).
-    # On miss (package not in the registry, e.g. the dash→sh alias
-    # call site, or no [[outputs]] entry for this basename) fall back
-    # to the legacy heuristic so existing build scripts keep working.
-    local rel=""
-    if [ -n "$host_target" ]; then
-        rel="$(cd "$repo_root" && \
-            env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
-            cargo run -p xtask --target "$host_target" --quiet -- \
-                build-deps output-path "$program" "$src_basename" 2>/dev/null || true)"
+        # Ask xtask for the package.toml-driven destination relative path.
+        # On hit, that's the canonical location matching the resolver's
+        # symlink layout (tools/xtask/src/build_deps.rs `place_binaries_symlinks`).
+        # On miss (package not in the registry, e.g. the dash→sh alias
+        # call site, or no [[outputs]] entry for this basename) fall back
+        # to the legacy heuristic so existing build scripts keep working.
+        local rel=""
+        if [ -n "$host_target" ]; then
+            rel="$(cd "$repo_root" && \
+                env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+                cargo run -p xtask --target "$host_target" --quiet -- \
+                    build-deps output-path "$program" "$src_basename" 2>/dev/null || true)"
+        fi
+
+        local dest
+        if [ -n "$rel" ]; then
+            dest="$repo_root/local-binaries/programs/$arch/$rel"
+        elif [ -n "$legacy_dest_name" ]; then
+            # Legacy multi-binary subdir layout. Used to be the only way to
+            # express "this program produces multiple wasms"; package.toml's
+            # [[outputs]] now does that explicitly. Reachable today only
+            # for callers whose program name isn't in the registry.
+            dest="$repo_root/local-binaries/programs/$arch/$program/$legacy_dest_name"
+        else
+            # Legacy single-binary fallback. Used by aliasing call sites
+            # like `install_local_binary sh "$BIN_DIR/dash.wasm"` where
+            # the "program" is a name registered nowhere. Uses the full
+            # compound extension so `.vfs.zst` round-trips intact.
+            dest="$repo_root/local-binaries/programs/$arch/$program$src_ext"
+        fi
+
+        mkdir -p "$(dirname "$dest")"
+        cp "$src" "$dest"
+        echo "  installed $dest"
     fi
-
-    local dest
-    if [ -n "$rel" ]; then
-        dest="$repo_root/local-binaries/programs/$arch/$rel"
-    elif [ -n "$legacy_dest_name" ]; then
-        # Legacy multi-binary subdir layout. Used to be the only way to
-        # express "this program produces multiple wasms"; package.toml's
-        # [[outputs]] now does that explicitly. Reachable today only
-        # for callers whose program name isn't in the registry.
-        dest="$repo_root/local-binaries/programs/$arch/$program/$legacy_dest_name"
-    else
-        # Legacy single-binary fallback. Used by aliasing call sites
-        # like `install_local_binary sh "$BIN_DIR/dash.wasm"` where
-        # the "program" is a name registered nowhere. Uses the full
-        # compound extension so `.vfs.zst` round-trips intact.
-        dest="$repo_root/local-binaries/programs/$arch/$program$src_ext"
-    fi
-
-    mkdir -p "$(dirname "$dest")"
-    cp "$src" "$dest"
-    echo "  installed $dest"
 
     # When invoked under the package-system resolver (`xtask build-deps
     # resolve`, `xtask archive-stage`), WASM_POSIX_DEP_OUT_DIR points at
