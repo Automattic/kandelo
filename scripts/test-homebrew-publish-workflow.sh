@@ -438,7 +438,6 @@ assert_generator_validates_homebrew_commit_as_data() {
 
   if PATH="$(dirname "$nix_bin"):$PATH" \
     HOMEBREW_BREW_COMMIT="not-a-commit" \
-    KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
     KANDELO_HOMEBREW_TAP_ROOT="$tap" \
     KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$tap" \
     KANDELO_HOMEBREW_SIDECAR_ROOT="$sidecars" \
@@ -458,6 +457,7 @@ assert_generator_validates_homebrew_commit_as_data() {
     KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
     bash "$REPO_ROOT/scripts/dev-shell.sh" \
       env \
+        KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved_taps" \
         KANDELO_HOMEBREW_TAP_NAME="kandelo-dev/tap-core" \
         KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
       bash -c '

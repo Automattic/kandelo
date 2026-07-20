@@ -862,7 +862,9 @@ jobs:
           trap restore_workflow_commands_on_exit EXIT
           workflow_commands_stopped=1
           printf '::stop-commands::%s\n' "$workflow_command_token"
-          bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh \
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-bottle-build.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
@@ -1007,7 +1009,9 @@ jobs:
             echo "::error::formula execution modified reviewed Homebrew tracked files"; exit 2;
           }
           cd "$GITHUB_WORKSPACE/kandelo-postbuild"
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-formula-source-closure.sh \
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-formula-source-closure.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
             --tap-repository "$TAP_REPOSITORY" \
             --tap-name "$TAP_NAME" \
@@ -1031,7 +1035,9 @@ jobs:
           cd "$GITHUB_WORKSPACE/kandelo-postbuild"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-bottle/build.env"
-          bash scripts/dev-shell.sh bash scripts/homebrew-create-build-handoff.sh \
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-create-build-handoff.sh \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
             --arch "$KANDELO_HOMEBREW_ARCH" \
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG" \
@@ -1103,7 +1109,9 @@ jobs:
             --out-env "$validated/build.env"
             --out-bottle-json "$validated/bottle.json"
           )
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-build-handoff.sh \
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-build-handoff.sh \
             "${validation_args[@]}"
           # shellcheck disable=SC1091
           . "$validated/build.env"
@@ -1278,7 +1286,9 @@ jobs:
             --forbidden-root "/home/kandelo-homebrew-build"
             --out-env "$RUNNER_TEMP/homebrew-validated-build.env"
           )
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-validated-build.env"
           bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py validate-child \
@@ -1896,7 +1906,9 @@ jobs:
             --out-env "$RUNNER_TEMP/homebrew-verified-input/build.env"
             --out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"
           )
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
 
       - name: Create local dry-run upload receipt
         if: ${{ inputs.dry-run && steps.build-handoff.outcome == 'success' && steps.oci-child.outcome == 'success' }}
@@ -2386,7 +2398,9 @@ jobs:
           trap restore_workflow_commands_on_exit EXIT
           workflow_commands_stopped=1
           printf '::stop-commands::%s\n' "$workflow_command_token"
-          bash scripts/dev-shell.sh bash scripts/homebrew-verify-poured-bottle.sh \
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-verify-poured-bottle.sh \
             --tap-root "$RUNNER_TEMP/homebrew-merged-tap" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
@@ -2591,6 +2605,7 @@ jobs:
             --arg build_home "/home/kandelo-homebrew-build" \
             '[$github_workspace, $runner_workspace, $runner_temp, $build_home]')"
           bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
             bash scripts/homebrew-generate-sidecars-from-env.sh
@@ -2631,6 +2646,7 @@ jobs:
             --arg build_home "/home/kandelo-homebrew-build" \
             '[$github_workspace, $runner_workspace, $runner_temp, $build_home]')"
           bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
             bash -c '
@@ -2853,8 +2869,28 @@ jobs:
             }
           fi
 
-          base_image="$(bash scripts/resolve-binary.sh programs/rootfs.vfs)"
-          kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"
+          resolver_paths="$acceptance_root/resolved-platform-artifacts.txt"
+          [ ! -e "$resolver_paths" ] && [ ! -L "$resolver_paths" ] || {
+            echo "::error::platform resolver output path already exists"; exit 2;
+          }
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            bash scripts/resolve-binary.sh programs/rootfs.vfs >"$1"
+            bash scripts/resolve-binary.sh kernel.wasm >>"$1"
+          ' bash "$resolver_paths"
+          [ -f "$resolver_paths" ] && [ ! -L "$resolver_paths" ] || {
+            echo "::error::platform resolver output is not a regular file"; exit 2;
+          }
+          resolver_paths_bytes="$(wc -c <"$resolver_paths" | tr -d '[:space:]')"
+          if [ "$resolver_paths_bytes" -le 0 ] || [ "$resolver_paths_bytes" -gt 8192 ]; then
+            echo "::error::platform resolver output exceeds its size contract"; exit 2
+          fi
+          mapfile -t resolved_platform_artifacts <"$resolver_paths"
+          [ "${#resolved_platform_artifacts[@]}" -eq 2 ] || {
+            echo "::error::platform resolver did not return exactly two artifacts"; exit 2;
+          }
+          base_image="${resolved_platform_artifacts[0]}"
+          kernel="${resolved_platform_artifacts[1]}"
           case "$base_image" in
             "$PWD/binaries"/*) ;;
             *) echo "::error::platform base did not resolve from the Kandelo package registry tree"; exit 2 ;;
@@ -3132,7 +3168,9 @@ jobs:
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
             payload_args+=(--allow-dry-run)
           fi
-          bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
 
       - name: Upload validated publication handoff
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -3289,7 +3327,9 @@ jobs:
               --forbidden-root "$RUNNER_TEMP"
               --forbidden-root "/home/kandelo-homebrew-build"
             )
-            bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
+            bash scripts/dev-shell.sh env \
+              KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+              bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
 
           } 2> >(tee "$error_file" >&2)
 
@@ -3334,7 +3374,9 @@ jobs:
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             )
-            bash scripts/dev-shell.sh bash scripts/homebrew-publish-sidecars.sh "${publish_args[@]}"
+            bash scripts/dev-shell.sh env \
+              KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+              bash scripts/homebrew-publish-sidecars.sh "${publish_args[@]}"
           } 2> >(tee -a "$error_file" >&2)
 
       - name: Checkout clean tap for a failed-attempt report
@@ -3378,7 +3420,8 @@ jobs:
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
           )
-          bash scripts/dev-shell.sh bash scripts/homebrew-publish-sidecars.sh "${report_args[@]}"
+          bash scripts/dev-shell.sh env \
+            bash scripts/homebrew-publish-sidecars.sh "${report_args[@]}"
 
       - name: Fail after reporting an unsuccessful matrix entry
         if: ${{ always() && (steps.publish-handoff.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}

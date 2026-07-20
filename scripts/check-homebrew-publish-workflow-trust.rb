@@ -21,11 +21,11 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "9a7a17e2df77b08649bc6fdc4b54eaa5a28d509484ac958876a6fca9791c5298"
-PUBLISHER_BUILD_DIGEST = "7aac7bab60e0373bbb38b584a336f0b481d1350ae207df19773efc2ab6277431"
-PUBLISHER_UPLOAD_DIGEST = "d7dafdc1e7a56cddc31ee31ef150c88219c06a0635c491b0c05310dbd0b13cbb"
+PUBLISHER_BUILD_DIGEST = "5aff321eb902bb169f203c3e54db399fee85482f015adf12166920ee712df65b"
+PUBLISHER_UPLOAD_DIGEST = "9d6452d17deae0c7c5914ea3eeeee76846f742c48cf7ef24dfd8319ec798a320"
 PUBLISHER_INDEX_DIGEST = "be6a78a2b02f0769d072b09022f0de08afa34c2d2bf5cba8dd13ad1c22e47679"
-PUBLISHER_VERIFY_DIGEST = "cfd1d422ac8aaaf1ce7ef016873012758600815faf3158fccc2138280fed70c4"
-PUBLISHER_FINALIZE_DIGEST = "23289a15937635abc5b20272234e73ad47e8c59306ef967dd28ff5b13d9e3cf3"
+PUBLISHER_VERIFY_DIGEST = "d66a39301c3676de788f56d8928f42a208e2db7ffb8e5a79f031d34d8a490d65"
+PUBLISHER_FINALIZE_DIGEST = "ce29dbe810001b5a9ea0a570a739a5e1871d342d7eb6f54d34ebb20e516465a5"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
@@ -1233,7 +1233,7 @@ def check_publisher(workflow)
     check(build_run.include?(fragment), "publisher Formula output boundary lacks #{fragment}")
   end
   stop_commands_index = build_run.index("printf '::stop-commands::%s\\n'")
-  builder_index = build_run.index("bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh")
+  builder_index = build_run.index("bash scripts/homebrew-bottle-build.sh")
   resume_commands_index = build_run.rindex("resume_workflow_commands")
   check(stop_commands_index && builder_index && resume_commands_index &&
         stop_commands_index < builder_index && builder_index < resume_commands_index,
@@ -1299,8 +1299,12 @@ def check_publisher(workflow)
     KANDELO_HOMEBREW_BROWSER_EVIDENCE
   ].all? { |name| dev_shell.include?("--keep #{name}") },
         "dev shell drops exact Homebrew runtime evidence inputs")
-  check(dev_shell.include?("--keep KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"),
-        "dev shell drops the immutable resolved tap map")
+  check(!dev_shell.include?("--keep KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"),
+        "dev shell globally preserves Homebrew resolved-tap state and invalidates package caches")
+  resolved_taps_forwarding =
+    'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
+  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 12,
+        "publisher does not explicitly carry immutable resolved taps across every consuming dev-shell boundary")
   check(!dev_shell.include?("--keep KANDELO_HOMEBREW_TAP_NAME"),
         "dev shell globally preserves caller-selected Homebrew tap identity")
   flake = File.binread(File.join(REPO_ROOT, "flake.nix"))
@@ -2906,6 +2910,7 @@ def check_publisher(workflow)
   end
   sidecar_env_forwarding = [
     'bash scripts/dev-shell.sh env \\',
+    resolved_taps_forwarding,
     'KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \\',
     'KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \\',
   ]
@@ -3030,9 +3035,19 @@ def check_publisher(workflow)
     'default-shell config must contain 1 to 65536 bytes',
     'vfs_args+=(--write-profile --shell-config "$shell_config")',
     'node_args+=(--shell-config "$shell_config")',
-    'base_image="$(bash scripts/resolve-binary.sh programs/rootfs.vfs)"',
+    'resolver_paths="$acceptance_root/resolved-platform-artifacts.txt"',
+    '[ ! -e "$resolver_paths" ] && [ ! -L "$resolver_paths" ]',
+    "bash scripts/dev-shell.sh bash -c '",
+    'bash scripts/resolve-binary.sh programs/rootfs.vfs >"$1"',
+    'bash scripts/resolve-binary.sh kernel.wasm >>"$1"',
+    '[ -f "$resolver_paths" ] && [ ! -L "$resolver_paths" ]',
+    'resolver_paths_bytes="$(wc -c <"$resolver_paths" | tr -d \'[:space:]\')"',
+    '[ "$resolver_paths_bytes" -gt 8192 ]',
+    'mapfile -t resolved_platform_artifacts <"$resolver_paths"',
+    '[ "${#resolved_platform_artifacts[@]}" -eq 2 ]',
+    'base_image="${resolved_platform_artifacts[0]}"',
     'platform base did not resolve from the Kandelo package registry tree',
-    'kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"',
+    'kernel="${resolved_platform_artifacts[1]}"',
     'verification kernel did not resolve from the exact worktree build',
     '--runtime node', '--no-fallback',
     'bash scripts/dev-shell.sh npx tsx',
@@ -4053,6 +4068,25 @@ def self_test(publisher, maintenance, repository_canary)
       )
       step["run"] = step.fetch("run").sub("--no-fallback", "")
     },
+    "dependency-bearing VFS resolver escapes the dev shell" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/dev-shell.sh bash -c '\n  set -euo pipefail\n" \
+          "  bash scripts/resolve-binary.sh programs/rootfs.vfs",
+        "bash -c '\n  set -euo pipefail\n" \
+          "  bash scripts/resolve-binary.sh programs/rootfs.vfs"
+      )
+    },
+    "resolved tap map dropped at a consuming dev-shell boundary" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Build and test Homebrew bottle without publisher credentials"
+      )
+      forwarding =
+        'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
+      step["run"] = step.fetch("run").lines.reject { |line| line.include?(forwarding) }.join
+    },
     "dependency-bearing VFS exact image digest unchecked" => lambda { |w|
       step = mutate_named_step(
         w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
@@ -4081,8 +4115,8 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "finalize-tap",
                                "Validate the complete data-only publication payload")
       step["run"] = step.fetch("run").sub(
-        'bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh',
-        'bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh --allow-dry-run'
+        'bash scripts/homebrew-validate-publish-handoff.sh',
+        'bash scripts/homebrew-validate-publish-handoff.sh --allow-dry-run'
       )
     },
     "credentialed checkout before validation" => lambda { |w|
