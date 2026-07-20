@@ -33,12 +33,12 @@ jobs:
     timeout-minutes: 1440
     steps:
       - name: Checkout package source
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           path: package-source
 
       - name: Checkout Kandelo
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ inputs.kandelo-ref }}
@@ -46,9 +46,17 @@ jobs:
           submodules: false
 
       - name: Install Nix
+        # Keep in sync with .github/actions/setup-nix. This workflow is
+        # workflow_call-only and checks the repo out into a subpath, so the
+        # workspace root has no ./.github/actions to reference.
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
+          extra-conf: |
+            connect-timeout = 10
+            stalled-download-timeout = 90
+            http-connections = 10
+            max-substitution-jobs = 8
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
@@ -68,7 +76,7 @@ jobs:
           git -C kandelo submodule update --init --depth 1 musl
 
       - name: Cache Cargo and Kandelo sysroots
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cargo/registry

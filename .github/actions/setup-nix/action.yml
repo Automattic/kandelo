@@ -1,0 +1,60 @@
+name: Set up Nix
+description: |
+  Install Nix and start the store cache daemon, with substituter settings
+  tuned to survive transient cache.nixos.org failures.
+
+  Every workflow that enters the dev shell goes through here so the
+  substituter contract lives in one place instead of being re-declared at
+  each call site.
+
+  Background: when a NAR download from cache.nixos.org fails, Nix disables
+  that binary cache for 60 seconds. Any store path it could not substitute
+  in that window gets built from source instead -- including stdenv, which
+  means bootstrap-tools, binutils, gcc, and glibc. That turns a five-minute
+  job into a six-hour one. See scripts/dev-shell.sh, which detects the
+  fallback and aborts, and the per-job timeout-minutes that bound it.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      with:
+        github-token: ""
+        # These reduce how often the substituter circuit breaker trips.
+        # They do not prevent the source-build fallback once it has: that
+        # behavior is internal to Nix's HttpBinaryCacheStore and is not
+        # configurable. Note in particular that `fallback` is already
+        # false by default and did NOT stop the fallback -- do not add it
+        # here expecting protection it does not give.
+        #
+        #   connect-timeout          15 -> 10   give up on a dead
+        #                                       connection sooner, so the
+        #                                       retry lands inside
+        #                                       download-attempts (5)
+        #   stalled-download-timeout 300 -> 90  a NAR that has stalled for
+        #                                       90s is not coming back;
+        #                                       retry rather than hang
+        #   http-connections         25 -> 10   fewer concurrent requests
+        #                                       to the CDN, which is what
+        #                                       returns the 5xx that trips
+        #                                       the breaker
+        #   max-substitution-jobs    16 -> 8    same, for substitution
+        #                                       fan-out
+        extra-conf: |
+          connect-timeout = 10
+          stalled-download-timeout = 90
+          http-connections = 10
+          max-substitution-jobs = 8
+
+    # Inert as configured: with both backends off this neither reads nor
+    # writes a cache. Kept as the single seam where a real substituter
+    # (Cachix, FlakeHub) would be wired in. GitHub Actions cache is a poor
+    # fit -- 200 cache-entry uploads/min/repo and a 10 GB LRU quota shared
+    # with the cargo caches -- and its read-side throttle degrades by
+    # building from source, i.e. straight back into the bug above.
+    - name: Cache Nix store + flake eval
+      uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+      with:
+        use-gha-cache: false
+        use-flakehub: false

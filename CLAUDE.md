@@ -272,6 +272,15 @@ commands should run from repo-declared tools, not undeclared host state. Use
 `scripts/dev-shell.sh` for build and verification claims; direnv is acceptable
 as a local interactive convenience, but it is not the verification contract.
 
+CI runs only reviewed code. Every third-party action in `.github/` is pinned to
+a full 40-character commit SHA with the version in a trailing comment
+(`uses: actions/checkout@9c091bb… # v7.0.0`). Never introduce or restore a tag
+or branch ref (`@v4`, `@v7.0.0`, `@master`): those re-resolve on every run, so
+whoever can move the ref can change what executes in a job holding
+`GITHUB_TOKEN` and repository secrets. Same-repo `./.github/...` references are
+the sole exception; they resolve to the running commit. Dependabot keeps the
+pins current.
+
 `bash build.sh` does not rebuild musl. After editing `libc/musl-overlay/` or
 `libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
 `build.sh`, Vitest, or conformance tests.

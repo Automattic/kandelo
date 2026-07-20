@@ -14,16 +14,8 @@ runs:
       with:
         submodules: libc/musl
 
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-      with:
-        github-token: ""
-
-    - name: Cache Nix store + flake eval
-      uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-      with:
-        use-gha-cache: false
-        use-flakehub: false
+    - name: Set up Nix
+      uses: ./.github/actions/setup-nix
 
     - name: Check libcxx LLVM version
       shell: bash
@@ -40,7 +32,7 @@ runs:
         echo "toolchain-cache key: $KEY"
 
     - name: Cache musl sysroot + libc++
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       id: cache
       with:
         path: |
@@ -82,7 +74,7 @@ runs:
           sysroot sysroot64 tools/bin/wasm-fork-instrument
 
     - name: Upload toolchain sysroots artifact
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: toolchain-sysroots
         path: ${{ runner.temp }}/toolchain-sysroots.tar.zst

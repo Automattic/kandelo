@@ -151,9 +151,16 @@ nix_develop=(
     --keep KANDELO_HOMEBREW_GALLERY_ROOT \
     --keep KANDELO_HOMEBREW_BROWSER_SMOKE_URL \
     --keep KANDELO_HOMEBREW_BROWSER_SMOKE_COMMAND \
-    --accept-flake-config \
-    --command "${dev_command[@]}"
+    --accept-flake-config
 )
+
+# Realizing the shell closure is split out from running the user's command
+# so the source-bootstrap watchdog below only ever inspects Nix's own
+# substitution output. Once `--command "${dev_command[@]}"` is running,
+# arbitrary build output shares the same stream and would produce false
+# positives. `true` needs no PATH repair, so the warm phase deliberately
+# does not go through `dev_command`.
+warm=("${nix_develop[@]}" --command true)
 
 is_transient_nix_fetch_failure() {
     local log_file="$1"
@@ -164,30 +171,103 @@ is_transient_nix_fetch_failure() {
         grep -Eq 'HTTP error 5[0-9][0-9]|This page is taking too long to load|Bad Gateway|Service Unavailable' "$log_file"
 }
 
+is_substituter_failure() {
+    local log_file="$1"
+
+    grep -Eq "disabling binary cache 'https?://[^']+'" "$log_file" ||
+        grep -q 'there is no substituter that can build it' "$log_file"
+}
+
+# When a NAR download fails, Nix disables that binary cache for 60 seconds
+# (hardcoded in HttpBinaryCacheStore; not a nix.conf setting). Store paths
+# it cannot substitute during that window are then built from source. For
+# this flake that means bootstrapping stdenv: bootstrap-tools, binutils,
+# gcc, glibc. It never fails -- it just runs for hours. Observed on
+# Automattic/kandelo run 29001115976, where one matrix job burned 5h52m
+# before hitting the GitHub job ceiling.
+#
+# None of this is a Kandelo toolchain input. Any of these names appearing
+# after `building '` means the substituters are unhealthy, not that we have
+# work to do, so abort and retry against a recovered cache rather than
+# proving the point over six hours.
+#
+# Set WASM_POSIX_ALLOW_SOURCE_BOOTSTRAP=1 to opt out (e.g. deliberately
+# bootstrapping on a system cache.nixos.org does not serve).
+source_bootstrap_re="building '/nix/store/[^']*-(bootstrap-tools|stdenv-(linux|darwin)|glibc-[0-9]|gcc-[0-9]|binutils-[0-9])"
+
+watch_for_source_bootstrap() {
+    local log_file="$1" nix_pid="$2" flag_file="$3"
+
+    while kill -0 "$nix_pid" 2>/dev/null; do
+        if grep -Eq "$source_bootstrap_re" "$log_file" 2>/dev/null; then
+            : >"$flag_file"
+            echo "dev-shell.sh: nix is rebuilding the toolchain from source; the binary cache is unhealthy. Aborting." >&2
+            # The client owns the build; killing it makes nix-daemon drop
+            # the work. A fresh connection also gets a fresh cache state,
+            # which is what clears the 60s disable.
+            pkill -TERM -P "$nix_pid" 2>/dev/null || true
+            kill -TERM "$nix_pid" 2>/dev/null || true
+            return 0
+        fi
+        sleep 2
+    done
+}
+
 attempt=1
 max_attempts="${WASM_POSIX_DEV_SHELL_ATTEMPTS:-3}"
-delay=5
 
 while true; do
     log_file="$(mktemp)"
+    flag_file="$(mktemp -u)"
+    watchdog_pid=""
+
     set +e
-    "${nix_develop[@]}" 2>&1 | tee "$log_file"
-    rc="${PIPESTATUS[0]}"
+    "${warm[@]}" > >(tee "$log_file") 2>&1 &
+    nix_pid=$!
+    if [ -z "${WASM_POSIX_ALLOW_SOURCE_BOOTSTRAP:-}" ]; then
+        watch_for_source_bootstrap "$log_file" "$nix_pid" "$flag_file" &
+        watchdog_pid=$!
+    fi
+    wait "$nix_pid"
+    rc=$?
     set -e
 
-    if [ "$rc" -eq 0 ]; then
-        rm -f "$log_file"
-        exit 0
+    if [ -n "$watchdog_pid" ]; then
+        kill "$watchdog_pid" 2>/dev/null || true
+        wait "$watchdog_pid" 2>/dev/null || true
     fi
 
-    if [ "$attempt" -ge "$max_attempts" ] || ! is_transient_nix_fetch_failure "$log_file"; then
-        rm -f "$log_file"
+    if [ -e "$flag_file" ]; then
+        reason="binary cache unhealthy (nix fell back to building the toolchain from source)"
+        # Long enough for Nix's 60s cache disable to lapse. A shorter
+        # sleep just re-enters the same disabled-cache window.
+        delay=$((90 * attempt))
+    elif [ "$rc" -eq 0 ]; then
+        rm -f "$log_file" "$flag_file"
+        break
+    elif is_substituter_failure "$log_file"; then
+        reason="binary cache unhealthy (substitution failed)"
+        delay=$((90 * attempt))
+    elif is_transient_nix_fetch_failure "$log_file"; then
+        reason="transient GitHub flake fetch failure"
+        delay=$((5 * attempt))
+    else
+        rm -f "$log_file" "$flag_file"
         exit "$rc"
     fi
 
-    echo "dev-shell.sh: transient GitHub flake fetch failure; retrying nix develop in ${delay}s (attempt ${attempt}/${max_attempts})." >&2
-    rm -f "$log_file"
+    rm -f "$log_file" "$flag_file"
+
+    if [ "$attempt" -ge "$max_attempts" ]; then
+        echo "dev-shell.sh: ${reason}; giving up after ${max_attempts} attempts." >&2
+        exit "${rc:-1}"
+    fi
+
+    echo "dev-shell.sh: ${reason}; retrying nix develop in ${delay}s (attempt ${attempt}/${max_attempts})." >&2
     sleep "$delay"
     attempt=$((attempt + 1))
-    delay=$((delay * 2))
 done
+
+# Closure is realized, so this cannot trip the watchdog. Running it
+# unwrapped also keeps stdout a tty for `dev-shell.sh bash`.
+exec "${nix_develop[@]}" --command "${dev_command[@]}"
