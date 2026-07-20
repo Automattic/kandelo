@@ -413,6 +413,15 @@ LIBS="" \
     erl_xcomp_code_model_small=no \
     2>&1 | tee "$WORK_DIR/configure.log" | tail -50
 
+# Configure owns the target otp.mk consumed by this sub-build, so only now can
+# the source release's removed preloaded modules be regenerated deterministically
+# with the verified host OTP. The opt target writes them to erts/ebin; OTP's
+# copy target strips and installs that exact set into erts/preloaded/ebin, where
+# the target emulator build reads them.
+mkdir -p "$SRC_DIR/erts/preloaded/ebin"
+make -C "$SRC_DIR/erts/preloaded/src" \
+    OVERRIDE_TARGET=wasm32-unknown-wasi opt copy
+
 echo "==> Configure complete. Patching config.h files..."
 
 # Post-configure: fix false positives from --allow-undefined linker
