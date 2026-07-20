@@ -347,11 +347,13 @@ supported. A Homebrew Formula must test the exact keg through `erlexec` in
 both the generic Node and Chromium runners, and the Node proof must require the
 fork descendant rather than accepting output as a proxy for process exit.
 
-`erlang-vfs` consumes `erlang`'s declared runtime archive through the resolver;
-it does not read a recipe-directory install tree or user cache. The VFS image
-copies the complete archive under `/usr/local/lib/erlang`, preserves executable
-modes, includes ABI metadata, and therefore contains the same BEAM and forker
-helper bytes tested by the package and Formula paths.
+The disabled legacy `erlang-vfs` compatibility recipe consumes `erlang`'s
+declared runtime archive through the resolver; it does not read a
+recipe-directory install tree or user cache. Its opt-in VFS image copies the
+complete archive under `/usr/local/lib/erlang`, preserves executable modes,
+and includes ABI metadata. Staging does not publish that image; the Homebrew
+Formula turns the executable and runtime archive into the normal keg and
+bottle distribution unit.
 
 ### `arches`
 

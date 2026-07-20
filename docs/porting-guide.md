@@ -780,8 +780,10 @@ sysroot, zlib prefix, and guest prefix from the package-resolver contract. It
 builds native generators and the target runtime only under the caller-owned
 work root, layers CPython-specific cross probes on `sdk/config.site`, and emits
 `python.wasm` plus the declared non-Wasm `python-runtime.zip`. The
-`python-vfs` package consumes those two artifacts from one resolver dependency
-root; it does not read CPython's source or build directories.
+disabled legacy `python-vfs` compatibility recipe consumes those two artifacts
+from one resolver dependency root; it does not read CPython's source or build
+directories. Staging does not publish that image; the Homebrew Formula turns
+the same closure into the normal keg and bottle distribution unit.
 
 ## SQLite Official Project Tests
 

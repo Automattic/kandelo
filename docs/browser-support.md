@@ -421,8 +421,8 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 
 | Demo | Image | Build command | What's inside |
 |------|-------|--------------|---------------|
-| Python | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
-| Erlang | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
+| Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
+| Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `bash images/vfs/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
@@ -464,9 +464,11 @@ UI instead of silently hiding the rest of the gallery.
 ### Building VFS images
 
 Package-backed image recipes resolve their declared dependencies rather than
-reading another package's source/build side effects. For example,
-`python-vfs` consumes CPython's `python.wasm` and `python-runtime.zip` closure.
-The `run.sh` script orchestrates resolver builds:
+reading another package's source/build side effects. The disabled legacy
+`python-vfs` recipe, for example, consumes CPython's `python.wasm` and
+`python-runtime.zip` closure. These compatibility recipes are excluded from
+staging and are not the Homebrew distribution unit. The `run.sh` script
+orchestrates explicit resolver builds:
 
 ```bash
 ./run.sh build python-vfs    # Build Python VFS image
