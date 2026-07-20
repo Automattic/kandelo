@@ -76,9 +76,10 @@ This is a dated checkpoint, not a substitute for inspecting live tap
 | Capability | State on 2026-07-20 |
 |---|---|
 | First-party repository and public package path | Proved. Production state is in `kandelo-dev/homebrew-tap-core`; repository-rooted public packages are created with the caller's built-in `GITHUB_TOKEN`, and anonymous readback gates finalization. `zlib` and `bzip2` are the original controls. |
-| Core Formula rollout | In progress. The current migration wave has finalized `curl` (wasm32 and wasm64), `less`, `nano`, and `texlive` on live tap `main`. `file-formula`, `icu`, and `hello` await the combined browser-input retry. `git` awaits a platform PTY fix, and `ruby` has no finalized bottle. Existing live-tap Formulae outside this wave retain their recorded Node support. |
-| Durable VFS image | Implemented, including immutable release publication and exact Node/Chromium evidence validation. The external M4 canary built and accepted the exact image, but its interrupted draft release exposed the authenticated draft-resume bug now being corrected. No required-acceptance VFS release has completed yet, so there is no current public Homebrew VFS product URL to advertise. |
-| Third-party tap | The external M4 canary has proved public bottle/index publication, anonymous dependency reads, force-pour, tap finalization, and exact Node/Chromium VFS execution from its own conventional tap. Only its immutable VFS release retry remains before this canary is terminal end-to-end third-party acceptance. |
+| Active workflow trust pin | The live first-party publish, dry-run, and maintenance callers, plus `CURRENT_KANDELO_WORKFLOW_SHA`, all pin merged Kandelo commit `f3aad8f124750525365e7019db5abf05ddf14c10`. Later fixes on Kandelo `main` and open PRs are not production authority until the exact merged pin passes the reviewed rotation procedure. |
+| Core Formula rollout | In progress. The current migration wave has finalized `curl` (wasm32 and wasm64), `less`, `nano`, and `texlive` on live tap `main`. `icu` awaits a fresh bounded recovery after the live caller rotates to a merged generation containing the verifier fix in [PR #1018](https://github.com/Automattic/kandelo/pull/1018). `file-formula` and `hello` additionally await the browser-input fixes proposed by open [PR #1019](https://github.com/Automattic/kandelo/pull/1019) and a later merged-pin rotation. Use a fresh dispatch with the unfinished-index recovery rules; do not rerun the old jobs. `git` awaits a platform PTY fix, and `ruby` has no finalized bottle. Existing live-tap Formulae outside this wave retain their recorded Node support. |
+| Durable VFS image | First-pass immutable release publication and exact Node/Chromium evidence validation are implemented. The external M4 canary built and accepted the exact image, but the currently merged publisher cannot rediscover the empty draft left by its interrupted publication. Open [PR #1019](https://github.com/Automattic/kandelo/pull/1019) proposes authenticated draft discovery; that behavior is not shipped or live-pinned. No required-acceptance VFS release has completed yet, so there is no current public Homebrew VFS product URL to advertise. |
+| Third-party tap | The external M4 canary has proved public bottle/index publication, anonymous dependency reads, force-pour, tap finalization, and exact Node/Chromium VFS execution from its own conventional tap. Only reviewed recovery and completion of its immutable VFS release remain before this canary is terminal end-to-end third-party acceptance. The existing draft is failure evidence, not a public product. |
 | Ruby | `Formula/ruby.rb` exists and the live build reached the artifact-safety boundary, but no Ruby sidecar or bottle is finalized. Do not report Ruby as available. |
 | Erlang and CPython | Neither has a finalized live-tap Formula and bottle. Porting work and legacy/local artifacts are not publication evidence. |
 | Guest `brew install` | Not yet validated or supported as a user-facing workflow. Current consumption is through verified, precomposed VFS images. |
@@ -987,6 +988,7 @@ or anonymous readback fails.
 | Child/index upload succeeded, but verification or finalization failed and no live sidecar exists | Public but unfinished registry state may occupy the Formula identity. | Preserve the run, fix the root cause, and use the bounded `force: true` recovery above. Do not rerun jobs or delete the child. |
 | A finalized bottle's bytes or fixed identity must change | The old immutable identity is accepted state, not recoverable scratch. | Commit a new Formula version/revision or the next positive bottle `rebuild`, validate the tap, and dispatch a fresh run. |
 | Node succeeds and Chromium fails | The package may have Node evidence, but the required VFS/browser claim failed. | Fix the real browser/VFS boundary and run the same exact gate again. Do not set `browser_compatible` or publish the VFS release manually. |
+| An immutable VFS publication leaves a draft | Current `main` cannot rediscover an already-interrupted draft because GitHub hides drafts from the release-by-tag endpoint. | Preserve the exact draft and failed run. Do not delete, retarget, or upload assets manually. Open PR #1019 proposes bounded authenticated discovery; after it merges and the caller pin rotates, a fresh dispatch may resume only when the tag, target tap commit, and existing assets still match exactly. |
 | VFS release reports `immutable: false` or the setting was enabled too late | The published object is diagnostic state, not an accepted durable VFS product. | Stop, enable release immutability for future releases, inventory the exact tag/assets, and require explicit operator recovery. Never use `--clobber`. |
 | Candidate pin trust passes and base trust reports only the intended caller/trust-root change | The old base correctly refused to authorize a new publisher generation. | Review the exact merged Kandelo SHA and first changed path, then merge the tap pin through the human trust gate. |
 | A failed rebuild has complete prior success metadata | Last-green state remains the current consumer contract. | Keep the immutable old bottle and use maintenance rollback/failure reporting. Package deletion is not rollback. |
@@ -1853,14 +1855,25 @@ path:
 ```
 
 The release publisher never uses `--clobber`. A content-tag state lock
-serializes writers. An absent release starts as a draft; an interrupted exact
-draft may be completed, while unexpected assets or existing bytes with a
+serializes writers. An absent release starts as a draft, and the creating
+invocation may upload its exact assets and publish it. Existing public releases
+are checked idempotently, while unexpected assets or existing bytes with a
 different digest fail closed. Once public, the release is never mutated. The
 tag must be a direct commit reference to the exact tap source commit, and
 success requires GitHub-enforced release immutability plus anonymous
-digest-and-size readback of all five assets. The run retains a small publication
-receipt with the descriptor and direct-image URLs, but that Actions artifact is
-only a receipt; the release assets are the durable public product.
+digest-and-size readback of all five assets.
+
+Current `main` cannot rediscover a draft after the creating invocation is
+interrupted: GitHub's release-by-tag and Git-ref endpoints do not expose drafts.
+Open PR #1019 proposes authenticated, paginated discovery of one unique matching
+draft by database ID, but that behavior is not shipped until the PR merges and a
+tap caller rotates to its exact merge commit. Preserve an interrupted draft and
+its failed run; do not delete, retarget, or upload assets manually. Even after
+the recovery code is live, resumption is valid only when the content tag, target
+tap commit, and existing asset set still match the new plan exactly. The run
+retains a small publication receipt with the descriptor and direct-image URLs,
+but that Actions artifact is only a receipt; the release assets are the durable
+public product.
 
 This promotion proves only the configured dependency-bearing acceptance image.
 It does not rewrite bottle `browser_compatible` flags and does not create a
@@ -2274,14 +2287,19 @@ not publication evidence: the following live gates remained open at the
 2026-07-20 checkpoint:
 
 - The first-party schema-2 File/Dash image-owned-shell selection still needs a
-  fresh successful write run with `require_vfs_acceptance: true`. It must pass
-  the exact Node command, Chromium command, full browser-machine shell boot,
-  tap finalization, immutable-release publication, and anonymous readback. No
-  public Homebrew VFS release is current until that run succeeds.
+  fresh successful write run with `require_vfs_acceptance: true`. Open PR #1019
+  proposes the complete browser-input preparation needed by that run; it must
+  merge and the live caller must rotate to the exact merge commit before the
+  retry. The run must pass the exact Node command, Chromium command, full
+  browser-machine shell boot, tap finalization, immutable-release publication,
+  and anonymous readback. No public Homebrew VFS release is current until that
+  run succeeds.
 - The external M4 canary has proved its locked core dependency checkout,
-  build, public upload/index, anonymous read, force-pour, and Node execution.
-  Its required browser-evidence capture and finalization still need one fresh
-  successful run before third-party tap consumption is reported as complete.
+  build, public upload/index, anonymous read, force-pour, Node and Chromium
+  execution, and tap finalization. Its interrupted empty draft still needs
+  reviewed exact-identity recovery and successful immutable publication before
+  third-party tap consumption is reported as complete. PR #1019 is pending and
+  must not be described as shipped recovery behavior.
 - Ruby has a live Formula but no finalized bottle. Erlang and CPython have no
   finalized live Formula/bottle pair. A successful compile, local artifact, or
   legacy Kandelo package is not a substitute for publication and runtime
