@@ -421,7 +421,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 
 | Demo | Image | Build command | What's inside |
 |------|-------|--------------|---------------|
-| Python | `python.vfs.zst` | `bash images/vfs/scripts/build-python-vfs-image.sh` | CPython stdlib |
+| Python | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang | `erlang.vfs.zst` | `bash images/vfs/scripts/build-erlang-vfs-image.sh` | OTP runtime |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `bash images/vfs/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
@@ -463,7 +463,10 @@ UI instead of silently hiding the rest of the gallery.
 
 ### Building VFS images
 
-Each build script requires the corresponding software to be compiled first (e.g., `build-cpython.sh` before `build-python-vfs-image.sh`). The `run.sh` script orchestrates this:
+Package-backed image recipes resolve their declared dependencies rather than
+reading another package's source/build side effects. For example,
+`python-vfs` consumes CPython's `python.wasm` and `python-runtime.zip` closure.
+The `run.sh` script orchestrates resolver builds:
 
 ```bash
 ./run.sh build python-vfs    # Build Python VFS image

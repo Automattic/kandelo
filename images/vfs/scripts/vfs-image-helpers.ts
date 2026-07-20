@@ -104,6 +104,8 @@ export interface SaveImageOptions {
   kernelAbi?: number;
   normalizeTimestampsMs?: number;
   skipWasmArtifactCheck?: boolean;
+  /** Normalize all serialized inode times for reproducible product images. */
+  normalizeTimestampsMs?: number;
 }
 
 function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {

@@ -1,18 +1,14 @@
 kind = "program"
 name = "python-vfs"
 version = "0.1.0"
-kernel_abi = 7
-# Implicit dep: build-python-vfs-image.ts reads the CPython stdlib
-# from `packages/registry/cpython/cpython-src/Lib/` — populated as a
-# side effect of `build-cpython.sh`'s tarball extraction. Without
-# this declaration a clean source-build (e.g., during manual
-# force-rebuild) fails. Folds cpython's cache_key into ours so a
-# cpython bump invalidates the python-vfs cache.
+kernel_abi = 41
+# The VFS consumes CPython's declared executable and runtime closure from the
+# resolver-provided dependency root; it never reads a source/build side effect
+# from the checkout.
 depends_on = ["cpython@3.13.3"]
 
-# Pre-built VFS image containing the CPython 3.13 stdlib for the
-# browser demo. Source at
-# images/vfs/scripts/build-python-vfs-image.ts.
+# Deterministic VFS layer containing the CPython interpreter, 3.13 standard
+# library, license, executable aliases, and image-owned demo metadata.
 [source]
 url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

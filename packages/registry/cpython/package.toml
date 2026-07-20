@@ -1,7 +1,7 @@
 kind = "program"
 name = "cpython"
 version = "3.13.3"
-kernel_abi = 7
+kernel_abi = 41
 depends_on = ["zlib@1.3.1"]
 
 [source]
@@ -18,3 +18,10 @@ script_path = "packages/registry/cpython/build-cpython.sh"
 [[outputs]]
 name = "cpython"
 wasm = "python.wasm"
+
+# Pure-Python standard library and license tree. Keeping this non-Wasm runtime
+# closure separate from the executable lets Formulae install a normal keg while
+# VFS builders consume the same immutable bytes through the resolver contract.
+[[runtime_files]]
+artifact = "python-runtime.zip"
+guest_path = "/usr/share/cpython/python-runtime.zip"

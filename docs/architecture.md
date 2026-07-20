@@ -734,7 +734,7 @@ There are two consumption patterns for VFS images, depending on whether the demo
 
 | Demo | VFS Image | Build Script | Boot pattern |
 |------|-----------|-------------|--------------|
-| Python | `python.vfs.zst` | `build-python-vfs-image.sh` | `kernel.boot` → `python3` |
+| Python | `python-vfs.vfs.zst` | `packages/registry/python-vfs/build-python-vfs.sh` | `kernel.boot` → `python3` |
 | Perl | `perl.vfs.zst` | `build-perl-vfs-image.sh` | `kernel.boot` → `perl` |
 | PHP | `php.vfs.zst` | `build-php-vfs-image.sh` | `kernel.boot` → `php` |
 | Ruby | `ruby.vfs.zst` | `build-ruby-vfs-image.sh` | `kernel.boot` → `ruby` |
