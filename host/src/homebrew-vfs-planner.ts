@@ -161,6 +161,15 @@ export interface HomebrewVfsPackagePlan {
   dependencies: HomebrewDependency[];
   runtimeSupport: HomebrewRuntime[];
   browserCompatible: boolean;
+  builtFrom?: HomebrewBottleBuildSource;
+}
+
+export interface HomebrewBottleBuildSource {
+  tapRepository: string;
+  tapCommit: string;
+  kandeloRepository: string;
+  kandeloCommit: string;
+  formulaSha256: string;
 }
 
 export interface HomebrewVfsPlan {
@@ -213,13 +222,6 @@ interface PlanPackageOptions {
   dependencies?: HomebrewDependency[];
   requireRepositoryRoot?: boolean;
   loadLinkManifest: (tapRelativePath: string) => unknown | Promise<unknown>;
-}
-
-interface HomebrewBottleBuildSource {
-  tapRepository: string;
-  tapCommit: string;
-  kandeloRepository: string;
-  kandeloCommit: string;
 }
 
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
@@ -860,8 +862,8 @@ async function planPackage(
       `package ${quote(pkg.name)} cache_key_sha ${quote(selected.cacheKeySha)} does not match expected ${quote(expectedCacheKey)}`,
     );
   }
-  const bottleBuildSource = options.requireRepositoryRoot
-    ? validateFederatedBottleSource(metadata, pkg, bottle, selected)
+  const bottleBuildSource = options.requireRepositoryRoot || options.allowFallback === false
+    ? validateRepositoryRootedBottleSource(metadata, pkg, bottle, selected)
     : undefined;
   // A failed current attempt carries its own built_from record while the
   // selected fallback bytes belong to an older publication. Until sidecars
@@ -905,10 +907,11 @@ async function planPackage(
     dependencies: options.dependencies ?? pkg.dependencies,
     runtimeSupport: bottle.runtime_support,
     browserCompatible: bottle.browser_compatible,
+    ...(selectedBuildSource === undefined ? {} : { builtFrom: selectedBuildSource }),
   };
 }
 
-function validateFederatedBottleSource(
+function validateRepositoryRootedBottleSource(
   metadata: HomebrewTapMetadata,
   pkg: HomebrewMetadataPackage,
   bottle: HomebrewMetadataBottle,
@@ -962,7 +965,7 @@ function validateFederatedBottleSource(
   if (!GIT_SHA_RE.test(kandeloCommit)) {
     fail(`package ${quote(pkg.full_name)} bottle built_from Kandelo commit must be a lowercase 40-char git sha`);
   }
-  validateSha256(
+  const formulaSha256 = validateSha256(
     requiredString(
       builtFrom,
       "formula_sha256",
@@ -975,6 +978,7 @@ function validateFederatedBottleSource(
     tapCommit,
     kandeloRepository: metadata.kandelo_repository,
     kandeloCommit,
+    formulaSha256,
   };
 }
 

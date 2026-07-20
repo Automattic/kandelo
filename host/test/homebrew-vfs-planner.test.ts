@@ -260,6 +260,75 @@ describe("Homebrew VFS planner", () => {
     ]);
   });
 
+  it("attributes strict single-tap bottles to built_from instead of stale catalog globals", async () => {
+    const strictUrl = federatedBottleUrl(CORE_TAP, "hello");
+    const tapMetadata = metadata([
+      packageEntry("hello", "2.12.1", [], [bottle("hello", "2.12.1", {
+        url: strictUrl,
+        built_from: {
+          kandelo_repository: "Automattic/kandelo",
+          kandelo_commit: BOTTLE_KANDELO_COMMIT,
+          tap_repository: CORE_TAP.repository,
+          tap_commit: BOTTLE_TAP_COMMIT,
+          formula_sha256: SHA_D,
+        },
+      })]),
+    ]);
+    const manifest = linkManifest("hello", "2.12.1", {
+      bottle: {
+        url: strictUrl,
+        sha256: SHA_B,
+        bytes: 123,
+        cache_key_sha: SHA_C,
+        payload_root: "hello/2.12.1",
+      },
+    });
+
+    const plan = await planHomebrewVfs(tapMetadata, {
+      packages: ["hello"],
+      arch: "wasm32",
+      allowFallback: false,
+      loadLinkManifest: () => manifest,
+    });
+
+    expect(plan.tapCommit).toBe(TAP_COMMIT);
+    expect(plan.kandeloCommit).toBe(KANDELO_COMMIT);
+    expect(plan.packages[0]).toMatchObject({
+      tapCommit: BOTTLE_TAP_COMMIT,
+      kandeloCommit: BOTTLE_KANDELO_COMMIT,
+      builtFrom: {
+        tapRepository: CORE_TAP.repository,
+        tapCommit: BOTTLE_TAP_COMMIT,
+        kandeloRepository: "Automattic/kandelo",
+        kandeloCommit: BOTTLE_KANDELO_COMMIT,
+        formulaSha256: SHA_D,
+      },
+    });
+  });
+
+  it("requires complete built_from provenance for strict single-tap bottles", async () => {
+    const strictUrl = federatedBottleUrl(CORE_TAP, "hello");
+    const bad = metadata([
+      packageEntry("hello", "2.12.1", [], [bottle("hello", "2.12.1", {
+        url: strictUrl,
+        built_from: {
+          kandelo_repository: "Automattic/kandelo",
+          kandelo_commit: BOTTLE_KANDELO_COMMIT,
+          tap_repository: CORE_TAP.repository,
+          tap_commit: BOTTLE_TAP_COMMIT,
+          formula_sha256: "stale-global-attribution",
+        },
+      })]),
+    ]);
+
+    await expect(planHomebrewVfs(bad, {
+      packages: ["hello"],
+      arch: "wasm32",
+      allowFallback: false,
+      loadLinkManifest: () => linkManifest("hello", "2.12.1"),
+    })).rejects.toThrow("built_from formula_sha256 must be a lowercase 64-char sha256");
+  });
+
   it("rejects metadata ABI drift before loading link manifests", async () => {
     let loaded = false;
     const tapMetadata = metadata([packageEntry("hello", "2.12.1")], {

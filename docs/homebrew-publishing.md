@@ -1465,12 +1465,16 @@ when the Brewfile actually includes that declared shell.
 ### Strict Main-Shell Bottle Closure
 
 `homebrew/main-shell.Brewfile` is the reviewed direct-root contract for the
-current rootfs plus browser shell/demo package closure. Keep it in the same
-order as `packages/registry/rootfs/package.toml` followed by the non-rootfs
-dependencies in `packages/registry/shell/package.toml`.
-`scripts/check-homebrew-main-shell-brewfile.mjs` enforces that relationship;
-the `file` package maps to Homebrew's reserved-name Formula
-`file-formula`.
+current rootfs plus browser shell/demo package closure.
+`homebrew/main-shell-migration-lock.json` maps every exact registry
+`name@version` to its Formula identity, version, revision, and bottle rebuild;
+it also records every reviewed identity or version substitution. Keep the lock
+and Brewfile in the same order as `packages/registry/rootfs/package.toml`
+followed by the non-rootfs dependencies in
+`packages/registry/shell/package.toml`. The checker rejects missing, reordered,
+or stale mappings and substitutions. In particular, the registry's `file`
+package maps to the reserved-name-safe `file-formula` Formula only because that
+identity substitution is explicit in the lock.
 
 CI materialization uses an exact local tap checkout and its full 40-character
 commit:
@@ -1492,6 +1496,33 @@ different from the expected SHA fail the build. The tap checkout must also be
 clean, including no untracked files, and its metadata must name the canonical
 `kandelo-dev/homebrew-tap-core` repository and `kandelo-dev/tap-core` tap.
 
+The selected consumer catalog and each selected bottle have distinct
+provenance. The report and image metadata bind the clean catalog checkout's
+repository, tap name, and full Git SHA. In strict single-tap mode, every bottle
+must independently carry a complete `built_from` record: tap repository and
+commit, Kandelo repository and commit, and Formula SHA-256. Those per-bottle
+commits are authoritative for historical bottles and need not equal the
+aggregate metadata document's last publication commits. Reporting the
+aggregate commits as if they built every bottle is rejected. The artifact and
+report also bind the exact migration-lock SHA-256 and byte length.
+
+The 512 MiB limit is a consumer contract, not merely builder headroom. It is
+recorded in the migration lock, VFS superblock, image metadata, and composition
+report. The browser's main-shell and custom-VFS profiles allocate that same
+capacity and reject a metadata/superblock mismatch or an image larger than the
+profile. Other built-in profiles retain their smaller default unless they use
+the shell image.
+
+Homebrew bottles own commands under the Homebrew prefix. To preserve the
+current shell's POSIX path surface, the migration lock permits the composer to
+mirror only direct `bin/<name>` entries from each verified bottle link manifest
+into `/bin` and `/usr/bin`. Reviewed aliases provide `/bin/sh` and
+`/usr/bin/sh` from Dash and preserve the existing `/usr/local/bin/fbdoom` and
+`/usr/local/bin/modeset` paths. The composer does not scan arbitrary bottle
+files, and it rejects unowned alias sources, duplicate targets, non-executable
+sources, or any collision with a platform/base-image path. Every generated
+link is attributed to its bottle and source in the report.
+
 The wrapper currently selects sidecars with `--runtime node` because older
 finalized sidecars predate truthful browser-compatibility recording. That is a
 selection compatibility boundary, not browser evidence. A produced image is
@@ -1499,6 +1530,11 @@ not ready to replace the browser main shell until the exact emitted bytes have
 booted and exercised the closure in both Node and Chromium. Prefer
 `--runtime browser` once every selected bottle sidecar records browser support
 from exact-byte browser acceptance.
+
+The wrapper's Node gate boots those exact emitted bytes through
+`NodeKernelHost` and executes `/bin/sh -c`, including representative Bash,
+Dash, and `/usr/bin/env` paths. This proves the bottle-composed shell image's
+Node path contract; it does not replace the final exact-byte Chromium gate.
 
 Repeatable `--package <name>` remains available for lower-level tooling and
 focused tests. It preserves the provided root order and uses the same planner,

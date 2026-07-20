@@ -22,6 +22,10 @@ import {
   nodeGuide,
 } from "../src/demo-guides";
 import { parseKandeloShellConfig } from "../src/shell-config";
+import {
+  MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+  assertVfsImageFitsProfile,
+} from "../src/vfs-capacity";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
@@ -1140,5 +1144,34 @@ describe("Kandelo default shell image configuration", () => {
       path: "/bin/sh",
       argv: ["sh", "-i"],
     }))).toBeNull();
+  });
+});
+
+describe("Kandelo VFS consumer capacity contract", () => {
+  it("accepts the main shell's exact 512 MiB declaration", () => {
+    expect(() => assertVfsImageFitsProfile(
+      {
+        byteLength: MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+        maxByteLength: MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+      },
+      MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+      MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+      "main-shell.vfs.zst",
+    )).not.toThrow();
+  });
+
+  it("rejects metadata drift and oversized custom images before allocation", () => {
+    expect(() => assertVfsImageFitsProfile(
+      { byteLength: 16 * 1024 * 1024, maxByteLength: 512 * 1024 * 1024 },
+      MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+      256 * 1024 * 1024,
+      "custom.vfs.zst",
+    )).toThrow("metadata does not match");
+    expect(() => assertVfsImageFitsProfile(
+      { byteLength: 16 * 1024 * 1024, maxByteLength: 768 * 1024 * 1024 },
+      MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+      undefined,
+      "custom.vfs.zst",
+    )).toThrow("profile permits");
   });
 });

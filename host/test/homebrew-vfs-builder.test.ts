@@ -18,6 +18,8 @@ import { ABI_VERSION } from "../src/generated/abi";
 import {
   buildHomebrewVfs,
   type HomebrewVfsBuildResult,
+  type HomebrewVfsCatalogCheckout,
+  type HomebrewVfsCompatibilityPolicy,
   type HomebrewVfsSelectionSource,
 } from "../src/homebrew-vfs-builder";
 import {
@@ -26,6 +28,7 @@ import {
   type HomebrewTapMetadata,
 } from "../src/homebrew-vfs-planner";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { ensureDirRecursive, writeVfsFile } from "../src/vfs/image-helpers";
 
 const PREFIX = "/home/linuxbrew/.linuxbrew";
 const CELLAR = `${PREFIX}/Cellar`;
@@ -310,6 +313,11 @@ async function buildFixture(
     linkOverrides?: Partial<HomebrewLinkManifest>;
     loadBytes?: Uint8Array;
     selectionSource?: HomebrewVfsSelectionSource;
+    strict?: boolean;
+    catalogCheckout?: HomebrewVfsCatalogCheckout;
+    compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
+    seedFs?: (fs: MemoryFileSystem) => void;
+    migrationLock?: { sha256: string; bytes: number };
   } = {},
 ): Promise<HomebrewVfsBuildResult> {
   const manifest = linkManifest(bytes, opts.linkOverrides);
@@ -317,12 +325,17 @@ async function buildFixture(
     packages: ["hello"],
     arch: "wasm32",
     runtime: "node",
+    ...(opts.strict ? { allowFallback: false } : {}),
     loadLinkManifest: () => manifest,
   });
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+  opts.seedFs?.(fs);
   return buildHomebrewVfs(plan, {
     fs,
     selectionSource: opts.selectionSource,
+    catalogCheckout: opts.catalogCheckout,
+    compatibilityPolicy: opts.compatibilityPolicy,
+    migrationLock: opts.migrationLock,
     loadBottleBytes: () => opts.loadBytes ?? bytes,
   });
 }
@@ -429,6 +442,143 @@ describe("Homebrew VFS builder", () => {
     expect(JSON.parse(
       readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
     ).selection).toEqual(result.report.selection);
+  });
+
+  it("records the consumer catalog separately from strict bottle build provenance", async () => {
+    const bytes = bottleTar(standardEntries());
+    const bottleUrl =
+      `https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:${sha256(bytes)}`;
+    const builtTapCommit = "3333333333333333333333333333333333333333";
+    const builtKandeloCommit = "4444444444444444444444444444444444444444";
+    const formulaSha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    const catalogCommit = "5555555555555555555555555555555555555555";
+    const result = await buildFixture(bytes, {
+      strict: true,
+      metadataOverrides: {
+        url: bottleUrl,
+        built_from: {
+          kandelo_repository: "Automattic/kandelo",
+          kandelo_commit: builtKandeloCommit,
+          tap_repository: "kandelo-dev/homebrew-tap-core",
+          tap_commit: builtTapCommit,
+          formula_sha256: formulaSha256,
+        },
+      },
+      linkOverrides: {
+        bottle: {
+          url: bottleUrl,
+          sha256: sha256(bytes),
+          bytes: bytes.byteLength,
+          cache_key_sha: CACHE_KEY,
+          payload_root: "hello/2.12.1",
+        },
+      },
+      catalogCheckout: {
+        tapRepository: "kandelo-dev/homebrew-tap-core",
+        tapName: "kandelo-dev/tap-core",
+        checkoutCommit: catalogCommit,
+      },
+    });
+    const composition = JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    );
+
+    expect(result.report.catalog).toEqual({
+      tap_repository: "kandelo-dev/homebrew-tap-core",
+      tap_name: "kandelo-dev/tap-core",
+      checkout_commit: catalogCommit,
+    });
+    expect(result.report.metadata).toMatchObject({
+      tap_commit: TAP_COMMIT,
+      kandelo_commit: KANDELO_COMMIT,
+    });
+    expect(result.report.packages[0].built_from).toEqual({
+      tap_repository: "kandelo-dev/homebrew-tap-core",
+      tap_commit: builtTapCommit,
+      kandelo_repository: "Automattic/kandelo",
+      kandelo_commit: builtKandeloCommit,
+      formula_sha256: formulaSha256,
+    });
+    expect(composition.catalog).toEqual(result.report.catalog);
+    expect(composition.packages[0].built_from)
+      .toEqual(result.report.packages[0].built_from);
+  });
+
+  it("binds the reviewed migration lock into the report and composition", async () => {
+    const bytes = bottleTar(standardEntries());
+    const binding = {
+      sha256: "abababababababababababababababababababababababababababababababab",
+      bytes: 4096,
+    };
+    const result = await buildFixture(bytes, { migrationLock: binding });
+    const composition = JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    );
+
+    expect(result.report.migration_lock).toEqual(binding);
+    expect(composition.migration_lock).toEqual(binding);
+
+    await expect(buildFixture(bytes, {
+      migrationLock: { sha256: "not-a-sha", bytes: 4096 },
+    })).rejects.toThrow("migration lock provenance is invalid");
+  });
+
+  it("mirrors only bottle-owned bin links into POSIX command paths", async () => {
+    const bytes = bottleTar(standardEntries());
+    const compatibilityPolicy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: ["/usr/bin", "/bin"] },
+      aliases: [{
+        package: "kandelo-dev/tap-core/hello",
+        source: "bin/hello",
+        targets: ["/usr/bin/sh", "/bin/sh"],
+      }],
+    };
+    const result = await buildFixture(bytes, { compatibilityPolicy });
+
+    for (const path of ["/usr/bin/hello", "/bin/hello", "/usr/bin/sh", "/bin/sh"]) {
+      expect(result.fs.readlink(path)).toBe(`${PREFIX}/bin/hello`);
+      expect(readVfsFile(result.fs, path)).toContain("echo hello");
+    }
+    expect(result.report.compatibility_links).toEqual([
+      expect.objectContaining({
+        path: "/usr/bin/hello",
+        package: "kandelo-dev/tap-core/hello",
+        source: "bin/hello",
+        ownership: "bottle-link-manifest",
+      }),
+      expect.objectContaining({ path: "/bin/hello" }),
+      expect.objectContaining({ path: "/usr/bin/sh" }),
+      expect.objectContaining({ path: "/bin/sh" }),
+    ]);
+    expect(JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    ).compatibility_links).toEqual(result.report.compatibility_links);
+  });
+
+  it("rejects legacy path collisions and aliases not owned by a bottle manifest", async () => {
+    const bytes = bottleTar(standardEntries());
+    const mirror: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: ["/usr/bin"] },
+      aliases: [],
+    };
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: mirror,
+      seedFs(fs) {
+        ensureDirRecursive(fs, "/usr/bin");
+        writeVfsFile(fs, "/usr/bin/hello", "legacy registry bytes", 0o755);
+      },
+    })).rejects.toThrow("already exists in the platform base or another package");
+
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: {
+        mirror_link_manifest_bin: { targets: [] },
+        aliases: [{
+          package: "kandelo-dev/tap-core/hello",
+          source: "bin/not-reviewed",
+          targets: ["/bin/sh"],
+        }],
+      },
+    })).rejects.toThrow("is not owned by that bottle's link manifest");
   });
 
   it("rejects invalid Brewfile provenance before loading bottle bytes", async () => {

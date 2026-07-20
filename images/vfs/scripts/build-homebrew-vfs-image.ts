@@ -23,7 +23,10 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildHomebrewVfs } from "../../../host/src/homebrew-vfs-builder";
+import {
+  buildHomebrewVfs,
+  type HomebrewVfsCompatibilityPolicy,
+} from "../../../host/src/homebrew-vfs-builder";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
   planFederatedHomebrewVfs,
@@ -66,6 +69,8 @@ interface CliOptions {
   maxBytes?: number;
   writeProfile: boolean;
   shellConfig?: string;
+  catalogCommit?: string;
+  migrationLock?: string;
 }
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
@@ -75,7 +80,9 @@ const MAX_SIDECAR_JSON_BYTES = 16_777_216;
 const MAX_BREWFILE_BYTES = 65_536;
 const MAX_BREWFILE_PACKAGES = 128;
 const MAX_BREWFILE_PARSER_OUTPUT_BYTES = 65_536;
+const MAX_MIGRATION_LOCK_BYTES = 65_536;
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
 const PACKAGE_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -111,6 +118,12 @@ interface LoadedShellConfig {
   bytes: number;
 }
 
+interface LoadedMigrationLock {
+  value: unknown;
+  sha256: string;
+  bytes: number;
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const metadata = readJsonFile(options.metadata);
@@ -118,6 +131,12 @@ async function main(): Promise<void> {
   const shellConfig = options.shellConfig
     ? readShellConfig(options.shellConfig)
     : undefined;
+  const migrationLock = options.migrationLock
+    ? readMigrationLock(options.migrationLock)
+    : undefined;
+  const compatibilityPolicy = migrationLock === undefined
+    ? undefined
+    : migrationLockCompatibilityPolicy(migrationLock.value, options.migrationLock!);
   const brewfileSelection = options.brewfile
     ? readBrewfileSelection(options.brewfile)
     : undefined;
@@ -162,7 +181,7 @@ async function main(): Promise<void> {
       },
     );
 
-  const { fs, baseImage } = createFs(
+  const { fs, baseImage, maxByteLength } = createFs(
     options.baseImage,
     options.maxBytes,
     plan.kandeloAbi,
@@ -178,6 +197,16 @@ async function main(): Promise<void> {
       bytes: brewfileSelection.bytes,
       requestedPackages: brewfileSelection.packages,
     } : undefined,
+    catalogCheckout: options.catalogCommit === undefined ? undefined : {
+      tapRepository: plan.tapRepository,
+      tapName: plan.tapName,
+      checkoutCommit: options.catalogCommit,
+    },
+    compatibilityPolicy,
+    migrationLock: migrationLock === undefined ? undefined : {
+      sha256: migrationLock.sha256,
+      bytes: migrationLock.bytes,
+    },
     loadBottleBytes: (pkg) => loadBottleBytes(pkg, options),
   });
   if (shellConfig) {
@@ -192,17 +221,31 @@ async function main(): Promise<void> {
     assertShellExecutable(fs, shellConfig.config.path);
   }
 
-  await saveImage(fs, options.out, {
+  const imageBytes = await saveImage(fs, options.out, {
     metadata: {
       version: 1,
       kernelAbi: plan.kandeloAbi,
       createdBy: "images/vfs/scripts/build-homebrew-vfs-image.ts",
+      capacity: { maxByteLength },
       ...(baseImage ? { baseImage: baseImage.binding } : {}),
       homebrew: {
         tapRepository: plan.tapRepository,
         tapName: plan.tapName,
         tapCommit: plan.tapCommit,
         releaseTag: plan.releaseTag,
+        ...(result.report.catalog === undefined ? {} : {
+          catalog: {
+            tapRepository: result.report.catalog.tap_repository,
+            tapName: result.report.catalog.tap_name,
+            checkoutCommit: result.report.catalog.checkout_commit,
+          },
+        }),
+        ...(result.report.migration_lock === undefined ? {} : {
+          migrationLock: {
+            sha256: result.report.migration_lock.sha256,
+            bytes: result.report.migration_lock.bytes,
+          },
+        }),
         selection: {
           kind: result.report.selection.kind,
           requestedPackageCount:
@@ -230,10 +273,26 @@ async function main(): Promise<void> {
           arch: pkg.arch,
           sourceStatus: pkg.sourceStatus,
           cacheKeySha: pkg.cacheKeySha,
+          ...(pkg.builtFrom === undefined ? {} : {
+            builtFrom: {
+              tapRepository: pkg.builtFrom.tapRepository,
+              tapCommit: pkg.builtFrom.tapCommit,
+              kandeloRepository: pkg.builtFrom.kandeloRepository,
+              kandeloCommit: pkg.builtFrom.kandeloCommit,
+              formulaSha256: pkg.builtFrom.formulaSha256,
+            },
+          }),
         })),
       },
     },
   });
+  const imageCapacity = MemoryFileSystem.readImageCapacity(imageBytes);
+  if (imageCapacity.maxByteLength !== maxByteLength) {
+    throw new Error(
+      `saved VFS capacity ${imageCapacity.maxByteLength} does not match ` +
+        `the declared consumer contract ${maxByteLength}`,
+    );
+  }
 
   const report = {
     ...result.report,
@@ -251,6 +310,10 @@ async function main(): Promise<void> {
         metadata: baseImage.metadata,
       },
     } : {}),
+    image_capacity: {
+      byte_length: imageCapacity.byteLength,
+      max_byte_length: imageCapacity.maxByteLength,
+    },
     image: options.out,
   };
   mkdirSync(dirname(options.report), { recursive: true });
@@ -342,6 +405,18 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.shellConfig = requireValue(args, ++i, arg);
         break;
+      case "--catalog-commit":
+        if (options.catalogCommit !== undefined) {
+          usage("--catalog-commit may be provided only once");
+        }
+        options.catalogCommit = requireValue(args, ++i, arg);
+        break;
+      case "--migration-lock":
+        if (options.migrationLock !== undefined) {
+          usage("--migration-lock may be provided only once");
+        }
+        options.migrationLock = requireValue(args, ++i, arg);
+        break;
       case "--help":
       case "-h":
         usage(undefined, 0);
@@ -365,6 +440,15 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.shellConfig && !options.writeProfile) {
     usage("--shell-config requires --write-profile so the Homebrew environment is initialized");
+  }
+  if (options.catalogCommit !== undefined && !GIT_SHA_RE.test(options.catalogCommit)) {
+    usage("--catalog-commit must be a lowercase 40-character git SHA");
+  }
+  if (options.catalogCommit !== undefined && Object.keys(options.dependencyTapRoots).length > 0) {
+    usage("--catalog-commit currently supports only a single-tap catalog checkout");
+  }
+  if (options.migrationLock && !existsSync(options.migrationLock)) {
+    usage(`migration lock does not exist: ${options.migrationLock}`);
   }
 
   return options as CliOptions;
@@ -427,7 +511,7 @@ function createFs(
   baseImage: string | undefined,
   maxBytes: number | undefined,
   expectedAbi: number,
-): { fs: MemoryFileSystem; baseImage?: LoadedBaseImage } {
+): { fs: MemoryFileSystem; baseImage?: LoadedBaseImage; maxByteLength: number } {
   if (baseImage) {
     const image = new Uint8Array(readFileSync(baseImage));
     const restored = MemoryFileSystem.fromImagePreservingCapacity(image);
@@ -478,11 +562,13 @@ function createFs(
       return {
         fs: restored.rebaseToNewFileSystem(targetMaxBytes),
         baseImage: loadedBase,
+        maxByteLength: targetMaxBytes,
       };
     }
     return {
       fs: restored,
       baseImage: loadedBase,
+      maxByteLength: targetMaxBytes,
     };
   }
 
@@ -494,7 +580,10 @@ function createFs(
   const sab = new SharedArrayBufferCtor(initialBytes, {
     maxByteLength: initialBytes,
   });
-  return { fs: MemoryFileSystem.create(sab, initialBytes) };
+  return {
+    fs: MemoryFileSystem.create(sab, initialBytes),
+    maxByteLength: initialBytes,
+  };
 }
 
 function formatMib(bytes: number): string {
@@ -525,6 +614,63 @@ function readJsonFile(path: string): unknown {
     "Homebrew sidecar JSON",
   );
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}
+
+function readMigrationLock(path: string): LoadedMigrationLock {
+  const source = readBoundedRegularFile(
+    path,
+    MAX_MIGRATION_LOCK_BYTES,
+    "Homebrew migration lock",
+  );
+  return {
+    value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(source)),
+    sha256: createHash("sha256").update(source).digest("hex"),
+    bytes: source.byteLength,
+  };
+}
+
+function migrationLockCompatibilityPolicy(
+  value: unknown,
+  path: string,
+): HomebrewVfsCompatibilityPolicy {
+  if (!isRecord(value) || value.schema !== 1 || !isRecord(value.compatibility)) {
+    throw new Error(`Homebrew migration lock has an invalid schema: ${path}`);
+  }
+  const compatibility = value.compatibility;
+  if (
+    !isRecord(compatibility.mirror_link_manifest_bin) ||
+    !Array.isArray(compatibility.mirror_link_manifest_bin.targets) ||
+    !compatibility.mirror_link_manifest_bin.targets.every(
+      (entry) => typeof entry === "string",
+    ) ||
+    !Array.isArray(compatibility.aliases)
+  ) {
+    throw new Error(`Homebrew migration lock has an invalid compatibility policy: ${path}`);
+  }
+  const aliases = compatibility.aliases.map((value, index) => {
+    if (
+      !isRecord(value) ||
+      typeof value.package !== "string" ||
+      typeof value.source !== "string" ||
+      !Array.isArray(value.targets) ||
+      !value.targets.every((entry) => typeof entry === "string")
+    ) {
+      throw new Error(
+        `Homebrew migration lock compatibility.aliases[${index}] is invalid: ${path}`,
+      );
+    }
+    return {
+      package: value.package,
+      source: value.source,
+      targets: [...value.targets],
+    };
+  });
+  return {
+    mirror_link_manifest_bin: {
+      targets: [...compatibility.mirror_link_manifest_bin.targets] as string[],
+    },
+    aliases,
+  };
 }
 
 function readShellConfig(path: string): LoadedShellConfig {
@@ -689,7 +835,8 @@ function usage(message?: string, code = 2): never {
   [--expected-cache-key <name>=<sha256>] [--no-fallback] \\
   [--bottle-cache <dir>] [--base-image <base.vfs[.zst]>] \\
   [--max-bytes <bytes|MiB>] [--write-profile] \\
-  [--shell-config <shell.json>]`);
+  [--shell-config <shell.json>] [--catalog-commit <full-sha>] \\
+  [--migration-lock <lock.json>]`);
   process.exit(code);
 }
 

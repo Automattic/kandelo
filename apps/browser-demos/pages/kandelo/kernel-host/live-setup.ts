@@ -60,6 +60,13 @@ import {
   type KandeloShellConfig,
 } from "../../../../../web-libs/kandelo-session/src/shell-config";
 import {
+  CUSTOM_VFS_PROFILE_MAX_BYTES,
+  DEFAULT_VFS_PROFILE_MAX_BYTES,
+  MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+  assertVfsImageFitsProfile,
+  declaredVfsMaxByteLength,
+} from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
+import {
   builtinDemoAssets,
   builtinDemoGuide,
   builtinDemoPresentation,
@@ -703,7 +710,7 @@ function customVfsProfile(
     descriptor: desc,
     shell: "default",
     includeNodeUtility: false,
-    maxVfsByteLength: 256 * 1024 * 1024,
+    maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
     framebufferTest: fb === "test",
   };
 }
@@ -719,7 +726,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       descriptor: desc,
       shell: "default",
       includeNodeUtility: false,
-      maxVfsByteLength: 256 * 1024 * 1024,
+      maxVfsByteLength: DEFAULT_VFS_PROFILE_MAX_BYTES,
       autoCommand: software.autoCommand,
       fallbackPresentation: software.presentation,
       init: software.init,
@@ -738,7 +745,10 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     descriptor: desc,
     shell: spec.shell ?? "default",
     includeNodeUtility: spec.includeNodeUtility ?? false,
-    maxVfsByteLength: spec.maxVfsByteLength ?? 256 * 1024 * 1024,
+    maxVfsByteLength: spec.maxVfsByteLength ??
+      (spec.image === "shell"
+        ? MAIN_SHELL_VFS_PROFILE_MAX_BYTES
+        : DEFAULT_VFS_PROFILE_MAX_BYTES),
     autoCommand: spec.autoCommand,
     init: spec.init && {
       argv: spec.init.argv.slice(),
@@ -1080,8 +1090,16 @@ async function bootProfile(
   assertCurrent();
 
   tick(`kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`);
+  const fetchedVfsImageBytes = new Uint8Array(vfsBytes);
+  const vfsMetadata = MemoryFileSystem.readImageMetadata(fetchedVfsImageBytes);
+  assertVfsImageFitsProfile(
+    MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes),
+    profile.maxVfsByteLength,
+    declaredVfsMaxByteLength(vfsMetadata),
+    `${profile.id}.vfs.zst`,
+  );
   MemoryFileSystem.assertImageKernelAbi(
-    new Uint8Array(vfsBytes),
+    fetchedVfsImageBytes,
     ABI_VERSION,
     `${profile.id}.vfs.zst`,
   );
@@ -1092,7 +1110,7 @@ async function bootProfile(
   // out of the live-VFS ownership set so WebKit reclaims it on teardown via
   // Worker.terminate() rather than lazy GC — the root fix for the Safari
   // image-switch OOM.
-  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
+  const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
     maxByteLength: profile.maxVfsByteLength,
   });
   const shellConfig = readImageShellConfig(buildFs);

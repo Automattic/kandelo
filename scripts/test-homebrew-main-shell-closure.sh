@@ -60,4 +60,17 @@ expect_failure "tap metadata has the wrong repository identity" \
 
 node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
 
+lock="$TMP_ROOT/main-shell-migration-lock.json"
+jq 'del(.reviewed_substitutions[-1])' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+expect_failure "reviewed migration substitutions are incomplete or stale" \
+  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
+  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+
+jq '.consumer.max_vfs_byte_length = 268435456' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+expect_failure "must declare the 512 MiB consumer profile" \
+  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
+  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+
 echo "test-homebrew-main-shell-closure: ok"
