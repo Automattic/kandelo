@@ -765,7 +765,7 @@ jobs:
             # existing `[binary]` pin in package.toml; prepare-merge
             # just refuses to redo the work. Remove an entry here
             # (and mirror in staging-build.yml) to re-enable rebuilds.
-            disabled_pkgs=" cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive "
+            disabled_pkgs=" perl perl-vfs redis texlive "
 
             for pkg_dir in packages/registry/*/; do
               pkg=$(basename "$pkg_dir")
