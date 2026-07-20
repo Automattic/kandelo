@@ -1203,11 +1203,12 @@ edges by canonical `owner/tap/formula`, requires each package's bottle URL and
 package-specific build commits independently of the document-generation
 commits, rejects duplicate Cellar short names across taps, and resolves the
 closure in deterministic dependency-first order.
-Guest-relative link-manifest paths admit literal square brackets so standard
-POSIX utility names such as `bin/[` remain representable. They still reject
-absolute paths, empty and `.`/`..` segments, backslashes, and whitespace. Tap
-metadata references use a separate, narrower path grammar and do not inherit
-the guest filename allowance.
+Guest-relative link-manifest paths admit literal square brackets and commas so
+standard POSIX utility names such as `bin/[` and upstream payload filenames
+such as TeX Live's comma-delimited examples remain representable. They still
+reject absolute paths, empty and `.`/`..` segments, backslashes, and whitespace.
+Tap metadata references use a separate, narrower path grammar and do not
+inherit the guest filename allowances.
 
 The Node-side builder is `buildHomebrewVfs()` in
 `host/src/homebrew-vfs-builder.ts`. It verifies bottle byte count and sha256,
