@@ -170,7 +170,7 @@ if [ "$release_rc" -eq 44 ]; then
     -f "tag_name=$tag" \
     -f "target_commitish=$TAP_COMMIT" \
     -f "name=Browser-proven Homebrew VFS ${FORMULA}" \
-    -f "body=Content-addressed Kandelo Homebrew VFS image. Provenance and exact Node/Chromium acceptance evidence are attached." \
+    -f "body=Content-addressed Kandelo Homebrew VFS image and lazy shell layer. Provenance and exact Node/Chromium acceptance evidence are attached." \
     -f make_latest=false \
     -F draft=true -F prerelease=false >"$create_json"
   then
@@ -242,6 +242,8 @@ printf '%s\n' \
   kandelo-homebrew-node-evidence.json \
   kandelo-homebrew-browser-evidence.json \
   kandelo-homebrew-vfs.json \
+  kandelo-homebrew-shell-layer.zip \
+  kandelo-homebrew-shell-layer.json \
   | jq -Rsc 'split("\n")[:-1] | sort' >"$expected_names"
 
 assert_asset_names_are_bounded() {
@@ -304,6 +306,8 @@ ensure_asset kandelo-homebrew-vfs-report.json
 ensure_asset kandelo-homebrew-node-evidence.json
 ensure_asset kandelo-homebrew-browser-evidence.json
 ensure_asset kandelo-homebrew-vfs.json
+ensure_asset kandelo-homebrew-shell-layer.zip
+ensure_asset kandelo-homebrew-shell-layer.json
 
 refresh_release
 validate_release
@@ -346,7 +350,9 @@ for name in \
   kandelo-homebrew-vfs-report.json \
   kandelo-homebrew-node-evidence.json \
   kandelo-homebrew-browser-evidence.json \
-  kandelo-homebrew-vfs.json
+  kandelo-homebrew-vfs.json \
+  kandelo-homebrew-shell-layer.zip \
+  kandelo-homebrew-shell-layer.json
 do
   source="$HANDOFF/$name"
   downloaded="$TMP_ROOT/anonymous-$name"
@@ -371,6 +377,7 @@ do
 done
 
 mkdir -p "$(dirname "$RECEIPT")"
+lazy_descriptor="$HANDOFF/kandelo-homebrew-shell-layer.json"
 jq -nS \
   --arg repository "$TAP_REPOSITORY" \
   --arg tag "$tag" \
@@ -380,6 +387,12 @@ jq -nS \
   --arg image_url "$(jq -er '.image.url' "$descriptor")" \
   --arg image_sha256 "$(jq -er '.image.sha256' "$descriptor")" \
   --argjson image_bytes "$(jq -er '.image.bytes' "$descriptor")" \
+  --arg lazy_descriptor_url "https://github.com/${TAP_REPOSITORY}/releases/download/${tag}/kandelo-homebrew-shell-layer.json" \
+  --arg lazy_archive_url "$(jq -er '.archive.url' "$lazy_descriptor")" \
+  --arg lazy_archive_sha256 "$(jq -er '.archive.sha256' "$lazy_descriptor")" \
+  --arg lazy_archive_asset "$(jq -er '.archive.asset' "$lazy_descriptor")" \
+  --argjson lazy_archive_bytes "$(jq -er '.archive.bytes' "$lazy_descriptor")" \
+  --argjson lazy_archive_entries "$(jq -er '.archive.entry_count' "$lazy_descriptor")" \
   --slurpfile assets "$anonymous_manifest" '
     {
       schema: 1,
@@ -392,8 +405,19 @@ jq -nS \
       arch: "wasm32",
       descriptor_url: $descriptor_url,
       image: {url: $image_url, sha256: $image_sha256, bytes: $image_bytes},
+      lazy_layer: {
+        descriptor_url: $lazy_descriptor_url,
+        archive: {
+          asset: $lazy_archive_asset,
+          url: $lazy_archive_url,
+          sha256: $lazy_archive_sha256,
+          bytes: $lazy_archive_bytes,
+          entry_count: $lazy_archive_entries
+        }
+      },
       assets: $assets
     }
   ' >"$RECEIPT"
 
 echo "Published immutable Homebrew VFS descriptor: https://github.com/${TAP_REPOSITORY}/releases/download/${tag}/kandelo-homebrew-vfs.json"
+echo "Published immutable Homebrew lazy layer descriptor: https://github.com/${TAP_REPOSITORY}/releases/download/${tag}/kandelo-homebrew-shell-layer.json"

@@ -140,7 +140,7 @@ Homebrew publishing is a sibling to Kandelo package archive publishing:
 | `Kandelo/reports/*.provenance.json` | Same as metadata | Durable publication and validation evidence. |
 | `Kandelo/vfs-acceptance.json` and its Brewfile | Tap git repository | Optional tap-owned dependency-bearing acceptance selection. |
 | `Kandelo/dependency-taps.json` | Primary tap git repository | Exact reviewed public tap source lock. |
-| Required-gate VFS image, descriptor, report, and Node/browser evidence | Source tap GitHub Release `homebrew-vfs-sha256-<image-sha256>` | Kandelo browser direct-`vfs` launch, audit tooling, and operators. |
+| Required-gate VFS image, lazy shell layer, descriptors, report, and Node/browser evidence | Source tap GitHub Release `homebrew-vfs-sha256-<image-sha256>` | Kandelo browser direct-`vfs` launch, future lazy shell composition, audit tooling, and operators. |
 | Browser gallery assets | Run-scoped diagnostic artifact | Review evidence only; not a durable public gallery. |
 
 Do not publish Homebrew bottles into Kandelo's `binaries-abi-v<N>` package
@@ -1057,8 +1057,9 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    pushed.
 6. `publish-vfs-release` runs only when `require-vfs-acceptance: true`, every
    verifier matrix entry succeeded, and every tap finalizer succeeded. The
-   verifier exports only the selected wasm32 image, its VFS report, the exact
-   Node and Chromium evidence, and a deterministic descriptor. A fresh job
+   verifier exports only the selected wasm32 image, its deterministic lazy
+   shell ZIP, both descriptors, its VFS report, and the exact Node and Chromium
+   evidence. A fresh job
    checks out the exact planned Kandelo and tap commits, revalidates that inert
    bundle without a token in its environment, compares its ABI and bottle
    release tag to the trusted plan outputs, and only then exposes the scoped
@@ -1066,7 +1067,7 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    That step serializes on the content tag, creates or resumes an exact draft,
    rejects duplicate, unexpected, missing-public, or byte-mismatched assets,
    and publishes only after authenticated byte checks succeed. It finally
-   reads all five public URLs with token variables removed and verifies every
+   reads all seven public URLs with token variables removed and verifies every
    SHA-256 and byte count. It requires the published release API record to set
    `immutable: true` before emitting success. A public release retry is
    read-only and idempotent.
@@ -1347,6 +1348,20 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --report target/homebrew-hello.vfs-report.json
 ```
 
+The required-acceptance publisher also passes `--lazy-layer-out` and
+`--lazy-layer-descriptor`. Those options run the same dependency-first plan
+through `buildHomebrewVfs()` in a fresh empty filesystem, reusing the already
+loaded bottle bytes. Required acceptance explicitly composes both filesystems
+with a 256 MiB ceiling so one closure can hold the Perl, Python plus zlib, and
+Erlang proof without changing the platform base image. The resulting
+deterministic ZIP contains only the poured
+`/home/linuxbrew/.linuxbrew` closure, its generated Homebrew composition
+manifest, and its profile fragment. It does not contain the platform base
+image, a gallery profile, or a language-specific VFS image. The descriptor
+indexes every directory, regular file, and symlink, including POSIX modes,
+sizes, and symlink targets; it also binds the exact package records, source VFS
+digest, archive digest, and immutable release URLs.
+
 `--dependency-tap-root owner/tap=/exact/checkout` is repeatable for lower-level
 federated planning. The publisher derives these arguments only from the
 committed dependency-tap lock and its exact checkouts; callers must not use the
@@ -1581,6 +1596,8 @@ kandelo-homebrew-vfs.json
 kandelo-homebrew-vfs-report.json
 kandelo-homebrew-node-evidence.json
 kandelo-homebrew-browser-evidence.json
+kandelo-homebrew-shell-layer.zip
+kandelo-homebrew-shell-layer.json
 ```
 
 `kandelo-homebrew-vfs.json` is the stable machine-readable entry point. It
@@ -1596,6 +1613,21 @@ path:
 ?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
 ```
 
+`kandelo-homebrew-shell-layer.json` is a separate schema-1 entry point for the
+lazy transport artifact. Keeping it separate preserves the stable whole-image
+descriptor contract. It records mount prefix `/`, the dependency-first package
+order, exact bottle and link-manifest provenance, the source VFS identity, and
+a bounded entry index for `kandelo-homebrew-shell-layer.zip`. The release
+validator opens the ZIP, checks every indexed path/type/mode/size and symlink
+target, and reads every member so the ZIP CRCs are verified before publication.
+Both assets receive authenticated and anonymous digest-and-size readback.
+
+This publisher change does not register the ZIP in the main shell VFS yet.
+Until the browser runtime gains integrity-checked lazy archive registration,
+the layer descriptor is a durable input for that follow-up rather than a claim
+that Perl, Python, Erlang, or any other selected package is already available
+in the default shell. It also does not publish one VFS image per language.
+
 The release publisher never uses `--clobber`. A content-tag state lock
 serializes writers. An absent release starts as a draft; an interrupted exact
 draft may be completed, while unexpected assets or existing bytes with a
@@ -1605,7 +1637,7 @@ authenticated, paginated release list and refreshes that draft by its database
 ID. Once public, the release is never mutated. Publication creates the tag,
 after which it must be a direct commit reference to the exact tap source
 commit. Success requires GitHub-enforced release immutability plus anonymous
-digest-and-size readback of all five assets. The run retains a small publication
+digest-and-size readback of all seven assets. The run retains a small publication
 receipt with the descriptor and direct-image URLs, but that Actions artifact is
 only a receipt; the release assets are the durable public product.
 
@@ -2028,8 +2060,10 @@ rollback path instead.
 
 The implemented path covers a trusted bottle build, public repository-rooted
 GHCR package creation plus anonymous readback, sidecar validation, verified VFS
-image building, Node and Chromium smoke, immutable public release of the exact
-required-acceptance image, diagnostic gallery gating, and lossless under-lock
-tap composition with Formula source-closure drift rejection. Durable generic
-gallery publication, broader package coverage, general guest `brew install`,
-and broader release/gallery operator runbooks remain separate work.
+image building, deterministic lazy ZIP closure generation, Node and Chromium
+smoke, immutable public release of the exact required-acceptance image and lazy
+transport layer, diagnostic gallery gating, and lossless under-lock tap
+composition with Formula source-closure drift rejection. Main-shell lazy layer
+registration and integrity checking, durable generic gallery publication,
+broader package coverage, general guest `brew install`, and broader
+release/gallery operator runbooks remain separate work.

@@ -24,6 +24,10 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildHomebrewVfs } from "../../../host/src/homebrew-vfs-builder";
+import {
+  buildHomebrewLazyLayer,
+  encodeHomebrewLazyLayerDescriptor,
+} from "../../../host/src/homebrew-lazy-layer";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
   planFederatedHomebrewVfs,
@@ -66,6 +70,8 @@ interface CliOptions {
   maxBytes?: number;
   writeProfile: boolean;
   shellConfig?: string;
+  lazyLayerOut?: string;
+  lazyLayerDescriptor?: string;
 }
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
@@ -167,6 +173,14 @@ async function main(): Promise<void> {
     options.maxBytes,
     plan.kandeloAbi,
   );
+  const loadedBottleBytes = new Map<string, Uint8Array>();
+  const loadPlannedBottle = async (pkg: HomebrewVfsPackagePlan) => {
+    const existing = loadedBottleBytes.get(pkg.fullName);
+    if (existing !== undefined) return existing;
+    const bytes = await loadBottleBytes(pkg, options);
+    loadedBottleBytes.set(pkg.fullName, bytes);
+    return bytes;
+  };
   const result = await buildHomebrewVfs(plan, {
     fs,
     writeProfile: options.writeProfile,
@@ -178,7 +192,7 @@ async function main(): Promise<void> {
       bytes: brewfileSelection.bytes,
       requestedPackages: brewfileSelection.packages,
     } : undefined,
-    loadBottleBytes: (pkg) => loadBottleBytes(pkg, options),
+    loadBottleBytes: loadPlannedBottle,
   });
   if (shellConfig) {
     assertShellExecutable(fs, shellConfig.config.path);
@@ -234,6 +248,35 @@ async function main(): Promise<void> {
       },
     },
   });
+
+  if (options.lazyLayerOut && options.lazyLayerDescriptor) {
+    const image = new Uint8Array(readFileSync(options.out));
+    const layerFs = createFs(undefined, options.maxBytes, plan.kandeloAbi).fs;
+    const layer = await buildHomebrewLazyLayer(plan, {
+      fs: layerFs,
+      sourceVfs: {
+        sha256: createHash("sha256").update(image).digest("hex"),
+        bytes: image.byteLength,
+      },
+      loadBottleBytes: loadPlannedBottle,
+      selectionSource: brewfileSelection ? {
+        kind: "brewfile",
+        parser: brewfileSelection.kind,
+        sha256: brewfileSelection.sha256,
+        bytes: brewfileSelection.bytes,
+        requestedPackages: brewfileSelection.packages,
+      } : undefined,
+    });
+    mkdirSync(dirname(options.lazyLayerOut), { recursive: true });
+    mkdirSync(dirname(options.lazyLayerDescriptor), { recursive: true });
+    writeFileSync(options.lazyLayerOut, layer.archive);
+    writeFileSync(
+      options.lazyLayerDescriptor,
+      encodeHomebrewLazyLayerDescriptor(layer.descriptor),
+    );
+    console.log(`Homebrew lazy shell layer: ${options.lazyLayerOut}`);
+    console.log(`Homebrew lazy shell layer descriptor: ${options.lazyLayerDescriptor}`);
+  }
 
   const report = {
     ...result.report,
@@ -342,6 +385,18 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.shellConfig = requireValue(args, ++i, arg);
         break;
+      case "--lazy-layer-out":
+        if (options.lazyLayerOut !== undefined) {
+          usage("--lazy-layer-out may be provided only once");
+        }
+        options.lazyLayerOut = requireValue(args, ++i, arg);
+        break;
+      case "--lazy-layer-descriptor":
+        if (options.lazyLayerDescriptor !== undefined) {
+          usage("--lazy-layer-descriptor may be provided only once");
+        }
+        options.lazyLayerDescriptor = requireValue(args, ++i, arg);
+        break;
       case "--help":
       case "-h":
         usage(undefined, 0);
@@ -365,6 +420,9 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.shellConfig && !options.writeProfile) {
     usage("--shell-config requires --write-profile so the Homebrew environment is initialized");
+  }
+  if (Boolean(options.lazyLayerOut) !== Boolean(options.lazyLayerDescriptor)) {
+    usage("--lazy-layer-out and --lazy-layer-descriptor must be provided together");
   }
 
   return options as CliOptions;
@@ -689,7 +747,9 @@ function usage(message?: string, code = 2): never {
   [--expected-cache-key <name>=<sha256>] [--no-fallback] \\
   [--bottle-cache <dir>] [--base-image <base.vfs[.zst]>] \\
   [--max-bytes <bytes|MiB>] [--write-profile] \\
-  [--shell-config <shell.json>]`);
+  [--shell-config <shell.json>] \\
+  [--lazy-layer-out <layer.zip> \\
+   --lazy-layer-descriptor <layer.json>]`);
   process.exit(code);
 }
 

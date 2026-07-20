@@ -24,9 +24,9 @@ PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "e718bb1228d750954ddb8150a7a2714d376f19b55b87965ea6ed8b8e997186c4"
+PUBLISHER_VERIFY_DIGEST = "a2743eed3006f0429e23d38526cbed534cd8302cd43524b17a7b83a955a7c1c1"
 PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
-PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
+PUBLISHER_VFS_RELEASE_DIGEST = "56905a52f68c3bae6f34e52d151cd96077b1f303f2fc35e21d4e69aa253f8b77"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
@@ -3307,7 +3307,9 @@ def check_publisher(workflow)
     'platform base did not resolve from the Kandelo package registry tree',
     'kernel="${resolved_platform_artifacts[1]}"',
     'verification kernel did not resolve from the exact worktree build',
-    '--runtime node', '--no-fallback',
+    '--runtime node', '--max-bytes 256MiB', '--no-fallback',
+    '--lazy-layer-out "$lazy_layer"',
+    '--lazy-layer-descriptor "$lazy_layer_descriptor"',
     'bash scripts/dev-shell.sh npx tsx',
     'scripts/homebrew-vfs-acceptance-smoke.ts',
     '--base-origin kandelo-package-registry', '--kernel-origin worktree-build',
@@ -3496,6 +3498,9 @@ def check_publisher(workflow)
         ) &&
         vfs_publish.fetch("run").include?('--receipt "$RUNNER_TEMP/homebrew-vfs-release-receipt.json"') &&
         vfs_publish.fetch("run").include?('echo "descriptor-url=$descriptor_url"') &&
+        vfs_publish.fetch("run").include?(
+          'echo "lazy-layer-descriptor-url=$lazy_layer_descriptor_url"'
+        ) &&
         vfs_publish.fetch("run").include?('echo "Browser launch input: \\`?vfs=$image_url\\`"'),
         "publisher VFS write step does not preserve validation, receipt, and launch outputs")
 
@@ -3506,6 +3511,8 @@ def check_publisher(workflow)
     'browser image digest', 'selected formula tap commit', 'Node dependency edge',
     'expected Kandelo ABI', 'expected bottle release tag',
     'browser legacy shell downloads', 'query_parameter": "vfs"',
+    'LAZY_LAYER_ASSET = "kandelo-homebrew-shell-layer.zip"',
+    'validate_lazy_layer_zip', 'canonical path order',
   ].each do |fragment|
     check(vfs_validator_source.include?(fragment),
           "Homebrew VFS release validator lacks #{fragment}")
@@ -3528,6 +3535,8 @@ def check_publisher(workflow)
     'publish response was ambiguous; reconciling',
     'anonymous readback failed', '.object.type == "commit"',
     'visibility: "public-anonymous-readback"',
+    'kandelo-homebrew-shell-layer.zip',
+    'kandelo-homebrew-shell-layer.json',
   ].each do |fragment|
     check(vfs_publisher_source.include?(fragment),
           "Homebrew VFS release publisher lacks #{fragment}")
@@ -3556,6 +3565,7 @@ def check_publisher(workflow)
     "transient anonymous release propagation", "ambiguous successful publish",
     "public release without GitHub immutability",
     "Kandelo ABI outside the trusted plan", "bottle release tag outside the trusted plan",
+    "tampered lazy ZIP layer", "lazy ZIP index that differs from its archive",
   ].each do |fragment|
     check(vfs_test_source.include?(fragment), "Homebrew VFS release tests lack #{fragment}")
   end
