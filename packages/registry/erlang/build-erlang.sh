@@ -417,10 +417,14 @@ LIBS="" \
 # the source release's removed preloaded modules be regenerated deterministically
 # with the verified host OTP. The opt target writes them to erts/ebin; OTP's
 # copy target strips and installs that exact set into erts/preloaded/ebin, where
-# the target emulator build reads them.
+# the target emulator build reads them. Keep these as separate make processes:
+# Homebrew supplies parallel MAKEFLAGS, and independent goals in one process
+# would otherwise allow copy to race the module compilation.
 mkdir -p "$SRC_DIR/erts/preloaded/ebin"
 make -C "$SRC_DIR/erts/preloaded/src" \
-    OVERRIDE_TARGET=wasm32-unknown-wasi opt copy
+    OVERRIDE_TARGET=wasm32-unknown-wasi opt
+make -C "$SRC_DIR/erts/preloaded/src" \
+    OVERRIDE_TARGET=wasm32-unknown-wasi copy
 
 echo "==> Configure complete. Patching config.h files..."
 
