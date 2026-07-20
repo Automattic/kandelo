@@ -304,14 +304,26 @@ if args[:2] == ["api", "--include"]:
         print("HTTP/1.1 404 Not Found\n")
         sys.exit(1)
     if "/releases/tags/" in endpoint:
+        if state["draft"]:
+            print("HTTP/1.1 404 Not Found\n")
+            sys.exit(1)
+        print("HTTP/1.1 200 OK\n")
+        print(json.dumps(release_json(state)))
+    elif "/releases/" in endpoint:
         print("HTTP/1.1 200 OK\n")
         print(json.dumps(release_json(state)))
     elif "/git/ref/tags/" in endpoint:
+        if state["draft"]:
+            print("HTTP/1.1 404 Not Found\n")
+            sys.exit(1)
         print("HTTP/1.1 200 OK\n")
         print(json.dumps({"ref": "refs/tags/" + state["tag"], "object": {"type": state.get("tag_type", "commit"), "sha": state.get("tag_sha", state["target"])}}))
     else:
         print("HTTP/1.1 404 Not Found\n")
         sys.exit(1)
+elif args[:3] == ["api", "--paginate", "--slurp"]:
+    state = load()
+    print(json.dumps([[release_json(state)]] if state is not None else [[]]))
 elif args[:3] == ["api", "--method", "POST"]:
     fields = {arg.split("=", 1)[0][2:]: arg.split("=", 1)[1] for arg in args if arg.startswith(("-f", "-F")) and "=" in arg}
     # gh receives -f and its value as separate arguments; parse those too.
@@ -431,9 +443,16 @@ cp "$fake_state/public-state.json" "$fake_state/state.json"
 jq '.draft = true | del(.assets["kandelo-homebrew-browser-evidence.json"])' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
+: >"$fake_state/gh.log"
 run_publisher >/dev/null
 jq -e '.draft == false and (.assets | length) == 5' "$fake_state/state.json" >/dev/null ||
   fail "publisher did not recover an exact partial draft"
+if ! jq -s -e '
+  any(.[]; .[0:3] == ["api", "--paginate", "--slurp"]) and
+  all(.[]; .[0:3] != ["api", "--method", "POST"])
+' "$fake_state/gh.log" >/dev/null; then
+  fail "publisher replaced an exact partial draft instead of discovering it by authenticated release list"
+fi
 
 # Existing public bytes are immutable and never overwritten.
 asset_file="$(jq -r '.assets["kandelo-homebrew.vfs.zst"].file' "$fake_state/state.json")"

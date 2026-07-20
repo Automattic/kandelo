@@ -1539,13 +1539,16 @@ The `hello` package bytes in this smoke come from the current Homebrew bottle:
 from the local build in dry-run mode, or from the anonymously fetched GHCR blob
 in write mode. The browser demo still resolves Kandelo-owned ABI platform
 prerequisites such as `node.wasm` and `node-vfs.vfs.zst` through Kandelo's normal
-binary release. Generic Formula and dependency-bearing VFS verification fetches
-only the base command set and `rootfs`; its focused Vite input does not scan the
-interactive demo. The `hello` gallery smoke additionally materializes the
-supported interactive graph through `./run.sh --fetch-only prepare-browser`,
-which excludes packages whose demos are provided by the external software
-gallery. Those platform assets are not the migrated package under test, and
-unrelated gallery packages are not bottle verification prerequisites.
+binary release. Generic Formula and schema 1 dependency-bearing VFS verification
+fetch only the base command set and `rootfs`; their focused Vite input does not
+scan the interactive demo. Schema 2 acceptance also boots the image-owned
+default shell through the full machine UI, so the selected acceptance matrix
+entry materializes the supported interactive graph through
+`./run.sh --fetch-only prepare-browser` before that smoke. The `hello` gallery
+smoke materializes the same graph. Browser preparation excludes packages whose
+demos are provided by the external software gallery. Those platform assets are
+not the migrated package under test, and unrelated gallery packages are not
+bottle verification prerequisites.
 
 ## Durable Browser-Proven VFS Releases
 
@@ -1596,9 +1599,12 @@ path:
 The release publisher never uses `--clobber`. A content-tag state lock
 serializes writers. An absent release starts as a draft; an interrupted exact
 draft may be completed, while unexpected assets or existing bytes with a
-different digest fail closed. Once public, the release is never mutated. The
-tag must be a direct commit reference to the exact tap source commit, and
-success requires GitHub-enforced release immutability plus anonymous
+different digest fail closed. GitHub's release-by-tag and Git-ref endpoints do
+not expose a draft, so recovery discovers the unique pending tag through the
+authenticated, paginated release list and refreshes that draft by its database
+ID. Once public, the release is never mutated. Publication creates the tag,
+after which it must be a direct commit reference to the exact tap source
+commit. Success requires GitHub-enforced release immutability plus anonymous
 digest-and-size readback of all five assets. The run retains a small publication
 receipt with the descriptor and direct-image URLs, but that Actions artifact is
 only a receipt; the release assets are the durable public product.

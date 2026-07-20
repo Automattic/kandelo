@@ -2088,7 +2088,7 @@ jobs:
           esac
 
       - name: Build Kandelo wasm64 sysroot for the interactive browser graph
-        if: ${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}
+        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'hello' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2124,7 +2124,7 @@ jobs:
           '
 
       - name: Prepare the supported interactive browser demo graph
-        if: ${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}
+        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'hello' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2657,6 +2657,10 @@ jobs:
             --arg runner_temp "$RUNNER_TEMP" \
             --arg build_home "/home/kandelo-homebrew-build" \
             '[$github_workspace, $runner_workspace, $runner_temp, $build_home]')"
+          (
+            cd apps/browser-demos
+            npx playwright install chromium --with-deps
+          )
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
@@ -2689,7 +2693,6 @@ jobs:
 
             (
               cd apps/browser-demos
-              npx playwright install chromium --with-deps
               playwright_args=(
                 test test/kandelo-homebrew.spec.ts
                 --project=chromium

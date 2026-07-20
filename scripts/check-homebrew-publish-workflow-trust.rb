@@ -24,7 +24,7 @@ PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "6b20da43874c751640631bf957b5f991aa793476dd6da10d27cec6f3387fe140"
+PUBLISHER_VERIFY_DIGEST = "e718bb1228d750954ddb8150a7a2714d376f19b55b87965ea6ed8b8e997186c4"
 PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
 PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -3070,14 +3070,17 @@ def check_publisher(workflow)
   check(index_verify_run.scan(repository_remote).length == 1 &&
         !index_verify_run.include?('remote="ghcr.io/${tap_name}/'),
         "publisher public Homebrew index verification is not repository-rooted")
+  browser_graph_condition =
+    "${{ matrix.arch == 'wasm32' && (matrix.formula == 'hello' || " \
+    "(!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}"
   browser_sysroot_step = named_step(
     verify_steps, "Build Kandelo wasm64 sysroot for the interactive browser graph"
   )
   check(browser_sysroot_step.keys.sort == %w[if name run shell] &&
         browser_sysroot_step["shell"] == "bash" &&
-        browser_sysroot_step["if"] ==
-          "${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}",
-        "publisher interactive browser wasm64 sysroot is not scoped to hello/wasm32")
+        browser_sysroot_step["if"] == browser_graph_condition,
+        "publisher interactive browser wasm64 sysroot is not scoped to " \
+        "hello or the exact wasm32 VFS acceptance entry")
   browser_sysroot_run = browser_sysroot_step.fetch("run")
   [
     "set -euo pipefail", "cd kandelo-sysroot-build",
@@ -3093,8 +3096,9 @@ def check_publisher(workflow)
                                  "Prepare the supported interactive browser demo graph")
   check(browser_demo_step.keys.sort == %w[if name run shell] &&
         browser_demo_step["shell"] == "bash" &&
-        browser_demo_step["if"] == "${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}",
-        "publisher interactive browser graph is not scoped to hello/wasm32")
+        browser_demo_step["if"] == browser_graph_condition,
+        "publisher interactive browser graph is not scoped to hello or the exact " \
+        "wasm32 VFS acceptance entry")
   browser_demo_run = browser_demo_step.fetch("run")
   [
     "for sysroot_name in sysroot sysroot64",
@@ -3237,6 +3241,10 @@ def check_publisher(workflow)
   end
   check(!browser_run.include?("bash -c '"),
         "publisher strict browser smoke exposes its inner script to outer shell expansion")
+  check(browser_run.scan("npx playwright install chromium --with-deps").length == 1 &&
+        browser_run.match?(
+          /\(\n\s+cd apps\/browser-demos\n\s+npx playwright install chromium --with-deps\n\s*\)\n\s*bash scripts\/dev-shell\.sh env/
+        ), "publisher strict browser smoke does not provision Chromium once in the runner shell")
   forbidden_root_json_fragments.each do |fragment|
     check(browser_run.include?(fragment),
           "publisher browser sidecar regeneration lacks trusted forbidden-root source #{fragment}")
@@ -3379,8 +3387,11 @@ def check_publisher(workflow)
   check(default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL") &&
         default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_PATH") &&
         default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0") &&
+        default_shell_test.include?('element.shadowRoot?.querySelector(".message-body")') &&
+        default_shell_test.include?('element.attachShadow({ mode: "open" })') &&
         default_shell_test.include?("expect(legacyShellFetches).toEqual([])"),
-        "browser Homebrew default-shell acceptance does not bind the exact image shell path")
+        "browser Homebrew default-shell acceptance does not bind the exact image shell path " \
+        "and preserve Vite diagnostics")
   diagnostics = named_step(verify_steps, "Upload read-only verification diagnostics")
   check(diagnostics.dig("with", "path").include?(
           "${{ runner.temp }}/homebrew-vfs-acceptance/**"
@@ -3505,6 +3516,11 @@ def check_publisher(workflow)
   [
     'env -u GH_TOKEN -u GITHUB_TOKEN python3', 'state-lock.sh',
     'homebrew-vfs-sha256-', 'draft=true', 'assert_asset_names_are_bounded',
+    'gh api --paginate --slurp', 'releases?per_page=100',
+    'type == "array" and all(.[]; type == "array")',
+    '[.[][] | select(.tag_name == $tag)]',
+    'github_api_get_json "/repos/${TAP_REPOSITORY}/releases/${release_id}"',
+    ".id | select(type == \"number\" and . > 0)",
     'existing release identity is malformed or mismatched',
     'public release is not protected by GitHub immutable releases',
     'public release is missing immutable asset', 'Accept: application/octet-stream',
@@ -3516,11 +3532,24 @@ def check_publisher(workflow)
     check(vfs_publisher_source.include?(fragment),
           "Homebrew VFS release publisher lacks #{fragment}")
   end
+  draft_tag_guard = <<~'SHELL'.strip
+    if [ "$(jq -r '.draft' "$release_json")" = false ]; then
+      validate_tag_target
+    fi
+  SHELL
+  guard_index = vfs_publisher_source.index(draft_tag_guard)
+  final_tag_index = vfs_publisher_source.rindex("\nvalidate_tag_target\n")
+  public_index = vfs_publisher_source.index("release did not become public")
+  check(!guard_index.nil? && !final_tag_index.nil? && !public_index.nil? &&
+        vfs_publisher_source.scan("\nvalidate_tag_target\n").length == 1 &&
+        guard_index < public_index && final_tag_index > public_index,
+        "Homebrew VFS release publisher requires a tag ref while the release is still draft")
   vfs_test_source = File.read(File.join(REPO_ROOT, "scripts/test-homebrew-vfs-release.sh"))
   [
     "validator accepted a tampered VFS image", "browser evidence for different bytes",
     "validator accepted a symlinked handoff entry", "dirty exact tap checkout",
     "idempotent public retry mutated the release", "recover an exact partial draft",
+    "replaced an exact partial draft instead of discovering it by authenticated release list",
     "filled a missing asset in an existing public release",
     "overwrote a mismatched public asset", "accepted an unexpected release asset",
     "failed anonymous digest readback", "release tag at the wrong commit",
@@ -4425,6 +4454,12 @@ def self_test(publisher, maintenance, repository_canary)
         "./run.sh --fetch-only prepare-browser", "bash scripts/fetch-binaries.sh --fetch-only"
       )
     },
+    "VFS acceptance interactive browser graph omitted" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
+      )
+      step["if"] = "${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}"
+    },
     "missing interactive browser wasm64 sysroot build" => lambda { |w|
       step = mutate_named_step(
         w, "verify-bottle", "Build Kandelo wasm64 sysroot for the interactive browser graph"
@@ -4474,6 +4509,13 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
       step["run"] = step.fetch("run").sub("KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
                                              "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=0")
+    },
+    "hello Chromium provisioning reentered the dev shell" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
+      step["run"] = step.fetch("run").sub(
+        "npx playwright install chromium --with-deps",
+        "bash scripts/dev-shell.sh npx playwright install chromium --with-deps"
+      )
     },
     "browser smoke inner variables exposed to outer shell expansion" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
