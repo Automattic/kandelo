@@ -565,6 +565,36 @@ wasm_imports_kernel_fork() {
     grep -a -q 'kernel_fork' "$path" 2>/dev/null
 }
 
+# Inspect the complete fork-instrumentation contract with one structural
+# decoder pass. Large programs such as Ruby produce tens of megabytes of
+# `wasm-objdump -x` output; decoding that output once also keeps a transient
+# decoder failure from being misreported as one arbitrarily missing export.
+#
+# Output fields are, in order:
+#   relocatable, imports kernel.kernel_fork, unwind begin/end,
+#   rewind begin/end, and state export.
+_wasm_fork_contract_inventory() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 1
+    command -v wasm-objdump >/dev/null 2>&1 || return 2
+
+    _wasm_stream_awk '
+        /name: "(linking|reloc\.)/ { relocatable = 1 }
+        /<- kernel\.kernel_fork/ { imports_fork = 1 }
+        /-> "wpk_fork_unwind_begin"/ { unwind_begin = 1 }
+        /-> "wpk_fork_unwind_end"/ { unwind_end = 1 }
+        /-> "wpk_fork_rewind_begin"/ { rewind_begin = 1 }
+        /-> "wpk_fork_rewind_end"/ { rewind_end = 1 }
+        /-> "wpk_fork_state"/ { state = 1 }
+        END {
+            printf "%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+                relocatable + 0, imports_fork + 0,
+                unwind_begin + 0, unwind_end + 0,
+                rewind_begin + 0, rewind_end + 0, state + 0
+        }
+    ' wasm-objdump -x "$path"
+}
+
 wasm_has_wpk_fork_export() {
     local path="${1:-}"
     local name="${2:-}"
@@ -631,18 +661,14 @@ wasm_require_exports() {
 
 wasm_has_complete_fork_instrumentation() {
     local path="${1:-}"
-    local name export_status
-    for name in \
-        wpk_fork_unwind_begin \
-        wpk_fork_unwind_end \
-        wpk_fork_rewind_begin \
-        wpk_fork_rewind_end \
-        wpk_fork_state; do
-        export_status=0
-        wasm_has_wpk_fork_export "$path" "$name" || export_status=$?
-        [ "$export_status" -eq 0 ] || return "$export_status"
-    done
-    return 0
+    local inventory inventory_status=0
+    local relocatable imports_fork unwind_begin unwind_end rewind_begin rewind_end state extra
+    inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
+    [ "$inventory_status" -eq 0 ] || return "$inventory_status"
+    IFS=$'\t' read -r relocatable imports_fork unwind_begin unwind_end \
+        rewind_begin rewind_end state extra <<< "$inventory"
+    [ -z "$extra" ] || return 2
+    [ "$unwind_begin$unwind_end$rewind_begin$rewind_end$state" = 11111 ]
 }
 
 wasm_is_relocatable_object() {
@@ -679,84 +705,111 @@ wasm_memory_arch() {
 
 wasm_has_any_wpk_fork_export() {
     local path="${1:-}"
-    local name export_status
-    for name in \
-        wpk_fork_unwind_begin \
-        wpk_fork_unwind_end \
-        wpk_fork_rewind_begin \
-        wpk_fork_rewind_end \
-        wpk_fork_state; do
-        export_status=0
-        wasm_has_wpk_fork_export "$path" "$name" || export_status=$?
-        case "$export_status" in
-            0) return 0 ;;
-            1) ;;
-            *) return 0 ;; # Decoder failure: classify as unsafe/present.
-        esac
-    done
-    return 1
+    local inventory inventory_status=0
+    local relocatable imports_fork unwind_begin unwind_end rewind_begin rewind_end state extra
+    inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
+    case "$inventory_status" in
+        0) ;;
+        1) return 1 ;;
+        *) return 0 ;; # Decoder failure: classify as unsafe/present.
+    esac
+    IFS=$'\t' read -r relocatable imports_fork unwind_begin unwind_end \
+        rewind_begin rewind_end state extra <<< "$inventory"
+    [ -z "$extra" ] || return 0
+    [ "$unwind_begin$unwind_end$rewind_begin$rewind_end$state" != 00000 ]
 }
 
 wasm_has_missing_fork_instrumentation() {
     local path="${1:-}"
-    local predicate_status complete_status
+    local inventory inventory_status=0
+    local relocatable imports_fork unwind_begin unwind_end rewind_begin rewind_end state extra
     wasm_is_binary "$path" || return 1
 
-    predicate_status=0
-    wasm_is_relocatable_object "$path" || predicate_status=$?
-    case "$predicate_status" in
-        0) return 1 ;;
-        1) ;;
-        *) return 0 ;; # Decoder failure: classify as unsafe.
-    esac
+    if ! command -v wasm-objdump >/dev/null 2>&1; then
+        case "$path" in
+            *.o) return 1 ;;
+            *) return 0 ;;
+        esac
+    fi
 
-    predicate_status=0
-    wasm_imports_kernel_fork "$path" || predicate_status=$?
-    case "$predicate_status" in
-        0)
-            complete_status=0
-            wasm_has_complete_fork_instrumentation "$path" || complete_status=$?
-            [ "$complete_status" -eq 0 ] && return 1
-            return 0
-            ;;
-        1) ;;
-        *) return 0 ;;
-    esac
+    inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
+    [ "$inventory_status" -eq 0 ] || return 0 # Decoder failure: unsafe.
+    IFS=$'\t' read -r relocatable imports_fork unwind_begin unwind_end \
+        rewind_begin rewind_end state extra <<< "$inventory"
+    [ -z "$extra" ] || return 0
+    [ "$relocatable" = 1 ] && return 1
 
-    predicate_status=0
-    wasm_has_any_wpk_fork_export "$path" || predicate_status=$?
-    case "$predicate_status" in
-        0)
-            complete_status=0
-            wasm_has_complete_fork_instrumentation "$path" || complete_status=$?
-            [ "$complete_status" -eq 0 ] && return 1
-            return 0
-            ;;
-        1) return 1 ;;
-        *) return 0 ;;
-    esac
+    local exports="$unwind_begin$unwind_end$rewind_begin$rewind_end$state"
+    [ "$exports" = 11111 ] && return 1
+    [ "$imports_fork" = 0 ] && [ "$exports" = 00000 ] && return 1
+    return 0
 }
 
 wasm_require_fork_instrumentation_if_needed() {
     local path="${1:-}"
-    if wasm_has_missing_fork_instrumentation "$path"; then
-        echo "ERROR: refusing wasm artifact with incomplete/missing fork instrumentation: $path" >&2
-        echo "       Binaries that import kernel.kernel_fork must be processed with scripts/run-wasm-fork-instrument.sh." >&2
+    wasm_is_binary "$path" || return 0
+
+    if ! command -v wasm-objdump >/dev/null 2>&1; then
+        case "$path" in
+            *.o) return 0 ;;
+        esac
+        echo "ERROR: unable to inspect fork instrumentation: $path" >&2
+        echo "       wasm-objdump is required for structural export validation." >&2
         return 1
     fi
+
+    local inventory inventory_status=0
+    local relocatable imports_fork unwind_begin unwind_end rewind_begin rewind_end state extra
+    inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
+    if [ "$inventory_status" -ne 0 ]; then
+        echo "ERROR: unable to inspect fork instrumentation: $path" >&2
+        echo "       wasm-objdump failed with status $inventory_status." >&2
+        return 1
+    fi
+    IFS=$'\t' read -r relocatable imports_fork unwind_begin unwind_end \
+        rewind_begin rewind_end state extra <<< "$inventory"
+    if [ -n "$extra" ]; then
+        echo "ERROR: unable to inspect fork instrumentation: $path" >&2
+        echo "       wasm-objdump returned an invalid fork-contract inventory." >&2
+        return 1
+    fi
+    [ "$relocatable" = 1 ] && return 0
+
+    local exports="$unwind_begin$unwind_end$rewind_begin$rewind_end$state"
+    [ "$exports" = 11111 ] && return 0
+    [ "$imports_fork" = 0 ] && [ "$exports" = 00000 ] && return 0
+
+    local missing=()
+    [ "$unwind_begin" = 1 ] || missing+=(wpk_fork_unwind_begin)
+    [ "$unwind_end" = 1 ] || missing+=(wpk_fork_unwind_end)
+    [ "$rewind_begin" = 1 ] || missing+=(wpk_fork_rewind_begin)
+    [ "$rewind_end" = 1 ] || missing+=(wpk_fork_rewind_end)
+    [ "$state" = 1 ] || missing+=(wpk_fork_state)
+    echo "ERROR: refusing wasm artifact with incomplete/missing fork instrumentation: $path" >&2
+    printf '       missing: %s\n' "${missing[*]}" >&2
+    echo "       Binaries that import kernel.kernel_fork must be processed with scripts/run-wasm-fork-instrument.sh." >&2
+    return 1
 }
 
 wasm_require_no_fork_instrumentation() {
     local path="${1:-}"
-    local predicate_status=0
-    wasm_has_any_wpk_fork_export "$path" || predicate_status=$?
-    if [ "$predicate_status" -eq 0 ]; then
-        echo "ERROR: refusing wasm artifact with disabled fork instrumentation policy: $path" >&2
-        echo "       Rebuild it without scripts/run-wasm-fork-instrument.sh." >&2
+    wasm_is_binary "$path" || return 0
+    local inventory inventory_status=0
+    local relocatable imports_fork unwind_begin unwind_end rewind_begin rewind_end state extra
+    inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
+    if [ "$inventory_status" -ne 0 ]; then
+        echo "ERROR: unable to inspect fork instrumentation policy: $path" >&2
         return 1
     fi
-    if [ "$predicate_status" -gt 1 ]; then
+    IFS=$'\t' read -r relocatable imports_fork unwind_begin unwind_end \
+        rewind_begin rewind_end state extra <<< "$inventory"
+    if [ -n "$extra" ]; then
         echo "ERROR: unable to inspect fork instrumentation policy: $path" >&2
+        return 1
+    fi
+    if [ "$unwind_begin$unwind_end$rewind_begin$rewind_end$state" != 00000 ]; then
+        echo "ERROR: refusing wasm artifact with disabled fork instrumentation policy: $path" >&2
+        echo "       Rebuild it without scripts/run-wasm-fork-instrument.sh." >&2
         return 1
     fi
 }

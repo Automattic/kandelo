@@ -263,6 +263,71 @@ if wasm_has_stale_abi "$work/no-abi.wasm" 18; then
     exit 1
 fi
 
+cat >"$work/complete-fork.wat" <<'WAT'
+(module
+  (import "kernel" "kernel_fork" (func $kernel_fork))
+  (func (export "wpk_fork_unwind_begin"))
+  (func (export "wpk_fork_unwind_end"))
+  (func (export "wpk_fork_rewind_begin"))
+  (func (export "wpk_fork_rewind_end"))
+  (func (export "wpk_fork_state"))
+  (func (export "_start")
+    call $kernel_fork))
+WAT
+wat2wasm "$work/complete-fork.wat" -o "$work/complete-fork.wasm"
+if ! wasm_has_complete_fork_instrumentation "$work/complete-fork.wasm"; then
+    echo "ERROR: complete fork instrumentation was rejected" >&2
+    exit 1
+fi
+if wasm_has_missing_fork_instrumentation "$work/complete-fork.wasm"; then
+    echo "ERROR: complete fork instrumentation was classified as missing" >&2
+    exit 1
+fi
+wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
+
+cat >"$work/partial-fork.wat" <<'WAT'
+(module
+  (import "kernel" "kernel_fork" (func $kernel_fork))
+  (func (export "wpk_fork_unwind_begin"))
+  (func (export "wpk_fork_unwind_end"))
+  (func (export "wpk_fork_rewind_begin"))
+  (func (export "wpk_fork_rewind_end"))
+  (func (export "_start")
+    call $kernel_fork))
+WAT
+wat2wasm "$work/partial-fork.wat" -o "$work/partial-fork.wasm"
+partial_fork_error="$work/partial-fork.error"
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/partial-fork.wasm" 2>"$partial_fork_error"; then
+    echo "ERROR: incomplete fork instrumentation was accepted" >&2
+    exit 1
+fi
+grep -Fqx '       missing: wpk_fork_state' "$partial_fork_error" || {
+    echo "ERROR: incomplete fork instrumentation did not report its exact missing export" >&2
+    cat "$partial_fork_error" >&2
+    exit 1
+}
+
+mkdir "$work/counting-bin"
+cat >"$work/counting-bin/wasm-objdump" <<'SH'
+#!/usr/bin/env bash
+printf 'decode\n' >> "$WASM_OBJDUMP_COUNT_FILE"
+exec "$REAL_WASM_OBJDUMP" "$@"
+SH
+chmod +x "$work/counting-bin/wasm-objdump"
+count_file="$work/wasm-objdump.count"
+: >"$count_file"
+(
+    export PATH="$work/counting-bin:$PATH"
+    export REAL_WASM_OBJDUMP="$real_objdump"
+    export WASM_OBJDUMP_COUNT_FILE="$count_file"
+    wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
+)
+[ "$(wc -l <"$count_file" | tr -d ' ')" = 1 ] || {
+    echo "ERROR: complete fork validation decoded the Wasm more than once" >&2
+    exit 1
+}
+
 mkdir "$work/failing-bin"
 cat >"$work/failing-bin/wasm-objdump" <<'SH'
 #!/usr/bin/env bash
