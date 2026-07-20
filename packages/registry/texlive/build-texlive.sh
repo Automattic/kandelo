@@ -2,6 +2,8 @@
 set -euo pipefail
 
 TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://pi.kwarc.info/historic/systems/texlive/${TEXLIVE_VERSION}/texlive-${TEXLIVE_VERSION}0308-source.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-fffdb1a3d143c177a4398a2229a40d6a88f18098e5f6dcfd57648c9f2417490f}"
 # Exported so build-texlive-bundle.sh's tlnet-final URL pins to the
 # same release as the source tarball below — keeps the engine and
 # its texmf-dist macros from drifting across upstream rollovers.
@@ -57,8 +59,10 @@ echo "==> libpng at $LIBPNG_PREFIX"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
     TARBALL="texlive-${TEXLIVE_VERSION}0308-source.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/${TARBALL}" \
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" \
         -o "/tmp/${TARBALL}"
+    echo "==> Verifying TeX Live source sha256..."
+    echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
     mkdir -p "$SRC_DIR"
     tar xf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/${TARBALL}"
