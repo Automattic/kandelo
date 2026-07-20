@@ -114,7 +114,7 @@ case "${1:-}" in
     esac
     ;;
   assert-native-isolation-runtime)
-    [ "$#" -eq 20 ]
+    [ "$#" -eq 21 ]
     shift
     native_prefix="$1"; shift
     native_cache="$1"; shift
@@ -134,7 +134,8 @@ case "${1:-}" in
     kandelo_root="$1"; shift
     tap_root="$1"; shift
     output_root="$1"; shift
-    sysroot_owner="$1"
+    sysroot_owner="$1"; shift
+    dependency_tap_root="$1"
 
     [ "$prefix" = "$native_prefix" ]
     [ "$(pwd -P)" = "$native_temp" ]
@@ -184,7 +185,7 @@ case "${1:-}" in
     if (: >"$target_work/native-write-probe") 2>/dev/null; then exit 1; fi
     for hidden_root in "$target_prefix" "$target_cache" "$target_temp" \
       "$target_config" "$target_home" "$kandelo_root" "$tap_root" "$output_root" \
-      "$sysroot_owner"; do
+      "$sysroot_owner" "$dependency_tap_root"; do
       # systemd exposes InaccessiblePaths as mode-000 mount points. The path may
       # still stat successfully, but the Formula must not be able to use it.
       if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then
@@ -395,7 +396,7 @@ case "${1:-}" in
     printf 'mutation\n' >>"${XDG_CONFIG_HOME:?}/homebrew/trust.json"
     ;;
   assert-source-aliases)
-    [ "$#" -eq 8 ]
+    [ "$#" -eq 9 ]
     [ "${HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
     [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
     [ "${HOMEBREW_KANDELO_SYSROOT:-}" = "$4" ]
@@ -403,7 +404,7 @@ case "${1:-}" in
     [ -r "$2/source-marker" ]
     [ -r "$3/tap-marker" ]
     [ "$(cat "$4/lib/libc.a")" = "reviewed sysroot" ]
-    for hidden_root in "$5" "$6" "$7" "$8"; do
+    for hidden_root in "$5" "$6" "$7" "$8" "$9"; do
       if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then
         exit 1
       fi
@@ -1075,6 +1076,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_shared_temp="$ISOLATION_ROOT/shared-temp"
   isolated_kandelo="$isolated_source_parent/kandelo"
   isolated_tap="$isolated_source_parent/tap"
+  isolated_dependency_tap="$isolated_source_parent/dependency-tap"
   isolated_output="$isolated_source_parent/output"
   isolated_sysroot_private_parent="$ISOLATION_ROOT/private-sysroot-owner"
   isolated_sysroot_owner="$isolated_sysroot_private_parent/sysroot-build"
@@ -1089,7 +1091,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   external_opt="$isolated_work/external-opt"
   mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
     "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
-    "$isolated_output" "$isolated_native_base" "$external_cellar" "$external_opt" \
+    "$isolated_dependency_tap" "$isolated_output" "$isolated_native_base" \
+    "$external_cellar" "$external_opt" \
     "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib"
   chmod 0711 "$isolated_native_base"
   chmod 0700 "$isolated_private_bottle_dir"
@@ -1102,11 +1105,12 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf '%s\n' "$protected_bottle_content" >"$private_bottle"
   printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
+  printf 'reviewed dependency tap\n' >"$isolated_dependency_tap/tap-marker"
   printf 'reviewed sysroot\n' >"$isolated_sysroot/lib/libc.a"
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
   printf 'external target untouched\n' >"$external_opt/sentinel"
-  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":["ninja"],"schema":2,"tap":"kandelo-dev/tap-core"}'
+  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":["ninja"],"schema":3,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
   mkdir "$isolated_kandelo/runner-control"
@@ -1239,7 +1243,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   rm -rf "$isolated_prefix/sysroot"
   homebrew_patched_launcher_isolate \
     "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
-    "$isolated_output" "$isolated_sysroot_owner"
+    "$isolated_output" "$isolated_sysroot_owner" "$isolated_dependency_tap"
   /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     test -x "$isolated_native_base" ||
     fail "build identity cannot traverse the workflow-owned native parent"
@@ -1313,7 +1317,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/tap" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/sysroot" \
-    "$isolated_kandelo" "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner"
+    "$isolated_kandelo" "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner" \
+    "$isolated_dependency_tap"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-argv \
     "" "with spaces" '$dollar' '%percent' $'line one\nline two'
   "$HOMEBREW_PATCHED_BREW_BIN" assert-bottle-tags "" ""
@@ -1343,7 +1348,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
       "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")" \
       "$ISOLATION_BUILD_USER" "$isolated_prefix" "$isolated_cache" "$isolated_temp" \
       "$XDG_CONFIG_HOME" "$isolated_home" "$isolated_work" "$isolated_kandelo" \
-      "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner"
+      "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner" \
+      "$isolated_dependency_tap"
   homebrew_patched_launcher_run_native spawn-daemon \
     "$native_daemon_marker" "$native_daemon_started"
   /usr/bin/sudo -n -- test -e "$native_daemon_started" ||

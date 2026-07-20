@@ -20,12 +20,12 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "ff7bcc6ee9aba6907997f146d2a04b3a6ae272de65a51814b7a85c83d263d521"
-PUBLISHER_BUILD_DIGEST = "5ca8a84cf75c232f3a943e7df8835ab648252dfc24b00478da2781c4483e7f7c"
-PUBLISHER_UPLOAD_DIGEST = "1023843652029512072c79e0ceb8f09283b60d520fc01fe01e7d92d90c178fb7"
-PUBLISHER_INDEX_DIGEST = "9fe1633079f5bb32bb589ed941876ed6429a16ce66d70cf399a0727e98cb7752"
-PUBLISHER_VERIFY_DIGEST = "4035d4b75b8c5b06d64c6ef0ce2f1ba26ab3abe42f7a21111861ad55ee880b82"
-PUBLISHER_FINALIZE_DIGEST = "46241674d594effc2102058fa95f63f659b1fb73540cb8cd421eb15b84adece7"
+PUBLISHER_PLAN_DIGEST = "9a7a17e2df77b08649bc6fdc4b54eaa5a28d509484ac958876a6fca9791c5298"
+PUBLISHER_BUILD_DIGEST = "5aff321eb902bb169f203c3e54db399fee85482f015adf12166920ee712df65b"
+PUBLISHER_UPLOAD_DIGEST = "9d6452d17deae0c7c5914ea3eeeee76846f742c48cf7ef24dfd8319ec798a320"
+PUBLISHER_INDEX_DIGEST = "be6a78a2b02f0769d072b09022f0de08afa34c2d2bf5cba8dd13ad1c22e47679"
+PUBLISHER_VERIFY_DIGEST = "d66a39301c3676de788f56d8928f42a208e2db7ffb8e5a79f031d34d8a490d65"
+PUBLISHER_FINALIZE_DIGEST = "ce29dbe810001b5a9ea0a570a739a5e1871d342d7eb6f54d34ebb20e516465a5"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
@@ -779,6 +779,21 @@ def check_publisher(workflow)
   check(planner_source.include?("formula selection must not be empty") &&
         planner_source.include?("architecture selection must not be empty"),
         "publisher planner permits a green empty dispatch")
+  dependency_taps_source = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-dependency-taps.py")
+  )
+  [
+    '"kandelo-dev/tap-core": "kandelo-dev/homebrew-tap-core"',
+    'COMMIT = re.compile(r"^[0-9a-f]{40}$")',
+    'if ALLOWED_DEPENDENCY_TAPS.get(name) != repository:',
+    'git_output(root, "status", "--short", "--untracked-files=all")',
+    'if set(dependency_roots) != expected_names:',
+    'verify_checkout(root, item["tap_commit"]',
+    'write_json(pathlib.Path(args.out), resolved)',
+  ].each do |fragment|
+    check(dependency_taps_source.include?(fragment),
+          "publisher immutable dependency-tap resolver lacks #{fragment}")
+  end
   check(plan["outputs"] == {
     "matrix" => "${{ steps.matrix.outputs.matrix }}",
     "formula-matrix" => "${{ steps.matrix.outputs.formula-matrix }}",
@@ -787,10 +802,11 @@ def check_publisher(workflow)
     "bottle-root-prefix" => "${{ steps.release.outputs.bottle-root-prefix }}",
     "kandelo-sha" => "${{ steps.source-commits.outputs.kandelo-sha }}",
     "tap-sha" => "${{ steps.source-commits.outputs.tap-sha }}",
+    "core-dependency-tap-sha" => "${{ steps.dependency-taps.outputs.core-tap-sha }}",
   }, "publisher plan outputs changed")
 
   expected_uses = [
-    *Array.new(19, CHECKOUT_ACTION),
+    *Array.new(29, CHECKOUT_ACTION),
     *Array.new(5, NIX_ACTION),
     *Array.new(2, MAGIC_NIX_ACTION),
     *Array.new(7, UPLOAD_ACTION),
@@ -803,6 +819,16 @@ def check_publisher(workflow)
     steps.select { |step| step["uses"] == CHECKOUT_ACTION }.map do |step|
       { "name" => step["name"], "if" => step["if"], "with" => step["with"] }
     end
+  end
+  core_checkout = lambda do |name, condition, ref, path|
+    {
+      "name" => name, "if" => condition,
+      "with" => {
+        "persist-credentials" => false, "token" => "",
+        "repository" => "kandelo-dev/homebrew-tap-core",
+        "ref" => ref, "path" => path,
+      },
+    }
   end
   check(checkout_view.call(plan_steps) == [
     {
@@ -822,6 +848,11 @@ def check_publisher(workflow)
         "ref" => "${{ steps.trust.outputs.tap-ref }}", "path" => "tap",
       },
     },
+    core_checkout.call(
+      "Checkout exact public core dependency tap",
+      "${{ steps.dependency-taps.outputs.core-tap-sha != '' }}",
+      "${{ steps.dependency-taps.outputs.core-tap-sha }}", "dependency-taps/core"
+    ),
   ], "publisher plan checkout wiring changed")
   check(checkout_view.call(build_steps) == [
     {
@@ -841,6 +872,11 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
       },
     },
+    core_checkout.call(
+      "Checkout exact public core dependency tap for build",
+      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
+    ),
     {
       "name" => "Checkout reviewed Homebrew implementation", "if" => nil,
       "with" => {
@@ -865,6 +901,12 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-reviewed",
       },
     },
+    core_checkout.call(
+      "Checkout exact post-build core dependency tap source",
+      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+      "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+      "dependency-taps/core-reviewed"
+    ),
   ], "publisher build checkout wiring changed")
   check(checkout_view.call(upload_steps) == [
     {
@@ -876,6 +918,19 @@ def check_publisher(workflow)
         "path" => "kandelo", "submodules" => false,
       },
     },
+    {
+      "name" => "Checkout exact tap source for upload validation", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
+      },
+    },
+    core_checkout.call(
+      "Checkout exact public core dependency tap for upload validation",
+      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
+    ),
   ], "publisher uploader checkout wiring changed")
   check(checkout_view.call(index_steps) == [
     {
@@ -887,6 +942,19 @@ def check_publisher(workflow)
         "path" => "kandelo", "submodules" => false,
       },
     },
+    {
+      "name" => "Checkout exact tap source for index validation", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
+      },
+    },
+    core_checkout.call(
+      "Checkout exact public core dependency tap for index validation",
+      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
+    ),
   ], "publisher version-index checkout wiring changed")
   check(checkout_view.call(verify_steps) == [
     {
@@ -915,6 +983,11 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
       },
     },
+    core_checkout.call(
+      "Checkout exact public core dependency tap for verification",
+      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
+    ),
     {
       "name" => "Checkout reviewed Homebrew implementation for bottle verification", "if" => nil,
       "with" => {
@@ -939,6 +1012,12 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-postverify",
       },
     },
+    core_checkout.call(
+      "Checkout exact post-verification core dependency tap source",
+      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+      "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+      "dependency-taps/core-postverify"
+    ),
   ], "publisher verifier checkout wiring changed")
 
   failure_condition = "${{ always() && (steps.publish-handoff.outcome != 'success' || " \
@@ -961,6 +1040,11 @@ def check_publisher(workflow)
         "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-base",
       },
     },
+    core_checkout.call(
+      "Checkout exact public core dependency tap for finalization",
+      "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+      "${{ needs.plan.outputs.core-dependency-tap-sha }}", "dependency-taps/core"
+    ),
     {
       "name" => "Checkout tap publication branch after payload validation",
       "if" => "${{ steps.validate-payload.outcome == 'success' }}",
@@ -1149,7 +1233,7 @@ def check_publisher(workflow)
     check(build_run.include?(fragment), "publisher Formula output boundary lacks #{fragment}")
   end
   stop_commands_index = build_run.index("printf '::stop-commands::%s\\n'")
-  builder_index = build_run.index("bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh")
+  builder_index = build_run.index("bash scripts/homebrew-bottle-build.sh")
   resume_commands_index = build_run.rindex("resume_workflow_commands")
   check(stop_commands_index && builder_index && resume_commands_index &&
         stop_commands_index < builder_index && builder_index < resume_commands_index,
@@ -1215,12 +1299,33 @@ def check_publisher(workflow)
     KANDELO_HOMEBREW_BROWSER_EVIDENCE
   ].all? { |name| dev_shell.include?("--keep #{name}") },
         "dev shell drops exact Homebrew runtime evidence inputs")
+  check(!dev_shell.include?("--keep KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"),
+        "dev shell globally preserves Homebrew resolved-tap state and invalidates package caches")
+  resolved_taps_forwarding =
+    'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
+  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 12,
+        "publisher does not explicitly carry immutable resolved taps across every consuming dev-shell boundary")
   check(!dev_shell.include?("--keep KANDELO_HOMEBREW_TAP_NAME"),
         "dev shell globally preserves caller-selected Homebrew tap identity")
   flake = File.binread(File.join(REPO_ROOT, "flake.nix"))
   check(flake.scan("pkgs.gnutar".b).length == 1,
         "dev shell does not declare exactly one GNU tar publisher input")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
+  formula_closure = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-formula-runtime-closure.rb")
+  )
+  [
+    'context_repository == repository_for_tap.call(context_name)',
+    'dependency Formula uses an undeclared tap',
+    'host dependency plan requires an immutable resolved tap map',
+    '"tap_name" => context.fetch("tap_name")',
+    '"tap_repository" => context.fetch("tap_repository")',
+    '"tap_commit" => commit',
+    '"target_taps" => immutable_target_taps',
+  ].each do |fragment|
+    check(formula_closure.include?(fragment),
+          "static Formula closure lacks immutable tap identity binding: #{fragment}")
+  end
   [
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
     'homebrew_patched_launcher_teardown "$BUILD_USER"',
@@ -1240,7 +1345,9 @@ def check_publisher(workflow)
     'HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"',
     'DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"',
     'BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"',
-    'DEPENDENCY_POUR_LIST="$CONTROL_DIR/same-tap-pour-dependencies.txt"',
+    'DEPENDENCY_POUR_LIST="$CONTROL_DIR/target-pour-dependencies.txt"',
+    'ALLOWED_TARGET_TAPS="$CONTROL_DIR/allowed-target-taps.txt"',
+    'STATIC_RUNTIME_DEPENDENCIES="$CONTROL_DIR/static-runtime-dependencies.txt"',
     'log="$CONTROL_DIR/brew-install-attempt-${attempt}.log"',
     'rm -rf "$CONTROL_DIR"',
     'unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG',
@@ -1256,6 +1363,16 @@ def check_publisher(workflow)
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install',
     "--include-build --include-test",
     'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
+    'keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap", "target_taps"]',
+    '.schema == 3',
+    '--slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
+    'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
+    'DEPENDENCY_TAP_ROOTS=()',
+    '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
+    'DEPENDENCY_TAP_ROOTS+=("$dependency_root")',
+    '"${DEPENDENCY_TAP_ROOTS[@]}"',
+    'filter_target_dependencies()',
+    'Homebrew runtime dependency graph differs from the static locked-tap graph',
     'validate_dependency_list "$HOST_DEPENDENCY_LIST" "host dependency list"',
     'validate_dependency_list "$DEPENDENCY_LIST"',
     '"$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"',
@@ -1370,6 +1487,18 @@ def check_publisher(workflow)
     check(seed_index && isolate_index && seed_index < isolate_index,
           "Formula runner does not seed locked Bundler groups before isolation")
     [
+      '.dependencies[] | [.tap_name, .root, .tap_commit] | @tsv',
+      '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
+      'tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"',
+      'locked_dependency_root="$(cd "$dependency_root" && pwd -P)"',
+      '[ "$tapped_dependency_root" != "$locked_dependency_root" ]',
+      '[ "$(git -C "$tapped_dependency_root" rev-parse HEAD)" = "$dependency_commit" ]',
+      '[ -z "$(git -C "$tapped_dependency_root" status --short --untracked-files=all)" ]',
+    ].each do |fragment|
+      check(formula_runner.include?(fragment),
+            "Formula runner immutable dependency tap binding lacks #{fragment}")
+    end
+    [
       'NATIVE_PREFIX="$(homebrew_patched_launcher_native_prefix_path "$NATIVE_BASE")"',
       'NATIVE_CACHE="$NATIVE_BASE/c"',
       'NATIVE_TEMP="$NATIVE_BASE/t"',
@@ -1382,6 +1511,9 @@ def check_publisher(workflow)
       'HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"',
       'EXPECTED_PLAN_TAP="$TAP_NAME"',
       '"$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json',
+      'immutable resolved tap map is required',
+      '--slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
+      'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
       '"homebrew/core/$dependency"',
       "run_native_brew_logged install --as-dependency --formula",
       'homebrew_patched_launcher_run_native info --json=v2',
@@ -1587,6 +1719,11 @@ def check_publisher(workflow)
     "FileUtils.touch(bottle_path, mtime: tab_source_modified_time)",
     "def self.dependency_plan(formula = nil, require_match: true)",
     "def self.selected_tap_formula?(formula)",
+    'tap.keys.sort == %w[tap_commit tap_name tap_repository]',
+    'tap_repository == "#{owner}/homebrew-#{short_name}"',
+    'TAP_GIT_HEAD.match?(tap["tap_commit"])',
+    'target_names == target_names.sort.uniq',
+    'tap.fetch("tap_name")',
     'PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"',
     "plan_path = HOMEBREW_PREFIX/PLAN_FILENAME",
     "plan = KandeloPublisher.dependency_plan(formula)",
@@ -1624,8 +1761,11 @@ def check_publisher(workflow)
     "publisher accepted mismatched archived receipt provenance",
     "ordinary Homebrew receipt behavior changed without a protected publisher plan",
     "recursive same-tap Formula retained native Linux global dependencies",
+    "recursive locked-tap Formula retained native Linux global dependencies",
     "protected publisher plan changed Linux global dependencies for another tap",
     "protected publisher plan changed native Homebrew global dependencies",
+    "mutable target tap revision suppressed Linux global dependencies",
+    "mismatched target tap repository suppressed Linux global dependencies",
   ].each do |fragment|
     check(publisher_patch_test.include?(fragment),
           "publisher overlay regression test lacks #{fragment}")
@@ -2382,9 +2522,13 @@ def check_publisher(workflow)
     File.join(REPO_ROOT, "scripts/homebrew-dependency-provenance.py")
   )
   [
-    "if not full_name.startswith(prefix):",
-    'f"target receipt runtime dependency {full_name!r} is outside "',
-    'f"selected tap {normalized_tap}"',
+    "contexts = resolved_tap_contexts(args)",
+    "context = contexts.get(dependency_tap)",
+    "if context is None:",
+    'f"target receipt runtime dependency {full_name!r} is outside immutable resolved taps"',
+    'source.get("tap_git_head") != context["tap_commit"]',
+    'formula_path = pathlib.Path(context["root"]) / "Formula" / f"{name}.rb"',
+    'dependency_root_url = context["bottle_root_url"]',
   ].each do |fragment|
     check(dependency_provenance.include?(fragment),
           "publisher dependency provenance allows external target receipts: #{fragment}")
@@ -2432,9 +2576,11 @@ def check_publisher(workflow)
     'if not validation_tap_root:',
     'fail("planned tap root requires a current tap root")',
     'if exact_git_head(planned_root, "planned tap root") != args.tap_commit:',
+    'if planned_root is not None and dependency_tap == normalized_tap:',
     'if sha256_file(planned_formula_path) != formula["sha256"]:',
     'Formula digest differs from the planned tap',
     'if current_formula_sha != formula["sha256"]:',
+    'elif current_formula_sha != formula["sha256"]:',
     'Formula differs from the planned tap outside canonical bottle metadata',
     'validate_parser.add_argument("--planned-tap-root")',
   ].each do |fragment|
@@ -2681,6 +2827,25 @@ def check_publisher(workflow)
   check(index_verify_run.scan(repository_remote).length == 1 &&
         !index_verify_run.include?('remote="ghcr.io/${tap_name}/'),
         "publisher public Homebrew index verification is not repository-rooted")
+  browser_sysroot_step = named_step(
+    verify_steps, "Build Kandelo wasm64 sysroot for the interactive browser graph"
+  )
+  check(browser_sysroot_step.keys.sort == %w[if name run shell] &&
+        browser_sysroot_step["shell"] == "bash" &&
+        browser_sysroot_step["if"] ==
+          "${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}",
+        "publisher interactive browser wasm64 sysroot is not scoped to hello/wasm32")
+  browser_sysroot_run = browser_sysroot_step.fetch("run")
+  [
+    "set -euo pipefail", "cd kandelo-sysroot-build",
+    "bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix",
+    "[ -f sysroot64/lib/libc.a ]",
+  ].each do |fragment|
+    check(browser_sysroot_run.include?(fragment),
+          "publisher interactive browser wasm64 sysroot lacks #{fragment}")
+  end
+  check(!browser_sysroot_run.lines.any? { |line| line.strip == "cd kandelo" },
+        "publisher builds the browser wasm64 sysroot in the reviewed verifier checkout")
   browser_demo_step = named_step(verify_steps,
                                  "Prepare the supported interactive browser demo graph")
   check(browser_demo_step.keys.sort == %w[if name run shell] &&
@@ -2689,8 +2854,9 @@ def check_publisher(workflow)
         "publisher interactive browser graph is not scoped to hello/wasm32")
   browser_demo_run = browser_demo_step.fetch("run")
   [
-    'sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/sysroot"',
-    'sysroot_destination="$GITHUB_WORKSPACE/kandelo/sysroot"',
+    "for sysroot_name in sysroot sysroot64",
+    'sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/$sysroot_name"',
+    'sysroot_destination="$GITHUB_WORKSPACE/kandelo/$sysroot_name"',
     '[ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ]',
     '[ -f "$sysroot_source/lib/libc.a" ]',
     '[ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ]',
@@ -2744,6 +2910,7 @@ def check_publisher(workflow)
   end
   sidecar_env_forwarding = [
     'bash scripts/dev-shell.sh env \\',
+    resolved_taps_forwarding,
     'KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \\',
     'KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \\',
   ]
@@ -2868,9 +3035,19 @@ def check_publisher(workflow)
     'default-shell config must contain 1 to 65536 bytes',
     'vfs_args+=(--write-profile --shell-config "$shell_config")',
     'node_args+=(--shell-config "$shell_config")',
-    'base_image="$(bash scripts/resolve-binary.sh programs/rootfs.vfs)"',
+    'resolver_paths="$acceptance_root/resolved-platform-artifacts.txt"',
+    '[ ! -e "$resolver_paths" ] && [ ! -L "$resolver_paths" ]',
+    "bash scripts/dev-shell.sh bash -c '",
+    'bash scripts/resolve-binary.sh programs/rootfs.vfs >"$1"',
+    'bash scripts/resolve-binary.sh kernel.wasm >>"$1"',
+    '[ -f "$resolver_paths" ] && [ ! -L "$resolver_paths" ]',
+    'resolver_paths_bytes="$(wc -c <"$resolver_paths" | tr -d \'[:space:]\')"',
+    '[ "$resolver_paths_bytes" -gt 8192 ]',
+    'mapfile -t resolved_platform_artifacts <"$resolver_paths"',
+    '[ "${#resolved_platform_artifacts[@]}" -eq 2 ]',
+    'base_image="${resolved_platform_artifacts[0]}"',
     'platform base did not resolve from the Kandelo package registry tree',
-    'kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"',
+    'kernel="${resolved_platform_artifacts[1]}"',
     'verification kernel did not resolve from the exact worktree build',
     '--runtime node', '--no-fallback',
     'bash scripts/dev-shell.sh npx tsx',
@@ -3813,6 +3990,22 @@ def self_test(publisher, maintenance, repository_canary)
         "./run.sh --fetch-only prepare-browser", "bash scripts/fetch-binaries.sh --fetch-only"
       )
     },
+    "missing interactive browser wasm64 sysroot build" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Build Kandelo wasm64 sysroot for the interactive browser graph"
+      )
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix", "true"
+      )
+    },
+    "browser handoff omits the wasm64 sysroot" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
+      )
+      step["run"] = step.fetch("run").sub(
+        "for sysroot_name in sysroot sysroot64", "for sysroot_name in sysroot"
+      )
+    },
     "missing exact browser sysroot handoff" => lambda { |w|
       step = mutate_named_step(
         w, "verify-bottle", "Prepare the supported interactive browser demo graph"
@@ -3875,6 +4068,25 @@ def self_test(publisher, maintenance, repository_canary)
       )
       step["run"] = step.fetch("run").sub("--no-fallback", "")
     },
+    "dependency-bearing VFS resolver escapes the dev shell" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/dev-shell.sh bash -c '\n  set -euo pipefail\n" \
+          "  bash scripts/resolve-binary.sh programs/rootfs.vfs",
+        "bash -c '\n  set -euo pipefail\n" \
+          "  bash scripts/resolve-binary.sh programs/rootfs.vfs"
+      )
+    },
+    "resolved tap map dropped at a consuming dev-shell boundary" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Build and test Homebrew bottle without publisher credentials"
+      )
+      forwarding =
+        'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
+      step["run"] = step.fetch("run").lines.reject { |line| line.include?(forwarding) }.join
+    },
     "dependency-bearing VFS exact image digest unchecked" => lambda { |w|
       step = mutate_named_step(
         w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
@@ -3903,8 +4115,8 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "finalize-tap",
                                "Validate the complete data-only publication payload")
       step["run"] = step.fetch("run").sub(
-        'bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh',
-        'bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh --allow-dry-run'
+        'bash scripts/homebrew-validate-publish-handoff.sh',
+        'bash scripts/homebrew-validate-publish-handoff.sh --allow-dry-run'
       )
     },
     "credentialed checkout before validation" => lambda { |w|

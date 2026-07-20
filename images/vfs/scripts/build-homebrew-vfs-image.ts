@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { buildHomebrewVfs } from "../../../host/src/homebrew-vfs-builder";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
+  planFederatedHomebrewVfs,
   planHomebrewVfs,
   type HomebrewBottleArch,
   type HomebrewRuntime,
@@ -51,6 +52,7 @@ import {
 interface CliOptions {
   metadata: string;
   tapRoot: string;
+  dependencyTapRoots: Record<string, string>;
   packages: string[];
   brewfile?: string;
   arch: HomebrewBottleArch;
@@ -112,6 +114,7 @@ interface LoadedShellConfig {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const metadata = readJsonFile(options.metadata);
+  const primaryTapName = metadataTapName(metadata, options.metadata);
   const shellConfig = options.shellConfig
     ? readShellConfig(options.shellConfig)
     : undefined;
@@ -120,15 +123,44 @@ async function main(): Promise<void> {
     : undefined;
   const requestedPackages = brewfileSelection?.packages ?? options.packages;
 
-  const plan = await planHomebrewVfs(metadata, {
+  const dependencyMetadata = Object.entries(options.dependencyTapRoots).map(
+    ([tapName, tapRoot]) => ({
+      tapName,
+      tapRoot,
+      metadata: readJsonFile(join(tapRoot, "Kandelo/metadata.json")),
+    }),
+  );
+  const tapRoots = new Map<string, string>([
+    [primaryTapName, options.tapRoot],
+    ...dependencyMetadata.map(({ tapName, tapRoot }) => [tapName, tapRoot] as const),
+  ]);
+  const commonPlanOptions = {
     packages: requestedPackages,
     arch: options.arch,
-    expectedTapName: brewfileSelection?.tap_name,
     runtime: options.runtime,
     expectedCacheKeys: options.expectedCacheKeys,
     allowFallback: options.allowFallback,
-    loadLinkManifest: (relPath) => readJsonFile(join(options.tapRoot, relPath)),
-  });
+  };
+  const plan = dependencyMetadata.length === 0
+    ? await planHomebrewVfs(metadata, {
+      ...commonPlanOptions,
+      expectedTapName: brewfileSelection?.tap_name,
+      loadLinkManifest: (relPath: string) => readJsonFile(join(options.tapRoot, relPath)),
+    })
+    : await planFederatedHomebrewVfs(
+      [metadata, ...dependencyMetadata.map(({ metadata: value }) => value)],
+      {
+        ...commonPlanOptions,
+        rootTapName: brewfileSelection?.tap_name ?? primaryTapName,
+        loadLinkManifest: (tap, relPath) => {
+          const root = tapRoots.get(tap.tapName);
+          if (root === undefined) {
+            throw new Error(`no immutable checkout is available for tap ${tap.tapName}`);
+          }
+          return readJsonFile(join(root, relPath));
+        },
+      },
+    );
 
   const { fs, baseImage } = createFs(
     options.baseImage,
@@ -190,6 +222,10 @@ async function main(): Promise<void> {
         } : {}),
         packages: plan.packages.map((pkg) => ({
           name: pkg.name,
+          fullName: pkg.fullName,
+          tapRepository: pkg.tapRepository,
+          tapName: pkg.tapName,
+          tapCommit: pkg.tapCommit,
           version: pkg.version,
           arch: pkg.arch,
           sourceStatus: pkg.sourceStatus,
@@ -229,6 +265,7 @@ function parseArgs(args: string[]): CliOptions {
   } = {
     packages: [],
     expectedCacheKeys: {},
+    dependencyTapRoots: {},
     arch: "wasm32",
     allowFallback: true,
     writeProfile: false,
@@ -243,6 +280,20 @@ function parseArgs(args: string[]): CliOptions {
       case "--tap-root":
         options.tapRoot = requireValue(args, ++i, arg);
         break;
+      case "--dependency-tap-root": {
+        const value = requireValue(args, ++i, arg);
+        const separator = value.indexOf("=");
+        const tapName = separator < 0 ? "" : value.slice(0, separator);
+        const tapRoot = separator < 0 ? "" : value.slice(separator + 1);
+        if (!TAP_NAME_RE.test(tapName) || !tapRoot) {
+          usage("--dependency-tap-root must be <owner/tap>=<tap-root>");
+        }
+        if (options.dependencyTapRoots[tapName] !== undefined) {
+          usage(`duplicate --dependency-tap-root for ${tapName}`);
+        }
+        options.dependencyTapRoots[tapName] = tapRoot;
+        break;
+      }
       case "--package":
         options.packages.push(requireValue(args, ++i, arg));
         break;
@@ -317,6 +368,17 @@ function parseArgs(args: string[]): CliOptions {
   }
 
   return options as CliOptions;
+}
+
+function metadataTapName(value: unknown, path: string): string {
+  if (
+    !isRecord(value) ||
+    typeof value.tap_name !== "string" ||
+    !TAP_NAME_RE.test(value.tap_name)
+  ) {
+    throw new Error(`Homebrew metadata has an invalid tap_name: ${path}`);
+  }
+  return value.tap_name;
 }
 
 function requireValue(args: string[], index: number, flag: string): string {
@@ -619,6 +681,7 @@ function usage(message?: string, code = 2): never {
   console.error(`usage: npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \\
   --metadata <Kandelo/metadata.json> \\
   --tap-root <tap-root> \\
+  [--dependency-tap-root <owner/tap>=<tap-root> ...] \\
   (--brewfile <Brewfile> | --package <name> [--package <name> ...]) \\
   --arch <wasm32|wasm64> [--runtime <node|browser>] \\
   --out <image.vfs.zst> \\

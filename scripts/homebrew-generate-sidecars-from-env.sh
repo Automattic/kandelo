@@ -399,9 +399,8 @@ if (
     raise SystemExit("static Formula declaration identity does not match the selected Formula")
 
 tap_prefix = f"{os.environ['TAP_NAME']}/"
-same_tap_direct_declarations = set()
-required_external_declarations = set()
-recommended_external_declarations = set()
+selected_direct_declarations = set()
+unsupported_external_declarations = set()
 seen_declarations = set()
 for index, declaration in enumerate(
     require_list(declarations.get("dependencies"), "static Formula dependencies")
@@ -425,23 +424,23 @@ for index, declaration in enumerate(
         if name != normalized:
             raise SystemExit(f"same-tap Formula dependency {name!r} is not normalized lowercase")
         if kind != "optional":
-            same_tap_direct_declarations.add(name)
+            selected_direct_declarations.add(name)
     elif kind == "required":
-        required_external_declarations.add(normalized)
+        if normalized.count("/") == 2 and name == normalized:
+            selected_direct_declarations.add(normalized)
+        else:
+            unsupported_external_declarations.add(normalized)
     elif kind == "recommended":
-        recommended_external_declarations.add(normalized)
+        if normalized.count("/") == 2 and name == normalized:
+            selected_direct_declarations.add(normalized)
+        else:
+            unsupported_external_declarations.add(normalized)
 
-if required_external_declarations:
+if unsupported_external_declarations:
     raise SystemExit(
-        "required external Formula dependencies are unsupported: "
-        f"{sorted(required_external_declarations)}"
+        "unqualified required or recommended external Formula dependencies are unsupported: "
+        f"{sorted(unsupported_external_declarations)}"
     )
-if recommended_external_declarations:
-    raise SystemExit(
-        "recommended external Formula dependencies are unsupported: "
-        f"{sorted(recommended_external_declarations)}"
-    )
-
 provenance_records = require_list(
     dependency_provenance.get("dependencies"), "dependency provenance dependencies"
 )
@@ -453,7 +452,13 @@ for index, record in enumerate(provenance_records):
     name = record.get("name")
     version_value = record.get("version")
     declared_directly = record.get("declared_directly")
-    if full_name != f"{tap_prefix}{name}" or not isinstance(version_value, str):
+    if (
+        not isinstance(full_name, str)
+        or full_name != full_name.lower()
+        or full_name.count("/") != 2
+        or full_name.rsplit("/", 1)[-1] != name
+        or not isinstance(version_value, str)
+    ):
         raise SystemExit(f"dependency provenance dependencies[{index}] has invalid identity")
     if not isinstance(declared_directly, bool) or full_name in provenance_dependencies:
         raise SystemExit(f"dependency provenance dependencies[{index}] has invalid directness")
@@ -464,9 +469,9 @@ provenance_direct_dependencies = {
     for full_name, record in provenance_dependencies.items()
     if record["declared_directly"]
 }
-if same_tap_direct_declarations != provenance_direct_dependencies:
-    missing = sorted(same_tap_direct_declarations - provenance_direct_dependencies)
-    unexpected = sorted(provenance_direct_dependencies - same_tap_direct_declarations)
+if selected_direct_declarations != provenance_direct_dependencies:
+    missing = sorted(selected_direct_declarations - provenance_direct_dependencies)
+    unexpected = sorted(provenance_direct_dependencies - selected_direct_declarations)
     raise SystemExit(
         "validated direct dependency provenance differs from static Formula declarations "
         f"(missing={missing}, unexpected={unexpected})"
@@ -493,16 +498,11 @@ for index, dep in enumerate(runtime_dependencies):
     version_value = dep.get("version")
     if not isinstance(version_value, str) or not version_value:
         raise SystemExit(f"runtime dependency {full_name!r} lacks a version")
-    if not normalized.startswith(tap_prefix):
-        raise SystemExit(
-            f"selected external runtime dependency {full_name!r} is outside "
-            f"{os.environ['TAP_NAME']}"
-        )
     record = provenance_dependencies.get(normalized)
     if record is None:
-        raise SystemExit(f"same-tap runtime dependency {full_name!r} lacks validated provenance")
+        raise SystemExit(f"runtime dependency {full_name!r} lacks validated provenance")
     if full_name != normalized:
-        raise SystemExit(f"same-tap runtime dependency {full_name!r} is not normalized lowercase")
+        raise SystemExit(f"runtime dependency {full_name!r} is not normalized lowercase")
     if version_value != record["version"] or declared_directly != record["declared_directly"]:
         raise SystemExit(f"runtime dependency {full_name!r} differs from validated provenance")
     receipt_dependencies[normalized] = version_value
@@ -511,16 +511,20 @@ if set(receipt_dependencies) != set(provenance_dependencies):
     missing = sorted(set(provenance_dependencies) - set(receipt_dependencies))
     unexpected = sorted(set(receipt_dependencies) - set(provenance_dependencies))
     raise SystemExit(
-        "bottle receipt does not match validated same-tap dependency provenance "
+        "bottle receipt does not match validated immutable-tap dependency provenance "
         f"(missing={missing}, unexpected={unexpected})"
     )
 deps = sorted(
     (
-        {"name": record["name"], "version": record["version"]}
+        {
+            "name": record["name"],
+            "full_name": record["full_name"],
+            "version": record["version"],
+        }
         for record in provenance_dependencies.values()
         if record["declared_directly"]
     ),
-    key=lambda dependency: dependency["name"],
+    key=lambda dependency: dependency["full_name"],
 )
 
 def is_linkable_file(rel):

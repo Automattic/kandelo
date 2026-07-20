@@ -675,7 +675,7 @@ mapfile -t external_required_bottle < <(repack_fixture_bottle \
   "$TMPDIR/dep-stage" sidecar-dep "${dep_bottle[1]}" wasm32 \
   sidecar-dep-external-required)
 expect_generate_failure external-required \
-  'required external Formula dependencies are unsupported in the runtime closure: ["sidecar-dep:cmake"]' \
+  'required external Formula dependencies are unsupported in the runtime closure: ["kandelo-dev/tap-core/sidecar-dep:cmake"]' \
   sidecar-dep "${external_required_bottle[@]}" \
   "$TMPDIR/external-required-sidecars"
 cp "$TMPDIR/sidecar-dep.original.rb" "$TAP/Formula/sidecar-dep.rb"
@@ -778,7 +778,7 @@ mapfile -t selected_external_bottle < <(repack_fixture_bottle \
   "$TMPDIR/tool-stage" sidecar-tool "${tool_bottle[1]}" wasm32 \
   sidecar-tool-selected-external)
 expect_generate_failure selected-conditional-external \
-  "selected external runtime dependency 'bubblewrap' is outside kandelo-dev/tap-core" \
+  "runtime dependency 'bubblewrap' lacks validated provenance" \
   sidecar-tool "${selected_external_bottle[@]}" \
   "$TMPDIR/selected-external-sidecars"
 
@@ -793,7 +793,7 @@ mapfile -t transitive_external_bottle < <(repack_fixture_bottle \
   "$TMPDIR/tool-stage" sidecar-tool "${tool_bottle[1]}" wasm32 \
   sidecar-tool-transitive-external)
 expect_generate_failure transitive-external \
-  "selected external runtime dependency 'libcap' is outside kandelo-dev/tap-core" \
+  "runtime dependency 'libcap' lacks validated provenance" \
   sidecar-tool "${transitive_external_bottle[@]}" \
   "$TMPDIR/transitive-external-sidecars"
 cp "$TMPDIR/sidecar-tool.original-receipt.json" \
@@ -822,7 +822,7 @@ mapfile -t optional_absent_bottle < <(repack_fixture_bottle \
   sidecar-tool-optional-absent)
 OPTIONAL_ABSENT_OUT="$TMPDIR/optional-absent-sidecars"
 generate_sidecars sidecar-tool "${optional_absent_bottle[@]}" "$OPTIONAL_ABSENT_OUT"
-jq -e '.packages[0].dependencies == [{"name":"sidecar-dep","version":"1.0"}]' \
+jq -e '.packages[0].dependencies == [{"name":"sidecar-dep","full_name":"kandelo-dev/tap-core/sidecar-dep","version":"1.0"}]' \
   "$OPTIONAL_ABSENT_OUT/sidecars-input.json" >/dev/null
 
 cp "$TMPDIR/sidecar-tool.original.rb" "$TAP/Formula/sidecar-tool.rb"
@@ -930,7 +930,7 @@ jq -e --arg tool_sha "${tool_bottle[2]}" --arg tool64_sha "${tool64_bottle[2]}" 
     .version == "2.0_3" and
     .formula_revision == 3 and
     .bottle_rebuild == 1 and
-    .dependencies == [{"name":"sidecar-dep","version":"1.0"}] and
+    .dependencies == [{"name":"sidecar-dep","full_name":"kandelo-dev/tap-core/sidecar-dep","version":"1.0"}] and
     [.bottles[].arch] == ["wasm32","wasm64"] and
     .bottles[0].cache_key_sha == $tool_sha and
     .bottles[0].fork_instrumentation == "required" and
@@ -1364,10 +1364,17 @@ npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_EVIDENCE"
 jq -e '
   .status == "validated" and
-  .dependency_edges == [{"from":"sidecar-tool","to":"sidecar-dep","version":"1.0"}] and
+  .dependency_edges == [{
+    "from":"kandelo-dev/tap-core/sidecar-tool",
+    "to":"kandelo-dev/tap-core/sidecar-dep",
+    "version":"1.0"
+  }] and
   .browser_plan == {
     "compatibility_basis":"pending-exact-image-runtime-test",
-    "packages":["sidecar-dep", "sidecar-tool"]
+    "packages":[
+      "kandelo-dev/tap-core/sidecar-dep",
+      "kandelo-dev/tap-core/sidecar-tool"
+    ]
   } and
   [.homebrew_bottles[].name] == ["sidecar-dep", "sidecar-tool"] and
   all(.homebrew_bottles[];
@@ -1572,6 +1579,7 @@ jq '
   .tap_repository = "Example/homebrew-kandelo-tools" |
   .tap_name = "example/kandelo-tools" |
   (.packages[].full_name |= sub("^kandelo-dev/tap-core/"; "example/kandelo-tools/")) |
+  (.packages[].dependencies[]?.full_name |= sub("^kandelo-dev/tap-core/"; "example/kandelo-tools/")) |
   (.packages[].bottles[].built_from.tap_repository? = "Example/homebrew-kandelo-tools")
 ' "$TAP/Kandelo/metadata.json" > "$THIRD_PARTY_TAP/Kandelo/metadata.json"
 THIRD_PARTY_BREWFILE="$TMPDIR/third-party.Brewfile"

@@ -173,6 +173,8 @@ struct PackageInput {
 struct DependencyInput {
     name: String,
     #[serde(default)]
+    full_name: Option<String>,
+    #[serde(default)]
     version: Option<String>,
 }
 
@@ -1042,13 +1044,24 @@ fn hash_for_rel(
 
 fn dependencies_json(dependencies: &[DependencyInput]) -> Value {
     let mut dependencies = dependencies.to_vec();
-    dependencies.sort_by(|a, b| a.name.cmp(&b.name));
+    dependencies.sort_by(|a, b| {
+        a.full_name
+            .as_deref()
+            .unwrap_or(&a.name)
+            .cmp(b.full_name.as_deref().unwrap_or(&b.name))
+    });
     Value::Array(
         dependencies
             .into_iter()
-            .map(|dep| match dep.version {
-                Some(version) => json!({ "name": dep.name, "version": version }),
-                None => json!({ "name": dep.name }),
+            .map(|dep| match (dep.full_name, dep.version) {
+                (Some(full_name), Some(version)) => {
+                    json!({ "name": dep.name, "full_name": full_name, "version": version })
+                }
+                (Some(full_name), None) => {
+                    json!({ "name": dep.name, "full_name": full_name })
+                }
+                (None, Some(version)) => json!({ "name": dep.name, "version": version }),
+                (None, None) => json!({ "name": dep.name }),
             })
             .collect(),
     )

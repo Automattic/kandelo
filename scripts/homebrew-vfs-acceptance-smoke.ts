@@ -24,6 +24,7 @@ import {
 } from "../host/src/constants";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import {
+  planFederatedHomebrewVfs,
   planHomebrewVfs,
   type HomebrewVfsPlan,
 } from "../host/src/homebrew-vfs-planner";
@@ -53,6 +54,7 @@ export type PlatformInputOrigin =
 export interface HomebrewVfsAcceptanceOptions {
   metadataPath: string;
   tapRoot: string;
+  dependencyTapRoot?: { tapName: string; tapRoot: string };
   brewfilePath: string;
   baseImagePath: string;
   baseOrigin: PlatformInputOrigin;
@@ -91,6 +93,9 @@ export interface HomebrewVfsAcceptanceEvidence {
   };
   homebrew_bottles: Array<{
     name: string;
+    full_name: string;
+    tap_repository: string;
+    tap_commit: string;
     version: string;
     sha256: string;
     bytes: number;
@@ -168,6 +173,12 @@ export async function validateHomebrewVfsAcceptance(
   }
 
   const metadata = readJson(options.metadataPath, "tap metadata");
+  const dependencyMetadata = options.dependencyTapRoot
+    ? readJson(
+      resolve(options.dependencyTapRoot.tapRoot, "Kandelo/metadata.json"),
+      `tap metadata ${options.dependencyTapRoot.tapName}`,
+    )
+    : undefined;
   const brewfile = readBrewfileSelection(options.brewfilePath);
   const shellConfig = options.shellConfigPath
     ? readShellConfig(options.shellConfigPath)
@@ -178,28 +189,72 @@ export async function validateHomebrewVfsAcceptance(
   if (!brewfile.packages.includes(options.expectedRootPackage)) {
     fail(`acceptance formula ${options.expectedRootPackage} is not a Brewfile root`);
   }
-  const loadLinkManifest = (relativePath: string): unknown =>
-    readJson(resolve(options.tapRoot, relativePath), `link manifest ${relativePath}`);
+  const tapRoots = new Map<string, string>([[brewfile.tapName, options.tapRoot]]);
+  if (options.dependencyTapRoot) {
+    tapRoots.set(options.dependencyTapRoot.tapName, options.dependencyTapRoot.tapRoot);
+  }
+  const loadFederatedLinkManifest = (
+    tap: { tapName: string },
+    relativePath: string,
+  ): unknown => {
+    const tapRoot = tapRoots.get(tap.tapName);
+    if (tapRoot === undefined) {
+      fail(`no immutable checkout is available for tap ${tap.tapName}`);
+    }
+    return readJson(resolve(tapRoot, relativePath), `link manifest ${tap.tapName}:${relativePath}`);
+  };
   const planOptions = {
     packages: brewfile.packages,
     arch: "wasm32" as const,
-    expectedTapName: brewfile.tapName,
     allowFallback: false,
-    loadLinkManifest,
   };
-  const nodePlan = await planHomebrewVfs(metadata, {
-    ...planOptions,
-    runtime: "node",
-  });
+  const metadataDocuments = dependencyMetadata === undefined
+    ? [metadata]
+    : [metadata, dependencyMetadata];
+  const nodePlan = dependencyMetadata === undefined
+    ? await planHomebrewVfs(metadata, {
+      ...planOptions,
+      expectedTapName: brewfile.tapName,
+      runtime: "node",
+      loadLinkManifest: (relativePath) =>
+        readJson(resolve(options.tapRoot, relativePath), `link manifest ${relativePath}`),
+    })
+    : await planFederatedHomebrewVfs(metadataDocuments, {
+      ...planOptions,
+      rootTapName: brewfile.tapName,
+      runtime: "node",
+      loadLinkManifest: loadFederatedLinkManifest,
+    });
   // Browser compatibility sidecars normally record evidence from an earlier
   // smoke. This gate is itself producing the first closure-level smoke, so it
   // makes only the selected in-memory plan eligible, then requires the exact
   // composed bytes to succeed in Chromium before the workflow can pass. The
   // tap files and published package claims are never rewritten here.
-  const browserPlan = await planHomebrewVfs(
-    createBrowserCandidateMetadata(metadata, nodePlan.packages.map((pkg) => pkg.name)),
-    { ...planOptions, runtime: "browser" },
-  );
+  const browserMetadata = metadataDocuments.map((document, index) => {
+    const tapName = requiredString(
+      requireRecord(document, `tap metadata browser candidate ${index}`),
+      "tap_name",
+      `tap metadata browser candidate ${index}`,
+    );
+    const selectedNames = nodePlan.packages
+      .filter((pkg) => pkg.tapName === tapName)
+      .map((pkg) => pkg.name);
+    return createBrowserCandidateMetadata(document, selectedNames);
+  });
+  const browserPlan = dependencyMetadata === undefined
+    ? await planHomebrewVfs(browserMetadata[0], {
+      ...planOptions,
+      expectedTapName: brewfile.tapName,
+      runtime: "browser",
+      loadLinkManifest: (relativePath) =>
+        readJson(resolve(options.tapRoot, relativePath), `link manifest ${relativePath}`),
+    })
+    : await planFederatedHomebrewVfs(browserMetadata, {
+      ...planOptions,
+      rootTapName: brewfile.tapName,
+      runtime: "browser",
+      loadLinkManifest: loadFederatedLinkManifest,
+    });
   assertEquivalentPlans(nodePlan, browserPlan);
   const plan = nodePlan;
 
@@ -287,10 +342,13 @@ export async function validateHomebrewVfsAcceptance(
       dependency_edges: dependencyEdges,
       browser_plan: {
         compatibility_basis: "pending-exact-image-runtime-test",
-        packages: plan.packages.map((pkg) => pkg.name),
+        packages: plan.packages.map((pkg) => pkg.fullName),
       },
       homebrew_bottles: plan.packages.map((pkg) => ({
         name: pkg.name,
+        full_name: pkg.fullName,
+        tap_repository: pkg.tapRepository,
+        tap_commit: pkg.tapCommit,
         version: pkg.version,
         sha256: pkg.sha256,
         bytes: pkg.bytes,
@@ -437,6 +495,10 @@ function assertEquivalentPlans(nodePlan: HomebrewVfsPlan, browserPlan: HomebrewV
     requestedPackages: plan.requestedPackages,
     packages: plan.packages.map((pkg) => ({
       name: pkg.name,
+      fullName: pkg.fullName,
+      tapRepository: pkg.tapRepository,
+      tapName: pkg.tapName,
+      tapCommit: pkg.tapCommit,
       version: pkg.version,
       sha256: pkg.sha256,
       bytes: pkg.bytes,
@@ -456,40 +518,40 @@ function collectDependencyEdges(
   plan: HomebrewVfsPlan,
   rootPackage: string,
 ): Array<{ from: string; to: string; version: string }> {
-  const selected = new Map(plan.packages.map((pkg) => [pkg.name, pkg]));
+  const selected = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
   const visited = new Set<string>();
   const edges: Array<{ from: string; to: string; version: string }> = [];
-  const visit = (name: string): void => {
-    if (visited.has(name)) return;
-    visited.add(name);
-    const pkg = selected.get(name);
-    if (!pkg) fail(`acceptance formula closure is missing package ${name}`);
+  const visit = (fullName: string): void => {
+    if (visited.has(fullName)) return;
+    visited.add(fullName);
+    const pkg = selected.get(fullName);
+    if (!pkg) fail(`acceptance formula closure is missing package ${fullName}`);
     for (const dependency of pkg.dependencies) {
-      const resolved = selected.get(dependency.name);
+      const dependencyFullName = dependency.full_name ?? `${pkg.tapName}/${dependency.name}`;
+      const resolved = selected.get(dependencyFullName);
       if (!resolved) continue;
       edges.push({
-        from: pkg.name,
-        to: resolved.name,
+        from: pkg.fullName,
+        to: resolved.fullName,
         version: resolved.version,
       });
-      visit(resolved.name);
+      visit(resolved.fullName);
     }
   };
-  visit(rootPackage);
+  visit(`${plan.tapName}/${rootPackage}`);
   return edges;
 }
 
 function assertGhcrBottleSources(plan: HomebrewVfsPlan): void {
-  const [owner, repository, extra] = plan.tapRepository.toLowerCase().split("/");
-  if (!owner || !repository || extra !== undefined) {
-    fail("tap repository is not owner/repository");
-  }
-  const root = `https://ghcr.io/v2/${owner}/${repository}`;
   for (const pkg of plan.packages) {
     if (pkg.sourceStatus !== "success" || pkg.metadataStatus !== "success") {
       fail(`package ${pkg.name} did not select a current successful bottle`);
     }
-    const expected = `${root}/${pkg.name}/blobs/sha256:${pkg.sha256}`;
+    const [owner, repository, extra] = pkg.tapRepository.toLowerCase().split("/");
+    if (!owner || !repository || extra !== undefined) {
+      fail(`package ${pkg.fullName} tap repository is not owner/repository`);
+    }
+    const expected = `https://ghcr.io/v2/${owner}/${repository}/${pkg.name}/blobs/sha256:${pkg.sha256}`;
     if (pkg.url !== expected) {
       fail(`package ${pkg.name} bottle URL is not the repository GHCR blob ${expected}`);
     }
@@ -554,6 +616,10 @@ function assertReportMatchesPlan(
     const actual = requireRecord(packages[index], `VFS report package ${index}`);
     const expected: Record<string, string | number> = {
       name: pkg.name,
+      full_name: pkg.fullName,
+      tap_repository: pkg.tapRepository,
+      tap_name: pkg.tapName,
+      tap_commit: pkg.tapCommit,
       version: pkg.version,
       arch: pkg.arch,
       source_status: "success",
@@ -647,6 +713,10 @@ function assertImageMetadata(
   const packages = requiredArray(homebrew, "packages", "composed VFS Homebrew metadata");
   assertPackageRecords(packages, plan, "composed VFS package", (pkg) => ({
     name: pkg.name,
+    fullName: pkg.fullName,
+    tapRepository: pkg.tapRepository,
+    tapName: pkg.tapName,
+    tapCommit: pkg.tapCommit,
     version: pkg.version,
     arch: pkg.arch,
     sourceStatus: "success",
@@ -697,6 +767,10 @@ function assertGuestManifest(
     "guest Homebrew package",
     (pkg) => ({
       name: pkg.name,
+      full_name: pkg.fullName,
+      tap_repository: pkg.tapRepository,
+      tap_name: pkg.tapName,
+      tap_commit: pkg.tapCommit,
       version: pkg.version,
       arch: pkg.arch,
       source_status: "success",
@@ -876,6 +950,7 @@ function parseArgs(args: string[]): CliOptions {
     "--metadata", "--tap-root", "--brewfile", "--base-image", "--base-origin",
     "--image", "--report", "--kernel", "--kernel-origin", "--formula", "--executable",
     "--argv-json", "--expect-stdout", "--timeout-ms", "--evidence", "--shell-config",
+    "--dependency-tap-root",
   ]);
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
@@ -884,7 +959,11 @@ function parseArgs(args: string[]): CliOptions {
     values.set(flag, value);
   }
   for (const flag of allowed) {
-    if (flag === "--timeout-ms" || flag === "--shell-config") continue;
+    if (
+      flag === "--timeout-ms" ||
+      flag === "--shell-config" ||
+      flag === "--dependency-tap-root"
+    ) continue;
     if (!values.has(flag)) usage(`missing ${flag}`);
   }
   let argv: unknown;
@@ -899,6 +978,9 @@ function parseArgs(args: string[]): CliOptions {
   return {
     metadataPath: values.get("--metadata")!,
     tapRoot: values.get("--tap-root")!,
+    dependencyTapRoot: values.has("--dependency-tap-root")
+      ? parseDependencyTapRoot(values.get("--dependency-tap-root")!)
+      : undefined,
     brewfilePath: values.get("--brewfile")!,
     baseImagePath: values.get("--base-image")!,
     baseOrigin: parseOrigin(values.get("--base-origin")!),
@@ -914,6 +996,16 @@ function parseArgs(args: string[]): CliOptions {
     shellConfigPath: values.get("--shell-config"),
     evidencePath: values.get("--evidence")!,
   };
+}
+
+function parseDependencyTapRoot(value: string): { tapName: string; tapRoot: string } {
+  const separator = value.indexOf("=");
+  const tapName = separator < 0 ? "" : value.slice(0, separator);
+  const tapRoot = separator < 0 ? "" : value.slice(separator + 1);
+  if (!/^[a-z0-9._-]+\/[a-z0-9._-]+$/.test(tapName) || !tapRoot) {
+    usage("--dependency-tap-root must be <owner/tap>=<tap-root>");
+  }
+  return { tapName, tapRoot };
 }
 
 function parseOrigin(value: string): PlatformInputOrigin {
@@ -1021,6 +1113,7 @@ function usage(message: string): never {
   console.error(`homebrew-vfs-acceptance-smoke: ${message}`);
   console.error(`usage: npx tsx scripts/homebrew-vfs-acceptance-smoke.ts \\
   --metadata <Kandelo/metadata.json> --tap-root <tap> --brewfile <Brewfile> \\
+  [--dependency-tap-root <owner/tap>=<tap-root>] \\
   --base-image <base.vfs[.zst]> --base-origin <origin> \\
   --image <composed.vfs.zst> --report <report.json> \\
   --kernel <kernel.wasm> --kernel-origin <origin> --formula <root> \\

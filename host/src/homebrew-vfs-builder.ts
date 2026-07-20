@@ -64,6 +64,10 @@ export interface HomebrewVfsSelectionReport {
 
 export interface HomebrewVfsPackageReport {
   name: string;
+  full_name: string;
+  tap_repository: string;
+  tap_name: string;
+  tap_commit: string;
   version: string;
   arch: string;
   source_status: "success" | "fallback";
@@ -139,6 +143,10 @@ export async function buildHomebrewVfs(
 
     packageReports.push({
       name: pkg.name,
+      full_name: pkg.fullName,
+      tap_repository: pkg.tapRepository,
+      tap_name: pkg.tapName,
+      tap_commit: pkg.tapCommit,
       version: pkg.version,
       arch: pkg.arch,
       source_status: pkg.sourceStatus,
@@ -183,6 +191,10 @@ export async function buildHomebrewVfs(
       metadata: report.metadata,
       packages: packageReports.map((pkg) => ({
         name: pkg.name,
+        full_name: pkg.full_name,
+        tap_repository: pkg.tap_repository,
+        tap_name: pkg.tap_name,
+        tap_commit: pkg.tap_commit,
         version: pkg.version,
         arch: pkg.arch,
         source_status: pkg.source_status,
@@ -194,7 +206,7 @@ export async function buildHomebrewVfs(
         link_manifest: pkg.link_manifest,
         prefix: pkg.prefix,
         keg: pkg.keg,
-        env: plan.packages.find((planned) => planned.name === pkg.name)?.linkManifest.env ?? {},
+        env: plan.packages.find((planned) => planned.fullName === pkg.full_name)?.linkManifest.env ?? {},
       })),
     }, null, 2) + "\n",
     0o644,
