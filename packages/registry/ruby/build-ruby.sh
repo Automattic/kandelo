@@ -500,12 +500,35 @@ echo "==> Cross-compiling Ruby for wasm32-posix..."
 rm -rf "$CROSS_BUILD_DIR" "$INSTALL_DIR" "$BIN_DIR"
 mkdir -p "$CROSS_BUILD_DIR"
 cd "$CROSS_BUILD_DIR"
-BASERUBY_WRAPPER="$CROSS_BUILD_DIR/kandelo-baseruby"
-cat > "$BASERUBY_WRAPPER" <<EOF
+RUBY_TOOL_DIR="$CROSS_BUILD_DIR/kandelo-tools"
+RUBY_CC_COMMAND="kandelo-ruby-cc"
+BASERUBY_COMMAND="kandelo-baseruby"
+mkdir -p "$RUBY_TOOL_DIR"
+cat > "$RUBY_TOOL_DIR/$BASERUBY_COMMAND" <<EOF
 #!/usr/bin/env bash
 exec "$HOST_MINIRUBY" -I"$CROSS_BUILD_DIR" -I"$SRC_DIR/lib" --disable=gems "\$@"
 EOF
-chmod +x "$BASERUBY_WRAPPER"
+cat > "$RUBY_TOOL_DIR/$RUBY_CC_COMMAND" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${KANDELO_RUBY_WORK_DIR:?KANDELO_RUBY_WORK_DIR must name Ruby's package work root}"
+STABLE_RUBY_BUILD_ROOT="/usr/src/kandelo-packages/ruby"
+
+# Ruby retains __FILE__ strings from assertions in its optimized runtime.
+# Keep those strings and compiler metadata truthful but independent of the
+# caller-owned temporary directory where the package happened to build.
+exec wasm32posix-cc \
+    "-ffile-prefix-map=${KANDELO_RUBY_WORK_DIR}=${STABLE_RUBY_BUILD_ROOT}" \
+    "-fdebug-prefix-map=${KANDELO_RUBY_WORK_DIR}=${STABLE_RUBY_BUILD_ROOT}" \
+    "-fmacro-prefix-map=${KANDELO_RUBY_WORK_DIR}=${STABLE_RUBY_BUILD_ROOT}" \
+    "$@"
+EOF
+chmod +x \
+    "$RUBY_TOOL_DIR/$BASERUBY_COMMAND" \
+    "$RUBY_TOOL_DIR/$RUBY_CC_COMMAND"
+export KANDELO_RUBY_WORK_DIR="$WORK_DIR"
+export PATH="$RUBY_TOOL_DIR:$PATH"
 cat > "$CROSS_BUILD_DIR/rbconfig.rb" <<'RBCONFIG_EOF'
 module RbConfig
   CONFIG = {"EXECUTABLE_EXTS" => ""}
@@ -873,7 +896,7 @@ SITE_EOF
     # Ruby parser/compiler paths are stack-heavy, and local-root spilling
     # adds small linear-stack frames to preserve VALUE visibility for GC.
     CONFIG_SITE="$CONFIG_SITE" \
-    CC=wasm32posix-cc \
+    CC="$RUBY_CC_COMMAND" \
     LD=wasm32posix-cc \
     AR=wasm32posix-ar \
     RANLIB=wasm32posix-ranlib \
@@ -881,16 +904,16 @@ SITE_EOF
     STRIP=wasm32posix-strip \
     PKG_CONFIG=wasm32posix-pkg-config \
     PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig:$ZLIB_PREFIX/lib/pkgconfig" \
-    BASERUBY="$BASERUBY_WRAPPER" \
+    BASERUBY="$BASERUBY_COMMAND" \
     WASM_POSIX_CROSS_COMPILE=1 \
     CFLAGS="-O2" \
-    CPPFLAGS="-DRUBY_KANDELO_POSIX=1 -I$SYSROOT/include -I$ZLIB_PREFIX/include" \
-    LDFLAGS="-L$SYSROOT/lib -L$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576" \
+    CPPFLAGS="-DRUBY_KANDELO_POSIX=1 -I$ZLIB_PREFIX/include" \
+    LDFLAGS="-L$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(uname -m)-apple-darwin" \
         --prefix="/usr" \
-        --with-baseruby="$BASERUBY_WRAPPER" \
+        --with-baseruby="$BASERUBY_COMMAND" \
         --with-thread=pthread \
         --with-coroutine=kandelo \
         --with-parser=parse.y \
@@ -1118,8 +1141,8 @@ make -f exts.mk \
     libdir="/usr/lib" \
     LIBRUBY_EXTS=./.libruby-with-ext.time \
     "EXTENCS=$STATIC_ENCOBJS" \
-    "BASERUBY=$BASERUBY_WRAPPER" \
-    "MINIRUBY=$BASERUBY_WRAPPER -I. -rwasm32-none-fake" \
+    "BASERUBY=$BASERUBY_COMMAND" \
+    "MINIRUBY=$BASERUBY_COMMAND -I. -rwasm32-none-fake" \
     static
 
 # Ruby's generated LDFLAGS include CFLAGS. Passing those compile flags through

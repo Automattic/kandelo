@@ -365,6 +365,26 @@ grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
     fail "NetHack build does not instrument its fork-capable artifact"
 
+# Ruby keeps source filenames in runtime assertions and publishes its generated
+# rbconfig.rb. Its recipe must therefore map caller work paths at compile time
+# while giving configure stable command names and sysroot-independent flags.
+ruby_script="$REPO_ROOT/packages/registry/ruby/build-ruby.sh"
+for map_kind in ffile fdebug fmacro; do
+    grep -F -- "-${map_kind}-prefix-map=\${KANDELO_RUBY_WORK_DIR}=\${STABLE_RUBY_BUILD_ROOT}" \
+        "$ruby_script" >/dev/null ||
+        fail "Ruby build is missing its ${map_kind} caller-work prefix map"
+done
+grep -F "CC=\"\$RUBY_CC_COMMAND\"" "$ruby_script" >/dev/null ||
+    fail "Ruby configure does not use its stable compiler command"
+grep -F -- "--with-baseruby=\"\$BASERUBY_COMMAND\"" "$ruby_script" >/dev/null ||
+    fail "Ruby configure does not record its stable baseruby command"
+grep -F "CPPFLAGS=\"-DRUBY_KANDELO_POSIX=1 -I\$ZLIB_PREFIX/include\"" \
+    "$ruby_script" >/dev/null ||
+    fail "Ruby configure CPPFLAGS reintroduced its private sysroot path"
+grep -F "LDFLAGS=\"-L\$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576\"" \
+    "$ruby_script" >/dev/null ||
+    fail "Ruby configure LDFLAGS reintroduced its private sysroot path"
+
 # Invalid guest paths are rejected before NetHack reaches any toolchain or
 # dependency work.
 nethack_work="$TMP_ROOT/nethack-invalid-work"
