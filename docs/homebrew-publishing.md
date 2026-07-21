@@ -1956,6 +1956,17 @@ or executes one of its regular files. That fetch is bounded by the declared
 byte count and must match the descriptor's SHA-256 before ZIP parsing or file
 materialization.
 
+The consumer accepts at most eight selected layers. Their descriptor byte counts
+may total at most 16 MiB, their indexes may total at most 100,000 entries, and
+their declared uncompressed payloads may total at most 256 MiB; an individual
+archive is also capped at 256 MiB. Package names, repository identities, paths,
+and symlink targets have independent bounds. Every layer package must own the
+indexed directory for its declared keg and the exact indexed symlink for its
+declared `opt` link. Selected layers may share directories only when those
+directories already exist in the lower image: one layer cannot use a directory
+owned by another layer as an undeclared ancestor, and two layers cannot reuse
+one archive URL or digest as separate ownership domains.
+
 An ordinary main-shell descriptor contains no `package-layer` mounts, so it
 does not fetch a language descriptor or archive and does not add a default VFS
 per language. Selection is explicit machine state, not package-specific UI or

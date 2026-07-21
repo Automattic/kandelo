@@ -29,6 +29,8 @@ import {
   type HomebrewLazyLayerBasePackageSource,
 } from "../src/homebrew-lazy-layer";
 import {
+  HOMEBREW_RUNTIME_LAYER_LIMITS,
+  parseHomebrewRuntimeLayerDescriptor,
   registerHomebrewRuntimeLayers,
   type HomebrewRuntimeLayerReference,
 } from "../src/homebrew-runtime-layer-consumer";
@@ -628,6 +630,56 @@ function runtimeLayerReference(
   };
 }
 
+function runtimeLayerVariant(
+  source: HomebrewLazyLayerDescriptor,
+  id: string,
+): HomebrewLazyLayerDescriptor {
+  const descriptor = structuredClone(source);
+  const pkg = descriptor.packages.layer[0];
+  const oldName = pkg.name;
+  const oldFullName = pkg.full_name;
+  const replaceName = (value: string) => value.replaceAll(oldName, id);
+
+  pkg.name = id;
+  pkg.full_name = `${pkg.tap_name}/${id}`;
+  pkg.url = `https://example.invalid/bottles/${id}.bottle.tar.gz`;
+  pkg.sha256 = sha256(utf8(`${id}-bottle`));
+  pkg.cache_key_sha = sha256(utf8(`${id}-cache-key`));
+  pkg.link_manifest = replaceName(pkg.link_manifest);
+  pkg.keg = replaceName(pkg.keg);
+  pkg.opt_link = {
+    path: `opt/${id}`,
+    target: `../${pkg.keg.slice(`${PREFIX}/`.length)}`,
+  };
+
+  descriptor.selection.requested_packages = [id];
+  descriptor.selection.package_order = descriptor.selection.package_order.map(
+    (name) => name === oldFullName ? pkg.full_name : name,
+  );
+  descriptor.selection.layer_package_order = [pkg.full_name];
+  for (const entry of descriptor.entries) {
+    entry.path = replaceName(entry.path);
+    if (entry.target !== undefined) {
+      entry.target = replaceName(entry.target);
+      entry.size = utf8(entry.target).byteLength;
+    }
+  }
+  descriptor.entries.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+  );
+  descriptor.archive.asset = `kandelo-homebrew-${id}-layer.zip`;
+  descriptor.archive.url = descriptor.archive.url.replace(
+    /[^/]+$/,
+    descriptor.archive.asset,
+  );
+  descriptor.archive.sha256 = sha256(utf8(`${id}-archive`));
+  descriptor.archive.uncompressed_bytes = descriptor.entries.reduce(
+    (total, entry) => total + entry.size,
+    0,
+  );
+  return descriptor;
+}
+
 function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
   const rootRepository = "example/homebrew-runtimes";
   const rootTap = "example/runtimes";
@@ -721,6 +773,266 @@ describe("Homebrew runtime layer consumer", () => {
     }
   });
 
+  it("composes disjoint selected layers while leaving both archives lazy", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const perlDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
+    const perl = runtimeLayerReference("perl", perlDescriptor);
+    const responses = new Map([
+      [runtime.reference.descriptor.url, runtime.bytes],
+      [perl.reference.descriptor.url, perl.bytes],
+    ]);
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference, perl.reference],
+      fetch: async (url) => new Response(responses.get(url)!),
+    })).resolves.toHaveLength(2);
+
+    expect(fs.exportLazyArchiveEntries()).toHaveLength(2);
+    expect(fs.readlink(`${PREFIX}/bin/runtime`)).toBe(
+      `${fixture.runtimeKeg}/bin/runtime`,
+    );
+    expect(fs.readlink(`${PREFIX}/bin/perl`)).toBe(
+      `${perlDescriptor.packages.layer[0].keg}/bin/perl`,
+    );
+  });
+
+  it("rejects closed-schema, path-cap, and archive-cap violations", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    expect(() => parseHomebrewRuntimeLayerDescriptor({
+      ...structuredClone(fixture.descriptor),
+      unexpected: true,
+    })).toThrow(/descriptor has unexpected or missing fields/);
+
+    const missing = structuredClone(fixture.descriptor) as Partial<
+      HomebrewLazyLayerDescriptor
+    >;
+    delete missing.archive;
+    expect(() => parseHomebrewRuntimeLayerDescriptor(missing)).toThrow(
+      /descriptor has unexpected or missing fields/,
+    );
+
+    const longPath = structuredClone(fixture.descriptor);
+    longPath.entries.find((entry) => entry.type === "file")!.path =
+      `${PREFIX.slice(1)}/${"x".repeat(HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes)}`;
+    expect(() => parseHomebrewRuntimeLayerDescriptor(longPath)).toThrow(
+      /path exceeds 4096 bytes/,
+    );
+
+    const largeArchive = structuredClone(fixture.descriptor);
+    largeArchive.archive.bytes = HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes + 1;
+    expect(() => parseHomebrewRuntimeLayerDescriptor(largeArchive)).toThrow(
+      /archive bytes must be an integer/,
+    );
+  });
+
+  it("binds every layer package to its declared keg, opt link, and tap provenance", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const missingKeg = structuredClone(fixture.descriptor);
+    const missingKegPackage = missingKeg.packages.layer[0];
+    missingKegPackage.keg = `${PREFIX}/Cellar/runtime/missing`;
+    missingKegPackage.opt_link.target = "../Cellar/runtime/missing";
+    expect(() => parseHomebrewRuntimeLayerDescriptor(missingKeg)).toThrow(
+      /has no layer-owned keg entry/,
+    );
+
+    const wrongOpt = structuredClone(fixture.descriptor);
+    const optPath = `${PREFIX.slice(1)}/${wrongOpt.packages.layer[0].opt_link.path}`;
+    const optEntry = wrongOpt.entries.find((entry) => entry.path === optPath)!;
+    optEntry.target = "../Cellar/runtime/wrong";
+    optEntry.size = utf8(optEntry.target).byteLength;
+    wrongOpt.archive.uncompressed_bytes = wrongOpt.entries.reduce(
+      (total, entry) => total + entry.size,
+      0,
+    );
+    expect(() => parseHomebrewRuntimeLayerDescriptor(wrongOpt)).toThrow(
+      /has no matching opt link entry/,
+    );
+
+    const wrongProvenance = structuredClone(fixture.descriptor);
+    wrongProvenance.packages.layer[0].built_from!.kandelo_repository =
+      "other/kandelo";
+    expect(() => parseHomebrewRuntimeLayerDescriptor(wrongProvenance)).toThrow(
+      /build provenance differs from its tap lock/,
+    );
+  });
+
+  it("enforces layer-count, descriptor-byte, and reference-shape caps before fetch", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const exact = runtimeLayerReference("runtime", fixture.descriptor);
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+    let fetches = 0;
+    const fetch = async () => {
+      fetches += 1;
+      return new Response(exact.bytes);
+    };
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: Array.from(
+        { length: HOMEBREW_RUNTIME_LAYER_LIMITS.maxLayers + 1 },
+        (_, index) => ({
+          id: `layer-${index}`,
+          descriptor: {
+            url: `https://example.invalid/layer-${index}.json`,
+            sha256: index.toString(16).padStart(64, "0"),
+            bytes: 1,
+          },
+        }),
+      ),
+      fetch,
+    })).rejects.toThrow(/layer count .* exceeds/);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [{
+        ...exact.reference,
+        id: "a".repeat(HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackageNameBytes + 1),
+      }],
+      fetch,
+    })).rejects.toThrow(/reference 0 id is invalid/);
+
+    const half = Math.floor(HOMEBREW_RUNTIME_LAYER_LIMITS.maxDescriptorBytes / 2) + 1;
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [
+        { ...exact.reference, descriptor: { ...exact.reference.descriptor, bytes: half } },
+        {
+          id: "perl",
+          descriptor: {
+            url: "https://example.invalid/layers/perl.json",
+            sha256: "2".repeat(64),
+            bytes: half,
+          },
+        },
+      ],
+      fetch,
+    })).rejects.toThrow(/descriptors exceed/);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [{
+        ...exact.reference,
+        unexpected: true,
+      } as HomebrewRuntimeLayerReference],
+      fetch,
+    })).rejects.toThrow(/reference 0 has unexpected or missing fields/);
+    expect(fetches).toBe(0);
+  });
+
+  it("rejects aggregate uncompressed size before changing the VFS", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const runtimeDescriptor = structuredClone(fixture.descriptor);
+    const perlDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
+    const declaredSize = Math.floor(
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes / 2,
+    ) + 1;
+    for (const descriptor of [runtimeDescriptor, perlDescriptor]) {
+      const file = descriptor.entries.find((entry) => entry.type === "file")!;
+      file.size = declaredSize;
+      descriptor.archive.uncompressed_bytes = descriptor.entries.reduce(
+        (total, entry) => total + entry.size,
+        0,
+      );
+    }
+    const runtime = runtimeLayerReference("runtime", runtimeDescriptor);
+    const perl = runtimeLayerReference("perl", perlDescriptor);
+    const responses = new Map([
+      [runtime.reference.descriptor.url, runtime.bytes],
+      [perl.reference.descriptor.url, perl.bytes],
+    ]);
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference, perl.reference],
+      fetch: async (url) => new Response(responses.get(url)!),
+    })).rejects.toThrow(/selected Homebrew runtime layers exceed the uncompressed size cap/i);
+    expect(() => fs.lstat(fixture.runtimeKeg)).toThrow();
+    expect(() => fs.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
+  });
+
+  it("rejects reused archive identities and cross-layer directory ownership", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const duplicateArchiveDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
+    duplicateArchiveDescriptor.archive.asset = fixture.descriptor.archive.asset;
+    duplicateArchiveDescriptor.archive.url = fixture.descriptor.archive.url;
+    duplicateArchiveDescriptor.archive.sha256 = fixture.descriptor.archive.sha256;
+    const duplicateArchive = runtimeLayerReference("perl", duplicateArchiveDescriptor);
+    let responses = new Map([
+      [runtime.reference.descriptor.url, runtime.bytes],
+      [duplicateArchive.reference.descriptor.url, duplicateArchive.bytes],
+    ]);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference, duplicateArchive.reference],
+      fetch: async (url) => new Response(responses.get(url)!),
+    })).rejects.toThrow(/reuses another layer archive/);
+
+    const nestedDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
+    nestedDescriptor.entries.find((entry) => entry.type === "file")!.path =
+      `${fixture.runtimeKeg.slice(1)}/foreign-perl`;
+    nestedDescriptor.entries.sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+    );
+    const nested = runtimeLayerReference("perl", nestedDescriptor);
+    responses = new Map([
+      [runtime.reference.descriptor.url, runtime.bytes],
+      [nested.reference.descriptor.url, nested.bytes],
+    ]);
+    await expect(registerHomebrewRuntimeLayers({
+      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference, nested.reference],
+      fetch: async (url) => new Response(responses.get(url)!),
+    })).rejects.toThrow(/descends through runtime-owned directory/);
+  });
+
+  it("rejects a shell composition digest mismatch before changing the VFS", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const descriptor = structuredClone(fixture.descriptor);
+    descriptor.base_vfs.composition.package_set_sha256 = "9".repeat(64);
+    const encoded = runtimeLayerReference("runtime", descriptor);
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [encoded.reference],
+      fetch: async () => new Response(encoded.bytes),
+    })).rejects.toThrow(/does not bind the shell composition/);
+    expect(() => fs.lstat(fixture.runtimeKeg)).toThrow();
+  });
+
   it("rejects descriptor size and digest mismatches before parsing", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const exact = runtimeLayerReference("runtime", fixture.descriptor);
@@ -789,12 +1101,8 @@ describe("Homebrew runtime layer consumer", () => {
   it("rejects a layer path that collides with the exact base filesystem", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const descriptor = structuredClone(fixture.descriptor);
-    for (const entry of descriptor.entries) {
-      entry.path = entry.path.replace(
-        "home/linuxbrew/.linuxbrew/Cellar/runtime",
-        "home/linuxbrew/.linuxbrew/Cellar/hello",
-      );
-    }
+    const file = descriptor.entries.find((entry) => entry.type === "file")!;
+    file.path = `${KEG.slice(1)}/bin/hello`;
     descriptor.entries.sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
@@ -813,22 +1121,15 @@ describe("Homebrew runtime layer consumer", () => {
   it("rejects pairwise path conflicts between independently named layers", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const runtime = runtimeLayerReference("runtime", fixture.descriptor);
-    const perlDescriptor = structuredClone(fixture.descriptor);
-    const runtimePackage = perlDescriptor.packages.layer[0];
-    const oldFullName = runtimePackage.full_name;
-    runtimePackage.name = "perl";
-    runtimePackage.full_name = "kandelo-dev/tap-core/perl";
-    runtimePackage.url = "https://example.invalid/bottles/perl.bottle.tar.gz";
-    runtimePackage.keg = runtimePackage.keg.replace("/runtime/", "/perl/");
-    runtimePackage.opt_link = {
-      path: "opt/perl",
-      target: `../${runtimePackage.keg.slice(`${PREFIX}/`.length)}`,
-    };
-    perlDescriptor.selection.requested_packages = ["perl"];
-    perlDescriptor.selection.package_order = perlDescriptor.selection.package_order.map(
-      (name) => name === oldFullName ? runtimePackage.full_name : name,
+    const perlDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
+    const runtimeFile = fixture.descriptor.entries.find(
+      (entry) => entry.type === "file",
+    )!;
+    const perlFile = perlDescriptor.entries.find((entry) => entry.type === "file")!;
+    perlFile.path = runtimeFile.path;
+    perlDescriptor.entries.sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
-    perlDescriptor.selection.layer_package_order = [runtimePackage.full_name];
     const perl = runtimeLayerReference("perl", perlDescriptor);
     const responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],

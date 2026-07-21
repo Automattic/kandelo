@@ -19,6 +19,8 @@ export const HOMEBREW_RUNTIME_LAYER_LIMITS = {
   maxSymlinkTargetBytes: 65_536,
   maxPackages: 512,
   maxTapLocks: 32,
+  maxPackageNameBytes: 255,
+  maxRepositoryBytes: 512,
   maxStringBytes: 8192,
 } as const;
 
@@ -455,9 +457,9 @@ export function parseHomebrewRuntimeLayerDescriptor(
   );
 
   const entries = validateEntries(root.entries, archive);
+  validateLayerPackageEntries(layerPackages, entries);
   void requestedPackages;
   void baseVfs;
-  void entries;
   return root as unknown as HomebrewLazyLayerDescriptor;
 }
 
@@ -467,13 +469,19 @@ function validateReferences(references: readonly HomebrewRuntimeLayerReference[]
   const digests = new Set<string>();
   let totalDescriptorBytes = 0;
   for (const [index, reference] of references.entries()) {
-    if (!PACKAGE_RE.test(reference.id)) {
-      throw new Error(`Homebrew runtime layer reference ${index} has an invalid id`);
-    }
-    const descriptor = exactRecord(
-      reference.descriptor,
-      ["url", "sha256", "bytes"],
+    const value = exactRecord(
+      reference,
+      ["id", "descriptor"],
       `Homebrew runtime layer reference ${index}`,
+    );
+    const id = requirePackageName(
+      value.id,
+      `Homebrew runtime layer reference ${index} id`,
+    );
+    const descriptor = exactRecord(
+      value.descriptor,
+      ["url", "sha256", "bytes"],
+      `Homebrew runtime layer reference ${index} descriptor`,
     );
     const url = requireHttpsUrl(
       descriptor.url,
@@ -496,10 +504,10 @@ function validateReferences(references: readonly HomebrewRuntimeLayerReference[]
           `${HOMEBREW_RUNTIME_LAYER_LIMITS.maxDescriptorBytes} bytes`,
       );
     }
-    if (ids.has(reference.id) || urls.has(url) || digests.has(digest)) {
+    if (ids.has(id) || urls.has(url) || digests.has(digest)) {
       throw new Error(`Homebrew runtime layer reference ${index} is duplicated`);
     }
-    ids.add(reference.id);
+    ids.add(id);
     urls.add(url);
     digests.add(digest);
   }
@@ -664,7 +672,19 @@ function validateLayerBinding(
 
 function validatePackageOwnership(layers: readonly LoadedLayer[]): void {
   const owner = new Map<string, string>();
+  const archiveUrls = new Set<string>();
+  const archiveDigests = new Set<string>();
   for (const layer of layers) {
+    if (
+      archiveUrls.has(layer.descriptor.archive.url) ||
+      archiveDigests.has(layer.descriptor.archive.sha256)
+    ) {
+      throw new Error(
+        `Homebrew runtime layer ${layer.reference.id} reuses another layer archive`,
+      );
+    }
+    archiveUrls.add(layer.descriptor.archive.url);
+    archiveDigests.add(layer.descriptor.archive.sha256);
     for (const pkg of layer.descriptor.packages.layer) {
       const previous = owner.get(pkg.full_name);
       if (previous !== undefined) {
@@ -776,6 +796,16 @@ function preflightLayerPaths(
         throw new Error(
           `Homebrew runtime layer path /${path} descends through ` +
             `non-directory /${ancestorPath}`,
+        );
+      }
+      if (
+        ancestor !== undefined &&
+        ancestor.ownership === "layer" &&
+        ancestor.id !== entry.id
+      ) {
+        throw new Error(
+          `Homebrew runtime layer ${entry.id} path /${path} descends through ` +
+            `${ancestor.id}-owned directory /${ancestorPath}`,
         );
       }
       if (ancestor === undefined) {
@@ -1003,7 +1033,16 @@ function validatePackageRecord(
     ) {
       throw new Error(`${label} bottle build provenance differs from its package`);
     }
-    requireRepository(built.kandelo_repository, `${label} built_from Kandelo repository`);
+    const kandeloRepository = requireRepository(
+      built.kandelo_repository,
+      `${label} built_from Kandelo repository`,
+    );
+    if (
+      kandeloRepository.toLowerCase() !==
+        String(locked.kandelo_repository).toLowerCase()
+    ) {
+      throw new Error(`${label} bottle build provenance differs from its tap lock`);
+    }
     requireGitSha(built.kandelo_commit, `${label} built_from Kandelo commit`);
     requireSha256(built.formula_sha256, `${label} built_from Formula digest`);
   }
@@ -1138,6 +1177,39 @@ function validateEntries(
     throw new Error("Homebrew runtime layer archive counts differ from its entries");
   }
   return entries;
+}
+
+function validateLayerPackageEntries(
+  packages: readonly HomebrewLazyLayerPackageRecord[],
+  entries: readonly HomebrewLazyLayerEntry[],
+): void {
+  const entriesByPath = new Map(entries.map((entry) => [entry.path, entry]));
+  for (const pkg of packages) {
+    const kegPath = pkg.keg.slice(1);
+    const keg = entriesByPath.get(kegPath);
+    if (
+      keg === undefined ||
+      keg.type !== "directory" ||
+      keg.ownership !== "layer"
+    ) {
+      throw new Error(
+        `Homebrew runtime layer package ${pkg.full_name} has no layer-owned keg entry`,
+      );
+    }
+
+    const optPath = `${HOMEBREW_PREFIX.slice(1)}/${pkg.opt_link.path}`;
+    const opt = entriesByPath.get(optPath);
+    if (
+      opt === undefined ||
+      opt.type !== "symlink" ||
+      opt.ownership !== "layer" ||
+      opt.target !== pkg.opt_link.target
+    ) {
+      throw new Error(
+        `Homebrew runtime layer package ${pkg.full_name} has no matching opt link entry`,
+      );
+    }
+  }
 }
 
 interface ParsedBaseComposition {
@@ -1411,7 +1483,12 @@ function requireArch(value: unknown, label: string): "wasm32" | "wasm64" {
 }
 
 function requireRepository(value: unknown, label: string): string {
-  if (typeof value !== "string" || !REPOSITORY_RE.test(value)) {
+  if (
+    typeof value !== "string" ||
+    new TextEncoder().encode(value).byteLength >
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes ||
+    !REPOSITORY_RE.test(value)
+  ) {
     throw new Error(`${label} is invalid`);
   }
   return value;
@@ -1425,7 +1502,12 @@ function requireReleaseTag(value: unknown, label: string): string {
 }
 
 function requirePackageName(value: unknown, label: string): string {
-  if (typeof value !== "string" || !PACKAGE_RE.test(value)) {
+  if (
+    typeof value !== "string" ||
+    new TextEncoder().encode(value).byteLength >
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackageNameBytes ||
+    !PACKAGE_RE.test(value)
+  ) {
     throw new Error(`${label} is invalid`);
   }
   return value;

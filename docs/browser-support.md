@@ -482,6 +482,12 @@ bounded and SHA-256 checked before first-use materialization. Descriptors with
 no package-layer mounts retain the ordinary shell behavior and fetch no
 runtime-layer bytes.
 
+Boot accepts at most eight package layers and 16 MiB of descriptor bytes
+in aggregate. The shared consumer additionally caps aggregate entry count and
+uncompressed size, requires each package's declared keg and `opt` link to match
+its indexed paths, and rejects archive reuse or a path that depends on a
+directory owned by another selected layer.
+
 ```json
 {
   "path": "/",
