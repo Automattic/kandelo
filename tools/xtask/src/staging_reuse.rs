@@ -7,13 +7,17 @@
 //! prior run can be combined only with an exact-current canonical complement.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::build_deps::{compute_cache_key_sha_for_package, Registry};
+use crate::build_deps::{Registry, compute_cache_key_sha_for_package};
 use crate::index_toml::{EntryStatus, IndexToml};
-use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{
+    BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch, validate_git_build_inputs,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct ExpectedLedger {
@@ -29,6 +33,7 @@ struct ExpectedEntry {
     version: String,
     revision: u32,
     cache_key_sha: String,
+    git_inputs: Vec<GitBuildInput>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -59,6 +64,9 @@ struct ValidatedEntry {
     package: String,
     kind: ExpectedKind,
     arch: TargetArch,
+    version: String,
+    revision: u32,
+    cache_key_sha: String,
     current: bool,
     asset: String,
     archive_sha256: String,
@@ -71,16 +79,30 @@ enum ValidationMode {
     Current,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArchiveValidationScope {
+    /// Validate every downloaded archive in a materialized snapshot.
+    All,
+    /// Metadata-only preflight downloads only entries that are current and
+    /// declare external Git provenance. Other entries cannot be selected under
+    /// a forged-equal Git identity because they have no such identity.
+    CurrentDeclaredGitInputs,
+}
+
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let Some((action, rest)) = args.split_first() else {
-        return Err("usage: xtask staging-reuse <expected|validate|compose> [args]".into());
+        return Err(
+            "usage: xtask staging-reuse <expected|validate|validate-archives|compose> [args]"
+                .into(),
+        );
     };
     match action.as_str() {
         "expected" => run_expected(rest),
         "validate" => run_validate(rest),
+        "validate-archives" => run_validate_archives(rest),
         "compose" => run_compose(rest),
         other => Err(format!(
-            "staging-reuse action must be expected, validate, or compose, got {other:?}"
+            "staging-reuse action must be expected, validate, validate-archives, or compose, got {other:?}"
         )),
     }
 }
@@ -95,8 +117,7 @@ fn run_compose(args: &[String]) -> Result<(), String> {
     ])?;
     let base_path = flags.required_path("--base-index")?;
     let overlay_path = flags.required_path("--overlay-index")?;
-    let expected: ExpectedLedger =
-        read_json(flags.required_path("--overlay-expected-ledger")?)?;
+    let expected: ExpectedLedger = read_json(flags.required_path("--overlay-expected-ledger")?)?;
     validate_expected_ledger(&expected)?;
     let base = read_index(base_path)?;
     let overlay = read_index(overlay_path)?;
@@ -106,19 +127,14 @@ fn run_compose(args: &[String]) -> Result<(), String> {
 }
 
 fn read_index(path: &Path) -> Result<IndexToml, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     IndexToml::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn run_expected(args: &[String]) -> Result<(), String> {
     let flags = Flags::parse(args)?;
-    flags.reject_unknown(&[
-        "--registry",
-        "--expected-abi",
-        "--exclude",
-        "--output",
-    ])?;
+    flags.reject_unknown(&["--registry", "--expected-abi", "--exclude", "--output"])?;
     let registry = flags.required_path("--registry")?;
     let abi = flags.required_u32("--expected-abi")?;
     let output = flags.required_path("--output")?;
@@ -148,8 +164,8 @@ fn run_validate(args: &[String]) -> Result<(), String> {
     let index_path = flags.required_path("--index")?;
     let index_text = std::fs::read_to_string(index_path)
         .map_err(|e| format!("read {}: {e}", index_path.display()))?;
-    let index = IndexToml::parse(&index_text)
-        .map_err(|e| format!("{}: {e}", index_path.display()))?;
+    let index =
+        IndexToml::parse(&index_text).map_err(|e| format!("{}: {e}", index_path.display()))?;
     let assets: Vec<ReleaseAsset> = read_json(flags.required_path("--assets")?)?;
     let release_tag = flags.required("--release-tag")?;
     validate_release_tag(release_tag)?;
@@ -158,7 +174,11 @@ fn run_validate(args: &[String]) -> Result<(), String> {
     let mode = match flags.required("--mode")? {
         "structural" => ValidationMode::Structural,
         "current" => ValidationMode::Current,
-        other => return Err(format!("--mode must be structural or current, got {other:?}")),
+        other => {
+            return Err(format!(
+                "--mode must be structural or current, got {other:?}"
+            ));
+        }
     };
     let snapshot = validate_release(
         &expected,
@@ -169,12 +189,36 @@ fn run_validate(args: &[String]) -> Result<(), String> {
         mode,
     )?;
     let localized = localize_index(&index, &snapshot)?;
-    std::fs::write(
-        flags.required_path("--localized-index")?,
-        localized.write(),
-    )
-    .map_err(|e| format!("write localized index: {e}"))?;
+    std::fs::write(flags.required_path("--localized-index")?, localized.write())
+        .map_err(|e| format!("write localized index: {e}"))?;
     write_json(flags.required_path("--output")?, &snapshot)
+}
+
+fn run_validate_archives(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse(args)?;
+    flags.reject_unknown(&[
+        "--expected-ledger",
+        "--snapshot",
+        "--archives-dir",
+        "--scope",
+    ])?;
+    let expected: ExpectedLedger = read_json(flags.required_path("--expected-ledger")?)?;
+    let snapshot: ValidatedSnapshot = read_json(flags.required_path("--snapshot")?)?;
+    let scope = match flags.required("--scope")? {
+        "all" => ArchiveValidationScope::All,
+        "current-declared-git-inputs" => ArchiveValidationScope::CurrentDeclaredGitInputs,
+        other => {
+            return Err(format!(
+                "--scope must be all or current-declared-git-inputs, got {other:?}"
+            ));
+        }
+    };
+    validate_archive_snapshot(
+        &expected,
+        &snapshot,
+        flags.required_path("--archives-dir")?,
+        scope,
+    )
 }
 
 fn build_expected_ledger(
@@ -208,6 +252,11 @@ fn build_expected_ledger(
             ManifestKind::Program => ExpectedKind::Program,
             ManifestKind::Source => continue,
         };
+        let git_inputs = if package_dir.join("build.toml").exists() {
+            BuildToml::load(&package_dir)?.git_inputs
+        } else {
+            Vec::new()
+        };
         for &arch in &manifest.target_arches {
             let key = (manifest.name.clone(), arch);
             if !keys.insert(key.clone()) {
@@ -217,12 +266,8 @@ fn build_expected_ledger(
                     key.1.as_str()
                 ));
             }
-            let cache_key_sha = compute_cache_key_sha_for_package(
-                &package_dir,
-                &registry,
-                arch,
-                abi_version,
-            )?;
+            let cache_key_sha =
+                compute_cache_key_sha_for_package(&package_dir, &registry, arch, abi_version)?;
             validate_sha256(&cache_key_sha, "computed cache_key_sha")?;
             entries.push(ExpectedEntry {
                 package: manifest.name.clone(),
@@ -231,6 +276,7 @@ fn build_expected_ledger(
                 version: manifest.version.clone(),
                 revision: manifest.revision,
                 cache_key_sha,
+                git_inputs: git_inputs.clone(),
             });
         }
     }
@@ -263,7 +309,10 @@ fn validate_release(
     let mut assets_by_name = BTreeMap::new();
     for asset in assets {
         if assets_by_name.insert(asset.name.as_str(), asset).is_some() {
-            return Err(format!("release contains duplicate asset name {:?}", asset.name));
+            return Err(format!(
+                "release contains duplicate asset name {:?}",
+                asset.name
+            ));
         }
     }
 
@@ -375,6 +424,9 @@ fn validate_release(
             package: wanted.package.clone(),
             kind: wanted.kind,
             arch: wanted.arch,
+            version: package.version.clone(),
+            revision: package.revision,
+            cache_key_sha: cache_key_sha.to_owned(),
             current,
             asset: asset.name.clone(),
             archive_sha256: archive_sha256.to_owned(),
@@ -403,6 +455,7 @@ fn validate_expected_ledger(expected: &ExpectedLedger) -> Result<(), String> {
     let mut keys = BTreeSet::new();
     for entry in &expected.entries {
         validate_sha256(&entry.cache_key_sha, "expected cache_key_sha")?;
+        validate_git_build_inputs(&entry.git_inputs, "expected ledger git_inputs")?;
         if !keys.insert((entry.package.as_str(), entry.arch)) {
             return Err(format!(
                 "expected ledger contains duplicate package/arch {} {}",
@@ -412,6 +465,228 @@ fn validate_expected_ledger(expected: &ExpectedLedger) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+const MAX_ARCHIVE_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Validate the immutable manifest inside every archive selected by a frozen
+/// staging snapshot. Release metadata and index cache keys are useful routing
+/// evidence, but neither can substitute for comparing the archive's authored
+/// provenance directly with the current expected ledger.
+fn validate_archive_snapshot(
+    expected: &ExpectedLedger,
+    snapshot: &ValidatedSnapshot,
+    archives_dir: &Path,
+    scope: ArchiveValidationScope,
+) -> Result<(), String> {
+    validate_expected_ledger(expected)?;
+    if snapshot.abi_version != expected.abi_version {
+        return Err(format!(
+            "archive snapshot ABI {} does not match expected ABI {}",
+            snapshot.abi_version, expected.abi_version
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(archives_dir)
+        .map_err(|e| format!("inspect archive directory {}: {e}", archives_dir.display()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "archive directory must be a non-symlink directory: {}",
+            archives_dir.display()
+        ));
+    }
+
+    let mut snapshot_by_key = BTreeMap::new();
+    for entry in &snapshot.entries {
+        let key = (entry.package.as_str(), entry.arch);
+        if snapshot_by_key.insert(key, entry).is_some() {
+            return Err(format!(
+                "archive snapshot contains duplicate package/arch {} {}",
+                entry.package,
+                entry.arch.as_str()
+            ));
+        }
+    }
+    if snapshot_by_key.len() != expected.entries.len() {
+        return Err(format!(
+            "archive snapshot contains {} entries, expected {}",
+            snapshot_by_key.len(),
+            expected.entries.len()
+        ));
+    }
+
+    for wanted in &expected.entries {
+        let entry = snapshot_by_key
+            .get(&(wanted.package.as_str(), wanted.arch))
+            .ok_or_else(|| {
+                format!(
+                    "archive snapshot lacks {} {}",
+                    wanted.package,
+                    wanted.arch.as_str()
+                )
+            })?;
+        let should_validate = match scope {
+            ArchiveValidationScope::All => true,
+            ArchiveValidationScope::CurrentDeclaredGitInputs => {
+                entry.current && !wanted.git_inputs.is_empty()
+            }
+        };
+        if !should_validate {
+            continue;
+        }
+        if entry.kind != wanted.kind {
+            return Err(format!(
+                "archive snapshot kind for {} {} differs from expected",
+                wanted.package,
+                wanted.arch.as_str()
+            ));
+        }
+        validate_sha256(&entry.cache_key_sha, "snapshot cache_key_sha")?;
+        if entry.asset.contains(['/', '\\']) || entry.asset.contains("..") {
+            return Err(format!("unsafe archive snapshot asset {:?}", entry.asset));
+        }
+        let archive_path = archives_dir.join(&entry.asset);
+        let archive_metadata = std::fs::symlink_metadata(&archive_path)
+            .map_err(|e| format!("inspect staging archive {}: {e}", archive_path.display()))?;
+        if !archive_metadata.is_file() || archive_metadata.file_type().is_symlink() {
+            return Err(format!(
+                "staging archive must be a regular non-symlink file: {}",
+                archive_path.display()
+            ));
+        }
+        if archive_metadata.len() != entry.size {
+            return Err(format!(
+                "staging archive {} has {} bytes, validated snapshot requires {}",
+                archive_path.display(),
+                archive_metadata.len(),
+                entry.size
+            ));
+        }
+        let archive_sha256 = sha256_file(&archive_path)?;
+        if archive_sha256 != entry.archive_sha256 {
+            return Err(format!(
+                "staging archive {} sha256 {} differs from validated snapshot {}",
+                archive_path.display(),
+                archive_sha256,
+                entry.archive_sha256
+            ));
+        }
+        let archived = read_archive_manifest(&archive_path)?;
+        let compatibility = archived
+            .compatibility
+            .as_ref()
+            .expect("parse_archived guarantees compatibility");
+        let archived_kind = match archived.kind {
+            ManifestKind::Library => ExpectedKind::Library,
+            ManifestKind::Program => ExpectedKind::Program,
+            ManifestKind::Source => {
+                return Err(format!(
+                    "staging archive {} unexpectedly contains kind=source",
+                    archive_path.display()
+                ));
+            }
+        };
+        if archived.name != entry.package
+            || archived.version != entry.version
+            || archived.revision != entry.revision
+            || archived_kind != entry.kind
+            || compatibility.target_arch != entry.arch
+            || !compatibility.abi_versions.contains(&expected.abi_version)
+            || compatibility.cache_key_sha != entry.cache_key_sha
+        {
+            return Err(format!(
+                "staging archive {} manifest identity differs from its validated snapshot entry",
+                archive_path.display()
+            ));
+        }
+        if entry.current {
+            if entry.version != wanted.version
+                || entry.revision != wanted.revision
+                || entry.cache_key_sha != wanted.cache_key_sha
+            {
+                return Err(format!(
+                    "current staging snapshot identity for {} {} differs from expected ledger",
+                    wanted.package,
+                    wanted.arch.as_str()
+                ));
+            }
+            if compatibility.git_inputs != wanted.git_inputs {
+                return Err(format!(
+                    "current staging archive {} immutable Git inputs {:?} differ from expected ledger {:?}",
+                    archive_path.display(),
+                    compatibility.git_inputs,
+                    wanted.git_inputs
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("open staging archive {} for sha256: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("hash staging archive {}: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn read_archive_manifest(path: &Path) -> Result<DepsManifest, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("open staging archive {}: {e}", path.display()))?;
+    let decoder = zstd::stream::read::Decoder::new(file)
+        .map_err(|e| format!("decompress staging archive {}: {e}", path.display()))?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries = archive
+        .entries()
+        .map_err(|e| format!("read staging archive {}: {e}", path.display()))?;
+    let mut entry = entries
+        .next()
+        .ok_or_else(|| format!("staging archive {} is empty", path.display()))?
+        .map_err(|e| format!("read first entry from {}: {e}", path.display()))?;
+    let entry_path = entry
+        .path()
+        .map_err(|e| format!("read first path from {}: {e}", path.display()))?;
+    if entry_path.as_ref() != Path::new("manifest.toml") || !entry.header().entry_type().is_file() {
+        return Err(format!(
+            "staging archive {} must begin with regular manifest.toml",
+            path.display()
+        ));
+    }
+    if entry.size() > MAX_ARCHIVE_MANIFEST_BYTES {
+        return Err(format!(
+            "staging archive {} manifest exceeds {} bytes",
+            path.display(),
+            MAX_ARCHIVE_MANIFEST_BYTES
+        ));
+    }
+    let mut text = String::new();
+    entry
+        .read_to_string(&mut text)
+        .map_err(|e| format!("read manifest from {}: {e}", path.display()))?;
+    drop(entry);
+    for later in entries {
+        let later = later.map_err(|e| format!("read entry from {}: {e}", path.display()))?;
+        let later_path = later
+            .path()
+            .map_err(|e| format!("read entry path from {}: {e}", path.display()))?;
+        if later_path.as_ref() == Path::new("manifest.toml") {
+            return Err(format!(
+                "staging archive {} contains duplicate manifest.toml",
+                path.display()
+            ));
+        }
+    }
+    DepsManifest::parse_archived(&text, path.to_path_buf())
+        .map_err(|e| format!("parse manifest from {}: {e}", path.display()))
 }
 
 fn reject_managed_package_splits(
@@ -435,10 +710,7 @@ fn reject_managed_package_splits(
     Ok(())
 }
 
-fn localize_index(
-    index: &IndexToml,
-    snapshot: &ValidatedSnapshot,
-) -> Result<IndexToml, String> {
+fn localize_index(index: &IndexToml, snapshot: &ValidatedSnapshot) -> Result<IndexToml, String> {
     let mut localized = index.clone();
     for validated in &snapshot.entries {
         let package = localized
@@ -527,15 +799,15 @@ fn ensure_localized_index(index: &IndexToml, context: &str) -> Result<(), String
         for (arch, entry) in &package.binary {
             for (field, value) in [
                 ("archive_url", entry.archive_url.as_deref()),
-                ("fallback_archive_url", entry.fallback_archive_url.as_deref()),
+                (
+                    "fallback_archive_url",
+                    entry.fallback_archive_url.as_deref(),
+                ),
             ] {
                 let Some(value) = value else {
                     continue;
                 };
-                if value.contains('/')
-                    || value.contains(['?', '#', '\\'])
-                    || value.contains("..")
-                {
+                if value.contains('/') || value.contains(['?', '#', '\\']) || value.contains("..") {
                     return Err(format!(
                         "{context} index {} {} {field} is not a localized asset basename: {value:?}",
                         package.name,
@@ -610,7 +882,9 @@ fn archive_asset_name<'a>(archive_url: &'a str, release_base_url: &str) -> Resul
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._+,-".contains(&byte))
     {
-        return Err(format!("archive_url has invalid asset basename {archive_url:?}"));
+        return Err(format!(
+            "archive_url has invalid asset basename {archive_url:?}"
+        ));
     }
     if archive_url != name {
         if archive_url.strip_prefix(release_base_url) != Some(name) {
@@ -629,8 +903,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let mut bytes = serde_json::to_vec_pretty(value).map_err(|e| format!("encode JSON: {e}"))?;
     bytes.push(b'\n');
@@ -689,11 +962,7 @@ impl Flags {
     }
 
     fn values<'a>(&'a self, flag: &'a str) -> impl Iterator<Item = &'a str> {
-        self.0
-            .get(flag)
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
+        self.0.get(flag).into_iter().flatten().map(String::as_str)
     }
 }
 
@@ -702,11 +971,121 @@ mod tests {
     use super::*;
     use crate::index_toml::{BinaryEntry, PackageEntry};
     use std::fs;
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const ABI: u32 = 39;
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const ARCHIVE_SHA: &str =
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const ARCHIVE_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn archive_tempdir(label: &str) -> std::path::PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "kandelo-staging-archive-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn git_input(name: &str, commit_byte: char) -> GitBuildInput {
+        GitBuildInput {
+            name: name.into(),
+            repository: format!("https://example.test/{name}.git"),
+            commit: commit_byte.to_string().repeat(40),
+        }
+    }
+
+    fn archived_manifest(git_inputs: &[GitBuildInput]) -> String {
+        let git_blocks = git_inputs
+            .iter()
+            .map(|input| {
+                format!(
+                    "[[compatibility.git_inputs]]\nname = {:?}\nrepository = {:?}\ncommit = {:?}\n",
+                    input.name, input.repository, input.commit,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"kind = "library"
+name = "zlib"
+version = "1.3.1"
+revision = 2
+depends_on = []
+[source]
+url = "https://example.test/zlib.tar.gz"
+sha256 = "{source_sha}"
+[license]
+spdx = "Zlib"
+[outputs]
+libs = ["lib/libz.a"]
+[compatibility]
+target_arch = "wasm32"
+abi_versions = [{ABI}]
+cache_key_sha = "{SHA}"
+{git_blocks}"#,
+            source_sha = "0".repeat(64),
+        )
+    }
+
+    fn write_test_archive(
+        path: &Path,
+        first_path: &str,
+        manifest: &[u8],
+        duplicate_manifest: bool,
+    ) {
+        let file = fs::File::create(path).unwrap();
+        let encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
+        let mut tar = tar::Builder::new(encoder);
+        append_tar_file(&mut tar, first_path, manifest);
+        if duplicate_manifest {
+            append_tar_file(&mut tar, "manifest.toml", manifest);
+        }
+        append_tar_file(&mut tar, "artifacts/lib/libz.a", b"archive bytes");
+        let encoder = tar.into_inner().unwrap();
+        encoder.finish().unwrap();
+    }
+
+    fn append_tar_file<W: std::io::Write>(tar: &mut tar::Builder<W>, path: &str, bytes: &[u8]) {
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        tar.append_data(&mut header, path, Cursor::new(bytes))
+            .unwrap();
+    }
+
+    fn expected_with_git_inputs(git_inputs: Vec<GitBuildInput>) -> ExpectedLedger {
+        let mut value = expected();
+        value.entries[0].git_inputs = git_inputs;
+        value
+    }
+
+    fn snapshot_for_archive(path: &Path, current: bool) -> ValidatedSnapshot {
+        ValidatedSnapshot {
+            abi_version: ABI,
+            release_tag: "pr-946-staging".into(),
+            complete_current: current,
+            entries: vec![ValidatedEntry {
+                package: "zlib".into(),
+                kind: ExpectedKind::Library,
+                arch: TargetArch::Wasm32,
+                version: "1.3.1".into(),
+                revision: 2,
+                cache_key_sha: SHA.into(),
+                current,
+                asset: path.file_name().unwrap().to_string_lossy().into_owned(),
+                archive_sha256: sha256_file(path).unwrap(),
+                size: fs::metadata(path).unwrap().len(),
+            }],
+        }
+    }
 
     fn expected() -> ExpectedLedger {
         ExpectedLedger {
@@ -718,16 +1097,24 @@ mod tests {
                 version: "1.3.1".into(),
                 revision: 2,
                 cache_key_sha: SHA.into(),
+                git_inputs: Vec::new(),
             }],
         }
+    }
+
+    #[test]
+    fn expected_ledger_requires_explicit_git_provenance() {
+        let missing = format!(
+            r#"{{"abi_version":{ABI},"entries":[{{"package":"zlib","kind":"library","arch":"wasm32","version":"1.3.1","revision":2,"cache_key_sha":"{SHA}"}}]}}"#,
+        );
+        let error = serde_json::from_str::<ExpectedLedger>(&missing).unwrap_err();
+        assert!(error.to_string().contains("git_inputs"), "{error}");
     }
 
     fn binary() -> crate::index_toml::BinaryEntry {
         BinaryEntry {
             status: EntryStatus::Success,
-            archive_url: Some(
-                "zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst".into(),
-            ),
+            archive_url: Some("zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst".into()),
             archive_sha256: Some(ARCHIVE_SHA.into()),
             cache_key_sha: Some(SHA.into()),
             built_at: Some("2026-07-14T00:00:00Z".into()),
@@ -827,7 +1214,10 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         )
         .unwrap();
         let second = build_expected_ledger(&registry_path, ABI, &BTreeSet::new()).unwrap();
-        assert_ne!(first.entries[0].cache_key_sha, second.entries[0].cache_key_sha);
+        assert_ne!(
+            first.entries[0].cache_key_sha,
+            second.entries[0].cache_key_sha
+        );
 
         let mut stale_index = IndexToml {
             abi_version: ABI,
@@ -866,26 +1256,22 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             size: 123,
             digest: Some(format!("sha256:{ARCHIVE_SHA}")),
         }];
-        assert!(validate_release(
-            &second,
-            &stale_index,
-            &stale_assets,
-            "pr-946-staging",
-            "https://github.com/Automattic/kandelo/releases/download/pr-946-staging/",
-            ValidationMode::Current,
-        )
-        .is_err());
+        assert!(
+            validate_release(
+                &second,
+                &stale_index,
+                &stale_assets,
+                "pr-946-staging",
+                "https://github.com/Automattic/kandelo/releases/download/pr-946-staging/",
+                ValidationMode::Current,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn accepts_complete_current_release() {
-        let snapshot = validate(
-            &expected(),
-            &index(),
-            &assets(),
-            ValidationMode::Current,
-        )
-        .unwrap();
+        let snapshot = validate(&expected(), &index(), &assets(), ValidationMode::Current).unwrap();
         assert!(snapshot.complete_current);
         assert!(snapshot.entries[0].current);
     }
@@ -897,17 +1283,26 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             match mutation {
                 "version" => {
                     index.packages[0].version = "1.3.0".into();
-                    index.packages[0].binary.get_mut(&TargetArch::Wasm32).unwrap().archive_url =
-                        Some("zlib-1.3.0-rev2-abi39-wasm32-aaaaaaaa.tar.zst".into());
+                    index.packages[0]
+                        .binary
+                        .get_mut(&TargetArch::Wasm32)
+                        .unwrap()
+                        .archive_url = Some("zlib-1.3.0-rev2-abi39-wasm32-aaaaaaaa.tar.zst".into());
                 }
                 "revision" => {
                     index.packages[0].revision = 1;
-                    index.packages[0].binary.get_mut(&TargetArch::Wasm32).unwrap().archive_url =
-                        Some("zlib-1.3.1-rev1-abi39-wasm32-aaaaaaaa.tar.zst".into());
+                    index.packages[0]
+                        .binary
+                        .get_mut(&TargetArch::Wasm32)
+                        .unwrap()
+                        .archive_url = Some("zlib-1.3.1-rev1-abi39-wasm32-aaaaaaaa.tar.zst".into());
                 }
                 "key" => {
                     let old = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-                    let entry = index.packages[0].binary.get_mut(&TargetArch::Wasm32).unwrap();
+                    let entry = index.packages[0]
+                        .binary
+                        .get_mut(&TargetArch::Wasm32)
+                        .unwrap();
                     entry.cache_key_sha = Some(old.into());
                     entry.archive_url =
                         Some("zlib-1.3.1-rev2-abi39-wasm32-cccccccc.tar.zst".into());
@@ -923,13 +1318,8 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
                 .unwrap();
             let mut assets = assets();
             assets[0].name = asset_name;
-            let structural = validate(
-                &expected(),
-                &index,
-                &assets,
-                ValidationMode::Structural,
-            )
-            .unwrap();
+            let structural =
+                validate(&expected(), &index, &assets, ValidationMode::Structural).unwrap();
             assert!(!structural.complete_current, "mutation {mutation}");
             assert!(
                 validate(&expected(), &index, &assets, ValidationMode::Current).is_err(),
@@ -942,16 +1332,31 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
     fn rejects_wrong_abi_status_arch_and_missing_coverage() {
         let mut wrong_abi = index();
         wrong_abi.abi_version = ABI - 1;
-        assert!(validate(&expected(), &wrong_abi, &assets(), ValidationMode::Structural).is_err());
+        assert!(
+            validate(
+                &expected(),
+                &wrong_abi,
+                &assets(),
+                ValidationMode::Structural
+            )
+            .is_err()
+        );
 
         let mut wrong_status = index();
-        wrong_status
-            .packages[0]
+        wrong_status.packages[0]
             .binary
             .get_mut(&TargetArch::Wasm32)
             .unwrap()
             .status = EntryStatus::Failed;
-        assert!(validate(&expected(), &wrong_status, &assets(), ValidationMode::Structural).is_err());
+        assert!(
+            validate(
+                &expected(),
+                &wrong_status,
+                &assets(),
+                ValidationMode::Structural
+            )
+            .is_err()
+        );
 
         let mut wrong_arch = index();
         let entry = wrong_arch.packages[0]
@@ -961,7 +1366,15 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         wrong_arch.packages[0]
             .binary
             .insert(TargetArch::Wasm64, entry);
-        assert!(validate(&expected(), &wrong_arch, &assets(), ValidationMode::Structural).is_err());
+        assert!(
+            validate(
+                &expected(),
+                &wrong_arch,
+                &assets(),
+                ValidationMode::Structural
+            )
+            .is_err()
+        );
 
         let mut missing = index();
         missing.packages.clear();
@@ -971,15 +1384,29 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
     #[test]
     fn rejects_duplicate_package_arch_and_assets() {
         let mut duplicate_index = index();
-        duplicate_index.packages.push(duplicate_index.packages[0].clone());
+        duplicate_index
+            .packages
+            .push(duplicate_index.packages[0].clone());
         assert!(
-            validate(&expected(), &duplicate_index, &assets(), ValidationMode::Structural).is_err()
+            validate(
+                &expected(),
+                &duplicate_index,
+                &assets(),
+                ValidationMode::Structural
+            )
+            .is_err()
         );
 
         let mut duplicate_assets = assets();
         duplicate_assets.push(duplicate_assets[0].clone());
         assert!(
-            validate(&expected(), &index(), &duplicate_assets, ValidationMode::Structural).is_err()
+            validate(
+                &expected(),
+                &index(),
+                &duplicate_assets,
+                ValidationMode::Structural
+            )
+            .is_err()
         );
     }
 
@@ -1018,7 +1445,15 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             .get_mut(&TargetArch::Wasm32)
             .unwrap()
             .archive_url = Some("other.tar.zst".into());
-        assert!(validate(&expected(), &wrong_name, &assets(), ValidationMode::Structural).is_err());
+        assert!(
+            validate(
+                &expected(),
+                &wrong_name,
+                &assets(),
+                ValidationMode::Structural
+            )
+            .is_err()
+        );
         assert!(validate(&expected(), &index(), &[], ValidationMode::Structural).is_err());
 
         for mutation in ["state", "size", "digest-null", "digest-wrong"] {
@@ -1045,9 +1480,9 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             .get_mut(&TargetArch::Wasm32)
             .unwrap()
             .archive_url = Some(format!(
-                "https://github.com/Automattic/kandelo/releases/download/pr-946-staging/{}",
-                assets()[0].name
-            ));
+            "https://github.com/Automattic/kandelo/releases/download/pr-946-staging/{}",
+            assets()[0].name
+        ));
         let snapshot =
             validate(&expected(), &valid, &assets(), ValidationMode::Structural).unwrap();
         let localized = localize_index(&valid, &snapshot).unwrap();
@@ -1063,9 +1498,9 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             .get_mut(&TargetArch::Wasm32)
             .unwrap()
             .archive_url = Some(format!(
-                "https://github.com/Automattic/other/releases/download/pr-946-staging/{}",
-                assets()[0].name
-            ));
+            "https://github.com/Automattic/other/releases/download/pr-946-staging/{}",
+            assets()[0].name
+        ));
         assert!(validate(&expected(), &valid, &assets(), ValidationMode::Structural).is_err());
     }
 
@@ -1116,5 +1551,251 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             .unwrap()
             .status = EntryStatus::Failed;
         assert!(compose_indexes(&base, &failed, &expected()).is_err());
+    }
+
+    #[test]
+    fn archive_snapshot_accepts_exact_ordered_git_provenance() {
+        let dir = archive_tempdir("exact-git");
+        let path = dir.join("zlib.tar.zst");
+        let git_inputs = vec![git_input("tap", '1'), git_input("support", '2')];
+        write_test_archive(
+            &path,
+            "manifest.toml",
+            archived_manifest(&git_inputs).as_bytes(),
+            false,
+        );
+        validate_archive_snapshot(
+            &expected_with_git_inputs(git_inputs),
+            &snapshot_for_archive(&path, true),
+            &dir,
+            ArchiveValidationScope::All,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn archive_snapshot_rejects_missing_extra_wrong_or_reordered_git_provenance() {
+        let expected_inputs = vec![git_input("tap", '1'), git_input("support", '2')];
+        let cases = [
+            ("missing", vec![expected_inputs[0].clone()]),
+            (
+                "extra",
+                vec![
+                    expected_inputs[0].clone(),
+                    expected_inputs[1].clone(),
+                    git_input("third", '3'),
+                ],
+            ),
+            (
+                "wrong",
+                vec![git_input("tap", '4'), expected_inputs[1].clone()],
+            ),
+            (
+                "reordered",
+                vec![expected_inputs[1].clone(), expected_inputs[0].clone()],
+            ),
+        ];
+        for (label, archived_inputs) in cases {
+            let dir = archive_tempdir(label);
+            let path = dir.join("zlib.tar.zst");
+            write_test_archive(
+                &path,
+                "manifest.toml",
+                archived_manifest(&archived_inputs).as_bytes(),
+                false,
+            );
+            let error = validate_archive_snapshot(
+                &expected_with_git_inputs(expected_inputs.clone()),
+                &snapshot_for_archive(&path, true),
+                &dir,
+                ArchiveValidationScope::All,
+            )
+            .unwrap_err();
+            assert!(error.contains("immutable Git inputs"), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn archive_snapshot_rejects_wrong_size_and_digest_before_manifest_trust() {
+        let dir = archive_tempdir("bytes");
+        let path = dir.join("zlib.tar.zst");
+        write_test_archive(
+            &path,
+            "manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            false,
+        );
+
+        let mut wrong_size = snapshot_for_archive(&path, true);
+        wrong_size.entries[0].size += 1;
+        let error =
+            validate_archive_snapshot(&expected(), &wrong_size, &dir, ArchiveValidationScope::All)
+                .unwrap_err();
+        assert!(error.contains("validated snapshot requires"), "{error}");
+
+        let mut wrong_digest = snapshot_for_archive(&path, true);
+        wrong_digest.entries[0].archive_sha256 = "c".repeat(64);
+        let error = validate_archive_snapshot(
+            &expected(),
+            &wrong_digest,
+            &dir,
+            ArchiveValidationScope::All,
+        )
+        .unwrap_err();
+        assert!(error.contains("sha256"), "{error}");
+    }
+
+    #[test]
+    fn archive_snapshot_rejects_unsafe_asset_name() {
+        let dir = archive_tempdir("unsafe-asset");
+        let mut snapshot = ValidatedSnapshot {
+            abi_version: ABI,
+            release_tag: "pr-946-staging".into(),
+            complete_current: true,
+            entries: vec![ValidatedEntry {
+                package: "zlib".into(),
+                kind: ExpectedKind::Library,
+                arch: TargetArch::Wasm32,
+                version: "1.3.1".into(),
+                revision: 2,
+                cache_key_sha: SHA.into(),
+                current: true,
+                asset: "../zlib.tar.zst".into(),
+                archive_sha256: ARCHIVE_SHA.into(),
+                size: 123,
+            }],
+        };
+        let error =
+            validate_archive_snapshot(&expected(), &snapshot, &dir, ArchiveValidationScope::All)
+                .unwrap_err();
+        assert!(error.contains("unsafe archive snapshot asset"), "{error}");
+
+        snapshot.entries[0].asset = "nested/zlib.tar.zst".into();
+        assert!(
+            validate_archive_snapshot(&expected(), &snapshot, &dir, ArchiveValidationScope::All,)
+                .unwrap_err()
+                .contains("unsafe archive snapshot asset")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_snapshot_rejects_symlinked_archive_asset() {
+        use std::os::unix::fs::symlink;
+
+        let dir = archive_tempdir("symlink-asset");
+        let target = dir.join("real.tar.zst");
+        write_test_archive(
+            &target,
+            "manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            false,
+        );
+        let link = dir.join("zlib.tar.zst");
+        symlink(&target, &link).unwrap();
+        let mut snapshot = snapshot_for_archive(&target, true);
+        snapshot.entries[0].asset = "zlib.tar.zst".into();
+        let error =
+            validate_archive_snapshot(&expected(), &snapshot, &dir, ArchiveValidationScope::All)
+                .unwrap_err();
+        assert!(error.contains("regular non-symlink file"), "{error}");
+    }
+
+    #[test]
+    fn archive_manifest_rejects_malformed_oversized_noncanonical_and_duplicate_entries() {
+        let malformed_dir = archive_tempdir("malformed");
+        let malformed = malformed_dir.join("malformed.tar.zst");
+        write_test_archive(&malformed, "manifest.toml", b"not = [valid", false);
+        assert!(
+            read_archive_manifest(&malformed)
+                .unwrap_err()
+                .contains("parse manifest")
+        );
+
+        let oversized_dir = archive_tempdir("oversized");
+        let oversized = oversized_dir.join("oversized.tar.zst");
+        write_test_archive(
+            &oversized,
+            "manifest.toml",
+            &vec![b' '; MAX_ARCHIVE_MANIFEST_BYTES as usize + 1],
+            false,
+        );
+        assert!(
+            read_archive_manifest(&oversized)
+                .unwrap_err()
+                .contains("manifest exceeds")
+        );
+
+        let noncanonical_dir = archive_tempdir("noncanonical");
+        let noncanonical = noncanonical_dir.join("noncanonical.tar.zst");
+        write_test_archive(
+            &noncanonical,
+            "metadata/manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            false,
+        );
+        assert!(
+            read_archive_manifest(&noncanonical)
+                .unwrap_err()
+                .contains("must begin with regular manifest.toml")
+        );
+
+        let duplicate_dir = archive_tempdir("duplicate");
+        let duplicate = duplicate_dir.join("duplicate.tar.zst");
+        write_test_archive(
+            &duplicate,
+            "manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            true,
+        );
+        assert!(
+            read_archive_manifest(&duplicate)
+                .unwrap_err()
+                .contains("duplicate manifest.toml")
+        );
+    }
+
+    #[test]
+    fn sparse_archive_preflight_skips_entries_without_current_git_provenance() {
+        let dir = archive_tempdir("sparse-skip");
+        let missing = dir.join("not-downloaded.tar.zst");
+        let snapshot = ValidatedSnapshot {
+            abi_version: ABI,
+            release_tag: "pr-946-staging".into(),
+            complete_current: true,
+            entries: vec![ValidatedEntry {
+                package: "zlib".into(),
+                kind: ExpectedKind::Library,
+                arch: TargetArch::Wasm32,
+                version: "1.3.1".into(),
+                revision: 2,
+                cache_key_sha: SHA.into(),
+                current: true,
+                asset: missing.file_name().unwrap().to_string_lossy().into_owned(),
+                archive_sha256: ARCHIVE_SHA.into(),
+                size: 123,
+            }],
+        };
+        validate_archive_snapshot(
+            &expected(),
+            &snapshot,
+            &dir,
+            ArchiveValidationScope::CurrentDeclaredGitInputs,
+        )
+        .unwrap();
+        assert!(
+            validate_archive_snapshot(&expected(), &snapshot, &dir, ArchiveValidationScope::All,)
+                .is_err()
+        );
+
+        let mut stale_snapshot = snapshot;
+        stale_snapshot.entries[0].current = false;
+        validate_archive_snapshot(
+            &expected_with_git_inputs(vec![git_input("tap", '1')]),
+            &stale_snapshot,
+            &dir,
+            ArchiveValidationScope::CurrentDeclaredGitInputs,
+        )
+        .unwrap();
     }
 }

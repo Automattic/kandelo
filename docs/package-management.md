@@ -459,7 +459,7 @@ Inspect:
 
 ```bash
 cargo xtask build-deps sha     zlib   # → e33c5e9a4383afdd…
-cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a
+cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a4383afdd…
 cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
@@ -472,9 +472,22 @@ in turn, it checks:
 1. **`<repo>/local-libs/<name>/build/`** — hand-patched, in-progress.
    Returned as-is; the build script never runs. Per-worktree,
    gitignored. Mirrors `local-binaries/`.
-2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<shortsha>/`** —
-   canonical cache. Trusted by presence: users invalidate by
-   deleting the directory or bumping `revision`.
+2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<cache-key-sha>/`** —
+   canonical cache. The suffix is the complete 64-character SHA-256 so two
+   identities that share an archive filename's eight-character label cannot
+   alias locally. Packages with immutable Git inputs also require a matching
+   adjacent provenance marker; users invalidate an entry by deleting it or
+   bumping `revision`. Old short-key cache entries are left unused and rebuilt
+   under the full-key path rather than migrated or trusted in place.
+
+   The marker is a resolver-owned sibling named
+   `.<canonical-cache-basename>.kandelo-provenance.toml`. It binds the schema,
+   package identity and kind, target architecture (or `source-independent`),
+   ABI when applicable, complete cache key, and ordered `git_inputs`. It is
+   never copied into the package tree or release archive. Publication writes
+   the marker before atomically installing the artifact, so a crash may leave
+   a harmless marker-only orphan; the next build reuses it only if every field
+   still matches and otherwise fails closed.
 3. **Index-based remote fetch** — load `build.toml`, resolve its
    `[binary]` block (typically to an `index_url`), fetch
    `index.toml` from that URL (with offline cache fallback at
@@ -1040,6 +1053,15 @@ PR with CI write access. Prepare merge uses a separate run-specific
 candidate initialized from canonical state; it never promotes the PR staging
 ledger directly into the canonical release.
 
+Staging reuse validates more than the release index. Its frozen snapshot binds
+each package's version, revision, full cache key, archive size, and archive
+SHA-256. Metadata-only preflight downloads every current entry that declares
+`git_inputs` and compares the archive's embedded ordered vector with the fresh
+expected ledger. A materialized candidate downloads and validates every archive
+before exposing the localized `file://` index. Missing, extra, changed, or
+reordered Git inputs; a mismatched archive identity; duplicate/noncanonical
+`manifest.toml`; or a symlinked archive fails closed.
+
 For pre-push iteration on packages whose source build is fast,
 just rely on the resolver's fall-through: edit `package.toml`,
 run `./run.sh browser`, and accept a one-time source build for
@@ -1103,9 +1125,9 @@ one archive lands as
 ```
 
 (short sha `e33c5e9a` is the first 8 chars of the cache-key sha
-for this manifest, identical to the canonical cache directory
-suffix — `cargo xtask build-deps sha zlib` prints the full
-form).
+for this manifest. Release asset filenames use that compact transport
+label, while the canonical local cache directory uses the full 64-character
+key — `cargo xtask build-deps sha zlib` prints the full form).
 
 After publish, the matrix flow's `scripts/index-update.sh`
 invocation has added an entry to the release's `index.toml`:
@@ -1286,10 +1308,11 @@ library and program builds: the script reads the same
 **Cache layout**
 
 ```
-<cache_root>/sources/<name>-<version>-rev<N>-<shortsha>/
+<cache_root>/sources/<name>-<version>-rev<N>-<cache-key-sha>/
 ```
 
-No `<arch>` segment — sources are arch-agnostic by definition.
+`<cache-key-sha>` is the complete 64-character SHA-256. No `<arch>` segment —
+sources are arch-agnostic by definition.
 That is the visible difference from the `libs/` and `programs/`
 cache trees.
 

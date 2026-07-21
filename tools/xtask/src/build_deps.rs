@@ -2,7 +2,7 @@
 //!
 //! Resolution order per library:
 //!   1. `<repo>/local-libs/<name>/build/` — hand-patched source, in-progress.
-//!   2. `<cache_root>/libs/<name>-<ver>-rev<N>-<shortsha>/` — canonical cache.
+//!   2. `<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<cache-key-sha>/` — canonical cache.
 //!   3. Build from source: run the declared `build.script_path`, validate
 //!      declared outputs, atomically install into the canonical cache.
 //!
@@ -50,8 +50,9 @@ use sha2::{Digest, Sha256};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::index_toml::{self, EntryStatus};
 use crate::pkg_manifest::{
-    BinarySource, BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, HostTool,
-    GitBuildInput, ManifestKind, TargetArch,
+    BinarySource, BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
+    HostTool, ManifestKind, TargetArch, remove_cache_provenance, validate_cache_provenance,
+    write_cache_provenance,
 };
 use crate::remote_fetch;
 use crate::repo_root;
@@ -958,17 +959,19 @@ fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<()
 /// Canonical cache directory for a resolved manifest.
 ///
 /// Layout:
-///   libs/programs: `<cache_root>/libs/<name>-<version>-rev<revision>-<arch>-<shortsha>/`
-///   sources:       `<cache_root>/sources/<name>-<version>-rev<revision>-<shortsha>/`
+///   libs/programs: `<cache_root>/libs/<name>-<version>-rev<revision>-<arch>-<cache-key-sha>/`
+///   sources:       `<cache_root>/sources/<name>-<version>-rev<revision>-<cache-key-sha>/`
 ///
-/// where shortsha is the first 8 hex chars of the cache-key sha —
-/// matches the binaries-release convention. 32 bits of collision
-/// resistance is enough for a per-user lib cache.
+/// The directory suffix is the complete 64-character cache-key SHA-256. Archive
+/// filenames may use an eight-character transport label, but canonical local
+/// cache identity must not collapse distinct keys that share that prefix. Cache
+/// entries created by older resolvers with a short suffix become unused and are
+/// rebuilt under the full-key path; they are not migrated or trusted in place.
 ///
 /// For libs and programs, `arch` is part of the path so a single user
 /// can host wasm32 and wasm64 builds of the same artifact side-by-side.
 /// The cache-key sha already incorporates `arch` as of Task A.5, so the
-/// shortsha alone disambiguates — but a visible arch segment makes the
+/// full cache identity disambiguates — but a visible arch segment makes the
 /// cache layout self-explanatory at a glance.
 ///
 /// For source-kind manifests, the layout omits the arch segment per
@@ -986,20 +989,14 @@ pub fn canonical_path(
         ManifestKind::Source => "sources",
     };
     let basename = match m.kind {
-        ManifestKind::Source => format!(
-            "{}-{}-rev{}-{}",
-            m.name,
-            m.version,
-            m.revision,
-            &hex(sha)[..8]
-        ),
+        ManifestKind::Source => format!("{}-{}-rev{}-{}", m.name, m.version, m.revision, hex(sha)),
         ManifestKind::Library | ManifestKind::Program => format!(
             "{}-{}-rev{}-{}-{}",
             m.name,
             m.version,
             m.revision,
             arch.as_str(),
-            &hex(sha)[..8]
+            hex(sha)
         ),
     };
     cache_root.join(kind_subdir).join(basename)
@@ -1146,8 +1143,8 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
     out
 }
 
-/// Process-lifetime memo of `(name, arch) → ensure_built_uncached`'s
-/// result. Within a single `xtask` invocation (e.g. one
+/// Process-lifetime memo of `(name, arch, exact cache identity) →
+/// ensure_built_uncached`'s result. Within a single `xtask` invocation (e.g. one
 /// `archive-stage` run, or a `build-deps resolve` walk that pulls a
 /// shared dep transitively), a manifest reached via multiple dependents
 /// (mariadb is reached 6× during a force-rebuild-all: directly + via
@@ -1176,6 +1173,10 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 /// * `name` — the manifest's identifier within its registry.
 /// * `arch` — wasm32 vs wasm64. The same name builds independently
 ///   per-arch.
+/// * `cache_identity` — the full recipe/dependency/toolchain digest computed
+///   from the current registry. This prevents a result from surviving a
+///   build.toml edit or being reused for a same-named package from another
+///   registry inside one long-lived process.
 /// * `was_force_rebuild` — `force_source_build` bypasses the
 ///   on-disk cache. Memoizing across the force-rebuild boundary
 ///   would mean a no-force result satisfies a later force request,
@@ -1186,7 +1187,7 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 ///   actual optimization we wanted.
 /// * `fetch_only` — fetch-only failures must not poison later normal
 ///   resolves, which are allowed to build from source.
-type BuildMemoKey = (PathBuf, String, TargetArch, bool, bool);
+type BuildMemoKey = (PathBuf, String, TargetArch, [u8; 32], bool, bool);
 type BuildMemoValue = Result<(PathBuf, BTreeSet<PathBuf>), String>;
 
 fn build_memo() -> &'static Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>> {
@@ -1258,9 +1259,10 @@ fn try_fetch_without_deps(
     let mut chain: Vec<String> = Vec::new();
     let sha = compute_sha(target, registry, arch, abi_version, memo, &mut chain)?;
     let canonical = canonical_path(opts.cache_root, target, arch, &sha);
+    let cache_key_sha_hex = hex(&sha);
 
     if canonical.is_dir() {
-        match validate_cache_artifacts(target, &canonical) {
+        match validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex) {
             Ok(()) => return Ok(Some(canonical)),
             Err(e) => {
                 eprintln!(
@@ -1269,7 +1271,7 @@ fn try_fetch_without_deps(
                     canonical.display(),
                     e,
                 );
-                std::fs::remove_dir_all(&canonical).map_err(|remove_err| {
+                remove_cache_entry(&canonical, &cache_key_sha_hex).map_err(|remove_err| {
                     format!(
                         "clear stale cache entry {} after validation failure: {remove_err}",
                         canonical.display()
@@ -1279,7 +1281,6 @@ fn try_fetch_without_deps(
         }
     }
 
-    let cache_key_sha_hex = hex(&sha);
     if let Some(binary) = target.binary.get(&arch) {
         match remote_fetch::fetch_and_install(
             binary,
@@ -1289,7 +1290,13 @@ fn try_fetch_without_deps(
             abi_version,
             &cache_key_sha_hex,
         ) {
-            Ok(()) => match validate_cache_artifacts(target, &canonical) {
+            Ok(()) => match validate_cache_entry(
+                target,
+                &canonical,
+                arch,
+                abi_version,
+                &cache_key_sha_hex,
+            ) {
                 Ok(()) => return Ok(Some(canonical)),
                 Err(e) => {
                     eprintln!(
@@ -1300,7 +1307,7 @@ fn try_fetch_without_deps(
                         e,
                         fetch_fallback_phrase(opts.fetch_only),
                     );
-                    let _ = std::fs::remove_dir_all(&canonical);
+                    let _ = remove_cache_entry(&canonical, &cache_key_sha_hex);
                 }
             },
             Err(e) => {
@@ -1366,6 +1373,19 @@ fn ensure_built_inner(
     // in a single force-rebuild-all (lamp, mariadb, mariadb-test,
     // mariadb-vfs each independently demand it). See `build_memo`'s
     // doc comment for full rationale.
+    // Compute the exact current identity before consulting the process memo.
+    // `ensure_built()` supplies a fresh hash memo for every top-level call, so
+    // an in-process build.toml edit cannot inherit the prior call's digest;
+    // recursive lookups in one unchanged graph remain cheap memo hits.
+    let mut identity_chain = Vec::new();
+    let cache_identity = compute_sha(
+        target,
+        registry,
+        arch,
+        abi_version,
+        memo,
+        &mut identity_chain,
+    )?;
     let was_force_rebuild = opts
         .force_source_build
         .map(|s| s.contains(&target.name))
@@ -1374,6 +1394,7 @@ fn ensure_built_inner(
         opts.cache_root.to_path_buf(),
         target.name.clone(),
         arch,
+        cache_identity,
         was_force_rebuild,
         opts.fetch_only,
     );
@@ -1527,6 +1548,7 @@ fn ensure_built_uncached(
     let mut chain: Vec<String> = Vec::new();
     let sha = compute_sha(target, registry, arch, abi_version, memo, &mut chain)?;
     let canonical = canonical_path(opts.cache_root, target, arch, &sha);
+    let cache_key_sha_hex = hex(&sha);
 
     let force_rebuild = opts
         .force_source_build
@@ -1539,7 +1561,7 @@ fn ensure_built_uncached(
     // (legacy Asyncify exports instead of wpk_fork_*). Reject those so
     // the resolver can fetch a current remote artifact or source-build.
     if !force_rebuild && canonical.is_dir() {
-        match validate_cache_artifacts(target, &canonical) {
+        match validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex) {
             Ok(()) => return Ok((canonical, transitive)),
             Err(e) => {
                 eprintln!(
@@ -1548,7 +1570,7 @@ fn ensure_built_uncached(
                     canonical.display(),
                     e,
                 );
-                std::fs::remove_dir_all(&canonical).map_err(|remove_err| {
+                remove_cache_entry(&canonical, &cache_key_sha_hex).map_err(|remove_err| {
                     format!(
                         "clear stale cache entry {} after validation failure: {remove_err}",
                         canonical.display()
@@ -1558,7 +1580,7 @@ fn ensure_built_uncached(
         }
     }
     if force_rebuild && canonical.is_dir() {
-        std::fs::remove_dir_all(&canonical)
+        remove_cache_entry(&canonical, &cache_key_sha_hex)
             .map_err(|e| format!("force-rebuild: clear {}: {e}", canonical.display()))?;
     }
 
@@ -1633,11 +1655,18 @@ fn ensure_built_uncached(
                     target.spec()
                 ));
             }
+            if let Err(e) =
+                write_cache_provenance(target, &canonical, arch, abi_version, &cache_key_sha_hex)
+            {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(e);
+            }
             // Race against a peer process that finished its own extract
             // first: keep theirs, drop ours. Identical inputs produce
             // identical outputs.
             if canonical.exists() {
                 let _ = std::fs::remove_dir_all(&tmp);
+                validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex)?;
                 return Ok((canonical, transitive));
             }
             std::fs::rename(&tmp, &canonical)
@@ -1663,6 +1692,8 @@ fn ensure_built_uncached(
             build_into_cache(
                 target,
                 arch,
+                abi_version,
+                &cache_key_sha_hex,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
@@ -1693,7 +1724,6 @@ fn ensure_built_uncached(
             //
             // `force_rebuild` short-circuits remote fetch entirely.
             if !force_rebuild {
-                let cache_key_sha_hex = hex(&sha);
                 if let Some(binary) = target.binary.get(&arch) {
                     match remote_fetch::fetch_and_install(
                         binary,
@@ -1703,7 +1733,13 @@ fn ensure_built_uncached(
                         abi_version,
                         &cache_key_sha_hex,
                     ) {
-                        Ok(()) => match validate_cache_artifacts(target, &canonical) {
+                        Ok(()) => match validate_cache_entry(
+                            target,
+                            &canonical,
+                            arch,
+                            abi_version,
+                            &cache_key_sha_hex,
+                        ) {
                             Ok(()) => return Ok((canonical, transitive)),
                             Err(e) => {
                                 eprintln!(
@@ -1714,7 +1750,7 @@ fn ensure_built_uncached(
                                     e,
                                     fetch_fallback_phrase(opts.fetch_only),
                                 );
-                                let _ = std::fs::remove_dir_all(&canonical);
+                                let _ = remove_cache_entry(&canonical, &cache_key_sha_hex);
                             }
                         },
                         Err(e) => {
@@ -1758,6 +1794,8 @@ fn ensure_built_uncached(
             build_into_cache(
                 target,
                 arch,
+                abi_version,
+                &cache_key_sha_hex,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
@@ -1910,21 +1948,23 @@ fn try_index_install(
         abi_version,
         cache_key_sha_hex,
     ) {
-        Ok(()) => match validate_cache_artifacts(target, canonical) {
-            Ok(()) => Some(()),
-            Err(e) => {
-                eprintln!(
-                    "warning: index-based fetch for {} from {} produced \
+        Ok(()) => {
+            match validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha_hex) {
+                Ok(()) => Some(()),
+                Err(e) => {
+                    eprintln!(
+                        "warning: index-based fetch for {} from {} produced \
                      a stale artifact ({}); {}",
-                    target.spec(),
-                    archive_url,
-                    e,
-                    fetch_fallback_phrase(fetch_only),
-                );
-                let _ = std::fs::remove_dir_all(canonical);
-                None
+                        target.spec(),
+                        archive_url,
+                        e,
+                        fetch_fallback_phrase(fetch_only),
+                    );
+                    let _ = remove_cache_entry(canonical, cache_key_sha_hex);
+                    None
+                }
             }
-        },
+        }
         Err(e) => {
             eprintln!(
                 "warning: index-based fetch for {} from {} failed ({}); \
@@ -1987,6 +2027,16 @@ fn compose_pkgconfig_path(paths: &BTreeSet<PathBuf>) -> String {
 struct ProvisionedGitInput {
     declaration: GitBuildInput,
     checkout: PathBuf,
+    worktree_digest: [u8; 32],
+}
+
+#[derive(Debug)]
+struct GitCommandIsolation {
+    home: PathBuf,
+    xdg_config_home: PathBuf,
+    empty_templates: PathBuf,
+    empty_hooks: PathBuf,
+    askpass: PathBuf,
 }
 
 /// Temporary, detached checkouts for a package's declared `git_inputs`.
@@ -1994,6 +2044,7 @@ struct ProvisionedGitInput {
 #[derive(Debug, Default)]
 struct ProvisionedGitInputs {
     root: Option<PathBuf>,
+    isolation: Option<GitCommandIsolation>,
     inputs: Vec<ProvisionedGitInput>,
 }
 
@@ -2016,6 +2067,25 @@ impl ProvisionedGitInputs {
         canonical: &Path,
         declarations: Vec<GitBuildInput>,
     ) -> Result<Self, String> {
+        Self::provision_declarations_inner(package_spec, canonical, declarations, &[])
+    }
+
+    #[cfg(test)]
+    fn provision_declarations_with_ambient_env(
+        package_spec: &str,
+        canonical: &Path,
+        declarations: Vec<GitBuildInput>,
+        ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
+    ) -> Result<Self, String> {
+        Self::provision_declarations_inner(package_spec, canonical, declarations, ambient_env)
+    }
+
+    fn provision_declarations_inner(
+        package_spec: &str,
+        canonical: &Path,
+        declarations: Vec<GitBuildInput>,
+        ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
+    ) -> Result<Self, String> {
         let parent = canonical.parent().ok_or_else(|| {
             format!(
                 "{}: canonical cache path has no parent for git inputs: {}",
@@ -2036,13 +2106,33 @@ impl ProvisionedGitInputs {
 
         let mut provisioned = Self {
             root: Some(root.clone()),
+            isolation: None,
             inputs: Vec::with_capacity(declarations.len()),
         };
+        let isolation = create_git_command_isolation(&root)?;
+        let checkouts = root.join("checkouts");
+        std::fs::create_dir(&checkouts).map_err(|e| {
+            format!(
+                "create immutable git-input checkout root {}: {e}",
+                checkouts.display()
+            )
+        })?;
+        provisioned.isolation = Some(isolation);
         for declaration in declarations {
-            let checkout = root.join(&declaration.name);
+            let isolation = provisioned
+                .isolation
+                .as_ref()
+                .expect("git command isolation was initialized");
+            let checkout = checkouts.join(&declaration.name);
             std::fs::create_dir(&checkout)
                 .map_err(|e| format!("create git-input checkout {}: {e}", checkout.display()))?;
-            run_git(&checkout, &["init", "--quiet"], &declaration.repository)?;
+            run_git(
+                &checkout,
+                &["init", "--quiet", "--object-format=sha1"],
+                &declaration.repository,
+                isolation,
+                ambient_env,
+            )?;
             run_git(
                 &checkout,
                 &[
@@ -2055,30 +2145,37 @@ impl ProvisionedGitInputs {
                     &declaration.commit,
                 ],
                 &declaration.repository,
+                isolation,
+                ambient_env,
             )?;
             run_git(
                 &checkout,
                 &["checkout", "--quiet", "--detach", "FETCH_HEAD"],
                 &declaration.repository,
+                isolation,
+                ambient_env,
             )?;
-            verify_git_input(&declaration, &checkout)?;
-            validate_git_input_tree(&declaration, &checkout)?;
+            verify_git_input(&declaration, &checkout, isolation, ambient_env)?;
+            validate_git_input_tree(&declaration, &checkout, isolation, ambient_env)?;
+            let worktree_digest = digest_git_input_worktree(&checkout)?;
             set_git_input_tree_read_only(&checkout, true)?;
             provisioned.inputs.push(ProvisionedGitInput {
                 declaration,
                 checkout,
+                worktree_digest,
             });
         }
+        // Seal the containing directory as well as each checkout. Otherwise a
+        // build that cannot edit files could still rename or replace the path
+        // exported in WASM_POSIX_BUILD_GIT_*_DIR.
+        set_git_input_tree_read_only(&root, true)?;
         Ok(provisioned)
     }
 
     fn export_to(&self, command: &mut Command) {
         for input in &self.inputs {
             let key = input.declaration.name.to_ascii_uppercase();
-            command.env(
-                format!("WASM_POSIX_BUILD_GIT_{key}_DIR"),
-                &input.checkout,
-            );
+            command.env(format!("WASM_POSIX_BUILD_GIT_{key}_DIR"), &input.checkout);
             command.env(
                 format!("WASM_POSIX_BUILD_GIT_{key}_COMMIT"),
                 &input.declaration.commit,
@@ -2087,8 +2184,23 @@ impl ProvisionedGitInputs {
     }
 
     fn verify_unchanged(&self) -> Result<(), String> {
+        if self.inputs.is_empty() {
+            return Ok(());
+        }
+        let isolation = self
+            .isolation
+            .as_ref()
+            .ok_or_else(|| "immutable Git inputs lack command isolation".to_string())?;
         for input in &self.inputs {
-            verify_git_input(&input.declaration, &input.checkout)?;
+            verify_git_input(&input.declaration, &input.checkout, isolation, &[])?;
+            validate_git_input_tree(&input.declaration, &input.checkout, isolation, &[])?;
+            let actual_digest = digest_git_input_worktree(&input.checkout)?;
+            if actual_digest != input.worktree_digest {
+                return Err(format!(
+                    "git input {:?}: immutable working-tree digest changed during build",
+                    input.declaration.name
+                ));
+            }
         }
         Ok(())
     }
@@ -2113,7 +2225,20 @@ fn create_git_input_root(parent: &Path, basename: &str) -> Result<PathBuf, Strin
             std::process::id()
         ));
         match std::fs::create_dir(&root) {
-            Ok(()) => return Ok(root),
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                        .map_err(|e| {
+                            format!(
+                                "set exclusive git-input root permissions {}: {e}",
+                                root.display()
+                            )
+                        })?;
+                }
+                return Ok(root);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(format!(
@@ -2129,29 +2254,93 @@ fn create_git_input_root(parent: &Path, basename: &str) -> Result<PathBuf, Strin
     ))
 }
 
+fn create_git_command_isolation(root: &Path) -> Result<GitCommandIsolation, String> {
+    let home = root.join("home");
+    let xdg_config_home = root.join("xdg-config");
+    let empty_templates = root.join("empty-templates");
+    let empty_hooks = root.join("empty-hooks");
+    for path in [&home, &xdg_config_home, &empty_templates, &empty_hooks] {
+        std::fs::create_dir(path)
+            .map_err(|e| format!("create isolated Git directory {}: {e}", path.display()))?;
+    }
+
+    let askpass = root.join("askpass-deny.sh");
+    std::fs::write(&askpass, "#!/bin/sh\nexit 1\n")
+        .map_err(|e| format!("write isolated Git askpass {}: {e}", askpass.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&askpass, std::fs::Permissions::from_mode(0o500))
+            .map_err(|e| format!("seal isolated Git askpass {}: {e}", askpass.display()))?;
+    }
+
+    Ok(GitCommandIsolation {
+        home,
+        xdg_config_home,
+        empty_templates,
+        empty_hooks,
+        askpass,
+    })
+}
+
 /// Construct a Git subprocess that cannot inherit source credentials, token
 /// headers, hooks, or repository selection from the caller's environment.
 /// Build-time Git inputs are public source inputs; a private checkout would be
 /// both unreproducible and an accidental credential dependency.
-fn hardened_git_command(repository: &str) -> Command {
+fn hardened_git_command(
+    repository: &str,
+    isolation: &GitCommandIsolation,
+    ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Command {
     let mut command = Command::new("git");
+    // Test callers can inject a hostile ambient environment without mutating
+    // process-global state. Production passes an empty slice; Command still
+    // begins with the real inherited environment in both cases.
+    command.envs(ambient_env.iter().cloned());
     command
         .arg("-c")
-        .arg("core.hooksPath=/dev/null")
+        .arg(format!(
+            "core.hooksPath={}",
+            isolation.empty_hooks.to_string_lossy()
+        ))
+        .arg("-c")
+        .arg(format!(
+            "init.templateDir={}",
+            isolation.empty_templates.to_string_lossy()
+        ))
         .arg("-c")
         .arg("credential.helper=")
         .arg("-c")
+        .arg("credential.interactive=false")
+        .arg("-c")
         .arg("http.extraHeader=")
         .arg("-c")
+        .arg("http.cookieFile=")
+        .arg("-c")
+        .arg("http.saveCookies=false")
+        .arg("-c")
+        .arg("http.followRedirects=false")
+        .arg("-c")
         .arg("submodule.recurse=false")
+        .arg("-c")
+        .arg("core.autocrlf=false")
+        .arg("-c")
+        .arg("core.eol=lf")
+        .env("HOME", &isolation.home)
+        .env("XDG_CONFIG_HOME", &isolation.xdg_config_home)
+        .env("GIT_ATTR_NOSYSTEM", "1")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_CONFIG_COUNT", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "true")
-        .env("SSH_ASKPASS", "true")
+        .env("GIT_ASKPASS", &isolation.askpass)
+        .env("GIT_ASKPASS_REQUIRE", "force")
+        .env("SSH_ASKPASS", &isolation.askpass)
+        .env("SSH_ASKPASS_REQUIRE", "force")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_DEFAULT_HASH", "sha1")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_PROTOCOL_FROM_USER", "0")
         .env(
             "GIT_ALLOW_PROTOCOL",
@@ -2168,20 +2357,46 @@ fn hardened_git_command(repository: &str) -> Command {
         "GH_TOKEN",
         "GITHUB_TOKEN",
         "HOMEBREW_GITHUB_PACKAGES_TOKEN",
+        "HOMEBREW_GITHUB_API_TOKEN",
+        "HOMEBREW_DOCKER_REGISTRY_TOKEN",
         "GIT_DIR",
+        "GIT_COMMON_DIR",
         "GIT_WORK_TREE",
         "GIT_INDEX_FILE",
         "GIT_OBJECT_DIRECTORY",
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG",
         "GIT_SSH",
         "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_EXEC_PATH",
+        "GIT_PROXY_COMMAND",
+        "GIT_NAMESPACE",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_GRAFT_FILE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_DIFF_OPTS",
+        "GIT_EDITOR",
+        "GIT_PAGER",
+        "GIT_TRACE",
+        "GIT_TRACE2",
+        "GIT_TRACE_CURL",
+        "GIT_CURL_VERBOSE",
+        "NETRC",
+        "SSH_AUTH_SOCK",
     ] {
         command.env_remove(key);
     }
-    for (key, _) in std::env::vars_os() {
+    for (key, _) in std::env::vars_os().chain(ambient_env.iter().cloned()) {
         let key_text = key.to_string_lossy();
-        if key_text.starts_with("GIT_CONFIG_KEY_") || key_text.starts_with("GIT_CONFIG_VALUE_") {
+        if key_text.starts_with("GIT_CONFIG_KEY_")
+            || key_text.starts_with("GIT_CONFIG_VALUE_")
+            || key_text.starts_with("GIT_TRACE_")
+        {
             command.env_remove(key);
         }
     }
@@ -2192,8 +2407,10 @@ fn git_output(
     checkout: &Path,
     args: &[&str],
     repository: &str,
+    isolation: &GitCommandIsolation,
+    ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> Result<std::process::Output, String> {
-    let mut command = hardened_git_command(repository);
+    let mut command = hardened_git_command(repository, isolation, ambient_env);
     let output = command
         .arg("-C")
         .arg(checkout)
@@ -2203,8 +2420,14 @@ fn git_output(
     Ok(output)
 }
 
-fn run_git(checkout: &Path, args: &[&str], repository: &str) -> Result<(), String> {
-    let output = git_output(checkout, args, repository)?;
+fn run_git(
+    checkout: &Path,
+    args: &[&str],
+    repository: &str,
+    isolation: &GitCommandIsolation,
+    ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<(), String> {
+    let output = git_output(checkout, args, repository, isolation, ambient_env)?;
     if output.status.success() {
         return Ok(());
     }
@@ -2217,8 +2440,19 @@ fn run_git(checkout: &Path, args: &[&str], repository: &str) -> Result<(), Strin
     ))
 }
 
-fn verify_git_input(input: &GitBuildInput, checkout: &Path) -> Result<(), String> {
-    let head = git_output(checkout, &["rev-parse", "HEAD^{commit}"], &input.repository)?;
+fn verify_git_input(
+    input: &GitBuildInput,
+    checkout: &Path,
+    isolation: &GitCommandIsolation,
+    ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<(), String> {
+    let head = git_output(
+        checkout,
+        &["rev-parse", "HEAD^{commit}"],
+        &input.repository,
+        isolation,
+        ambient_env,
+    )?;
     if !head.status.success() {
         return Err(format!(
             "git input {:?}: cannot resolve detached HEAD in {}: {}",
@@ -2239,6 +2473,8 @@ fn verify_git_input(input: &GitBuildInput, checkout: &Path) -> Result<(), String
         checkout,
         &["rev-parse", "--abbrev-ref", "HEAD"],
         &input.repository,
+        isolation,
+        ambient_env,
     )?;
     if !branch.status.success() || String::from_utf8_lossy(&branch.stdout).trim() != "HEAD" {
         return Err(format!(
@@ -2256,6 +2492,8 @@ fn verify_git_input(input: &GitBuildInput, checkout: &Path) -> Result<(), String
             "--ignored=matching",
         ],
         &input.repository,
+        isolation,
+        ambient_env,
     )?;
     if !status.status.success() {
         return Err(format!(
@@ -2275,11 +2513,18 @@ fn verify_git_input(input: &GitBuildInput, checkout: &Path) -> Result<(), String
     Ok(())
 }
 
-fn validate_git_input_tree(input: &GitBuildInput, checkout: &Path) -> Result<(), String> {
+fn validate_git_input_tree(
+    input: &GitBuildInput,
+    checkout: &Path,
+    isolation: &GitCommandIsolation,
+    ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<(), String> {
     let index = git_output(
         checkout,
         &["ls-files", "--stage", "-z"],
         &input.repository,
+        isolation,
+        ambient_env,
     )?;
     if !index.status.success() {
         return Err(format!(
@@ -2288,9 +2533,16 @@ fn validate_git_input_tree(input: &GitBuildInput, checkout: &Path) -> Result<(),
             String::from_utf8_lossy(&index.stderr).trim()
         ));
     }
-    for record in index.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
+    for record in index
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
         let metadata = record.split(|byte| *byte == b'\t').next().unwrap_or(record);
-        let mode = metadata.split(|byte| *byte == b' ').next().unwrap_or(metadata);
+        let mode = metadata
+            .split(|byte| *byte == b' ')
+            .next()
+            .unwrap_or(metadata);
         if mode == b"160000" {
             return Err(format!(
                 "git input {:?}: submodule gitlinks are not allowed in immutable build inputs",
@@ -2301,7 +2553,33 @@ fn validate_git_input_tree(input: &GitBuildInput, checkout: &Path) -> Result<(),
 
     let canonical = std::fs::canonicalize(checkout)
         .map_err(|e| format!("resolve git input root {}: {e}", checkout.display()))?;
-    validate_git_input_tree_entries(input, checkout, checkout, &canonical)
+    let git_metadata_path = checkout.join(".git");
+    let git_metadata_lstat = std::fs::symlink_metadata(&git_metadata_path).map_err(|e| {
+        format!(
+            "inspect git input metadata directory {}: {e}",
+            git_metadata_path.display()
+        )
+    })?;
+    if !git_metadata_lstat.is_dir() || git_metadata_lstat.file_type().is_symlink() {
+        return Err(format!(
+            "git input {:?}: .git must be a real non-symlink directory inside its checkout",
+            input.name
+        ));
+    }
+    let git_metadata = std::fs::canonicalize(&git_metadata_path).map_err(|e| {
+        format!(
+            "resolve git input metadata directory {}: {e}",
+            checkout.join(".git").display()
+        )
+    })?;
+    if !git_metadata.starts_with(&canonical) {
+        return Err(format!(
+            "git input {:?}: .git resolves outside immutable checkout {}",
+            input.name,
+            checkout.display()
+        ));
+    }
+    validate_git_input_tree_entries(input, checkout, checkout, &canonical, &git_metadata)
 }
 
 fn validate_git_input_tree_entries(
@@ -2309,6 +2587,7 @@ fn validate_git_input_tree_entries(
     checkout: &Path,
     directory: &Path,
     canonical: &Path,
+    git_metadata: &Path,
 ) -> Result<(), String> {
     let mut entries = std::fs::read_dir(directory)
         .map_err(|e| format!("read git input directory {}: {e}", directory.display()))?
@@ -2338,8 +2617,16 @@ fn validate_git_input_tree_entries(
                     checkout.display()
                 ));
             }
+            if resolved == git_metadata || resolved.starts_with(git_metadata) {
+                return Err(format!(
+                    "git input {:?}: symlink {} resolves into private Git metadata {}",
+                    input.name,
+                    path.display(),
+                    git_metadata.display()
+                ));
+            }
         } else if metadata.is_dir() {
-            validate_git_input_tree_entries(input, checkout, &path, canonical)?;
+            validate_git_input_tree_entries(input, checkout, &path, canonical, git_metadata)?;
         } else if !metadata.is_file() {
             return Err(format!(
                 "git input {:?}: {} is not a regular file, directory, or contained symlink",
@@ -2349,6 +2636,83 @@ fn validate_git_input_tree_entries(
         }
     }
     Ok(())
+}
+
+/// Hash the exported working tree independently of Git's index/status view.
+/// A build can toggle index flags such as `assume-unchanged`; it cannot make a
+/// byte, symlink target, path, or executable-bit mutation disappear from this
+/// resolver-owned digest.
+fn digest_git_input_worktree(checkout: &Path) -> Result<[u8; 32], String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"kandelo-immutable-git-working-tree-v1\0");
+    digest_git_input_directory(checkout, checkout, &mut hasher)?;
+    Ok(hasher.finalize().into())
+}
+
+fn digest_git_input_directory(
+    checkout: &Path,
+    directory: &Path,
+    hasher: &mut Sha256,
+) -> Result<(), String> {
+    let mut entries = std::fs::read_dir(directory)
+        .map_err(|e| format!("read immutable Git tree {}: {e}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("read immutable Git tree entry {}: {e}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if directory == checkout && entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(checkout)
+            .map_err(|_| format!("immutable Git path escaped checkout: {}", path.display()))?;
+        let path_bytes = relative.as_os_str().as_encoded_bytes();
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("stat immutable Git path {}: {e}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&path)
+                .map_err(|e| format!("read immutable Git symlink {}: {e}", path.display()))?;
+            hasher.update(b"symlink\0");
+            hasher.update((path_bytes.len() as u64).to_le_bytes());
+            hasher.update(path_bytes);
+            let target_bytes = target.as_os_str().as_encoded_bytes();
+            hasher.update((target_bytes.len() as u64).to_le_bytes());
+            hasher.update(target_bytes);
+        } else if metadata.is_dir() {
+            hasher.update(b"directory\0");
+            hasher.update((path_bytes.len() as u64).to_le_bytes());
+            hasher.update(path_bytes);
+            digest_git_input_directory(checkout, &path, hasher)?;
+        } else if metadata.is_file() {
+            hasher.update(b"file\0");
+            hasher.update((path_bytes.len() as u64).to_le_bytes());
+            hasher.update(path_bytes);
+            hasher.update([git_input_file_is_executable(&metadata) as u8]);
+            hasher.update(metadata.len().to_le_bytes());
+            let mut file = std::fs::File::open(&path)
+                .map_err(|e| format!("open immutable Git file {}: {e}", path.display()))?;
+            std::io::copy(&mut file, hasher)
+                .map_err(|e| format!("hash immutable Git file {}: {e}", path.display()))?;
+        } else {
+            return Err(format!(
+                "immutable Git path is not a file, directory, or symlink: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn git_input_file_is_executable(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn git_input_file_is_executable(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 #[cfg(unix)]
@@ -2435,6 +2799,8 @@ fn set_git_input_tree_read_only(path: &Path, read_only: bool) -> Result<(), Stri
 fn build_into_cache(
     target: &DepsManifest,
     arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
     canonical: &Path,
     dep_dirs: &BTreeMap<String, DirectDep>,
     pkgconfig_path: &str,
@@ -2474,7 +2840,10 @@ fn build_into_cache(
         Ok(inputs) => inputs,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&tmp);
-            return Err(format!("{}: provision immutable git inputs: {e}", target.spec()));
+            return Err(format!(
+                "{}: provision immutable git inputs: {e}",
+                target.spec()
+            ));
         }
     };
 
@@ -2600,12 +2969,27 @@ fn build_into_cache(
         }
     }
 
+    // Publish resolver metadata beside, never inside, the package tree. The
+    // marker lands first: a crash leaves harmless metadata without an artifact,
+    // while no reader can observe an artifact lacking its required provenance.
+    if let Err(e) = write_cache_provenance(target, canonical, arch, abi_version, cache_key_sha) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+
     // Atomic install. If someone else finished first, keep theirs,
     // discard ours — identical inputs produce identical outputs, and
     // trying to overwrite a non-empty directory isn't portable.
     if canonical.exists() {
         let _ = std::fs::remove_dir_all(&tmp);
-        return Ok(());
+        return validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha).map_err(
+            |e| {
+                format!(
+                    "concurrent cache winner {} failed exact validation: {e}",
+                    canonical.display()
+                )
+            },
+        );
     }
     std::fs::rename(&tmp, canonical)
         .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), canonical.display()))?;
@@ -2987,6 +3371,39 @@ fn validate_artifact_tree(
     }
     active_dirs.remove(&resolved);
     Ok(leaves)
+}
+
+fn validate_cache_entry(
+    target: &DepsManifest,
+    dir: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<(), String> {
+    validate_cache_artifacts(target, dir)?;
+    validate_cache_provenance(target, dir, arch, abi_version, cache_key_sha)
+}
+
+fn remove_cache_entry(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
+    match std::fs::symlink_metadata(canonical) {
+        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+            std::fs::remove_file(canonical)
+                .map_err(|e| format!("remove stale cache path {}: {e}", canonical.display()))?;
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            std::fs::remove_dir_all(canonical)
+                .map_err(|e| format!("remove stale cache entry {}: {e}", canonical.display()))?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "refusing to remove special cache path {}",
+                canonical.display()
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("inspect cache path {}: {e}", canonical.display())),
+    }
+    remove_cache_provenance(canonical, cache_key_sha)
 }
 
 pub(crate) fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Result<(), String> {
@@ -4530,12 +4947,8 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
         )
         .unwrap();
         assert_ne!(sha_before, sha_changed_commit);
-        let changed_canonical = canonical_path(
-            &cache_root,
-            &manifest,
-            TEST_ARCH,
-            &sha_changed_commit,
-        );
+        let changed_canonical =
+            canonical_path(&cache_root, &manifest, TEST_ARCH, &sha_changed_commit);
         assert_ne!(old_canonical, changed_canonical);
         assert!(
             !changed_canonical.exists(),
@@ -5510,6 +5923,107 @@ libs = ["lib/libB.a"]
     }
 
     #[test]
+    fn process_memo_recomputes_identity_after_git_inputs_change() {
+        let root = tempdir("memo-git-input-reg");
+        let cache = tempdir("memo-git-input-cache");
+        write_lib(
+            &root,
+            "libMemoGit",
+            "1.0.0",
+            &[],
+            "mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"; touch \"$WASM_POSIX_DEP_OUT_DIR/lib/libMemoGit.a\"",
+            "[outputs]\nlibs = [\"lib/libMemoGit.a\"]\n",
+        );
+        let package_dir = root.join("libMemoGit");
+        let build_path = package_dir.join("build.toml");
+        let build_base = r#"script_path = "libMemoGit/build-libMemoGit.sh"
+inputs = ["libMemoGit/build-libMemoGit.sh"]
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+[binary]
+index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
+"#;
+        fs::write(&build_path, build_base).unwrap();
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+
+        let first_manifest = registry.load("libMemoGit").unwrap();
+        let first_sha = compute_sha(
+            &first_manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let first_path = canonical_path(&cache, &first_manifest, TEST_ARCH, &first_sha);
+        fs::create_dir_all(first_path.join("lib")).unwrap();
+        fs::write(first_path.join("lib/libMemoGit.a"), b"first").unwrap();
+        let resolved_first = ensure_built(
+            &first_manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        assert_eq!(resolved_first, first_path);
+
+        fs::write(
+            &build_path,
+            format!(
+                r#"{build_base}
+[[git_inputs]]
+name = "tap"
+repository = "https://example.test/tap.git"
+commit = "1111111111111111111111111111111111111111"
+"#,
+            ),
+        )
+        .unwrap();
+        let second_manifest = registry.load("libMemoGit").unwrap();
+        let second_sha = compute_sha(
+            &second_manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_ne!(first_sha, second_sha);
+        let second_path = canonical_path(&cache, &second_manifest, TEST_ARCH, &second_sha);
+        fs::create_dir_all(second_path.join("lib")).unwrap();
+        fs::write(second_path.join("lib/libMemoGit.a"), b"second").unwrap();
+        write_cache_provenance(
+            &second_manifest,
+            &second_path,
+            TEST_ARCH,
+            TEST_ABI,
+            &hex(&second_sha),
+        )
+        .unwrap();
+
+        let resolved_second = ensure_built(
+            &second_manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        assert_eq!(resolved_second, second_path);
+        assert_ne!(resolved_second, resolved_first);
+        assert_eq!(
+            fs::read(resolved_second.join("lib/libMemoGit.a")).unwrap(),
+            b"second"
+        );
+    }
+
+    #[test]
     fn build_script_sees_target_arch_env() {
         let root = tempdir("ta-env");
         let cache = tempdir("ta-env-cache");
@@ -5606,6 +6120,237 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn immutable_git_inputs_ignore_hostile_home_xdg_templates_hooks_and_git_env() {
+        use std::ffi::OsString;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir("git-input-hostile-env");
+        let (source, commit) = immutable_git_fixture("git-input-hostile-env-source");
+        let hostile_home = root.join("hostile-home");
+        let hostile_xdg = root.join("hostile-xdg");
+        let hostile_templates = root.join("hostile-templates");
+        let hostile_hooks = root.join("hostile-hooks");
+        for dir in [
+            &hostile_home,
+            &hostile_xdg.join("git"),
+            &hostile_templates.join("hooks"),
+            &hostile_hooks,
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let sentinel = root.join("ambient-git-state-was-used");
+        let malicious_config = format!(
+            "[url \"file:///definitely-unreachable/\"]\n\tinsteadOf = file://\n\
+             [core]\n\thooksPath = {}\n",
+            hostile_hooks.display(),
+        );
+        fs::write(hostile_home.join(".gitconfig"), &malicious_config).unwrap();
+        fs::write(hostile_xdg.join("git/config"), &malicious_config).unwrap();
+        fs::write(
+            hostile_home.join(".netrc"),
+            "machine example.test login private\n",
+        )
+        .unwrap();
+        let hook = format!("#!/bin/sh\nprintf invoked > '{}'\n", sentinel.display());
+        for path in [
+            hostile_templates.join("hooks/post-checkout"),
+            hostile_hooks.join("post-checkout"),
+            root.join("hostile-askpass"),
+        ] {
+            fs::write(&path, &hook).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let ambient = vec![
+            (OsString::from("HOME"), hostile_home.as_os_str().to_owned()),
+            (
+                OsString::from("XDG_CONFIG_HOME"),
+                hostile_xdg.as_os_str().to_owned(),
+            ),
+            (
+                OsString::from("GIT_TEMPLATE_DIR"),
+                hostile_templates.as_os_str().to_owned(),
+            ),
+            (
+                OsString::from("GIT_CONFIG_GLOBAL"),
+                hostile_home.join(".gitconfig").into_os_string(),
+            ),
+            (OsString::from("GIT_CONFIG_COUNT"), OsString::from("1")),
+            (
+                OsString::from("GIT_CONFIG_KEY_0"),
+                OsString::from("url.file:///definitely-unreachable/.insteadOf"),
+            ),
+            (
+                OsString::from("GIT_CONFIG_VALUE_0"),
+                OsString::from("file://"),
+            ),
+            (
+                OsString::from("GIT_ASKPASS"),
+                root.join("hostile-askpass").into_os_string(),
+            ),
+            (OsString::from("GH_TOKEN"), OsString::from("must-not-leak")),
+            (
+                OsString::from("GIT_DIR"),
+                root.join("wrong-git-dir").into_os_string(),
+            ),
+        ];
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let declaration = GitBuildInput {
+            name: "tap".into(),
+            repository: format!("file://{}", source.display()),
+            commit,
+        };
+        let provisioned = ProvisionedGitInputs::provision_declarations_with_ambient_env(
+            "shell@0.1.0",
+            &canonical,
+            vec![declaration.clone()],
+            &ambient,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(provisioned.inputs[0].checkout.join("payload.txt")).unwrap(),
+            "immutable payload\n"
+        );
+        assert!(!sentinel.exists(), "ambient hook/template/askpass executed");
+
+        let isolation = provisioned.isolation.as_ref().unwrap();
+        assert!(
+            isolation
+                .home
+                .starts_with(provisioned.root.as_ref().unwrap())
+        );
+        assert!(
+            isolation
+                .xdg_config_home
+                .starts_with(provisioned.root.as_ref().unwrap())
+        );
+        assert!(isolation.askpass.is_absolute());
+        let command = hardened_git_command(&declaration.repository, isolation, &ambient);
+        let explicit_env: BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(OsString::from)))
+            .collect();
+        assert_eq!(
+            explicit_env
+                .get(std::ffi::OsStr::new("HOME"))
+                .unwrap()
+                .as_deref(),
+            Some(isolation.home.as_os_str())
+        );
+        assert_eq!(
+            explicit_env
+                .get(std::ffi::OsStr::new("GIT_ASKPASS"))
+                .unwrap()
+                .as_deref(),
+            Some(isolation.askpass.as_os_str())
+        );
+        assert_eq!(
+            explicit_env.get(std::ffi::OsStr::new("GH_TOKEN")),
+            Some(&None)
+        );
+        assert_eq!(
+            explicit_env.get(std::ffi::OsStr::new("GIT_CONFIG_KEY_0")),
+            Some(&None)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn immutable_git_input_rejects_symlink_into_dot_git_config() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir("git-input-dot-git-link");
+        let (source, _commit) = immutable_git_fixture("git-input-dot-git-link-source");
+        symlink(".git/config", source.join("git-config-link")).unwrap();
+        fixture_git(&source, &["add", "git-config-link"]);
+        fixture_git(&source, &["commit", "--quiet", "-m", "metadata link"]);
+        let commit = fixture_git(&source, &["rev-parse", "HEAD"]);
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let error = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![GitBuildInput {
+                name: "tap".into(),
+                repository: format!("file://{}", source.display()),
+                commit,
+            }],
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("symlink") && error.contains("private Git metadata"),
+            "got: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn immutable_git_input_parent_seal_blocks_checkout_path_replacement() {
+        let root = tempdir("git-input-parent-seal");
+        let (source, commit) = immutable_git_fixture("git-input-parent-seal-source");
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let provisioned = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![GitBuildInput {
+                name: "tap".into(),
+                repository: format!("file://{}", source.display()),
+                commit,
+            }],
+        )
+        .unwrap();
+        let checkout = provisioned.inputs[0].checkout.clone();
+        let checkout_parent = checkout.parent().unwrap();
+        let error = fs::rename(&checkout, checkout_parent.join("replacement")).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        let git_root = provisioned.root.as_ref().unwrap();
+        let error = fs::rename(
+            git_root.join("checkouts"),
+            git_root.join("replacement-checkouts"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        provisioned.verify_unchanged().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn immutable_git_worktree_digest_catches_assume_unchanged_evasion() {
+        let root = tempdir("git-input-assume-unchanged");
+        let (source, commit) = immutable_git_fixture("git-input-assume-unchanged-source");
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let provisioned = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![GitBuildInput {
+                name: "tap".into(),
+                repository: format!("file://{}", source.display()),
+                commit,
+            }],
+        )
+        .unwrap();
+        let checkout = provisioned.inputs[0].checkout.clone();
+        set_git_input_tree_read_only(provisioned.root.as_ref().unwrap(), false).unwrap();
+        fixture_git(
+            &checkout,
+            &["update-index", "--assume-unchanged", "payload.txt"],
+        );
+        fs::write(checkout.join("payload.txt"), "hidden mutation\n").unwrap();
+        assert!(fixture_git(&checkout, &["status", "--porcelain=v1"]).is_empty());
+        set_git_input_tree_read_only(provisioned.root.as_ref().unwrap(), true).unwrap();
+
+        let error = provisioned.verify_unchanged().unwrap_err();
+        assert!(
+            error.contains("working-tree digest changed"),
+            "got: {error}"
+        );
+    }
+
     #[test]
     fn immutable_git_input_rejects_a_different_exact_commit() {
         let root = tempdir("git-input-wrong-commit");
@@ -5622,7 +6367,10 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
             }],
         )
         .unwrap_err();
-        assert!(err.contains("fetch") && err.contains("failed"), "got: {err}");
+        assert!(
+            err.contains("fetch") && err.contains("failed"),
+            "got: {err}"
+        );
         assert!(
             fs::read_dir(canonical.parent().unwrap())
                 .unwrap()
@@ -5657,7 +6405,10 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
             }],
         )
         .unwrap_err();
-        assert!(err.contains("symlink") && err.contains("escapes"), "got: {err}");
+        assert!(
+            err.contains("symlink") && err.contains("escapes"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -6218,12 +6969,12 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         let parent = path.parent().unwrap();
         assert_eq!(parent, cache.join("libs"));
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        // After A.6 the path includes the arch segment between revN and shortsha.
+        // The path includes the arch segment between revN and the full cache key.
         assert!(name.starts_with("zlib-1.3.1-rev1-wasm32-"), "got {name}");
-        // 8-char short sha appended after the last dash.
-        let short = name.rsplit('-').next().unwrap();
-        assert_eq!(short.len(), 8);
-        assert!(short.chars().all(|c| c.is_ascii_hexdigit()));
+        let key = name.rsplit('-').next().unwrap();
+        assert_eq!(key.len(), 64);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(key, hex(&sha));
     }
 
     #[test]
@@ -6235,8 +6986,30 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         let path = canonical_path(&cache, &m, TargetArch::Wasm32, &sha);
         assert_eq!(
             path,
-            PathBuf::from("/cache/sources/pcre2-source-10.42-rev1-00000000")
+            PathBuf::from(format!(
+                "/cache/sources/pcre2-source-10.42-rev1-{}",
+                hex(&sha)
+            ))
         );
+    }
+
+    #[test]
+    fn canonical_path_does_not_alias_keys_with_the_same_archive_prefix() {
+        let dir = tempdir("canonical-full-key");
+        let m = parse_source_manifest(&dir);
+        let mut first = [0u8; 32];
+        let mut second = [0u8; 32];
+        first[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        second[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        first[31] = 1;
+        second[31] = 2;
+
+        let first_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, &first);
+        let second_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, &second);
+
+        assert_ne!(first_path, second_path);
+        assert!(first_path.to_string_lossy().ends_with(&hex(&first)));
+        assert!(second_path.to_string_lossy().ends_with(&hex(&second)));
     }
 
     fn parse_source_manifest(dir: &Path) -> DepsManifest {
@@ -7250,22 +8023,24 @@ cache_key_sha = "{cache_key_hex}"
         };
         let err = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &fetch_only_opts).unwrap_err();
         assert!(err.contains("fetch-only"), "got: {err}");
-        assert!(!canonical_path(
-            &fetch_only_cache,
-            &manifest,
-            TEST_ARCH,
-            &compute_sha(
+        assert!(
+            !canonical_path(
+                &fetch_only_cache,
                 &manifest,
-                &reg,
                 TEST_ARCH,
-                TEST_ABI,
-                &mut BTreeMap::new(),
-                &mut Vec::new(),
+                &compute_sha(
+                    &manifest,
+                    &reg,
+                    TEST_ARCH,
+                    TEST_ABI,
+                    &mut BTreeMap::new(),
+                    &mut Vec::new(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .join("via-build")
-        .exists());
+            .join("via-build")
+            .exists()
+        );
     }
 
     #[test]

@@ -54,7 +54,10 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-use crate::pkg_manifest::{Binary, BuildToml, DepsManifest, GitBuildInput, TargetArch};
+use crate::pkg_manifest::{
+    Binary, DepsManifest, GitBuildInput, TargetArch, current_git_inputs, validate_cache_provenance,
+    write_cache_provenance,
+};
 use crate::util::hex;
 
 /// Maximum response size we will accept from `fetch_url` and archive
@@ -289,18 +292,14 @@ pub fn fetch_and_install_direct(
     // Cache-key participation is necessary but insufficient evidence here:
     // compare the human-auditable archived provenance directly so an archive
     // cannot claim a different source identity under a copied cache key.
-    let expected_git_inputs = if target.dir.join("build.toml").exists() {
-        match BuildToml::load(&target.dir) {
-            Ok(build) => build.git_inputs,
-            Err(e) => {
-                let _ = fs::remove_dir_all(&tmp);
-                return Err(FetchError::ManifestParseError(format!(
-                    "load current build.toml git inputs: {e}"
-                )));
-            }
+    let expected_git_inputs = match current_git_inputs(target) {
+        Ok(inputs) => inputs,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(FetchError::ManifestParseError(format!(
+                "load current build.toml git inputs: {e}"
+            )));
         }
-    } else {
-        Vec::new()
     };
     if compat.git_inputs != expected_git_inputs {
         let _ = fs::remove_dir_all(&tmp);
@@ -324,10 +323,28 @@ pub fn fetch_and_install_direct(
         let _ = fs::remove_dir_all(&tmp);
         return Err(e);
     }
+    if let Err(e) = write_cache_provenance(
+        target,
+        canonical,
+        arch,
+        abi_version,
+        local_cache_key_sha_hex,
+    ) {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(FetchError::IoError(e));
+    }
 
     // 10. Atomic rename. If a peer raced us, discard ours.
     if canonical.exists() {
         let _ = fs::remove_dir_all(&tmp);
+        validate_cache_provenance(
+            target,
+            canonical,
+            arch,
+            abi_version,
+            local_cache_key_sha_hex,
+        )
+        .map_err(FetchError::IoError)?;
         return Ok(());
     }
     if let Err(e) = fs::rename(&tmp, canonical) {
@@ -338,6 +355,14 @@ pub fn fetch_and_install_direct(
         // before surfacing an error.
         let _ = fs::remove_dir_all(&tmp);
         if canonical.exists() {
+            validate_cache_provenance(
+                target,
+                canonical,
+                arch,
+                abi_version,
+                local_cache_key_sha_hex,
+            )
+            .map_err(FetchError::IoError)?;
             return Ok(());
         }
         return Err(FetchError::IoError(format!(
@@ -1065,10 +1090,7 @@ fn build_http_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(30))
         .timeout_read(Duration::from_secs(60))
-        .user_agent(concat!(
-            "kandelo-tools/xtask/",
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(concat!("kandelo-tools/xtask/", env!("CARGO_PKG_VERSION")))
         .build()
 }
 
@@ -1409,10 +1431,8 @@ repository = "https://example.test/different-tap.git"
 commit = "2222222222222222222222222222222222222222"
 "#
         );
-        let archive = build_test_archive(
-            &archived_manifest,
-            &[("lib/libdemo.a", b"archive bytes")],
-        );
+        let archive =
+            build_test_archive(&archived_manifest, &[("lib/libdemo.a", b"archive bytes")]);
         let archive_path = dir.join("demo.tar.zst");
         fs::write(&archive_path, &archive).unwrap();
         let archive_sha = sha256_hex(&archive);
@@ -1429,8 +1449,14 @@ commit = "2222222222222222222222222222222222222222"
         .unwrap_err();
         match err {
             FetchError::GitInputsMismatch { expected, archived } => {
-                assert_eq!(expected[0].repository, "https://example.test/current-tap.git");
-                assert_eq!(archived[0].repository, "https://example.test/different-tap.git");
+                assert_eq!(
+                    expected[0].repository,
+                    "https://example.test/current-tap.git"
+                );
+                assert_eq!(
+                    archived[0].repository,
+                    "https://example.test/different-tap.git"
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }

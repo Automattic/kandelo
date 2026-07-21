@@ -8,7 +8,7 @@ TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 mkdir -p "$TMP_ROOT/bin"
 
-printf '{"abi_version":39,"entries":[{"package":"zlib"}]}\n' > "$TMP_ROOT/expected.json"
+printf '%s\n' '{"abi_version":39,"entries":[{"package":"zlib","arch":"wasm32","git_inputs":[{"name":"tap","repository":"https://example.invalid/tap.git","commit":"1111111111111111111111111111111111111111"}]}]}' > "$TMP_ROOT/expected.json"
 cat > "$TMP_ROOT/index.toml" <<'EOF'
 abi_version = 39
 archive_url = "https://github.com/Automattic/kandelo/releases/download/pr-946-staging/zlib.tar.zst"
@@ -61,7 +61,7 @@ cat > "$TMP_ROOT/bin/xtask" <<'EOF'
 set -euo pipefail
 action="$1 $2"
 shift 2
-mode=""; output=""; localized=""; index=""; assets=""
+mode=""; output=""; localized=""; index=""; assets=""; archives=""; snapshot=""; scope=""
 base=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -70,12 +70,26 @@ while [ "$#" -gt 0 ]; do
     --localized-index) localized="$2"; shift 2 ;;
     --index) index="$2"; shift 2 ;;
     --assets) assets="$2"; shift 2 ;;
+    --archives-dir) archives="$2"; shift 2 ;;
+    --snapshot) snapshot="$2"; shift 2 ;;
+    --scope) scope="$2"; shift 2 ;;
     --base-index) base="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 if [ "$action" = 'staging-reuse compose' ]; then
   cp "$base" "$output"
+  exit 0
+fi
+if [ "$action" = 'staging-reuse validate-archives' ]; then
+  [ -s "$snapshot" ]
+  if [ "${XTASK_EXPECT_ARCHIVE:-1}" = 1 ]; then
+    [ -s "$archives/zlib.tar.zst" ]
+  else
+    [ ! -e "$archives/zlib.tar.zst" ]
+  fi
+  [[ "$scope" == all || "$scope" == current-declared-git-inputs ]]
+  [ "${XTASK_ARCHIVE_STUB_FAIL:-0}" = 0 ] || exit 1
   exit 0
 fi
 [ "$action" = 'staging-reuse validate' ]
@@ -85,7 +99,7 @@ sed 's#https://github.com/Automattic/kandelo/releases/download/pr-946-staging/##
   "$index" > "$localized"
 jq -n --arg mode "$mode" --arg sha "${GH_STUB_ARCHIVE_SHA:?}" \
   --argjson size "${GH_STUB_ARCHIVE_SIZE:?}" \
-  '{mode:$mode,entries:[{asset:"zlib.tar.zst",archive_sha256:$sha,size:$size}]}' > "$output"
+  '{mode:$mode,entries:[{package:"zlib",arch:"wasm32",current:true,asset:"zlib.tar.zst",archive_sha256:$sha,size:$size}]}' > "$output"
 EOF
 chmod +x "$TMP_ROOT/bin/xtask"
 
@@ -105,6 +119,8 @@ run_helper() {
     GH_STUB_ARCHIVE_SHA="$ARCHIVE_SHA" \
     GH_STUB_ARCHIVE_SIZE="$ARCHIVE_SIZE" \
     XTASK_STUB_FAIL="${XTASK_STUB_FAIL:-0}" \
+    XTASK_ARCHIVE_STUB_FAIL="${XTASK_ARCHIVE_STUB_FAIL:-0}" \
+    XTASK_EXPECT_ARCHIVE="${XTASK_EXPECT_ARCHIVE:-1}" \
     bash "$SCRIPT" "$@"
 }
 
@@ -114,6 +130,15 @@ run_helper --tag pr-946-staging --expected-ledger "$TMP_ROOT/expected.json" \
 [ -s "$TMP_ROOT/structural/index.toml" ]
 [ -s "$TMP_ROOT/structural/assets.json" ]
 [ -s "$TMP_ROOT/structural/snapshot.json" ]
+[ ! -e "$TMP_ROOT/structural/archives" ]
+
+printf '%s\n' \
+  '{"abi_version":39,"entries":[{"package":"zlib","arch":"wasm32","git_inputs":[]}]}' \
+  > "$TMP_ROOT/expected-no-git.json"
+XTASK_EXPECT_ARCHIVE=0 run_helper --tag pr-946-staging \
+  --expected-ledger "$TMP_ROOT/expected-no-git.json" --mode structural \
+  --output-dir "$TMP_ROOT/structural-no-git" --xtask "$TMP_ROOT/bin/xtask"
+[ ! -e "$TMP_ROOT/structural-no-git/archives" ]
 
 run_helper --tag pr-946-staging --expected-ledger "$TMP_ROOT/expected.json" \
   --mode current --materialize --output-dir "$TMP_ROOT/current" --xtask "$TMP_ROOT/bin/xtask"
@@ -176,6 +201,13 @@ if XTASK_STUB_FAIL=1 run_helper --tag pr-946-staging \
   --expected-ledger "$TMP_ROOT/expected.json" --mode structural \
   --output-dir "$TMP_ROOT/invalid" --xtask "$TMP_ROOT/bin/xtask"; then
   echo "validator failure was accepted" >&2
+  exit 1
+fi
+
+if XTASK_ARCHIVE_STUB_FAIL=1 run_helper --tag pr-946-staging \
+  --expected-ledger "$TMP_ROOT/expected.json" --mode structural \
+  --output-dir "$TMP_ROOT/archive-invalid" --xtask "$TMP_ROOT/bin/xtask"; then
+  echo "archive provenance validator failure was accepted" >&2
   exit 1
 fi
 

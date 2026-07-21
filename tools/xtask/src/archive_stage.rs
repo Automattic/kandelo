@@ -17,7 +17,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::build_deps::validate_cache_artifacts;
-use crate::pkg_manifest::{BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch};
+use crate::pkg_manifest::{
+    BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch, validate_cache_provenance,
+};
 
 /// Caller-supplied build provenance + the locally-computed cache-key
 /// sha. We don't recompute the sha here so the caller (`archive-stage`
@@ -74,6 +76,8 @@ pub fn stage_archive_with_options(
     // omits; the consumer should never be the first place that notices.
     validate_cache_artifacts(target, cache_dir)
         .map_err(|e| format!("archive_stage: invalid cache entry: {e}"))?;
+    validate_cache_provenance(target, cache_dir, arch, abi_version, &opts.cache_key_sha)
+        .map_err(|e| format!("archive_stage: invalid cache provenance: {e}"))?;
 
     let expected_git_inputs = if target.dir.join("build.toml").exists() {
         BuildToml::load(&target.dir)?.git_inputs
@@ -375,7 +379,10 @@ headers = ["include/zlib.h"]
         fs::write(&toml_path, library_manifest_text()).unwrap();
         let m = DepsManifest::load(&toml_path).unwrap();
 
-        let cache_dir = dir.join("cache_entry");
+        // The local cache path is part of the provenance invariant and must
+        // carry the complete cache key, even in archive-stage unit fixtures.
+        let cache_key_sha = "a".repeat(64);
+        let cache_dir = dir.join(format!("cache-entry-{cache_key_sha}"));
         fs::create_dir_all(cache_dir.join("lib")).unwrap();
         fs::create_dir_all(cache_dir.join("include")).unwrap();
         fs::write(cache_dir.join("lib/libZ.a"), b"\x7fELF-fake-archive").unwrap();
@@ -388,7 +395,7 @@ headers = ["include/zlib.h"]
         // round-trip test as long as we feed the SAME value into both
         // stage_archive_with_options and remote_fetch::fetch_and_install.
         let opts = StageOptions {
-            cache_key_sha: "a".repeat(64),
+            cache_key_sha,
             build_timestamp: "2026-04-26T10:00:00Z".to_string(),
             build_host: "darwin-arm64".to_string(),
             git_inputs: vec![],
@@ -491,7 +498,8 @@ mode = 420
         fs::write(&manifest_path, manifest_text).unwrap();
         let manifest = DepsManifest::load(&manifest_path).unwrap();
 
-        let cache_dir = dir.join("cache_entry");
+        let cache_key_sha = "c".repeat(64);
+        let cache_dir = dir.join(format!("cache-entry-{cache_key_sha}"));
         fs::create_dir_all(&cache_dir).unwrap();
         fs::write(
             cache_dir.join("php.wasm"),
@@ -503,7 +511,7 @@ mode = 420
 
         let archive_path = dir.join("php-out.tar.zst");
         let opts = StageOptions {
-            cache_key_sha: "c".repeat(64),
+            cache_key_sha,
             build_timestamp: "2026-07-12T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
             git_inputs: vec![],
@@ -633,6 +641,8 @@ mode = 420
 
     #[test]
     fn embedded_manifest_round_trips_through_parse_archived() {
+        use crate::pkg_manifest::Binary;
+        use sha2::{Digest, Sha256};
         use std::io::Read;
 
         let (cache_dir, archive_path, manifest, mut opts) =
@@ -656,6 +666,14 @@ commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
 [binary]
 index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
 "#,
+        )
+        .unwrap();
+        crate::pkg_manifest::write_cache_provenance(
+            &manifest,
+            &cache_dir,
+            TargetArch::Wasm32,
+            4,
+            &opts.cache_key_sha,
         )
         .unwrap();
 
@@ -700,6 +718,59 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         );
         assert_eq!(c.build_host.as_deref(), Some(opts.build_host.as_str()));
         assert_eq!(c.git_inputs, opts.git_inputs);
+
+        // Consume those same bytes through the remote installer. This proves
+        // the authored vector becomes an adjacent local-cache marker and is
+        // accepted only under the exact current build.toml identity.
+        let mut archive_hash = Sha256::new();
+        archive_hash.update(&bytes);
+        let binary = Binary {
+            archive_url: format!("file://{}", archive_path.display()),
+            archive_sha256: crate::util::hex(&Into::<[u8; 32]>::into(archive_hash.finalize())),
+        };
+        let install_root = archive_path
+            .parent()
+            .unwrap()
+            .join("install")
+            .join(format!("zlib-{}", opts.cache_key_sha));
+        fs::create_dir_all(install_root.parent().unwrap()).unwrap();
+        crate::remote_fetch::fetch_and_install(
+            &binary,
+            &install_root,
+            &manifest,
+            TargetArch::Wasm32,
+            4,
+            &opts.cache_key_sha,
+        )
+        .unwrap();
+        crate::pkg_manifest::validate_cache_provenance(
+            &manifest,
+            &install_root,
+            TargetArch::Wasm32,
+            4,
+            &opts.cache_key_sha,
+        )
+        .unwrap();
+        assert!(install_root.join("lib/libZ.a").is_file());
+        assert!(
+            crate::pkg_manifest::cache_provenance_path(&install_root, &opts.cache_key_sha)
+                .unwrap()
+                .is_file()
+        );
+
+        let decoder = zstd::stream::read::Decoder::new(&bytes[..]).unwrap();
+        let mut tar = tar::Archive::new(decoder);
+        let archived_paths = tar
+            .entries()
+            .unwrap()
+            .map(|entry| entry.unwrap().path().unwrap().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            archived_paths
+                .iter()
+                .all(|path| !path.to_string_lossy().contains("kandelo-provenance")),
+            "resolver-local adjacent provenance must never enter package archives"
+        );
     }
 
     #[test]
@@ -720,7 +791,10 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             &opts,
         )
         .unwrap_err();
-        assert!(err.contains("differs from current build.toml"), "got: {err}");
+        assert!(
+            err.contains("differs from current build.toml"),
+            "got: {err}"
+        );
         assert!(!archive_path.exists());
     }
 
@@ -738,14 +812,15 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         fs::write(&toml_path, library_manifest_text()).unwrap();
         let m = DepsManifest::load(&toml_path).unwrap();
 
-        let cache_dir = dir.join("cache_entry");
+        let cache_key_sha = "1".repeat(64);
+        let cache_dir = dir.join(format!("cache-entry-{cache_key_sha}"));
         fs::create_dir_all(cache_dir.join("lib")).unwrap();
         fs::create_dir_all(cache_dir.join("include")).unwrap();
         fs::write(cache_dir.join("lib/libZ.a"), b"\x00\x01\x02").unwrap();
         fs::write(cache_dir.join("include/zlib.h"), b"#ifndef ZLIB_H\n").unwrap();
 
         let opts = StageOptions {
-            cache_key_sha: "1".repeat(64),
+            cache_key_sha,
             build_timestamp: "2026-04-26T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
             git_inputs: vec![],
@@ -779,7 +854,7 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         fs::write(&toml_path, library_manifest_text()).unwrap();
         let m = DepsManifest::load(&toml_path).unwrap();
 
-        let empty_cache = dir.join("empty_cache");
+        let empty_cache = dir.join(format!("empty-cache-{}", "0".repeat(64)));
         fs::create_dir_all(&empty_cache).unwrap();
         // No files inside.
 
