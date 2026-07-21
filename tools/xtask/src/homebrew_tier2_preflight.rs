@@ -180,7 +180,7 @@ fn validate(
     validate_plan_identity(&plan)?;
     let Some(bridge) = plan.tier2_bridge.0 else {
         return Ok(BridgeAttestation {
-            schema: 1,
+            schema: 2,
             arch: arch.as_str().to_string(),
             tap: plan.tap,
             formula: plan.formula,
@@ -302,7 +302,7 @@ fn validate(
     };
 
     Ok(BridgeAttestation {
-        schema: 1,
+        schema: 2,
         arch: arch.as_str().to_string(),
         tap: plan.tap,
         formula: plan.formula,
@@ -330,7 +330,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn validate_plan_identity(plan: &BridgePlan) -> Result<(), String> {
-    if plan.schema != 1 {
+    if plan.schema != 2 {
         return Err(format!(
             "unsupported Tier-2 bridge plan schema {}",
             plan.schema
@@ -707,7 +707,7 @@ mod tests {
 
     fn bridge_plan() -> String {
         serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "tap": "kandelo-dev/tap-core",
             "formula": "bridge",
             "full_name": "kandelo-dev/tap-core/bridge",
@@ -793,6 +793,7 @@ index_url = "https://example.test/index.toml"
                 "tier2_bridge",
             ]
         );
+        assert_eq!(document["schema"], 2);
         assert_eq!(
             document["tier2_bridge"]
                 .as_object()
@@ -829,6 +830,21 @@ index_url = "https://example.test/index.toml"
         assert_eq!(bridge.version, "1.2.3");
         assert_eq!(bridge.source_mode, "exact");
         assert_eq!(attestation.arch, "wasm32");
+    }
+
+    #[test]
+    fn bridge_plan_rejects_previous_and_unknown_schemas() {
+        let fixture = Fixture::new();
+        for schema in [1, 3] {
+            let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
+            plan["schema"] = schema.into();
+            fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+            let error = fixture.validate(TargetArch::Wasm32).unwrap_err();
+            assert_eq!(
+                error,
+                format!("unsupported Tier-2 bridge plan schema {schema}")
+            );
+        }
     }
 
     #[test]
@@ -1321,7 +1337,7 @@ index_url = "https://example.test/index.toml"
     #[test]
     fn bridge_plan_rejects_duplicate_fields_and_missing_support_digest() {
         let fixture = Fixture::new();
-        let duplicate = bridge_plan().replacen("\"schema\":1", "\"schema\":1,\"schema\":1", 1);
+        let duplicate = bridge_plan().replacen("\"schema\":2", "\"schema\":2,\"schema\":2", 1);
         fs::write(&fixture.plan, duplicate).unwrap();
         assert!(fixture.validate(TargetArch::Wasm32).is_err());
 
@@ -1377,6 +1393,7 @@ index_url = "https://example.test/index.toml"
         assert_eq!(attestation.support_runtime_sha256, None);
         assert_eq!(attestation.tier2_bridge, None);
         let document = serde_json::to_value(attestation).unwrap();
+        assert_eq!(document["schema"], 2);
         assert_eq!(
             document
                 .as_object()

@@ -300,7 +300,7 @@ ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
 if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   --arg arch "$ARCH" '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-    .schema == 1 and .tap == $tap and .formula == $formula and .arch == $arch and
+    .schema == 2 and .tap == $tap and .formula == $formula and .arch == $arch and
     .full_name == ($tap + "/" + $formula) and
     (.formula_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
     (.support_sha256 == null or
@@ -308,6 +308,7 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
     (.support_runtime_sha256 == null or
       (.support_runtime_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
     ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
+    (.tier2_bridge == null or .support_sha256 != null) and
     if .tier2_bridge == null then true else
       (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
       (.tier2_bridge.package | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,254}$")) and

@@ -99,6 +99,11 @@ frozen runtime authority and performs no definition work. Binding the whole
 tree matters because support methods dispatch neighboring TypeScript, shell,
 Perl, HTML, and configuration files through their lexical `__dir__`.
 
+Formula support API version 1 always includes that canonical runtime authority;
+there is no valid inert or module-only version-1 shape. A tap that omits the
+runtime initializer or assignment is rejected even when its Formula does not
+use the Tier-2 registry bridge.
+
 The publisher carries both hashes through the Tier-2 plan and attestation, then
 separately snapshots the exact clean primary tap clone into
 `HOMEBREW_KANDELO_PRIMARY_TAP_ROOT`, and the isolated launcher makes the whole
@@ -107,6 +112,10 @@ attests the selected Formula under the primary tap root regardless of whether
 Homebrew loaded primary or dependency support first. A missing root, changed
 module or runtime helper, different support API version, or Formula/support
 drift fails before Formula installation.
+
+Adding the runtime-tree digest changed the exact Tier-2 control-document shape.
+Tier-2 bridge plans and attestations therefore use schema 2; schema 1 is
+rejected rather than interpreted as if it carried the newer runtime contract.
 
 The protected publisher plan repeats every target tap as a sorted immutable
 identity record containing its normalized tap name, conventional repository,

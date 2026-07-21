@@ -1507,6 +1507,15 @@ def check_publisher(workflow)
     check(formula_closure.include?(fragment),
           "static Formula closure lacks immutable tap identity binding: #{fragment}")
   end
+  tier2_plan_output = formula_closure[/elsif tier2_bridge_only(.*?)elsif bottle_identity_only/m, 1]
+  check(tier2_plan_output&.include?('"schema" => 2') &&
+        !tier2_plan_output&.include?('"schema" => 1'),
+        "static Formula closure does not emit the exact Tier-2 schema-2 plan")
+  check(!formula_closure.include?("legacy_requires") &&
+        formula_closure.include?(
+          "if runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1"
+        ),
+        "Formula support API v1 does not require canonical Tier-2 runtime authority")
   [
     'TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"',
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
@@ -1548,6 +1557,8 @@ def check_publisher(workflow)
     'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
     'keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap", "target_taps"]',
     '.schema == 3',
+    'TIER2_ATTESTATION="$CONTROL_DIR/tier2-attestation.json"',
+    '.schema == 2 and .tap == $tap and .formula == $formula and .arch == $arch',
     '--slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
     'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
     'DEPENDENCY_TAP_ROOTS=()',

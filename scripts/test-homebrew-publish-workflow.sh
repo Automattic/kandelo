@@ -393,6 +393,14 @@ homebrew_patched_launcher_stage_dependency_plan() {
 homebrew_patched_launcher_stage_tier2_attestation() {
   jq -e '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
+    .schema == 2 and
+    (.formula_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.support_sha256 == null or
+      (.support_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+    (.support_runtime_sha256 == null or
+      (.support_runtime_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+    ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
+    (.tier2_bridge == null or .support_sha256 != null) and
     if .tier2_bridge == null then true else
       (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"])
     end
@@ -3678,7 +3686,7 @@ EOF
     fail "bottle build did not run Tier-2 preflight before and after tap materialization"
   jq -e '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-    .schema == 1 and .arch == "wasm32" and
+    .schema == 2 and .arch == "wasm32" and
     .tap == "kandelo-dev/tap-core" and .formula == "hello" and
     (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
     .tier2_bridge.package == "cpython" and

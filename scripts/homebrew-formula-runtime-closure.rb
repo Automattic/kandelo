@@ -708,7 +708,6 @@ support_methods_by_tap = {}
 support_sha256_by_tap = {}
 support_runtime_sha256_by_tap = {}
 support_api_version_by_tap = {}
-support_tier2_runtime_by_tap = {}
 support_tier2_package_keyword_by_tap = {}
 validate_support = lambda do |context|
   context_tap_name = context.fetch("tap_name")
@@ -772,12 +771,6 @@ validate_support = lambda do |context|
   support_tree = Ripper.sexp(support_source)
   abort "could not parse Kandelo Formula support: #{support_path}" if support_tree.nil?
   top_level = support_tree[1]
-  legacy_requires = [
-    "require \"fileutils\"\n",
-    "require \"json\"\n",
-    "require \"shellwords\"\n",
-    "require \"tempfile\"\n",
-  ]
   runtime_requires = [
     "require \"digest\"\n",
     "require \"fileutils\"\n",
@@ -787,20 +780,19 @@ validate_support = lambda do |context|
     "require \"tempfile\"\n",
   ]
   support_lines = support_source.lines
-  expected_requires = [runtime_requires, legacy_requires].find do |candidate|
-    top_level.is_a?(Array) && top_level.length == candidate.length + 1 &&
-      top_level.first(candidate.length).each_with_index.all? do |statement, index|
+  canonical_requires =
+    top_level.is_a?(Array) && top_level.length == runtime_requires.length + 1 &&
+      top_level.first(runtime_requires.length).each_with_index.all? do |statement, index|
         position = call_position.call(statement)
         line_number = position[0] if position.is_a?(Array)
         line = support_lines.fetch(line_number - 1, nil) if line_number.is_a?(Integer)
-        call_name.call(statement) == "require" && line == candidate[index]
+        call_name.call(statement) == "require" && line == runtime_requires[index]
       end
-  end
-  if expected_requires.nil?
+  unless canonical_requires
     abort "Kandelo Formula support must contain only approved requires, the compatibility guard, and one module: #{support_path}"
   end
-  compatibility_guard = top_level.fetch(expected_requires.length)
-  last_require_position = call_position.call(top_level.fetch(expected_requires.length - 1))
+  compatibility_guard = top_level.fetch(runtime_requires.length)
+  last_require_position = call_position.call(top_level.fetch(runtime_requires.length - 1))
   guard_line = last_require_position.fetch(0) + 2 if last_require_position.is_a?(Array)
   canonical_guard_lines = [
     "if defined?(KandeloFormulaSupport)\n",
@@ -1029,13 +1021,8 @@ validate_support = lambda do |context|
       abort "Kandelo Formula support contains executable module structure: #{support_path}"
     end
   end
-  runtime_capable = !runtime_initializer_index.nil? || !runtime_assignment_index.nil?
-  if runtime_capable &&
-     (runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1)
+  if runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1
     abort "Kandelo Formula support must initialize Tier-2 runtime authority exactly once: #{support_path}"
-  end
-  if runtime_capable && expected_requires != runtime_requires
-    abort "Kandelo Formula support Tier-2 runtime initializer requires canonical imports: #{support_path}"
   end
   if support_api_version != FORMULA_SUPPORT_API_VERSION
     abort "Kandelo Formula support must declare API version #{FORMULA_SUPPORT_API_VERSION}: #{support_path}"
@@ -1050,7 +1037,6 @@ validate_support = lambda do |context|
     JSON.generate(support_runtime_files),
   )
   support_api_version_by_tap[context_tap_name] = support_api_version
-  support_tier2_runtime_by_tap[context_tap_name] = runtime_capable
   support_tier2_package_keyword_by_tap[context_tap_name] = tier2_package_keyword
   support_validated.add(context_tap_name)
 end
@@ -1352,10 +1338,6 @@ parse_formula = lambda do |full_name|
        !support_tier2_package_keyword_by_tap.fetch(formula_tap_name)
       abort "Formula bridge package mapping requires canonical package: support: #{path}"
     end
-    unless support_tier2_runtime_by_tap.fetch(formula_tap_name)
-      abort "Formula bridge requires canonical Tier-2 runtime authority: #{path}"
-    end
-
     direct_literal = lambda do |command|
       candidates = class_body.select do |statement|
         statement.is_a?(Array) && statement.first == :command &&
@@ -1558,7 +1540,7 @@ if declarations_only
 elsif tier2_bridge_only
   record = formula_tier2_bridges.fetch(target_full_name)
   document = JSON.generate({
-    "schema" => 1,
+    "schema" => 2,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => target_full_name,
