@@ -365,6 +365,52 @@ grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
     fail "NetHack build does not instrument its fork-capable artifact"
 
+# Ruby keeps source filenames in runtime assertions and publishes its generated
+# rbconfig.rb. Its recipe must therefore map caller work paths at compile time
+# while giving configure stable command names and sysroot-independent flags.
+ruby_script="$REPO_ROOT/packages/registry/ruby/build-ruby.sh"
+ruby_cc_wrapper="$REPO_ROOT/packages/registry/ruby/kandelo-ruby-cc"
+bash -n "$ruby_cc_wrapper" || fail "Ruby compiler prefix wrapper has invalid shell syntax"
+ruby_wrapper_err="$TMP_ROOT/ruby-wrapper-missing-work-root.err"
+if env -u KANDELO_RUBY_WORK_DIR bash "$ruby_cc_wrapper" --version \
+    >/dev/null 2>"$ruby_wrapper_err"; then
+    fail "Ruby compiler prefix wrapper accepted a missing work root"
+fi
+grep -F "must name the Ruby package work root" "$ruby_wrapper_err" >/dev/null ||
+    fail "Ruby compiler prefix wrapper did not explain its missing work root"
+ruby_fake_bin="$TMP_ROOT/ruby-fake-bin"
+ruby_wrapper_args="$TMP_ROOT/ruby-wrapper-args"
+mkdir -p "$ruby_fake_bin"
+cat > "$ruby_fake_bin/wasm32posix-cc" <<'RUBY_FAKE_CC'
+#!/usr/bin/env bash
+printf '%s\n' "$@"
+RUBY_FAKE_CC
+chmod +x "$ruby_fake_bin/wasm32posix-cc"
+KANDELO_RUBY_WORK_DIR="$TMP_ROOT/caller-ruby-work" \
+    PATH="$ruby_fake_bin:$PATH" \
+    bash "$ruby_cc_wrapper" -O2 conftest.c > "$ruby_wrapper_args"
+for map_kind in ffile fdebug fmacro; do
+    grep -Fx -- "-${map_kind}-prefix-map=$TMP_ROOT/caller-ruby-work=/usr/src/kandelo-packages/ruby" \
+        "$ruby_wrapper_args" >/dev/null ||
+        fail "Ruby compiler wrapper is missing its ${map_kind} caller-work prefix map"
+done
+grep -Fx -- "-O2" "$ruby_wrapper_args" >/dev/null ||
+    fail "Ruby compiler wrapper did not preserve a compiler option"
+grep -Fx "conftest.c" "$ruby_wrapper_args" >/dev/null ||
+    fail "Ruby compiler wrapper did not preserve a source argument"
+grep -F "cp \"\$SCRIPT_DIR/kandelo-ruby-cc\"" "$ruby_script" >/dev/null ||
+    fail "Ruby build does not install its tested compiler prefix wrapper"
+grep -F "CC=\"\$RUBY_CC_COMMAND\"" "$ruby_script" >/dev/null ||
+    fail "Ruby configure does not use its stable compiler command"
+grep -F -- "--with-baseruby=\"\$BASERUBY_COMMAND\"" "$ruby_script" >/dev/null ||
+    fail "Ruby configure does not record its stable baseruby command"
+grep -F "CPPFLAGS=\"-DRUBY_KANDELO_POSIX=1 -I\$ZLIB_PREFIX/include\"" \
+    "$ruby_script" >/dev/null ||
+    fail "Ruby configure CPPFLAGS reintroduced its private sysroot path"
+grep -F "LDFLAGS=\"-L\$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576\"" \
+    "$ruby_script" >/dev/null ||
+    fail "Ruby configure LDFLAGS reintroduced its private sysroot path"
+
 # Invalid guest paths are rejected before NetHack reaches any toolchain or
 # dependency work.
 nethack_work="$TMP_ROOT/nethack-invalid-work"

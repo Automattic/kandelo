@@ -1,6 +1,7 @@
 script_path = "packages/registry/ruby/build-ruby.sh"
 inputs = [
   "packages/registry/ruby/build-ruby.sh",
+  "packages/registry/ruby/kandelo-ruby-cc",
   "packages/registry/ruby/patches",
   "crates/wasm-local-root-spill",
   "scripts/build-local-root-spill-tool.sh",
@@ -8,7 +9,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 10
+revision    = 11
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

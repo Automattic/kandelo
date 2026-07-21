@@ -72,27 +72,108 @@ _wasm_stream_awk() {
     return "${statuses[1]:-1}"
 }
 
-_wasm_objdump_function_has_signature() {
-    local details="${1:-}"
-    local function_index="${2:-}"
-    local expected_signature="${3:-}"
-    [[ "$function_index" =~ ^[0-9]+$ ]] && [ -n "$expected_signature" ] || return 1
+_wasm_objdump_abi_export_function_index() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 2
+    command -v wasm-objdump >/dev/null 2>&1 || return 2
 
-    local signature_index
-    signature_index="$(
-        sed -nE "s/^ - func\\[$function_index\\] sig=([0-9]+).*/\\1/p" <<< "$details"
-    )"
-    [[ "$signature_index" =~ ^[0-9]+$ ]] || return 1
-    grep -Fqx " - type[$signature_index] $expected_signature" <<< "$details"
+    # Keep the structural decoder's potentially large output in a pipe. Ruby's
+    # 20 MiB executable produces more than 16 MiB of `wasm-objdump -x` text,
+    # while the only evidence needed here is one export mapping and the exact
+    # signature assigned to that function.
+    _wasm_stream_awk '
+        /^ - type\[[0-9]+\] / {
+            type_index = $0
+            sub(/^ - type\[/, "", type_index)
+            sub(/\].*$/, "", type_index)
+            signature = $0
+            sub(/^ - type\[[0-9]+\] /, "", signature)
+            type_signatures[type_index] = signature
+        }
+        /^ - func\[[0-9]+\] sig=[0-9]+/ {
+            function_index = $0
+            sub(/^ - func\[/, "", function_index)
+            sub(/\].*$/, "", function_index)
+            signature_index = $0
+            sub(/^.* sig=/, "", signature_index)
+            sub(/[^0-9].*$/, "", signature_index)
+            function_signatures[function_index] = signature_index
+        }
+        / -> "__abi_version"$/ {
+            named_exports++
+            if ($0 ~ /^ - func\[[0-9]+\].* -> "__abi_version"$/) {
+                mapped_exports++
+                target = $0
+                sub(/^ - func\[/, "", target)
+                sub(/\].*$/, "", target)
+            }
+        }
+        END {
+            if (named_exports == 0) exit 1
+            if (named_exports != 1 || mapped_exports != 1) exit 3
+            if (!(target in function_signatures)) exit 3
+            signature_index = function_signatures[target]
+            if (!(signature_index in type_signatures) ||
+                type_signatures[signature_index] != "() -> i32") exit 3
+            print target
+        }
+    ' wasm-objdump -x "$path"
+}
+
+_wasm_objdump_candidate_signatures_are_valid() {
+    local path="${1:-}"
+    local void_function_index="${2:-}"
+    local i32_function_index="${3:-}"
+    [[ "$void_function_index" =~ ^[0-9]*$ ]] || return 1
+    [[ "$i32_function_index" =~ ^[0-9]*$ ]] || return 1
+    [ -n "$void_function_index$i32_function_index" ] || return 1
+
+    WASM_ARTIFACT_VOID_FUNC_INDEX="$void_function_index" \
+    WASM_ARTIFACT_I32_FUNC_INDEX="$i32_function_index" \
+    _wasm_stream_awk '
+        /^ - type\[[0-9]+\] / {
+            type_index = $0
+            sub(/^ - type\[/, "", type_index)
+            sub(/\].*$/, "", type_index)
+            signature = $0
+            sub(/^ - type\[[0-9]+\] /, "", signature)
+            type_signatures[type_index] = signature
+        }
+        /^ - func\[[0-9]+\] sig=[0-9]+/ {
+            function_index = $0
+            sub(/^ - func\[/, "", function_index)
+            sub(/\].*$/, "", function_index)
+            signature_index = $0
+            sub(/^.* sig=/, "", signature_index)
+            sub(/[^0-9].*$/, "", signature_index)
+            function_signatures[function_index] = signature_index
+        }
+        END {
+            void_target = ENVIRON["WASM_ARTIFACT_VOID_FUNC_INDEX"]
+            i32_target = ENVIRON["WASM_ARTIFACT_I32_FUNC_INDEX"]
+            if (void_target != "") {
+                if (!(void_target in function_signatures)) exit 1
+                signature_index = function_signatures[void_target]
+                if (!(signature_index in type_signatures) ||
+                    type_signatures[signature_index] != "() -> nil") exit 1
+            }
+            if (i32_target != "") {
+                if (!(i32_target in function_signatures)) exit 1
+                signature_index = function_signatures[i32_target]
+                if (!(signature_index in type_signatures) ||
+                    type_signatures[signature_index] != "() -> i32") exit 1
+            }
+        }
+    ' wasm-objdump -x "$path"
 }
 
 # Resolve body-shape evidence emitted by the numeric wasm-objdump parsers.
 # Wrapper calls are accepted only when their targets have the exact signatures
 # that make the recognized instruction sequence a valid ABI-returning thunk.
 _wasm_resolve_objdump_abi_candidate() {
-    local details="${1:-}"
+    local path="${1:-}"
     local candidate="${2:-}"
-    local kind first second third extra version
+    local kind first second third extra version signature_status=0
     IFS=$'\t' read -r kind first second third extra <<< "$candidate"
     [ -z "$extra" ] || return 1
 
@@ -103,13 +184,16 @@ _wasm_resolve_objdump_abi_candidate() {
             ;;
         folded)
             [ -n "$first" ] && [ -n "$second" ] && [ -z "$third" ] || return 1
-            _wasm_objdump_function_has_signature "$details" "$first" "() -> nil" || return 1
+            _wasm_objdump_candidate_signatures_are_valid \
+                "$path" "$first" "" || signature_status=$?
+            [ "$signature_status" -eq 0 ] || return "$signature_status"
             version="$second"
             ;;
         delegated)
             [ -n "$first" ] && [ -n "$second" ] && [ -n "$third" ] || return 1
-            _wasm_objdump_function_has_signature "$details" "$first" "() -> nil" || return 1
-            _wasm_objdump_function_has_signature "$details" "$second" "() -> i32" || return 1
+            _wasm_objdump_candidate_signatures_are_valid \
+                "$path" "$first" "$second" || signature_status=$?
+            [ "$signature_status" -eq 0 ] || return "$signature_status"
             version="$third"
             ;;
         *)
@@ -211,9 +295,15 @@ wasm_extract_abi_version_with_binaryen() {
         rm -f "$extracted"
         return 2
     }
+    candidate="$(_wasm_extract_constant_i32_body "$extracted_function_index" <<< "$dump")" || {
+        rm -f "$extracted"
+        return 3
+    }
+    abi="$(_wasm_resolve_objdump_abi_candidate "$extracted" "$candidate")" || {
+        rm -f "$extracted"
+        return 3
+    }
     rm -f "$extracted"
-    candidate="$(_wasm_extract_constant_i32_body "$extracted_function_index" <<< "$dump")" || return 3
-    abi="$(_wasm_resolve_objdump_abi_candidate "$details" "$candidate")" || return 3
     printf '%s\n' "$abi"
 }
 
@@ -230,27 +320,14 @@ wasm_extract_abi_version() {
     # have no function names at all. Resolve the export to its numeric function
     # index first; that index is stable in `wasm-objdump` output regardless of
     # the custom name section.
-    local details details_status=0 func_index signature_index
-    details="$(wasm-objdump -x "$path" 2>/dev/null)" || details_status=$?
-    if [ "$details_status" -ne 0 ]; then
-        [ "$details_status" -eq 1 ] && return 2
-        return "$details_status"
-    fi
-    func_index="$(
-        sed -nE 's/^ - func\[([0-9]+)\].* -> "__abi_version"$/\1/p' <<< "$details"
-    )"
-    if ! [[ "$func_index" =~ ^[0-9]+$ ]]; then
-        # Status 1 is reserved for a genuinely absent optional ABI export.
-        # Once the export name exists, any malformed mapping, signature, or
-        # body is unsafe and must remain distinguishable from absence.
-        grep -Fq -- '-> "__abi_version"' <<< "$details" && return 3
-        return 1
-    fi
-    signature_index="$(
-        sed -nE "s/^ - func\\[$func_index\\] sig=([0-9]+).*/\\1/p" <<< "$details"
-    )"
-    [[ "$signature_index" =~ ^[0-9]+$ ]] || return 3
-    grep -Fqx " - type[$signature_index] () -> i32" <<< "$details" || return 3
+    local func_index details_status=0
+    func_index="$(_wasm_objdump_abi_export_function_index "$path")" || details_status=$?
+    case "$details_status" in
+        0) ;;
+        1) return 1 ;;
+        *) return "$details_status" ;;
+    esac
+    [[ "$func_index" =~ ^[0-9]+$ ]] || return 3
 
     # Accept only constants that form the direct return value. This avoids
     # mistaking an unrelated instrumentation constant in the same function for
@@ -260,7 +337,7 @@ wasm_extract_abi_version() {
     # The linker can also fold the constant implementation into that thunk,
     # producing `call; i32.const; end`. Accept that folded shape only when it is
     # the exported target; a delegating wrapper must end at a pure constant body.
-    local candidate version disassembly_status=0
+    local candidate version disassembly_status=0 resolve_status=0
     candidate="$(
         WASM_ARTIFACT_ABI_FUNC_INDEX="$func_index" \
         _wasm_stream_awk '
@@ -359,12 +436,19 @@ wasm_extract_abi_version() {
             }
         ' wasm-objdump -d "$path"
     )" || disassembly_status=$?
-    if [ "$disassembly_status" -eq 0 ] &&
-        version="$(_wasm_resolve_objdump_abi_candidate "$details" "$candidate")"; then
-        printf '%s\n' "$version"
-        return 0
+    if [ "$disassembly_status" -eq 0 ]; then
+        version="$(_wasm_resolve_objdump_abi_candidate "$path" "$candidate")" || \
+            resolve_status=$?
+        if [ "$resolve_status" -eq 0 ]; then
+            printf '%s\n' "$version"
+            return 0
+        fi
+        # A complete structural decode with a wrong body or callee signature is
+        # a semantic rejection. A later decoder failure may use the strict
+        # Binaryen fallback instead of being mislabeled as malformed ABI data.
+        [ "$resolve_status" -eq 1 ] && return 3
+        disassembly_status="$resolve_status"
     fi
-    [ "$disassembly_status" -eq 0 ] && return 3
     # A successful full disassembly that does not have one of the exact
     # constant-return shapes is a semantic rejection, not a reason to try a
     # more permissive decoder.
