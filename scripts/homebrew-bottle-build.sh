@@ -71,7 +71,7 @@ case "$ARCH" in
   *) echo "homebrew-bottle-build.sh: invalid arch: $ARCH" >&2; exit 2 ;;
 esac
 
-TAP_ROOT="$(cd "$TAP_ROOT" && pwd)"
+TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
@@ -112,6 +112,8 @@ export HOMEBREW_KANDELO_GNU_TAR
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-formula-support-inputs.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 EXPECTED_BOTTLE_ROOT_URL="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
 if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
@@ -391,7 +393,17 @@ jq -r '.build_and_test[]' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"
 validate_dependency_list "$HOST_DEPENDENCY_LIST" "host dependency list"
 homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"
 
+TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
+TAPPED_TAP_ROOT="$(cd "$TAPPED_TAP_ROOT" && pwd -P)"
+[ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ] && \
+  [ "$(git -C "$TAPPED_TAP_ROOT" rev-parse HEAD)" = "$TAP_COMMIT" ] && \
+  [ -z "$(git -C "$TAPPED_TAP_ROOT" status --short --untracked-files=all)" ] || {
+  echo "homebrew-bottle-build.sh: Homebrew did not clone the planned tap commit cleanly" >&2
+  exit 1
+}
+homebrew_prune_formula_support_tests_from_tapped_clone "$TAPPED_TAP_ROOT"
 
 printf '%s\n' "$TAP_NAME" >"$ALLOWED_TARGET_TAPS"
 DEPENDENCY_TAP_ROOTS=()
@@ -412,6 +424,8 @@ if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
       echo "homebrew-bottle-build.sh: Homebrew did not clone dependency tap $dependency_tap at its locked commit cleanly" >&2
       exit 1
     }
+    homebrew_prune_formula_support_tests_from_tapped_clone \
+      "$tapped_dependency_root"
     printf '%s\n' "$dependency_tap" >>"$ALLOWED_TARGET_TAPS"
     DEPENDENCY_TAP_ROOTS+=("$dependency_root")
   done < <(jq -er '.dependencies[] | [.tap_name, .root, .tap_commit] | @tsv' \
@@ -431,7 +445,6 @@ if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
   done <"$ALLOWED_TARGET_TAPS"
 fi
 FORMULA_REF="$TAP_NAME/$FORMULA"
-TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
 
 same_file() {
@@ -647,7 +660,6 @@ brew_install_build_bottle() {
   fi
 )
 
-TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
 TARGET_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"
 python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
   --brew-bin "$BREW_BIN" \
