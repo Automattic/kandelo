@@ -508,16 +508,17 @@ validate_support = lambda do |context|
   support_tree = Ripper.sexp(support_source)
   abort "could not parse Kandelo Formula support: #{support_path}" if support_tree.nil?
   top_level = support_tree[1]
-  unless top_level.is_a?(Array) && top_level.length == 4
-    abort "Kandelo Formula support must contain three requires and one module: #{support_path}"
-  end
   expected_requires = [
     "require \"fileutils\"\n",
     "require \"json\"\n",
     "require \"shellwords\"\n",
+    "require \"tempfile\"\n",
   ]
+  unless top_level.is_a?(Array) && top_level.length == expected_requires.length + 1
+    abort "Kandelo Formula support must contain only approved requires and one module: #{support_path}"
+  end
   support_lines = support_source.lines
-  top_level.first(3).each_with_index do |statement, index|
+  top_level.first(expected_requires.length).each_with_index do |statement, index|
     position = call_position.call(statement)
     line_number = position[0] if position.is_a?(Array)
     line = support_lines.fetch(line_number - 1) if line_number.is_a?(Integer)
@@ -525,7 +526,7 @@ validate_support = lambda do |context|
       abort "Kandelo Formula support has a noncanonical require: #{support_path}"
     end
   end
-  module_node = top_level.fetch(3)
+  module_node = top_level.fetch(expected_requires.length)
   module_name = module_node.dig(1, 1) if module_node.is_a?(Array) && module_node.first == :module
   unless module_name.is_a?(Array) && module_name.first == :@const && module_name[1] == "KandeloFormulaSupport"
     abort "Kandelo Formula support must define only KandeloFormulaSupport: #{support_path}"
