@@ -10,6 +10,7 @@ inputs = [
   "scripts/build-musl.sh",
   "scripts/build-dri-stubs.sh",
   "scripts/build-gles-stubs.sh",
+  "scripts/write-graphics-pkgconfig.sh",
   "scripts/package-build-roots.sh",
   "scripts/run-wasm-fork-instrument.sh",
 ]
