@@ -16,6 +16,85 @@ fail() {
   exit 1
 }
 
+# Emit the shared support loader contract around a fixture-specific module
+# body supplied on stdin. Keeping the versioned idempotence guard in one helper
+# lets security tests vary the module body without accidentally testing an
+# obsolete loader shape instead of their intended boundary.
+write_canonical_formula_support() {
+  if [ "$#" -ne 1 ]; then
+    fail "write_canonical_formula_support expects one output path"
+  fi
+  local output="$1"
+  {
+    cat <<'RUBY'
+require "digest"
+require "fileutils"
+require "json"
+require "pathname"
+require "shellwords"
+require "tempfile"
+
+if defined?(KandeloFormulaSupport)
+  unless KandeloFormulaSupport::KANDELO_FORMULA_SUPPORT_API_VERSION == 1 &&
+         Digest::SHA256.file(Pathname(__FILE__).realpath).hexdigest ==
+           KandeloFormulaSupport::KANDELO_TIER2_RUNTIME.fetch("support_sha256")
+    raise "loaded Kandelo Formula support copies are incompatible"
+  end
+else
+module KandeloFormulaSupport
+  KANDELO_FORMULA_SUPPORT_API_VERSION = 1
+
+  def self.kandelo_load_tier2_runtime!
+    support_path = Pathname(__FILE__).realpath
+    { "support_sha256" => Digest::SHA256.file(support_path).hexdigest }.freeze
+  end
+
+  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
+
+RUBY
+    cat
+    printf 'end\nend\n'
+  } >"$output"
+}
+
+assert_canonical_formula_support_is_load_order_independent() {
+  local fixture="$TMPDIR/canonical-formula-support-load"
+  local first="$fixture/primary/kandelo_formula_support.rb"
+  local second="$fixture/dependency/kandelo_formula_support.rb"
+  local mismatched="$fixture/mismatched/kandelo_formula_support.rb"
+  local err status
+  mkdir -p "$(dirname "$first")" "$(dirname "$second")" "$(dirname "$mismatched")"
+  write_canonical_formula_support "$first" </dev/null
+  cp "$first" "$second"
+
+  for order in "$first:$second" "$second:$first"; do
+    IFS=: read -r left right <<<"$order"
+    ruby - "$left" "$right" <<'RUBY'
+require ARGV.fetch(0)
+require ARGV.fetch(1)
+abort "support API version changed" unless
+  KandeloFormulaSupport::KANDELO_FORMULA_SUPPORT_API_VERSION == 1
+RUBY
+  done
+
+  cp "$first" "$mismatched"
+  printf '# incompatible copy\n' >>"$mismatched"
+  for order in "$first:$mismatched" "$mismatched:$first"; do
+    IFS=: read -r left right <<<"$order"
+    err="$fixture/$(basename "$(dirname "$left")")-first.err"
+    set +e
+    ruby - "$left" "$right" > /dev/null 2>"$err" <<'RUBY'
+require ARGV.fetch(0)
+require ARGV.fetch(1)
+RUBY
+    status="$?"
+    set -e
+    [ "$status" -ne 0 ] || fail "canonical support accepted mismatched bytes: $order"
+    grep -F 'loaded Kandelo Formula support copies are incompatible' "$err" >/dev/null ||
+      fail "canonical support did not explain mismatched bytes: $order"
+  done
+}
+
 assert_local_root_spill_uses_caller_work_root() {
   local fixture="$TMPDIR/local-root-spill-caller-work"
   local mock_bin="$fixture/mock-bin"
@@ -313,7 +392,7 @@ homebrew_patched_launcher_stage_dependency_plan() {
 
 homebrew_patched_launcher_stage_tier2_attestation() {
   jq -e '
-    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_sha256", "tap", "tier2_bridge"] and
+    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
     if .tier2_bridge == null then true else
       (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"])
     end
@@ -337,10 +416,13 @@ homebrew_patched_launcher_isolate() {
 }
 
 homebrew_patched_launcher_run_native() {
-  HOME="$HOMEBREW_PATCHED_NATIVE_HOME" FAKE_HOMEBREW_REALM=native \
-    FAKE_NATIVE_PREFIX="$HOMEBREW_PATCHED_NATIVE_PREFIX" \
-    HOMEBREW_RELOCATE_BUILD_PREFIX=1 \
-    "$HOMEBREW_PATCHED_BREW_BIN" "$@"
+  (
+    unset HOMEBREW_KANDELO_PRIMARY_TAP_ROOT
+    HOME="$HOMEBREW_PATCHED_NATIVE_HOME" FAKE_HOMEBREW_REALM=native \
+      FAKE_NATIVE_PREFIX="$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+      HOMEBREW_RELOCATE_BUILD_PREFIX=1 \
+      "$HOMEBREW_PATCHED_BREW_BIN" "$@"
+  )
 }
 
 homebrew_patched_launcher_seal_native_prefix() {
@@ -3259,27 +3341,14 @@ assert_bottle_build_installs_test_dependencies() {
   mkdir -p "$tap/Kandelo/formula_support/test"
   printf 'must not reach Formula execution\n' \
     >"$tap/Kandelo/formula_support/test/prune-sentinel"
-  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
-require "digest"
-require "fileutils"
-require "json"
-require "pathname"
-require "shellwords"
-require "tempfile"
-
-module KandeloFormulaSupport
-  def self.kandelo_load_tier2_runtime!
-    support_path = Pathname(__FILE__).realpath
-    support_path.freeze
-  end
-
-  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
-
+  write_canonical_formula_support \
+    "$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
   def kandelo_build_package(package: nil, script_env: {})
     [package, script_env]
   end
-end
 EOF
+  printf 'export const reviewed = true;\n' \
+    >"$tap/Kandelo/formula_support/run-browser-wasm.ts"
   cat >"$tap/Formula/hello.rb" <<'EOF'
 require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
 
@@ -3335,9 +3404,19 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_BREW_LOG"
 printf '%s|%s\n' "${FAKE_HOMEBREW_REALM:-target}" "$*" >>"$FAKE_REALM_COMMAND_LOG"
 if [ "${FAKE_HOMEBREW_REALM:-target}" = native ]; then
-  [ "${HOMEBREW_RELOCATE_BUILD_PREFIX:-}" = 1 ] || exit 52
+  [ "${HOMEBREW_RELOCATE_BUILD_PREFIX:-}" = 1 ] || {
+    echo "fake brew: native realm lacks relocation authority" >&2
+    exit 52
+  }
+  [ -z "${HOMEBREW_KANDELO_PRIMARY_TAP_ROOT+x}" ] || {
+    echo "fake brew: primary tap authority leaked into the native realm" >&2
+    exit 55
+  }
 else
-  [ -z "${HOMEBREW_RELOCATE_BUILD_PREFIX+x}" ] || exit 53
+  [ -z "${HOMEBREW_RELOCATE_BUILD_PREFIX+x}" ] || {
+    echo "fake brew: native relocation authority leaked into the target realm" >&2
+    exit 53
+  }
 fi
 case "${1:-}" in
   --prefix)
@@ -3361,8 +3440,19 @@ case "${1:-}" in
       : >"$FAKE_TIER2_REGISTRY_DRIFT_MARKER"
     fi
     ;;
-  trust) ;;
+  trust)
+    if [ "${FAKE_TAPPED_SUPPORT_DRIFT:-}" = 1 ] &&
+       [ ! -e "${FAKE_TAPPED_SUPPORT_DRIFT_MARKER:?}" ]; then
+      printf '# tapped support drift\n' >>"${FAKE_TAPPED_SUPPORT_PATH:?}"
+      : >"$FAKE_TAPPED_SUPPORT_DRIFT_MARKER"
+    fi
+    ;;
   deps)
+    expected_primary_tap_root="$(cd "$FAKE_TAP_ROOT" && pwd -P)"
+    if [ "${HOMEBREW_KANDELO_PRIMARY_TAP_ROOT:-}" != "$expected_primary_tap_root" ]; then
+      echo "fake brew: target Formula did not receive the canonical primary tap root" >&2
+      exit 56
+    fi
     [ ! -e "$FAKE_TAP_ROOT/Kandelo/formula_support/test" ] || exit 54
     case "$*" in
       'deps --topological --full-name --formula kandelo-dev/tap-core/hello')
@@ -3581,12 +3671,13 @@ EOF
       --out "$out" \
       --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
       >/dev/null 2>"$runner_err"; then
-    fail "test dependency fixture did not complete: $(cat "$runner_err")"
+    fail "test dependency fixture did not complete: $(cat "$runner_err"); " \
+      "last Brew commands: $(tail -n 12 "$realm_log" | tr '\n' ';')"
   fi
   [ "$(wc -l <"$tier2_preflight_log" | tr -d '[:space:]')" = 2 ] ||
     fail "bottle build did not run Tier-2 preflight before and after tap materialization"
   jq -e '
-    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_sha256", "tap", "tier2_bridge"] and
+    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
     .schema == 1 and .arch == "wasm32" and
     .tap == "kandelo-dev/tap-core" and .formula == "hello" and
     (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
@@ -3650,6 +3741,57 @@ EOF
   grep -F 'Formula/support/registry execution inputs changed before isolation' \
     "$tier2_drift_err" >/dev/null ||
     fail "bottle build did not explain Tier-2 registry drift"
+
+  local support_drift_out="$TMPDIR/bottle-support-drift-out"
+  local support_drift_prefix="$TMPDIR/bottle-support-drift-prefix"
+  local support_drift_err="$TMPDIR/bottle-support-drift.err"
+  local support_drift_lifecycle="$TMPDIR/bottle-support-drift-lifecycle.log"
+  local support_drift_marker="$TMPDIR/bottle-support-drift.marker"
+  local support_drift_preflight="$TMPDIR/bottle-support-drift-preflight.log"
+  local support_drift_native_capture="$TMPDIR/bottle-support-drift-native-prefix.txt"
+  local support_drift_status
+  mkdir -p "$support_drift_prefix"
+  local tapped_support_drift="$TMPDIR/bottle-support-drift-tapped"
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped_support_drift" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
+  set +e
+  PATH="$fake_bin:$PATH" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
+    FAKE_BREW_LOG="$log" \
+    FAKE_REALM_COMMAND_LOG="$realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$support_drift_lifecycle" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$support_drift_native_capture" \
+    FAKE_BUILD_TIME=1700000000 \
+    FAKE_BREW_PREFIX="$support_drift_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tapped_support_drift" \
+    FAKE_TIER2_PREFLIGHT_LOG="$support_drift_preflight" \
+    FAKE_TAPPED_SUPPORT_DRIFT=1 \
+    FAKE_TAPPED_SUPPORT_DRIFT_MARKER="$support_drift_marker" \
+    FAKE_TAPPED_SUPPORT_PATH="$tapped_support_drift/Kandelo/formula_support/run-browser-wasm.ts" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --arch wasm32 \
+      --out "$support_drift_out" \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$support_drift_err"
+  support_drift_status="$?"
+  set -e
+  [ "$support_drift_status" -eq 1 ] ||
+    fail "bottle build accepted tapped Formula-support drift: $support_drift_status"
+  [ -e "$support_drift_marker" ] ||
+    fail "tapped Formula-support drift fixture did not mutate the validated clone"
+  [ "$(wc -l <"$support_drift_preflight" | tr -d '[:space:]')" = 1 ] ||
+    fail "tapped Formula-support drift reached the execution preflight"
+  grep -F 'tapped Formula/support bridge plan differs from the reviewed source' \
+    "$support_drift_err" >/dev/null ||
+    fail "bottle build did not explain tapped Formula-support drift"
   native_prefix="$(cat "$native_prefix_capture")"
   case "$native_prefix" in
     /tmp/k.??????/p|/private/tmp/k.??????/p) ;;
@@ -5307,13 +5449,8 @@ RUBY
   expect_static_closure_failure foreign-include "an alternate class-body support module"
 
   mkdir -p "$tap/Kandelo/formula_support"
-  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
-require "fileutils"
-require "json"
-require "shellwords"
-require "tempfile"
-
-module KandeloFormulaSupport
+  write_canonical_formula_support \
+    "$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
   KANDELO_TAP_FORMULA_PREFIX = "kandelo-dev/tap-core/"
 
   def formula_opt_prefix(name)
@@ -5323,7 +5460,6 @@ module KandeloFormulaSupport
   def kandelo_fixture
     "fixture"
   end
-end
 RUBY
   cat >"$tap/Formula/support-ok.rb" <<'RUBY'
 require "digest"
@@ -6373,13 +6509,8 @@ class Escape < Formula
   end
 end
 EOF
-  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
-require "fileutils"
-require "json"
-require "shellwords"
-require "tempfile"
-
-module KandeloFormulaSupport
+  write_canonical_formula_support \
+    "$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
   def kandelo_runner_command
     runner = Pathname(__dir__)/"run-network-wasm.ts"
     command = +""
@@ -6393,7 +6524,6 @@ module KandeloFormulaSupport
       "node", runner, "/tmp/root"
     ].map { |arg| Shellwords.escape(arg.to_s) }.join(" ")
   end
-end
 EOF
   printf 'export const reviewed = true;\n' \
     >"$tap/Kandelo/formula_support/run-network-wasm.ts"
@@ -6542,18 +6672,11 @@ EOF
       reassigned) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    runner = Pathname("/tmp/other.rb")' ;;
       duplicate) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    runner = Pathname(__dir__)/"run-network-wasm.ts"' ;;
     esac
-    cat >"$support_fixture" <<EOF
-require "fileutils"
-require "json"
-require "shellwords"
-require "tempfile"
-
-module KandeloFormulaSupport
+    write_canonical_formula_support "$support_fixture" <<EOF
   def kandelo_escape
     runner = $support_expression
     runner.to_s
   end
-end
 EOF
     if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
       "$tap" kandelo-dev/tap-core hello --declarations-json \
@@ -6603,17 +6726,10 @@ EOF
         support_method_body=$'    runner = Pathname(__dir__)/"run-network-wasm.ts"\n    command = +""\n    root = "/tmp/root"\n    outside = begin\n      command << "#{Shellwords.escape(runner.to_s)} #{Shellwords.escape(root)} "\n    end'
         ;;
     esac
-    cat >"$support_fixture" <<EOF
-require "fileutils"
-require "json"
-require "shellwords"
-require "tempfile"
-
-module KandeloFormulaSupport
+    write_canonical_formula_support "$support_fixture" <<EOF
   def kandelo_escape
 $support_method_body
   end
-end
 EOF
     if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
       "$tap" kandelo-dev/tap-core hello --declarations-json \
@@ -6634,17 +6750,11 @@ EOF
   git -C "$tap" show "$base:Kandelo/formula_support/kandelo_formula_support.rb" \
     >"$support_fixture"
 
-  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
-require "fileutils"
-require "json"
-require "shellwords"
-require "tempfile"
-
-module KandeloFormulaSupport
+  write_canonical_formula_support \
+    "$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
   def kandelo_escape
     require_relative "../other"
   end
-end
 EOF
   cat >"$tap/Formula/escape.rb" <<'EOF'
 require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
@@ -6801,6 +6911,7 @@ EOF
     fail "under-lock publisher does not revalidate the Formula source closure"
 }
 
+assert_canonical_formula_support_is_load_order_independent
 make_formula_runner_fixture
 assert_formula_support_test_pruning_is_bounded
 assert_local_root_spill_uses_caller_work_root
