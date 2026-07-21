@@ -26,9 +26,9 @@ Kandelo/
 
 This template currently contains:
 
-- `Formula/hello.rb`, the first Kandelo Homebrew formula scaffold;
+- `Formula/what.rb`, a non-live Formula source-closure fixture;
 - JSON Schemas for the Kandelo sidecar metadata contract;
-- `hello` example metadata for schema and validator development.
+- `what` example metadata for schema and validator development.
 - an `xtask homebrew-sidecars` generator that converts produced bottle bytes
   and workflow evidence into the expected sidecar files.
 - a shared host `planHomebrewVfs()` metadata planner for Node and browser VFS
@@ -36,7 +36,7 @@ This template currently contains:
 - a Node-side `build-homebrew-vfs-image.ts` builder that verifies bottle bytes,
   pours/link-manifests them into a Homebrew prefix, and emits precomposed VFS
   images plus build reports.
-- a browser-gallery gate for wasm32 `hello` that boots the published
+- a browser-gallery gate for wasm32 `file-formula` that boots the published
   Homebrew-derived VFS image before marking it browser-compatible.
 
 The reusable trusted publisher lives in the main Kandelo repository at
@@ -75,7 +75,7 @@ local bytes, while a write verifier anonymously reads back the exact GHCR
 digest and verifies its SHA-256 and byte count before using it. The verifier
 fetches only the declared base commands and rootfs as Kandelo platform
 prerequisites; the migrated package payload comes from the Homebrew bottle, not
-the package registry archive. The Hello gallery smoke separately prepares the
+the package registry archive. The file-formula gallery smoke separately prepares the
 supported interactive browser graph. The workflow retains browser gallery
 output as run-scoped diagnostics and does not publish sidecars or gallery
 assets to a GitHub Release.

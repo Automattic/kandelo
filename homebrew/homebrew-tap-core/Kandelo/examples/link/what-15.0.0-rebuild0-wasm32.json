@@ -1,29 +1,29 @@
 {
   "schema": 1,
-  "package": "hello",
-  "version": "2.12.1",
+  "package": "what",
+  "version": "15.0.0",
   "arch": "wasm32",
   "kandelo_abi": 15,
   "prefix": "/home/linuxbrew/.linuxbrew",
   "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-  "keg": "/home/linuxbrew/.linuxbrew/Cellar/hello/2.12.1",
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/what/15.0.0",
   "bottle": {
-    "url": "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm32_kandelo.bottle.tar.gz",
+    "url": "https://example.invalid/kandelo-homebrew/what-15.0.0-rebuild0-wasm32_kandelo.bottle.tar.gz",
     "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "bytes": 12345,
     "cache_key_sha": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "payload_root": "hello/2.12.1"
+    "payload_root": "what/15.0.0"
   },
   "links": [
     {
       "type": "symlink",
-      "source": "Cellar/hello/2.12.1/bin/hello",
-      "target": "bin/hello"
+      "source": "Cellar/what/15.0.0/bin/what",
+      "target": "bin/what"
     }
   ],
   "receipts": [
-    "Cellar/hello/2.12.1/.brew/hello.rb",
-    "Cellar/hello/2.12.1/INSTALL_RECEIPT.json"
+    "Cellar/what/15.0.0/.brew/what.rb",
+    "Cellar/what/15.0.0/INSTALL_RECEIPT.json"
   ],
   "env": {
     "PATH_prepend": ["bin"]

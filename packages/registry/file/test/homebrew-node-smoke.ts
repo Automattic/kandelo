@@ -1,8 +1,8 @@
 /**
- * Node-side smoke coverage for the published Kandelo Homebrew hello bottle.
+ * Node-side smoke coverage for the published Kandelo Homebrew file-formula bottle.
  *
  * Run:
- *   npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
+ *   npx tsx packages/registry/file/test/homebrew-node-smoke.ts \
  *     --result-dir test-runs/kd-8ho.9/manual \
  *     --tap-repository kandelo-dev/homebrew-tap-core
  */
@@ -32,7 +32,7 @@ import { saveImage } from "../../../../images/vfs/scripts/vfs-image-helpers";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../../..");
 const DEFAULT_TAP_REPOSITORY = "kandelo-dev/homebrew-tap-core";
-const HELLO_PATH = "/home/linuxbrew/.linuxbrew/bin/hello";
+const FILE_PATH = "/home/linuxbrew/.linuxbrew/bin/file";
 
 type OutcomeStatus = "pass" | "fail" | "skip";
 
@@ -91,13 +91,13 @@ async function main(): Promise<void> {
   });
 
   await runCase(outcomes, options, tapRoot, tapCommit, "homebrew_vfs_build_from_published_sidecars", async () => {
-    builtVfs = await buildPublishedHelloVfs(metadata, tapRoot, options);
+    builtVfs = await buildPublishedFileVfs(metadata, tapRoot, options);
     return `report=${builtVfs.reportPath}`;
   });
 
-  await runCase(outcomes, options, tapRoot, tapCommit, "hello_version_on_node_from_homebrew_vfs", async () => {
+  await runCase(outcomes, options, tapRoot, tapCommit, "file_version_on_node_from_homebrew_vfs", async () => {
     if (!builtVfs) throw new SkipCase("requires successful homebrew_vfs_build_from_published_sidecars");
-    return await runHelloVersion(builtVfs, options);
+    return await runFileVersion(builtVfs, options);
   });
 
   await runCase(outcomes, options, tapRoot, tapCommit, "negative_abi_mismatch_rejected", async () => {
@@ -164,13 +164,13 @@ async function runCase(
   writeOutcomeLists(options.resultDir, outcomes);
 }
 
-async function buildPublishedHelloVfs(
+async function buildPublishedFileVfs(
   metadata: HomebrewTapMetadata,
   tapRoot: string,
   options: CliOptions,
 ): Promise<BuiltVfs> {
   const plan = await planHomebrewVfs(metadata, {
-    packages: ["hello"],
+    packages: ["file-formula"],
     arch: "wasm32",
     runtime: "node",
     loadLinkManifest: (relPath) => readJsonFile(join(tapRoot, relPath)),
@@ -178,18 +178,18 @@ async function buildPublishedHelloVfs(
   const fs = createFs(options.maxBytes);
   const result = await buildHomebrewVfs(plan, {
     fs,
-    createdBy: "packages/registry/hello/test/homebrew-node-smoke.ts",
+    createdBy: "packages/registry/file/test/homebrew-node-smoke.ts",
     loadBottleBytes: (pkg) => loadBottleBytes(pkg, options),
   });
 
   const reportPath = join(options.resultDir, "homebrew-vfs-report.json");
   writeFileSync(reportPath, `${JSON.stringify(result.report, null, 2)}\n`);
-  const imagePath = join(options.resultDir, "hello-homebrew.vfs.zst");
+  const imagePath = join(options.resultDir, "file-formula-homebrew.vfs.zst");
   const imageBytes = await saveImage(fs, imagePath, {
     metadata: {
       version: 1,
       kernelAbi: plan.kandeloAbi,
-      createdBy: "packages/registry/hello/test/homebrew-node-smoke.ts",
+      createdBy: "packages/registry/file/test/homebrew-node-smoke.ts",
       homebrew: {
         tapRepository: plan.tapRepository,
         tapCommit: plan.tapCommit,
@@ -207,8 +207,8 @@ async function buildPublishedHelloVfs(
   return { fs, imageBytes, reportPath };
 }
 
-async function runHelloVersion(built: BuiltVfs, options: CliOptions): Promise<string> {
-  const helloBytes = readVfsFile(built.fs, HELLO_PATH);
+async function runFileVersion(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const fileBytes = readVfsFile(built.fs, FILE_PATH);
   let stdout = "";
   let stderr = "";
   const host = new NodeKernelHost({
@@ -220,7 +220,7 @@ async function runHelloVersion(built: BuiltVfs, options: CliOptions): Promise<st
   await host.init();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const exitPromise = host.spawn(toArrayBuffer(helloBytes), ["hello", "--version"], {
+    const exitPromise = host.spawn(toArrayBuffer(fileBytes), ["file", "--version"], {
       env: [
         "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
         "HOME=/tmp",
@@ -231,18 +231,18 @@ async function runHelloVersion(built: BuiltVfs, options: CliOptions): Promise<st
     });
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeout = setTimeout(
-        () => reject(new Error(`hello --version timed out after ${options.timeoutMs}ms`)),
+        () => reject(new Error(`file --version timed out after ${options.timeoutMs}ms`)),
         options.timeoutMs,
       );
     });
     const exitCode = await Promise.race([exitPromise, timeoutPromise]);
     if (exitCode !== 0) {
-      throw new Error(`hello --version exited ${exitCode}; stderr=${JSON.stringify(stderr)}`);
+      throw new Error(`file --version exited ${exitCode}; stderr=${JSON.stringify(stderr)}`);
     }
-    if (!stdout.includes("hello (GNU Hello) 2.12.3")) {
-      throw new Error(`unexpected hello --version stdout: ${JSON.stringify(stdout)}`);
+    if (!/^file(?:\.wasm)?-5\.45$/m.test(stdout)) {
+      throw new Error(`unexpected file --version stdout: ${JSON.stringify(stdout)}`);
     }
-    return stdout.trim().split("\n")[0] ?? "hello --version passed";
+    return stdout.trim().split("\n")[0] ?? "file --version passed";
   } finally {
     if (timeout) clearTimeout(timeout);
     await host.destroy().catch(() => {});
@@ -264,7 +264,7 @@ async function assertAbiMismatchRejected(
 
   await expectReject(
     () => planHomebrewVfs(badMetadata, {
-      packages: ["hello"],
+      packages: ["file-formula"],
       arch: "wasm32",
       runtime: "node",
       loadLinkManifest: (relPath) => readJsonFile(join(tapRoot, relPath)),
@@ -278,17 +278,17 @@ async function assertMissingBottleRejected(
   tapRoot: string,
   options: CliOptions,
 ): Promise<void> {
-  const missingUrl = pathToFileURL(join(options.resultDir, "missing-hello.bottle.tar.gz")).href;
+  const missingUrl = pathToFileURL(join(options.resultDir, "missing-file-formula.bottle.tar.gz")).href;
   const badMetadata = cloneJson(metadata) as HomebrewTapMetadata;
   for (const pkg of badMetadata.packages) {
-    if (pkg.name !== "hello") continue;
+    if (pkg.name !== "file-formula") continue;
     for (const bottle of pkg.bottles) {
       if (bottle.arch === "wasm32") bottle.url = missingUrl;
     }
   }
 
   const plan = await planHomebrewVfs(badMetadata, {
-    packages: ["hello"],
+    packages: ["file-formula"],
     arch: "wasm32",
     runtime: "node",
     loadLinkManifest: (relPath) => {
@@ -302,10 +302,10 @@ async function assertMissingBottleRejected(
   await expectReject(
     () => buildHomebrewVfs(plan, {
       fs,
-      createdBy: "packages/registry/hello/test/homebrew-node-smoke.ts negative_missing_bottle_rejected",
+      createdBy: "packages/registry/file/test/homebrew-node-smoke.ts negative_missing_bottle_rejected",
       loadBottleBytes: (pkg) => loadBottleBytes(pkg, options),
     }),
-    "missing-hello.bottle.tar.gz",
+    "missing-file-formula.bottle.tar.gz",
   );
 }
 
@@ -388,7 +388,7 @@ function parseArgs(args: string[]): CliOptions {
   const defaultResultDir = join(
     repoRoot,
     "test-runs",
-    "hello-homebrew-node-smoke",
+    "file-formula-homebrew-node-smoke",
     new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "Z"),
   );
   const options: CliOptions = {
@@ -467,7 +467,7 @@ function requireValue(args: string[], index: number, flag: string): string {
 
 function usage(code: number, message?: string): never {
   if (message) console.error(`homebrew-node-smoke: ${message}`);
-  console.error(`usage: npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \\
+  console.error(`usage: npx tsx packages/registry/file/test/homebrew-node-smoke.ts \\
   [--result-dir <dir>] [--tap-root <dir> | --tap-repository <owner/repo>] \\
   [--bottle-cache <dir>] [--timeout-ms <ms>] [--max-bytes <bytes|MiB>]`);
   process.exit(code);
@@ -515,7 +515,7 @@ function writeSummary(
 ): void {
   const counts = countOutcomes(data.outcomes);
   const summary = {
-    suite: "hello Homebrew Node VFS smoke",
+    suite: "file-formula Homebrew Node VFS smoke",
     bead_id: options.beadId,
     started_at: data.startedAt.toISOString(),
     completed_at: data.completedAt.toISOString(),
@@ -532,12 +532,12 @@ function writeSummary(
       failures: join(options.resultDir, "failures.json"),
       current_run: join(options.resultDir, "current-run.json"),
       vfs_report: join(options.resultDir, "homebrew-vfs-report.json"),
-      vfs_image: join(options.resultDir, "hello-homebrew.vfs.zst"),
+      vfs_image: join(options.resultDir, "file-formula-homebrew.vfs.zst"),
     },
   };
   writeFileSync(join(options.resultDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
   writeFileSync(join(options.resultDir, "summary.md"), [
-    "# hello Homebrew Node VFS smoke",
+    "# file-formula Homebrew Node VFS smoke",
     "",
     `Result dir: \`${options.resultDir}\``,
     `Tap commit: \`${data.tapCommit}\``,
@@ -565,7 +565,7 @@ function writeCurrentRun(
 ): void {
   const counts = countOutcomes(data.outcomes);
   const currentRun = {
-    suite: "hello-homebrew-node-smoke",
+    suite: "file-formula-homebrew-node-smoke",
     bead_id: options.beadId,
     worktree: repoRoot,
     result_dir: options.resultDir,

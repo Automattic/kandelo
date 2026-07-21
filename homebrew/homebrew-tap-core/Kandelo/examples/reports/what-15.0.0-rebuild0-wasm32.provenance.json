@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "subject": {
-    "package": "hello",
-    "version": "2.12.1",
+    "package": "what",
+    "version": "15.0.0",
     "arch": "wasm32",
     "bottle_rebuild": 0,
     "kandelo_abi": 15
@@ -14,11 +14,11 @@
     "tap_commit": "1111111111111111111111111111111111111111"
   },
   "formula": {
-    "path": "Formula/hello.rb",
+    "path": "Formula/what.rb",
     "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "bottle": {
-    "url": "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm32_kandelo.bottle.tar.gz",
+    "url": "https://example.invalid/kandelo-homebrew/what-15.0.0-rebuild0-wasm32_kandelo.bottle.tar.gz",
     "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "bytes": 12345,
     "cache_key_sha": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -42,9 +42,9 @@
         "status": "success",
         "passed": [
           "metadata.json",
-          "formula/hello.json",
-          "link/hello-2.12.1-rebuild0-wasm32.json",
-          "reports/hello-2.12.1-rebuild0-wasm32.provenance.json"
+          "formula/what.json",
+          "link/what-15.0.0-rebuild0-wasm32.json",
+          "reports/what-15.0.0-rebuild0-wasm32.provenance.json"
         ],
         "failed": [],
         "skipped": []
@@ -54,8 +54,8 @@
         "status": "skipped",
         "passed": [],
         "failed": [],
-        "skipped": ["fixture has no live Formula/hello.rb"],
-        "skip_reason": "Scaffold example only; formula implementation belongs to kd-8ho.5."
+        "skipped": ["schema fixture does not execute Formula/what.rb"],
+        "skip_reason": "Schema validation does not audit or build Formula source."
       },
       {
         "name": "bottle_build",
@@ -63,7 +63,7 @@
         "passed": [],
         "failed": [],
         "skipped": ["fixture does not build or upload bottle bytes"],
-        "skip_reason": "Trusted bottle publishing belongs to kd-8ho.3 and kd-8ho.5."
+        "skip_reason": "The checked-in schema fixture does not publish artifacts."
       },
       {
         "name": "node_smoke",
@@ -71,7 +71,7 @@
         "passed": [],
         "failed": [],
         "skipped": ["fixture does not boot a VFS image"],
-        "skip_reason": "Node runtime validation belongs to kd-8ho.9."
+        "skip_reason": "Runtime validation uses published tap artifacts, not schema fixtures."
       },
       {
         "name": "browser_smoke",
@@ -79,7 +79,7 @@
         "passed": [],
         "failed": [],
         "skipped": ["browser_compatible is false in this fixture"],
-        "skip_reason": "Browser validation belongs to kd-8ho.10."
+        "skip_reason": "Browser validation uses published tap artifacts, not schema fixtures."
       }
     ]
   },
@@ -89,15 +89,15 @@
       "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
     },
     "formula_json": {
-      "path": "Kandelo/formula/hello.json",
+      "path": "Kandelo/formula/what.json",
       "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
     },
     "link_manifest_json": {
-      "path": "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json",
+      "path": "Kandelo/link/what-15.0.0-rebuild0-wasm32.json",
       "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
     },
     "provenance_json": {
-      "path": "Kandelo/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
+      "path": "Kandelo/reports/what-15.0.0-rebuild0-wasm32.provenance.json",
       "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
     }
   }

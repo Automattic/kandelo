@@ -40,7 +40,7 @@ execute installed shell scripts on Kandelo. These unqualified host-resolver
 paths intentionally remain wasm32 when the bottle matrix target is wasm64.
 Generic Homebrew runtime verification fetches only that base command set and
 the declared rootfs needed to exercise a Formula or dependency-bearing VFS.
-The Hello gallery smoke separately prepares Kandelo's supported interactive
+The file-formula gallery smoke separately prepares Kandelo's supported interactive
 browser graph. These base tools, kernel, host-runtime, and VFS artifacts are
 platform prerequisites. The
 migrated package being verified is poured from the Homebrew bottle: the local

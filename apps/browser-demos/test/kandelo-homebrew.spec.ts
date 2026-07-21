@@ -107,7 +107,7 @@ async function writeHomebrewGalleryFixture(
     entries: entries.map((entry) => ({
       id: entry.id,
       title: entry.title,
-      description: "GNU hello poured from a Homebrew bottle.",
+      description: "A sample package poured from a Homebrew bottle.",
       packages: [{ name: packageNameForEntry(entry), version: "2.12.3" }],
     })),
   }), "utf8");
@@ -129,7 +129,7 @@ browser_compatible = ${entry.browserCompatible ? "true" : "false"}
 }
 
 function packageNameForEntry(entry: FixtureEntry): string {
-  return `hello-homebrew-${entry.id}`;
+  return `sample-homebrew-${entry.id}`;
 }
 
 async function writeHomebrewDefaultShellFixture(): Promise<string> {
@@ -190,42 +190,45 @@ test("strict Homebrew publisher smoke reads Vite shadow-root errors", async ({ p
 
 test("software gallery hides wasm32 entries without browser-compatible metadata", async ({ page }) => {
   const manifestPath = await writeHomebrewGalleryFixture("nonbrowser", [
-    { id: "hello-vfs", title: "GNU hello Homebrew VFS", browserCompatible: false },
-    { id: "hello-sentinel", title: "GNU hello Browser Sentinel", browserCompatible: true },
+    { id: "sample-vfs", title: "Sample Homebrew VFS", browserCompatible: false },
+    { id: "sample-sentinel", title: "Sample Browser Sentinel", browserCompatible: true },
   ]);
   await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
   await openNewMachineLauncher(page);
 
-  await expect(galleryRowByTitle(page, /^GNU hello Browser Sentinel$/)).toBeVisible({
+  await expect(galleryRowByTitle(page, /^Sample Browser Sentinel$/)).toBeVisible({
     timeout: 90_000,
   });
-  await expect(galleryRowByTitle(page, /^GNU hello Homebrew VFS$/)).toHaveCount(0);
+  await expect(galleryRowByTitle(page, /^Sample Homebrew VFS$/)).toHaveCount(0);
 });
 
 test("browser-compatible gallery archive launch failures are visible", async ({ page }) => {
   const manifestPath = await writeHomebrewGalleryFixture("browser", [
-    { id: "hello-vfs", title: "GNU hello Homebrew VFS", browserCompatible: true },
+    { id: "sample-vfs", title: "Sample Homebrew VFS", browserCompatible: true },
   ]);
   await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
   await openNewMachineLauncher(page);
 
-  const row = galleryRowByTitle(page, /^GNU hello Homebrew VFS$/);
+  const row = galleryRowByTitle(page, /^Sample Homebrew VFS$/);
   await expect(row).toBeVisible({ timeout: 90_000 });
   await row.getByRole("button", { name: "Launch" }).click();
 
-  await expect(page.getByText("Failed to boot GNU hello Homebrew VFS")).toBeVisible({
+  await expect(page.getByText("Failed to boot Sample Homebrew VFS")).toBeVisible({
     timeout: 120_000,
   });
   await expect(page.getByText(/404|artifact|archive/i).first()).toBeVisible();
   await expect(page.getByText(/third-party gallery entry/i)).toBeVisible();
 });
 
-test("Homebrew hello VFS image boots in browser and runs hello --version", async ({ page }) => {
-  const vfsUrl = process.env.KANDELO_BROWSER_HELLO_VFS_URL;
+test("Homebrew file-formula VFS image boots in browser and runs file --version", async ({ page }) => {
+  const vfsUrl = process.env.KANDELO_BROWSER_FILE_FORMULA_VFS_URL;
   if (!vfsUrl && process.env.KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE === "1") {
-    throw new Error("KANDELO_BROWSER_HELLO_VFS_URL is required for the strict publisher smoke");
+    throw new Error("KANDELO_BROWSER_FILE_FORMULA_VFS_URL is required for the strict publisher smoke");
   }
-  test.skip(!vfsUrl, "KANDELO_BROWSER_HELLO_VFS_URL is required for the published Homebrew hello smoke");
+  test.skip(
+    !vfsUrl,
+    "KANDELO_BROWSER_FILE_FORMULA_VFS_URL is required for the published Homebrew file-formula smoke",
+  );
   test.setTimeout(360_000);
 
   await gotoOrSkip(page, `/?vfs=${encodeURIComponent(vfsUrl!)}`, false);
@@ -234,8 +237,8 @@ test("Homebrew hello VFS image boots in browser and runs hello --version", async
 
   await runTerminalCommand(
     page,
-    "/home/linuxbrew/.linuxbrew/bin/hello --version",
-    /hello \(GNU Hello\) 2\.12\.3/,
+    "/home/linuxbrew/.linuxbrew/bin/file --version",
+    /^file(?:\.wasm)?-5\.45$/m,
     180_000,
   );
 });
