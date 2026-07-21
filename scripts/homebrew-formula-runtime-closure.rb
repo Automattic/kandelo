@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "pathname"
 require "ripper"
@@ -8,7 +9,7 @@ require "set"
 
 unless ARGV.length.between?(3, 4)
   abort "usage: homebrew-formula-runtime-closure.rb <tap-root> <owner/tap> <formula> " \
-        "[wasm32|wasm64|--direct|--declarations-json|--host-dependencies-json|--bottle-identity-json]"
+        "[wasm32|wasm64|--direct|--declarations-json|--host-dependencies-json|--bottle-identity-json|--tier2-bridge-json]"
 end
 
 MAX_FORMULA_BYTES = 1_048_576
@@ -29,7 +30,21 @@ ALLOWED_PUBLIC_INSTANCE_METHODS = Set[
 ].freeze
 FORBIDDEN_PRIVATE_INSTANCE_METHODS = Set[
   "dependencies", "initialize", "initialize_clone", "initialize_copy", "initialize_dup",
-  "recursive_dependencies", "requirements",
+  "kandelo_build_package", "name", "recursive_dependencies", "requirements", "version",
+].freeze
+TIER2_BRIDGE_METHOD = "kandelo_build_package"
+TIER2_BRIDGE_COMPONENT = /\A[a-z0-9][a-z0-9._-]{0,254}\z/
+TIER2_BRIDGE_SCRIPT = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,254}\z/
+TIER2_BRIDGE_VERSION = /\A[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}\z/
+TIER2_BRIDGE_SOURCE_SHA256 = /\A[0-9a-f]{64}\z/
+TIER2_RESERVED_ENV = Set[
+  "WASM_POSIX_DEP_NAME",
+  "WASM_POSIX_DEP_OUT_DIR",
+  "WASM_POSIX_DEP_SOURCE_SHA256",
+  "WASM_POSIX_DEP_SOURCE_URL",
+  "WASM_POSIX_DEP_TARGET_ARCH",
+  "WASM_POSIX_DEP_VERSION",
+  "WASM_POSIX_DEP_WORK_DIR",
 ].freeze
 FORBIDDEN_DEPENDENCY_IDENTIFIERS = Set[
   "Dependency", "Requirement", "__send__", "class_eval", "const_get", "define_method",
@@ -55,12 +70,13 @@ EXCLUDED_TAG_SETS = Set[
 tap_input, requested_tap_name, target, output_mode = ARGV
 abort "invalid tap name: #{requested_tap_name}" unless TAP_NAME.match?(requested_tap_name)
 abort "invalid target Formula: #{target}" unless FORMULA_NAME.match?(target)
-abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[wasm32 wasm64 --direct --declarations-json --host-dependencies-json --bottle-identity-json].include?(output_mode)
+abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[wasm32 wasm64 --direct --declarations-json --host-dependencies-json --bottle-identity-json --tier2-bridge-json].include?(output_mode)
 direct_only = output_mode == "--direct"
 declarations_only = output_mode == "--declarations-json"
 host_dependencies_only = output_mode == "--host-dependencies-json"
 bottle_identity_only = output_mode == "--bottle-identity-json"
-output_arch = direct_only || declarations_only || host_dependencies_only || bottle_identity_only ? nil : output_mode
+tier2_bridge_only = output_mode == "--tier2-bridge-json"
+output_arch = direct_only || declarations_only || host_dependencies_only || bottle_identity_only || tier2_bridge_only ? nil : output_mode
 tap_name = requested_tap_name.downcase
 tap_owner, tap_repository = tap_name.split("/", 2)
 
@@ -419,11 +435,84 @@ canonical_escape_map_block = lambda do |node|
     shellwords_escape.call(body.first, "arg")
 end
 
-literal_string = lambda do |node, expected|
+literal_string_value = lambda do |node|
   content = node[1] if node.is_a?(Array) && node.first == :string_literal
   token = content[1] if content.is_a?(Array) && content.first == :string_content &&
                         content.length == 2
-  token.is_a?(Array) && token.first == :@tstring_content && token[1] == expected
+  token[1] if token.is_a?(Array) && token.first == :@tstring_content
+end
+
+literal_string = lambda do |node, expected|
+  literal_string_value.call(node) == expected
+end
+
+canonical_literal_value = lambda do |node, lines|
+  content = node[1] if node.is_a?(Array) && node.first == :string_literal
+  token = content[1] if content.is_a?(Array) && content.first == :string_content &&
+                        content.length == 2
+  next nil unless token.is_a?(Array) && token.first == :@tstring_content
+
+  value = token[1]
+  position = token[2]
+  next nil unless value.is_a?(String) && position.is_a?(Array)
+
+  line_number, content_column = position
+  line = lines.fetch(line_number - 1, nil)
+  encoded = JSON.generate(value)
+  start_column = content_column - 1
+  next nil unless line.is_a?(String) && start_column >= 0 &&
+                  line.byteslice(start_column, encoded.bytesize) == encoded
+
+  value
+end
+
+canonical_command_arguments = lambda do |node, expected_name|
+  next nil unless node.is_a?(Array) && node.first == :command
+
+  identifier = node[1]
+  arguments = node[2]
+  next nil unless identifier.is_a?(Array) && identifier.first == :@ident &&
+                  identifier[1] == expected_name
+  next nil unless arguments.is_a?(Array) && arguments.first == :args_add_block &&
+                  arguments[1].is_a?(Array) && arguments[2] == false
+
+  arguments[1]
+end
+
+stable_url_expression = lambda do |node|
+  node.is_a?(Array) && node.first == :call &&
+    node[1].is_a?(Array) && node[1].first == :vcall &&
+    node.dig(1, 1, 1) == "stable" && node.dig(3, 1) == "url"
+end
+
+stable_sha256_expression = lambda do |node|
+  node.is_a?(Array) && node.first == :call && node.dig(3, 1) == "hexdigest" &&
+    node[1].is_a?(Array) && node[1].first == :call &&
+    node.dig(1, 3, 1) == "checksum" &&
+    node.dig(1, 1).is_a?(Array) && node.dig(1, 1).first == :vcall &&
+    node.dig(1, 1, 1, 1) == "stable"
+end
+
+script_env_keys = lambda do |node, lines|
+  next nil unless node.is_a?(Array) && node.first == :bare_assoc_hash &&
+                  node[1].is_a?(Array) && node[1].length == 1
+  association = node[1].first
+  next nil unless association.is_a?(Array) && association.first == :assoc_new &&
+                  association.dig(1, 0) == :@label && association.dig(1, 1) == "script_env:"
+
+  value = association[2]
+  next nil unless value.is_a?(Array) && value.first == :hash
+  list = value[1]
+  next [] if list.nil?
+  next nil unless list.is_a?(Array) && list.first == :assoclist_from_args && list[1].is_a?(Array)
+
+  keys = list[1].map do |entry|
+    break nil unless entry.is_a?(Array) && entry.first == :assoc_new
+    key = canonical_literal_value.call(entry[1], lines)
+    break nil unless key&.match?(/\A[A-Z][A-Z0-9_]{0,254}\z/)
+    key
+  end
+  keys
 end
 
 direct_statement = nil
@@ -481,7 +570,29 @@ find_forbidden_support_token = lambda do |node, allowed_nodes = Set.new|
   found
 end
 
+valid_tier2_support_signature = lambda do |parameters|
+  parameters = parameters[1] if parameters.is_a?(Array) && parameters.first == :paren
+  next false unless parameters.is_a?(Array) && parameters.first == :params &&
+                    parameters.length == 8
+
+  required = parameters[1]
+  keywords = parameters[5]
+  required_names = required&.map do |token|
+    token[1] if token.is_a?(Array) && token.first == :@ident
+  end
+  keyword = keywords.first if keywords.is_a?(Array) && keywords.length == 1
+  keyword_default = keyword[1] if keyword.is_a?(Array) && keyword.length == 2
+  required_names == %w[name script source_url source_sha256] &&
+    parameters[2].nil? && parameters[3].nil? && parameters[4].nil? &&
+    keyword.is_a?(Array) &&
+    keyword.dig(0, 0) == :@label && keyword.dig(0, 1) == "script_env:" &&
+    keyword_default.is_a?(Array) && keyword_default.first == :hash && keyword_default[1].nil? &&
+    parameters[6].nil? && parameters[7].nil?
+end
+
 support_validated = Set.new
+support_methods_by_tap = {}
+support_sha256_by_tap = {}
 validate_support = lambda do |context|
   context_tap_name = context.fetch("tap_name")
   next if support_validated.include?(context_tap_name)
@@ -548,6 +659,9 @@ validate_support = lambda do |context|
       method = method_token[1] if method_token.is_a?(Array) && method_token.first == :@ident
       unless method&.match?(/\A(?:formula_opt|kandelo)_[a-z0-9_]*[!?]?\z/) && methods.add?(method)
         abort "Kandelo Formula support may contain only unique approved instance methods: #{support_path}"
+      end
+      if method == TIER2_BRIDGE_METHOD && !valid_tier2_support_signature.call(statement[2])
+        abort "Kandelo Formula support #{TIER2_BRIDGE_METHOD} has a noncanonical signature: #{support_path}"
       end
       allowed_nodes = Set.new
       support_child_binding = nil
@@ -688,12 +802,15 @@ validate_support = lambda do |context|
       abort "Kandelo Formula support contains executable module structure: #{support_path}"
     end
   end
+  support_methods_by_tap[context_tap_name] = methods.freeze
+  support_sha256_by_tap[context_tap_name] = Digest::SHA256.hexdigest(support_source)
   support_validated.add(context_tap_name)
 end
 
 formula_bottles = {}
 formula_runtime_declarations = {}
 formula_dependency_declarations = {}
+formula_tier2_bridges = {}
 parse_formula = lambda do |full_name|
   formula_tap_name, separator, name = full_name.rpartition("/")
   abort "invalid dependency Formula identity: #{full_name}" if separator.empty?
@@ -768,7 +885,9 @@ parse_formula = lambda do |full_name|
   class_body = class_bodystmt[1]
   abort "Formula class has no canonical statements: #{path}" unless class_body.is_a?(Array)
   seen_instance_methods = Set.new
+  private_instance_methods = Set.new
   private_visibility = false
+  included_support = false
   bottle = nil
   class_body.each do |statement|
     abort "Formula class contains a malformed statement: #{path}" unless statement.is_a?(Array)
@@ -782,7 +901,9 @@ parse_formula = lambda do |full_name|
         unless line_number.is_a?(Integer) && lines.fetch(line_number - 1) == "  include KandeloFormulaSupport\n"
           abort "Formula may include only KandeloFormulaSupport: #{path}"
         end
+        abort "Formula repeats KandeloFormulaSupport include: #{path}" if included_support
         validate_support.call(context)
+        included_support = true
       end
     when :method_add_block
       method = call_name.call(statement)
@@ -812,6 +933,7 @@ parse_formula = lambda do |full_name|
       unless valid_method && seen_instance_methods.add?(method)
         abort "Formula class defines an unsupported or duplicate instance method #{method.inspect}: #{path}"
       end
+      private_instance_methods.add(method) if private_visibility
     when :assign
       left = statement[1]
       constant = left.dig(1) if left.is_a?(Array) && left.first == :var_field
@@ -828,6 +950,150 @@ parse_formula = lambda do |full_name|
     else
       abort "Formula class uses unsupported executable structure #{statement.first.inspect}: #{path}"
     end
+  end
+
+  unless !included_support || seen_requires.include?(support_require_line)
+    abort "Formula must canonically require KandeloFormulaSupport before including it: #{path}"
+  end
+  if included_support
+    collisions = seen_instance_methods & support_methods_by_tap.fetch(formula_tap_name)
+    unless collisions.empty?
+      abort "Formula methods shadow Kandelo Formula support methods #{collisions.to_a.sort.inspect}: #{path}"
+    end
+  end
+
+  bridge_identifier_positions = Ripper.lex(source).each_with_object([]) do |(position, type, token, _state), positions|
+    positions << position if type == :on_ident && token == TIER2_BRIDGE_METHOD
+  end
+  bridge_calls = []
+  install_method = class_body.find do |statement|
+    statement.is_a?(Array) && statement.first == :def && statement.dig(1, 1) == "install"
+  end
+  unless install_method.nil?
+    install_body = install_method[3]
+    install_statements = install_body[1] if install_body.is_a?(Array) &&
+                                            install_body.first == :bodystmt &&
+                                            install_body.drop(2).all?(&:nil?)
+    abort "Formula install method has no canonical body: #{path}" unless install_statements.is_a?(Array)
+
+    find_bridge_calls = nil
+    find_bridge_calls = lambda do |node, ancestors|
+      next unless node.is_a?(Array)
+
+      if node.first == :method_add_arg && node.dig(1, 0) == :fcall &&
+         node.dig(1, 1, 0) == :@ident && node.dig(1, 1, 1) == TIER2_BRIDGE_METHOD
+        assignment = ancestors.last
+        direct_assignment = assignment.is_a?(Array) && assignment.first == :assign &&
+                            assignment[2].equal?(node) &&
+                            install_statements.any? { |statement| statement.equal?(assignment) }
+        abort "#{TIER2_BRIDGE_METHOD} must be the direct right-hand side of an install assignment: #{path}" unless direct_assignment
+
+        left = assignment[1]
+        variable = left[1] if left.is_a?(Array) && left.first == :var_field
+        unless variable.is_a?(Array) && variable.first == :@ident
+          abort "#{TIER2_BRIDGE_METHOD} result must bind one local variable: #{path}"
+        end
+
+        arg_paren = node[2]
+        argument_list = arg_paren[1] if arg_paren.is_a?(Array) && arg_paren.first == :arg_paren
+        arguments = argument_list[1] if argument_list.is_a?(Array) &&
+                                         argument_list.first == :args_add_block &&
+                                         argument_list[2] == false
+        unless arguments.is_a?(Array) && arguments.length.between?(4, 5)
+          abort "#{TIER2_BRIDGE_METHOD} must use four positional arguments and optional script_env: #{path}"
+        end
+
+        package = canonical_literal_value.call(arguments[0], lines)
+        script = canonical_literal_value.call(arguments[1], lines)
+        unless package&.match?(TIER2_BRIDGE_COMPONENT)
+          abort "#{TIER2_BRIDGE_METHOD} package must be one canonical literal component: #{path}"
+        end
+        unless script&.match?(TIER2_BRIDGE_SCRIPT) && script != "." && script != ".."
+          abort "#{TIER2_BRIDGE_METHOD} script must be one canonical literal component: #{path}"
+        end
+        if arguments.length == 5
+          keys = script_env_keys.call(arguments[4], lines)
+          if keys.nil? || keys.uniq.length != keys.length
+            abort "#{TIER2_BRIDGE_METHOD} script_env must be one literal hash with unique literal keys: #{path}"
+          end
+          reserved = keys.to_set & TIER2_RESERVED_ENV
+          unless reserved.empty?
+            abort "#{TIER2_BRIDGE_METHOD} script_env overrides reserved variables #{reserved.to_a.sort.inspect}: #{path}"
+          end
+        end
+        bridge_calls << {
+          "package" => package,
+          "script" => script,
+          "source_url_expression" => arguments[2],
+          "source_sha256_expression" => arguments[3],
+          "position" => node.dig(1, 1, 2),
+        }
+      end
+      node.each { |child| find_bridge_calls.call(child, ancestors + [node]) }
+    end
+    find_bridge_calls.call(install_method, [])
+  end
+
+  accepted_bridge_positions = bridge_calls.map { |call| call.fetch("position") }.sort
+  unless bridge_identifier_positions.sort == accepted_bridge_positions
+    abort "every #{TIER2_BRIDGE_METHOD} reference must be one canonical direct install call: #{path}"
+  end
+  abort "Formula has multiple #{TIER2_BRIDGE_METHOD} calls: #{path}" if bridge_calls.length > 1
+
+  tier2_bridge = nil
+  unless bridge_calls.empty?
+    unless private_instance_methods.empty?
+      abort "Tier-2 Formula may not define private helper methods #{private_instance_methods.to_a.sort.inspect}: #{path}"
+    end
+    unless included_support && support_methods_by_tap.fetch(formula_tap_name).include?(TIER2_BRIDGE_METHOD)
+      abort "Formula bridge requires the canonical Kandelo Formula support helper: #{path}"
+    end
+
+    direct_literal = lambda do |command|
+      candidates = class_body.select do |statement|
+        statement.is_a?(Array) && statement.first == :command &&
+          call_name.call(statement) == command
+      end
+      next nil unless candidates.length == 1
+
+      arguments = canonical_command_arguments.call(candidates.first, command)
+      next nil unless arguments&.length == 1
+
+      canonical_literal_value.call(arguments.first, lines)
+    end
+    version_value = direct_literal.call("version")
+    url_value = direct_literal.call("url")
+    sha256_value = direct_literal.call("sha256")
+    unless version_value&.match?(TIER2_BRIDGE_VERSION)
+      abort "Tier-2 Formula must declare one canonical literal class version: #{path}"
+    end
+    unless url_value&.match?(%r{\Ahttps://[A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{0,2039}\z})
+      abort "Tier-2 Formula must declare one canonical literal class source URL: #{path}"
+    end
+    unless sha256_value&.match?(TIER2_BRIDGE_SOURCE_SHA256)
+      abort "Tier-2 Formula must declare one canonical literal class source SHA-256: #{path}"
+    end
+
+    bridge_call = bridge_calls.first
+    source_url = url_value
+    source_sha256 = sha256_value
+    url_expression = bridge_call.fetch("source_url_expression")
+    sha256_expression = bridge_call.fetch("source_sha256_expression")
+    unless stable_url_expression.call(url_expression) ||
+           canonical_literal_value.call(url_expression, lines) == source_url
+      abort "#{TIER2_BRIDGE_METHOD} source URL must use stable.url or the exact Formula URL literal: #{path}"
+    end
+    unless stable_sha256_expression.call(sha256_expression) ||
+           canonical_literal_value.call(sha256_expression, lines) == source_sha256
+      abort "#{TIER2_BRIDGE_METHOD} source SHA-256 must use stable.checksum.hexdigest or the exact Formula SHA literal: #{path}"
+    end
+    tier2_bridge = {
+      "package" => bridge_call.fetch("package"),
+      "script" => bridge_call.fetch("script"),
+      "source_sha256" => source_sha256,
+      "source_url" => source_url,
+      "version" => version_value,
+    }
   end
 
   direct_positions = direct_dependency_positions.call(selected_class).sort
@@ -905,6 +1171,11 @@ parse_formula = lambda do |full_name|
   formula_dependency_declarations[full_name] = declarations.map do |_line_number, dependency, tags|
     {"name" => dependency, "tags" => tags}
   end
+  formula_tier2_bridges[full_name] = {
+    "formula_sha256" => Digest::SHA256.hexdigest(source),
+    "support_sha256" => included_support ? support_sha256_by_tap.fetch(formula_tap_name) : nil,
+    "tier2_bridge" => tier2_bridge,
+  }
   dependencies
 end
 
@@ -970,6 +1241,19 @@ if declarations_only
     "full_name" => "#{tap_name}/#{target}",
     "dependencies" => records,
   })
+elsif tier2_bridge_only
+  record = formula_tier2_bridges.fetch(target_full_name)
+  document = JSON.generate({
+    "schema" => 1,
+    "tap" => tap_name,
+    "formula" => target,
+    "full_name" => target_full_name,
+    "formula_sha256" => record.fetch("formula_sha256"),
+    "support_sha256" => record.fetch("support_sha256"),
+    "tier2_bridge" => record.fetch("tier2_bridge"),
+  })
+  abort "Tier-2 bridge plan exceeds 4096 bytes" if document.bytesize > 4096
+  puts document
 elsif bottle_identity_only
   bottle = formula_bottles.fetch(target_full_name)
   puts JSON.generate({
