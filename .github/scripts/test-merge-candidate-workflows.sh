@@ -141,6 +141,42 @@ if grep -Fq 'git rev-list --count "$MERGE_BASE_SHA..$MERGE_HEAD_SHA"' <<<"$prefl
   fail "candidate initialization must not recount commits from the shallow preflight checkout"
 fi
 
+# GitHub increments github.run_attempt for both full workflow reruns and
+# "rerun failed jobs." In the latter case a successful preflight job is not
+# rerun: its candidate tag, candidate.json, and outputs still belong to the
+# original attempt. Keep that preflight-owned identity all the way through
+# sealing instead of consulting the later job's global attempt number.
+grep -Fq 'candidate_run_attempt: ${{ steps.compute.outputs.candidate_run_attempt }}' \
+  <<<"$preflight_job" || \
+  fail "preflight must export the attempt that owns the candidate"
+grep -Fq 'CANDIDATE_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"' <<<"$preflight_step" || \
+  fail "candidate creation must capture the current attempt in preflight"
+grep -Fq 'echo "candidate_run_attempt=$CANDIDATE_RUN_ATTEMPT"' <<<"$preflight_step" || \
+  fail "preflight must publish the captured candidate attempt"
+grep -Fq 'attempt-${CANDIDATE_RUN_ATTEMPT}"' <<<"$preflight_step" || \
+  fail "candidate tag must use the captured preflight attempt"
+grep -Fq -- '--run-attempt "$CANDIDATE_RUN_ATTEMPT"' <<<"$preflight_step" || \
+  fail "candidate metadata must use the captured preflight attempt"
+
+candidate_attempt_capture=$(printf '%s\n' "$preflight_step" | grep -E \
+  '^[[:space:]]*(CANDIDATE_RUN_ATTEMPT="\$GITHUB_RUN_ATTEMPT"|echo "candidate_run_attempt=\$CANDIDATE_RUN_ATTEMPT" >> "\$GITHUB_OUTPUT")$')
+capture_candidate_attempt() {
+  local current_attempt="$1"
+  local output
+  output=$(mktemp)
+  GITHUB_RUN_ATTEMPT="$current_attempt" GITHUB_OUTPUT="$output" \
+    bash -c "$candidate_attempt_capture"
+  sed -n 's/^candidate_run_attempt=//p' "$output"
+  rm -f "$output"
+}
+
+initial_attempt=$(capture_candidate_attempt 1)
+full_rerun_attempt=$(capture_candidate_attempt 2)
+[ "$initial_attempt" = 1 ] || \
+  fail "initial preflight must own candidate attempt 1"
+[ "$full_rerun_attempt" = 2 ] || \
+  fail "a full rerun must create a candidate owned by attempt 2"
+
 count_fixture=$(mktemp -d)
 trap 'rm -rf "$count_fixture"' EXIT
 git init --quiet --initial-branch=main "$count_fixture"
@@ -272,6 +308,27 @@ fi
 merge_gate=$(job_block "$PREPARE" merge-gate-post)
 grep -Fq 'mark-merge-candidate-ready.sh' <<<"$merge_gate" || \
   fail "merge-gate must seal and publish candidate authority"
+grep -Fq 'CANDIDATE_RUN_ATTEMPT: ${{ needs.preflight.outputs.candidate_run_attempt }}' \
+  <<<"$merge_gate" || \
+  fail "merge-gate must consume the attempt exported by candidate preflight"
+grep -Fq -- '--run-attempt "$CANDIDATE_RUN_ATTEMPT"' <<<"$merge_gate" || \
+  fail "merge-gate must seal the preflight-owned candidate attempt"
+if grep -Fq -- '--run-attempt "${{ github.run_attempt }}"' <<<"$merge_gate"; then
+  fail "merge-gate must not substitute the failed-job rerun attempt while sealing"
+fi
+
+# A failed-job rerun increments the global attempt to 2 but reuses the output
+# from the already-successful attempt-1 preflight. The workflow wiring above
+# makes that stored output authoritative. A full rerun executes preflight and
+# therefore supplies the newly captured attempt-2 output instead.
+failed_job_rerun_global_attempt=2
+failed_job_rerun_seal_attempt="$initial_attempt"
+full_rerun_seal_attempt="$full_rerun_attempt"
+[ "$failed_job_rerun_global_attempt" = 2 ] && \
+  [ "$failed_job_rerun_seal_attempt" = 1 ] || \
+  fail "failed-job rerun must preserve its original candidate attempt"
+[ "$full_rerun_seal_attempt" = 2 ] || \
+  fail "full rerun must seal the candidate created by its new preflight"
 grep -Fq 'ref: ${{ needs.synthesize-merge.outputs.base_sha }}' <<<"$merge_gate" || \
   fail "write-authorized merge-gate helpers must come from the exact prepared base"
 if grep -Fq 'ref: ${{ needs.synthesize-merge.outputs.head_sha }}' <<<"$merge_gate"; then

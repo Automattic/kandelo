@@ -133,6 +133,14 @@ Each package-changing Prepare merge run owns one release tag:
 merge-candidate-abi-v<N>-pr-<PR>-run-<RUN>-attempt-<ATTEMPT>
 ```
 
+Preflight owns the attempt number in that tag and carries the same value into
+candidate metadata and sealing. A full workflow rerun executes preflight again
+and creates a candidate for the new attempt. A "rerun failed jobs" operation
+can instead reuse the successful preflight job and its outputs while GitHub
+increments the workflow's global attempt number. Downstream jobs therefore use
+the preflight output, not the later global value, so they seal the candidate
+that was actually created and tested.
+
 Preflight stores three candidate assets before package writers start:
 
 - `candidate.json` binds the repository, PR, target branch and base SHA, PR

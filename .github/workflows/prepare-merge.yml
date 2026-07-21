@@ -567,6 +567,7 @@ jobs:
       promote_matrix: ${{ steps.compute.outputs.promote_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
+      candidate_run_attempt: ${{ steps.compute.outputs.candidate_run_attempt }}
       canonical_tag: ${{ steps.compute.outputs.canonical_tag }}
       staging_tag: ${{ steps.compute.outputs.staging_tag }}
       merge_base_sha: ${{ steps.compute.outputs.merge_base_sha }}
@@ -675,7 +676,9 @@ jobs:
 
             CANONICAL_TAG="binaries-abi-v${ABI}"
             echo "canonical_tag=$CANONICAL_TAG" >> "$GITHUB_OUTPUT"
-            TARGET_TAG="merge-candidate-abi-v${ABI}-pr-${{ github.event.pull_request.number }}-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
+            CANDIDATE_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
+            echo "candidate_run_attempt=$CANDIDATE_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+            TARGET_TAG="merge-candidate-abi-v${ABI}-pr-${{ github.event.pull_request.number }}-run-${GITHUB_RUN_ID}-attempt-${CANDIDATE_RUN_ATTEMPT}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             STAGING_TAG="pr-${{ github.event.pull_request.number }}-staging"
             echo "staging_tag=$STAGING_TAG" >> "$GITHUB_OUTPUT"
@@ -731,7 +734,7 @@ jobs:
               --merge-method "${{ env.PREPARE_MERGE_METHOD }}" \
               --pr-commit-count "$PR_COMMIT_COUNT" \
               --run-id "$GITHUB_RUN_ID" \
-              --run-attempt "$GITHUB_RUN_ATTEMPT"
+              --run-attempt "$CANDIDATE_RUN_ATTEMPT"
             staging_assets_file=$(mktemp)
             gh release view "$STAGING_TAG" \
               --repo "${{ github.repository }}" \
@@ -2027,6 +2030,7 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       CANDIDATE_TAG: ${{ needs.preflight.outputs.target_tag }}
+      CANDIDATE_RUN_ATTEMPT: ${{ needs.preflight.outputs.candidate_run_attempt }}
     steps:
       - name: Verify prepared base is still current
         run: |
@@ -2069,7 +2073,7 @@ jobs:
             --head-sha "${{ needs.synthesize-merge.outputs.head_sha }}" \
             --synthetic-tree-sha "${{ needs.synthesize-merge.outputs.tree_sha }}" \
             --run-id "${{ github.run_id }}" \
-            --run-attempt "${{ github.run_attempt }}" \
+            --run-attempt "$CANDIDATE_RUN_ATTEMPT" \
             --candidate-index-sha256 "${{ needs.test-gate.outputs.candidate_index_sha256 }}"
 
       - name: Comment on original PR
