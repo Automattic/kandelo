@@ -354,6 +354,17 @@ grep -F 'make -j1 CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover' \
     "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
     fail "NetHack host generators do not override ambient parallel MAKEFLAGS"
 
+for package in lsof modeset netcat; do
+    if grep -F 'scripts/run-wasm-fork-instrument.sh' \
+        "$REPO_ROOT/packages/registry/$package/build-$package.sh" >/dev/null; then
+        fail "$package build instruments a program that does not import fork"
+    fi
+done
+
+grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
+    "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
+    fail "NetHack build does not instrument its fork-capable artifact"
+
 # Invalid guest paths are rejected before NetHack reaches any toolchain or
 # dependency work.
 nethack_work="$TMP_ROOT/nethack-invalid-work"

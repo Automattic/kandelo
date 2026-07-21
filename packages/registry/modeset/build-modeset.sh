@@ -53,11 +53,6 @@ wasm32posix-cc \
     -lm \
     -o "$OUT_BIN"
 
-"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
-    "$OUT_BIN" \
-    -o "$OUT_BIN.instr"
-mv "$OUT_BIN.instr" "$OUT_BIN"
-
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary modeset "$OUT_BIN" modeset.wasm

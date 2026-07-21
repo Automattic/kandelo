@@ -12,7 +12,6 @@ inputs = [
   "scripts/build-gles-stubs.sh",
   "scripts/write-graphics-pkgconfig.sh",
   "scripts/package-build-roots.sh",
-  "scripts/run-wasm-fork-instrument.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"

@@ -64,7 +64,7 @@ validate_guest_path NETHACK_VAR_PLAYGROUND "$NETHACK_VAR_PLAYGROUND"
 # reviewed checkout read-only and suppress the developer-only local mirror.
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
-    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
 
 # --- Prerequisites ---
