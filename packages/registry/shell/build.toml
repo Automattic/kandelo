@@ -24,6 +24,7 @@ inputs = [
   "host/package-lock.json",
   "host/src/constants.ts",
   "host/src/generated/abi.ts",
+  "host/src/homebrew-lazy-layer.ts",
   "host/src/homebrew-vfs-builder.ts",
   "host/src/homebrew-vfs-fetch.ts",
   "host/src/homebrew-vfs-planner.ts",

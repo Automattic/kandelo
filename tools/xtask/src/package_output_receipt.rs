@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 
 use crate::build_deps::{Registry, compute_cache_key_sha_for_package, resolve_relative_url};
 use crate::index_toml::{EntryStatus, IndexToml};
-use crate::pkg_manifest::{BuildToml, DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{
+    BuildToml, DepsManifest, ManifestKind, TargetArch, write_cache_provenance,
+};
 use crate::remote_fetch;
 use crate::util::hex;
 
@@ -209,7 +211,11 @@ fn materialize(args: Args) -> Result<(), String> {
     let archive_url = resolve_relative_url(&index_url, archive_url);
 
     let scratch = ScratchDir::create(&args.out)?;
-    let install = scratch.path.join("installed");
+    // The strict archive installer uses the same adjacent immutable-Git
+    // provenance marker as the resolver cache. Preserve that contract even in
+    // this exclusive ephemeral workspace by giving the install directory its
+    // canonical full-cache-key suffix.
+    let install = scratch.path.join(format!("installed-{cache_key_sha}"));
     let fetched = remote_fetch::fetch_and_install_direct_with_metadata(
         &archive_url,
         archive_sha256,
@@ -450,6 +456,11 @@ repo_url = "https://github.com/example/kandelo.git"
 commit = "0000000000000000000000000000000000000000"
 revision = 14
 
+[[git_inputs]]
+name = "homebrew_tap_core"
+repository = "https://github.com/example/homebrew-tap-core.git"
+commit = "1111111111111111111111111111111111111111"
+
 [binary]
 index_url = "https://example.invalid/index.toml"
 "#,
@@ -472,6 +483,8 @@ index_url = "https://example.invalid/index.toml"
         fs::create_dir_all(&cache).unwrap();
         let output_bytes = b"exact bottle-built shell bytes\n".to_vec();
         fs::write(cache.join("shell.vfs.zst"), &output_bytes).unwrap();
+        write_cache_provenance(&target, &cache, TargetArch::Wasm32, abi, &cache_key).unwrap();
+        let git_inputs = BuildToml::load(&package_dir).unwrap().git_inputs;
         let archive_name = format!(
             "shell-0.1.0-rev14-abi{abi}-wasm32-{}.tar.zst",
             &cache_key[..8]
@@ -487,7 +500,7 @@ index_url = "https://example.invalid/index.toml"
                 cache_key_sha: cache_key.clone(),
                 build_timestamp: "2026-07-21T00:00:00Z".to_string(),
                 build_host: "test".to_string(),
-                git_inputs: vec![],
+                git_inputs,
             },
         )
         .unwrap();
