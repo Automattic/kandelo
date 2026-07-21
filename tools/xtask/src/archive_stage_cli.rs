@@ -11,6 +11,7 @@
 //! See `docs/plans/2026-05-05-decoupled-package-builds-design.md`
 //! and the Task 4 description.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,7 @@ use crate::util::hex;
 use wasm_posix_shared as shared;
 
 /// Parsed CLI args for `xtask archive-stage`.
+#[derive(Debug)]
 struct Args {
     package_dir: PathBuf,
     arch: TargetArch,
@@ -34,6 +36,7 @@ struct Args {
     registry_root: Option<PathBuf>,
     binaries_dir: Option<PathBuf>,
     expected_cache_key_sha: Option<String>,
+    force_source_build: bool,
 }
 
 /// CLI entry point for `xtask archive-stage`.
@@ -66,6 +69,9 @@ struct Args {
 ///                 <hex>    Require the computed cache_key_sha to match
 ///                           this preflight-selected 64-char lowercase
 ///                           hex value before and after building.
+///   --force-source-build    Bypass the selected package's cache and binary
+///                           index entry, and execute its source build. This
+///                           does not force-build its dependencies.
 ///
 /// On success: prints the absolute path of the produced archive to
 /// stdout (one line, no trailing whitespace beyond the newline).
@@ -144,10 +150,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // Resolve / build the cache entry. local_libs is intentionally
     // None — staged archives must reproduce from source / cache, never
     // from a developer's hand-patched checkout.
+    let force_source_build = parsed
+        .force_source_build
+        .then(|| BTreeSet::from([manifest.name.clone()]));
     let resolve_opts = ResolveOpts {
         cache_root: &cache_root,
         local_libs: None,
-        force_source_build: None,
+        force_source_build: force_source_build.as_ref(),
         fetch_only: false,
         repo_root: None,
         binaries_dir: parsed.binaries_dir.as_deref(),
@@ -243,6 +252,7 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
     let mut registry_root: Option<PathBuf> = None;
     let mut binaries_dir: Option<PathBuf> = None;
     let mut expected_cache_key_sha: Option<String> = None;
+    let mut force_source_build = false;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -335,6 +345,11 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
                 value,
                 "--expected-cache-key-sha",
             )?;
+        } else if a == "--force-source-build" {
+            if force_source_build {
+                return Err("--force-source-build given more than once".to_string());
+            }
+            force_source_build = true;
         } else {
             return Err(format!("unexpected argument {a:?}"));
         }
@@ -361,6 +376,7 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         registry_root,
         binaries_dir,
         expected_cache_key_sha,
+        force_source_build,
     })
 }
 
@@ -388,6 +404,7 @@ fn assign_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
@@ -567,6 +584,154 @@ index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
 "#
         );
         fs::write(registry.join(name).join("build.toml"), build_toml).unwrap();
+    }
+
+    fn write_counted_lib_fixture(registry: &Path, name: &str, depends_on: &[&str], counter: &Path) {
+        let lib_dir = registry.join(name);
+        fs::create_dir_all(&lib_dir).unwrap();
+        let depends = depends_on
+            .iter()
+            .map(|dep| format!("{dep:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let manifest = format!(
+            r#"
+kind = "library"
+name = "{name}"
+version = "1.0.0"
+depends_on = [{depends}]
+
+[source]
+url = "https://example.test/{name}-1.0.0.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/out.a"]
+"#,
+            ""
+        );
+        fs::write(lib_dir.join("package.toml"), manifest).unwrap();
+        let script_path = lib_dir.join(format!("build-{name}.sh"));
+        let script = format!(
+            "#!/bin/bash\nset -euo pipefail\nprintf 'ran\\n' >> {:?}\nmkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf '%s\\n' {:?} > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\n",
+            counter, name,
+        );
+        fs::write(&script_path, script).unwrap();
+        let mut permissions = fs::metadata(&script_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).unwrap();
+    }
+
+    fn write_index_build_toml(registry: &Path, name: &str, index_path: &Path) {
+        let build_toml = format!(
+            r#"
+script_path = "{name}/build-{name}.sh"
+repo_url = "https://example.test/repo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+
+[binary]
+index_url = "file://{}"
+"#,
+            index_path.display(),
+        );
+        fs::write(registry.join(name).join("build.toml"), build_toml).unwrap();
+    }
+
+    fn archived_lib_manifest(name: &str, cache_key_sha: &str) -> String {
+        format!(
+            r#"
+kind = "library"
+name = "{name}"
+version = "1.0.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-1.0.0.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/out.a"]
+
+[compatibility]
+target_arch = "wasm32"
+abi_versions = [{}]
+cache_key_sha = "{cache_key_sha}"
+"#,
+            "",
+            shared::ABI_VERSION,
+        )
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let digest: [u8; 32] = hasher.finalize().into();
+        hex(&digest)
+    }
+
+    fn stage_index(
+        path: &Path,
+        name: &str,
+        archive_path: &Path,
+        archive_sha256: &str,
+        cache_key_sha: &str,
+    ) {
+        let index = format!(
+            r#"abi_version = {abi}
+generated_at = "2026-07-21T00:00:00Z"
+generator = "archive-stage force-source-build test"
+
+[[packages]]
+name = "{name}"
+version = "1.0.0"
+revision = 1
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "file://{archive_path}"
+archive_sha256 = "{archive_sha256}"
+cache_key_sha = "{cache_key_sha}"
+built_at = "2026-07-21T00:00:00Z"
+built_by = "test"
+"#,
+            abi = shared::ABI_VERSION,
+            archive_path = archive_path.display(),
+        );
+        fs::write(path, index).unwrap();
+    }
+
+    fn archive_stage_args(
+        registry: &Path,
+        cache_root: &Path,
+        out_dir: &Path,
+        package: &str,
+    ) -> Vec<String> {
+        vec![
+            "--package".into(),
+            registry.join(package).display().to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--out".into(),
+            out_dir.display().to_string(),
+            "--build-timestamp".into(),
+            "2026-07-21T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+            "--abi".into(),
+            shared::ABI_VERSION.to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+        ]
     }
 
     /// End-to-end smoke: a clean run of the CLI produces a real
@@ -1004,5 +1169,165 @@ echo changed > "$script_dir/input.txt"
         ])
         .expect_err("duplicate --package must error");
         assert!(err.contains("--package"), "got: {err}");
+    }
+
+    #[test]
+    fn cli_force_source_build_is_a_single_valueless_flag() {
+        let args = archive_stage_args(
+            Path::new("/registry"),
+            Path::new("/cache"),
+            Path::new("/out"),
+            "shell",
+        );
+        let mut forced = args.clone();
+        forced.push("--force-source-build".into());
+        assert!(
+            super::parse_args(forced).unwrap().force_source_build,
+            "the explicit flag must enable selected-target source building"
+        );
+        assert!(
+            !super::parse_args(args).unwrap().force_source_build,
+            "omitting the flag must preserve normal cache/index resolution"
+        );
+
+        let mut duplicate = archive_stage_args(
+            Path::new("/registry"),
+            Path::new("/cache"),
+            Path::new("/out"),
+            "shell",
+        );
+        duplicate.extend(["--force-source-build".into(), "--force-source-build".into()]);
+        let err = super::parse_args(duplicate).expect_err("duplicate force flag must fail");
+        assert!(err.contains("given more than once"), "got: {err}");
+
+        let mut assigned = archive_stage_args(
+            Path::new("/registry"),
+            Path::new("/cache"),
+            Path::new("/out"),
+            "shell",
+        );
+        assigned.push("--force-source-build=true".into());
+        let err = super::parse_args(assigned).expect_err("force flag must not take a value");
+        assert!(err.contains("unexpected argument"), "got: {err}");
+    }
+
+    #[test]
+    fn cli_force_source_build_bypasses_target_cache_only() {
+        let dir = tempdir("force-target-cache-only");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let dependency_counter = dir.join("dependency-counter");
+        let target_counter = dir.join("target-counter");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+        write_counted_lib_fixture(&registry, "dependency", &[], &dependency_counter);
+        write_counted_lib_fixture(
+            &registry,
+            "composer",
+            &["dependency@1.0.0"],
+            &target_counter,
+        );
+
+        super::run(archive_stage_args(
+            &registry,
+            &cache_root,
+            &dir.join("first"),
+            "composer",
+        ))
+        .expect("initial source build must succeed");
+        super::run(archive_stage_args(
+            &registry,
+            &cache_root,
+            &dir.join("cached"),
+            "composer",
+        ))
+        .expect("normal second invocation must reuse the cache");
+        assert_eq!(
+            fs::read_to_string(&dependency_counter)
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "normal archive-stage must retain its existing cache behavior"
+        );
+        assert_eq!(
+            fs::read_to_string(&target_counter).unwrap().lines().count(),
+            1,
+            "normal archive-stage must not rebuild a cached target"
+        );
+
+        let mut forced =
+            archive_stage_args(&registry, &cache_root, &dir.join("forced"), "composer");
+        forced.push("--force-source-build".into());
+        super::run(forced).expect("forced target source build must succeed");
+        assert_eq!(
+            fs::read_to_string(&dependency_counter)
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "forcing the selected target must leave cached dependencies alone"
+        );
+        assert_eq!(
+            fs::read_to_string(&target_counter).unwrap().lines().count(),
+            2,
+            "forcing the selected target must execute its source recipe"
+        );
+    }
+
+    #[test]
+    fn cli_force_source_build_bypasses_valid_index_archive() {
+        let dir = tempdir("force-target-index");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let counter = dir.join("source-build-counter");
+        let index_path = dir.join("index.toml");
+        let archive_path = dir.join("composer-remote.tar.zst");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+        write_counted_lib_fixture(&registry, "composer", &[], &counter);
+        write_index_build_toml(&registry, "composer", &index_path);
+
+        let manifest = DepsManifest::load_with_overlay(&registry.join("composer")).unwrap();
+        let reg = Registry {
+            roots: vec![registry.clone()],
+        };
+        let cache_key_sha =
+            super::compute_sha_hex(&manifest, &reg, TargetArch::Wasm32, shared::ABI_VERSION)
+                .unwrap();
+        let archive = crate::remote_fetch::build_test_archive(
+            &archived_lib_manifest("composer", &cache_key_sha),
+            &[("lib/out.a", b"REMOTE\n")],
+        );
+        fs::write(&archive_path, &archive).unwrap();
+        stage_index(
+            &index_path,
+            "composer",
+            &archive_path,
+            &sha256_hex(&archive),
+            &cache_key_sha,
+        );
+
+        super::run(archive_stage_args(
+            &registry,
+            &cache_root,
+            &dir.join("remote"),
+            "composer",
+        ))
+        .expect("normal archive-stage must accept the valid index archive");
+        assert!(
+            !counter.exists(),
+            "the valid index archive must satisfy an ordinary invocation"
+        );
+
+        let mut forced =
+            archive_stage_args(&registry, &cache_root, &dir.join("forced"), "composer");
+        forced.push("--force-source-build".into());
+        super::run(forced).expect("force flag must bypass the valid index archive");
+        assert_eq!(
+            fs::read_to_string(counter).unwrap().lines().count(),
+            1,
+            "the selected package's source recipe must run despite a valid index archive"
+        );
     }
 }

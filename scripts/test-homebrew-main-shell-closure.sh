@@ -14,6 +14,7 @@ PREPARE_MERGE_WORKFLOW="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 FORCE_REBUILD_WORKFLOW="$REPO_ROOT/.github/workflows/force-rebuild.yml"
 SHELL_BUILD_TOML="$REPO_ROOT/packages/registry/shell/build.toml"
 SHELL_BUILDER="$REPO_ROOT/packages/registry/shell/build-shell.sh"
+RUN_SH="$REPO_ROOT/run.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -125,6 +126,8 @@ grep -Fq -- '--package packages/registry/shell' "$WORKFLOW" ||
   fail "main-shell proof must stage the shell package"
 grep -Fq -- '--expected-cache-key-sha "$cache_key"' "$WORKFLOW" ||
   fail "main-shell proof must bind archive-stage to the precomputed package identity"
+grep -Fq -- '--force-source-build' "$WORKFLOW" ||
+  fail "main-shell proof must execute the shell composer instead of reusing its package archive"
 grep -Fq 'tar --zstd -xf "$ARCHIVE_PATH" -C "$archive_root" \' "$WORKFLOW" ||
   fail "main-shell proof must extract the package archive"
 grep -Fq 'manifest.toml artifacts/shell.vfs.zst' "$WORKFLOW" ||
@@ -242,6 +245,69 @@ grep -Fq 'scripts/homebrew-main-shell-node-smoke.ts' "$WORKFLOW" ||
   fail "exact archived shell bytes must retain post-archive Node acceptance"
 grep -Eq '^depends_on = \[\]$' "$REPO_ROOT/packages/registry/shell/package.toml" ||
   fail "canonical bottle-only shell package must not pre-resolve the legacy registry graph"
+
+shell_build_function="$TMP_ROOT/build-shell-vfs-function.sh"
+sed -n '/^build_shell_vfs()/,/^}/p' "$RUN_SH" >"$shell_build_function"
+grep -Fq 'resolve_args+=(resolve shell)' "$shell_build_function" ||
+  fail "run.sh must resolve the shell package through the package system"
+grep -Fq 'need_shell_vfs_build_tools' "$shell_build_function" ||
+  fail "run.sh must prepare lockfile-owned tools before shell source fallback"
+grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
+  "$shell_build_function" ||
+  fail "run.sh must distinguish an explicit fetch-only resolve from normal fallback"
+grep -Fq 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
+  "$shell_build_function" ||
+  fail "run.sh must forward the caller's fetch-only contract to the shell resolver"
+fetch_condition_line="$(grep -nF 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
+  "$shell_build_function" | cut -d: -f1)"
+fetch_forward_line="$(grep -nF 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
+  "$shell_build_function" | cut -d: -f1)"
+fallback_else_line="$(grep -nE '^    else$' "$shell_build_function" | cut -d: -f1)"
+fallback_tools_line="$(grep -nF '        need_shell_vfs_build_tools' \
+  "$shell_build_function" | cut -d: -f1)"
+fallback_fi_line="$(awk -v start="$fallback_tools_line" \
+  'NR > start && /^    fi$/ { print NR; exit }' "$shell_build_function")"
+[ "$fetch_condition_line" -lt "$fetch_forward_line" ] &&
+  [ "$fetch_forward_line" -lt "$fallback_else_line" ] &&
+  [ "$fallback_else_line" -lt "$fallback_tools_line" ] &&
+  [ "$fallback_tools_line" -lt "$fallback_fi_line" ] ||
+  fail "run.sh must skip composer tools only on the fetch-only branch"
+shell_tools_function="$TMP_ROOT/need-shell-vfs-build-tools-function.sh"
+sed -n '/^need_shell_vfs_build_tools()/,/^}/p' "$RUN_SH" >"$shell_tools_function"
+grep -Fq 'npm ci --no-audit --no-fund --prefer-offline' \
+  "$shell_tools_function" ||
+  fail "run.sh must install root shell-composer dependencies from the lockfile"
+grep -Fq 'npm --prefix "$REPO_ROOT/tools/mkrootfs" ci' \
+  "$shell_tools_function" ||
+  fail "run.sh must install mkrootfs dependencies from the lockfile"
+grep -Eq '(^|[[:space:]])if[[:space:]]' "$shell_tools_function" &&
+  fail "shell source fallback must not accept dependency presence as lockfile identity"
+grep -Fq -- '--binaries-dir "$REPO_ROOT/local-binaries"' "$RUN_SH" ||
+  fail "run.sh must materialize the resolved shell package for local consumers"
+grep -Fq 'pkg_has_output shell shell.vfs.zst' "$RUN_SH" ||
+  fail "run.sh must validate the shell package's declared output"
+grep -Fq 'packages/registry/shell/build-shell.sh' "$RUN_SH" &&
+  fail "run.sh must not bypass the resolver by invoking the shell recipe directly"
+grep -Fq 'build_fbdoom' "$shell_build_function" &&
+  fail "the bottle-built shell resolver path must not retain the obsolete fbdoom prerequisite"
+grep -Fq '[ "${KANDELO_REBUILD_TARGET:-}" != "shell-vfs" ] && has_shell_vfs' \
+  "$shell_build_function" ||
+  fail "rebuild shell-vfs must not short-circuit on a fetched or local artifact"
+grep -Fq 'KANDELO_REBUILD_TARGET="$t" build_target "$t"' "$RUN_SH" ||
+  fail "run.sh rebuild must identify the target whose availability guard is bypassed"
+
+local_output_function="$TMP_ROOT/pkg-local-output-path-function.sh"
+sed -n '/^pkg_local_output_path()/,/^}/p' "$RUN_SH" >"$local_output_function"
+grep -Fq 'rel=$(pkg_output_rel "$pkg" "$wasm" "$arch")' "$local_output_function" ||
+  fail "local package cleanup must derive output layout from package metadata"
+clean_target_function="$TMP_ROOT/clean-target-function.sh"
+sed -n '/^clean_target()/,/^}/p' "$RUN_SH" >"$clean_target_function"
+shell_clean_case="$TMP_ROOT/clean-shell-vfs-case.sh"
+sed -n '/^        shell-vfs)/,/;;/p' "$clean_target_function" >"$shell_clean_case"
+grep -Fq 'pkg_remove_local_output shell shell.vfs.zst wasm32' "$shell_clean_case" ||
+  fail "clean shell-vfs must remove the resolver-owned local output"
+grep -Fq '"$REPO_ROOT/binaries/' "$shell_clean_case" &&
+  fail "clean shell-vfs must preserve immutable fetched package artifacts"
 
 for shell_derived_package in lamp node-vfs wordpress; do
   shell_derived_build="$REPO_ROOT/packages/registry/$shell_derived_package/build.toml"

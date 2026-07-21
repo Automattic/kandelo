@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const EXPECTED_ROOT_COUNT = 32;
 const EXPECTED_CLOSURE_COUNT = 38;
 const EXPECTED_ARCH = "wasm32";
@@ -422,4 +424,3 @@ function assertUnique(values: string[], label: string): void {
 function fail(message: string): never {
   throw new Error(`Homebrew main-shell image contract: ${message}`);
 }
-import { createHash } from "node:crypto";

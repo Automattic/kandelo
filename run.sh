@@ -231,6 +231,42 @@ pkg_xtask_bin() {
     echo "$PKG_XTASK_BIN"
 }
 
+# pkg_output_rel <pkg-name> <wasm-basename> [arch]
+#
+# Print the package system's canonical path below programs/<arch>/ for one
+# declared output. Keep local materialization and cleanup on this same metadata
+# path so output layout changes cannot strand stale artifacts.
+pkg_output_rel() {
+    local pkg=$1
+    local wasm=$2
+    local arch=${3:-wasm32}
+    local xtask
+    xtask=$(pkg_xtask_bin) || return 1
+    "$xtask" build-deps --arch "$arch" output-path "$pkg" "$wasm" 2>/dev/null
+}
+
+# pkg_local_output_path <pkg-name> <wasm-basename> [arch]
+pkg_local_output_path() {
+    local pkg=$1
+    local wasm=$2
+    local arch=${3:-wasm32}
+    local rel
+    rel=$(pkg_output_rel "$pkg" "$wasm" "$arch") || return 1
+    case "$rel" in
+        ""|/*|../*|*/../*|*/..)
+            err "Package resolver returned an unsafe output path for $pkg: $rel"
+            return 1
+            ;;
+    esac
+    printf '%s\n' "$REPO_ROOT/local-binaries/programs/$arch/$rel"
+}
+
+pkg_remove_local_output() {
+    local output
+    output=$(pkg_local_output_path "$@") || return 1
+    rm -f -- "$output"
+}
+
 # pkg_has_output <pkg-name> <wasm-basename> [arch]
 #
 # True when the package's named output is resolvable via the package
@@ -249,10 +285,8 @@ pkg_has_output() {
     local pkg=$1
     local wasm=$2
     local arch=${3:-wasm32}
-    local xtask rel
-    xtask=$(pkg_xtask_bin) || return 1
-    rel=$("$xtask" build-deps --arch "$arch" output-path "$pkg" "$wasm" 2>/dev/null) \
-        || return 1
+    local rel
+    rel=$(pkg_output_rel "$pkg" "$wasm" "$arch") || return 1
     if [ "$arch" = "wasm32" ]; then
         # `has_resolvable programs/<x>` injects `wasm32/` per the
         # default-arch shim (matches host/src/binary-resolver.ts). No
@@ -444,6 +478,23 @@ need_node_modules() {
         warn "Installing root npm dependencies"
         cd "$REPO_ROOT" && npm install --prefer-offline
     fi
+}
+
+# Source composition of the bottle-built shell uses the repository's pinned
+# tsx and mkrootfs dependency trees. Run exact lockfile installs every time the
+# source-capable path is selected: presence checks cannot prove that an old
+# node_modules tree matches the cache key's current package-lock inputs.
+need_shell_vfs_build_tools() {
+    step "Installing locked Shell VFS TypeScript dependencies"
+    (cd "$REPO_ROOT" && \
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+        npm ci --no-audit --no-fund --prefer-offline)
+    info "Shell VFS TypeScript dependencies installed"
+
+    step "Installing locked mkrootfs dependencies"
+    npm --prefix "$REPO_ROOT/tools/mkrootfs" ci \
+        --no-audit --no-fund --prefer-offline
+    info "mkrootfs dependencies installed"
 }
 
 # ─── Build targets ────────────────────────────────────────────────────────────
@@ -907,14 +958,44 @@ build_nethack_zip() {
 }
 
 build_shell_vfs() {
-    if ! has_shell_vfs; then
-        build_fbdoom
-        step "Building Shell VFS image"
-        bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
-        info "Shell VFS image built"
-    else
+    # `clean` removes only the resolver-owned local link and deliberately keeps
+    # immutable fetched `binaries/`. A rebuild marker must therefore bypass the
+    # ordinary availability guard so the resolver rematerializes the local
+    # output even when the downloaded artifact remains usable.
+    if [ "${KANDELO_REBUILD_TARGET:-}" != "shell-vfs" ] && has_shell_vfs; then
         info "Shell VFS image"
+        return
     fi
+
+    step "Resolving the bottle-built Shell VFS image"
+    local xtask
+    local resolve_args=(
+        build-deps --arch wasm32
+        --binaries-dir "$REPO_ROOT/local-binaries"
+    )
+    if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
+        # Preserve the caller's explicit no-source-build contract. This
+        # path needs no composer dependencies because any archive miss or
+        # verification failure must remain a failure.
+        resolve_args+=("${FETCH_ONLY_ARGS[@]}")
+    else
+        # The normal resolver may use a valid public archive or execute
+        # the source composer. Prepare the latter's exact lockfile-owned
+        # tools so fallback never depends on ambient npm state.
+        need_shell_vfs_build_tools
+    fi
+    resolve_args+=(resolve shell)
+    xtask="$(pkg_xtask_bin)" || {
+        err "Could not build the package resolver needed for the Shell VFS image"
+        return 1
+    }
+    mkdir -p "$REPO_ROOT/local-binaries"
+    (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
+    if ! pkg_has_output shell shell.vfs.zst; then
+        err "Package resolver did not materialize the declared shell.vfs.zst output"
+        return 1
+    fi
+    info "Bottle-built Shell VFS image resolved"
 }
 
 build_erlang() {
@@ -1801,6 +1882,7 @@ clean_target() {
             warn "Cleaned Perl VFS image" ;;
         shell-vfs)
             rm -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
+            pkg_remove_local_output shell shell.vfs.zst wasm32
             warn "Cleaned Shell VFS image" ;;
         node)
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
@@ -2030,7 +2112,7 @@ cmd_rebuild() {
     fi
     for t in "$@"; do
         clean_target "$t"
-        build_target "$t"
+        KANDELO_REBUILD_TARGET="$t" build_target "$t"
     done
     echo ""
     info "Rebuild complete"

@@ -673,6 +673,12 @@ byte-identical archives. This is load-bearing: test-gate re-installs
 the same archives that publish later uploads, and the only way that
 round-trip works is if both sides are deterministic.
 
+Ordinary `archive-stage` calls may reuse a valid resolver cache entry or
+indexed archive. A producer that must prove execution of the selected source
+recipe passes `--force-source-build`. The option is deliberately narrow: it
+bypasses cache and index reuse for `--package` only, while dependencies retain
+normal resolver behavior.
+
 The `[compatibility]` block injected into each archive's
 `manifest.toml` is also a pure function of the build inputs (no
 wall-clock or worker-local fields).

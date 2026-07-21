@@ -424,7 +424,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `bash images/vfs/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the exact reviewed 38-Formula public Homebrew bottle closure, compatibility links, profile, and image-owned Homebrew Bash |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
@@ -441,7 +441,10 @@ The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
 root-owned `01777` sticky directory.
 
-VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
+Generated VFS images are `.gitignore`d rather than committed. Package-backed
+images can be materialized from a current public package archive; the normal
+resolver falls back to the package's source recipe when needed. The `run.sh`
+script handles this automatically before starting the browser.
 
 Homebrew-derived browser images are external artifacts, not bundled into the
 app. The trusted Homebrew publisher first pours wasm32 bottles into a
@@ -481,6 +484,14 @@ orchestrates explicit resolver builds:
 ./run.sh build shell-vfs     # Build Shell VFS image
 ./run.sh build all            # Build everything including all VFS images
 ```
+
+The main shell target resolves the `shell` package into `local-binaries`; it
+does not invoke the image recipe directly or source-build fbDOOM first. On a
+cache or index miss, that package's source recipe anonymously provisions the
+immutable `homebrew-tap-core` commit declared in `build.toml`, verifies the
+reviewed Brewfile and migration lock, and composes exclusively from public
+bottles. `./run.sh --fetch-only build shell-vfs` keeps the stricter consumer
+contract and refuses that source fallback.
 
 ### Adding a new VFS image
 

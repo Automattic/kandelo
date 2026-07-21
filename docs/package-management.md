@@ -909,6 +909,14 @@ cache tree into
 /tmp/archives/<name>-<version>-rev<N>-abi<N>-<arch>-<shortsha>.tar.zst
 ```
 
+By default, `archive-stage` preserves normal resolver behavior: a valid local
+cache entry or indexed archive may satisfy the selected package. Exact source
+execution proofs can add `--force-source-build`. That flag bypasses cache and
+binary-index reuse only for the package passed to `--package`; dependencies
+continue through ordinary resolution. For example, the main-shell proof uses
+it to guarantee that the shell composer runs while its reviewed Homebrew
+bottles remain ordinary immutable inputs.
+
 Each matrix entry then publishes via `scripts/index-update.sh`:
 
 ```bash

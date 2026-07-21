@@ -1495,12 +1495,24 @@ Every composition scratch file, report, and downloaded bottle lives in a new
 resolver-owned workspace below `WASM_POSIX_DEP_OUT_DIR`; the wrapper removes
 that workspace before publishing the single declared `shell.vfs.zst` output.
 There is no legacy registry-composition fallback. The dedicated workflow then
-archives that normal package output, extracts the exact archived bytes, boots
-them through Node, and requires Chromium's current `?demo=shell` path to fetch
-the same SHA-256, launch the image-owned shell, and exercise the locked command
-surface. Runtime acceptance intentionally happens after archive creation so a
-package cache hit cannot skip it and a package build cannot depend on ambient
-kernel build artifacts.
+passes `archive-stage --force-source-build`, which bypasses cache and index
+reuse for the `shell` package only. Its dependencies retain normal resolver
+semantics; in this case the package has no registry dependencies because the
+38 public bottles are the composer's immutable inputs. This guarantees the
+composer executes even after a prior shell archive has been published. The
+workflow extracts the exact newly archived bytes, boots them through Node, and
+requires Chromium's current `?demo=shell` path to fetch the same SHA-256,
+launch the image-owned shell, and exercise the locked command surface. Runtime
+acceptance intentionally happens after archive creation so a package cache hit
+cannot skip it and a package build cannot depend on ambient kernel build
+artifacts.
+
+For local use, `./run.sh build shell-vfs` takes the ordinary resolver path and
+materializes the declared output under `local-binaries`. It may reuse a valid
+public package archive; before allowing normal source fallback, it prepares
+the root `tsx` and `tools/mkrootfs` dependency trees from their committed npm
+lockfiles. The explicit `--fetch-only` mode skips those build prerequisites
+and continues to refuse source fallback.
 
 The wrapper first builds a platform-only VFS from `MANIFEST` and
 `images/rootfs`. It deliberately does not generate or add the
