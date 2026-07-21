@@ -4,20 +4,37 @@ set -euo pipefail
 # Build GNU bc 1.07.1 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: packages/registry/bc/bin/bc.wasm
+# Output: packages/registry/bc/bin/bc.wasm for a direct build, or
+# WASM_POSIX_DEP_OUT_DIR for a resolver/Formula build.
 #
 # bc needs a host-native build first: during compilation, it builds 'fbc'
 # (a temporary bc binary) to process libmath.b into libmath.h. Since fbc
 # must run on the host, we do a native build first to generate libmath.h,
 # then cross-compile with that pre-generated file.
 
-BC_VERSION="${BC_VERSION:-1.07.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/bc-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/bc-host-build"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/bc-src"
+HOST_BUILD_DIR="$WORK_DIR/bc-host-build"
+BIN_DIR="$WORK_DIR/bin"
+LIBMATH_HEADER="$WORK_DIR/libmath.h"
 SYSROOT="$REPO_ROOT/sysroot"
+BC_VERSION="${WASM_POSIX_DEP_VERSION:-${BC_VERSION:-1.07.1}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/bc/bc-${BC_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-bc-source"
+
+# A resolver/Formula caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -42,34 +59,30 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download bc source ---
-download_bc() {
-    local dest="$1"
-    echo "==> Downloading bc $BC_VERSION to $dest..."
-    TARBALL="bc-${BC_VERSION}.tar.gz"
-    URL="https://ftpmirror.gnu.org/gnu/bc/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$dest"
-    tar xzf "/tmp/$TARBALL" -C "$dest" --strip-components=1
-    rm "/tmp/$TARBALL"
-}
-
+expected_source_marker="$(printf '%s\n%s\n%s' "$BC_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$BIN_DIR" "$LIBMATH_HEADER"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    download_bc "$SRC_DIR"
+    echo "==> Staging verified bc $BC_VERSION source..."
+    kandelo_package_stage_verified_source bc "$SRC_DIR" "$VERIFIED_SOURCE_DIR" \
+        "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
 fi
 
 # --- Step 1: Host-native build to generate libmath.h ---
-if [ ! -f "$SCRIPT_DIR/libmath.h" ]; then
+if [ ! -f "$LIBMATH_HEADER" ]; then
     echo "==> Building host-native bc to generate libmath.h..."
     if [ ! -d "$HOST_BUILD_DIR" ]; then
-        download_bc "$HOST_BUILD_DIR"
+        mkdir -p "$HOST_BUILD_DIR"
+        cp -a "$SRC_DIR/." "$HOST_BUILD_DIR/"
     fi
     cd "$HOST_BUILD_DIR"
     if [ ! -f Makefile ]; then
         ./configure --with-readline=no 2>&1 | tail -10
     fi
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -10
-    cp "$HOST_BUILD_DIR/bc/libmath.h" "$SCRIPT_DIR/libmath.h"
+    cp "$HOST_BUILD_DIR/bc/libmath.h" "$LIBMATH_HEADER"
     echo "==> libmath.h generated"
 fi
 
@@ -103,7 +116,7 @@ if [ ! -f Makefile ]; then
 fi
 
 # Place libmath.h from host build.
-cp "$SCRIPT_DIR/libmath.h" "$SRC_DIR/bc/libmath.h"
+cp "$LIBMATH_HEADER" "$SRC_DIR/bc/libmath.h"
 
 # Patch the Makefile to skip fbc/libmath.h regeneration.
 # The Makefile rule rebuilds libmath.h via fbc (a host-native binary) from
@@ -133,7 +146,7 @@ echo ""
 echo "==> bc built successfully!"
 echo "Binary: $BIN_DIR/bc.wasm"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# Apply normal artifact guards and install either to the direct-build mirror or
+# to the caller-owned resolver/Formula output root.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary bc "$SCRIPT_DIR/bin/bc.wasm"
+install_local_binary bc "$BIN_DIR/bc.wasm"

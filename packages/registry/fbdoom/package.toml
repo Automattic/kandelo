@@ -10,12 +10,10 @@ version = "0.1.0"
 kernel_abi = 7
 depends_on = []
 
-# Upstream is a depth-1 git clone of maximevince/fbDOOM at HEAD; no
-# release-tag tarball exists. Source SHA is placeholder until either
-# the upstream pins a release or we mirror a frozen tarball.
+# Upstream has no release tarball, so this package pins an exact commit archive.
 [source]
-url = "https://github.com/maximevince/fbDOOM"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+url = "https://github.com/maximevince/fbDOOM/archive/17280163bc95e5d954d2efaa0633489b763b4cd1.tar.gz"
+sha256 = "77f57cee68fed438dffdba96f6070b8975c16652a63ddf4fb967994e5585a38a"
 
 [license]
 spdx = "GPL-2.0-or-later"

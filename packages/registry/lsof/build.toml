@@ -1,4 +1,9 @@
 script_path = "packages/registry/lsof/build-lsof.sh"
+inputs = [
+  "packages/registry/lsof/build-lsof.sh",
+  "examples/lsof.c",
+  "scripts/package-build-roots.sh",
+]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
 revision    = 2

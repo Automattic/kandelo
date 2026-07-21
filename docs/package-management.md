@@ -404,7 +404,19 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_REVISION` | Effective package revision after `build.toml` is overlaid. |
 | `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from package.toml). |
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
+| `WASM_POSIX_DEP_TARGET_ARCH` | Requested package architecture (`wasm32` or `wasm64`). A package that supports only one must reject the other before invoking its toolchain. |
+| `WASM_POSIX_DEP_WORK_DIR` | Optional caller-owned scratch root. The sealed Homebrew Formula bridge sets this because its reviewed Kandelo checkout is read-only. Direct developer builds may retain a package-local default. |
+| `WASM_POSIX_DEP_SOURCE_DIR` | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
+
+Scripts that accept the optional sealed-build roots should source
+`scripts/package-build-roots.sh`. Explicit source, work, and output roots must
+be absolute, normalized, real non-symlink directories with no pairwise overlap.
+The source root is immutable input: copy it below the work root before patches,
+configure steps, code generation, or compilation. Work products stay below the
+work root, and only declared artifacts are installed into the output root. This
+keeps the normal source-build path usable by Homebrew without granting write
+access to either the reviewed Kandelo checkout or verified source tree.
 
 The libcxx package is intentionally stricter than ordinary source-fetching
 packages. It builds the C++ standard library from the exact LLVM source
