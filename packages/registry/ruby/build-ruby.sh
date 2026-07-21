@@ -508,22 +508,7 @@ cat > "$RUBY_TOOL_DIR/$BASERUBY_COMMAND" <<EOF
 #!/usr/bin/env bash
 exec "$HOST_MINIRUBY" -I"$CROSS_BUILD_DIR" -I"$SRC_DIR/lib" --disable=gems "\$@"
 EOF
-cat > "$RUBY_TOOL_DIR/$RUBY_CC_COMMAND" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-: "${KANDELO_RUBY_WORK_DIR:?KANDELO_RUBY_WORK_DIR must name Ruby's package work root}"
-STABLE_RUBY_BUILD_ROOT="/usr/src/kandelo-packages/ruby"
-
-# Ruby retains __FILE__ strings from assertions in its optimized runtime.
-# Keep those strings and compiler metadata truthful but independent of the
-# caller-owned temporary directory where the package happened to build.
-exec wasm32posix-cc \
-    "-ffile-prefix-map=${KANDELO_RUBY_WORK_DIR}=${STABLE_RUBY_BUILD_ROOT}" \
-    "-fdebug-prefix-map=${KANDELO_RUBY_WORK_DIR}=${STABLE_RUBY_BUILD_ROOT}" \
-    "-fmacro-prefix-map=${KANDELO_RUBY_WORK_DIR}=${STABLE_RUBY_BUILD_ROOT}" \
-    "$@"
-EOF
+cp "$SCRIPT_DIR/kandelo-ruby-cc" "$RUBY_TOOL_DIR/$RUBY_CC_COMMAND"
 chmod +x \
     "$RUBY_TOOL_DIR/$BASERUBY_COMMAND" \
     "$RUBY_TOOL_DIR/$RUBY_CC_COMMAND"
