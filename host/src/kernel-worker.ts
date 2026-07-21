@@ -86,6 +86,7 @@ import {
   PROCESS_MMAP_BASE,
   growMemoryToCover,
 } from "./process-memory";
+import { readForkContinuationAnchor } from "./fork-continuation";
 
 import type { KernelConfig, NetworkAddress, PlatformIO, TcpConnectionPeer, UdpDatagram } from "./types";
 
@@ -9151,7 +9152,11 @@ export class CentralizedKernelWorker {
       ? {
           fnPtr: threadCtx.fnPtr,
           argPtr: threadCtx.argPtr,
-          forkBufAddr: channel.channelOffset - FORK_BUF_SIZE,
+          forkBufAddr: readForkContinuationAnchor(
+            channel.memory,
+            channel.channelOffset - FORK_BUF_SIZE,
+            this.processes.get(parentPid)?.ptrWidth ?? 4,
+          ),
           slotStart: callerSlotStart,
           slotLen: callerSlotLen,
         }

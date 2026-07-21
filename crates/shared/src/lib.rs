@@ -78,7 +78,10 @@ pub mod host_abi;
 ///     require the host_fcntl_lock import; fork/exec OFD state is versioned.
 /// 41: main-thread, pthread, and side-module fork continuations reserve 60 KiB
 ///     so valid wide call stacks do not overwrite adjacent host control state.
-pub const ABI_VERSION: u32 = 41;
+/// 42: fork continuations use transactional, dynamically allocated linked
+///     chunks instead of a fixed-capacity save buffer; instrumented modules
+///     declare the format and import reserve/commit/replay hooks.
+pub const ABI_VERSION: u32 = 42;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///

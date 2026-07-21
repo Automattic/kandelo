@@ -140,6 +140,37 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 
 ## Host runtime
 
+### Recover a partial linked fork unwind after continuation allocation failure
+
+The scalable fork-continuation work is moving from one fixed contiguous save
+buffer to variable-sized frame nodes in linked chunks. The first runtime
+iteration can reserve each node before writing it and therefore remains memory
+safe when the allocator is exhausted, but once inner frames have already
+unwound it cannot yet return an ordinary `ENOMEM` to the original `fork()`
+call. Its truthful initial boundary is to refuse `SYS_FORK`, report the partial
+continuation failure, and terminate the affected process.
+
+A future `ABORT_UNWINDING` state should make that failure recoverable. If saving
+the current outer frame cannot reserve a node, that frame is still a live Wasm
+activation and every already-unwound inner frame has a committed linked node.
+The instrumented control flow can dispatch the live frame back into the saved
+call site, replay the committed inner nodes to the original `fork()` import,
+return `ENOMEM`, restore NORMAL state, and then release the partial chain. The
+same design must cover plain/catch-ref exception state, pthread continuation
+roots, and reversal of a completed side-module unwind before a later
+main-module allocation failure.
+
+The linked-frame implementation must preserve this future recovery path:
+reserve before any current-frame or reference-stash mutation, publish a node
+only after complete commit, retain the failing frame's dynamic call-site state,
+and keep partial-chain ownership until rewind or fatal teardown. Do not emulate
+recovery by retrying an ordinary unwind after the native stack has been partly
+destroyed.
+
+**Files:** `crates/fork-instrument/src/instrument.rs`,
+`crates/fork-instrument/src/runtime.rs`, `host/src/worker-main.ts`,
+`host/src/dylink.ts`, `host/src/kernel-worker.ts`
+
 ### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes
 that declare `__wasm_posix_thread_slots = -1` use that boot-time default.

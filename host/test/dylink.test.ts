@@ -24,7 +24,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
+import { LINKED_FRAME_FORMAT_SECTION } from "../src/fork-continuation";
 
 function hasCompiler(): boolean {
   try {
@@ -80,7 +80,14 @@ function buildDylinkWat(
   mkdirSync(dir, { recursive: true });
   const watPath = join(dir, `${name}.wat`);
   const wasmPath = join(dir, `${name}.wasm`);
-  writeFileSync(watPath, wat);
+  const linkedWat = forkCapabilities !== undefined
+      && (forkCapabilities & FORK_CAP_SIDE_ENTRY) !== 0
+    ? wat.replace("(module", `(module
+          (import "env" "__wpk_fork_frame_reserve" (func (param i32) (result i32)))
+          (import "env" "__wpk_fork_frame_commit" (func (param i32)))
+          (import "env" "__wpk_fork_frame_next" (func (param i32) (result i32)))`)
+    : wat;
+  writeFileSync(watPath, linkedWat);
   execFileSync("wat2wasm", ["--enable-threads", ...wat2wasmFlags, watPath, "-o", wasmPath], {
     stdio: "pipe",
   });
@@ -109,13 +116,26 @@ function buildDylinkWat(
   out.set(module.subarray(0, 8), 0);
   out.set(section, 8);
   out.set(module.subarray(8), 8 + section.length);
-  return forkCapabilities === undefined
-    ? out
-    : appendCustomSection(
+  if (forkCapabilities === undefined) return out;
+  let marked = appendCustomSection(
         out,
         FORK_CAPABILITIES_SECTION,
         new Uint8Array([FORK_CAPABILITIES_VERSION, forkCapabilities]),
       );
+  if ((forkCapabilities & FORK_CAP_SIDE_ENTRY) !== 0) {
+    marked = appendCustomSection(
+      marked,
+      LINKED_FRAME_FORMAT_SECTION,
+      new Uint8Array([
+        0x4b, 0x4c, 0x43, 0x46,
+        1, 0, 24, 0, 4, 8, 1, 0,
+        32, 0, 0, 0,
+        24, 0, 0, 0,
+        8, 0, 0, 0,
+      ]),
+    );
+  }
+  return marked;
 }
 
 describe.skipIf(typeof WebAssembly.Tag !== "function")("longjmp tag identity", () => {
@@ -508,11 +528,22 @@ describe.skipIf(!hasCompiler())("synchronous loading (loadSharedLibrarySync)", (
 });
 
 function createSideForkLoadOptions(): LoadSharedLibraryOptions {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
+  let nextContinuation = 65536;
   return {
-    memory: new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true }),
+    memory,
     table: new WebAssembly.Table({ initial: 1, element: "anyfunc" }),
     stackPointer: new WebAssembly.Global({ value: "i32", mutable: true }, 65536),
     heapPointer: { value: 1024 },
+    allocateContinuation: (size) => {
+      const addr = nextContinuation;
+      nextContinuation += size;
+      const requiredPages = Math.ceil(nextContinuation / 65536);
+      const currentPages = memory.buffer.byteLength / 65536;
+      if (requiredPages > currentPages) memory.grow(requiredPages - currentPages);
+      return addr;
+    },
+    deallocateContinuation: () => {},
     globalSymbols: new Map(),
     got: new Map(),
     loadedLibraries: new Map(),
@@ -658,6 +689,31 @@ describe("side-module fork contract", () => {
       .toThrow(/main module lacks the versioned dlopen-main fork capability; rebuild it/);
   });
 
+  it("rejects a fork-capable side module without process-mapping storage", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "fork" (func $fork (result i32)))
+        (func (export "wpk_fork_unwind_begin") (param i32))
+        (func (export "wpk_fork_unwind_end"))
+        (func (export "wpk_fork_rewind_begin") (param i32))
+        (func (export "wpk_fork_rewind_end"))
+        (func (export "wpk_fork_state") (result i32) i32.const 0)
+        (func (export "side_fork") (result i32) call $fork))
+    `, "side-without-continuation-mapping", FORK_CAP_SIDE_ENTRY);
+    const options = createSideForkLoadOptions();
+    options.allocateContinuation = undefined;
+    options.deallocateContinuation = undefined;
+    options.sideModuleFork = {
+      setActiveFork: () => {},
+      clearActiveFork: () => {},
+      invokeMainFork: () => 0,
+    };
+
+    expect(() => loadSharedLibrarySync("libunmappedfork.so", wasmBytes, options))
+      .toThrow(/require process-mapping allocation and cleanup/);
+  });
+
   it("drives repeated instrumented side-module forks through exact states", () => {
     const wasmBytes = buildDylinkWat(`
       (module
@@ -714,7 +770,7 @@ describe("side-module fork contract", () => {
       expect(sideFork()).toBe(41);
       expect(state()).toBe(1);
       expect(active?.forkBufAddr).toBe(lib.forkBufAddr);
-      expect(active?.forkBufSize).toBe(FORK_SAVE_BUFFER_SIZE);
+      expect(active?.continuation).toBe(lib.forkContinuation);
 
       unwindEnd();
       forkResult = expectedForkResult;

@@ -41,6 +41,11 @@ import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
 } from "./process-memory";
+import {
+  LinkedForkContinuation,
+  readLinkedFrameFormat,
+  writeForkContinuationAnchor,
+} from "./fork-continuation";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -60,6 +65,66 @@ function alignUp(value: number, align: number): number {
 const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
 const PROT_READ_WRITE = 3;
 const MAP_PRIVATE_ANONYMOUS = 0x22;
+
+function continuationMmap(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+  size: number,
+  label: string,
+): number {
+  const base = channelOffset;
+  let view = new DataView(memory.buffer);
+  view.setInt32(base + CH_SYSCALL, SYS_MMAP_NR, true);
+  view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, 0n, true);
+  view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(size), true);
+  view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
+  view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
+  view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, -1n, true);
+  view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
+  let i32 = new Int32Array(memory.buffer);
+  Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+  Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+  while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
+
+  view = new DataView(memory.buffer);
+  i32 = new Int32Array(memory.buffer);
+  const result = Number(view.getBigInt64(base + CH_RETURN, true));
+  const err = view.getUint32(base + CH_ERRNO, true);
+  Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+  if (err || result < 0) {
+    throw new Error(`${label}: mmap(${size}) failed errno=${err || -result}`);
+  }
+  return result;
+}
+
+function continuationMunmap(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+  addr: number,
+  size: number,
+  label: string,
+): void {
+  const base = channelOffset;
+  const view = new DataView(memory.buffer);
+  view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Munmap, true);
+  view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(addr), true);
+  view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(size), true);
+  for (let i = 2; i < 6; i++) {
+    view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+  }
+  const i32 = new Int32Array(memory.buffer);
+  Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+  Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+  while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
+  const resultView = new DataView(memory.buffer);
+  const resultI32 = new Int32Array(memory.buffer);
+  const result = Number(resultView.getBigInt64(base + CH_RETURN, true));
+  const err = resultView.getUint32(base + CH_ERRNO, true);
+  Atomics.store(resultI32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+  if (err || result < 0) {
+    throw new Error(`${label}: munmap(0x${addr.toString(16)}, ${size}) failed errno=${err || -result}`);
+  }
+}
 
 /**
  * Build kernel.* import stubs for channel-mode Wasm modules.
@@ -301,6 +366,7 @@ function buildDlopenImports(
     }
   };
   const linkerAllocations = new Map<number, { rawAddr: number; length: number }>();
+  const archiveEntries = new Map<string, number>();
   let hostDlopenError: string | null = null;
   let mainDlopenDepth = 0;
   const acquireMainDlopenLock = (): boolean => {
@@ -459,6 +525,12 @@ function buildDlopenImports(
               );
             }
             activeSideFork = state;
+            const loaded = loadedLibraries.get(state.name);
+            if (!loaded || loaded.forkContinuation !== state.continuation) {
+              throw new Error(`${state.name}: linked continuation owner mismatch`);
+            }
+            loaded.forkBufAddr = state.forkBufAddr;
+            updateArchiveForkBuffer(state.name, state.forkBufAddr);
             writePtr(new DataView(memory.buffer), activeSideForkSlot, state.forkBufAddr);
           },
           clearActiveFork: (state: SideModuleForkState) => {
@@ -469,12 +541,14 @@ function buildDlopenImports(
               || activeSideFork.name !== state.name
               || activeSideFork.instance !== state.instance
               || activeSideFork.forkBufAddr !== state.forkBufAddr
-              || activeSideFork.forkBufSize !== state.forkBufSize
               || persisted !== state.forkBufAddr
             ) {
               throw new Error(`${state.name}: stale side-module fork identity during rewind`);
             }
             activeSideFork = null;
+            const loaded = loadedLibraries.get(state.name);
+            if (loaded) loaded.forkBufAddr = undefined;
+            updateArchiveForkBuffer(state.name, 0);
             writePtr(view, activeSideForkSlot, 0);
           },
           invokeMainFork: (expectedStateAfter: 0 | 1): number => {
@@ -497,6 +571,19 @@ function buildDlopenImports(
       stackPointer: sp,
       allocateMemory,
       deallocateMemory,
+      allocateContinuation: (size) => continuationMmap(
+        memory,
+        channelOffset,
+        size,
+        "side-module continuation",
+      ),
+      deallocateContinuation: (addr, size) => continuationMunmap(
+        memory,
+        channelOffset,
+        addr,
+        size,
+        "side-module continuation",
+      ),
       globalSymbols,
       got: new Map(),
       loadedLibraries,
@@ -532,6 +619,7 @@ function buildDlopenImports(
     const totalSize = entrySize + nameAligned + bytes.length;
 
     const entry = allocateMemory(totalSize, 8);
+    archiveEntries.set(name, entry);
     const namePtr = entry + entrySize;
     const bytesPtr = namePtr + nameAligned;
 
@@ -579,6 +667,16 @@ function buildDlopenImports(
       }
       cursor = next;
     }
+  };
+
+  const updateArchiveForkBuffer = (name: string, forkBufAddr: number): void => {
+    const entry = archiveEntries.get(name);
+    if (entry === undefined) {
+      throw new Error(`${name}: missing dlopen archive entry for fork continuation`);
+    }
+    const view = new DataView(memory.buffer);
+    if (ptrWidth === 8) view.setBigUint64(entry + 56, BigInt(forkBufAddr), true);
+    else view.setUint32(entry + 28, forkBufAddr, true);
   };
 
   const replayDlopens = (): void => {
@@ -630,6 +728,7 @@ function buildDlopenImports(
       const name = decoder.decode(
         new Uint8Array(new Uint8Array(memory.buffer, namePtr, nameLen)),
       );
+      archiveEntries.set(name, cursor);
       const bytesCopy = new Uint8Array(new Uint8Array(memory.buffer, bytesPtr, bytesLen));
 
       // DynamicLinker.dlopenSync returns 0 on error, >0 on success.
@@ -687,7 +786,7 @@ function buildDlopenImports(
       name: loaded.name,
       instance: loaded.instance,
       forkBufAddr: persisted,
-      forkBufSize: FORK_BUF_SIZE,
+      continuation: loaded.forkContinuation!,
     };
     return activeSideFork;
   };
@@ -706,6 +805,11 @@ function buildDlopenImports(
     if (!state) return;
     if (sideForkState(state) !== 0) {
       throw new Error(`${state.name}: expected NORMAL before side-module rewind`);
+    }
+    if (state.continuation.hasActiveContinuation()) {
+      state.continuation.beginReplay();
+    } else {
+      state.continuation.attachForReplay(state.forkBufAddr);
     }
     (state.instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
       state.forkBufAddr,
@@ -830,6 +934,7 @@ function buildImportObject(
     vmInterruptPtr: number,
     seconds: number,
   ) => void,
+  forkContinuation?: LinkedForkContinuation,
 ): WebAssembly.Imports {
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
@@ -841,6 +946,29 @@ function buildImportObject(
   // Each instance gets its own global, immune to cross-thread shared memory corruption.
   // On wasm64, __channel_base is i64 (BigInt); on wasm32 it's i32 (number).
   const moduleImports = WebAssembly.Module.imports(module);
+  const importsFunction = (name: string): boolean => moduleImports.some(
+    (i) => i.module === "env" && i.name === name && i.kind === "function",
+  );
+  const linkedFrameImportNames = [
+    "__wpk_fork_frame_reserve",
+    "__wpk_fork_frame_commit",
+    "__wpk_fork_frame_next",
+  ];
+  const linkedFrameImportCount = linkedFrameImportNames.filter(importsFunction).length;
+  if (linkedFrameImportCount !== 0 && linkedFrameImportCount !== linkedFrameImportNames.length) {
+    throw new Error("incomplete linked fork instrumentation imports; rebuild the program");
+  }
+  if (linkedFrameImportCount !== 0) {
+    if (!forkContinuation) {
+      throw new Error("linked fork instrumentation requested without continuation storage");
+    }
+    envImports.__wpk_fork_frame_reserve = (size: number | bigint) =>
+      forkContinuation.reserveFrame(size);
+    envImports.__wpk_fork_frame_commit = (payload: number | bigint) =>
+      forkContinuation.commitFrame(payload);
+    envImports.__wpk_fork_frame_next = (size: number | bigint) =>
+      forkContinuation.nextFrame(size);
+  }
   if (moduleImports.some(i => i.module === "env" && i.name === "__channel_base" && i.kind === "global")) {
     if (ptrWidth === 8) {
       envImports.__channel_base = new WebAssembly.Global({ value: "i64", mutable: true }, BigInt(channelOffset));
@@ -1091,13 +1219,15 @@ function buildImportObject(
   return importObject;
 }
 
-/** Size of the fork save buffer used by wpk_fork_* instrumentation */
+/** Legacy control-page geometry retained as the per-channel anchor location. */
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 /**
- * Detect a fork-continuation save-buffer overrun after an unwind completes.
+ * Detect a legacy contiguous fork-save-buffer overrun after unwind.
  *
- * The instrumentation keeps `current_pos` — the pointer-width integer at the
+ * ABI 42 linked continuations do not use this check. It remains exported for
+ * stale-buffer regression coverage. Legacy instrumentation keeps
+ * `current_pos` — the pointer-width integer at the
  * base of the save buffer (`forkBufAddr + 0`) — seeded to the absolute address
  * `forkBufAddr + frames_start_offset` and advanced by every saved frame. After
  * unwind it is therefore the high-water linear-memory address written (see
@@ -1135,9 +1265,9 @@ export function forkSaveBufferOverrun(
  * main buffer cannot protect this continuation.
  */
 export function finalizeSideModuleForkUnwind(
-  memory: WebAssembly.Memory,
+  _memory: WebAssembly.Memory,
   state: SideModuleForkState,
-  ptrWidth: 4 | 8,
+  _ptrWidth: 4 | 8,
 ): void {
   const sideForkState = (): number =>
     Number((state.instance.exports.wpk_fork_state as () => number)());
@@ -1149,21 +1279,7 @@ export function finalizeSideModuleForkUnwind(
     throw new Error(`${state.name}: side-module unwind did not return to NORMAL`);
   }
 
-  const overrun = forkSaveBufferOverrun(
-    memory,
-    state.forkBufAddr,
-    ptrWidth,
-    state.forkBufSize,
-  );
-  if (overrun > 0) {
-    throw new Error(
-      `${state.name}: side-module fork() continuation save buffer overflow — ` +
-        `the call stack at fork() needed ${state.forkBufSize + overrun} bytes ` +
-        `but only ${state.forkBufSize} (FORK_SAVE_BUFFER_SIZE) are reserved; ` +
-        `the side-module stack is too deep/wide to fork here. This is a ` +
-        `platform limit of the fork continuation buffer, not a defect in the program.`,
-    );
-  }
+  state.continuation.finishUnwind();
 }
 
 // Host-private control slots below the process main channel's fork buffer.
@@ -1403,10 +1519,18 @@ export async function centralizedWorkerMain(
     );
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
-    const forkBufAddr = initData.forkBufAddr ?? channelOffset - FORK_BUF_SIZE;
+    let forkBufAddr = initData.forkBufAddr ?? 0;
     const dlopenArchiveControlAddr = channelOffset - FORK_BUF_SIZE;
 
     if (hasForkInstrumentation) {
+      const linkedFrameFormat = readLinkedFrameFormat(module);
+      const forkContinuation = new LinkedForkContinuation(
+        memory,
+        linkedFrameFormat,
+        (size) => continuationMmap(memory, channelOffset, size, `pid=${pid}`),
+        (addr, size) => continuationMunmap(memory, channelOffset, addr, size, `pid=${pid}`),
+        `pid=${pid}`,
+      );
       // Override kernel_fork with fork-instrumentation-aware version.
       // Late-bound: processInstance is set after instantiation.
       let processInstance: WebAssembly.Instance | null = null;
@@ -1419,6 +1543,9 @@ export async function centralizedWorkerMain(
         if (state === 2) {
           // Rewinding: end rewind and return the stored fork result
           (processInstance.exports.wpk_fork_rewind_end as () => void)();
+          forkContinuation.finishReplayAndRelease();
+          writeForkContinuationAnchor(memory, dlopenArchiveControlAddr, ptrWidth, 0);
+          forkBufAddr = 0;
           return forkResult;
         }
 
@@ -1427,6 +1554,13 @@ export async function centralizedWorkerMain(
         // wpk_fork_unwind_begin self-initializes current_pos and snapshots
         // saved_globals (including __tls_base and __stack_pointer) into the
         // buffer — the host no longer pre-seeds the header.
+        forkBufAddr = Number(forkContinuation.beginUnwind());
+        writeForkContinuationAnchor(
+          memory,
+          dlopenArchiveControlAddr,
+          ptrWidth,
+          forkBufAddr,
+        );
         (processInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         return 0; // ignored during unwind
       };
@@ -1454,7 +1588,8 @@ export async function centralizedWorkerMain(
             vmInterruptPtr,
             seconds,
           } satisfies WorkerToHostMessage);
-        });
+        },
+        forkContinuation);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
       if (initData.isForkChild) {
@@ -1491,11 +1626,8 @@ export async function centralizedWorkerMain(
           forkResult = 0; // fork() returns 0 in child
         }
 
-        // Use parent's fork buffer address for child rewind
-        const rewindAddr = initData.isForkChild && initData.forkBufAddr != null
-          ? initData.forkBufAddr
-          : forkBufAddr;
         let replayedForkChildDlopens = false;
+        let attachedForkChildContinuation = false;
 
         // Choose entry: normal _start, or — for a fork-from-non-main-thread
         // child — call the parent thread's thread function directly. _start
@@ -1524,6 +1656,18 @@ export async function centralizedWorkerMain(
 
         for (;;) {
           if (needsRewind) {
+            const rewindAddr = initData.isForkChild
+                && !attachedForkChildContinuation
+                && initData.forkBufAddr != null
+              ? initData.forkBufAddr
+              : forkBufAddr;
+            if (initData.isForkChild && !attachedForkChildContinuation) {
+              // A fork child has copied chunks but a fresh JS owner.
+              forkContinuation.attachForReplay(rewindAddr);
+              attachedForkChildContinuation = true;
+            } else {
+              forkContinuation.beginReplay();
+            }
             // wpk_fork_rewind_begin restores all saved mutable globals
             // (including __tls_base and __stack_pointer) from the fork
             // buffer. Must run before setupChannelBase, which reads
@@ -1560,31 +1704,7 @@ export async function centralizedWorkerMain(
           if (forkState === 1) {
             // Unwind completed (fork) — finalize and send SYS_FORK.
             unwindEnd();
-
-            // The unwind writes saved frames into a fixed FORK_BUF_SIZE buffer
-            // that abuts the syscall channel. If the call stack at fork() was
-            // too deep/wide, those writes overran into the channel. Fail
-            // truthfully here rather than sending a fork on a corrupt channel
-            // and spawning a child whose continuation buffer is already
-            // clobbered (which otherwise surfaces as an unexplained trap or a
-            // child worker that never makes progress). The process is torn
-            // down after this throw, discarding the corrupted channel.
-            const overrun = forkSaveBufferOverrun(
-              memory,
-              forkBufAddr,
-              ptrWidth,
-              FORK_BUF_SIZE,
-            );
-            if (overrun > 0) {
-              throw new Error(
-                `pid=${pid}: fork() continuation save buffer overflow — the ` +
-                  `call stack at fork() needed ${FORK_BUF_SIZE + overrun} bytes ` +
-                  `but only ${FORK_BUF_SIZE} (FORK_SAVE_BUFFER_SIZE) are ` +
-                  `reserved; the stack is too deep/wide to fork here. This is a ` +
-                  `platform limit of the fork continuation buffer, not a defect ` +
-                  `in the program.`,
-              );
-            }
+            forkContinuation.finishUnwind();
 
             dlopenSupport.completeSideModuleForkUnwind();
 
@@ -2362,7 +2482,23 @@ export async function centralizedThreadWorkerMain(
 
     const moduleExports = WebAssembly.Module.exports(module);
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
-    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
+    let forkBufAddr = 0;
+    const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
+    const threadForkContinuation = hasForkInstrumentation
+      ? new LinkedForkContinuation(
+          memory,
+          readLinkedFrameFormat(module),
+          (size) => continuationMmap(memory, channelOffset, size, `pid=${pid} tid=${tid}`),
+          (addr, size) => continuationMunmap(
+            memory,
+            channelOffset,
+            addr,
+            size,
+            `pid=${pid} tid=${tid}`,
+          ),
+          `pid=${pid} tid=${tid}`,
+        )
+      : null;
     const processArchiveHeadOffset = ptrWidth === 8
       ? DLOPEN_HEAD_OFFSET_WASM64
       : DLOPEN_HEAD_OFFSET_WASM32;
@@ -2415,6 +2551,9 @@ export async function centralizedThreadWorkerMain(
         if (state === 2) {
           try {
             (threadInstance.exports.wpk_fork_rewind_end as () => void)();
+            threadForkContinuation!.finishReplayAndRelease();
+            writeForkContinuationAnchor(memory, forkAnchorAddr, ptrWidth, 0);
+            forkBufAddr = 0;
           } finally {
             releasePthreadForkLock();
           }
@@ -2435,6 +2574,13 @@ export async function centralizedThreadWorkerMain(
         }
 
         try {
+          forkBufAddr = Number(threadForkContinuation!.beginUnwind());
+          writeForkContinuationAnchor(
+            memory,
+            forkAnchorAddr,
+            ptrWidth,
+            forkBufAddr,
+          );
           (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         } catch (error) {
           releasePthreadForkLock();
@@ -2465,7 +2611,8 @@ export async function centralizedThreadWorkerMain(
           vmInterruptPtr,
           seconds,
         } satisfies WorkerToHostMessage);
-      });
+      },
+      threadForkContinuation ?? undefined);
     const instance = new WebAssembly.Instance(module, importObject);
     threadInstance = instance;
 
@@ -2517,6 +2664,7 @@ export async function centralizedThreadWorkerMain(
 
       for (;;) {
         if (needsRewind) {
+          threadForkContinuation!.beginReplay();
           rewindBegin(forkBufAddr);
           needsRewind = false;
         }
@@ -2539,23 +2687,7 @@ export async function centralizedThreadWorkerMain(
         const forkState = getState();
         if (forkState === 1) {
           unwindEnd();
-          // See the main-process fork path: a too-deep/wide stack overruns the
-          // fixed save buffer into the channel. Detect and fail truthfully.
-          const overrun = forkSaveBufferOverrun(
-            memory,
-            forkBufAddr,
-            ptrWidth,
-            FORK_BUF_SIZE,
-          );
-          if (overrun > 0) {
-            throw new Error(
-              `pid=${pid} tid=${tid}: fork() continuation save buffer ` +
-                `overflow — the call stack at fork() needed ` +
-                `${FORK_BUF_SIZE + overrun} bytes but only ${FORK_BUF_SIZE} ` +
-                `(FORK_SAVE_BUFFER_SIZE) are reserved; too deep/wide to fork ` +
-                `from this thread. Platform limit, not a program defect.`,
-            );
-          }
+          threadForkContinuation!.finishUnwind();
           // Close the race where the process main worker dlopens after this
           // pthread began unwinding but before it completed. Rewind locally
           // with ENOTSUP and do not create a child.

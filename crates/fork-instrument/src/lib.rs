@@ -20,6 +20,7 @@ use wasmparser::{Parser, Payload};
 
 pub mod call_graph;
 pub mod instrument;
+pub mod linked_frames;
 pub mod runtime;
 
 /// Versioned artifact claim emitted by `wasm-fork-instrument` and consumed by
@@ -148,7 +149,15 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         .collect();
     fork_path_targets.sort();
     let b1_plan = instrument::plan_b1_scratch(&module, &fork_path_targets);
-    let runtime = runtime::inject_runtime(&mut module, b1_plan.total_bytes);
+    // Only modules with the configured fork seed need linked-frame imports.
+    // Runtime exports and metadata remain stable for no-seed modules, but
+    // adding unused host imports would make an otherwise inert side module
+    // impossible to instantiate through the dynamic linker.
+    let runtime = if entry.is_some() {
+        runtime::inject_linked_runtime(&mut module, b1_plan.total_bytes)
+    } else {
+        runtime::inject_runtime(&mut module, b1_plan.total_bytes)
+    };
 
     // Phase 4b: structural wrap of each fork-path function's body.
     // No-op when `fork_path` is empty (module doesn't use fork).
@@ -166,6 +175,30 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     module.customs.add(RawCustomSection {
         name: FORK_CAPABILITIES_SECTION.into(),
         data: vec![FORK_CAPABILITIES_VERSION, fork_capabilities],
+    });
+
+    loop {
+        let existing = module
+            .customs
+            .iter()
+            .find(|(_, section)| section.name() == linked_frames::LINKED_FRAME_FORMAT_SECTION)
+            .map(|(id, _)| id);
+        let Some(existing) = existing else { break };
+        module.customs.delete(existing);
+    }
+    let pointer_width = match runtime.buf_type {
+        walrus::ValType::I32 => linked_frames::PointerWidth::Wasm32,
+        walrus::ValType::I64 => linked_frames::PointerWidth::Wasm64,
+        other => unreachable!("unsupported fork buffer pointer type: {other:?}"),
+    };
+    module.customs.add(RawCustomSection {
+        name: linked_frames::LINKED_FRAME_FORMAT_SECTION.into(),
+        data: linked_frames::FrameFormatDescriptor::current(
+            pointer_width,
+            runtime.frames_start_offset,
+        )
+        .encode()
+        .to_vec(),
     });
 
     // Historical phase list (Phase 4b/4c/4d/4e/4f/5/6) was an artefact

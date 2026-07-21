@@ -50,6 +50,8 @@ interface Expected {
   argv?: string[];
   /** Optional virtual-path → wasm binary map for exec/spawn targets. */
   execPrograms?: Map<string, string>;
+  /** Opt out when the fixture does not access the filesystem. */
+  useDefaultRootfs?: boolean;
 }
 
 async function runFixture(relPath: string, expected: Expected) {
@@ -66,6 +68,7 @@ async function runFixture(relPath: string, expected: Expected) {
     argv: expected.argv ?? [relPath],
     timeout: expected.timeout ?? 10_000,
     execPrograms: expected.execPrograms,
+    useDefaultRootfs: expected.useDefaultRootfs,
   });
   expect(
     result.exitCode,
@@ -468,6 +471,17 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
     await runFixture("programs/p_09_posix_spawn_fork.wasm", {
       contains: ["PRE_SPAWN", "PARENT: child=", "PASS: P-09"],
       execPrograms: echoExecMap,
+    });
+  });
+
+  // P-10: 4,096 live recursive activations require more frame payload than
+  // ABI 41's retired 60 KiB contiguous reserve. This is the end-to-end guard
+  // that the ABI 42 host grows a linked continuation and replays it safely.
+  it("P-10 continuation grows beyond the retired fixed reserve", async () => {
+    await runFixture("programs/p_10_deep_linked_continuation.wasm", {
+      contains: ["PRE_DEEP_FORK", "DEEP_CHILD: ok", "DEEP_PARENT: child=", "PASS: P-10"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
     });
   });
 });

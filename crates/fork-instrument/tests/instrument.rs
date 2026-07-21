@@ -839,6 +839,15 @@ fn two_calls_assign_sequential_call_idx() {
     let caller = func_by_name(&module, "caller");
     let _unwind_save = entry_wrapper_seq(&module, caller);
     let f = local_func(&module, caller);
+    let reserve = module
+        .imports
+        .iter()
+        .find(|import| import.name == "__wpk_fork_frame_reserve")
+        .and_then(|import| match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        })
+        .expect("linked frame reserve import");
 
     // Count Const values immediately preceding stores to frame.call_index.
     fn walk_seqs<F: FnMut(InstrSeqId)>(f: &LocalFunction, seq: InstrSeqId, visit: &mut F) {
@@ -856,6 +865,12 @@ fn two_calls_assign_sequential_call_idx() {
         for i in 1..instrs.len() {
             if let Instr::Store(store) = &instrs[i].0 {
                 if store.arg.offset == 4 {
+                    assert!(
+                        instrs[..i].iter().any(|(instr, _)| {
+                            matches!(instr, Instr::Call(ir::Call { func }) if *func == reserve)
+                        }),
+                        "frame must be reserved before call_index is written",
+                    );
                     if let Instr::Const(c) = &instrs[i - 1].0 {
                         if let ir::Value::I32(v) = c.value {
                             idxs.push(v);
@@ -950,7 +965,7 @@ fn preamble_starts_with_rewinding_state_check() {
 }
 
 #[test]
-fn preamble_then_moves_cursor_to_current_frame() {
+fn preamble_then_requests_next_linked_frame() {
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     let module = Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
@@ -961,17 +976,15 @@ fn preamble_then_moves_cursor_to_current_frame() {
         kinds,
         vec![
             InstrKind::GlobalGet, // buf store address
-            InstrKind::GlobalGet, // buf load address
-            InstrKind::Other,     // Load current_pos
             InstrKind::Const,     // frame_size
-            InstrKind::Binop,     // sub to current frame base
-            InstrKind::Other,     // Store new current_pos/current frame
+            InstrKind::Call,      // __wpk_fork_frame_next
+            InstrKind::Other,     // Store current frame pointer
         ],
     );
 }
 
 #[test]
-fn postamble_writes_frame_header_and_bumps_current_pos() {
+fn postamble_writes_and_commits_the_reserved_linked_frame() {
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     let module = Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
@@ -990,11 +1003,8 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
         InstrKind::Const,
         InstrKind::Other, // Store packed zero catch_region_id + exnref_slot
         InstrKind::GlobalGet,
-        InstrKind::GlobalGet,
         InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Binop,
-        InstrKind::Other, // Store new current_pos
+        InstrKind::Call,  // __wpk_fork_frame_commit
         InstrKind::Const, // default return value
     ];
     assert_eq!(postamble, expected);
@@ -1078,15 +1088,16 @@ fn postamble_serializes_user_scalar_locals() {
     let postamble = &kinds[postamble_start..];
 
     // Postamble with one user local:
-    //   4 current-frame pointer loads + 4 stores (func_index,
-    //   packed zero catch fields, user_x, new current_pos) = 8 Others.
+    //   4 current-frame pointer loads/stores plus three payload stores
+    //   (func_index, packed zero catch fields, user_x) = 7 Others. The linked
+    //   commit replaces the legacy current_pos bump.
     let other_count = postamble
         .iter()
         .filter(|k| matches!(k, InstrKind::Other))
         .count();
     assert_eq!(
-        other_count, 8,
-        "postamble should have 4 frame loads + 4 stores (header 2 + user 1 + bump 1): {postamble:?}",
+        other_count, 7,
+        "postamble should load/store the active payload and serialize its fields: {postamble:?}",
     );
 }
 
