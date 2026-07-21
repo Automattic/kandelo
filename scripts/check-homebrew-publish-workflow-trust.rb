@@ -1464,6 +1464,26 @@ def check_publisher(workflow)
   check(flake.scan("pkgs.gnutar".b).length == 1,
         "dev shell does not declare exactly one GNU tar publisher input")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
+  formula_support_inputs = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-formula-support-inputs.sh")
+  )
+  [
+    "homebrew_prune_formula_support_tests_from_tapped_clone()",
+    'test_relative="Kandelo/formula_support/test"',
+    'test_root="$tapped_root/$test_relative"',
+    'git -C "$tapped_root" ls-tree HEAD -- "$test_relative"',
+    'git -C "$tapped_root" ls-tree -r HEAD -- "$test_relative"',
+    'awk \'$1 != "100644" && $1 != "100755" { print; exit }\'',
+    'find "$test_root" -mindepth 1',
+    'rm -rf -- "$test_root"',
+  ].each do |fragment|
+    check(formula_support_inputs.include?(fragment),
+          "Formula support execution-input boundary lacks #{fragment}")
+  end
+  check(!formula_support_inputs.include?('Kandelo/formula_support/*') &&
+        !formula_support_inputs.include?('Kandelo/formula_support/**') &&
+        formula_support_inputs.scan('rm -rf -- "$test_root"').length == 1,
+        "Formula support execution-input boundary prunes more than the reserved test tree")
   formula_closure = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-formula-runtime-closure.rb")
   )
@@ -1480,6 +1500,7 @@ def check_publisher(workflow)
           "static Formula closure lacks immutable tap identity binding: #{fragment}")
   end
   [
+    'TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"',
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
     'homebrew_patched_launcher_teardown "$BUILD_USER"',
     "homebrew_patched_launcher_verify_isolation",
@@ -1641,6 +1662,12 @@ def check_publisher(workflow)
   )
   [bottle_builder, bottle_verifier].each do |formula_runner|
     check(formula_runner.include?(
+      '. "$KANDELO_ROOT/scripts/homebrew-formula-support-inputs.sh"'
+    ) && formula_runner.scan(
+      'homebrew_prune_formula_support_tests_from_tapped_clone'
+    ).length == 2,
+          "Formula runner does not prune primary and dependency execution clones")
+    check(formula_runner.include?(
       "PUBLISHER_ISOLATION_PATCH_FILE=\"$KANDELO_ROOT/#{publisher_isolation_patch_path}\""
     ) &&
           formula_runner.include?(
@@ -1669,6 +1696,16 @@ def check_publisher(workflow)
       check(formula_runner.include?(fragment),
             "Formula runner immutable dependency tap binding lacks #{fragment}")
     end
+    dependency_clean_index = formula_runner.index(
+      '[ -z "$(git -C "$tapped_dependency_root" status --short --untracked-files=all)" ]'
+    )
+    dependency_prune_index = formula_runner.index(
+      "homebrew_prune_formula_support_tests_from_tapped_clone \\\n" \
+      '      "$tapped_dependency_root"'
+    )
+    check(dependency_clean_index && dependency_prune_index &&
+          dependency_clean_index < dependency_prune_index,
+          "Formula runner prunes dependency tests before validating the exact clean clone")
     [
       'NATIVE_PREFIX="$(homebrew_patched_launcher_native_prefix_path "$NATIVE_BASE")"',
       'NATIVE_CACHE="$NATIVE_BASE/c"',
@@ -1737,6 +1774,29 @@ def check_publisher(workflow)
     check(formula_runner.scan('NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"').length == 1,
           "Formula runner does not use exactly one bounded native prefix")
   end
+  builder_tap_clone_index = bottle_builder.index(
+    '"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"'
+  )
+  builder_clean_clone_index = bottle_builder.index(
+    'git -C "$TAPPED_TAP_ROOT" rev-parse HEAD'
+  )
+  builder_primary_prune_index = bottle_builder.index(
+    'homebrew_prune_formula_support_tests_from_tapped_clone "$TAPPED_TAP_ROOT"'
+  )
+  builder_execution_rescan_index = bottle_builder.index(
+    '"$TAPPED_TAP_ROOT" "$TAP_NAME" "$FORMULA" --tier2-bridge-json'
+  )
+  builder_isolate_index = bottle_builder.index(
+    'homebrew_patched_launcher_isolate "$BUILD_USER"'
+  )
+  check(builder_tap_clone_index && builder_clean_clone_index &&
+        builder_primary_prune_index && builder_execution_rescan_index &&
+        builder_isolate_index &&
+        builder_tap_clone_index < builder_clean_clone_index &&
+        builder_clean_clone_index < builder_primary_prune_index &&
+        builder_primary_prune_index < builder_execution_rescan_index &&
+        builder_execution_rescan_index < builder_isolate_index,
+        "reviewed bottle builder exposes support tests or prunes an unvalidated primary clone")
   check(bottle_builder.include?('rm -rf "$NATIVE_BASE" "$WORK_DIR"'),
         "reviewed bottle builder does not remove its temporary realms")
   protected_bottle_stage_index = bottle_verifier.index(
@@ -1830,6 +1890,19 @@ def check_publisher(workflow)
   selected_formula_index = bottle_verifier.index(
     'mapfile -t selected_tap_changes'
   )
+  selected_formula_compare_index = bottle_verifier.index(
+    'cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"'
+  )
+  primary_test_prune_index = bottle_verifier.rindex(
+    'homebrew_prune_formula_support_tests_from_tapped_clone "$TAPPED_TAP_ROOT"'
+  )
+  verifier_isolate_after_prune_index = bottle_verifier.index(
+    'homebrew_patched_launcher_isolate "$BUILD_USER"', primary_test_prune_index || 0
+  )
+  verifier_deps_after_prune_index = bottle_verifier.index(
+    'deps --topological --full-name --formula "$FORMULA_REF"',
+    primary_test_prune_index || 0
+  )
   check(
     bottle_verifier.include?(
       'RECONSTRUCTED_FORMULA_RELATIVE="Formula/$FORMULA.rb"'
@@ -1868,10 +1941,16 @@ def check_publisher(workflow)
       !bottle_verifier.include?(' -ef "$TAP_ROOT/Formula/$FORMULA.rb"') &&
       reconstructed_source_index && tap_clone_index && clean_clone_index &&
       materialize_formula_index && selected_formula_index &&
+      selected_formula_compare_index && primary_test_prune_index &&
       reconstructed_source_index < tap_clone_index &&
       tap_clone_index < clean_clone_index &&
       clean_clone_index < materialize_formula_index &&
-      materialize_formula_index < selected_formula_index,
+      materialize_formula_index < selected_formula_index &&
+      selected_formula_index < selected_formula_compare_index &&
+      selected_formula_compare_index < primary_test_prune_index &&
+      verifier_isolate_after_prune_index && verifier_deps_after_prune_index &&
+      primary_test_prune_index < verifier_isolate_after_prune_index &&
+      primary_test_prune_index < verifier_deps_after_prune_index,
     "bottle verifier does not materialize only the reconstructed Formula into the planned Homebrew tap clone"
   )
   [
@@ -3663,6 +3742,7 @@ def check_publisher(workflow)
     'git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit"',
     'assert_static_tap_tree "$PLANNED_TAP_ROOT" "planned composition tap"',
     '[ "$(git -C "$PLANNED_TAP_ROOT" rev-parse HEAD)" = "$input_tap_commit" ]',
+    '--reviewed-tap-root "$PLANNED_TAP_ROOT"',
     '--planned-tap-root "$PLANNED_TAP_ROOT"',
     'git -C "$TAP_ROOT" worktree remove --force "$PLANNED_TAP_ROOT"',
   ].each do |fragment|
@@ -3687,6 +3767,21 @@ def check_publisher(workflow)
         finalizer_source.rindex("\nacquire_lock\n") <
           finalizer_source.rindex('for ((publication_index = 0; publication_index < ${#PUBLICATION_HANDOFFS[@]}; publication_index++))'),
         "publisher does not acquire exactly one tap lock before batch composition")
+  check(finalizer_source.scan('--reviewed-tap-root "$PLANNED_TAP_ROOT"').length == 1,
+        "publisher finalizer does not bind source closure to one planned checkout")
+  planned_checkout_index = finalizer_source.index(
+    'git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit"'
+  )
+  source_closure_index = finalizer_source.index(
+    'scripts/homebrew-validate-formula-source-closure.sh'
+  )
+  provenance_rebind_index = finalizer_source.index(
+    'scripts/homebrew-dependency-provenance.py" validate'
+  )
+  check(planned_checkout_index && source_closure_index && provenance_rebind_index &&
+         planned_checkout_index < source_closure_index &&
+         source_closure_index < provenance_rebind_index,
+         "publisher finalizer validates sources or dependencies before binding the planned checkout")
   publisher_test_source = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
   )

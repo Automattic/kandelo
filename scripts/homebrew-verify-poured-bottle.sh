@@ -109,6 +109,8 @@ TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-formula-support-inputs.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 BOTTLE_TAG="${ARCH}_kandelo"
 for file in "$BOTTLE" "$BOTTLE_JSON" "$DEPENDENCY_PROVENANCE" "$SELECTION_RECEIPT"; do
@@ -424,6 +426,8 @@ if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
       echo "homebrew-verify-poured-bottle.sh: Homebrew did not clone dependency tap $dependency_tap at its locked commit cleanly" >&2
       exit 1
     }
+    homebrew_prune_formula_support_tests_from_tapped_clone \
+      "$tapped_dependency_root"
     printf '%s\n' "$dependency_tap" >>"$ALLOWED_TARGET_TAPS"
     DEPENDENCY_TAP_ROOTS+=("$dependency_root")
   done < <(jq -er '.dependencies[] | [.tap_name, .root, .tap_commit] | @tsv' \
@@ -470,6 +474,7 @@ cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
   echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
   exit 1
 }
+homebrew_prune_formula_support_tests_from_tapped_clone "$TAPPED_TAP_ROOT"
 
 if [ -n "$BUILD_USER" ]; then
   rm -rf "$KANDELO_ROOT/host/dist"

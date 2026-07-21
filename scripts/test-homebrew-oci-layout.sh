@@ -311,6 +311,108 @@ build_child child32 wasm32
 build_child child64 wasm64
 build_child generic32 wasm32 "hello fixture" "fixture support v1" 0644 "" \
   Acme/homebrew-tools Acme/tools
+
+# The publisher removes the exact top-level Formula-support test directory from
+# disposable execution clones, so that reserved subtree is not a bottle input.
+# Every other support path remains a conservative recursive input.
+source_closure_root="$TMP_ROOT/source-closure-inputs"
+cp -a "$TMP_ROOT/child32/tap" "$source_closure_root"
+printf 'export const buildInput = "v1";\n' \
+  >"$source_closure_root/Kandelo/formula_support/build-input.ts"
+source_closure_args=(
+  source-closure
+  --tap-root "$source_closure_root"
+  --kandelo-root "$REPO_ROOT"
+  --tap-repository kandelo-dev/homebrew-tap-core
+  --tap-name kandelo-dev/tap-core
+  --formula hello
+)
+python3 "$TOOL" "${source_closure_args[@]}" \
+  --out "$TMP_ROOT/source-closure-baseline.json"
+mkdir -p "$source_closure_root/Kandelo/formula_support/test"
+printf 'test-only-v1\n' \
+  >"$source_closure_root/Kandelo/formula_support/test/support_test.rb"
+python3 "$TOOL" "${source_closure_args[@]}" \
+  --out "$TMP_ROOT/source-closure-with-test.json"
+[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-baseline.json")" = \
+  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-test.json")" ] || {
+  echo "Formula support test source changed the bottle source closure" >&2
+  exit 1
+}
+printf 'test-only-v2\n' \
+  >"$source_closure_root/Kandelo/formula_support/test/support_test.rb"
+python3 "$TOOL" "${source_closure_args[@]}" \
+  --out "$TMP_ROOT/source-closure-with-changed-test.json"
+[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-baseline.json")" = \
+  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-changed-test.json")" ] || {
+  echo "Formula support test edit changed the bottle source closure" >&2
+  exit 1
+}
+chmod 0755 "$source_closure_root/Kandelo/formula_support/test/support_test.rb"
+python3 "$TOOL" "${source_closure_args[@]}" \
+  --out "$TMP_ROOT/source-closure-with-executable-test.json"
+[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-baseline.json")" = \
+  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-executable-test.json")" ] || {
+  echo "Formula support test mode changed the bottle source closure" >&2
+  exit 1
+}
+ln -s ../build-input.ts \
+  "$source_closure_root/Kandelo/formula_support/test/unsafe-link"
+if python3 "$TOOL" "${source_closure_args[@]}" \
+    --out "$TMP_ROOT/source-closure-with-unsafe-test-link.json" \
+    >/dev/null 2>&1; then
+  echo "Formula support source closure accepted a symlink inside excluded tests" >&2
+  exit 1
+fi
+rm "$source_closure_root/Kandelo/formula_support/test/unsafe-link"
+mkfifo "$source_closure_root/Kandelo/formula_support/test/unsafe-fifo"
+if python3 "$TOOL" "${source_closure_args[@]}" \
+    --out "$TMP_ROOT/source-closure-with-unsafe-test-fifo.json" \
+    >/dev/null 2>&1; then
+  echo "Formula support source closure accepted a special file inside excluded tests" >&2
+  exit 1
+fi
+rm "$source_closure_root/Kandelo/formula_support/test/unsafe-fifo"
+rm "$source_closure_root/Kandelo/formula_support/test/support_test.rb"
+rmdir "$source_closure_root/Kandelo/formula_support/test"
+printf 'export const buildInput = "v2";\n' \
+  >"$source_closure_root/Kandelo/formula_support/build-input.ts"
+python3 "$TOOL" "${source_closure_args[@]}" \
+  --out "$TMP_ROOT/source-closure-with-changed-input.json"
+[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-baseline.json")" != \
+  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-changed-input.json")" ] || {
+  echo "Formula support build-input edit did not change the bottle source closure" >&2
+  exit 1
+}
+printf 'a similarly named top-level path remains an input\n' \
+  >"$source_closure_root/Kandelo/formula_support/test-other"
+python3 "$TOOL" "${source_closure_args[@]}" \
+  --out "$TMP_ROOT/source-closure-with-test-other.json"
+[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-changed-input.json")" != \
+  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-test-other.json")" ] || {
+  echo "Formula support path named test-other was excluded from the source closure" >&2
+  exit 1
+}
+mkdir -p "$source_closure_root/Kandelo/formula_support/runtime/test"
+printf 'nested production input\n' \
+  >"$source_closure_root/Kandelo/formula_support/runtime/test/input.ts"
+python3 "$TOOL" "${source_closure_args[@]}" \
+  --out "$TMP_ROOT/source-closure-with-nested-test.json"
+[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-test-other.json")" != \
+  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-nested-test.json")" ] || {
+  echo "Nested Formula support directory named test was excluded from the source closure" >&2
+  exit 1
+}
+printf 'regular direct child, not an excluded test directory\n' \
+  >"$source_closure_root/Kandelo/formula_support/test"
+python3 "$TOOL" "${source_closure_args[@]}" \
+  --out "$TMP_ROOT/source-closure-with-test-file.json"
+[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-nested-test.json")" != \
+  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-test-file.json")" ] || {
+  echo "Formula support direct file named test was excluded from the source closure" >&2
+  exit 1
+}
+
 python3 - "$TMP_ROOT/generic32/layout" "$TMP_ROOT/generic32/receipt.json" <<'PY'
 import json
 import pathlib

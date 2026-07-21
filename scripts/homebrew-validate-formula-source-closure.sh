@@ -16,10 +16,13 @@ usage() {
 usage: scripts/homebrew-validate-formula-source-closure.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --base-ref <commit> [--reviewed-tap-root <dir>]
 
 Compares the working tap against the reviewed Formula source at base-ref.
-Canonical bottle metadata may differ. Formula code and every file in the
-required Kandelo/formula_support tree must remain unchanged. When
---reviewed-tap-root is supplied, base-ref must be its exact clean HEAD; this
-keeps the comparison independent from Git state exposed to Formula execution.
+Canonical bottle metadata may differ. Formula code and every publisher input
+in Kandelo/formula_support must remain unchanged. Only the real top-level test
+directory is excluded from identity; the publisher removes that reserved
+validation-only subtree from disposable tap clones before Formula execution.
+When --reviewed-tap-root is supplied, base-ref must be its exact clean HEAD;
+this keeps the comparison independent from Git state exposed to Formula
+execution.
 EOF
 }
 
@@ -157,6 +160,7 @@ if grep -Fq "$support_marker" "$BASE_FORMULA"; then
   fi
 
   SUPPORT_RELATIVE="Kandelo/formula_support"
+  SUPPORT_TEST_RELATIVE="$SUPPORT_RELATIVE/test"
   SUPPORT_PATH="$TAP_ROOT/$SUPPORT_RELATIVE"
   SUPPORT_HELPER="$SUPPORT_RELATIVE/kandelo_formula_support.rb"
   BASE_HELPER_MODE="$(git -C "$BASE_GIT_ROOT" ls-tree "$BASE_COMMIT" -- "$SUPPORT_HELPER" | awk '{print $1 " " $2}')"
@@ -178,14 +182,20 @@ if grep -Fq "$support_marker" "$BASE_FORMULA"; then
     echo "homebrew-validate-formula-source-closure.sh: current Formula support must be a real directory" >&2
     exit 1
   fi
-  unsafe_path="$(find "$SUPPORT_PATH" -mindepth 1 \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
+  unsafe_path="$(find "$SUPPORT_PATH" -mindepth 1 \
+    \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
   if [ -n "$unsafe_path" ]; then
     echo "homebrew-validate-formula-source-closure.sh: current Formula support contains a symlink or special file: ${unsafe_path#"$TAP_ROOT/"}" >&2
     exit 1
   fi
   if [ -n "$REVIEWED_TAP_ROOT" ]; then
     REVIEWED_SUPPORT_PATH="$REVIEWED_TAP_ROOT/$SUPPORT_RELATIVE"
-    reviewed_unsafe_path="$(find "$REVIEWED_SUPPORT_PATH" -mindepth 1 \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
+    if [ ! -d "$REVIEWED_SUPPORT_PATH" ] || [ -L "$REVIEWED_SUPPORT_PATH" ]; then
+      echo "homebrew-validate-formula-source-closure.sh: reviewed Formula support must be a real directory" >&2
+      exit 1
+    fi
+    reviewed_unsafe_path="$(find "$REVIEWED_SUPPORT_PATH" -mindepth 1 \
+      \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
     if [ -n "$reviewed_unsafe_path" ]; then
       echo "homebrew-validate-formula-source-closure.sh: reviewed Formula support checkout is unsafe" >&2
       exit 1
@@ -210,7 +220,8 @@ if grep -Fq "$support_marker" "$BASE_FORMULA"; then
             )"
             printf 'file\0%s\0%s\0%s\0' "$relative" "$mode" "$digest"
           fi
-        done < <(find . -mindepth 1 -print0 | sort -z)
+        done < <(find . -mindepth 1 \
+          \( -path './test' -type d -prune \) -o -print0 | sort -z)
       )
     }
     if ! cmp -s <(support_manifest "$REVIEWED_SUPPORT_PATH") <(support_manifest "$SUPPORT_PATH"); then
@@ -218,11 +229,13 @@ if grep -Fq "$support_marker" "$BASE_FORMULA"; then
       exit 1
     fi
   else
-    if ! git -C "$TAP_ROOT" diff --quiet "$BASE_COMMIT" -- "$SUPPORT_RELATIVE"; then
+    if ! git -C "$TAP_ROOT" diff --quiet "$BASE_COMMIT" -- \
+      "$SUPPORT_RELATIVE" ":(exclude)$SUPPORT_TEST_RELATIVE/**"; then
       echo "homebrew-validate-formula-source-closure.sh: Formula support source changed after the bottle build" >&2
       exit 1
     fi
-    if [ -n "$(git -C "$TAP_ROOT" status --short --untracked-files=all --ignored -- "$SUPPORT_RELATIVE")" ]; then
+    if [ -n "$(git -C "$TAP_ROOT" status --short --untracked-files=all --ignored -- \
+      "$SUPPORT_RELATIVE" ":(exclude)$SUPPORT_TEST_RELATIVE/**")" ]; then
       echo "homebrew-validate-formula-source-closure.sh: Formula support working tree changed after the bottle build" >&2
       exit 1
     fi

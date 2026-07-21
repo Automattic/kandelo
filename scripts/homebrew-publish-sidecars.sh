@@ -453,7 +453,8 @@ compose_publication_handoff() {
     --tap-repository "$TAP_REPOSITORY" \
     --tap-name "$TAP_NAME" \
     --formula "$FORMULA" \
-    --base-ref "$input_tap_commit" >/dev/null
+    --base-ref "$input_tap_commit" \
+    --reviewed-tap-root "$PLANNED_TAP_ROOT" >/dev/null
 
   # Rebind the complete dependency closure to the refreshed tap while the
   # state lock is held. Planned-commit ancestry alone does not prevent a

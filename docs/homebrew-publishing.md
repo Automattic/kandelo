@@ -654,7 +654,13 @@ direct child of the bound `Kandelo/formula_support` tree with the canonical
 binding exactly once through one of the runner command constructions validated
 by the publisher. Dynamic names, direct aliases, subdirectories, traversal,
 reassignment, reflection, and other direct path operations on the bound
-`runner` local remain forbidden.
+`runner` local remain forbidden. The exact real top-level
+`formula_support/test/` directory is reserved for validation source and is
+excluded from bottle source-closure identity. Before any Formula, dependency,
+or test command runs, the publisher removes that exact directory from every
+disposable Homebrew tap clone, so a direct runner cannot load it transitively.
+Every other support path remains a recursive identity input. A non-directory
+top-level path or a nested directory named `test` is not excluded.
 
 ## Trusted Publish Flow
 
@@ -879,9 +885,14 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    removal, including the separator blank line owned by the composer. This lets
    the first architecture add the block without invalidating an already-built
    sibling while continuing to compare every other byte exactly. Separate
-   checks reject Formula mode changes and any
-   tracked, untracked, ignored, mode, symlink, or special-file drift under
-   `Kandelo/formula_support`.
+   checks reject Formula mode changes and any tracked, untracked, ignored,
+   mode, symlink, or special-file drift in the publisher-consumable
+   `Kandelo/formula_support` closure. That closure conservatively includes the
+   support module and every path outside its exact real top-level `test/`
+   directory. The whole support tree, including `test/`, must contain only
+   bounded regular files and directories. Test-only changes do not invalidate
+   already-built bottles because the publisher removes the reserved subtree
+   from each disposable execution clone before Homebrew loads Formula code.
 
    The handoff remains explicitly bounded while supporting complete large
    packages: Homebrew bottle JSON is capped at 16 MiB, dependency provenance at
@@ -1072,9 +1083,11 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    The publisher then acquires the tap state lock once for the entire planned
    set, refreshes `main`, verifies that the planned tap commit is still an
    ancestor, and composes every handoff into one detached candidate. For every
-   entry it rechecks the Formula's bottle-excluded source digest, any required
-   `Kandelo/formula_support` tree, and the complete dependency Formula and
-   bottle closure against refreshed tap state. For each dependency, a detached
+   entry it rechecks the Formula's bottle-excluded source digest and any
+   required publisher-input closure under `Kandelo/formula_support` against a
+   detached checkout of that exact planned commit. It also rederives and
+   revalidates the complete dependency Formula and bottle closure against the
+   refreshed tap while the lock is held. For each dependency, a detached
    checkout of the exact planned tap binds the recorded raw Formula digest;
    refreshed Formula bytes may differ only by the structurally canonical
    bottle block, and the selected architecture's bottle metadata must remain

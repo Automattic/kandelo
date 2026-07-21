@@ -5,6 +5,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/scripts/homebrew-publication-limits.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/homebrew-formula-support-inputs.sh"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 TEST_FORBIDDEN_ROOT="/trusted/publisher/build-root"
@@ -167,6 +169,7 @@ make_formula_runner_fixture() {
   FORMULA_RUNNER_FIXTURE_ROOT="$(cd "$FORMULA_RUNNER_FIXTURE_ROOT" && pwd -P)"
   cp "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
+    "$REPO_ROOT/scripts/homebrew-formula-support-inputs.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
     "$REPO_ROOT/scripts/homebrew-tap-identity.sh" \
     "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/"
@@ -386,6 +389,88 @@ EOF
   git -C "$tap" commit -q -m "initial tap"
 }
 
+assert_formula_support_test_pruning_is_bounded() {
+  local source="$TMPDIR/formula-support-prune-source"
+  local safe_clone="$TMPDIR/formula-support-prune-safe"
+  local symlink_clone="$TMPDIR/formula-support-prune-symlink"
+  local submodule_clone="$TMPDIR/formula-support-prune-submodule"
+  local special_clone="$TMPDIR/formula-support-prune-special"
+  local file_clone="$TMPDIR/formula-support-prune-file"
+  local base err="$TMPDIR/formula-support-prune.err"
+
+  mkdir -p "$source/Kandelo/formula_support/test"
+  printf 'production input\n' >"$source/Kandelo/formula_support/runner.ts"
+  printf 'validation source\n' \
+    >"$source/Kandelo/formula_support/test/support_test.rb"
+  git -C "$source" init -q
+  git -C "$source" config user.name "Kandelo Test"
+  git -C "$source" config user.email "kandelo-test@example.invalid"
+  git -C "$source" add .
+  git -C "$source" commit -q -m "add Formula support inputs"
+  base="$(git -C "$source" rev-parse HEAD)"
+
+  git clone -q "$source" "$safe_clone"
+  homebrew_prune_formula_support_tests_from_tapped_clone "$safe_clone"
+  [ ! -e "$safe_clone/Kandelo/formula_support/test" ] ||
+    fail "Formula support tests survived execution-clone pruning"
+  [ -f "$safe_clone/Kandelo/formula_support/runner.ts" ] ||
+    fail "Formula support pruning removed a production input"
+  [ -f "$source/Kandelo/formula_support/test/support_test.rb" ] ||
+    fail "Formula support pruning mutated the reviewed source checkout"
+
+  ln -s ../runner.ts "$source/Kandelo/formula_support/test/unsafe-link"
+  git -C "$source" add Kandelo/formula_support/test/unsafe-link
+  git -C "$source" commit -q -m "add unsafe test symlink"
+  git clone -q "$source" "$symlink_clone"
+  if homebrew_prune_formula_support_tests_from_tapped_clone "$symlink_clone" \
+      >/dev/null 2>"$err"; then
+    fail "Formula support pruning accepted a tracked symlink"
+  fi
+  grep -F "unsafe Git object" "$err" >/dev/null ||
+    fail "Formula support pruning did not explain the tracked symlink"
+  [ -L "$symlink_clone/Kandelo/formula_support/test/unsafe-link" ] &&
+    [ "$(cat "$symlink_clone/Kandelo/formula_support/runner.ts")" = \
+      "production input" ] ||
+    fail "rejected Formula support pruning mutated the symlink tree or its target"
+
+  git -C "$source" rm -q Kandelo/formula_support/test/unsafe-link
+  git -C "$source" update-index --add --cacheinfo \
+    "160000,$base,Kandelo/formula_support/test/submodule"
+  git -C "$source" commit -q -m "add unsafe test gitlink"
+  git clone -q "$source" "$submodule_clone"
+  if homebrew_prune_formula_support_tests_from_tapped_clone "$submodule_clone" \
+      >/dev/null 2>"$err"; then
+    fail "Formula support pruning accepted a Git submodule"
+  fi
+  grep -F "unsafe Git object" "$err" >/dev/null ||
+    fail "Formula support pruning did not explain the Git submodule"
+
+  git clone -q "$source" "$special_clone"
+  git -C "$special_clone" checkout -q "$base"
+  mkfifo "$special_clone/Kandelo/formula_support/test/unsafe-fifo"
+  if homebrew_prune_formula_support_tests_from_tapped_clone "$special_clone" \
+      >/dev/null 2>"$err"; then
+    fail "Formula support pruning accepted a special file"
+  fi
+  grep -F "symlink or special file" "$err" >/dev/null ||
+    fail "Formula support pruning did not explain the special file"
+  [ -p "$special_clone/Kandelo/formula_support/test/unsafe-fifo" ] ||
+    fail "rejected Formula support pruning removed the unsafe tree"
+
+  git -C "$source" rm -q -f Kandelo/formula_support/test/submodule \
+    Kandelo/formula_support/test/support_test.rb
+  [ ! -d "$source/Kandelo/formula_support/test" ] || \
+    rmdir "$source/Kandelo/formula_support/test"
+  printf 'production file named test\n' \
+    >"$source/Kandelo/formula_support/test"
+  git -C "$source" add Kandelo/formula_support/test
+  git -C "$source" commit -q -m "use a production file named test"
+  git clone -q "$source" "$file_clone"
+  homebrew_prune_formula_support_tests_from_tapped_clone "$file_clone"
+  [ -f "$file_clone/Kandelo/formula_support/test" ] ||
+    fail "Formula support pruning removed a regular input named test"
+}
+
 make_primary_resolved_tap_map() {
   local tap="$1" output="${1}.resolved-taps.json" commit
   commit="$(git -C "$tap" rev-parse HEAD)"
@@ -403,6 +488,25 @@ make_primary_resolved_tap_map() {
 JSON
   chmod 0444 "$output"
   printf '%s\n' "$output"
+}
+
+prepare_formula_runner_tapped_clone() {
+  local source="$1" tapped="$2" resolved_taps="$3"
+  local commit updated="${resolved_taps}.updated"
+
+  git -C "$source" add -A
+  if ! git -C "$source" diff --cached --quiet; then
+    git -C "$source" commit -q -m "Homebrew: Refresh Formula runner fixture"
+  fi
+  [ ! -e "$tapped" ] ||
+    fail "Formula runner tapped-clone fixture already exists: $tapped"
+  git clone -q "$source" "$tapped"
+  commit="$(git -C "$source" rev-parse HEAD)"
+  jq --arg commit "$commit" '.primary.tap_commit = $commit' \
+    "$resolved_taps" >"$updated"
+  chmod 0644 "$resolved_taps"
+  mv "$updated" "$resolved_taps"
+  chmod 0444 "$resolved_taps"
 }
 
 assert_resolved_primary_override_is_bounded() {
@@ -2841,6 +2945,8 @@ assert_bottle_build_trusts_selected_tap() {
   local ci_err="$TMPDIR/bottle-trust-ci.err"
   local caller_config="$TMPDIR/caller-homebrew-config"
   local symlink_target="$TMPDIR/runner-write-target"
+  local ci_tapped="$TMPDIR/bottle-trust-ci-tapped"
+  local tapped="$TMPDIR/bottle-trust-tapped"
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   make_tap "$tap"
   KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap")"
@@ -2909,11 +3015,13 @@ esac
 EOF
   chmod +x "$fake_brew"
 
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$ci_tapped" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
   if FAKE_BREW_LOG="$log" \
     FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$ci_tapped" \
     FAKE_SYMLINK_TARGET="$symlink_target" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
@@ -2935,11 +3043,13 @@ EOF
     fail "CI bottle build did not explain its isolated-identity requirement"
   : >"$log"
 
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
   if FAKE_BREW_LOG="$log" \
     FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped" \
     FAKE_SYMLINK_TARGET="$symlink_target" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     XDG_CONFIG_HOME="$caller_config" \
@@ -2994,6 +3104,10 @@ assert_bottle_build_forces_same_tap_dependencies() {
   local out="$TMPDIR/bottle-dependency-out"
   local log="$TMPDIR/bottle-dependency.log"
   local lifecycle_log="$TMPDIR/bottle-dependency-lifecycle.log"
+  local tapped="$TMPDIR/bottle-dependency-tapped"
+  local dependency_tap="$TMPDIR/bottle-dependency-external-tap"
+  local tapped_dependency="$TMPDIR/bottle-dependency-external-tapped"
+  local dependency_commit resolved_updated
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   make_tap "$tap"
   KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap")"
@@ -3002,6 +3116,7 @@ assert_bottle_build_forces_same_tap_dependencies() {
   cat >"$tap/Formula/hello.rb" <<'EOF'
 class Hello < Formula
   depends_on "kandelo-dev/tap-core/zlib"
+  depends_on "zz-fixture/tools/tool"
 end
 EOF
   cat >"$tap/Formula/zlib.rb" <<'EOF'
@@ -3012,6 +3127,35 @@ class Zlib < Formula
   end
 end
 EOF
+  mkdir -p "$dependency_tap/Formula" \
+    "$dependency_tap/Kandelo/formula_support/test"
+  cat >"$dependency_tap/Formula/tool.rb" <<'EOF'
+class Tool < Formula
+  bottle do
+    root_url "https://ghcr.io/v2/zz-fixture/homebrew-tools"
+    sha256 cellar: :any, wasm32_kandelo: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  end
+end
+EOF
+  printf 'must not reach dependency Formula execution\n' \
+    >"$dependency_tap/Kandelo/formula_support/test/prune-sentinel"
+  git -C "$dependency_tap" init -q
+  git -C "$dependency_tap" config user.name "Kandelo Test"
+  git -C "$dependency_tap" config user.email "kandelo-test@example.invalid"
+  git -C "$dependency_tap" add .
+  git -C "$dependency_tap" commit -q -m "Homebrew: Add dependency clone fixture"
+  dependency_commit="$(git -C "$dependency_tap" rev-parse HEAD)"
+  resolved_updated="${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE}.dependency"
+  jq --arg root "$(cd "$dependency_tap" && pwd -P)" \
+    --arg commit "$dependency_commit" '.dependencies = [{
+      tap_name: "zz-fixture/tools",
+      tap_repository: "zz-fixture/homebrew-tools",
+      tap_commit: $commit,
+      root: $root
+    }]' "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" >"$resolved_updated"
+  chmod 0644 "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
+  mv "$resolved_updated" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
+  chmod 0444 "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
 
   cat >"$fake_brew" <<'EOF'
 #!/usr/bin/env bash
@@ -3023,12 +3167,17 @@ case "${1:-}" in
     if [ "$#" -eq 1 ]; then
       printf '%s\n' "$FAKE_BREW_REPOSITORY"
     else
-      printf '%s\n' "$FAKE_TAP_ROOT"
+      case "$2" in
+        kandelo-dev/tap-core) printf '%s\n' "$FAKE_TAP_ROOT" ;;
+        zz-fixture/tools) printf '%s\n' "$FAKE_DEPENDENCY_TAP_ROOT" ;;
+        *) exit 46 ;;
+      esac
     fi
     ;;
   tap|trust) ;;
   deps)
-    printf '%s\n' 'cmake' 'kandelo-dev/tap-core/zlib'
+    [ ! -e "$FAKE_DEPENDENCY_TAP_ROOT/Kandelo/formula_support/test" ] || exit 47
+    printf '%s\n' 'cmake' 'kandelo-dev/tap-core/zlib' 'zz-fixture/tools/tool'
     ;;
   missing)
     [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 44
@@ -3047,11 +3196,15 @@ esac
 EOF
   chmod +x "$fake_brew"
 
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
+  git clone -q "$dependency_tap" "$tapped_dependency"
   if FAKE_BREW_LOG="$log" \
     FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped" \
+    FAKE_DEPENDENCY_TAP_ROOT="$tapped_dependency" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
     KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
@@ -3077,6 +3230,10 @@ EOF
     fail "bottle build treated a host dependency as a Kandelo bottle"
   ! grep -F 'install --build-bottle' "$log" >/dev/null ||
     fail "bottle build continued to the target source build after a dependency bottle failure"
+  [ ! -e "$tapped_dependency/Kandelo/formula_support/test" ] ||
+    fail "bottle build exposed dependency-tap support tests to Formula execution"
+  [ -f "$dependency_tap/Kandelo/formula_support/test/prune-sentinel" ] ||
+    fail "bottle build pruned the reviewed dependency-tap source"
 }
 
 assert_bottle_build_installs_test_dependencies() {
@@ -3099,7 +3256,9 @@ assert_bottle_build_installs_test_dependencies() {
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
-  mkdir -p "$tap/Kandelo/formula_support"
+  mkdir -p "$tap/Kandelo/formula_support/test"
+  printf 'must not reach Formula execution\n' \
+    >"$tap/Kandelo/formula_support/test/prune-sentinel"
   cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
 require "digest"
 require "fileutils"
@@ -3204,6 +3363,7 @@ case "${1:-}" in
     ;;
   trust) ;;
   deps)
+    [ ! -e "$FAKE_TAP_ROOT/Kandelo/formula_support/test" ] || exit 54
     case "$*" in
       'deps --topological --full-name --formula kandelo-dev/tap-core/hello')
         printf '%s\n' 'dynamic-runtime-host' 'kandelo-dev/tap-core/zlib'
@@ -3388,6 +3548,9 @@ printf '{"schema":1}\n' >"$out"
 EOF
   chmod +x "$fake_bin/python3"
 
+  local tapped_main="$TMPDIR/bottle-test-dependency-tapped-main"
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped_main" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
   if ! PATH="$fake_bin:$PATH" \
     REAL_PYTHON3="$real_python3" \
     FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
@@ -3403,7 +3566,7 @@ EOF
     FAKE_EXPECTED_HOST_GIT="$host_git_bin" \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped_main" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
     KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
@@ -3447,6 +3610,9 @@ EOF
   local tier2_drift_status
   cp "$tier2_registry_script" "$tier2_registry_script_backup"
   mkdir -p "$tier2_drift_prefix"
+  local tapped_tier2_drift="$TMPDIR/bottle-tier2-drift-tapped"
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped_tier2_drift" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
   set +e
   PATH="$fake_bin:$PATH" \
     REAL_PYTHON3="$real_python3" \
@@ -3459,7 +3625,7 @@ EOF
     FAKE_BUILD_TIME=1700000000 \
     FAKE_BREW_PREFIX="$tier2_drift_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped_tier2_drift" \
     FAKE_TIER2_PREFLIGHT_LOG="$tier2_drift_preflight" \
     FAKE_TIER2_REGISTRY_DRIFT=1 \
     FAKE_TIER2_REGISTRY_DRIFT_MARKER="$tier2_drift_marker" \
@@ -3512,6 +3678,9 @@ EOF
   local drift_err="$TMPDIR/bottle-rebuild-drift.err"
   local drift_status
   mkdir -p "$drift_prefix"
+  local tapped_rebuild_drift="$TMPDIR/bottle-rebuild-drift-tapped"
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped_rebuild_drift" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
   set +e
   PATH="$fake_bin:$PATH" \
     REAL_PYTHON3="$real_python3" \
@@ -3525,7 +3694,7 @@ EOF
     FAKE_BOTTLE_REBUILD_DRIFT=1 \
     FAKE_BREW_PREFIX="$drift_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped_rebuild_drift" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     GITHUB_ACTIONS= \
     bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
@@ -3577,6 +3746,9 @@ EOF
   [ "$first_tap_head" != "$second_tap_head" ] ||
     fail "reproducible bottle fixture did not change tap HEAD"
   mkdir -p "$second_prefix"
+  local tapped_second="$TMPDIR/bottle-test-dependency-tapped-second"
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped_second" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
   if ! PATH="$fake_bin:$PATH" \
     REAL_PYTHON3="$real_python3" \
     FAKE_PROVENANCE_CAPTURE="$second_provenance_capture" \
@@ -3588,7 +3760,7 @@ EOF
     FAKE_BUILD_TIME=1800000000 \
     FAKE_BREW_PREFIX="$second_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped_second" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     GITHUB_ACTIONS= \
     bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
@@ -3690,6 +3862,9 @@ EOF
   local cellar_leak_capture="$TMPDIR/bottle-cellar-leak-native-prefix.txt"
   local cellar_leak_native_prefix cellar_leak_status
   mkdir -p "$cellar_leak_temp" "$cellar_leak_prefix"
+  local tapped_cellar_leak="$TMPDIR/bottle-cellar-leak-tapped"
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped_cellar_leak" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
   set +e
   PATH="$fake_bin:$PATH" \
     TMPDIR="$cellar_leak_temp" \
@@ -3704,7 +3879,7 @@ EOF
     FAKE_INSTALL_IMPLICIT_NATIVE=1 \
     FAKE_BREW_PREFIX="$cellar_leak_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped_cellar_leak" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
     GITHUB_ACTIONS= \
@@ -3735,6 +3910,9 @@ EOF
   local cleanup_failure_capture="$TMPDIR/bottle-cleanup-failure-native-prefix.txt"
   local cleanup_failure_prefix cleanup_failure_status
   mkdir -p "$cleanup_failure_temp"
+  local tapped_cleanup_failure="$TMPDIR/bottle-cleanup-failure-tapped"
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped_cleanup_failure" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
   set +e
   PATH="$fake_bin:$PATH" \
     TMPDIR="$cleanup_failure_temp" \
@@ -3749,7 +3927,7 @@ EOF
     FAKE_LAUNCHER_CLEANUP_STATUS=7 \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
-    FAKE_TAP_ROOT="$tap" \
+    FAKE_TAP_ROOT="$tapped_cleanup_failure" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
     GITHUB_ACTIONS= \
@@ -3827,7 +4005,10 @@ EOF
 class TestHelper < Formula
 end
 EOF
-  git -C "$tap" add Formula
+  mkdir -p "$tap/Kandelo/formula_support/test"
+  printf 'must not reach verifier execution\n' \
+    >"$tap/Kandelo/formula_support/test/prune-sentinel"
+  git -C "$tap" add Formula Kandelo/formula_support
   git -C "$tap" commit -q -m "add verifier dependencies"
   tap_commit="$(git -C "$tap" rev-parse HEAD)"
   git clone -q "$tap" "$provenance_tap"
@@ -3924,6 +4105,7 @@ case "${1:-}" in
     esac
     ;;
   deps)
+    [ ! -e "$FAKE_TAP_ROOT/Kandelo/formula_support/test" ] || exit 38
     case "$*" in
       'deps --topological --full-name --formula kandelo-dev/tap-core/hello')
         printf '%s\n' dynamic-runtime-host kandelo-dev/tap-core/zlib
@@ -4187,8 +4369,8 @@ EOF
   [ "$(git -C "$tapped_tap" rev-parse HEAD)" = "$tap_commit" ] ||
     fail "bottle verifier changed the selected tap commit"
   [ "$(git -C "$tapped_tap" status --short --untracked-files=all)" = \
-    " M Formula/hello.rb" ] ||
-    fail "bottle verifier changed the selected tap outside the reconstructed Formula"
+    $' M Formula/hello.rb\n D Kandelo/formula_support/test/prune-sentinel' ] ||
+    fail "bottle verifier changed the selected tap outside the reconstructed Formula and pruned tests"
 
   native_prefix="$(cat "$native_prefix_capture")"
   case "$native_prefix" in
@@ -4271,8 +4453,9 @@ EOF
   : >"$realm_log"
   : >"$lifecycle_log"
   run_bottle_verifier_fixture "$root/clean-runtime-evidence.json" >/dev/null
-  [ -z "$(git -C "$tapped_tap" status --short --untracked-files=all)" ] ||
-    fail "bottle verifier dirtied the selected tap for an unchanged reconstructed Formula"
+  [ "$(git -C "$tapped_tap" status --short --untracked-files=all)" = \
+    " D Kandelo/formula_support/test/prune-sentinel" ] ||
+    fail "bottle verifier changed the selected tap outside the pruned support tests"
   cmp -s "$tap/Formula/hello.rb" "$tapped_tap/Formula/hello.rb" ||
     fail "bottle verifier did not retain the unchanged reconstructed Formula"
   [ -f "$root/clean-runtime-evidence.json" ] ||
@@ -5955,7 +6138,7 @@ assert_formula_source_closure_is_bound() {
   local err="$TMPDIR/formula-source-closure.err"
   local base
 
-  mkdir -p "$tap/Formula" "$tap/Kandelo/formula_support"
+  mkdir -p "$tap/Formula" "$tap/Kandelo/formula_support/test"
   cat >"$tap/Formula/hello.rb" <<'EOF'
 require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
 
@@ -6005,6 +6188,8 @@ end
 EOF
   printf 'export const reviewed = true;\n' \
     >"$tap/Kandelo/formula_support/run-network-wasm.ts"
+  printf 'test-only-v1\n' \
+    >"$tap/Kandelo/formula_support/test/kandelo_formula_support_test.rb"
   printf 'Kandelo/formula_support/runtime-cache.tmp\n' >"$tap/.gitignore"
   git -C "$tap" init -q
   git -C "$tap" config user.name "Kandelo Test"
@@ -6039,6 +6224,76 @@ EOF
     --formula hello \
     --base-ref "$base" \
     --reviewed-tap-root "$reviewed" >/dev/null
+
+  printf 'test-only-v2\n' \
+    >"$tap/Kandelo/formula_support/test/kandelo_formula_support_test.rb"
+  git -C "$tap" add Kandelo/formula_support/test/kandelo_formula_support_test.rb
+  git -C "$tap" commit -q -m "change only Formula support tests"
+  bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --base-ref "$base" >/dev/null
+  bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --base-ref "$base" \
+    --reviewed-tap-root "$reviewed" >/dev/null
+
+  ln -s ../run-network-wasm.ts \
+    "$tap/Kandelo/formula_support/test/unsafe-link"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted a symlink inside excluded tests"
+  fi
+  grep -F "symlink or special file" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain the excluded-test symlink"
+  rm "$tap/Kandelo/formula_support/test/unsafe-link"
+  mkfifo "$tap/Kandelo/formula_support/test/unsafe-fifo"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --base-ref "$base" \
+    --reviewed-tap-root "$reviewed" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted a special file inside excluded tests"
+  fi
+  grep -F "symlink or special file" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain the excluded-test special file"
+  rm "$tap/Kandelo/formula_support/test/unsafe-fifo"
+
+  printf 'export const reviewed = false;\n' \
+    >"$tap/Kandelo/formula_support/run-network-wasm.ts"
+  git -C "$tap" add Kandelo/formula_support/run-network-wasm.ts
+  git -C "$tap" commit -q -m "change Formula support build input"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted build-support drift"
+  fi
+  grep -F "Formula support source changed after the bottle build" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain build-support drift"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --base-ref "$base" \
+    --reviewed-tap-root "$reviewed" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted reviewed build-support drift"
+  fi
+  grep -F "Formula support working tree changed after the bottle build" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not compare reviewed build-support input"
+  git -C "$tap" show "$base:Kandelo/formula_support/run-network-wasm.ts" \
+    >"$tap/Kandelo/formula_support/run-network-wasm.ts"
+  git -C "$tap" add Kandelo/formula_support/run-network-wasm.ts
+  git -C "$tap" commit -q -m "restore Formula support build input"
+
   if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
     --tap-root "$tap" \
     --tap-repository kandelo-dev/homebrew-tap-core \
@@ -6338,6 +6593,7 @@ EOF
 }
 
 make_formula_runner_fixture
+assert_formula_support_test_pruning_is_bounded
 assert_local_root_spill_uses_caller_work_root
 assert_ghcr_auth_env_does_not_cross_dev_shell
 assert_matrix

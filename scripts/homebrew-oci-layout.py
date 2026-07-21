@@ -21,7 +21,7 @@ import tarfile
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Any, BinaryIO, NoReturn
+from typing import Any, BinaryIO, Iterator, NoReturn
 
 
 OCI_INDEX = "application/vnd.oci.image.index.v1+json"
@@ -351,6 +351,68 @@ def formula_identity_for_path(path: pathlib.Path, kandelo_root: pathlib.Path) ->
     return require_string(identity, "tap Formula source identity", SHA256)
 
 
+def formula_support_tree_paths(
+    support_root: pathlib.Path,
+) -> Iterator[tuple[pathlib.Path, os.stat_result]]:
+    """Yield every support-tree path without following symlinks."""
+
+    def walk(directory: pathlib.Path) -> Iterator[tuple[pathlib.Path, os.stat_result]]:
+        for path in sorted(directory.iterdir()):
+            metadata = path.lstat()
+            yield path, metadata
+            if stat.S_ISDIR(metadata.st_mode) and not path.is_symlink():
+                yield from walk(path)
+
+    yield from walk(support_root)
+
+
+def validate_formula_support_tree(support_root: pathlib.Path) -> None:
+    """Reject unsafe or unbounded paths, including validation-only tests."""
+
+    total = 0
+    for index, (path, metadata) in enumerate(
+        formula_support_tree_paths(support_root)
+    ):
+        if index >= MAX_SUPPORT_FILES:
+            fail(f"Formula support tree exceeds {MAX_SUPPORT_FILES} entries")
+        if stat.S_ISDIR(metadata.st_mode) and not path.is_symlink():
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            fail(f"Formula support tree contains a non-regular path: {path}")
+        total += metadata.st_size
+        if total > MAX_SUPPORT_BYTES:
+            fail(f"Formula support tree exceeds {MAX_SUPPORT_BYTES} bytes")
+
+
+def formula_support_input_paths(
+    support_root: pathlib.Path,
+) -> Iterator[tuple[pathlib.Path, os.stat_result]]:
+    """Yield every publisher-consumable support path in stable path order.
+
+    Omit only the real top-level test directory. The publisher physically
+    removes that reserved validation-only subtree from disposable Homebrew tap
+    clones before Formula execution. A file, symlink, special path, or nested
+    directory named ``test`` remains an input. The complete tree is safety-
+    validated separately before this selector runs.
+    """
+
+    def walk(directory: pathlib.Path) -> Iterator[tuple[pathlib.Path, os.stat_result]]:
+        for path in sorted(directory.iterdir()):
+            metadata = path.lstat()
+            if (
+                directory == support_root
+                and path.name == "test"
+                and stat.S_ISDIR(metadata.st_mode)
+                and not path.is_symlink()
+            ):
+                continue
+            yield path, metadata
+            if stat.S_ISDIR(metadata.st_mode) and not path.is_symlink():
+                yield from walk(path)
+
+    yield from walk(support_root)
+
+
 def source_closure(
     *,
     tap_root: pathlib.Path,
@@ -393,11 +455,13 @@ def source_closure(
         support_root = real_directory(
             tap_root / "Kandelo/formula_support", "Formula support source root"
         )
+        validate_formula_support_tree(support_root)
         total = 0
-        for index, path in enumerate(sorted(support_root.rglob("*"))):
+        for index, (path, metadata) in enumerate(
+            formula_support_input_paths(support_root)
+        ):
             if index >= MAX_SUPPORT_FILES:
                 fail(f"Formula support closure exceeds {MAX_SUPPORT_FILES} entries")
-            metadata = path.lstat()
             if stat.S_ISDIR(metadata.st_mode) and not path.is_symlink():
                 entries.append(
                     {
