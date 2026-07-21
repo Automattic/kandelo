@@ -15,10 +15,10 @@ import { detectArch } from '../lib/arch.ts';
 // openssl back, then wasm-ld fails to link `/nix/store/.../openssl.so`
 // against a wasm32 conftest.
 //
-// PKG_CONFIG_SYSROOT_DIR is intentionally NOT set: every .pc file we
-// produce (sysroot-installed and dep-cache alike) has absolute host paths
-// in `prefix=`, so prepending sysroot would corrupt the emitted -I/-L
-// flags rather than resolve them.
+// PKG_CONFIG_SYSROOT_DIR is intentionally NOT set: dependency-cache .pc files
+// carry absolute host paths, while sysroot-owned .pc files derive complete
+// paths from `${pcfiledir}` so a copied sysroot relocates itself. Prepending a
+// second sysroot would corrupt either form rather than resolve it.
 export function buildPkgConfigEnv(
   callerEnv: NodeJS.ProcessEnv,
   sysroot: string,

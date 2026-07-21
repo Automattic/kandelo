@@ -344,7 +344,10 @@ package dependencies and they are not outputs of the kernel package. A package
 that links against them should declare the package's resulting executable or
 VFS image as its output, and include the relevant sysroot/glue sources and
 build scripts in `build.toml.inputs` so binary cache keys change when the
-library ABI or implementation changes.
+library ABI or implementation changes. Their pkg-config metadata derives its
+prefix from the `.pc` file location, so copying or mounting the complete
+sysroot at a different host path preserves the emitted include and library
+paths.
 
 ### Pthread slot limit
 

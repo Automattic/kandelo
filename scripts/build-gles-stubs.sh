@@ -65,26 +65,4 @@ echo "Building libGLESv2.a (libglesv2_stub.c)..."
 echo "GL stubs installed:"
 ls -la "$OUT_DIR/libEGL.a" "$OUT_DIR/libGLESv2.a"
 
-cat > "$PC_DIR/egl.pc" <<EOF
-prefix=$SYSROOT
-libdir=\${prefix}/lib
-includedir=\${prefix}/include
-
-Name: egl
-Description: Kandelo wasm EGL userspace shim
-Version: 1.0.0
-Libs: -L\${libdir} -lEGL
-Cflags: -I\${includedir}
-EOF
-
-cat > "$PC_DIR/glesv2.pc" <<EOF
-prefix=$SYSROOT
-libdir=\${prefix}/lib
-includedir=\${prefix}/include
-
-Name: glesv2
-Description: Kandelo wasm GLESv2 userspace shim
-Version: 1.0.0
-Libs: -L\${libdir} -lGLESv2
-Cflags: -I\${includedir}
-EOF
+bash "$REPO_ROOT/scripts/write-graphics-pkgconfig.sh" gles "$PC_DIR"

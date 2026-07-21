@@ -322,6 +322,8 @@ grep -F "artifact must be a portable relative path" "$err" >/dev/null ||
 [ ! -e "$output_only_root/escape.dat" ] ||
     fail "unsafe caller-owned runtime artifact escaped its output root"
 
+bash "$REPO_ROOT/scripts/test-graphics-pkgconfig.sh"
+
 # Every exact-shell registry recipe must enter through this tested root
 # contract. Their real package builds remain separate bottle/dry-run evidence.
 for package in bc posix-utils-lite lsof nethack fbdoom modeset; do

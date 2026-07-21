@@ -54,14 +54,14 @@ describe('buildPkgConfigEnv', () => {
     expect(env.PKG_CONFIG_PATH).toBe(sysrootPc);
   });
 
-  it('does not set PKG_CONFIG_SYSROOT_DIR (sysroot-prefix would corrupt absolute-path .pc files)', () => {
+  it('does not set PKG_CONFIG_SYSROOT_DIR (the .pc files already emit complete paths)', () => {
     const env = buildPkgConfigEnv({}, SYSROOT);
     expect(env.PKG_CONFIG_SYSROOT_DIR).toBeUndefined();
   });
 
   it('drops a caller-provided PKG_CONFIG_SYSROOT_DIR if one was inherited', () => {
     // Even if the caller's env has it (e.g. inherited from a parent build),
-    // we must not propagate it — it would corrupt absolute-path .pc files.
+    // we must not propagate it — it would double-prefix complete .pc paths.
     // This test enforces the regression guard.
     //
     // Implementation note: the spread retains it, so this test currently
