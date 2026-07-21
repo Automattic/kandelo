@@ -173,7 +173,8 @@ jobs:
           abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
             crates/shared/src/lib.rs)
           export WASM_POSIX_BINARY_INDEX_URL="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${abi}/index.toml"
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
+          WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS} shell" \
+            bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
             cargo build --release -p kandelo -Z build-std=core,alloc
@@ -191,9 +192,10 @@ jobs:
             -u HOMEBREW_GITHUB_API_TOKEN \
             -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
             -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-            KANDELO_HOMEBREW_MAIN_SHELL_TAP_ROOT="$GITHUB_WORKSPACE/dependency-taps/core" \
-            KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA="$TAP_COMMIT" \
-            bash scripts/dev-shell.sh bash packages/registry/shell/build-shell.sh
+            bash scripts/dev-shell.sh env \
+              KANDELO_HOMEBREW_MAIN_SHELL_TAP_ROOT="$GITHUB_WORKSPACE/dependency-taps/core" \
+              KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA="$TAP_COMMIT" \
+              bash packages/registry/shell/build-shell.sh
 
       - name: Verify canonical installation and exact closure evidence
         id: image
@@ -241,9 +243,11 @@ jobs:
           report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
           (
             cd apps/browser-demos
-            bash ../../scripts/dev-shell.sh \
+            bash ../../scripts/dev-shell.sh env \
+              KANDELO_HOMEBREW_MAIN_SHELL_STRICT="$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
+              KANDELO_HOMEBREW_MAIN_SHELL_SHA256="$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
               npx playwright test test/kandelo-homebrew-main-shell.spec.ts \
-                --project=chromium --reporter=json >"$report"
+              --project=chromium --reporter=json >"$report"
           )
           jq -e '
             .stats.expected == 1 and .stats.unexpected == 0 and

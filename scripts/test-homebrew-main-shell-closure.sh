@@ -92,9 +92,18 @@ for variable in \
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
   KANDELO_HOMEBREW_MAIN_SHELL_SHA256
 do
-  grep -Fq -- "--keep $variable " "$REPO_ROOT/scripts/dev-shell.sh" ||
-    fail "dev shell must preserve $variable for exact main-shell acceptance"
+  grep -Fq -- "$variable=\"\$" "$WORKFLOW" ||
+    fail "main-shell workflow must pass $variable explicitly to its isolated consumer"
+  grep -Fq -- "--keep $variable " "$REPO_ROOT/scripts/dev-shell.sh" &&
+    fail "dev shell must not globally preserve main-shell-only input $variable"
 done
+
+grep -Fq 'bash scripts/dev-shell.sh env \' "$WORKFLOW" ||
+  fail "main-shell workflow must forward bottle-composer inputs inside the isolated dev shell"
+grep -Fq 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW" ||
+  fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
+grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS} shell"' "$WORKFLOW" ||
+  fail "binary fetch must skip the legacy shell artifact rebuilt from bottles by this workflow"
 
 expect_failure "KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA requires" \
   env KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA=0000000000000000000000000000000000000000 \
