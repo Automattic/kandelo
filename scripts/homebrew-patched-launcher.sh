@@ -16,6 +16,15 @@ HOMEBREW_PATCHED_OVERLAY_SEAL_STATE=""
 HOMEBREW_PATCHED_DEPENDENCY_PLAN=""
 HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
 HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE=""
+HOMEBREW_PATCHED_TIER2_ATTESTATION=""
+HOMEBREW_PATCHED_TIER2_ATTESTATION_SHA256=""
+HOMEBREW_PATCHED_TIER2_ATTESTATION_STATE=""
+declare -Ag HOMEBREW_PATCHED_CONTROL_FILE_PATH=()
+declare -Ag HOMEBREW_PATCHED_CONTROL_FILE_BASENAME=()
+declare -Ag HOMEBREW_PATCHED_CONTROL_FILE_LABEL=()
+declare -Ag HOMEBREW_PATCHED_CONTROL_FILE_MAX_BYTES=()
+declare -Ag HOMEBREW_PATCHED_CONTROL_FILE_SHA256=()
+declare -Ag HOMEBREW_PATCHED_CONTROL_FILE_STATE=()
 HOMEBREW_PATCHED_SUDO_BIN=""
 HOMEBREW_PATCHED_SYSTEMD_RUN_BIN=""
 HOMEBREW_PATCHED_SYSTEMCTL_BIN=""
@@ -87,57 +96,89 @@ homebrew_patched_launcher_snapshot_target_cellar_layout() {
   fi
 }
 
-homebrew_patched_launcher_stage_dependency_plan() {
-  if [ "$#" -ne 1 ]; then
-    echo "homebrew_patched_launcher_stage_dependency_plan: expected PLAN" >&2
+homebrew_patched_launcher_stage_control_file() {
+  if [ "$#" -ne 5 ]; then
+    echo "homebrew_patched_launcher_stage_control_file: expected KEY SOURCE BASENAME MAX_BYTES LABEL" >&2
     return 2
   fi
-  local source="$1" destination bytes plan_sha
+  local key="$1" source="$2" basename="$3" max_bytes="$4" label="$5"
+  local destination source_state source_uid source_mode source_links bytes digest
   if [ -z "$HOMEBREW_PATCHED_PREFIX" ] || [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
-    echo "homebrew-patched-launcher: stage the dependency plan after preparation and before isolation" >&2
+    echo "homebrew-patched-launcher: stage the $label after preparation and before isolation" >&2
     return 2
   fi
-  if [ ! -f "$source" ] || [ -L "$source" ] || \
-     [ "$(stat -c '%h' "$source" 2>/dev/null || stat -f '%l' "$source")" != "1" ]; then
-    echo "homebrew-patched-launcher: dependency plan is not a private regular file" >&2
+  if ! [[ "$key" =~ ^[a-z][a-z0-9_]*$ ]] ||
+     ! [[ "$basename" =~ ^\.[a-z0-9][a-z0-9._-]*\.json$ ]] ||
+     ! [[ "$max_bytes" =~ ^[1-9][0-9]*$ ]]; then
+    echo "homebrew-patched-launcher: invalid protected control-file declaration for $label" >&2
     return 2
   fi
-  bytes="$(wc -c <"$source" | tr -d '[:space:]')"
-  if ! [[ "$bytes" =~ ^[0-9]+$ ]] || [ "$bytes" -gt 65536 ]; then
-    echo "homebrew-patched-launcher: dependency plan exceeds the size limit" >&2
+  if [ -n "${HOMEBREW_PATCHED_CONTROL_FILE_PATH[$key]:-}" ]; then
+    echo "homebrew-patched-launcher: $label is already staged" >&2
     return 2
   fi
-  destination="$HOMEBREW_PATCHED_PREFIX/.kandelo-publisher-build-dependencies.json"
+  if [ ! -f "$source" ] || [ -L "$source" ]; then
+    echo "homebrew-patched-launcher: $label is not a private regular file" >&2
+    return 2
+  fi
+  if source_state="$(stat -c '%u:%a:%h:%s' "$source" 2>/dev/null)"; then
+    IFS=: read -r source_uid source_mode source_links bytes <<<"$source_state"
+  else
+    source_state="$(stat -f '%u:%Lp:%l:%z' "$source")" || return 2
+    IFS=: read -r source_uid source_mode source_links bytes <<<"$source_state"
+  fi
+  if [ "$source_uid" != "$(id -u)" ] || [ "$source_links" != "1" ] ||
+     ! [[ "$source_mode" =~ ^[0-7]{3,4}$ ]] ||
+     [ $((8#$source_mode & 0077)) -ne 0 ]; then
+    echo "homebrew-patched-launcher: $label is not a private regular file" >&2
+    return 2
+  fi
+  if ! [[ "$bytes" =~ ^[1-9][0-9]*$ ]] || [ "$bytes" -gt "$max_bytes" ]; then
+    echo "homebrew-patched-launcher: $label exceeds the size limit" >&2
+    return 2
+  fi
+  destination="$HOMEBREW_PATCHED_PREFIX/$basename"
   if [ -e "$destination" ] || [ -L "$destination" ]; then
-    echo "homebrew-patched-launcher: dependency plan destination already exists" >&2
+    echo "homebrew-patched-launcher: $label destination already exists" >&2
     return 1
   fi
-  HOMEBREW_PATCHED_DEPENDENCY_PLAN="$destination"
-  HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
-  HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE="staging"
+  HOMEBREW_PATCHED_CONTROL_FILE_PATH[$key]="$destination"
+  HOMEBREW_PATCHED_CONTROL_FILE_BASENAME[$key]="$basename"
+  HOMEBREW_PATCHED_CONTROL_FILE_LABEL[$key]="$label"
+  HOMEBREW_PATCHED_CONTROL_FILE_MAX_BYTES[$key]="$max_bytes"
+  HOMEBREW_PATCHED_CONTROL_FILE_SHA256[$key]=""
+  HOMEBREW_PATCHED_CONTROL_FILE_STATE[$key]="staging"
   if ! cp "$source" "$destination" || ! chmod 0444 "$destination" ||
-     ! plan_sha="$(homebrew_sha256_stream <"$destination")"; then
-    echo "homebrew-patched-launcher: could not stage the dependency plan" >&2
-    homebrew_patched_launcher_remove_dependency_plan || true
+     ! digest="$(homebrew_sha256_stream <"$destination")"; then
+    echo "homebrew-patched-launcher: could not stage the $label" >&2
+    homebrew_patched_launcher_remove_control_file "$key" || true
     return 1
   fi
-  HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256="$plan_sha"
-  HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE="ready"
-  if ! homebrew_patched_launcher_verify_dependency_plan; then
-    HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE="staging"
-    homebrew_patched_launcher_remove_dependency_plan || true
+  HOMEBREW_PATCHED_CONTROL_FILE_SHA256[$key]="$digest"
+  HOMEBREW_PATCHED_CONTROL_FILE_STATE[$key]="ready"
+  if ! homebrew_patched_launcher_verify_control_file "$key"; then
+    HOMEBREW_PATCHED_CONTROL_FILE_STATE[$key]="staging"
+    homebrew_patched_launcher_remove_control_file "$key" || true
     return 1
   fi
 }
 
-homebrew_patched_launcher_verify_dependency_plan() {
-  [ -n "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" ] || return 0
-  local expected="$HOMEBREW_PATCHED_PREFIX/.kandelo-publisher-build-dependencies.json"
-  local state prefix_uid actual_sha
-  if [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE" != "ready" ] || \
-     [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" != "$expected" ] || \
+homebrew_patched_launcher_verify_control_file() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_verify_control_file: expected KEY" >&2
+    return 2
+  fi
+  local key="$1" path
+  path="${HOMEBREW_PATCHED_CONTROL_FILE_PATH[$key]:-}"
+  [ -n "$path" ] || return 0
+  local label="${HOMEBREW_PATCHED_CONTROL_FILE_LABEL[$key]}"
+  local expected="$HOMEBREW_PATCHED_PREFIX/${HOMEBREW_PATCHED_CONTROL_FILE_BASENAME[$key]}"
+  local max_bytes="${HOMEBREW_PATCHED_CONTROL_FILE_MAX_BYTES[$key]}"
+  local state prefix_uid actual_sha size
+  if [ "${HOMEBREW_PATCHED_CONTROL_FILE_STATE[$key]:-}" != "ready" ] ||
+     [ "$path" != "$expected" ] ||
      [ ! -f "$expected" ] || [ -L "$expected" ]; then
-    echo "homebrew-patched-launcher: protected dependency plan changed" >&2
+    echo "homebrew-patched-launcher: protected $label changed" >&2
     return 1
   fi
   if state="$(stat -c '%u:%a:%h:%s' "$expected" 2>/dev/null)"; then
@@ -149,14 +190,19 @@ homebrew_patched_launcher_verify_dependency_plan() {
   case "$state" in
     "$prefix_uid":444:1:*) ;;
     *)
-      echo "homebrew-patched-launcher: protected dependency plan ownership or mode is unsafe" >&2
+      echo "homebrew-patched-launcher: protected $label ownership or mode is unsafe" >&2
       return 1
       ;;
   esac
+  size="${state##*:}"
+  if ! [[ "$size" =~ ^[1-9][0-9]*$ ]] || [ "$size" -gt "$max_bytes" ]; then
+    echo "homebrew-patched-launcher: protected $label size changed" >&2
+    return 1
+  fi
   actual_sha="$(homebrew_sha256_stream <"$expected")"
-  if [ -z "$HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256" ] || \
-     [ "$actual_sha" != "$HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256" ]; then
-    echo "homebrew-patched-launcher: protected dependency plan content changed" >&2
+  if [ -z "${HOMEBREW_PATCHED_CONTROL_FILE_SHA256[$key]:-}" ] ||
+     [ "$actual_sha" != "${HOMEBREW_PATCHED_CONTROL_FILE_SHA256[$key]}" ]; then
+    echo "homebrew-patched-launcher: protected $label content changed" >&2
     return 1
   fi
   if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
@@ -164,25 +210,32 @@ homebrew_patched_launcher_verify_dependency_plan() {
       /usr/bin/test -r "$expected" &&
       ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$HOMEBREW_PATCHED_BUILD_USER" -- \
         /usr/bin/test -w "$expected" || {
-        echo "homebrew-patched-launcher: Formula identity has unsafe dependency plan access" >&2
+        echo "homebrew-patched-launcher: Formula identity has unsafe $label access" >&2
         return 1
       }
   fi
 }
 
-homebrew_patched_launcher_remove_dependency_plan() {
-  [ -n "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" ] || return 0
-  if [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE" = "staging" ]; then
-    local expected="$HOMEBREW_PATCHED_PREFIX/.kandelo-publisher-build-dependencies.json"
+homebrew_patched_launcher_remove_control_file() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_remove_control_file: expected KEY" >&2
+    return 2
+  fi
+  local key="$1" path
+  path="${HOMEBREW_PATCHED_CONTROL_FILE_PATH[$key]:-}"
+  [ -n "$path" ] || return 0
+  local label="${HOMEBREW_PATCHED_CONTROL_FILE_LABEL[$key]}"
+  local expected="$HOMEBREW_PATCHED_PREFIX/${HOMEBREW_PATCHED_CONTROL_FILE_BASENAME[$key]}"
+  if [ "${HOMEBREW_PATCHED_CONTROL_FILE_STATE[$key]:-}" = "staging" ]; then
     local destination_uid prefix_uid destination_links
     if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ] || \
-       [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" != "$expected" ]; then
-      echo "homebrew-patched-launcher: refusing to remove an unsafe partial dependency plan" >&2
+       [ "$path" != "$expected" ]; then
+      echo "homebrew-patched-launcher: refusing to remove an unsafe partial $label" >&2
       return 1
     fi
     if [ -e "$expected" ] || [ -L "$expected" ]; then
       if [ ! -f "$expected" ] || [ -L "$expected" ]; then
-        echo "homebrew-patched-launcher: partial dependency plan is not a regular file" >&2
+        echo "homebrew-patched-launcher: partial $label is not a regular file" >&2
         return 1
       fi
       if destination_uid="$(stat -c '%u' "$expected" 2>/dev/null)"; then
@@ -194,26 +247,92 @@ homebrew_patched_launcher_remove_dependency_plan() {
         destination_links="$(stat -f '%l' "$expected")"
       fi
       if [ "$destination_uid" != "$prefix_uid" ] || [ "$destination_links" != "1" ]; then
-        echo "homebrew-patched-launcher: partial dependency plan ownership is unsafe" >&2
+        echo "homebrew-patched-launcher: partial $label ownership is unsafe" >&2
         return 1
       fi
       rm -f -- "$expected" || return
     fi
-    HOMEBREW_PATCHED_DEPENDENCY_PLAN=""
-    HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
-    HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE=""
-    return 0
-  fi
-  homebrew_patched_launcher_verify_dependency_plan || return
-  if [ -n "$HOMEBREW_PATCHED_SUDO_BIN" ]; then
-    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/rm -f -- \
-      "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" || return
   else
-    rm -f -- "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" || return
+    homebrew_patched_launcher_verify_control_file "$key" || return
+    if [ -n "$HOMEBREW_PATCHED_SUDO_BIN" ]; then
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/rm -f -- "$path" || return
+    else
+      rm -f -- "$path" || return
+    fi
   fi
+  unset 'HOMEBREW_PATCHED_CONTROL_FILE_PATH[$key]'
+  unset 'HOMEBREW_PATCHED_CONTROL_FILE_BASENAME[$key]'
+  unset 'HOMEBREW_PATCHED_CONTROL_FILE_LABEL[$key]'
+  unset 'HOMEBREW_PATCHED_CONTROL_FILE_MAX_BYTES[$key]'
+  unset 'HOMEBREW_PATCHED_CONTROL_FILE_SHA256[$key]'
+  unset 'HOMEBREW_PATCHED_CONTROL_FILE_STATE[$key]'
+}
+
+homebrew_patched_launcher_seal_control_files() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_seal_control_files: expected BUILD_USER" >&2
+    return 2
+  fi
+  local build_user="$1" key path label
+  for key in "${!HOMEBREW_PATCHED_CONTROL_FILE_PATH[@]}"; do
+    path="${HOMEBREW_PATCHED_CONTROL_FILE_PATH[$key]}"
+    label="${HOMEBREW_PATCHED_CONTROL_FILE_LABEL[$key]}"
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chown root:root "$path" || return
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chmod 0444 "$path" || return
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$path")" = "0:0:444:1" ] &&
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$build_user" -- /usr/bin/test -r "$path" &&
+      ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$build_user" -- /usr/bin/test -w "$path" || {
+      echo "homebrew-patched-launcher: could not protect the $label" >&2
+      return 1
+    }
+    homebrew_patched_launcher_verify_control_file "$key" || return
+  done
+}
+
+homebrew_patched_launcher_stage_dependency_plan() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_stage_dependency_plan: expected PLAN" >&2
+    return 2
+  fi
+  homebrew_patched_launcher_stage_control_file dependency_plan "$1" \
+    .kandelo-publisher-build-dependencies.json 65536 "dependency plan" || return
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN="${HOMEBREW_PATCHED_CONTROL_FILE_PATH[dependency_plan]}"
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256="${HOMEBREW_PATCHED_CONTROL_FILE_SHA256[dependency_plan]}"
+  HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE="${HOMEBREW_PATCHED_CONTROL_FILE_STATE[dependency_plan]}"
+}
+
+homebrew_patched_launcher_verify_dependency_plan() {
+  homebrew_patched_launcher_verify_control_file dependency_plan
+}
+
+homebrew_patched_launcher_remove_dependency_plan() {
+  homebrew_patched_launcher_remove_control_file dependency_plan || return
   HOMEBREW_PATCHED_DEPENDENCY_PLAN=""
   HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
   HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE=""
+}
+
+homebrew_patched_launcher_stage_tier2_attestation() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_stage_tier2_attestation: expected ATTESTATION" >&2
+    return 2
+  fi
+  homebrew_patched_launcher_stage_control_file tier2_attestation "$1" \
+    .kandelo-publisher-tier2-attestation.json 16384 "Tier-2 attestation" || return
+  HOMEBREW_PATCHED_TIER2_ATTESTATION="${HOMEBREW_PATCHED_CONTROL_FILE_PATH[tier2_attestation]}"
+  HOMEBREW_PATCHED_TIER2_ATTESTATION_SHA256="${HOMEBREW_PATCHED_CONTROL_FILE_SHA256[tier2_attestation]}"
+  HOMEBREW_PATCHED_TIER2_ATTESTATION_STATE="${HOMEBREW_PATCHED_CONTROL_FILE_STATE[tier2_attestation]}"
+}
+
+homebrew_patched_launcher_verify_tier2_attestation() {
+  homebrew_patched_launcher_verify_control_file tier2_attestation
+}
+
+homebrew_patched_launcher_remove_tier2_attestation() {
+  homebrew_patched_launcher_remove_control_file tier2_attestation || return
+  HOMEBREW_PATCHED_TIER2_ATTESTATION=""
+  HOMEBREW_PATCHED_TIER2_ATTESTATION_SHA256=""
+  HOMEBREW_PATCHED_TIER2_ATTESTATION_STATE=""
 }
 
 homebrew_assert_tree_not_writable_by_user() {
@@ -760,6 +879,10 @@ homebrew_patched_launcher_cleanup() {
     echo "homebrew-patched-launcher: protected dependency plan changed; preserving launcher state for retry" >&2
     return 1
   fi
+  if ! homebrew_patched_launcher_remove_tier2_attestation; then
+    echo "homebrew-patched-launcher: protected Tier-2 attestation changed; preserving launcher state for retry" >&2
+    return 1
+  fi
   if [ -n "$HOMEBREW_PATCHED_PROTECTED_DIR" ]; then
     "$HOMEBREW_PATCHED_SUDO_BIN" rm -rf "$HOMEBREW_PATCHED_PROTECTED_DIR" \
       >/dev/null 2>&1 || true
@@ -816,6 +939,15 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_DEPENDENCY_PLAN=""
   HOMEBREW_PATCHED_DEPENDENCY_PLAN_SHA256=""
   HOMEBREW_PATCHED_DEPENDENCY_PLAN_STATE=""
+  HOMEBREW_PATCHED_TIER2_ATTESTATION=""
+  HOMEBREW_PATCHED_TIER2_ATTESTATION_SHA256=""
+  HOMEBREW_PATCHED_TIER2_ATTESTATION_STATE=""
+  HOMEBREW_PATCHED_CONTROL_FILE_PATH=()
+  HOMEBREW_PATCHED_CONTROL_FILE_BASENAME=()
+  HOMEBREW_PATCHED_CONTROL_FILE_LABEL=()
+  HOMEBREW_PATCHED_CONTROL_FILE_MAX_BYTES=()
+  HOMEBREW_PATCHED_CONTROL_FILE_SHA256=()
+  HOMEBREW_PATCHED_CONTROL_FILE_STATE=()
   HOMEBREW_PATCHED_NATIVE_PREFIX=""
   HOMEBREW_PATCHED_NATIVE_CACHE=""
   HOMEBREW_PATCHED_NATIVE_TEMP=""
@@ -1776,24 +1908,7 @@ homebrew_patched_launcher_isolate() {
   "$sudo_bin" chmod 1775 "$HOMEBREW_PATCHED_PREFIX"
   "$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775 \
     "$HOMEBREW_PATCHED_PREFIX/Cellar" "$HOMEBREW_PATCHED_PREFIX/opt"
-  if [ -n "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" ]; then
-    [ "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" = \
-      "$HOMEBREW_PATCHED_PREFIX/.kandelo-publisher-build-dependencies.json" ] || {
-      echo "homebrew-patched-launcher: dependency plan has an unexpected destination" >&2
-      return 2
-    }
-    "$sudo_bin" /usr/bin/chown root:root "$HOMEBREW_PATCHED_DEPENDENCY_PLAN"
-    "$sudo_bin" /usr/bin/chmod 0444 "$HOMEBREW_PATCHED_DEPENDENCY_PLAN"
-    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$HOMEBREW_PATCHED_DEPENDENCY_PLAN")" = \
-      "0:0:444:1" ] &&
-      "$sudo_bin" -n -H -u "$build_user" -- \
-        /usr/bin/test -r "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" &&
-      ! "$sudo_bin" -n -H -u "$build_user" -- \
-        /usr/bin/test -w "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" || {
-      echo "homebrew-patched-launcher: could not protect the dependency plan" >&2
-      return 1
-    }
-  fi
+  homebrew_patched_launcher_seal_control_files "$build_user" || return
   "$sudo_bin" install -d -o root -g root -m 0755 \
     "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME/homebrew"
   for config_root in "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME"; do
