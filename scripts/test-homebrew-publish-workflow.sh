@@ -5486,8 +5486,13 @@ RUBY
 
 assert_failure_preserves_metadata() {
   local tap="$TMPDIR/failure-tap"
+  local detail="$TMPDIR/failure-detail.txt"
+  local report
   make_tap "$tap"
   local before after
+  printf '%s\n%s\n' \
+    'homebrew-publish-handoff-paths.sh: flattened handoff contains unexpected entries' \
+    'validator stopped before credentialed checkout' >"$detail"
   before="$(sha256sum "$tap/Kandelo/metadata.json" 2>/dev/null || shasum -a 256 "$tap/Kandelo/metadata.json")"
   bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --tap-root "$tap" \
@@ -5496,6 +5501,7 @@ assert_failure_preserves_metadata() {
     --release-tag bottles-abi-v15 \
     --status failed \
     --error "intentional test failure" \
+    --error-detail-file "$detail" \
     --dry-run \
     --no-lock >/dev/null
   after="$(sha256sum "$tap/Kandelo/metadata.json" 2>/dev/null || shasum -a 256 "$tap/Kandelo/metadata.json")"
@@ -5503,8 +5509,91 @@ assert_failure_preserves_metadata() {
   [ "$(git -C "$tap" log -1 --format=%s)" = \
       "Homebrew: Record hello wasm32 bottle failure" ] ||
     fail "failure publication did not use the purpose-prefixed tap commit subject"
-  find "$tap/Kandelo/reports/failures" -type f -name '*-hello-wasm32.json' -print -quit |
-    grep -q . || fail "failure path did not write failure report"
+  report="$(find "$tap/Kandelo/reports/failures" -type f -name '*-hello-wasm32.json' -print -quit)"
+  [ -n "$report" ] || fail "failure path did not write failure report"
+  jq -e --rawfile expected "$detail" '
+    .error == "intentional test failure" and .error_detail == $expected
+  ' "$report" >/dev/null ||
+    fail "failure report did not preserve exact bounded validation stderr"
+}
+
+assert_failure_error_detail_is_bounded() {
+  local tap="$TMPDIR/failure-detail-bounds-tap"
+  local oversized="$TMPDIR/failure-detail-oversized.txt"
+  local invalid="$TMPDIR/failure-detail-invalid.txt"
+  local external="$TMPDIR/failure-detail-external.txt"
+  local symlinked="$TMPDIR/failure-detail-symlinked.txt"
+  local err="$TMPDIR/failure-detail-symlinked.err"
+  local report oversized_error
+  make_tap "$tap"
+  truncate -s "$((HOMEBREW_MAX_FAILURE_ERROR_DETAIL_BYTES + 1))" "$oversized"
+  GITHUB_RUN_ID=220 GITHUB_RUN_ATTEMPT=1 \
+    bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+      --tap-root "$tap" \
+      --formula hello \
+      --arch wasm32 \
+      --release-tag bottles-abi-v15 \
+      --status failed \
+      --error "bounded failure detail test" \
+      --error-detail-file "$oversized" \
+      --dry-run \
+      --no-lock >/dev/null
+  report="$(find "$tap/Kandelo/reports/failures" -type f -name '*-run-220-attempt-1-hello-wasm32.json' -print -quit)"
+  [ -n "$report" ] || fail "oversized failure detail did not produce a bounded report"
+  jq -e --arg expected \
+    "[omitted: captured finalizer stderr exceeds ${HOMEBREW_MAX_FAILURE_ERROR_DETAIL_BYTES}-byte report limit]" \
+    '.error_detail == $expected' "$report" >/dev/null ||
+    fail "oversized failure detail was not replaced by the bounded omission marker"
+
+  printf '\377' >"$invalid"
+  GITHUB_RUN_ID=221 GITHUB_RUN_ATTEMPT=1 \
+    bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+      --tap-root "$tap" \
+      --formula hello \
+      --arch wasm32 \
+      --release-tag bottles-abi-v15 \
+      --status failed \
+      --error "invalid failure detail test" \
+      --error-detail-file "$invalid" \
+      --dry-run \
+      --no-lock >/dev/null
+  report="$(find "$tap/Kandelo/reports/failures" -type f -name '*-run-221-attempt-1-hello-wasm32.json' -print -quit)"
+  [ -n "$report" ] || fail "non-text failure detail did not produce a bounded report"
+  jq -e '.error_detail == "[omitted: captured finalizer stderr is not NUL-free UTF-8]"' \
+    "$report" >/dev/null ||
+    fail "non-text failure detail was not replaced by the bounded omission marker"
+
+  printf -v oversized_error '%*s' "$((HOMEBREW_MAX_FAILURE_ERROR_BYTES + 1))" ''
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --tap-root "$tap" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v15 \
+    --status failed \
+    --error "$oversized_error" \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    fail "failure reporter accepted an oversized summary error"
+  fi
+  grep -F "failure error exceeds $HOMEBREW_MAX_FAILURE_ERROR_BYTES bytes" "$err" >/dev/null ||
+    fail "failure reporter did not explain an oversized summary error"
+
+  printf 'external detail\n' >"$external"
+  ln -s "$external" "$symlinked"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --tap-root "$tap" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v15 \
+    --status failed \
+    --error "symlink detail test" \
+    --error-detail-file "$symlinked" \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    fail "failure reporter accepted a symlinked error-detail file"
+  fi
+  grep -F -- '--error-detail-file must be a regular non-symlink file' "$err" >/dev/null ||
+    fail "failure reporter did not explain the rejected error-detail symlink"
 }
 
 assert_success_payload_size_bounds_are_final() {
@@ -5947,6 +6036,126 @@ assert_index_artifact_download_topologies() {
   if bash "$helper" --root "$nested_single" --kind publication --formula zlib \
     --run-attempt 1 --out "$TMPDIR/index-artifacts-nested-single.paths" >/dev/null 2>&1; then
     fail "index artifact collector accepted an impossible nested single-artifact layout"
+  fi
+}
+
+assert_publish_handoff_download_topologies() {
+  local helper="$REPO_ROOT/scripts/homebrew-publish-handoff-paths.sh"
+  local flat="$TMPDIR/publish-handoffs-flat"
+  local nested="$TMPDIR/publish-handoffs-nested"
+  local nested_single="$TMPDIR/publish-handoffs-nested-single"
+  local mixed="$TMPDIR/publish-handoffs-mixed"
+  local extra="$TMPDIR/publish-handoffs-extra"
+  local mismatched="$TMPDIR/publish-handoffs-mismatched"
+  local symlinked="$TMPDIR/publish-handoffs-symlinked"
+  local duplicate="$TMPDIR/publish-handoffs-duplicate"
+  local output_inside="$TMPDIR/publish-handoffs-output-inside"
+  local out wrapper
+  local single_matrix='[{"formula":"ruby","arch":"wasm32"}]'
+  local multi_matrix='[{"formula":"ruby","arch":"wasm32"},{"formula":"python","arch":"wasm64"}]'
+  local duplicate_matrix='[{"formula":"ruby","arch":"wasm32"},{"formula":"ruby","arch":"wasm32"}]'
+  local -a paths=()
+
+  mkdir -p "$flat/build" "$flat/composition"
+  printf '{}\n' >"$flat/receipt.json"
+  out="$TMPDIR/publish-handoffs-flat.paths"
+  bash "$helper" --root "$flat" --planned-matrix "$single_matrix" \
+    --run-attempt 3 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 3 ] &&
+    [ "${paths[0]}" = ruby ] && [ "${paths[1]}" = wasm32 ] &&
+    [ "${paths[2]}" = "$flat" ] ||
+    fail "single publication handoff was not accepted in its flattened layout"
+
+  # Create the directories in reverse matrix order. The normalized manifest
+  # must still retain the exact trusted plan order.
+  for wrapper in \
+    homebrew-publish-handoff-python-wasm64-attempt-4 \
+    homebrew-publish-handoff-ruby-wasm32-attempt-4; do
+    mkdir -p "$nested/$wrapper/build" "$nested/$wrapper/composition"
+    printf '{}\n' >"$nested/$wrapper/receipt.json"
+  done
+  out="$TMPDIR/publish-handoffs-nested.paths"
+  bash "$helper" --root "$nested" --planned-matrix "$multi_matrix" \
+    --run-attempt 4 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 6 ] &&
+    [ "${paths[0]}" = ruby ] && [ "${paths[1]}" = wasm32 ] &&
+    [ "${paths[2]}" = "$nested/homebrew-publish-handoff-ruby-wasm32-attempt-4" ] &&
+    [ "${paths[3]}" = python ] && [ "${paths[4]}" = wasm64 ] &&
+    [ "${paths[5]}" = "$nested/homebrew-publish-handoff-python-wasm64-attempt-4" ] ||
+    fail "multi-publication handoffs were not normalized in exact plan order"
+
+  mkdir -p "$nested_single/homebrew-publish-handoff-ruby-wasm32-attempt-1/build" \
+    "$nested_single/homebrew-publish-handoff-ruby-wasm32-attempt-1/composition"
+  printf '{}\n' \
+    >"$nested_single/homebrew-publish-handoff-ruby-wasm32-attempt-1/receipt.json"
+  out="$TMPDIR/publish-handoffs-nested-single.paths"
+  bash "$helper" --root "$nested_single" --planned-matrix "$single_matrix" \
+    --run-attempt 1 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 3 ] &&
+    [ "${paths[0]}" = ruby ] && [ "${paths[1]}" = wasm32 ] &&
+    [ "${paths[2]}" = \
+      "$nested_single/homebrew-publish-handoff-ruby-wasm32-attempt-1" ] ||
+    fail "correctly named nested single-publication handoff was not accepted"
+
+  mkdir -p "$mixed/build" "$mixed/composition" \
+    "$mixed/homebrew-publish-handoff-ruby-wasm32-attempt-1/build"
+  printf '{}\n' >"$mixed/receipt.json"
+  if bash "$helper" --root "$mixed" --planned-matrix "$single_matrix" \
+    --run-attempt 1 --out "$TMPDIR/publish-handoffs-mixed.paths" \
+    >/dev/null 2>&1; then
+    fail "publication handoff collector accepted mixed flattened and nested layouts"
+  fi
+
+  for wrapper in \
+    homebrew-publish-handoff-ruby-wasm32-attempt-1 \
+    homebrew-publish-handoff-python-wasm64-attempt-1 \
+    homebrew-publish-handoff-extra-wasm32-attempt-1; do
+    mkdir -p "$extra/$wrapper/build" "$extra/$wrapper/composition"
+    printf '{}\n' >"$extra/$wrapper/receipt.json"
+  done
+  if bash "$helper" --root "$extra" --planned-matrix "$multi_matrix" \
+    --run-attempt 1 --out "$TMPDIR/publish-handoffs-extra.paths" \
+    >/dev/null 2>&1; then
+    fail "publication handoff collector accepted an extra artifact directory"
+  fi
+
+  for wrapper in \
+    homebrew-publish-handoff-ruby-wasm32-attempt-1 \
+    homebrew-publish-handoff-python-wasm32-attempt-1; do
+    mkdir -p "$mismatched/$wrapper/build" "$mismatched/$wrapper/composition"
+    printf '{}\n' >"$mismatched/$wrapper/receipt.json"
+  done
+  if bash "$helper" --root "$mismatched" --planned-matrix "$multi_matrix" \
+    --run-attempt 1 --out "$TMPDIR/publish-handoffs-mismatched.paths" \
+    >/dev/null 2>&1; then
+    fail "publication handoff collector accepted an identity outside the planned matrix"
+  fi
+
+  mkdir -p "$symlinked/build" "$symlinked/composition"
+  printf '{}\n' >"$TMPDIR/publish-handoffs-real-receipt.json"
+  ln -s "$TMPDIR/publish-handoffs-real-receipt.json" "$symlinked/receipt.json"
+  if bash "$helper" --root "$symlinked" --planned-matrix "$single_matrix" \
+    --run-attempt 1 --out "$TMPDIR/publish-handoffs-symlinked.paths" \
+    >/dev/null 2>&1; then
+    fail "publication handoff collector accepted a symlinked payload entry"
+  fi
+
+  mkdir -p "$duplicate/build" "$duplicate/composition"
+  printf '{}\n' >"$duplicate/receipt.json"
+  if bash "$helper" --root "$duplicate" --planned-matrix "$duplicate_matrix" \
+    --run-attempt 1 --out "$TMPDIR/publish-handoffs-duplicate.paths" \
+    >/dev/null 2>&1; then
+    fail "publication handoff collector accepted a duplicate planned identity"
+  fi
+
+  mkdir -p "$output_inside/build" "$output_inside/composition"
+  printf '{}\n' >"$output_inside/receipt.json"
+  if bash "$helper" --root "$output_inside" --planned-matrix "$single_matrix" \
+    --run-attempt 1 --out "$output_inside/paths.bin" >/dev/null 2>&1; then
+    fail "publication handoff collector wrote its manifest inside untrusted artifact data"
   fi
 }
 
@@ -6603,6 +6812,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-publisher-overlay-patch.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_index_artifact_download_topologies
+assert_publish_handoff_download_topologies
 assert_sysroot_fingerprint_is_arch_specific
 assert_bottle_build_trusts_selected_tap
 assert_bottle_build_forces_same_tap_dependencies
@@ -6624,6 +6834,7 @@ assert_stale_bottle_rebuild_cannot_rewind_publication
 assert_atomic_publication_batch_closes_formula_metadata_wave
 assert_publish_dependencies_are_source_bound
 assert_failure_preserves_metadata
+assert_failure_error_detail_is_bounded
 assert_success_payload_size_bounds_are_final
 assert_failure_reports_do_not_collide_within_one_second
 assert_write_publish_requires_attached_branch_and_pushes_explicit_ref

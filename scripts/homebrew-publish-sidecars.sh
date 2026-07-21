@@ -21,6 +21,7 @@ ARCH=""
 RELEASE_TAG=""
 STATUS=""
 ERROR_TEXT=""
+ERROR_DETAIL_FILE=""
 KANDELO_COMMIT=""
 TAP_COMMIT=""
 REASON_TEXT=""
@@ -38,7 +39,7 @@ COMPOSED_FORMULAE=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--publication <formula> <wasm32|wasm64> <handoff> ... | --formula <name> --arch <wasm32|wasm64> [--publication-handoff <dir> | --sidecar-root <dir>]] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
+usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--publication <formula> <wasm32|wasm64> <handoff> ... | --formula <name> --arch <wasm32|wasm64> [--publication-handoff <dir> | --sidecar-root <dir>]] [--error <text>] [--error-detail-file <path>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
 
 Success either composes one or more validated package-scoped --publication
 handoffs against refreshed tap state under one lock or publishes a generated
@@ -75,6 +76,7 @@ while [ "$#" -gt 0 ]; do
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
     --status) STATUS="${2:-}"; shift 2 ;;
     --error) ERROR_TEXT="${2:-}"; shift 2 ;;
+    --error-detail-file) ERROR_DETAIL_FILE="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --reason) REASON_TEXT="${2:-}"; shift 2 ;;
@@ -109,6 +111,20 @@ case "$STATUS" in
   success|failed|rollback) ;;
   *) echo "homebrew-publish-sidecars.sh: --status must be success, failed, or rollback" >&2; exit 2 ;;
 esac
+if [ -n "$ERROR_DETAIL_FILE" ]; then
+  [ "$STATUS" = "failed" ] || {
+    echo "homebrew-publish-sidecars.sh: --error-detail-file is only valid with --status failed" >&2
+    exit 2
+  }
+  [ -z "$SIDECAR_ROOT" ] || {
+    echo "homebrew-publish-sidecars.sh: --error-detail-file is only valid for an attempt report" >&2
+    exit 2
+  }
+  [ -f "$ERROR_DETAIL_FILE" ] && [ ! -L "$ERROR_DETAIL_FILE" ] || {
+    echo "homebrew-publish-sidecars.sh: --error-detail-file must be a regular non-symlink file" >&2
+    exit 2
+  }
+fi
 if [ "${#PUBLICATION_HANDOFFS[@]}" -gt 0 ]; then
   if [ "$STATUS" != "success" ]; then
     echo "homebrew-publish-sidecars.sh: --publication is only valid with --status success" >&2
@@ -620,6 +636,7 @@ guard_non_success_payload_preserves_last_green() {
 
 write_failure_report() {
   local now run_url run_id run_attempt report_dir report_path safe_error
+  local safe_error_detail="" error_bytes detail_bytes
   now="$(date -u +%FT%TZ)"
   run_id="${GITHUB_RUN_ID:-local}"
   run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
@@ -634,6 +651,33 @@ write_failure_report() {
   report_path="$report_dir/${now//[:]/-}-run-${run_id}-attempt-${run_attempt}-${FORMULA}-${ARCH}.json"
   mkdir -p "$report_dir"
   safe_error="${ERROR_TEXT:-homebrew bottle publish failed before sidecar payload was produced}"
+  error_bytes="$(printf '%s' "$safe_error" | wc -c | tr -d '[:space:]')"
+  if [ "$error_bytes" -gt "$HOMEBREW_MAX_FAILURE_ERROR_BYTES" ]; then
+    echo "homebrew-publish-sidecars.sh: failure error exceeds $HOMEBREW_MAX_FAILURE_ERROR_BYTES bytes" >&2
+    exit 1
+  fi
+  if [ -n "$ERROR_DETAIL_FILE" ]; then
+    detail_bytes="$(wc -c <"$ERROR_DETAIL_FILE" | tr -d '[:space:]')"
+    if [ "$detail_bytes" -gt "$HOMEBREW_MAX_FAILURE_ERROR_DETAIL_BYTES" ]; then
+      safe_error_detail="[omitted: captured finalizer stderr exceeds ${HOMEBREW_MAX_FAILURE_ERROR_DETAIL_BYTES}-byte report limit]"
+    elif python3 - "$ERROR_DETAIL_FILE" <<'PY'
+import pathlib
+import sys
+
+data = pathlib.Path(sys.argv[1]).read_bytes()
+if b"\0" in data:
+    raise SystemExit(1)
+try:
+    data.decode("utf-8", errors="strict")
+except UnicodeDecodeError:
+    raise SystemExit(1)
+PY
+    then
+      IFS= read -r -d '' safe_error_detail <"$ERROR_DETAIL_FILE" || true
+    else
+      safe_error_detail="[omitted: captured finalizer stderr is not NUL-free UTF-8]"
+    fi
+  fi
   jq -n \
     --arg schema "1" \
     --arg formula "$FORMULA" \
@@ -645,6 +689,7 @@ write_failure_report() {
     --arg kandelo_commit "$KANDELO_COMMIT" \
     --arg tap_commit "$TAP_COMMIT" \
     --arg error "$safe_error" \
+    --arg error_detail "$safe_error_detail" \
     '{
       schema: ($schema | tonumber),
       formula: $formula,
@@ -655,7 +700,8 @@ write_failure_report() {
       attempted_by: $attempted_by,
       kandelo_commit: $kandelo_commit,
       tap_commit: $tap_commit,
-      error: $error
+      error: $error,
+      error_detail: (if $error_detail == "" then null else $error_detail end)
     }' >"$report_path"
   echo "homebrew-publish-sidecars.sh: wrote failure report $report_path"
 }

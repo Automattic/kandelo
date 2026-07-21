@@ -1082,9 +1082,15 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    never execute artifact-provided scripts, Formulae, or environment files.
 5. `finalize-tap` runs only for a write publication and receives only
    `contents: write`. On another fresh runner it downloads exactly one handoff
-   for every planned Formula/architecture pair, rejects missing, extra, or
-   duplicate identities, and validates each handoff as inert package-scoped
-   data against the exact base tap before checking out with push credentials.
+   for every planned Formula/architecture pair. The pinned artifact downloader
+   may flatten one matched handoff directly into the requested directory or
+   retain artifact-name directories, so the finalizer normalizes either exact
+   topology into one NUL-delimited plan-ordered path manifest. Correctly named
+   nested single- and multi-handoff layouts are also accepted for compatibility
+   with downloader topology changes. Mixed layouts, missing or extra entries,
+   duplicate identities, symlinks, and special files fail closed. Each
+   normalized handoff is then validated as inert package-scoped data against
+   the exact base tap before checking out with push credentials.
    The publisher then acquires the tap state lock once for the entire planned
    set, refreshes `main`, verifies that the planned tap commit is still an
    ancestor, and composes every handoff into one detached candidate. For every
@@ -1200,8 +1206,13 @@ Failure reporting must not replace last-green metadata. The workflow's failure
 path checks out a fresh tap, refreshes it to `origin/main` under the tap-wide
 lock, and calls `scripts/homebrew-publish-sidecars.sh --status failed`. The
 report records the resolved Kandelo and tap source commits plus the workflow run
-URL, but not raw stderr. The previous successful bottle remains selectable when
-its fallback fields are complete. Maintenance exposes only `rebuild` and
+URL. It also records the exact captured stderr from the first failed local
+finalizer stage—handoff validation first, otherwise atomic tap publication—when
+that file is a regular non-symlink, NUL-free UTF-8 file within the shared byte
+limit. An oversized or non-text diagnostic is replaced by a fixed omission
+marker, and an artifact-download failure remains outcome-only because it has no
+trusted local error file. The previous successful bottle remains selectable
+when its fallback fields are complete. Maintenance exposes only `rebuild` and
 `rollback`; there is no workflow-level `repair-only` mode.
 
 ## VFS Planning And Building
