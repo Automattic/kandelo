@@ -803,32 +803,32 @@ assert_generator_validates_homebrew_commit_as_data() {
 
 make_build_handoff() {
   local handoff="$1"
+  local formula="${BUILD_HANDOFF_FORMULA:-hello}"
+  local formula_class
   local extra_file_count="${BUILD_HANDOFF_EXTRA_FILE_COUNT:-0}"
   local dependency_provenance_source="${BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE:-}"
   local formula_source="${BUILD_HANDOFF_FORMULA_SOURCE:-}"
   local source_dir="${handoff}.source"
-  local bottle="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.tar.gz"
-  local bottle_json="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.json"
+  local bottle="$source_dir/${formula}--2.12.1.wasm32_kandelo.bottle.tar.gz"
+  local bottle_json="$source_dir/${formula}--2.12.1.wasm32_kandelo.bottle.json"
   local dependency_provenance="$source_dir/dependency-provenance.json"
-  local bottle_stage="$source_dir/stage/hello/2.12.1"
+  local bottle_stage="$source_dir/stage/$formula/2.12.1"
   local tap_repository="${BUILD_HANDOFF_TAP_REPOSITORY:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${BUILD_HANDOFF_TAP_NAME:-kandelo-dev/tap-core}"
   local tap_commit="${BUILD_HANDOFF_TAP_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   local kandelo_commit="${BUILD_HANDOFF_KANDELO_COMMIT:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
   local bottle_root="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
-  local formula_key="${tap_name}/hello"
-  local formula_path="Library/Taps/${tap_name%%/*}/homebrew-${tap_name#*/}/Formula/hello.rb"
+  local formula_key="${tap_name}/$formula"
+  local formula_path="Library/Taps/${tap_name%%/*}/homebrew-${tap_name#*/}/Formula/$formula.rb"
   local sha256
 
+  formula_class="$(printf '%s' "$formula" | awk -F '[-_.]' '{ for (i = 1; i <= NF; i++) printf "%s", toupper(substr($i, 1, 1)) substr($i, 2) }')"
   mkdir -p "$bottle_stage/.brew" "$bottle_stage/bin"
   if [ -n "$formula_source" ]; then
-    cp "$formula_source" "$bottle_stage/.brew/hello.rb"
+    cp "$formula_source" "$bottle_stage/.brew/$formula.rb"
   else
-    cat >"$bottle_stage/.brew/hello.rb" <<'EOF'
-class Hello < Formula
-  desc "reviewed fixture"
-end
-EOF
+    printf 'class %s < Formula\n  desc "reviewed fixture"\nend\n' \
+      "$formula_class" >"$bottle_stage/.brew/$formula.rb"
   fi
   if [ -n "$dependency_provenance_source" ]; then
     jq -S '{
@@ -839,28 +839,28 @@ EOF
   else
     printf '{"runtime_dependencies":[]}\n' >"$bottle_stage/INSTALL_RECEIPT.json"
   fi
-  printf '#!/bin/sh\necho hello\n' >"$bottle_stage/bin/hello"
-  chmod +x "$bottle_stage/bin/hello"
-  cat >"$source_dir/hello.wat" <<'EOF'
+  printf '#!/bin/sh\necho %s\n' "$formula" >"$bottle_stage/bin/$formula"
+  chmod +x "$bottle_stage/bin/$formula"
+  cat >"$source_dir/$formula.wat" <<'EOF'
 (module
   (memory 1)
   (func (export "__abi_version") (result i32) (i32.const 18))
 )
 EOF
-  wat2wasm "$source_dir/hello.wat" -o "$bottle_stage/bin/hello.wasm"
-  chmod +x "$bottle_stage/bin/hello.wasm"
-  tar -czf "$bottle" -C "$source_dir/stage" hello
+  wat2wasm "$source_dir/$formula.wat" -o "$bottle_stage/bin/$formula.wasm"
+  chmod +x "$bottle_stage/bin/$formula.wasm"
+  tar -czf "$bottle" -C "$source_dir/stage" "$formula"
   sha256="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
   jq -n --arg sha256 "$sha256" --arg formula_key "$formula_key" \
     --arg formula_path "$formula_path" --arg bottle_root "$bottle_root" \
-    --arg tap_commit "$tap_commit" \
+    --arg tap_commit "$tap_commit" --arg formula "$formula" \
     --slurpfile receipt "$bottle_stage/INSTALL_RECEIPT.json" '{
     ($formula_key): {
       formula: {
-        name: "hello",
+        name: $formula,
         path: $formula_path,
         pkg_version: "2.12.1",
-        tap_git_path: "Formula/hello.rb",
+        tap_git_path: ("Formula/" + $formula + ".rb"),
         tap_git_revision: $tap_commit,
         desc: "this artifact-only field must not reach Homebrew merge"
       },
@@ -870,11 +870,11 @@ EOF
         rebuild: 0,
         tags: {
           wasm32_kandelo: {
-            local_filename: "hello--2.12.1.wasm32_kandelo.bottle.tar.gz",
+            local_filename: ($formula + "--2.12.1.wasm32_kandelo.bottle.tar.gz"),
             sha256: $sha256,
             tab: $receipt[0],
-            path_exec_files: ["bin/hello"],
-            all_files: [".brew/hello.rb", "INSTALL_RECEIPT.json", "bin/hello", "bin/hello.wasm"]
+            path_exec_files: [("bin/" + $formula)],
+            all_files: [(".brew/" + $formula + ".rb"), "INSTALL_RECEIPT.json", ("bin/" + $formula), ("bin/" + $formula + ".wasm")]
           }
         }
       }
@@ -893,9 +893,10 @@ EOF
     cp "$dependency_provenance_source" "$dependency_provenance"
   else
     jq -nS --arg tap_repository "$tap_repository" --arg tap_name "$tap_name" \
-      --arg tap_commit "$tap_commit" --arg bottle_root "$bottle_root" '{
+      --arg tap_commit "$tap_commit" --arg bottle_root "$bottle_root" \
+      --arg formula "$formula" '{
       schema: 2,
-      formula: "hello",
+      formula: $formula,
       arch: "wasm32",
       tap_repository: $tap_repository,
       tap_name: $tap_name,
@@ -907,7 +908,7 @@ EOF
   fi
 
   bash "$REPO_ROOT/scripts/homebrew-create-build-handoff.sh" \
-    --formula hello \
+    --formula "$formula" \
     --arch wasm32 \
     --release-tag bottles-abi-v18 \
     --tap-repository "$tap_repository" \
@@ -1015,7 +1016,7 @@ validate_build_handoff() {
 make_dry_upload_receipt() {
   local handoff="$1" receipt="$2"
   local mode="${3:-dry-run}"
-  local sha256 bytes url layout canonical_sha
+  local formula sha256 bytes url layout canonical_sha
   local bottle_root tap_repository tap_repository_lower tap_name tap_commit kandelo_commit
   sha256="$(jq -er '.bottle.sha256' "$handoff/manifest.json")"
   bytes="$(jq -er '.bottle.bytes' "$handoff/manifest.json")"
@@ -1025,7 +1026,8 @@ make_dry_upload_receipt() {
   tap_name="$(jq -er '.tap_name' "$handoff/manifest.json")"
   tap_commit="$(jq -er '.tap_commit' "$handoff/manifest.json")"
   kandelo_commit="$(jq -er '.kandelo_commit' "$handoff/manifest.json")"
-  url="$bottle_root/hello/blobs/sha256:$sha256"
+  formula="$(jq -er '.formula' "$handoff/manifest.json")"
+  url="$bottle_root/$formula/blobs/sha256:$sha256"
   layout="${receipt}.layout"
   jq -nS \
     --arg sha256 "$sha256" \
@@ -1034,10 +1036,11 @@ make_dry_upload_receipt() {
     --arg tap_repository "$tap_repository" \
     --arg tap_name "$tap_name" \
     --arg tap_commit "$tap_commit" \
-    --arg kandelo_commit "$kandelo_commit" '{
+    --arg kandelo_commit "$kandelo_commit" \
+    --arg formula "$formula" '{
       schema: 2,
       kind: "child",
-      formula: "hello",
+      formula: $formula,
       arch: "wasm32",
       abi: 18,
       pkg_version: "2.12.1",
@@ -1072,16 +1075,17 @@ make_dry_upload_receipt() {
     --arg tap_repository "$tap_repository" \
     --arg tap_repository_lower "$tap_repository_lower" \
     --arg tap_name "$tap_name" \
+    --arg formula "$formula" \
     --arg mode "$mode" '{
       schema: 3,
       kind: "child",
-      formula: "hello",
+      formula: $formula,
       tap_repository: $tap_repository,
       tap_name: $tap_name,
       layout: $layout[0],
       layout_receipt_sha256: $canonical_sha,
       publication: {
-        remote: ("ghcr.io/" + $tap_repository_lower + "/hello"),
+        remote: ("ghcr.io/" + $tap_repository_lower + "/" + $formula),
         reference: ("sha256-" + ("6" * 64)),
         digest: ("sha256:" + ("6" * 64)),
         previous_digest: null,
@@ -1895,6 +1899,8 @@ seed_publish_dependency_sidecars() {
 
 make_publish_handoff() {
   local handoff="$1" tap_root="$2"
+  local formula="${PUBLISH_HANDOFF_FORMULA:-hello}"
+  local formula_class
   local build_stage="${handoff}.build"
   local extra_link_count="${PUBLISH_HANDOFF_EXTRA_LINK_COUNT:-0}"
   local dependency_mode="${PUBLISH_HANDOFF_DEPENDENCY_MODE:-none}"
@@ -1905,19 +1911,18 @@ make_publish_handoff() {
   local composition_dependencies='[]'
   local bottle_sha bottle_bytes bottle_url formula_sha archived_formula_sha
 
+  formula_class="$(printf '%s' "$formula" | awk -F '[-_.]' '{ for (i = 1; i <= NF; i++) printf "%s", toupper(substr($i, 1, 1)) substr($i, 2) }')"
   rm -rf "$handoff" "$tap_root" "$build_stage" "$dependency_provenance_source"
   mkdir -p "$tap_root/Formula" "$handoff/composition"
   if [ "$dependency_mode" = "none" ]; then
     if [ -n "$selected_formula_source" ]; then
-      cp "$selected_formula_source" "$tap_root/Formula/hello.rb"
+      cp "$selected_formula_source" "$tap_root/Formula/$formula.rb"
     else
-      cat >"$tap_root/Formula/hello.rb" <<'EOF'
-class Hello < Formula
-  desc "reviewed fixture"
-end
-EOF
+      printf 'class %s < Formula\n  desc "reviewed fixture"\nend\n' \
+        "$formula_class" >"$tap_root/Formula/$formula.rb"
     fi
   else
+    [ "$formula" = "hello" ] || fail "dependency publish fixture only supports hello"
     cat >"$tap_root/Formula/hello.rb" <<'EOF'
 class Hello < Formula
   desc "reviewed fixture"
@@ -1952,19 +1957,21 @@ EOF
       seed_publish_dependency_sidecars "$tap_root"
     fi
   fi
-  formula_sha="$(sha256sum "$tap_root/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/hello.rb" | awk '{print $1}')"
+  formula_sha="$(sha256sum "$tap_root/Formula/$formula.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/$formula.rb" | awk '{print $1}')"
   if [ "$dependency_mode" = "none" ]; then
     if [ -n "$archived_formula_source" ]; then
+      BUILD_HANDOFF_FORMULA="$formula" \
       BUILD_HANDOFF_FORMULA_SOURCE="$archived_formula_source" \
         make_build_handoff "$build_stage"
       archived_formula_sha="$(sha256sum "$archived_formula_source" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$archived_formula_source" | awk '{print $1}')"
     else
-      make_build_handoff "$build_stage"
+      BUILD_HANDOFF_FORMULA="$formula" make_build_handoff "$build_stage"
       archived_formula_sha="$formula_sha"
     fi
   else
+    BUILD_HANDOFF_FORMULA="$formula" \
     BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE="$dependency_provenance_source" \
-      BUILD_HANDOFF_FORMULA_SOURCE="$tap_root/Formula/hello.rb" \
+      BUILD_HANDOFF_FORMULA_SOURCE="$tap_root/Formula/$formula.rb" \
       make_build_handoff "$build_stage"
     archived_formula_sha="$formula_sha"
   fi
@@ -1977,6 +1984,7 @@ EOF
   jq -nS \
     --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
     --arg formula_sha "$formula_sha" --arg archived_formula_sha "$archived_formula_sha" \
+    --arg formula "$formula" \
     --argjson dependencies "$composition_dependencies" '{
       schema: 1,
       tap_repository: "kandelo-dev/homebrew-tap-core",
@@ -1989,12 +1997,12 @@ EOF
       generated_at: "2026-07-12T00:00:00Z",
       generator: "workflow fixture",
       packages: [{
-        name: "hello",
-        full_name: "kandelo-dev/tap-core/hello",
+        name: $formula,
+        full_name: ("kandelo-dev/tap-core/" + $formula),
         version: "2.12.1",
         formula_revision: 0,
         bottle_rebuild: 0,
-        formula_path: "Formula/hello.rb",
+        formula_path: ("Formula/" + $formula + ".rb"),
         formula_source_sha256: $formula_sha,
         dependencies: $dependencies,
         bottles: [{
@@ -2012,9 +2020,9 @@ EOF
           archived_formula_sha256: $archived_formula_sha,
           url: $url,
           cache_key_sha: $sha,
-          payload_root: "hello/2.12.1",
-          links: [{type: "symlink", source: "bin/hello", target: "bin/hello"}],
-          receipts: [".brew/hello.rb", "INSTALL_RECEIPT.json"],
+          payload_root: ($formula + "/2.12.1"),
+          links: [{type: "symlink", source: ("bin/" + $formula), target: ("bin/" + $formula)}],
+          receipts: [(".brew/" + $formula + ".rb"), "INSTALL_RECEIPT.json"],
           env: {PATH_prepend: ["bin"]},
           build: {
             github_run: "https://example.invalid/actions/runs/1",
@@ -2033,11 +2041,11 @@ EOF
     }' >"$handoff/composition/sidecars-input.json"
   if [ "$extra_link_count" -gt 0 ]; then
     local expanded_input="$handoff/composition/sidecars-input.expanded.json"
-    jq --argjson count "$extra_link_count" '
+    jq --argjson count "$extra_link_count" --arg formula "$formula" '
       .packages[0].bottles[0].links += [
         range(0; $count) | {
           type: "symlink",
-          source: "bin/hello",
+          source: ("bin/" + $formula),
           target: "share/texmf-dist/fixture/path-\(.).tex"
         }
       ]
@@ -2048,14 +2056,16 @@ EOF
 
 validate_publish_handoff() {
   local handoff="$1" tap_root="$2"
+  local formula="${PUBLISH_HANDOFF_FORMULA:-hello}"
+  local tap_commit="${PUBLISH_HANDOFF_TAP_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   shift 2
   bash "$REPO_ROOT/scripts/homebrew-validate-publish-handoff.sh" \
     --handoff "$handoff" \
-    --formula hello \
+    --formula "$formula" \
     --arch wasm32 \
     --release-tag bottles-abi-v18 \
     --tap-repository kandelo-dev/homebrew-tap-core \
-    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --tap-commit "$tap_commit" \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
@@ -2436,6 +2446,183 @@ assert_stale_bottle_rebuild_cannot_rewind_publication() {
     fail "stale bottle rebuild modified published metadata"
   [ "$before_head" = "$after_head" ] ||
     fail "stale bottle rebuild created a tap commit"
+}
+
+assert_atomic_publication_batch_closes_formula_metadata_wave() {
+  local seed_handoff="$TMPDIR/batch-seed-tool-handoff"
+  local seed_tap="$TMPDIR/batch-seed-tool-tap"
+  local hello_handoff="$TMPDIR/batch-hello-handoff"
+  local hello_tap="$TMPDIR/batch-hello-tap"
+  local tool_handoff="$TMPDIR/batch-tool-handoff"
+  local tool_tap="$TMPDIR/batch-tool-tap"
+  local bad_handoff="$TMPDIR/batch-bad-tool-handoff"
+  local tap_root="$TMPDIR/batch-publication-tap"
+  local composed="$TMPDIR/batch-composed-tool.rb"
+  local planned_formula="$TMPDIR/batch-planned-tool.rb"
+  local err="$TMPDIR/batch-publication.err"
+  local host planned tool_sha tool_formula_sha before_head before_status
+
+  PUBLISH_HANDOFF_FORMULA=tool make_publish_handoff "$seed_handoff" "$seed_tap"
+  mkdir -p "$tap_root/Formula"
+  cp "$seed_tap/Formula/tool.rb" "$planned_formula"
+  tool_sha="$(jq -er '.layout.bottle.sha256' "$seed_handoff/receipt.json")"
+  ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$planned_formula" "$planned_formula" \
+    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core 0 wasm32_kandelo \
+    any_skip_relocation "$tool_sha" discard "$composed"
+  cp "$composed" "$tap_root/Formula/tool.rb"
+  tool_formula_sha="$(sha256sum "$tap_root/Formula/tool.rb" 2>/dev/null | awk '{print $1}' || \
+    shasum -a 256 "$tap_root/Formula/tool.rb" | awk '{print $1}')"
+  jq --arg sha "$tool_formula_sha" \
+    '.packages[0].formula_source_sha256 = $sha' \
+    "$seed_handoff/composition/sidecars-input.json" \
+    >"$seed_handoff/composition/sidecars-input.updated.json"
+  mv "$seed_handoff/composition/sidecars-input.updated.json" \
+    "$seed_handoff/composition/sidecars-input.json"
+  host="$(rustc -vV | awk '/^host/ {print $2}')"
+  cargo run --release -p xtask --target "$host" --quiet -- \
+    homebrew-sidecars --tap-root "$tap_root" \
+    --input "$seed_handoff/composition/sidecars-input.json" >/dev/null
+  cargo run --release -p xtask --target "$host" --quiet -- \
+    homebrew-validate --tap-root "$tap_root" >/dev/null
+
+  # Build a second tool bottle from the old, valid Formula. The planned tap is
+  # then moved ahead to that bottle block while its aggregate metadata remains
+  # on the first digest, reproducing the coordinated-wave deadlock.
+  PUBLISH_HANDOFF_FORMULA=tool \
+    PUBLISH_HANDOFF_FORMULA_SOURCE="$tap_root/Formula/tool.rb" \
+    PUBLISH_HANDOFF_ARCHIVED_FORMULA_SOURCE="$tap_root/Formula/tool.rb" \
+    make_publish_handoff "$tool_handoff" "$tool_tap"
+  tool_sha="$(jq -er '.layout.bottle.sha256' "$tool_handoff/receipt.json")"
+  cp "$tap_root/Formula/tool.rb" "$planned_formula"
+  ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$tap_root/Formula/tool.rb" "$planned_formula" \
+    https://ghcr.io/v2/kandelo-dev/homebrew-tap-core 0 wasm32_kandelo \
+    any_skip_relocation "$tool_sha" preserve "$composed"
+  mv "$composed" "$tap_root/Formula/tool.rb"
+  tool_formula_sha="$(sha256sum "$tap_root/Formula/tool.rb" 2>/dev/null | awk '{print $1}' || \
+    shasum -a 256 "$tap_root/Formula/tool.rb" | awk '{print $1}')"
+  jq --arg sha "$tool_formula_sha" \
+    '.packages[0].formula_source_sha256 = $sha' \
+    "$tool_handoff/composition/sidecars-input.json" \
+    >"$tool_handoff/composition/sidecars-input.updated.json"
+  mv "$tool_handoff/composition/sidecars-input.updated.json" \
+    "$tool_handoff/composition/sidecars-input.json"
+
+  make_publish_handoff "$hello_handoff" "$hello_tap"
+  cp "$hello_tap/Formula/hello.rb" "$tap_root/Formula/hello.rb"
+  git -C "$tap_root" init -q
+  git -C "$tap_root" config user.name "Kandelo Test"
+  git -C "$tap_root" config user.email "kandelo-test@example.invalid"
+  git -C "$tap_root" add .
+  git -C "$tap_root" commit -q -m "formula wave ahead of aggregate metadata"
+  planned="$(git -C "$tap_root" rev-parse HEAD)"
+  rebind_publish_handoff_tap_commit "$hello_handoff" "$planned"
+  rebind_publish_handoff_tap_commit "$tool_handoff" "$planned"
+  make_dry_upload_receipt "$hello_handoff/build" "$hello_handoff/receipt.json" already-present
+  make_dry_upload_receipt "$tool_handoff/build" "$tool_handoff/receipt.json" already-present
+
+  if PUBLISH_HANDOFF_TAP_COMMIT="$planned" \
+    validate_publish_handoff "$hello_handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "whole-tap handoff validation accepted a candidate with an ahead peer Formula"
+  fi
+  grep -F "Formula bottle tags" "$err" >/dev/null ||
+    grep -F "Formula bottle" "$err" >/dev/null ||
+    { cat "$err" >&2; fail "whole-tap validation did not explain the peer Formula/metadata mismatch"; }
+  PUBLISH_HANDOFF_TAP_COMMIT="$planned" \
+    validate_publish_handoff "$hello_handoff" "$tap_root" \
+    --defer-whole-tap-validation >/dev/null ||
+    fail "package-scoped validation rejected a handoff reserved for atomic batch finalization"
+  cp -a "$hello_handoff" "$bad_handoff"
+  jq '.packages[0].bottles[0].cache_key_sha = ("0" * 64)' \
+    "$bad_handoff/composition/sidecars-input.json" \
+    >"$bad_handoff/composition/sidecars-input.updated.json"
+  mv "$bad_handoff/composition/sidecars-input.updated.json" \
+    "$bad_handoff/composition/sidecars-input.json"
+  if PUBLISH_HANDOFF_TAP_COMMIT="$planned" \
+    validate_publish_handoff "$bad_handoff" "$tap_root" \
+      --defer-whole-tap-validation >/dev/null 2>"$err"; then
+    fail "deferred whole-tap validation weakened selected bottle evidence"
+  fi
+  grep -F "composition input does not match the planned bottle" "$err" >/dev/null ||
+    fail "deferred validation did not explain selected bottle evidence drift"
+
+  before_head="$(git -C "$tap_root" rev-parse HEAD)"
+  before_status="$(git -C "$tap_root" status --short)"
+  rm -rf "$bad_handoff"
+  cp -a "$tool_handoff" "$bad_handoff"
+  jq '.kandelo_commit = "0000000000000000000000000000000000000000"' \
+    "$bad_handoff/composition/sidecars-input.json" \
+    >"$bad_handoff/composition/sidecars-input.updated.json"
+  mv "$bad_handoff/composition/sidecars-input.updated.json" \
+    "$bad_handoff/composition/sidecars-input.json"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication hello wasm32 "$hello_handoff" \
+    --publication tool wasm32 "$bad_handoff" \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run --no-lock >/dev/null 2>"$err"; then
+    fail "atomic batch publisher accepted one invalid package handoff"
+  fi
+  [ "$(git -C "$tap_root" rev-parse HEAD)" = "$before_head" ] &&
+    [ "$(git -C "$tap_root" status --short)" = "$before_status" ] ||
+    fail "failed atomic batch changed the tap checkout"
+
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication hello wasm32 "$hello_handoff" \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run --no-lock >/dev/null 2>"$err"; then
+    fail "single-package publication bypassed the peer Formula/metadata mismatch"
+  fi
+  [ "$(git -C "$tap_root" rev-parse HEAD)" = "$before_head" ] &&
+    [ "$(git -C "$tap_root" status --short)" = "$before_status" ] ||
+    fail "globally invalid single-package candidate changed the tap checkout"
+
+  bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication hello wasm32 "$hello_handoff" \
+    --publication tool wasm32 "$tool_handoff" \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run --no-lock >/dev/null
+  [ "$(git -C "$tap_root" log -1 --format=%s)" = \
+      "Homebrew: Publish 2 bottle sidecar updates" ] ||
+    fail "atomic batch did not produce one purpose-prefixed tap commit"
+  cargo run --release -p xtask --target "$host" --quiet -- \
+    homebrew-validate --tap-root "$tap_root" >/dev/null
+  jq -e --arg hello_sha "$(jq -er '.layout.bottle.sha256' "$hello_handoff/receipt.json")" \
+    --arg tool_sha "$tool_sha" '
+      ([.packages[] | select(.name == "hello")][0].bottles[0].sha256 == $hello_sha) and
+      ([.packages[] | select(.name == "tool")][0].bottles[0].sha256 == $tool_sha)
+    ' "$tap_root/Kandelo/metadata.json" >/dev/null ||
+    fail "atomic batch metadata did not contain both exact bottle handoffs"
+
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication hello wasm32 "$hello_handoff" \
+    --publication hello wasm32 "$hello_handoff" \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run --no-lock >/dev/null 2>"$err"; then
+    fail "batch publisher accepted a duplicate formula/architecture identity"
+  fi
+  grep -F "duplicate publication: hello/wasm32" "$err" >/dev/null ||
+    fail "batch publisher did not explain the duplicate identity"
 }
 
 assert_publish_dependencies_are_source_bound() {
@@ -6178,6 +6365,7 @@ assert_upload_receipt_is_bound_to_build_handoff
 assert_cross_tap_upload_receipt_survives_dev_shell
 assert_publish_handoff_is_exact_inert_data
 assert_stale_bottle_rebuild_cannot_rewind_publication
+assert_atomic_publication_batch_closes_formula_metadata_wave
 assert_publish_dependencies_are_source_bound
 assert_failure_preserves_metadata
 assert_success_payload_size_bounds_are_final

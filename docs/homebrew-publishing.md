@@ -1057,34 +1057,42 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    modes and paths are not trusted exemptions. The static
    Formula declaration parser then cross-checks dependency categories and
    directness against the validated build provenance and receipt. The verifier
-   generates a full candidate tap for validation, but the publication handoff
-   contains only the strict build files, upload receipt, selected runtime
-   bottle bytes, and one package-scoped `composition/sidecars-input.json`.
-   Downstream jobs never execute artifact-provided scripts, Formulae, or
-   environment files.
+   generates the selected package's candidate sidecars, then validates the
+   strict build files, upload receipt, selected runtime bottle bytes, Formula
+   composition, and one package-scoped `composition/sidecars-input.json`.
+   Whole-tap validation is deliberately deferred because another Formula in
+   the same coordinated rollout may already describe its new bottle while
+   aggregate metadata still describes the previous bottle. Downstream jobs
+   never execute artifact-provided scripts, Formulae, or environment files.
 5. `finalize-tap` runs only for a write publication and receives only
-   `contents: write`. On another fresh runner it validates the complete
-   publication handoff as inert data against the exact base tap before checking
-   out with push credentials. The publisher then acquires the tap state lock,
-   refreshes `main`, verifies that the planned tap commit is still an ancestor,
-   and rechecks both the Formula's bottle-excluded source digest and any required
-   `Kandelo/formula_support` tree against that commit. It also rederives and
-   revalidates the complete dependency Formula and bottle closure against the
-   refreshed tap while the lock is held. For each dependency, a detached
+   `contents: write`. On another fresh runner it downloads exactly one handoff
+   for every planned Formula/architecture pair, rejects missing, extra, or
+   duplicate identities, and validates each handoff as inert package-scoped
+   data against the exact base tap before checking out with push credentials.
+   The publisher then acquires the tap state lock once for the entire planned
+   set, refreshes `main`, verifies that the planned tap commit is still an
+   ancestor, and composes every handoff into one detached candidate. For every
+   entry it rechecks the Formula's bottle-excluded source digest, any required
+   `Kandelo/formula_support` tree, and the complete dependency Formula and
+   bottle closure against refreshed tap state. For each dependency, a detached
    checkout of the exact planned tap binds the recorded raw Formula digest;
    refreshed Formula bytes may differ only by the structurally canonical
    bottle block, and the selected architecture's bottle metadata must remain
-   exact. It then statically composes the
-   selected bottle tag and regenerates aggregate sidecars from refreshed tap
-   metadata. A sibling-architecture tag is retained only when the refreshed
+   exact. It statically composes each selected bottle tag and regenerates
+   aggregate sidecars after each package input, carrying the preceding
+   candidate metadata forward. This supports multiple packages and both
+   architectures without copying or splicing generated provenance files. A
+   sibling-architecture tag is retained only when the refreshed
    metadata proves the same ABI, version, formula revision, and bottle rebuild.
    A stale handoff cannot move the tap to an older ABI or, for the same package
    identity and ABI, to a lower bottle rebuild.
-   It does not load Formula Ruby or run Homebrew in the credentialed role. Only
-   the composed and fully validated Formula update, sidecars, and provenance are
-   pushed.
+   The unchanged whole-tap semantic validator then checks the complete detached
+   candidate and the exact staged attached-`main` tree. Only after both checks
+   pass does one purpose-prefixed commit push all Formulae, sidecars, and
+   recomputed provenance together. It does not load Formula Ruby or run Homebrew
+   in the credentialed role.
 6. `publish-vfs-release` runs only when `require-vfs-acceptance: true`, every
-   verifier matrix entry succeeded, and every tap finalizer succeeded. The
+   verifier matrix entry succeeded, and the atomic tap finalizer succeeded. The
    verifier exports only the selected wasm32 image, its VFS report, the exact
    Node and Chromium evidence, and a deterministic descriptor. A fresh job
    checks out the exact planned Kandelo and tap commits, revalidates that inert
@@ -1589,10 +1597,10 @@ bottle verification prerequisites.
 ## Durable Browser-Proven VFS Releases
 
 A non-dry-run publication with the sealed `require-vfs-acceptance: true` input
-promotes the exact accepted wasm32 image only after both the complete verifier
-and tap finalizer matrices are green. Ordinary optional acceptance runs do not
-publish a VFS release. The release belongs to the source tap repository and has
-the content-addressed tag:
+promotes the exact accepted wasm32 image only after the complete verifier
+matrix and the atomic tap finalizer are green. Ordinary optional acceptance
+runs do not publish a VFS release. The release belongs to the source tap
+repository and has the content-addressed tag:
 
 ```text
 homebrew-vfs-sha256-<full lowercase image SHA-256>
@@ -1821,10 +1829,11 @@ normal-publication job set must conclude successfully:
 - `publish / upload-bottle (<formula>, wasm32)`
 - `publish / publish-bottle-index (<formula>)`
 - `publish / verify-bottle (<formula>, wasm32)`
-- `publish / finalize-tap (<formula>, wasm32)`
+- `publish / finalize-tap`
 
 For a multi-architecture publication, require every architecture-specific
-matrix instance as well as the single Formula-level index job. A finalizer that
+build, upload, and verifier matrix instance as well as each Formula-level index
+job and the single atomic finalizer. A finalizer that
 successfully writes a failure report still concludes as a failed job and does
 not satisfy this gate.
 

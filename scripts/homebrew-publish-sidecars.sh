@@ -13,6 +13,9 @@ TAP_REPOSITORY="kandelo-dev/homebrew-tap-core"
 TAP_NAME_INPUT=""
 SIDECAR_ROOT=""
 PUBLICATION_HANDOFF=""
+PUBLICATION_FORMULAE=()
+PUBLICATION_ARCHES=()
+PUBLICATION_HANDOFFS=()
 FORMULA=""
 ARCH=""
 RELEASE_TAG=""
@@ -31,14 +34,17 @@ PUBLISH_BRANCH=""
 COMPOSE_PARENT=""
 COMPOSE_ROOT=""
 PLANNED_TAP_ROOT=""
+COMPOSED_FORMULAE=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--publication-handoff <dir>] [--sidecar-root <dir>] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
+usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--publication <formula> <wasm32|wasm64> <handoff> ... | --formula <name> --arch <wasm32|wasm64> [--publication-handoff <dir> | --sidecar-root <dir>]] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
 
-Success either composes a validated package-scoped --publication-handoff
-against refreshed tap state or publishes a generated --sidecar-root payload,
-then validates it with xtask homebrew-validate. Failed and rollback attempts
+Success either composes one or more validated package-scoped --publication
+handoffs against refreshed tap state under one lock or publishes a generated
+--sidecar-root payload, then validates the complete candidate with xtask
+homebrew-validate. The singular --publication-handoff form remains supported.
+Failed and rollback attempts
 either publish a validated non-success sidecar payload or, when --sidecar-root
 is absent, write an attempt report under Kandelo/reports while leaving
 metadata.json untouched so last-green metadata is preserved. Package deletion is
@@ -54,6 +60,16 @@ while [ "$#" -gt 0 ]; do
     --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --sidecar-root) SIDECAR_ROOT="${2:-}"; shift 2 ;;
     --publication-handoff) PUBLICATION_HANDOFF="${2:-}"; shift 2 ;;
+    --publication)
+      [ "$#" -ge 4 ] || {
+        echo "homebrew-publish-sidecars.sh: --publication requires formula, arch, and handoff" >&2
+        exit 2
+      }
+      PUBLICATION_FORMULAE+=("$2")
+      PUBLICATION_ARCHES+=("$3")
+      PUBLICATION_HANDOFFS+=("$4")
+      shift 4
+      ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
@@ -82,8 +98,6 @@ require() {
 }
 
 require tap-root "$TAP_ROOT"
-require formula "$FORMULA"
-require arch "$ARCH"
 require release-tag "$RELEASE_TAG"
 require status "$STATUS"
 
@@ -91,18 +105,63 @@ require status "$STATUS"
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 
-if ! [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
-  echo "homebrew-publish-sidecars.sh: invalid formula name: $FORMULA" >&2
-  exit 2
-fi
-case "$ARCH" in
-  wasm32|wasm64) ;;
-  *) echo "homebrew-publish-sidecars.sh: invalid arch: $ARCH" >&2; exit 2 ;;
-esac
 case "$STATUS" in
   success|failed|rollback) ;;
   *) echo "homebrew-publish-sidecars.sh: --status must be success, failed, or rollback" >&2; exit 2 ;;
 esac
+if [ "${#PUBLICATION_HANDOFFS[@]}" -gt 0 ]; then
+  if [ "$STATUS" != "success" ]; then
+    echo "homebrew-publish-sidecars.sh: --publication is only valid with --status success" >&2
+    exit 2
+  fi
+  if [ -n "$FORMULA" ] || [ -n "$ARCH" ] || [ -n "$PUBLICATION_HANDOFF" ] || [ -n "$SIDECAR_ROOT" ]; then
+    echo "homebrew-publish-sidecars.sh: --publication cannot be combined with singular publication flags" >&2
+    exit 2
+  fi
+elif [ "$STATUS" = "success" ] && [ -n "$PUBLICATION_HANDOFF" ]; then
+  require formula "$FORMULA"
+  require arch "$ARCH"
+  PUBLICATION_FORMULAE+=("$FORMULA")
+  PUBLICATION_ARCHES+=("$ARCH")
+  PUBLICATION_HANDOFFS+=("$PUBLICATION_HANDOFF")
+elif [ "$STATUS" != "success" ] || [ -n "$SIDECAR_ROOT" ]; then
+  require formula "$FORMULA"
+  require arch "$ARCH"
+elif [ "$STATUS" = "success" ]; then
+  echo "homebrew-publish-sidecars.sh: success requires --publication, --publication-handoff, or --sidecar-root" >&2
+  exit 2
+fi
+
+for ((publication_index = 0; publication_index < ${#PUBLICATION_HANDOFFS[@]}; publication_index++)); do
+  publication_formula="${PUBLICATION_FORMULAE[$publication_index]}"
+  publication_arch="${PUBLICATION_ARCHES[$publication_index]}"
+  if ! [[ "$publication_formula" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+    echo "homebrew-publish-sidecars.sh: invalid formula name: $publication_formula" >&2
+    exit 2
+  fi
+  case "$publication_arch" in
+    wasm32|wasm64) ;;
+    *) echo "homebrew-publish-sidecars.sh: invalid arch: $publication_arch" >&2; exit 2 ;;
+  esac
+  publication_identity="$publication_formula/$publication_arch"
+  for ((earlier_index = 0; earlier_index < publication_index; earlier_index++)); do
+    if [ "${PUBLICATION_FORMULAE[$earlier_index]}/${PUBLICATION_ARCHES[$earlier_index]}" = \
+         "$publication_identity" ]; then
+      echo "homebrew-publish-sidecars.sh: duplicate publication: $publication_identity" >&2
+      exit 2
+    fi
+  done
+done
+if [ "${#PUBLICATION_HANDOFFS[@]}" -eq 0 ]; then
+  if ! [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+    echo "homebrew-publish-sidecars.sh: invalid formula name: $FORMULA" >&2
+    exit 2
+  fi
+  case "$ARCH" in
+    wasm32|wasm64) ;;
+    *) echo "homebrew-publish-sidecars.sh: invalid arch: $ARCH" >&2; exit 2 ;;
+  esac
+fi
 if [ "$REPAIR_ONLY" = "1" ] && [ "$STATUS" != "success" ]; then
   echo "homebrew-publish-sidecars.sh: --repair-only is only valid with --status success" >&2
   exit 2
@@ -287,14 +346,24 @@ assert_static_tap_tree() {
   fi
 }
 
+initialize_composition() {
+  COMPOSE_PARENT="$(mktemp -d)"
+  COMPOSE_ROOT="$COMPOSE_PARENT/tap"
+  git -C "$TAP_ROOT" worktree add --detach "$COMPOSE_ROOT" HEAD >/dev/null
+  assert_static_tap_tree "$COMPOSE_ROOT" "refreshed composition tap"
+}
+
 compose_publication_handoff() {
   local handoff input manifest receipt bottle formula_path formula_sha
   local input_tap_commit input_kandelo_commit bottle_sha bottle_url bottle_bytes
   local bottle_root relocation_cellar rebuild tag planned_formula composed_formula
   local host previous_metadata version formula_revision
-  local kandelo_abi sibling_policy formula_stage publish_stage kandelo_stage kandelo_previous
+  local kandelo_abi sibling_policy planned_index
   local -a sidecar_args
 
+  FORMULA="$1"
+  ARCH="$2"
+  PUBLICATION_HANDOFF="$3"
   if [ -z "$PUBLICATION_HANDOFF" ] || [ ! -d "$PUBLICATION_HANDOFF" ] || [ -L "$PUBLICATION_HANDOFF" ]; then
     echo "homebrew-publish-sidecars.sh: --publication-handoff must name a validated data directory" >&2
     exit 2
@@ -364,16 +433,14 @@ compose_publication_handoff() {
     exit 1
   }
 
-  COMPOSE_PARENT="$(mktemp -d)"
-  COMPOSE_ROOT="$COMPOSE_PARENT/tap"
-  git -C "$TAP_ROOT" worktree add --detach "$COMPOSE_ROOT" HEAD >/dev/null
   assert_static_tap_tree "$COMPOSE_ROOT" "refreshed composition tap"
   if ! git -C "$COMPOSE_ROOT" cat-file -e "${input_tap_commit}^{commit}" 2>/dev/null ||
      ! git -C "$COMPOSE_ROOT" merge-base --is-ancestor "$input_tap_commit" HEAD; then
     echo "homebrew-publish-sidecars.sh: planned tap commit is not an ancestor of refreshed tap main" >&2
     exit 1
   fi
-  PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap"
+  planned_index="${#COMPOSED_FORMULAE[@]}"
+  PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap-$planned_index"
   git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit" >/dev/null
   assert_static_tap_tree "$PLANNED_TAP_ROOT" "planned composition tap"
   [ "$(git -C "$PLANNED_TAP_ROOT" rev-parse HEAD)" = "$input_tap_commit" ] || {
@@ -445,28 +512,28 @@ compose_publication_handoff() {
   (cd "$KANDELO_ROOT" && "${sidecar_args[@]}")
   assert_static_tap_tree "$COMPOSE_ROOT" "composed tap"
   assert_sidecar_size_bounds "$COMPOSE_ROOT"
+  git -C "$TAP_ROOT" worktree remove --force "$PLANNED_TAP_ROOT" >/dev/null
+  PLANNED_TAP_ROOT=""
+  COMPOSED_FORMULAE+=("$FORMULA")
+}
+
+stage_composed_publications() {
+  local patch_path
   run_validator "$COMPOSE_ROOT"
-
   assert_static_tap_tree "$TAP_ROOT" "refreshed publication tap"
-  formula_stage="$(mktemp "$TAP_ROOT/Formula/.${FORMULA}.publish.XXXXXX")"
-  publish_stage="$(mktemp -d "$TAP_ROOT/.homebrew-publish.XXXXXX")"
-  kandelo_stage="$publish_stage/Kandelo"
-  kandelo_previous="$TAP_ROOT/.Kandelo.previous.$$"
-  cp "$COMPOSE_ROOT/$formula_path" "$formula_stage"
-  cp -a "$COMPOSE_ROOT/Kandelo" "$kandelo_stage"
-  assert_static_tap_tree "$publish_stage" "staged publication tap"
-
-  if [ -e "$TAP_ROOT/Kandelo" ]; then
-    mv "$TAP_ROOT/Kandelo" "$kandelo_previous"
-  fi
-  if ! mv "$kandelo_stage" "$TAP_ROOT/Kandelo"; then
-    [ ! -e "$kandelo_previous" ] || mv "$kandelo_previous" "$TAP_ROOT/Kandelo"
+  git -C "$COMPOSE_ROOT" add Formula Kandelo
+  patch_path="$COMPOSE_PARENT/tap-publication.patch"
+  git -C "$COMPOSE_ROOT" diff --cached --binary --full-index HEAD -- Formula Kandelo \
+    >"$patch_path"
+  if [ ! -s "$patch_path" ]; then
+    echo "homebrew-publish-sidecars.sh: composed publication produced no tap update" >&2
     exit 1
   fi
-  mv "$formula_stage" "$TAP_ROOT/$formula_path"
-  rm -rf "$kandelo_previous"
-  rmdir "$publish_stage"
-  assert_static_tap_tree "$TAP_ROOT" "published tap"
+  git -C "$TAP_ROOT" apply --index --binary "$patch_path"
+  assert_static_tap_tree "$TAP_ROOT" "staged publication tap"
+  # The unchanged whole-tap validator remains the final authority over the
+  # exact attached-main tree that will be committed and pushed.
+  run_validator "$TAP_ROOT"
 }
 
 copy_payload() {
@@ -663,16 +730,31 @@ assert_static_tap_tree "$TAP_ROOT" "refreshed publication tap"
 
 case "$STATUS" in
   success)
-    if [ -n "$PUBLICATION_HANDOFF" ]; then
-      compose_publication_handoff
+    if [ "${#PUBLICATION_HANDOFFS[@]}" -gt 0 ]; then
+      initialize_composition
+      for ((publication_index = 0; publication_index < ${#PUBLICATION_HANDOFFS[@]}; publication_index++)); do
+        compose_publication_handoff \
+          "${PUBLICATION_FORMULAE[$publication_index]}" \
+          "${PUBLICATION_ARCHES[$publication_index]}" \
+          "${PUBLICATION_HANDOFFS[$publication_index]}"
+      done
+      stage_composed_publications
     else
       copy_payload
       run_validator
     fi
     if [ "$REPAIR_ONLY" = "1" ]; then
-      commit_and_push "Homebrew: Repair ${FORMULA} ${ARCH} bottle sidecars"
+      if [ "${#PUBLICATION_HANDOFFS[@]}" -gt 1 ]; then
+        commit_and_push "Homebrew: Repair ${#PUBLICATION_HANDOFFS[@]} bottle sidecar updates"
+      else
+        commit_and_push "Homebrew: Repair ${FORMULA} ${ARCH} bottle sidecars"
+      fi
     else
-      commit_and_push "Homebrew: Publish ${FORMULA} ${ARCH} bottle sidecars"
+      if [ "${#PUBLICATION_HANDOFFS[@]}" -gt 1 ]; then
+        commit_and_push "Homebrew: Publish ${#PUBLICATION_HANDOFFS[@]} bottle sidecar updates"
+      else
+        commit_and_push "Homebrew: Publish ${FORMULA} ${ARCH} bottle sidecars"
+      fi
     fi
     ;;
   failed)

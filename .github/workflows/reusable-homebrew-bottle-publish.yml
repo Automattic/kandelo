@@ -3058,22 +3058,6 @@ jobs:
             mv "$browser_evidence.tmp" "$browser_evidence"
           fi
 
-      - name: Validate generated sidecars against the exact base tap
-        shell: bash
-        run: |
-          set -euo pipefail
-          validation_tap="$RUNNER_TEMP/homebrew-validation-tap"
-          cp -a "$GITHUB_WORKSPACE/tap-postverify" "$validation_tap"
-          rsync -a "$RUNNER_TEMP/homebrew-sidecars/Formula/" "$validation_tap/Formula/"
-          rsync -a "$RUNNER_TEMP/homebrew-sidecars/Kandelo/" "$validation_tap/Kandelo/"
-          cd kandelo-postverify
-          host="$(bash scripts/dev-shell.sh rustc -vV | awk '/^host/ {print $2}')"
-          validation_args=(
-            cargo run --release -p xtask --target "$host" --quiet --
-            homebrew-validate --tap-root "$validation_tap"
-          )
-          bash scripts/dev-shell.sh "${validation_args[@]}"
-
       - name: Recheck trusted verifier sources after runtime execution
         shell: bash
         env:
@@ -3224,6 +3208,7 @@ jobs:
             --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
             --forbidden-root "$RUNNER_TEMP"
             --forbidden-root "/home/kandelo-homebrew-build"
+            --defer-whole-tap-validation
           )
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
             payload_args+=(--allow-dry-run)
@@ -3262,10 +3247,6 @@ jobs:
     permissions:
       actions: read
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout exact Kandelo finalizer source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -3343,54 +3324,80 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh true
 
-      - name: Download validated publication handoff
-        id: publish-handoff
+      - name: Download the complete validated publication handoff set
+        id: publish-handoffs
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: homebrew-publish-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/homebrew-publish-handoff
+          pattern: homebrew-publish-handoff-*-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-publish-handoffs
+          merge-multiple: false
 
-      - name: Validate the complete data-only publication payload
+      - name: Validate the exact package-scoped publication handoff set
         id: validate-payload
-        if: ${{ steps.publish-handoff.outcome == 'success' }}
+        if: ${{ steps.publish-handoffs.outcome == 'success' }}
         continue-on-error: true
         shell: bash
         env:
-          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
-          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          KANDELO_HOMEBREW_PLANNED_MATRIX: ${{ needs.plan.outputs.matrix }}
+          KANDELO_HOMEBREW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           error_file="$RUNNER_TEMP/homebrew-finalize-error.txt"
           : >"$error_file"
           {
             cd kandelo
-            payload_args=(
-              --handoff "$RUNNER_TEMP/homebrew-publish-handoff"
-              --tap-root "$GITHUB_WORKSPACE/tap-base"
-              --formula "$KANDELO_HOMEBREW_FORMULA"
-              --arch "$KANDELO_HOMEBREW_ARCH"
-              --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
-              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
-              --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
-              --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
-              --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
-              --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
-              --forbidden-root "$GITHUB_WORKSPACE"
-              --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
-              --forbidden-root "$RUNNER_TEMP"
-              --forbidden-root "/home/kandelo-homebrew-build"
-            )
-            bash scripts/dev-shell.sh env \
-              KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
-              bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
-
+            handoff_root="$RUNNER_TEMP/homebrew-publish-handoffs"
+            expected="$RUNNER_TEMP/homebrew-expected-handoffs.txt"
+            actual="$RUNNER_TEMP/homebrew-actual-handoffs.txt"
+            jq -er --arg attempt "$KANDELO_HOMEBREW_RUN_ATTEMPT" '
+              if type != "array" or length == 0 then error("empty matrix") else . end
+              | .[]
+              | "homebrew-publish-handoff-\(.formula)-\(.arch)-attempt-\($attempt)"
+            ' <<<"$KANDELO_HOMEBREW_PLANNED_MATRIX" | sort >"$expected"
+            while IFS= read -r -d '' entry; do
+              if [ ! -d "$entry" ] || [ -L "$entry" ]; then
+                echo "::error::publication handoff root contains a non-directory entry"
+                exit 1
+              fi
+              basename "$entry"
+            done < <(find "$handoff_root" -mindepth 1 -maxdepth 1 -print0) |
+              sort >"$actual"
+            cmp "$expected" "$actual" || {
+              echo "::error::downloaded publication handoffs differ from the exact planned matrix"
+              diff -u "$expected" "$actual" || true
+              exit 1
+            }
+            while IFS=$'\t' read -r formula arch; do
+              handoff="$handoff_root/homebrew-publish-handoff-${formula}-${arch}-attempt-${KANDELO_HOMEBREW_RUN_ATTEMPT}"
+              payload_args=(
+                --handoff "$handoff"
+                --tap-root "$GITHUB_WORKSPACE/tap-base"
+                --formula "$formula"
+                --arch "$arch"
+                --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
+                --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+                --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
+                --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+                --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+                --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+                --forbidden-root "$GITHUB_WORKSPACE"
+                --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
+                --forbidden-root "$RUNNER_TEMP"
+                --forbidden-root "/home/kandelo-homebrew-build"
+                --defer-whole-tap-validation
+              )
+              bash scripts/dev-shell.sh env \
+                KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+                bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
+            done < <(jq -er '.[] | [.formula, .arch] | @tsv' \
+              <<<"$KANDELO_HOMEBREW_PLANNED_MATRIX")
           } 2> >(tee "$error_file" >&2)
 
       - name: Checkout tap publication branch after payload validation
@@ -3402,21 +3409,21 @@ jobs:
           path: tap-publish
           fetch-depth: 0
 
-      - name: Publish validated sidecars under the tap state lock
+      - name: Atomically compose and publish all sidecars under one tap state lock
         id: publish
         if: ${{ steps.validate-payload.outcome == 'success' }}
         continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
-          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
-          STATE_LOCK_OWNER_DETAIL: ${{ matrix.formula }}, ${{ matrix.arch }}
+          KANDELO_HOMEBREW_PLANNED_MATRIX: ${{ needs.plan.outputs.matrix }}
+          KANDELO_HOMEBREW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          STATE_LOCK_OWNER_DETAIL: coordinated bottle batch
         run: |
           set -euo pipefail
           error_file="$RUNNER_TEMP/homebrew-finalize-error.txt"
@@ -3424,9 +3431,6 @@ jobs:
             cd kandelo
             publish_args=(
               --tap-root "$GITHUB_WORKSPACE/tap-publish"
-              --publication-handoff "$RUNNER_TEMP/homebrew-publish-handoff"
-              --formula "$KANDELO_HOMEBREW_FORMULA"
-              --arch "$KANDELO_HOMEBREW_ARCH"
               --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
               --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
               --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
@@ -3434,13 +3438,18 @@ jobs:
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             )
+            while IFS=$'\t' read -r formula arch; do
+              handoff="$RUNNER_TEMP/homebrew-publish-handoffs/homebrew-publish-handoff-${formula}-${arch}-attempt-${KANDELO_HOMEBREW_RUN_ATTEMPT}"
+              publish_args+=(--publication "$formula" "$arch" "$handoff")
+            done < <(jq -er '.[] | [.formula, .arch] | @tsv' \
+              <<<"$KANDELO_HOMEBREW_PLANNED_MATRIX")
             bash scripts/dev-shell.sh env \
               KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
               bash scripts/homebrew-publish-sidecars.sh "${publish_args[@]}"
           } 2> >(tee -a "$error_file" >&2)
 
       - name: Checkout clean tap for a failed-attempt report
-        if: ${{ always() && (steps.publish-handoff.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
+        if: ${{ always() && (steps.publish-handoffs.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ inputs.tap-repository }}
@@ -3449,42 +3458,44 @@ jobs:
           fetch-depth: 0
 
       - name: Record failed attempt without replacing last-green metadata
-        if: ${{ always() && (steps.publish-handoff.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
+        if: ${{ always() && (steps.publish-handoffs.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
-          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
-          PUBLISH_HANDOFF_OUTCOME: ${{ steps.publish-handoff.outcome }}
+          KANDELO_HOMEBREW_PLANNED_MATRIX: ${{ needs.plan.outputs.matrix }}
+          PUBLISH_HANDOFF_OUTCOME: ${{ steps.publish-handoffs.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-          STATE_LOCK_OWNER_DETAIL: ${{ matrix.formula }}, ${{ matrix.arch }}
+          STATE_LOCK_OWNER_DETAIL: coordinated bottle batch failure reports
           VALIDATE_PAYLOAD_OUTCOME: ${{ steps.validate-payload.outcome }}
         run: |
           set -euo pipefail
           error_text="publish-handoff=$PUBLISH_HANDOFF_OUTCOME; validate-payload=$VALIDATE_PAYLOAD_OUTCOME; publish=$PUBLISH_OUTCOME"
           cd kandelo
-          report_args=(
-            --tap-root "$GITHUB_WORKSPACE/tap-report"
-            --formula "$KANDELO_HOMEBREW_FORMULA"
-            --arch "$KANDELO_HOMEBREW_ARCH"
-            --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
-            --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
-            --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
-            --status failed
-            --error "$error_text"
-            --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
-            --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
-          )
-          bash scripts/dev-shell.sh env \
-            bash scripts/homebrew-publish-sidecars.sh "${report_args[@]}"
+          while IFS=$'\t' read -r formula arch; do
+            report_args=(
+              --tap-root "$GITHUB_WORKSPACE/tap-report"
+              --formula "$formula"
+              --arch "$arch"
+              --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
+              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+              --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
+              --status failed
+              --error "$error_text"
+              --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+              --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+            )
+            bash scripts/dev-shell.sh env \
+              bash scripts/homebrew-publish-sidecars.sh "${report_args[@]}"
+          done < <(jq -er '.[] | [.formula, .arch] | @tsv' \
+            <<<"$KANDELO_HOMEBREW_PLANNED_MATRIX")
 
-      - name: Fail after reporting an unsuccessful matrix entry
-        if: ${{ always() && (steps.publish-handoff.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
+      - name: Fail after reporting an unsuccessful coordinated publication
+        if: ${{ always() && (steps.publish-handoffs.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
         shell: bash
         run: exit 1
 

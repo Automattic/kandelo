@@ -24,8 +24,8 @@ PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "a5b0f9d53fe9be880bee622cb8d80e57d7cfe255cb5c24976e6d71bf7222db9f"
-PUBLISHER_FINALIZE_DIGEST = "3a7cb7293b43777154287f57e6301e71e747314d1c1d7fd2604234f39957535f"
+PUBLISHER_VERIFY_DIGEST = "2fb7c3d3f1191fea9bb08518ce9b103f20c1d20b6b44aa749d5416b282779551"
+PUBLISHER_FINALIZE_DIGEST = "da1c21fa1d85e7ce92a270bf75a5187880dae20296914516319378a664c63abc"
 PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -540,11 +540,13 @@ def check_publisher(workflow)
 
   check(plan.keys.sort == %w[outputs permissions runs-on steps],
         "publisher plan contract changed")
-  %w[build-and-test upload-bottle verify-bottle finalize-tap].each do |job_name|
+  %w[build-and-test upload-bottle verify-bottle].each do |job_name|
     check(jobs.fetch(job_name).keys.sort ==
           %w[if needs permissions runs-on steps strategy timeout-minutes],
           "publisher #{job_name} job contract changed")
   end
+  check(finalize.keys.sort == %w[if needs permissions runs-on steps timeout-minutes],
+        "publisher atomic finalizer job contract changed")
   check(index.keys.sort == %w[concurrency if needs permissions runs-on steps strategy timeout-minutes],
         "publisher version-index job contract changed")
   check(vfs_release.keys.sort == %w[if needs permissions runs-on steps timeout-minutes],
@@ -581,10 +583,12 @@ def check_publisher(workflow)
     "fail-fast" => false,
     "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.matrix) }}" },
   }
-  [build, upload, verify, finalize].each do |job|
+  [build, upload, verify].each do |job|
     check(job["strategy"] == matrix_strategy,
           "publisher execution job bypasses the validated matrix")
   end
+  check(!finalize.key?("strategy"),
+        "publisher finalizer must compose the complete matrix in one job")
   check(index["strategy"] == {
     "fail-fast" => false,
     "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.formula-matrix) }}" },
@@ -1040,7 +1044,7 @@ def check_publisher(workflow)
     },
   ], "publisher verifier checkout wiring changed")
 
-  failure_condition = "${{ always() && (steps.publish-handoff.outcome != 'success' || " \
+  failure_condition = "${{ always() && (steps.publish-handoffs.outcome != 'success' || " \
                       "steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}"
   check(checkout_view.call(finalize_steps) == [
     {
@@ -1201,7 +1205,7 @@ def check_publisher(workflow)
     !(step.fetch("env", {}).keys & credential_names).empty?
   end
   check(finalizer_credential_steps.map { |step| step["name"] } == [
-    "Publish validated sidecars under the tap state lock",
+    "Atomically compose and publish all sidecars under one tap state lock",
     "Record failed attempt without replacing last-green metadata",
   ] && finalizer_credential_steps.all? do |step|
     step.fetch("env").slice(*credential_names) == { "GH_TOKEN" => "${{ github.token }}" }
@@ -1321,13 +1325,16 @@ def check_publisher(workflow)
     "compression-level" => 0,
     "if-no-files-found" => "error", "retention-days" => 2,
   }, "publisher publication handoff artifact contract changed")
-  publish_handoff_download = named_step(finalize_steps, "Download validated publication handoff")
+  publish_handoff_download = named_step(
+    finalize_steps, "Download the complete validated publication handoff set"
+  )
   check(publish_handoff_download["uses"] == DOWNLOAD_ACTION &&
-        publish_handoff_download["id"] == "publish-handoff" &&
+        publish_handoff_download["id"] == "publish-handoffs" &&
         publish_handoff_download["continue-on-error"] == true &&
         publish_handoff_download["with"] == {
-          "name" => publish_handoff_name,
-          "path" => "${{ runner.temp }}/homebrew-publish-handoff",
+          "pattern" => "homebrew-publish-handoff-*-attempt-${{ github.run_attempt }}",
+          "path" => "${{ runner.temp }}/homebrew-publish-handoffs",
+          "merge-multiple" => false,
         }, "publisher publication handoff download contract changed")
   vfs_handoff_upload = named_step(
     verify_steps, "Upload exact browser-proven VFS release handoff"
@@ -3351,11 +3358,11 @@ def check_publisher(workflow)
         "publisher dependency-bearing VFS acceptance references a credential")
   sidecar_generation = named_step(verify_steps, "Generate sidecars from the selected bottle")
   sidecar_validation = named_step(
-    verify_steps, "Validate generated sidecars against the exact base tap"
+    verify_steps, "Package validated data-only publication handoff"
   )
   check(verify_steps.index(sidecar_generation) < verify_steps.index(acceptance_step) &&
         verify_steps.index(acceptance_step) < verify_steps.index(sidecar_validation),
-        "publisher dependency-bearing VFS acceptance runs outside the verified sidecar boundary")
+        "publisher dependency-bearing VFS acceptance runs outside the package-scoped sidecar boundary")
 
   acceptance_source = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-vfs-acceptance-smoke.ts")
@@ -3583,6 +3590,7 @@ def check_publisher(workflow)
     '.packages[0].bottles[0].bottle_file = "../build/bottle.tar.gz"',
     'if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then',
     'payload_args+=(--allow-dry-run)',
+    "--defer-whole-tap-validation",
     "scripts/homebrew-validate-publish-handoff.sh",
   ].each do |fragment|
     check(package_handoff_run.include?(fragment), "publisher publication handoff lacks #{fragment}")
@@ -3595,13 +3603,20 @@ def check_publisher(workflow)
   check(!package_handoff_run.match?(/(?:^|\s)(?:cp|rsync)[^\n]*(?:scripts?|\.env)(?:\s|\/|$)/),
         "publisher publication handoff includes executable or environment data")
 
-  payload_validation = named_step(finalize_steps,
-                                  "Validate the complete data-only publication payload")
+  payload_validation = named_step(
+    finalize_steps, "Validate the exact package-scoped publication handoff set"
+  )
   publish_checkout = named_step(finalize_steps,
                                 "Checkout tap publication branch after payload validation")
   check(payload_validation["id"] == "validate-payload" &&
         payload_validation["continue-on-error"] == true &&
         payload_validation.fetch("run").include?("scripts/homebrew-validate-publish-handoff.sh") &&
+        payload_validation.fetch("run").include?("--defer-whole-tap-validation") &&
+        payload_validation.fetch("run").include?('cmp "$expected" "$actual"') &&
+        payload_validation.fetch("run").include?('[ ! -d "$entry" ] || [ -L "$entry" ]') &&
+        payload_validation.fetch("run").include?(
+          'homebrew-publish-handoff-${formula}-${arch}-attempt-${KANDELO_HOMEBREW_RUN_ATTEMPT}'
+        ) &&
         !payload_validation.fetch("run").include?("--allow-dry-run") &&
         finalize_steps.index(payload_validation) < finalize_steps.index(publish_checkout),
         "publisher finalizer does not validate a write-only strict handoff before credentialed checkout")
@@ -3618,16 +3633,21 @@ def check_publisher(workflow)
         "publisher does not pass the exact trusted forbidden-root set at every archive boundary")
   check(forbidden_root_lines.none? { |line| line.include?("linuxbrew") || line.include?("/opt/") },
         "publisher forbids canonical Homebrew prefix or opt metadata")
-  publish_step = named_step(finalize_steps, "Publish validated sidecars under the tap state lock")
+  publish_step = named_step(
+    finalize_steps, "Atomically compose and publish all sidecars under one tap state lock"
+  )
   publish_run = publish_step.fetch("run")
   check(publish_run.include?("scripts/homebrew-publish-sidecars.sh") &&
-        publish_run.include?('--publication-handoff "$RUNNER_TEMP/homebrew-publish-handoff"') &&
+        publish_run.include?('publish_args+=(--publication "$formula" "$arch" "$handoff")') &&
+        publish_run.include?('KANDELO_HOMEBREW_PLANNED_MATRIX') &&
         !publish_run.include?("--sidecar-root"),
-        "publisher finalizer bypasses under-lock package composition")
+        "publisher finalizer bypasses under-lock coordinated package composition")
   finalizer_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-publish-sidecars.sh"))
   expected_commit_subjects = {
     'commit_and_push "Homebrew: Repair ${FORMULA} ${ARCH} bottle sidecars"' => 1,
+    'commit_and_push "Homebrew: Repair ${#PUBLICATION_HANDOFFS[@]} bottle sidecar updates"' => 1,
     'commit_and_push "Homebrew: Publish ${FORMULA} ${ARCH} bottle sidecars"' => 1,
+    'commit_and_push "Homebrew: Publish ${#PUBLICATION_HANDOFFS[@]} bottle sidecar updates"' => 1,
     'commit_and_push "Homebrew: Record ${FORMULA} ${ARCH} bottle failure"' => 2,
     'commit_and_push "Homebrew: Roll back ${FORMULA} ${ARCH} bottle metadata"' => 1,
     'commit_and_push "Homebrew: Record ${FORMULA} ${ARCH} bottle rollback"' => 1,
@@ -3639,7 +3659,7 @@ def check_publisher(workflow)
   check(!finalizer_source.include?('commit_and_push "homebrew:'),
         "publisher finalizer still generates a lowercase Homebrew commit prefix")
   [
-    'PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap"',
+    'PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap-$planned_index"',
     'git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit"',
     'assert_static_tap_tree "$PLANNED_TAP_ROOT" "planned composition tap"',
     '[ "$(git -C "$PLANNED_TAP_ROOT" rev-parse HEAD)" = "$input_tap_commit" ]',
@@ -3651,6 +3671,22 @@ def check_publisher(workflow)
   end
   check(finalizer_source.scan('--planned-tap-root "$PLANNED_TAP_ROOT"').length == 1,
         "publisher finalizer passes an ambiguous planned dependency checkout")
+  [
+    'for ((publication_index = 0; publication_index < ${#PUBLICATION_HANDOFFS[@]}; publication_index++))',
+    'compose_publication_handoff',
+    'stage_composed_publications',
+    'git -C "$TAP_ROOT" apply --index --binary "$patch_path"',
+    'run_validator "$COMPOSE_ROOT"',
+    'run_validator "$TAP_ROOT"',
+    'duplicate publication: $publication_identity',
+  ].each do |fragment|
+    check(finalizer_source.include?(fragment),
+          "publisher finalizer lacks atomic batch invariant: #{fragment}")
+  end
+  check(finalizer_source.scan(/^acquire_lock$/).length == 1 &&
+        finalizer_source.rindex("\nacquire_lock\n") <
+          finalizer_source.rindex('for ((publication_index = 0; publication_index < ${#PUBLICATION_HANDOFFS[@]}; publication_index++))'),
+        "publisher does not acquire exactly one tap lock before batch composition")
   publisher_test_source = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
   )
@@ -3672,6 +3708,11 @@ def check_publisher(workflow)
     'under-lock publisher accepted concurrent dependency-edge drift',
     'Formula differs from the planned tap outside canonical bottle metadata',
     'bash "$REPO_ROOT/scripts/test-install-local-binary-sealed.sh"',
+    'assert_atomic_publication_batch_closes_formula_metadata_wave',
+    'single-package publication bypassed the peer Formula/metadata mismatch',
+    'failed atomic batch changed the tap checkout',
+    'atomic batch metadata did not contain both exact bottle handoffs',
+    'deferred whole-tap validation weakened selected bottle evidence',
     'bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"',
   ].each do |fragment|
     check(publisher_test_source.include?(fragment),
@@ -3689,7 +3730,9 @@ def check_publisher(workflow)
                                "Checkout clean tap for a failed-attempt report")
   report = named_step(finalize_steps,
                       "Record failed attempt without replacing last-green metadata")
-  final_fail = named_step(finalize_steps, "Fail after reporting an unsuccessful matrix entry")
+  final_fail = named_step(
+    finalize_steps, "Fail after reporting an unsuccessful coordinated publication"
+  )
   check(report_checkout["if"] == failure_condition && report["if"] == failure_condition &&
         final_fail["if"] == failure_condition,
         "publisher failed-attempt path changed")
@@ -3962,7 +4005,7 @@ def self_test(publisher, maintenance, repository_canary)
     },
     "package secret reaches finalizer" => lambda { |w|
       step = mutate_named_step(
-        w, "finalize-tap", "Publish validated sidecars under the tap state lock"
+        w, "finalize-tap", "Atomically compose and publish all sidecars under one tap state lock"
       )
       step.fetch("env")["GH_TOKEN"] = "${{ secrets.UNREVIEWED_TOKEN }}"
     },
@@ -4597,7 +4640,7 @@ def self_test(publisher, maintenance, repository_canary)
     },
     "unvalidated publication handoff" => lambda { |w|
       step = mutate_named_step(w, "finalize-tap",
-                               "Validate the complete data-only publication payload")
+                               "Validate the exact package-scoped publication handoff set")
       step["run"] = step.fetch("run").sub("scripts/homebrew-validate-publish-handoff.sh", "true")
     },
     "dry-run publication handoff mode dropped" => lambda { |w|
@@ -4607,7 +4650,7 @@ def self_test(publisher, maintenance, repository_canary)
     },
     "write finalizer accepts dry-run receipt" => lambda { |w|
       step = mutate_named_step(w, "finalize-tap",
-                               "Validate the complete data-only publication payload")
+                               "Validate the exact package-scoped publication handoff set")
       step["run"] = step.fetch("run").sub(
         'bash scripts/homebrew-validate-publish-handoff.sh',
         'bash scripts/homebrew-validate-publish-handoff.sh --allow-dry-run'

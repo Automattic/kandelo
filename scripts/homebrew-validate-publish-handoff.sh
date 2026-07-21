@@ -13,14 +13,17 @@ KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 TAP_ROOT=""
 ALLOW_DRY_RUN=0
+DEFER_WHOLE_TAP_VALIDATION=0
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--allow-dry-run]
+usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--allow-dry-run] [--defer-whole-tap-validation]
 
 Checks the exact build/receipt/composition artifact grammar and cross-validates
-all publication data without loading Formula Ruby or executing package code.
+all package-scoped publication data without loading Formula Ruby or executing
+package code. --defer-whole-tap-validation is for a coordinated batch whose
+complete candidate will be validated atomically by the credentialed publisher.
 EOF
 }
 
@@ -37,6 +40,7 @@ while [ "$#" -gt 0 ]; do
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --allow-dry-run) ALLOW_DRY_RUN=1; shift ;;
+    --defer-whole-tap-validation) DEFER_WHOLE_TAP_VALIDATION=1; shift ;;
     --forbidden-root)
       [ "$#" -ge 2 ] && [ -n "$2" ] || {
         echo "homebrew-validate-publish-handoff.sh: --forbidden-root requires a value" >&2
@@ -375,8 +379,10 @@ if [ -f "$VALIDATION_TAP/Kandelo/metadata.json" ]; then
 fi
 (cd "$KANDELO_ROOT" && "${sidecar_args[@]}")
 assert_static_tap_tree "$VALIDATION_TAP" "composed validation tap"
-(cd "$KANDELO_ROOT" && cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-  homebrew-validate --tap-root "$VALIDATION_TAP")
+if [ "$DEFER_WHOLE_TAP_VALIDATION" -eq 0 ]; then
+  (cd "$KANDELO_ROOT" && cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+    homebrew-validate --tap-root "$VALIDATION_TAP")
+fi
 
 EXPECTED_STEM="${FORMULA}-${VERSION}-rebuild${BOTTLE_REBUILD}-${ARCH}"
 mkdir -p "$SELECTED_ROOT/Formula" "$SELECTED_ROOT/Kandelo/formula" \
@@ -649,4 +655,8 @@ if ! cmp -s "$formula_check_tmp/published.rb" "$formula_check_tmp/reviewed.rb"; 
   exit 1
 fi
 
-echo "homebrew-validate-publish-handoff.sh: validated $FORMULA/$ARCH"
+if [ "$DEFER_WHOLE_TAP_VALIDATION" -eq 1 ]; then
+  echo "homebrew-validate-publish-handoff.sh: validated package handoff $FORMULA/$ARCH; whole-tap validation deferred to atomic batch finalization"
+else
+  echo "homebrew-validate-publish-handoff.sh: validated $FORMULA/$ARCH"
+fi
