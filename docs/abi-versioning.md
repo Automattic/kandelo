@@ -125,7 +125,7 @@ rebuilding because the public process-memory layout belongs to ABI 41. ABI 41
 candidate programs created before publication remain mechanically valid when
 only this host-supplied reserve grows and the frame format stays unchanged.
 
-### ABI 42 kernel-owned task identities
+### ABI 42 kernel-owned task identities and scalable fork continuations
 
 ABI 42 makes the Rust `ProcessTable` the sole authority for process and thread
 identities. One monotonically increasing positive signed task-ID sequence starts
@@ -229,6 +229,27 @@ creation, `kernel_set_current_tid`, signal dequeue, child wait, write prepare,
 SysV attachment, exact exec, and exact thread exit, are incompatible kernel
 Wasm changes. Kernels, hosts, packages, guest binaries, and VFS images from
 ABI 41 must be rebuilt rather than mixed with ABI 42 artifacts.
+#### Scalable fork continuations
+
+ABI 42 replaces the fixed-capacity contiguous save buffer with dynamically
+mapped linked chunks. Instrumented modules carry the strict version-1
+`kandelo.wpk_fork.linked_frames` descriptor and import
+`env.__wpk_fork_frame_reserve`, `env.__wpk_fork_frame_commit`, and
+`env.__wpk_fork_frame_next`. The host validates the descriptor, owns chunk
+allocation and cleanup, and rejects incomplete or stale instrumentation.
+
+The transition is incompatible even though the five `wpk_fork_*` export names
+remain unchanged: generated postambles now depend on reserve-before-write and
+commit-after-write semantics, replay uses a validated linked-node order, and
+the old channel-adjacent area is only an active-root handoff anchor. ABI 41 and
+older programs must be rebuilt with the ABI 42 instrumenter and package/VFS
+artifacts must be republished for the new ABI epoch.
+
+Version 1 keeps inherited chunks at the parent's virtual addresses in the
+child. Relocating and rebasing a serialized continuation is not part of this
+ABI. Allocation failure before `SYS_FORK` is truthful but process-fatal after
+unwind has begun; a recoverable `ENOMEM` result requires the future
+`ABORT_UNWINDING` state.
 
 ## The snapshot
 

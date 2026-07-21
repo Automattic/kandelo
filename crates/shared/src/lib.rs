@@ -78,9 +78,12 @@ pub mod host_abi;
 ///     require the host_fcntl_lock import; fork/exec OFD state is versioned.
 /// 41: main-thread, pthread, and side-module fork continuations reserve 60 KiB
 ///     so valid wide call stacks do not overwrite adjacent host control state.
-/// 42: process and thread identities come from one kernel-owned allocator;
-///     process creation and fork exports return their allocated identities,
-///     and obsolete host-supplied fork/TID imports are removed.
+/// 42: process and thread identities come from one kernel-owned allocator,
+///     while fork continuations use transactional, dynamically allocated
+///     linked chunks instead of a fixed-capacity save buffer. Process creation
+///     and fork exports return kernel-allocated identities; instrumented
+///     modules declare the continuation format and import reserve, commit, and
+///     replay hooks.
 pub const ABI_VERSION: u32 = 42;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.

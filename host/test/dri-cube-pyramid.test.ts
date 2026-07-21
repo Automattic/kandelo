@@ -12,6 +12,7 @@ import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth, extractHeapBase } from "../src/constants";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { readForkContinuationAnchor } from "../src/fork-continuation";
 import { GlMuxer } from "../src/webgl/muxer";
 import type { GlBinding } from "../src/webgl/registry";
 import type {
@@ -120,12 +121,17 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             kernel.registerProcess(childPid, childMemory, [childChannelOffset], {
               ptrWidth,
             });
+            kernel.inheritProcessSharedMappings(parentForkPid, childPid);
 
             // Same canvas → same WebGL2 context → same muxer instance
             // (gl_muxers is a WeakMap keyed by context).
             kernel.gl.attachCanvas(childPid, fakeCanvas);
 
-            const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
+            const forkBufAddr = readForkContinuationAnchor(
+              parentMemory,
+              childChannelOffset - FORK_SAVE_BUFFER_SIZE,
+              ptrWidth,
+            );
 
             const childInit: CentralizedWorkerInitMessage = {
               type: "centralized_init",

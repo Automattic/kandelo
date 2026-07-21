@@ -21,6 +21,7 @@ import {
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { readForkContinuationAnchor } from "../src/fork-continuation";
 import type { HostDiagnostic } from "../src/host-diagnostic";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
@@ -360,14 +361,22 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
         const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
+        const activeForkBufAddr = threadFork?.forkBufAddr ?? readForkContinuationAnchor(
+          parentMemory,
+          childChannelOffset - FORK_BUF_SIZE,
+          parentPtrWidth,
+        );
+        const parentForkReplayContext = forkReplayContexts.get(parentPid);
         const forkReplayContext: ForkReplayContext | undefined = threadFork
           ? {
               fnPtr: threadFork.fnPtr,
               argPtr: threadFork.argPtr,
-              forkBufAddr: threadFork.forkBufAddr,
+              forkBufAddr: activeForkBufAddr,
             }
-          : forkReplayContexts.get(parentPid);
-        const forkBufAddr = forkReplayContext?.forkBufAddr ?? childChannelOffset - FORK_BUF_SIZE;
+          : parentForkReplayContext
+            ? { ...parentForkReplayContext, forkBufAddr: activeForkBufAddr }
+            : undefined;
+        const forkBufAddr = activeForkBufAddr;
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 

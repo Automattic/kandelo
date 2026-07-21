@@ -418,23 +418,23 @@ channel, fork-context, and clear-TID metadata.
 Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stack (details in [fork-instrumentation.md](fork-instrumentation.md)):
 
 1. User calls `fork()` → musl → `__syscall(SYS_clone, ...)` → glue
-2. Host's `kernel_fork` override calls `wpk_fork_unwind_begin(buf)`. The tool-injected export sets state to UNWINDING, initializes the absolute frame cursor `current_pos = buf + frames_start_offset` at `*(buf+0)`, and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the buffer's `saved_globals[]` area.
-3. The return-to-caller chain unwinds; each instrumented function's postamble writes its frame to the buffer and bumps `current_pos`.
+2. The host's `kernel_fork` override maps a root continuation chunk and calls `wpk_fork_unwind_begin(root + chunk_header_size)`. The tool-injected export sets state to UNWINDING and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the root's fixed prefix.
+3. The return-to-caller chain unwinds. After each fork-path call returns in the unwinding state, the caller asks the host to reserve a complete node before its first frame write; its postamble commits the node only after all scalar and reference state has been saved. The host maps additional page-rounded chunks when necessary.
 4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
 5. Kernel's `kernel_fork_process(parent_pid, caller_tid)` validates the caller,
    allocates the child PID from the global task-ID sequence, and copies process
    metadata and the fd/OFD tables. The child receives the calling task's blocked
    signal mask, while inherited stateful descriptors retain references to their
    existing kernel-global backings.
-6. Host copies the parent's linear memory to a new `WebAssembly.Memory` and spawns a child worker.
-7. Child worker calls `wpk_fork_rewind_begin(buf)` — the tool's export restores all saved globals. The host then calls `setupChannelBase(...)` (which reads the now-correct `__tls_base`) and invokes `_start`.
-8. Each instrumented function's preamble sees state=REWINDING, reloads its frame, and re-enters the call site where the parent was interrupted. Eventually reaches the `kernel_fork` call site in the leaf function, which returns 0. Libc then refreshes the copied pthread TID from the kernel through `set_tid_address` before returning to user code.
-9. `wpk_fork_rewind_end` resets state; fork returns 0 in child, child PID in parent.
+6. Host copies the parent's linear memory, including continuation mappings, to a new `WebAssembly.Memory` and spawns a child worker. Kernel mmap metadata is inherited with the process state.
+7. Child worker attaches to the copied root and calls `wpk_fork_rewind_begin(buf)` — the tool's export restores all saved globals. The host then calls `setupChannelBase(...)` (which reads the now-correct `__tls_base`) and invokes `_start`.
+8. Each instrumented function's preamble requests and validates the next committed frame, then re-enters the call site where the parent was interrupted. Eventually it reaches the `kernel_fork` call site in the leaf function, which returns 0. Libc then refreshes the copied pthread TID from the kernel through `set_tid_address` before returning to user code.
+9. `wpk_fork_rewind_end` resets state; parent and child independently unmap their continuation chunks; fork returns 0 in child and the child PID in the parent.
 
 The instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
 
 A fork reached directly inside an instrumented dlopened side module uses two
-ordered state machines and two save buffers: side then main during unwind, main
+ordered state machines and two linked continuations: side then main during unwind, main
 then side during rewind. Versioned fork-instrument capability metadata lets
 marker-present artifacts prove their role. ABI 16 defines the historical
 five-export fallback, while ABI 18 and later require role claims and reject

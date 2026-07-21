@@ -43,6 +43,7 @@ import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
 import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
+import { readForkContinuationAnchor } from "./fork-continuation";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -1049,14 +1050,21 @@ async function handleFork(
   });
   kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
+  const activeForkBufAddr = threadFork?.forkBufAddr ?? readForkContinuationAnchor(
+    parentMemory,
+    parentInfo.channelOffset - FORK_BUF_SIZE,
+    ptrWidth,
+  );
   const forkReplayContext: ForkReplayContext | undefined = threadFork
     ? {
         fnPtr: threadFork.fnPtr,
         argPtr: threadFork.argPtr,
-        forkBufAddr: threadFork.forkBufAddr,
+        forkBufAddr: activeForkBufAddr,
       }
-    : parentInfo.forkReplayContext;
-  const forkBufAddr = forkReplayContext?.forkBufAddr ?? childChannelOffset - FORK_BUF_SIZE;
+    : parentInfo.forkReplayContext
+      ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
+      : undefined;
+  const forkBufAddr = activeForkBufAddr;
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,

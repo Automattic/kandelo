@@ -20,7 +20,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `39` (see
+ABI version: `42` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -48,7 +48,7 @@ ABI version: `39` (see
 Every instrumented module carries a single mutable i32 global, `_wpk_fork_state`,
 and one mutable pointer global, `_wpk_fork_buf` (i32 for wasm32 programs, i64
 for wasm64). The pointer is zero while the state is `NORMAL` and holds the
-address of the active save buffer otherwise.
+address of the active root chunk's module prefix otherwise.
 
 ```
                    wpk_fork_unwind_begin(buf)
@@ -66,9 +66,10 @@ address of the active save buffer otherwise.
 
 - `NORMAL` — ordinary execution. Gated ops and gated calls run normally.
 - `UNWINDING` — the stack is being torn down. Each instrumented function runs
-  its postamble, writes a frame into the save buffer, and returns a default
-  value; the runtime-exported `wpk_fork_unwind_end` is called once the top of
-  the stack is reached.
+  its unwind-only call-site bridge, reserves a complete linked node before the
+  first frame write, then runs its postamble to finish the payload, commit the
+  node, and return a default value; the runtime-exported
+  `wpk_fork_unwind_end` is called once the top of the stack is reached.
 - `REWINDING` — the stack is being rebuilt from saved frames. Each
   instrumented function loads its frame and jumps straight to the matching
   call site via switch-dispatch. Body chunks before the chosen post-call
@@ -110,6 +111,23 @@ wpk_fork_state() -> i32
   Returns current state. Exported for host-side assertions.
 ```
 
+ABI 42 modules additionally import three exact `env` functions. A module that
+imports any one of them must import all three and carry the linked-frame custom
+section described below.
+
+```
+__wpk_fork_frame_reserve(frame_size: ptr) -> ptr
+  Reserves a complete node and returns its payload address before any frame
+  bytes or reference-table entries are written.
+
+__wpk_fork_frame_commit(payload: ptr) -> ()
+  Publishes the pending node after all payload and reference writes complete.
+
+__wpk_fork_frame_next(expected_frame_size: ptr) -> ptr
+  Returns the next committed payload during rewind and rejects size/order
+  mismatches before generated code reads it.
+```
+
 The five exports identify the state-machine ABI, but they do not prove which
 import seeded call-graph discovery. The tool therefore also emits the custom
 section `kandelo.wpk_fork.capabilities`. Its two-byte payload is
@@ -145,24 +163,23 @@ advance `ABI_VERSION` and regenerate `abi/snapshot.json` atomically.
 tool picks the pointer width from the module's primary memory — a memory64
 memory yields `i64`, anything else yields `i32`.
 
-Important Phase 7 behavior: `wpk_fork_unwind_begin` self-initializes
-`*(buf + 0)` with the absolute address `buf + frames_start_offset` before
-touching any user state. The host does **not** need to pre-seed the buffer
-header — it only needs to allocate a buffer at least as large as the
-instrumented module's `frames_start_offset` plus its worst-case frame-data
-footprint.
+`wpk_fork_unwind_begin` self-initializes `*(buf + 0)` with the address of the
+first byte after the fixed prefix before touching user state. During linked
+unwind and rewind, generated code overwrites that word with the payload address
+returned by the corresponding host hook. The host allocates the root chunk and
+passes `root + chunk_header_size` as `buf`; no caller computes or preallocates a
+worst-case frame-data footprint.
 
 ## Host Threading Contract
 
-The save buffer belongs to the channel that issued `SYS_FORK`. For a main-thread
-fork this is the process worker's channel, and the child enters `_start` before
+The continuation belongs to the channel that issued `SYS_FORK`. For a
+main-thread fork this is the process worker's channel, and the child enters `_start` before
 `wpk_fork_rewind_begin` replays to the saved call site.
 
-`current_pos` is an absolute linear-memory address inside that channel's save
-buffer, not an offset from address zero. This is load-bearing for pthreads:
-thread instances share linear memory, so relative frame addresses would make
-simultaneous fork unwinds overwrite one process-wide low-memory payload even
-though their buffer headers are distinct.
+Each process worker or pthread worker owns a separate host-side continuation
+object. This is load-bearing for pthreads: thread instances share linear
+memory, but separately allocated mappings and per-worker replay cursors prevent
+their unwinds from sharing frame storage.
 
 For `fork()` from a pthread worker, the host must preserve the pthread entry
 context as well as the buffer:
@@ -175,7 +192,8 @@ context as well as the buffer:
 - `centralizedThreadWorkerMain` overrides `kernel_fork` for instrumented modules
   and drives `wpk_fork_unwind_begin` / `wpk_fork_state` /
   `wpk_fork_rewind_begin` around the pthread function, using
-  `channelOffset - FORK_BUF_SIZE` as that thread's save buffer.
+  a dynamically mapped root chunk. `channelOffset - FORK_BUF_SIZE` now stores
+  only the active root address used by the kernel-worker fork handoff.
 - `handleFork` passes a `ForkFromThreadContext` through the host `onFork`
   callback. Node and browser hosts copy `forkBufAddr`, `fnPtr`, and `argPtr`
   into the child init message.
@@ -215,7 +233,7 @@ into one side-module instance whose call stack reaches `env.fork`:
    functions, the tool marks and preserves all possible dynamic indirect-call
    boundaries.
 2. Instrument the fork-capable side module with `--entry env.fork`. It receives
-   its own fork save buffer and versioned side-entry capability.
+   its own linked continuation and versioned side-entry capability.
 3. The process worker unwinds the side module, then the main module. Fork replay
    restores dlopen instances at their exact memory and table bases, rewinds the
    main module, then rewinds the active side module.
@@ -252,65 +270,61 @@ already contains live TLS, and reinitialization would overwrite C++ landing-pad
 and application `thread_local` state. TLS-relative exports relocate from that
 base, while `__tls_size` and `__tls_align` remain scalar constants.
 
-Every participating module uses the fixed 60 KiB save-buffer limit
-described below. A dynamically allocated side buffer avoids overlap with the
-main control slab but does not make deep/unbounded frame use safe. Before the
-worker sends `SYS_FORK`, it checks both the main module's buffer and the active
-side module's independent buffer; either overrun terminates the process instead
-of creating a child from corrupted continuation state.
+Every participating module owns an independent linked continuation. Side and
+main nodes may occupy several mappings and may contain a frame larger than one
+WebAssembly page. The coordinator completes and validates both continuations
+before it sends `SYS_FORK`.
 
 ## Save buffer format
 
-All offsets are byte-exact, all values little-endian. `P` is pointer width
-(4 on wasm32, 8 on wasm64). `N` is the total byte size of the module's saved
-scalar globals — fixed per module at instrument time. `B` is the total byte
-size of the B1 plain-catch scratch region, fixed per module at instrument
-time and 0 in modules that do not contain plain-catch capture sites.
+All values are little-endian and all records are eight-byte aligned. `P` is
+pointer width (4 on wasm32, 8 on wasm64). Instrumented modules carry exactly
+one 24-byte `kandelo.wpk_fork.linked_frames` custom section. Version 1 contains
+the `KLCF` magic, descriptor size, pointer width, alignment, transactional-node
+flag, chunk-header size, node-header size, and module-specific fixed-prefix
+size. The host validates every field before instantiation.
 
-| Offset            | Size | Field                 | Purpose                                |
-|-------------------|------|-----------------------|----------------------------------------|
-| `+0`              | `P`  | `current_pos`         | Absolute address of next frame byte    |
-| `+P`              | `P`  | `end_pos`             | Reserved; not read or written today    |
-| `+2P`             | `N`  | `saved_globals[]`     | Mutable scalar globals, decl. order    |
-| `+2P + N`         | `B`  | `b1_scratch[]`        | Plain-catch operand stash (see B1)     |
-| `+2P + N + B`     | var  | frame data            | Frames grow upward from here           |
+Continuation storage consists of page-rounded anonymous process mappings. The
+root starts with a chunk header, followed by the module's fixed prefix. Later
+chunks contain only a chunk header and nodes. Version-1 chunk headers are:
 
-`frames_start_offset = 2P + N + B`. It is exposed as metadata on the tool's
-internal `Runtime` struct, and `wpk_fork_unwind_begin` writes
-`buf + frames_start_offset` into `*(buf + 0)` on every invocation.
+| Offset | Size | Field | Purpose |
+|---|---:|---|---|
+| `+0` | 4 | magic | `KFCH` |
+| `+4` | 2 | version | Linked format version |
+| `+6` | 2 | flags | Zero in version 1 |
+| `+8` | `P` | root | Root chunk address |
+| `+8+P` | `P` | previous | Previous chunk, or zero |
+| `+8+2P` | `P` | next | Next chunk, or zero |
+| `+8+3P` | `P` | capacity | Mapped byte length |
+| `+8+4P` | `P` | used | First unused byte |
+| `+8+5P` | `P` | committed tail | Newest committed node; meaningful on root |
 
-After an unwind, the host compares this absolute `current_pos` with the explicit
-`buf + FORK_SAVE_BUFFER_SIZE` bound before sending `SYS_FORK`. Main-process and
-pthread buffers sit next to their syscall channels; a fork-capable side module
-has a separately allocated buffer recorded in its active-fork state. A cursor
-beyond either end means frame writes crossed that module's reserved boundary.
-The process fails with the required and reserved byte counts instead of
-creating a child from corrupted continuation state. This is detection, not
-prevention: the instrumented unwind has already written past the fixed reserve,
-so the host discards the process and its memory. Increasing the reserve again
-or making it elastic would be another ABI layout change.
+The module prefix retains the runtime's pointer word, reserved pointer word,
+saved scalar globals, and B1 plain-catch scratch. Its size is
+`frames_start_offset = 2P + N + B`, where `N` and `B` are fixed for the module.
+Frame nodes are not stored in that prefix.
 
-ABI 41 places the 60 KiB main and pthread buffers at the top of a dedicated
-64 KiB scratch page. The lower 4 KiB remains host-owned control space; current
-dlopen archive, active-side-fork, and arbitration slots consume at most 40
-bytes of it. The exact Homebrew candidate Bash child measured 49,232 bytes
-(192 bytes of fixed header/global/plain-catch state plus 49,040 bytes of live
-frames), leaving 12,208 bytes below the ABI 41 bound.
+At the first fork call, the host maps one page-rounded root large enough for
+the chunk header and fixed prefix. Each postamble already knows its own exact
+frame size and passes it to `reserve`; no extra frame-size-counting
+instrumentation or whole-stack prepass is required. When the active chunk does
+not fit the next complete node, the host maps another page-rounded chunk. A
+single node larger than a WebAssembly page receives a multi-page chunk.
 
-For wasm32 (`P = 4`) with a module that declares three additional scalar
-mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one
-user i64) and one fork-path function with a single `(catch $tag (param i32))`
-arm (16-byte scratch tuple after 8-byte alignment):
+Allocation is transactional: a reserved node is not linked from the committed
+tail until all scalar and reference writes finish. Allocation failure releases
+all parent-owned continuation mappings and throws before `SYS_FORK`, so no
+child is created from a partial chain. Version 1 terminates that process because
+the generated unwind cannot yet reverse already-returned frames. Converting
+this boundary into guest-visible `ENOMEM` requires the future
+`ABORT_UNWINDING` state documented in [future-improvements.md](future-improvements.md).
 
-```
-+0    4    current_pos
-+4    4    end_pos                (reserved)
-+8    4    saved __stack_pointer  (i32)
-+12   4    saved __tls_base       (i32)
-+16   8    saved user i64 global
-+24   16   b1 scratch (1 slot)
-+40        frames start here
-```
+The child receives the mappings through the normal process-memory copy and the
+kernel's inherited mmap metadata, at the same virtual addresses in version 1.
+Parent and child independently walk and unmap their copies after rewind. The
+linked format makes chunk boundaries explicit, but version 1 does not rebase
+internal pointers or relocate the chain in the child.
 
 The `b1_scratch` region is empty (`B == 0`) when no fork-path function in the
 module has a plain (non-`_ref`) catch arm — this is the case for every
@@ -322,8 +336,12 @@ a future extension. The tool currently ignores them when snapshotting globals.
 
 ## Frame format
 
-Each instrumented function reserves a fixed-size frame. The size depends on
-how many scalar user locals the function has, but the header is uniform.
+Each instrumented function has a statically known payload size. The size
+depends on how many scalar user locals the function has, but the payload header
+is uniform. Each payload is preceded by a linked-node header: `KFCN` magic,
+format version, transactional state, previous-node pointer, payload size, and
+total aligned node size. That header costs 24 bytes on wasm32 and 32 bytes on
+wasm64 before alignment.
 
 | Offset | Size | Field             | Purpose                                  |
 |--------|------|-------------------|------------------------------------------|
@@ -417,8 +435,8 @@ The tool applies a per-function transform that depends on the dispatch
 scheme described above. The following pairs show representative fixtures
 from `crates/fork-instrument/tests/instrument.rs` and
 `crates/fork-instrument/tests/switch_dispatch.rs`. The transformed WAT is
-simplified for readability; the actual output includes `current_pos`
-bumping, default values for result types, and preserved source locations.
+simplified for readability; the actual output includes linked-node hook calls,
+default values for result types, and preserved source locations.
 
 > **Note (post-commit-4):** Examples (a) and (c) below describe the
 > pre-2.5/2.6 guard-dispatch shape, which was deleted in commit 4 of
@@ -450,8 +468,8 @@ After instrumentation (abridged):
   ;; [1] Preamble: if REWINDING, load our frame and jump to matching call.
   (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
     (then
-      ;; Move current_pos back to this frame, then restore frame fields
-      ;; and locals. call_index remains in the frame header.
+      ;; Request the next committed payload, then restore frame fields and
+      ;; locals. call_index remains in the frame payload header.
       ...))
 
   ;; [2] Body wrapper: runs on NORMAL; on REWINDING, dispatch jumps to
@@ -477,9 +495,8 @@ After instrumentation (abridged):
         (br $unwind_save)))
     (return))
 
-  ;; [5] Postamble: write remaining frame header fields, serialize locals,
-  ;;     bump current_pos, then return a default value for the function's
-  ;;     result type.
+  ;; [5] Postamble: finish writing the already-reserved node's frame header
+  ;;     and serialized locals, commit it, then return a default result.
   ...
   (return (i32.const 0)))
 ```
@@ -487,25 +504,26 @@ After instrumentation (abridged):
 Numbered callouts:
 
 1. **Preamble (Phase 4d).** Every instrumented function opens with a state
-   test. Under `REWINDING`, the preamble reads `current_pos`, locates the
-   frame at `current_pos - frame_size`, stores that frame base back into
+   test. Under `REWINDING`, the preamble calls
+   `__wpk_fork_frame_next(frame_size)`, stores the returned payload in
    `*(buf + 0)`, and deserializes each scalar user local. Dispatch reads
-   `call_index` directly from that active frame header.
+   `call_index` directly from that active frame payload.
 2. **Body wrapper (Phase 4b/4c).** The original body is wrapped in a `$unwind_save`
    block. On `REWINDING`, a `br_table` keyed by `frame.call_index` jumps to
    the selected post-call landing. On `NORMAL`, dispatch falls through and
    executes the original chunks.
 3. **Wrapped call site (Phase 4c).** The original call is kept intact. After
-   the call returns in `UNWINDING`, the tool writes the call site's
-   `call_index` to `frame[+4]`.
+   the call returns in `UNWINDING`, the tool reserves the function's complete
+   frame node before its first write, stores the returned payload pointer in
+   `*(buf + 0)`, and writes the call site's `call_index` to `frame[+4]`.
 4. **Unwind bridge (Phase 4c/4d).** The unwind-only branch writes
    `frame.call_index` and exits `$unwind_save`. If the callee did not begin
    unwinding, execution continues normally.
 5. **Postamble (Phase 4d).** Emits the remaining frame header fields
-   (func_index, catch_region_id, exnref_slot), writes each scalar user local, bumps
-   `*(buf + 0)` by the frame size, and returns a default value of the
-   function's result type. Callers see the default on the unwind path but
-   discard it because their own postamble runs next.
+   (func_index, catch_region_id, exnref_slot), writes each scalar user local,
+   commits the reserved node, and returns a default value of the function's
+   result type. Callers see the default on the unwind path but discard it
+   because their own postamble runs next.
 
 ### (b) Fork from inside a catch handler
 
@@ -1043,10 +1061,33 @@ investigation — is preserved in
 
 ## Performance envelope
 
-The Phase 7 acceptance gate is ±3% of the previous fork-continuation baseline on fork-heavy
-benchmark suites, measured with `npx tsx benchmarks/run.ts --rounds=3` on
-both the Node.js host and the browser host. The suites that exercise fork
-meaningfully are `wordpress`, `erlang-ring`, and `process-lifecycle`.
+Linked continuations add three imported host calls per saved activation over a
+complete fork cycle: reserve and commit while unwinding, then next while
+replaying. Each saved activation also carries a 24-byte node header on wasm32
+or a 32-byte node header on wasm64, rounded together with the payload to an
+8-byte boundary. Each active module continuation uses at least one 64 KiB
+page-rounded anonymous mapping; another mapping is added only when the current
+chunk cannot hold the next complete node. An individual frame larger than a
+Wasm page is allocated in a correspondingly larger page-rounded chunk.
+
+The module-format cost is three imports plus the 24-byte
+`kandelo.wpk_fork.linked_frames` descriptor and normal Wasm section/name
+encoding. The fixed 60 KiB host-reserved control-region geometry remains in
+ABI 42, but it is no longer continuation capacity: only its anchor word is
+used to find the dynamically allocated root chunk.
+
+As a narrow size check, instrumenting the P-10 deep-recursion fixture from the
+same 27,886-byte raw Wasm produced 50,873 bytes with the ABI 41 instrumenter
+and 52,330 bytes with the ABI 42 linked-frame instrumenter: 1,457 additional
+bytes (2.86%). This is one small fixture, not a general application-size
+claim; the fixed import/metadata cost and the number of transformed call sites
+change the percentage substantially between programs.
+
+Performance comparisons must use the fork-heavy benchmark suites with
+`npx tsx benchmarks/run.ts --rounds=3` on both the Node.js and browser hosts.
+The suites that exercise fork meaningfully are `wordpress`, `erlang-ring`,
+and `process-lifecycle`. Do not infer a regression percentage from the
+structural costs above.
 
 For the concrete numbers landed by the Phase 7 rollout PR, see Task 15 of
 `docs/plans/2026-04-21-fork-instrument-phase-7-rollout-plan.md`. Binary size

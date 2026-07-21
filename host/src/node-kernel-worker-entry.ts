@@ -52,6 +52,7 @@ import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
+import { readForkContinuationAnchor } from "./fork-continuation";
 import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
@@ -863,14 +864,21 @@ async function handleFork(
   kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
   const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
+  const activeForkBufAddr = threadFork?.forkBufAddr ?? readForkContinuationAnchor(
+    parentMemory,
+    parentInfo.channelOffset - FORK_BUF_SIZE,
+    ptrWidth,
+  );
   const forkReplayContext: ForkReplayContext | undefined = threadFork
     ? {
         fnPtr: threadFork.fnPtr,
         argPtr: threadFork.argPtr,
-        forkBufAddr: threadFork.forkBufAddr,
+        forkBufAddr: activeForkBufAddr,
       }
-    : parentInfo.forkReplayContext;
-  const forkBufAddr = forkReplayContext?.forkBufAddr ?? childChannelOffset - FORK_BUF_SIZE;
+    : parentInfo.forkReplayContext
+      ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
+      : undefined;
+  const forkBufAddr = activeForkBufAddr;
 
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",

@@ -12,6 +12,9 @@
 //!   is well-formed.
 
 use fork_instrument::runtime::names;
+use fork_instrument::linked_frames::{
+    FrameFormatDescriptor, LINKED_FRAME_FORMAT_SECTION, PointerWidth,
+};
 use fork_instrument::{
     FORK_CAP_DYLINK_MAIN, FORK_CAP_SIDE_ENTRY, FORK_CAPABILITIES_SECTION,
     FORK_CAPABILITIES_VERSION, Options, instrument,
@@ -71,6 +74,55 @@ const EMPTY_MODULE_WITH_FORK: &str = r#"
 fn instrumented_module_validates() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     validate(&bytes);
+}
+
+#[test]
+fn linked_runtime_imports_transaction_hooks_and_emits_exact_prefix_metadata() {
+    let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let module = Module::from_buffer(&bytes).unwrap();
+    for name in [
+        names::IMPORT_FRAME_RESERVE,
+        names::IMPORT_FRAME_COMMIT,
+        names::IMPORT_FRAME_NEXT,
+    ] {
+        assert!(
+            module.imports.iter().any(|import| import.module == "env" && import.name == name),
+            "missing linked continuation import {name}",
+        );
+    }
+
+    let descriptors: Vec<_> = Parser::new(0)
+        .parse_all(&bytes)
+        .filter_map(|payload| match payload.expect("parse payload") {
+            Payload::CustomSection(section) if section.name() == LINKED_FRAME_FORMAT_SECTION => {
+                Some(FrameFormatDescriptor::decode(section.data()).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        descriptors,
+        vec![FrameFormatDescriptor::current(PointerWidth::Wasm32, 8)],
+    );
+}
+
+#[test]
+fn module_without_fork_seed_does_not_import_linked_storage_hooks() {
+    let bytes = instrument_wat("(module (memory 1) (func (export \"run\")))");
+    let module = Module::from_buffer(&bytes).unwrap();
+    for name in [
+        names::IMPORT_FRAME_RESERVE,
+        names::IMPORT_FRAME_COMMIT,
+        names::IMPORT_FRAME_NEXT,
+    ] {
+        assert!(
+            !module
+                .imports
+                .iter()
+                .any(|import| import.module == "env" && import.name == name),
+            "inert module unexpectedly imports linked continuation hook {name}",
+        );
+    }
 }
 
 #[test]

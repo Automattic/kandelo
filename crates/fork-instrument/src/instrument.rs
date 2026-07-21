@@ -601,6 +601,7 @@ fn instrument_one_function_switch(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         catch_state_locals,
     );
 
@@ -2304,6 +2305,7 @@ fn populate_dispatch_structure(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
 ) {
     let n_calls = call_sites.len();
@@ -2336,6 +2338,7 @@ fn populate_dispatch_structure(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         catch_state_locals,
     );
 }
@@ -2360,6 +2363,7 @@ fn emit_dispatch_node(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
 ) {
     match node {
@@ -2379,6 +2383,7 @@ fn emit_dispatch_node(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             catch_state_locals,
         ),
         DispatchTree::Internal {
@@ -2400,6 +2405,7 @@ fn emit_dispatch_node(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             catch_state_locals,
         ),
     }
@@ -2440,6 +2446,7 @@ fn emit_internal_dispatch(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
 ) {
     let b = children.len();
@@ -2502,6 +2509,7 @@ fn emit_internal_dispatch(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             catch_state_locals,
         );
     }
@@ -2530,6 +2538,7 @@ fn emit_internal_dispatch(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         catch_state_locals,
     );
 }
@@ -2557,6 +2566,7 @@ fn emit_leaf_dispatch(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
 ) {
     debug_assert!(
@@ -2625,6 +2635,7 @@ fn emit_leaf_dispatch(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             catch_state_locals,
             function_unwind_save,
         );
@@ -2661,6 +2672,7 @@ fn emit_leaf_dispatch(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         catch_state_locals,
         function_unwind_save,
     );
@@ -2819,6 +2831,7 @@ fn emit_call_index_store_and_unwind_branch(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     call_idx: u32,
     unwind_save: InstrSeqId,
 ) {
@@ -2833,6 +2846,20 @@ fn emit_call_index_store_and_unwind_branch(
 
     {
         let s = &mut local.block_mut(if_then).instrs;
+        if let Some(frame_reserve) = runtime.frame_reserve {
+            // This is the first frame write on the unwind path. Reserve the
+            // complete node before publishing call_index or any postamble
+            // scalar/reference state.
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
+            );
+            push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+            push_instr(s, Instr::Call(Call { func: frame_reserve }));
+            push_instr(s, store_ptr(memory, ptr_ty, 0));
+        }
         push_current_frame_ptr(s, runtime, memory, ptr_ty);
         push_instr(
             s,
@@ -2891,28 +2918,34 @@ fn populate_preamble_then(
 ) {
     let s = &mut local.block_mut(preamble_then).instrs;
 
-    // *(buf + 0) = *(buf + 0) - frame_size. After this, the buffer
-    // cursor itself is the current frame pointer for all frame reads.
+    // Store the frame selected for replay in *(buf + 0). The linked format
+    // asks the host-managed chain for the next committed frame; the legacy
+    // format walks its contiguous buffer backward.
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
             global: runtime.buf_global,
         }),
     );
-    push_instr(
-        s,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.buf_global,
-        }),
-    );
-    push_instr(s, load_ptr(memory, ptr_ty, 0));
-    push_instr(s, ptr_const(ptr_ty, frame_size as i64));
-    push_instr(
-        s,
-        Instr::Binop(Binop {
-            op: ptr_sub(ptr_ty),
-        }),
-    );
+    if let Some(frame_next) = runtime.frame_next {
+        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(s, Instr::Call(Call { func: frame_next }));
+    } else {
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_instr(s, load_ptr(memory, ptr_ty, 0));
+        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(
+            s,
+            Instr::Binop(Binop {
+                op: ptr_sub(ptr_ty),
+            }),
+        );
+    }
     push_instr(s, store_ptr(memory, ptr_ty, 0));
 
     if let Some(catch_state) = catch_state_locals {
@@ -3037,22 +3070,28 @@ fn populate_postamble(
         push_instr(out, Instr::TableSet(TableSet { table }));
     }
 
-    // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
-    push_instr(
-        out,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.buf_global,
-        }),
-    );
-    push_current_frame_ptr(out, runtime, memory, ptr_ty);
-    push_instr(out, ptr_const(ptr_ty, frame_size as i64));
-    push_instr(
-        out,
-        Instr::Binop(Binop {
-            op: ptr_add(ptr_ty),
-        }),
-    );
-    push_instr(out, store_ptr(memory, ptr_ty, 0));
+    if let Some(frame_commit) = runtime.frame_commit {
+        // Publish only after the complete payload and reference stashes exist.
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(out, Instr::Call(Call { func: frame_commit }));
+    } else {
+        // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
+        push_instr(
+            out,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(out, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(
+            out,
+            Instr::Binop(Binop {
+                op: ptr_add(ptr_ty),
+            }),
+        );
+        push_instr(out, store_ptr(memory, ptr_ty, 0));
+    }
 
     // Push defaults for the function's result types, or `unreachable`
     // if any result is a non-nullable ref.
@@ -3093,6 +3132,7 @@ fn emit_post_call_via_local(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
 ) {
@@ -3123,6 +3163,7 @@ fn emit_post_call_via_local(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         call_idx as u32,
         unwind_save,
     );
@@ -6330,6 +6371,7 @@ fn instrument_one_function_nested_switch(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             cond_swap_local,
             catch_state_locals,
             unwind_save,
@@ -6358,6 +6400,7 @@ fn instrument_one_function_nested_switch(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         cond_swap_local,
         catch_state_locals,
         unwind_save,
@@ -6547,6 +6590,7 @@ fn transform_region_seq(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
@@ -6642,6 +6686,7 @@ fn transform_region_seq(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         cond_swap_local,
         catch_state_locals,
         unwind_save,
@@ -6682,6 +6727,7 @@ fn transform_entry_region(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
@@ -6754,6 +6800,7 @@ fn transform_entry_region(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         cond_swap_local,
         catch_state_locals,
         unwind_save,
@@ -7113,6 +7160,7 @@ fn populate_region_dispatch_structure(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
@@ -7174,6 +7222,7 @@ fn populate_region_dispatch_structure(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             cond_swap_local,
             catch_state_locals,
             unwind_save,
@@ -7215,6 +7264,7 @@ fn populate_region_dispatch_structure(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         cond_swap_local,
         catch_state_locals,
         unwind_save,
@@ -7242,6 +7292,7 @@ fn emit_post_landing(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
@@ -7282,6 +7333,7 @@ fn emit_post_landing(
                 runtime,
                 memory,
                 ptr_ty,
+                frame_size,
                 *call_idx,
                 unwind_save,
             );
