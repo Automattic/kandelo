@@ -34,6 +34,22 @@ RUBY_MAJOR_MINOR="$(echo "$RUBY_VERSION" | cut -d. -f1-2)"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://cache.ruby-lang.org/pub/ruby/${RUBY_MAJOR_MINOR}/ruby-${RUBY_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-ruby}"
+GUEST_PREFIX="${WASM_POSIX_DEP_GUEST_PREFIX-/usr}"
+
+validate_guest_prefix() {
+    local value="$1"
+    if [[ ! "$value" =~ ^/([A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$ ]]; then
+        echo "ERROR: WASM_POSIX_DEP_GUEST_PREFIX must be a safe absolute guest path: $value" >&2
+        exit 2
+    fi
+    if [[ "/${value#/}/" == *'/../'* || "/${value#/}/" == *'/./'* || \
+          "/${value#/}/" == *'//'* ]]; then
+        echo "ERROR: WASM_POSIX_DEP_GUEST_PREFIX must be normalized: $value" >&2
+        exit 2
+    fi
+}
+
+validate_guest_prefix "$GUEST_PREFIX"
 # Explicit env wins; else the in-tree sysroot. Homebrew exposes the reviewed
 # checkout and sysroot read-only, so a Formula build augments a private copy
 # with Ruby's libyaml and compatibility headers instead of mutating its trusted
@@ -897,7 +913,7 @@ SITE_EOF
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(uname -m)-apple-darwin" \
-        --prefix="/usr" \
+        --prefix="$GUEST_PREFIX" \
         --with-baseruby="$BASERUBY_COMMAND" \
         --with-thread=pthread \
         --with-coroutine=kandelo \
@@ -1123,7 +1139,7 @@ FINAL_RUBY_LDFLAGS="$STATIC_LINK_PATHS -Wl,-z,stack-size=1048576"
 
 echo "==> Relinking Ruby with static extensions and encodings..."
 make -f exts.mk \
-    libdir="/usr/lib" \
+    libdir="$GUEST_PREFIX/lib" \
     LIBRUBY_EXTS=./.libruby-with-ext.time \
     "EXTENCS=$STATIC_ENCOBJS" \
     "BASERUBY=$BASERUBY_COMMAND" \
@@ -1161,11 +1177,13 @@ echo "==> Applying wasm-fork-instrument to ruby.wasm..."
 "$FORK_INSTRUMENT" "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.instr"
 mv "$BIN_DIR/ruby.wasm.instr" "$BIN_DIR/ruby.wasm"
 
-# Install stdlib and default RubyGems/Bundler files under the guest /usr
-# prefix. The package publishes this tree as ruby-runtime.zip for VFS images.
+# Install stdlib and default RubyGems/Bundler files under the selected guest
+# prefix. Direct package builds retain /usr; Homebrew builds select their
+# stable guest opt prefix so Ruby's built-in load path works after pouring.
 echo "==> Installing Ruby runtime..."
 mkdir -p "$INSTALL_DIR"
-RUBY_LIB_DIR="$INSTALL_DIR/usr/lib/ruby/${RUBY_MAJOR_MINOR}.0"
+RUBY_INSTALL_ROOT="$INSTALL_DIR$GUEST_PREFIX"
+RUBY_LIB_DIR="$RUBY_INSTALL_ROOT/lib/ruby/${RUBY_MAJOR_MINOR}.0"
 make install \
     DESTDIR="$INSTALL_DIR" 2>/dev/null || {
     echo "==> make install failed, copying lib manually..."
@@ -1191,32 +1209,38 @@ if [ ! -d "$RUBY_LIB_DIR/rubygems" ]; then
     echo "ERROR: Ruby runtime tree is missing rubygems at $RUBY_LIB_DIR/rubygems" >&2
     exit 1
 fi
-mkdir -p "$INSTALL_DIR/usr/bin"
-cat >"$INSTALL_DIR/usr/bin/gem" <<'EOF'
+mkdir -p "$RUBY_INSTALL_ROOT/bin"
+cat >"$RUBY_INSTALL_ROOT/bin/gem" <<'EOF'
 #!/usr/bin/env ruby
 require "rubygems/gem_runner"
 Gem::GemRunner.new.run(ARGV)
 EOF
-cat >"$INSTALL_DIR/usr/bin/bundle" <<'EOF'
+cat >"$RUBY_INSTALL_ROOT/bin/bundle" <<'EOF'
 #!/usr/bin/env ruby
+require "rubygems"
+require "bundler"
 require "bundler/friendly_errors"
 Bundler.with_friendly_errors do
   require "bundler/cli"
   Bundler::CLI.start(ARGV, debug: true)
 end
 EOF
-cat >"$INSTALL_DIR/usr/bin/bundler" <<'EOF'
+cat >"$RUBY_INSTALL_ROOT/bin/bundler" <<'EOF'
 #!/usr/bin/env ruby
 load File.expand_path("bundle", __dir__)
 EOF
-chmod 755 "$INSTALL_DIR/usr/bin/gem" "$INSTALL_DIR/usr/bin/bundle" "$INSTALL_DIR/usr/bin/bundler"
+chmod 755 "$RUBY_INSTALL_ROOT/bin/gem" "$RUBY_INSTALL_ROOT/bin/bundle" "$RUBY_INSTALL_ROOT/bin/bundler"
 
 rm -f "$RUNTIME_ZIP"
 RUNTIME_STAGE="$(mktemp -d)"
 trap 'rm -rf "$RUNTIME_STAGE"' EXIT
 mkdir -p "$RUNTIME_STAGE/usr/lib"
-cp -R "$INSTALL_DIR/usr/lib/ruby" "$RUNTIME_STAGE/usr/lib/ruby"
-cp -R "$INSTALL_DIR/usr/bin" "$RUNTIME_STAGE/usr/bin"
+# Keep the archive's existing /usr payload layout. The direct package VFS
+# overlays it at /, while the Formula treats it as a portable staging tree and
+# installs the contents into its keg. The generated rbconfig and executable
+# still retain the selected guest prefix.
+cp -R "$RUBY_INSTALL_ROOT/lib/ruby" "$RUNTIME_STAGE/usr/lib/ruby"
+cp -R "$RUBY_INSTALL_ROOT/bin" "$RUNTIME_STAGE/usr/bin"
 (cd "$RUNTIME_STAGE" && zip -r -q "$RUNTIME_ZIP" usr)
 echo "==> Ruby runtime archive: $RUNTIME_ZIP"
 

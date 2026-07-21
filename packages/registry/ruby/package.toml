@@ -19,9 +19,10 @@ script_path = "packages/registry/ruby/build-ruby.sh"
 name = "ruby"
 wasm = "ruby.wasm"
 
-# Runtime files staged under guest /usr for Ruby load paths, RubyGems, and
-# Bundler-facing Homebrew startup. Multi-output layout places both outputs
-# under programs/<arch>/ruby/.
+# Runtime files use /usr by default for direct package images. Callers such as
+# Homebrew may compile the same runtime for their stable guest prefix while the
+# archive keeps its portable /usr staging layout. Multi-output layout places
+# both outputs under programs/<arch>/ruby/.
 [[outputs]]
 name = "ruby-runtime"
 wasm = "ruby-runtime.zip"

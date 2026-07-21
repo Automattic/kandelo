@@ -410,6 +410,39 @@ grep -F "CPPFLAGS=\"-DRUBY_KANDELO_POSIX=1 -I\$ZLIB_PREFIX/include\"" \
 grep -F "LDFLAGS=\"-L\$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576\"" \
     "$ruby_script" >/dev/null ||
     fail "Ruby configure LDFLAGS reintroduced its private sysroot path"
+grep -F 'GUEST_PREFIX="${WASM_POSIX_DEP_GUEST_PREFIX-/usr}"' "$ruby_script" >/dev/null ||
+    fail "Ruby build does not default its compiled runtime prefix to /usr"
+grep -F -- '--prefix="$GUEST_PREFIX"' "$ruby_script" >/dev/null ||
+    fail "Ruby configure does not honor the caller-selected guest prefix"
+grep -F 'libdir="$GUEST_PREFIX/lib"' "$ruby_script" >/dev/null ||
+    fail "Ruby static extension link does not honor the caller-selected guest prefix"
+grep -F 'RUBY_INSTALL_ROOT="$INSTALL_DIR$GUEST_PREFIX"' "$ruby_script" >/dev/null ||
+    fail "Ruby runtime installation does not honor the caller-selected guest prefix"
+
+# Ruby concatenates this prefix with DESTDIR, embeds it into rbconfig, and uses
+# it for its built-in load path. Reject malformed caller input before reaching
+# any compiler or dependency work.
+invalid_ruby_prefixes=(
+    ""
+    relative/not-allowed
+    /opt/../escape
+    /opt//ruby
+    /opt/ruby/
+    "/opt/ruby path"
+    $'/opt/ruby\tpath'
+    $'/opt/ruby\npath'
+)
+for invalid_prefix in "${invalid_ruby_prefixes[@]}"; do
+    err="$TMP_ROOT/ruby-guest-prefix.err"
+    if WASM_POSIX_DEP_WORK_DIR="$TMP_ROOT/ruby-invalid-work" \
+        WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/ruby-invalid-out" \
+        WASM_POSIX_DEP_GUEST_PREFIX="$invalid_prefix" \
+        bash "$ruby_script" >/dev/null 2>"$err"; then
+        fail "Ruby accepted invalid guest prefix '$invalid_prefix'"
+    fi
+    grep -F "WASM_POSIX_DEP_GUEST_PREFIX must be" "$err" >/dev/null ||
+        fail "Ruby invalid guest-prefix rejection was not explained"
+done
 
 # Invalid guest paths are rejected before NetHack reaches any toolchain or
 # dependency work.
