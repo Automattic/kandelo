@@ -588,4 +588,40 @@ sed -i.bak 's/    out_dir = kandelo_build_package(/    first = kandelo_build_pac
 rm "$TAP_ROOT/Formula/bridge.rb.bak"
 expect_bridge_failure multiple-calls 'Formula has multiple kandelo_build_package calls'
 
+write_valid_bridge_formula
+sed -i.bak '/    source_dir = kandelo_stage_verified_formula_source/a\
+    singleton_class.instance_exec do\
+      alias_method(("kandelo_" + "build_package").to_sym, :system)\
+    end' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure replaced-dispatch 'forbidden tap-local source operation "singleton_class"'
+
+cat >"$TAP_ROOT/Formula/indirect.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class Indirect < Formula
+  include KandeloFormulaSupport
+
+  desc "Indirect bridge fixture"
+  homepage "https://example.test/indirect"
+  url "https://example.test/indirect-1.0.0.tar.gz"
+  version "1.0.0"
+  sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  license "MIT"
+
+  def install
+    KandeloFormulaSupport.instance_method(("kandelo_" + "build_package").to_sym).bind_call(
+      self, "wrong", "wrong.sh", stable.url, stable.checksum.hexdigest
+    )
+  end
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core indirect \
+  --tier2-bridge-json >"$TMP_ROOT/indirect.out" 2>"$TMP_ROOT/indirect.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: emitted a null plan for indirect bridge dispatch" >&2
+  exit 1
+fi
+grep -F 'forbidden tap-local source operation "instance_method"' \
+  "$TMP_ROOT/indirect.err" >/dev/null
+
 echo "test-homebrew-formula-runtime-closure.sh: passed"

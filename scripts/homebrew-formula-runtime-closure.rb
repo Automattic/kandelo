@@ -56,8 +56,12 @@ FORBIDDEN_DEPENDENCY_IDENTIFIERS = Set[
 FORBIDDEN_SUPPORT_IDENTIFIERS = (
   FORBIDDEN_DEPENDENCY_IDENTIFIERS +
     Set[
-      "Tap", "__FILE__", "__dir__", "autoload", "binding", "load",
-      "local_variable_get", "local_variable_set", "require", "tap",
+      "Module", "ObjectSpace", "Tap", "__FILE__", "__dir__", "alias", "alias_method",
+      "autoload", "bind", "bind_call", "binding", "class_exec", "const_set", "extend",
+      "instance_exec", "instance_method", "load", "local_variable_get", "local_variable_set",
+      "module_function", "prepend", "private_instance_method", "public_instance_method",
+      "refine", "remove_const", "remove_instance_variable", "remove_method", "require",
+      "singleton_class", "tap", "unbind", "undef", "undef_method", "using",
     ]
 ).freeze
 EXCLUDED_TAG_SETS = Set[
