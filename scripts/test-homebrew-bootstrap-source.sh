@@ -8,11 +8,15 @@ PATCH_SHA256="9c52238d811616c210cd1ecdd23b0192a3e0333219a70b34d8ea6d77dbcfbf74"
 BREW_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_BREW_REPOSITORY:-https://github.com/Homebrew/brew.git}"
 BREW_REVISION="21aba0bc7080a75753f01c06d2358ca27706bfeb"
 TAP_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_TAP_REPOSITORY:-https://github.com/kandelo-dev/homebrew-tap-core.git}"
-TAP_REVISION="da5f694d1c9c01656bfd1beeb78a710af3a25d6e"
-HELLO_SHA256="b31c5b52e72da1686d8d95cdfe04883e400a273d4cc3d7e15eda95ba5a57183d"
-# This pinned pre-relocation revision records the real historical Automattic
-# bottle. The new tap has no bottle metadata until its first publication.
-HELLO_ROOT_URL="https://ghcr.io/v2/automattic/kandelo-homebrew"
+TAP_REVISION="e447c36f78ef5ab1c060087a9965bed00d4bfc13"
+TAP_NAME="kandelo-dev/tap-core"
+BOTTLE_FORMULA="zlib"
+BOTTLE_TAG="wasm32_kandelo"
+BOTTLE_SHA256="919fe4746f30a775963040995297c149972874fea50356530a8cb81b70845865"
+# This immutable tap revision records a finalized public first-party bottle.
+# Keep selection coverage on the production tap and repository-rooted GHCR
+# namespace; fetching, pouring, and execution belong to integration tests.
+BOTTLE_ROOT_URL="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
 
 for tool in git node sha256sum unzip; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -252,7 +256,15 @@ case "$ALIAS_VERSION" in
         ;;
 esac
 
-TAP_ROOT="$EXTRACT_ROOT/Library/Taps/automattic/homebrew-kandelo-homebrew"
+TAP_OWNER="${TAP_NAME%%/*}"
+TAP_SHORT_NAME="${TAP_NAME#*/}"
+if [ -z "$TAP_OWNER" ] || [ -z "$TAP_SHORT_NAME" ] || \
+    [ "$TAP_SHORT_NAME" != "${TAP_SHORT_NAME#*/}" ] || \
+    [ "$TAP_NAME" != "$TAP_OWNER/$TAP_SHORT_NAME" ]; then
+    echo "test-homebrew-bootstrap-source: invalid canonical tap name: $TAP_NAME" >&2
+    exit 1
+fi
+TAP_ROOT="$EXTRACT_ROOT/Library/Taps/$TAP_OWNER/homebrew-$TAP_SHORT_NAME"
 git init -q "$TAP_ROOT"
 git -C "$TAP_ROOT" remote add origin "$TAP_REPOSITORY"
 git -C "$TAP_ROOT" fetch -q --depth=1 origin "$TAP_REVISION"
@@ -273,9 +285,9 @@ env -u HOMEBREW_KANDELO_BOTTLE_TAG -u KANDELO_HOMEBREW_BOTTLE_TAG \
     HOMEBREW_TEMP="$RUN_ROOT/homebrew-temp" \
     "$EXTRACT_ROOT/bin/brew" ruby \
     "$ROOT/homebrew/test/kandelo_bootstrap_bottle_selection.rb" \
-    automattic/kandelo-homebrew/hello \
-    automattic/kandelo-homebrew \
-    wasm32_kandelo "$HELLO_SHA256" "$HELLO_ROOT_URL"
+    "$TAP_NAME/$BOTTLE_FORMULA" \
+    "$TAP_NAME" \
+    "$BOTTLE_TAG" "$BOTTLE_SHA256" "$BOTTLE_ROOT_URL"
 
 # A reviewed patch must fail closed when its pinned upstream context drifts.
 DRIFT_WORKTREE="$RUN_ROOT/drift-worktree"
