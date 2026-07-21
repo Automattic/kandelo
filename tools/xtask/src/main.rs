@@ -41,6 +41,9 @@
 //!                         manifest at a freshly-published archive.
 //!   homebrew-sidecars     Generate Kandelo/Homebrew tap sidecars from
 //!                         produced bottle bytes and workflow evidence.
+//!   homebrew-tier2-preflight
+//!                         Bind one statically-scanned Formula bridge to its
+//!                         authoritative in-tree registry recipe.
 //!   homebrew-validate     Validate Kandelo/Homebrew tap sidecar metadata.
 
 use std::collections::BTreeMap;
@@ -56,6 +59,14 @@ mod dump_abi;
 #[cfg(test)]
 mod homebrew_schema;
 mod homebrew_sidecars;
+#[cfg(unix)]
+mod homebrew_tier2_preflight;
+#[cfg(not(unix))]
+mod homebrew_tier2_preflight {
+    pub fn run(_args: Vec<String>) -> Result<(), String> {
+        Err("homebrew-tier2-preflight requires a Unix publisher host".to_string())
+    }
+}
 mod homebrew_validate;
 mod host_tool_probe;
 mod index_candidate;
@@ -77,7 +88,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, staging-reuse, archive-stage, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-validate"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, staging-reuse, archive-stage, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
             );
             return ExitCode::from(2);
         }
@@ -98,6 +109,7 @@ fn main() -> ExitCode {
         "index-update" => index_update::run_index_update(&rest),
         "index-candidate" => index_candidate::run(rest),
         "homebrew-sidecars" => homebrew_sidecars::run(rest),
+        "homebrew-tier2-preflight" => homebrew_tier2_preflight::run(rest),
         "homebrew-validate" => homebrew_validate::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");

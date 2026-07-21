@@ -396,8 +396,8 @@ require "shellwords"
 require "tempfile"
 
 module KandeloFormulaSupport
-  def kandelo_build_package(name, script, source_url, source_sha256, script_env: {})
-    [name, script, source_url, source_sha256, script_env]
+  def kandelo_build_package(script_env: {})
+    script_env
   end
 end
 RUBY
@@ -409,6 +409,8 @@ require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kand
 class Bridge < Formula
   include KandeloFormulaSupport
 
+  KANDELO_REGISTRY_BRIDGE = true
+
   desc "Tier-2 bridge fixture"
   homepage "https://example.test/bridge"
   url "https://example.test/bridge-1.2.3.tar.gz"
@@ -417,12 +419,9 @@ class Bridge < Formula
   license "MIT"
 
   def install
-    source_dir = kandelo_stage_verified_formula_source
     ["fixture"].map(&:to_s)
     out_dir = kandelo_build_package(
-      "registry-name", "build-registry-name.sh", stable.url, stable.checksum.hexdigest,
       script_env: {
-        "WASM_POSIX_DEP_SOURCE_DIR" => source_dir,
         "WASM_POSIX_DEP_ZLIB_DIR" => formula_opt_prefix("kandelo-dev/tap-core/zlib"),
       }
     )
@@ -457,22 +456,14 @@ jq -e '
   (.formula_sha256 | test("^[0-9a-f]{64}$")) and
   (.support_sha256 | test("^[0-9a-f]{64}$")) and
   .tier2_bridge == {
-    package: "registry-name",
-    script: "build-registry-name.sh",
+    package: "bridge",
+    script_env_keys: ["WASM_POSIX_DEP_ZLIB_DIR"],
     source_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     source_url: "https://example.test/bridge-1.2.3.tar.gz",
     version: "1.2.3"
   }
 ' <<<"$bridge_plan" >/dev/null
 [ "$bridge_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)" ]
-
-write_valid_bridge_formula
-sed -i.bak \
-  's/stable.url, stable.checksum.hexdigest/"https:\/\/example.test\/bridge-1.2.3.tar.gz", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/' \
-  "$TAP_ROOT/Formula/bridge.rb"
-rm "$TAP_ROOT/Formula/bridge.rb.bak"
-literal_bridge_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
-[ "$(jq -c '.tier2_bridge' <<<"$literal_bridge_plan")" = "$(jq -c '.tier2_bridge' <<<"$bridge_plan")" ]
 
 idiomatic_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core required --tier2-bridge-json)"
 jq -e '.tier2_bridge == null and .support_sha256 == null and
@@ -496,40 +487,62 @@ rm "$TAP_ROOT/Formula/bridge.rb.bak"
 expect_bridge_failure nested-call 'must be the direct right-hand side of an install assignment'
 
 write_valid_bridge_formula
-sed -i.bak 's/"registry-name", "build-registry-name.sh"/"registry-name", script_name/' \
-  "$TAP_ROOT/Formula/bridge.rb"
+sed -i.bak '/  KANDELO_REGISTRY_BRIDGE = true/d' "$TAP_ROOT/Formula/bridge.rb"
 rm "$TAP_ROOT/Formula/bridge.rb.bak"
-expect_bridge_failure dynamic-script 'script must be one canonical literal component'
+expect_bridge_failure missing-marker 'bridge marker and canonical helper call must appear together'
 
 write_valid_bridge_formula
-sed -i.bak 's/"registry-name", "build-registry-name.sh"/"", "build-registry-name.sh"/' \
-  "$TAP_ROOT/Formula/bridge.rb"
+sed -i.bak 's/kandelo_build_package(/formula_opt_prefix(/' "$TAP_ROOT/Formula/bridge.rb"
 rm "$TAP_ROOT/Formula/bridge.rb.bak"
-expect_bridge_failure empty-package 'package must be one canonical literal component'
+expect_bridge_failure marker-without-call 'bridge marker and canonical helper call must appear together'
 
 write_valid_bridge_formula
-sed -i.bak 's/"WASM_POSIX_DEP_SOURCE_DIR"/"WASM_POSIX_DEP_VERSION"/' \
+sed -i.bak 's/KANDELO_REGISTRY_BRIDGE = true/KANDELO_REGISTRY_BRIDGE = false/' \
+  "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure false-marker 'registry bridge marker must be one canonical true constant'
+
+write_valid_bridge_formula
+sed -i.bak '/  KANDELO_REGISTRY_BRIDGE = true/a\
+  KANDELO_REGISTRY_BRIDGE = true' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure duplicate-marker 'registry bridge marker must be one canonical true constant'
+
+write_valid_bridge_formula
+sed -i.bak '/    out_dir = kandelo_build_package(/a\
+      "wrong",' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure positional-identity 'must use only one script_env: keyword'
+
+write_valid_bridge_formula
+sed -i.bak 's/"WASM_POSIX_DEP_ZLIB_DIR"/"WASM_POSIX_DEP_VERSION"/' \
   "$TAP_ROOT/Formula/bridge.rb"
 rm "$TAP_ROOT/Formula/bridge.rb.bak"
 expect_bridge_failure reserved-env 'script_env overrides reserved variables ["WASM_POSIX_DEP_VERSION"]'
 
 write_valid_bridge_formula
-sed -i.bak 's/WASM_POSIX_DEP_SOURCE_DIR/WASM_POSIX_DEP_NA\\x4dE/' \
+sed -i.bak 's/"WASM_POSIX_DEP_ZLIB_DIR"/"WASM_POSIX_DEP_SOURCE_DIR"/' \
+  "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure reserved-source-dir 'script_env overrides reserved variables ["WASM_POSIX_DEP_SOURCE_DIR"]'
+
+write_valid_bridge_formula
+sed -i.bak 's/"WASM_POSIX_DEP_ZLIB_DIR"/"WASM_POSIX_INSTALL_LOCAL_MIRROR"/' \
+  "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure reserved-local-mirror 'script_env overrides reserved variables ["WASM_POSIX_INSTALL_LOCAL_MIRROR"]'
+
+write_valid_bridge_formula
+sed -i.bak 's/"WASM_POSIX_DEP_ZLIB_DIR"/"PATH"/' \
+  "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure shell-control-env 'script_env uses keys outside the approved namespace ["PATH"]'
+
+write_valid_bridge_formula
+sed -i.bak 's/WASM_POSIX_DEP_ZLIB_DIR/WASM_POSIX_DEP_NA\\x4dE/' \
   "$TAP_ROOT/Formula/bridge.rb"
 rm "$TAP_ROOT/Formula/bridge.rb.bak"
 expect_bridge_failure escaped-env 'script_env must be one literal hash with unique literal keys'
-
-write_valid_bridge_formula
-sed -i.bak 's/stable.url, stable.checksum.hexdigest/source_url, stable.checksum.hexdigest/' \
-  "$TAP_ROOT/Formula/bridge.rb"
-rm "$TAP_ROOT/Formula/bridge.rb.bak"
-expect_bridge_failure dynamic-source-url 'source URL must use stable.url or the exact Formula URL literal'
-
-write_valid_bridge_formula
-sed -i.bak 's/stable.url, stable.checksum.hexdigest/stable.url, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/' \
-  "$TAP_ROOT/Formula/bridge.rb"
-rm "$TAP_ROOT/Formula/bridge.rb.bak"
-expect_bridge_failure wrong-source-sha 'source SHA-256 must use stable.checksum.hexdigest or the exact Formula SHA literal'
 
 write_valid_bridge_formula
 sed -i.bak 's#bridge-1.2.3.tar.gz#bridge-\\x31.2.3.tar.gz#' "$TAP_ROOT/Formula/bridge.rb"
@@ -584,13 +597,13 @@ expect_bridge_failure support-signature 'kandelo_build_package has a noncanonica
 cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 
 write_valid_bridge_formula
-sed -i.bak 's/    out_dir = kandelo_build_package(/    first = kandelo_build_package("registry-name", "build-registry-name.sh", stable.url, stable.checksum.hexdigest)\
+sed -i.bak 's/    out_dir = kandelo_build_package(/    first = kandelo_build_package(script_env: {})\
     out_dir = kandelo_build_package(/' "$TAP_ROOT/Formula/bridge.rb"
 rm "$TAP_ROOT/Formula/bridge.rb.bak"
 expect_bridge_failure multiple-calls 'Formula has multiple kandelo_build_package calls'
 
 write_valid_bridge_formula
-sed -i.bak '/    source_dir = kandelo_stage_verified_formula_source/a\
+sed -i.bak '/    \["fixture"\].map/a\
     singleton_class.instance_exec do\
       alias_method(("kandelo_" + "build_package").to_sym, :system)\
     end' "$TAP_ROOT/Formula/bridge.rb"

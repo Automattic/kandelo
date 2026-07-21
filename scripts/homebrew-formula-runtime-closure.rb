@@ -14,6 +14,7 @@ end
 
 MAX_FORMULA_BYTES = 1_048_576
 MAX_DEPENDENCIES = 128
+MAX_TIER2_CONTROL_BYTES = 16_384
 FORMULA_NAME = /\A[a-z0-9][a-z0-9._-]*\z/
 HOST_FORMULA_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
 TAP_NAME = /\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
@@ -33,18 +34,19 @@ FORBIDDEN_PRIVATE_INSTANCE_METHODS = Set[
   "kandelo_build_package", "name", "recursive_dependencies", "requirements", "version",
 ].freeze
 TIER2_BRIDGE_METHOD = "kandelo_build_package"
-TIER2_BRIDGE_COMPONENT = /\A[a-z0-9][a-z0-9._-]{0,254}\z/
-TIER2_BRIDGE_SCRIPT = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,254}\z/
+TIER2_BRIDGE_MARKER = "KANDELO_REGISTRY_BRIDGE"
 TIER2_BRIDGE_VERSION = /\A[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}\z/
 TIER2_BRIDGE_SOURCE_SHA256 = /\A[0-9a-f]{64}\z/
 TIER2_RESERVED_ENV = Set[
   "WASM_POSIX_DEP_NAME",
   "WASM_POSIX_DEP_OUT_DIR",
+  "WASM_POSIX_DEP_SOURCE_DIR",
   "WASM_POSIX_DEP_SOURCE_SHA256",
   "WASM_POSIX_DEP_SOURCE_URL",
   "WASM_POSIX_DEP_TARGET_ARCH",
   "WASM_POSIX_DEP_VERSION",
   "WASM_POSIX_DEP_WORK_DIR",
+  "WASM_POSIX_INSTALL_LOCAL_MIRROR",
 ].freeze
 FORBIDDEN_DEPENDENCY_IDENTIFIERS = Set[
   "Dependency", "Requirement", "__send__", "class_eval", "const_get", "define_method",
@@ -484,20 +486,6 @@ canonical_command_arguments = lambda do |node, expected_name|
   arguments[1]
 end
 
-stable_url_expression = lambda do |node|
-  node.is_a?(Array) && node.first == :call &&
-    node[1].is_a?(Array) && node[1].first == :vcall &&
-    node.dig(1, 1, 1) == "stable" && node.dig(3, 1) == "url"
-end
-
-stable_sha256_expression = lambda do |node|
-  node.is_a?(Array) && node.first == :call && node.dig(3, 1) == "hexdigest" &&
-    node[1].is_a?(Array) && node[1].first == :call &&
-    node.dig(1, 3, 1) == "checksum" &&
-    node.dig(1, 1).is_a?(Array) && node.dig(1, 1).first == :vcall &&
-    node.dig(1, 1, 1, 1) == "stable"
-end
-
 script_env_keys = lambda do |node, lines|
   next nil unless node.is_a?(Array) && node.first == :bare_assoc_hash &&
                   node[1].is_a?(Array) && node[1].length == 1
@@ -582,12 +570,9 @@ valid_tier2_support_signature = lambda do |parameters|
 
   required = parameters[1]
   keywords = parameters[5]
-  required_names = required&.map do |token|
-    token[1] if token.is_a?(Array) && token.first == :@ident
-  end
   keyword = keywords.first if keywords.is_a?(Array) && keywords.length == 1
   keyword_default = keyword[1] if keyword.is_a?(Array) && keyword.length == 2
-  required_names == %w[name script source_url source_sha256] &&
+  required.nil? &&
     parameters[2].nil? && parameters[3].nil? && parameters[4].nil? &&
     keyword.is_a?(Array) &&
     keyword.dig(0, 0) == :@label && keyword.dig(0, 1) == "script_env:" &&
@@ -1029,36 +1014,30 @@ parse_formula = lambda do |full_name|
         arguments = argument_list[1] if argument_list.is_a?(Array) &&
                                          argument_list.first == :args_add_block &&
                                          argument_list[2] == false
-        unless arguments.is_a?(Array) && arguments.length.between?(4, 5)
-          abort "#{TIER2_BRIDGE_METHOD} must use four positional arguments and optional script_env: #{path}"
+        unless arguments.is_a?(Array) && arguments.length == 1
+          abort "#{TIER2_BRIDGE_METHOD} must use only one script_env: keyword: #{path}"
         end
 
-        package = canonical_literal_value.call(arguments[0], lines)
-        script = canonical_literal_value.call(arguments[1], lines)
-        unless package&.match?(TIER2_BRIDGE_COMPONENT)
-          abort "#{TIER2_BRIDGE_METHOD} package must be one canonical literal component: #{path}"
+        keys = script_env_keys.call(arguments.first, lines)
+        if keys.nil? || keys.uniq.length != keys.length
+          abort "#{TIER2_BRIDGE_METHOD} script_env must be one literal hash with unique literal keys: #{path}"
         end
-        unless script&.match?(TIER2_BRIDGE_SCRIPT) && script != "." && script != ".."
-          abort "#{TIER2_BRIDGE_METHOD} script must be one canonical literal component: #{path}"
+        if keys.length > 64 || keys.sum(&:bytesize) > 4096
+          abort "#{TIER2_BRIDGE_METHOD} script_env exceeds the static key limit: #{path}"
         end
-        if arguments.length == 5
-          keys = script_env_keys.call(arguments[4], lines)
-          if keys.nil? || keys.uniq.length != keys.length
-            abort "#{TIER2_BRIDGE_METHOD} script_env must be one literal hash with unique literal keys: #{path}"
-          end
-          if keys.length > 64 || keys.sum(&:bytesize) > 4096
-            abort "#{TIER2_BRIDGE_METHOD} script_env exceeds the static key limit: #{path}"
-          end
-          reserved = keys.to_set & TIER2_RESERVED_ENV
-          unless reserved.empty?
-            abort "#{TIER2_BRIDGE_METHOD} script_env overrides reserved variables #{reserved.to_a.sort.inspect}: #{path}"
-          end
+        reserved = keys.to_set & TIER2_RESERVED_ENV
+        unless reserved.empty?
+          abort "#{TIER2_BRIDGE_METHOD} script_env overrides reserved variables #{reserved.to_a.sort.inspect}: #{path}"
+        end
+        package_prefix = "#{name.upcase.gsub(/[^A-Z0-9]/, "_")}_"
+        invalid_namespace = keys.reject do |key|
+          key.start_with?("WASM_POSIX_DEP_") || key.start_with?(package_prefix)
+        end
+        unless invalid_namespace.empty?
+          abort "#{TIER2_BRIDGE_METHOD} script_env uses keys outside the approved namespace #{invalid_namespace.sort.inspect}: #{path}"
         end
         bridge_calls << {
-          "package" => package,
-          "script" => script,
-          "source_url_expression" => arguments[2],
-          "source_sha256_expression" => arguments[3],
+          "script_env_keys" => keys.sort,
           "position" => node.dig(1, 1, 2),
         }
       end
@@ -1072,6 +1051,25 @@ parse_formula = lambda do |full_name|
     abort "every #{TIER2_BRIDGE_METHOD} reference must be one canonical direct install call: #{path}"
   end
   abort "Formula has multiple #{TIER2_BRIDGE_METHOD} calls: #{path}" if bridge_calls.length > 1
+
+  bridge_markers = class_body.select do |statement|
+    left = statement[1] if statement.is_a?(Array) && statement.first == :assign
+    constant = left[1] if left.is_a?(Array) && left.first == :var_field
+    constant.is_a?(Array) && constant.first == :@const &&
+      constant[1] == TIER2_BRIDGE_MARKER
+  end
+  valid_bridge_marker = bridge_markers.length == 1 &&
+                        bridge_markers.first.dig(2, 0) == :var_ref &&
+                        bridge_markers.first.dig(2, 1, 0) == :@kw &&
+                        bridge_markers.first.dig(2, 1, 1) == "true" &&
+                        lines.fetch(bridge_markers.first.dig(1, 1, 2, 0) - 1, nil) ==
+                          "  #{TIER2_BRIDGE_MARKER} = true\n"
+  if bridge_markers.any? && !valid_bridge_marker
+    abort "Formula Tier-2 registry bridge marker must be one canonical true constant: #{path}"
+  end
+  if bridge_calls.empty? != bridge_markers.empty?
+    abort "Formula Tier-2 registry bridge marker and canonical helper call must appear together: #{path}"
+  end
 
   tier2_bridge = nil
   unless bridge_calls.empty?
@@ -1107,24 +1105,11 @@ parse_formula = lambda do |full_name|
       abort "Tier-2 Formula must declare one canonical literal class source SHA-256: #{path}"
     end
 
-    bridge_call = bridge_calls.first
-    source_url = url_value
-    source_sha256 = sha256_value
-    url_expression = bridge_call.fetch("source_url_expression")
-    sha256_expression = bridge_call.fetch("source_sha256_expression")
-    unless stable_url_expression.call(url_expression) ||
-           canonical_literal_value.call(url_expression, lines) == source_url
-      abort "#{TIER2_BRIDGE_METHOD} source URL must use stable.url or the exact Formula URL literal: #{path}"
-    end
-    unless stable_sha256_expression.call(sha256_expression) ||
-           canonical_literal_value.call(sha256_expression, lines) == source_sha256
-      abort "#{TIER2_BRIDGE_METHOD} source SHA-256 must use stable.checksum.hexdigest or the exact Formula SHA literal: #{path}"
-    end
     tier2_bridge = {
-      "package" => bridge_call.fetch("package"),
-      "script" => bridge_call.fetch("script"),
-      "source_sha256" => source_sha256,
-      "source_url" => source_url,
+      "package" => name,
+      "script_env_keys" => bridge_calls.first.fetch("script_env_keys"),
+      "source_sha256" => sha256_value,
+      "source_url" => url_value,
       "version" => version_value,
     }
   end
@@ -1285,7 +1270,9 @@ elsif tier2_bridge_only
     "support_sha256" => record.fetch("support_sha256"),
     "tier2_bridge" => record.fetch("tier2_bridge"),
   })
-  abort "Tier-2 bridge plan exceeds 4096 bytes" if document.bytesize > 4096
+  if document.bytesize > MAX_TIER2_CONTROL_BYTES
+    abort "Tier-2 bridge plan exceeds #{MAX_TIER2_CONTROL_BYTES} bytes"
+  end
   puts document
 elsif bottle_identity_only
   bottle = formula_bottles.fetch(target_full_name)

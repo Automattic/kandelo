@@ -682,6 +682,7 @@ impl BuildToml {
         for input in &raw.inputs {
             validate_build_input_path(input)?;
         }
+        validate_build_script_path(&raw.script_path, "build.toml")?;
         Ok(BuildToml {
             script_path: raw.script_path,
             inputs: raw.inputs,
@@ -700,6 +701,35 @@ impl BuildToml {
             std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
+}
+
+fn validate_build_script_path(path: &str, document: &str) -> Result<(), String> {
+    if path.is_empty()
+        || path.len() > 4_096
+        || path.contains('\0')
+        || path.contains('\\')
+        || !path.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'@' | b'+' | b'-' | b'/')
+        })
+        || path.split('/').any(|component| {
+            component.is_empty() || component.len() > 255 || component == "." || component == ".."
+        })
+    {
+        return Err(format!(
+            "{document} script_path must be a bounded portable repo-relative path, got {path:?}"
+        ));
+    }
+    let parsed = Path::new(path);
+    if parsed.is_absolute()
+        || parsed
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "{document} script_path must contain only normal repo-relative components, got {path:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_build_input_path(path: &str) -> Result<(), String> {
@@ -1190,6 +1220,9 @@ impl DepsManifest {
                  See docs/plans/2026-05-05-decoupled-package-builds-design.md \
                  §3.1."
                 .into());
+        }
+        if let Some(script_path) = raw.build.script_path.as_deref() {
+            validate_build_script_path(script_path, "package.toml")?;
         }
         // Phase B-2 Task 3: source manifests with a [build] block must
         // declare top-level `kernel_abi`. The [build] block marks "this
@@ -2010,6 +2043,40 @@ wasm = "../escape.wasm"
             m.build_script_path(Path::new("/other-root")),
             PathBuf::from("/other-root/packages/registry/zlib/build-zlib.sh")
         );
+    }
+
+    #[test]
+    fn source_package_rejects_unsafe_build_script_paths() {
+        for script_path in [
+            "".to_string(),
+            "/absolute/build.sh".to_string(),
+            "../outside/build.sh".to_string(),
+            "packages/registry/./build.sh".to_string(),
+            r"packages\registry\build.sh".to_string(),
+            "packages/registry/build script.sh".to_string(),
+            "packages/registry/build:script.sh".to_string(),
+            "packages/registry/büild.sh".to_string(),
+            format!("packages/registry/{}", "x".repeat(256)),
+            format!("{}a", "a/".repeat(2_048)),
+        ] {
+            let text = format!(
+                "{}\n[build]\nscript_path = {script_path:?}\n",
+                EXAMPLE.replace("depends_on = []", "depends_on = []\nkernel_abi = 7")
+            );
+            let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+            assert!(err.contains("script_path"), "{script_path:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn source_package_accepts_the_build_script_path_size_boundary() {
+        let script_path = format!("{}aa", "a/".repeat(2_047));
+        assert_eq!(script_path.len(), 4_096);
+        let text = format!(
+            "{}\n[build]\nscript_path = {script_path:?}\n",
+            EXAMPLE.replace("depends_on = []", "depends_on = []\nkernel_abi = 7")
+        );
+        assert!(DepsManifest::parse(&text, PathBuf::from("/x")).is_ok());
     }
 
     #[test]
@@ -3506,6 +3573,50 @@ index_url = "https://example.com/index.toml"
 "#;
         let err = BuildToml::parse(toml).unwrap_err();
         assert!(err.contains(".."), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_unsafe_build_toml_script_paths() {
+        for script_path in [
+            "".to_string(),
+            "/absolute/build.sh".to_string(),
+            "../outside/build.sh".to_string(),
+            "packages/registry/./build.sh".to_string(),
+            r"packages\registry\build.sh".to_string(),
+            "packages/registry/build script.sh".to_string(),
+            "packages/registry/build:script.sh".to_string(),
+            "packages/registry/büild.sh".to_string(),
+            format!("packages/registry/{}", "x".repeat(256)),
+            format!("{}a", "a/".repeat(2_048)),
+        ] {
+            let toml = format!(
+                r#"
+script_path = {script_path:?}
+repo_url = "y"
+commit = "z"
+[binary]
+index_url = "https://example.com/index.toml"
+"#
+            );
+            let err = BuildToml::parse(&toml).unwrap_err();
+            assert!(err.contains("script_path"), "{script_path:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn accepts_the_build_toml_script_path_size_boundary() {
+        let script_path = format!("{}aa", "a/".repeat(2_047));
+        assert_eq!(script_path.len(), 4_096);
+        let toml = format!(
+            r#"
+script_path = {script_path:?}
+repo_url = "y"
+commit = "z"
+[binary]
+index_url = "https://example.com/index.toml"
+"#
+        );
+        assert!(BuildToml::parse(&toml).is_ok());
     }
 
     #[test]

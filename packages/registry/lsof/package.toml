@@ -7,15 +7,16 @@ depends_on = []
 # In-tree implementation, not the upstream lsof. The source lives at
 # examples/lsof.c and reads this kernel's /proc to enumerate open
 # file descriptors. Versioned alongside the kernel, so the source
-# URL is the project repo and the sha256 is a placeholder (the source
-# is on-disk in the repo, not fetched).
+# URL names the authoritative project repo and the all-zero SHA-256 is
+# the explicit in-repository-source sentinel (the source is on disk in
+# the checked-out repo, not fetched through the normal source resolver).
 [source]
-url = "https://github.com/brandonpayton/kandelo"
+url = "https://github.com/Automattic/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
 
 [build]
 script_path = "packages/registry/lsof/build-lsof.sh"

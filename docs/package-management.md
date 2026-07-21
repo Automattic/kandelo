@@ -179,6 +179,14 @@ pkgconfig = ["lib/pkgconfig/zlib.pc"]
 files = ["share/runtime-data.bin"]                   # other runtime data
 ```
 
+The three in-tree Homebrew bridge recipes (`lsof`, `modeset`, and
+`posix-utils-lite`) use a deliberately narrow `in-repository-source`
+exception: `[source].url` is the authoritative Kandelo repository and an
+all-zero SHA-256 is a mode sentinel, not a checksum. Homebrew publication
+must bind such a recipe to a nonzero-checksum Formula URL of the exact form
+`<source.url>/archive/<40-lowercase-hex-commit>.tar.gz`. Other recipes use a
+normal source URL and checksum that must match the Formula exactly.
+
 Program packages use `[[outputs]]` for executable/side-module artifacts. A
 non-Wasm file required at runtime is declared separately so it remains part of
 the same reproducible archive and cache key:
