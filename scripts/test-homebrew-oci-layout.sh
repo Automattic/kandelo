@@ -654,11 +654,12 @@ expect_failure changed-support "stale Formula identity" \
     --out-layout "$TMP_ROOT/changed-support/layout" \
     --out-receipt "$TMP_ROOT/changed-support/receipt.json"
 
-# An explicit forced retry may replace only an unfinalized partial index. The
+# An explicit forced retry may replace different bytes at the same immutable
+# Homebrew child ref only while the old index is demonstrably unfinalized. The
 # exact clean planned tap must have no Formula-level or aggregate sidecar entry;
 # old children are validated under their own identity and then all discarded.
 recovery_tap="$TMP_ROOT/recovery-tap"
-cp -a "$TMP_ROOT/changed-support32/tap" "$recovery_tap"
+cp -a "$TMP_ROOT/changed32/tap" "$recovery_tap"
 mkdir -p "$recovery_tap/Kandelo/formula"
 jq -nS '{schema: 1, packages: []}' >"$recovery_tap/Kandelo/metadata.json"
 git -C "$recovery_tap" init -q
@@ -669,10 +670,10 @@ git -C "$recovery_tap" commit -qm "initialize unfinalized recovery tap"
 recovery_head="$(git -C "$recovery_tap" rev-parse HEAD)"
 recovery_receipt="$TMP_ROOT/recovery-child-receipt.json"
 jq --arg head "$recovery_head" '.tap_commit = $head' \
-  "$TMP_ROOT/changed-support32/receipt.json" >"$recovery_receipt"
+  "$TMP_ROOT/changed32/receipt.json" >"$recovery_receipt"
 python3 "$TOOL" merge-index \
   --existing-layout "$TMP_ROOT/combined/layout" \
-  --child-layout "$TMP_ROOT/changed-support32/layout" \
+  --child-layout "$TMP_ROOT/changed32/layout" \
   --child-receipt "$recovery_receipt" \
   --recover-unfinalized-tap-root "$recovery_tap" \
   --out-layout "$TMP_ROOT/recovered/layout" \
@@ -682,10 +683,15 @@ python3 "$TOOL" validate-index \
   --receipt "$TMP_ROOT/recovered/receipt.json"
 previous_top_digest="$(jq -r '.manifests[0].digest' \
   "$TMP_ROOT/combined/layout/index.json")"
+selected_manifest_digest="$(jq -r '.oci.manifest.digest' \
+  "$TMP_ROOT/changed32/receipt.json")"
 jq -e --arg previous "$previous_top_digest" '
   .top.previous_digest == $previous and
-  .top.transition_reason == "unfinalized-stale-source-identity" and
+  .top.transition_reason == "unfinalized-same-identity-child-replacement" and
   [.children[].arch] == ["wasm32"]
+' "$TMP_ROOT/recovered/receipt.json" >/dev/null
+jq -e --arg selected "$selected_manifest_digest" '
+  [.children[].manifest_digest] == [$selected]
 ' "$TMP_ROOT/recovered/receipt.json" >/dev/null
 old_wasm64_digest="$(jq -r '.children[] | select(.arch == "wasm64") | .manifest_digest' \
   "$TMP_ROOT/combined/receipt.json")"
@@ -695,6 +701,31 @@ if jq -e --arg digest "$old_wasm64_digest" \
   echo "unfinalized recovery retained an old sibling architecture" >&2
   exit 1
 fi
+
+# Transition evidence is canonical receipt data, not an unvalidated status
+# string. Unknown reasons and a transition without the replaced digest fail.
+cp "$TMP_ROOT/recovered/receipt.json" \
+  "$TMP_ROOT/recovery-invalid-transition-receipt.json"
+jq '.top.transition_reason = "unfinalized-unknown-transition"' \
+  "$TMP_ROOT/recovery-invalid-transition-receipt.json" \
+  >"$TMP_ROOT/recovery-invalid-transition-receipt.json.tmp"
+mv "$TMP_ROOT/recovery-invalid-transition-receipt.json.tmp" \
+  "$TMP_ROOT/recovery-invalid-transition-receipt.json"
+expect_failure recovery-invalid-transition "invalid transition reason" \
+  python3 "$TOOL" validate-index \
+    --layout "$TMP_ROOT/recovered/layout" \
+    --receipt "$TMP_ROOT/recovery-invalid-transition-receipt.json"
+cp "$TMP_ROOT/recovered/receipt.json" \
+  "$TMP_ROOT/recovery-missing-previous-receipt.json"
+jq '.top.previous_digest = null' \
+  "$TMP_ROOT/recovery-missing-previous-receipt.json" \
+  >"$TMP_ROOT/recovery-missing-previous-receipt.json.tmp"
+mv "$TMP_ROOT/recovery-missing-previous-receipt.json.tmp" \
+  "$TMP_ROOT/recovery-missing-previous-receipt.json"
+expect_failure recovery-missing-previous "transition lacks a previous top digest" \
+  python3 "$TOOL" validate-index \
+    --layout "$TMP_ROOT/recovered/layout" \
+    --receipt "$TMP_ROOT/recovery-missing-previous-receipt.json"
 
 # Recovery never treats an obsolete identity as disposable before proving that
 # its complete index was a valid publication under that identity.
@@ -722,7 +753,7 @@ PY
 expect_failure recovery-malformed-old "child manifest blob does not exist" \
   python3 "$TOOL" merge-index \
     --existing-layout "$TMP_ROOT/recovery-malformed-old/layout" \
-    --child-layout "$TMP_ROOT/changed-support32/layout" \
+    --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$recovery_receipt" \
     --recover-unfinalized-tap-root "$recovery_tap" \
     --out-layout "$TMP_ROOT/recovery-malformed-old-output/layout" \
@@ -738,7 +769,7 @@ python3 "$TOOL" merge-index \
 expect_failure recovery-fixed-identity "cannot change the fixed Formula/version/repository identity" \
   python3 "$TOOL" merge-index \
     --existing-layout "$TMP_ROOT/generic-index/layout" \
-    --child-layout "$TMP_ROOT/changed-support32/layout" \
+    --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$recovery_receipt" \
     --recover-unfinalized-tap-root "$recovery_tap" \
     --out-layout "$TMP_ROOT/recovery-fixed-identity/layout" \
@@ -750,12 +781,12 @@ git -C "$recovery_tap" add Kandelo/formula/hello.json
 git -C "$recovery_tap" commit -qm "add finalized Formula sidecar"
 sidecar_head="$(git -C "$recovery_tap" rev-parse HEAD)"
 jq --arg head "$sidecar_head" '.tap_commit = $head' \
-  "$TMP_ROOT/changed-support32/receipt.json" \
+  "$TMP_ROOT/changed32/receipt.json" \
   >"$TMP_ROOT/recovery-sidecar-receipt.json"
 expect_failure recovery-formula-sidecar "tap has a Formula sidecar" \
   python3 "$TOOL" merge-index \
     --existing-layout "$TMP_ROOT/combined/layout" \
-    --child-layout "$TMP_ROOT/changed-support32/layout" \
+    --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$TMP_ROOT/recovery-sidecar-receipt.json" \
     --recover-unfinalized-tap-root "$recovery_tap" \
     --out-layout "$TMP_ROOT/recovery-formula-sidecar/layout" \
@@ -769,12 +800,12 @@ git -C "$recovery_tap" add -A
 git -C "$recovery_tap" commit -qm "record finalized aggregate metadata"
 aggregate_head="$(git -C "$recovery_tap" rev-parse HEAD)"
 jq --arg head "$aggregate_head" '.tap_commit = $head' \
-  "$TMP_ROOT/changed-support32/receipt.json" \
+  "$TMP_ROOT/changed32/receipt.json" \
   >"$TMP_ROOT/recovery-aggregate-receipt.json"
 expect_failure recovery-aggregate-sidecar "aggregate metadata contains hello" \
   python3 "$TOOL" merge-index \
     --existing-layout "$TMP_ROOT/combined/layout" \
-    --child-layout "$TMP_ROOT/changed-support32/layout" \
+    --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$TMP_ROOT/recovery-aggregate-receipt.json" \
     --recover-unfinalized-tap-root "$recovery_tap" \
     --out-layout "$TMP_ROOT/recovery-aggregate-sidecar/layout" \
@@ -788,29 +819,61 @@ git -C "$recovery_tap" add Kandelo/metadata.json
 git -C "$recovery_tap" commit -qm "restore unfinalized aggregate metadata"
 clean_head="$(git -C "$recovery_tap" rev-parse HEAD)"
 jq --arg head "$aggregate_head" '.tap_commit = $head' \
-  "$TMP_ROOT/changed-support32/receipt.json" \
+  "$TMP_ROOT/changed32/receipt.json" \
   >"$TMP_ROOT/recovery-wrong-head-receipt.json"
 expect_failure recovery-wrong-head "tap HEAD does not match" \
   python3 "$TOOL" merge-index \
     --existing-layout "$TMP_ROOT/combined/layout" \
-    --child-layout "$TMP_ROOT/changed-support32/layout" \
+    --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$TMP_ROOT/recovery-wrong-head-receipt.json" \
     --recover-unfinalized-tap-root "$recovery_tap" \
     --out-layout "$TMP_ROOT/recovery-wrong-head/layout" \
     --out-receipt "$TMP_ROOT/recovery-wrong-head/receipt.json"
 jq --arg head "$clean_head" '.tap_commit = $head' \
-  "$TMP_ROOT/changed-support32/receipt.json" \
+  "$TMP_ROOT/changed32/receipt.json" \
   >"$TMP_ROOT/recovery-dirty-receipt.json"
 printf 'untracked\n' >"$recovery_tap/untracked"
 expect_failure recovery-dirty-tap "has working-tree changes" \
   python3 "$TOOL" merge-index \
     --existing-layout "$TMP_ROOT/combined/layout" \
-    --child-layout "$TMP_ROOT/changed-support32/layout" \
+    --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$TMP_ROOT/recovery-dirty-receipt.json" \
     --recover-unfinalized-tap-root "$recovery_tap" \
     --out-layout "$TMP_ROOT/recovery-dirty-tap/layout" \
     --out-receipt "$TMP_ROOT/recovery-dirty-tap/receipt.json"
 rm "$recovery_tap/untracked"
+
+# A stale Formula/support identity uses the same authorization guard but records
+# its own transition reason. It also discards the complete old child set.
+stale_recovery_tap="$TMP_ROOT/stale-recovery-tap"
+cp -a "$TMP_ROOT/changed-support32/tap" "$stale_recovery_tap"
+mkdir -p "$stale_recovery_tap/Kandelo/formula"
+jq -nS '{schema: 1, packages: []}' \
+  >"$stale_recovery_tap/Kandelo/metadata.json"
+git -C "$stale_recovery_tap" init -q
+git -C "$stale_recovery_tap" config user.name "Homebrew OCI fixture"
+git -C "$stale_recovery_tap" config user.email "homebrew-oci@example.invalid"
+git -C "$stale_recovery_tap" add .
+git -C "$stale_recovery_tap" commit -qm "initialize stale recovery tap"
+stale_recovery_head="$(git -C "$stale_recovery_tap" rev-parse HEAD)"
+stale_recovery_receipt="$TMP_ROOT/stale-recovery-child-receipt.json"
+jq --arg head "$stale_recovery_head" '.tap_commit = $head' \
+  "$TMP_ROOT/changed-support32/receipt.json" >"$stale_recovery_receipt"
+python3 "$TOOL" merge-index \
+  --existing-layout "$TMP_ROOT/combined/layout" \
+  --child-layout "$TMP_ROOT/changed-support32/layout" \
+  --child-receipt "$stale_recovery_receipt" \
+  --recover-unfinalized-tap-root "$stale_recovery_tap" \
+  --out-layout "$TMP_ROOT/recovered-stale/layout" \
+  --out-receipt "$TMP_ROOT/recovered-stale/receipt.json"
+python3 "$TOOL" validate-index \
+  --layout "$TMP_ROOT/recovered-stale/layout" \
+  --receipt "$TMP_ROOT/recovered-stale/receipt.json"
+jq -e --arg previous "$previous_top_digest" '
+  .top.previous_digest == $previous and
+  .top.transition_reason == "unfinalized-stale-source-identity" and
+  [.children[].arch] == ["wasm32"]
+' "$TMP_ROOT/recovered-stale/receipt.json" >/dev/null
 
 # A synthetic child-only layout cannot satisfy the Homebrew version-index contract.
 expect_failure synthetic-only "top root" \

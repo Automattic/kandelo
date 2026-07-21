@@ -2989,7 +2989,7 @@ def check_publisher(workflow)
   [
     'def top_semantics_from_annotations(',
     'def exact_clean_git_head(',
-    'def validate_unfinalized_recovery_tap(',
+    'def authorize_unfinalized_recovery(',
     'head != receipt["tap_commit"]',
     'unfinalized recovery is forbidden because the tap has a Formula sidecar',
     'unfinalized recovery is forbidden because the tap aggregate metadata',
@@ -2997,7 +2997,9 @@ def check_publisher(workflow)
     'existing_layout, descriptor, existing_semantics',
     '"dev.kandelo.homebrew.tap_repository",',
     'unfinalized recovery cannot change the fixed',
-    'transition_reason = "unfinalized-stale-source-identity"',
+    'conflicting_refs = [',
+    '"unfinalized-same-identity-child-replacement"',
+    '"unfinalized-stale-source-identity"',
   ].each do |fragment|
     check(index_import_tool.include?(fragment),
           "trusted unfinalized version-index recovery lacks #{fragment}")
