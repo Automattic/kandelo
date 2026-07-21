@@ -1092,6 +1092,14 @@ and a manually dispatched dry run can write Actions storage in the same
 repository scope as a later privileged publish. Run-scoped diagnostic artifacts
 remain available, but cached build output is not an input to bottle publication.
 
+The repository-dispatch API does not return the workflow run ID, and concurrent
+dispatches can appear in the run list in a different order from the requests.
+Treat the newest run only as a candidate. Before cancelling, rerunning, watching,
+or downloading artifacts from a manually dispatched run, wait for its `plan`
+job and read that job's logged inputs. Match the Formula selection, architectures,
+Kandelo ref, and tap ref to the exact dispatch payload. If those facts are not
+yet available, do not mutate the run; another operator or rollout may own it.
+
 `bottles-abi-v<N>` is a bottle metadata namespace, not a promise that a GitHub
 Release with that tag contains sidecars or gallery archives. Browser-proven VFS
 images use their own immutable `homebrew-vfs-sha256-<image-sha256>` releases;
