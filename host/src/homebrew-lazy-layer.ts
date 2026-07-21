@@ -10,6 +10,18 @@ import type {
   HomebrewVfsPlan,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+import type {
+  HomebrewLazyLayerBasePackageSource,
+  HomebrewLazyLayerDescriptor,
+  HomebrewLazyLayerEntry,
+  HomebrewLazyLayerPackageRecord,
+} from "./homebrew-lazy-layer-descriptor";
+export type {
+  HomebrewLazyLayerBasePackageSource,
+  HomebrewLazyLayerDescriptor,
+  HomebrewLazyLayerEntry,
+  HomebrewLazyLayerPackageRecord,
+} from "./homebrew-lazy-layer-descriptor";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 
 export const HOMEBREW_LAZY_LAYER_ARCHIVE =
@@ -41,157 +53,6 @@ export interface HomebrewLazyLayerBaseVfs {
   fs: MemoryFileSystem;
   image: HomebrewLazyLayerImageSource;
   source: HomebrewLazyLayerBasePackageSource;
-}
-
-/**
- * Immutable package-release identity for the lower VFS image.
- *
- * `index` records the exact resolver ledger snapshot used at composition
- * time. Consumers do not need that mutable URL to retain the same bytes:
- * `archive.url` and `archive.sha256` identify the content-addressed package
- * archive directly, while `output` identifies and hashes the declared file
- * inside its `artifacts/` subtree.
- */
-export interface HomebrewLazyLayerBasePackageSource {
-  schema: 1;
-  kind: "kandelo-package-output";
-  index: {
-    url: string;
-    sha256: string;
-    bytes: number;
-    abi: number;
-  };
-  package: {
-    name: string;
-    version: string;
-    revision: number;
-    arch: "wasm32" | "wasm64";
-    cache_key_sha: string;
-  };
-  archive: {
-    format: "kandelo-package-tar-zstd-v2";
-    url: string;
-    sha256: string;
-    bytes: number;
-  };
-  output: {
-    name: string;
-    path: string;
-    sha256: string;
-    bytes: number;
-  };
-}
-
-export interface HomebrewLazyLayerEntry {
-  path: string;
-  type: "directory" | "file" | "symlink";
-  ownership: "layer" | "shared-base-directory";
-  mode: number;
-  size: number;
-  target?: string;
-}
-
-export interface HomebrewLazyLayerPackageRecord {
-  name: string;
-  full_name: string;
-  tap_repository: string;
-  tap_name: string;
-  tap_commit: string;
-  version: string;
-  formula_revision: number;
-  bottle_rebuild: number;
-  arch: "wasm32" | "wasm64";
-  source_status: "success" | "fallback";
-  metadata_status: string;
-  url: string;
-  sha256: string;
-  bytes: number;
-  cache_key_sha: string;
-  link_manifest: string;
-  prefix: string;
-  keg: string;
-  opt_link: { path: string; target: string };
-  built_from?: {
-    tap_repository: string;
-    tap_commit: string;
-    kandelo_repository: string;
-    kandelo_commit: string;
-    formula_sha256: string;
-  };
-}
-
-export interface HomebrewLazyLayerDescriptor {
-  schema: 2;
-  kind: "kandelo-homebrew-lazy-archive";
-  arch: "wasm32" | "wasm64";
-  mount_prefix: "/";
-  tap: {
-    repository: string;
-    name: string;
-    commit: string;
-  };
-  tap_lock: Array<{
-    repository: string;
-    name: string;
-    commit: string;
-    kandelo_repository: string;
-    kandelo_commit: string;
-    kandelo_abi: number;
-    bottle_release_tag: string;
-  }>;
-  kandelo: {
-    repository: string;
-    commit: string;
-    abi: number;
-  };
-  bottle_release_tag: string;
-  selection: {
-    requested_packages: string[];
-    package_order: string[];
-    base_package_order: string[];
-    layer_package_order: string[];
-  };
-  packages: {
-    base: HomebrewLazyLayerPackageRecord[];
-    layer: HomebrewLazyLayerPackageRecord[];
-  };
-  base_vfs: {
-    sha256: string;
-    bytes: number;
-    kernel_abi: number;
-    package_source: HomebrewLazyLayerBasePackageSource;
-    composition: {
-      path: typeof HOMEBREW_COMPOSITION_PATH;
-      sha256: string;
-      bytes: number;
-      requested_packages_sha256: string;
-      package_set_sha256: string;
-      package_count: number;
-      package_order: string[];
-    };
-  };
-  release: {
-    repository: string;
-    tag: string;
-  };
-  acceptance_vfs: {
-    asset: typeof HOMEBREW_VFS_ASSET;
-    url: string;
-    sha256: string;
-    bytes: number;
-  };
-  archive: {
-    format: "zip";
-    asset: typeof HOMEBREW_LAZY_LAYER_ARCHIVE;
-    url: string;
-    sha256: string;
-    bytes: number;
-    entry_count: number;
-    layer_entry_count: number;
-    shared_base_directory_count: number;
-    uncompressed_bytes: number;
-  };
-  entries: HomebrewLazyLayerEntry[];
 }
 
 export interface BuildHomebrewLazyLayerOptions {
@@ -738,28 +599,29 @@ function assertBasePackageMatches(
   }
 }
 
-function packageArtifactIdentity(value: Record<string, unknown>): Record<string, unknown> {
-  const builtFrom = value.built_from === undefined
+function packageArtifactIdentity(value: unknown): Record<string, unknown> {
+  const record = requireRecord(value, "Homebrew package identity");
+  const builtFrom = record.built_from === undefined
     ? undefined
-    : requireRecord(value.built_from, "Homebrew package built_from");
-  const optLink = requireRecord(value.opt_link, "Homebrew package opt_link");
+    : requireRecord(record.built_from, "Homebrew package built_from");
+  const optLink = requireRecord(record.opt_link, "Homebrew package opt_link");
   return {
-    name: requireString(value.name, "Homebrew package name"),
-    full_name: requireString(value.full_name, "Homebrew package full_name"),
-    tap_repository: requireString(value.tap_repository, "Homebrew package tap_repository"),
-    tap_name: requireString(value.tap_name, "Homebrew package tap_name"),
-    tap_commit: requireString(value.tap_commit, "Homebrew package tap_commit"),
-    version: requireString(value.version, "Homebrew package version"),
-    arch: requireString(value.arch, "Homebrew package arch"),
-    source_status: requireString(value.source_status, "Homebrew package source_status"),
-    metadata_status: requireString(value.metadata_status, "Homebrew package metadata_status"),
-    url: requireString(value.url, "Homebrew package URL"),
-    sha256: requireSha256(value.sha256, "Homebrew package sha256"),
-    bytes: requirePositiveInteger(value.bytes, "Homebrew package bytes"),
-    cache_key_sha: requireSha256(value.cache_key_sha, "Homebrew package cache key"),
-    link_manifest: requireString(value.link_manifest, "Homebrew package link manifest"),
-    prefix: requireString(value.prefix, "Homebrew package prefix"),
-    keg: requireString(value.keg, "Homebrew package keg"),
+    name: requireString(record.name, "Homebrew package name"),
+    full_name: requireString(record.full_name, "Homebrew package full_name"),
+    tap_repository: requireString(record.tap_repository, "Homebrew package tap_repository"),
+    tap_name: requireString(record.tap_name, "Homebrew package tap_name"),
+    tap_commit: requireString(record.tap_commit, "Homebrew package tap_commit"),
+    version: requireString(record.version, "Homebrew package version"),
+    arch: requireString(record.arch, "Homebrew package arch"),
+    source_status: requireString(record.source_status, "Homebrew package source_status"),
+    metadata_status: requireString(record.metadata_status, "Homebrew package metadata_status"),
+    url: requireString(record.url, "Homebrew package URL"),
+    sha256: requireSha256(record.sha256, "Homebrew package sha256"),
+    bytes: requirePositiveInteger(record.bytes, "Homebrew package bytes"),
+    cache_key_sha: requireSha256(record.cache_key_sha, "Homebrew package cache key"),
+    link_manifest: requireString(record.link_manifest, "Homebrew package link manifest"),
+    prefix: requireString(record.prefix, "Homebrew package prefix"),
+    keg: requireString(record.keg, "Homebrew package keg"),
     opt_link: {
       path: requireString(optLink.path, "Homebrew package opt link path"),
       target: requireString(optLink.target, "Homebrew package opt link target"),

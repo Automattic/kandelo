@@ -24,8 +24,14 @@ import {
 } from "../src/homebrew-vfs-builder";
 import {
   buildHomebrewLazyLayer,
+  encodeHomebrewLazyLayerDescriptor,
+  type HomebrewLazyLayerDescriptor,
   type HomebrewLazyLayerBasePackageSource,
 } from "../src/homebrew-lazy-layer";
+import {
+  registerHomebrewRuntimeLayers,
+  type HomebrewRuntimeLayerReference,
+} from "../src/homebrew-runtime-layer-consumer";
 import {
   planHomebrewVfs,
   type HomebrewLinkManifest,
@@ -570,6 +576,58 @@ async function lazyLayerFixture(options: {
   return { baseFs, plan, build, baseBytes, runtimeBytes, runtimeKeg };
 }
 
+async function runtimeLayerConsumerFixture() {
+  const fixture = await lazyLayerFixture({
+    mutateBase(fs) {
+      const composition = JSON.parse(readVfsFile(fs, "/etc/kandelo/homebrew-vfs.json"));
+      composition.packages[0].url =
+        "https://example.invalid/bottles/hello.bottle.tar.gz";
+      writeVfsFile(
+        fs,
+        "/etc/kandelo/homebrew-vfs.json",
+        `${JSON.stringify(composition)}\n`,
+      );
+    },
+    mutatePlan(plan) {
+      plan.packages[0].url =
+        "https://example.invalid/bottles/hello.bottle.tar.gz";
+      plan.packages[1].url =
+        "https://example.invalid/bottles/runtime.bottle.tar.gz";
+    },
+  });
+  const result = await fixture.build();
+  const baseImageBytes = await fixture.baseFs.saveImage();
+  const baseSha = sha256(baseImageBytes);
+  result.descriptor.base_vfs.sha256 = baseSha;
+  result.descriptor.base_vfs.bytes = baseImageBytes.byteLength;
+  result.descriptor.base_vfs.package_source.output.sha256 = baseSha;
+  result.descriptor.base_vfs.package_source.output.bytes = baseImageBytes.byteLength;
+  return {
+    ...fixture,
+    descriptor: result.descriptor,
+    archive: result.archive,
+    baseImageBytes,
+  };
+}
+
+function runtimeLayerReference(
+  id: string,
+  descriptor: HomebrewLazyLayerDescriptor,
+): { reference: HomebrewRuntimeLayerReference; bytes: Uint8Array } {
+  const bytes = encodeHomebrewLazyLayerDescriptor(descriptor);
+  return {
+    bytes,
+    reference: {
+      id,
+      descriptor: {
+        url: `https://example.invalid/layers/${id}.json`,
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+    },
+  };
+}
+
 function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
   const rootRepository = "example/homebrew-runtimes";
   const rootTap = "example/runtimes";
@@ -613,6 +671,180 @@ function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
     ],
   });
 }
+
+describe("Homebrew runtime layer consumer", () => {
+  it("registers verified stubs without fetching the archive, then verifies it on demand", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
+    let descriptorFetches = 0;
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+    const registered = await registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [reference],
+      fetch: async () => {
+        descriptorFetches += 1;
+        return new Response(bytes);
+      },
+    });
+
+    expect(descriptorFetches).toBe(1);
+    expect(registered).toHaveLength(1);
+    expect(fs.readlink(`${PREFIX}/bin/runtime`)).toBe(
+      `${fixture.runtimeKeg}/bin/runtime`,
+    );
+    expect(fs.exportLazyArchiveEntries()[0]).toMatchObject({
+      url: fixture.descriptor.archive.url,
+      integrity: {
+        sha256: fixture.descriptor.archive.sha256,
+        bytes: fixture.archive.byteLength,
+      },
+    });
+
+    const originalFetch = globalThis.fetch;
+    let archiveFetches = 0;
+    globalThis.fetch = async () => {
+      archiveFetches += 1;
+      return new Response(fixture.archive);
+    };
+    try {
+      await expect(
+        fs.ensureMaterialized(`${fixture.runtimeKeg}/bin/runtime`),
+      ).resolves.toBe(true);
+      expect(readVfsFile(fs, `${fixture.runtimeKeg}/bin/runtime`))
+        .toContain("echo runtime");
+      expect(archiveFetches).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects descriptor size and digest mismatches before parsing", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const exact = runtimeLayerReference("runtime", fixture.descriptor);
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [{
+        ...exact.reference,
+        descriptor: { ...exact.reference.descriptor, bytes: exact.bytes.byteLength - 1 },
+      }],
+      fetch: async () => new Response(exact.bytes),
+    })).rejects.toThrow(/descriptor exceeds expected/);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [{
+        ...exact.reference,
+        descriptor: { ...exact.reference.descriptor, sha256: "0".repeat(64) },
+      }],
+      fetch: async () => new Response(exact.bytes),
+    })).rejects.toThrow(/descriptor SHA-256 .* does not match/);
+  });
+
+  it("rejects a descriptor that does not bind the exact loaded shell", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const descriptor = structuredClone(fixture.descriptor);
+    descriptor.base_vfs.sha256 = "9".repeat(64);
+    descriptor.base_vfs.package_source.output.sha256 = "9".repeat(64);
+    const encoded = runtimeLayerReference("runtime", descriptor);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [encoded.reference],
+      fetch: async () => new Response(encoded.bytes),
+    })).rejects.toThrow(/does not bind the loaded shell image/);
+  });
+
+  it("rejects unsafe descriptor paths before changing the VFS", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const descriptor = structuredClone(fixture.descriptor);
+    descriptor.entries[0].path = "../escape";
+    const encoded = runtimeLayerReference("runtime", descriptor);
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [encoded.reference],
+      fetch: async () => new Response(encoded.bytes),
+    })).rejects.toThrow(/canonical relative POSIX path/);
+    expect(() => fs.lstat("/escape")).toThrow();
+  });
+
+  it("rejects a layer path that collides with the exact base filesystem", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const descriptor = structuredClone(fixture.descriptor);
+    for (const entry of descriptor.entries) {
+      entry.path = entry.path.replace(
+        "home/linuxbrew/.linuxbrew/Cellar/runtime",
+        "home/linuxbrew/.linuxbrew/Cellar/hello",
+      );
+    }
+    descriptor.entries.sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+    );
+    const encoded = runtimeLayerReference("runtime", descriptor);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [encoded.reference],
+      fetch: async () => new Response(encoded.bytes),
+    })).rejects.toThrow(/collides with the base/);
+  });
+
+  it("rejects pairwise path conflicts between independently named layers", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const perlDescriptor = structuredClone(fixture.descriptor);
+    const runtimePackage = perlDescriptor.packages.layer[0];
+    const oldFullName = runtimePackage.full_name;
+    runtimePackage.name = "perl";
+    runtimePackage.full_name = "kandelo-dev/tap-core/perl";
+    runtimePackage.url = "https://example.invalid/bottles/perl.bottle.tar.gz";
+    runtimePackage.keg = runtimePackage.keg.replace("/runtime/", "/perl/");
+    runtimePackage.opt_link = {
+      path: "opt/perl",
+      target: `../${runtimePackage.keg.slice(`${PREFIX}/`.length)}`,
+    };
+    perlDescriptor.selection.requested_packages = ["perl"];
+    perlDescriptor.selection.package_order = perlDescriptor.selection.package_order.map(
+      (name) => name === oldFullName ? runtimePackage.full_name : name,
+    );
+    perlDescriptor.selection.layer_package_order = [runtimePackage.full_name];
+    const perl = runtimeLayerReference("perl", perlDescriptor);
+    const responses = new Map([
+      [runtime.reference.descriptor.url, runtime.bytes],
+      [perl.reference.descriptor.url, perl.bytes],
+    ]);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference, perl.reference],
+      fetch: async (url) => new Response(responses.get(url)!),
+    })).rejects.toThrow(/conflict at/);
+  });
+});
 
 describe("Homebrew VFS builder", () => {
   it("builds a deterministic lazy ZIP containing only base-exclusive package output", async () => {

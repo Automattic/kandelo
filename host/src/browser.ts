@@ -73,6 +73,22 @@ export {
   selectHomebrewRuntimeLayer,
   selectHomebrewRuntimeLayers,
 } from "./homebrew-runtime-layer-policy";
+export {
+  HOMEBREW_RUNTIME_LAYER_LIMITS,
+  parseHomebrewRuntimeLayerDescriptor,
+  registerHomebrewRuntimeLayers,
+} from "./homebrew-runtime-layer-consumer";
+export type {
+  HomebrewRuntimeLayerReference,
+  RegisterHomebrewRuntimeLayersOptions,
+  RegisteredHomebrewRuntimeLayer,
+} from "./homebrew-runtime-layer-consumer";
+export type {
+  HomebrewLazyLayerBasePackageSource,
+  HomebrewLazyLayerDescriptor,
+  HomebrewLazyLayerEntry,
+  HomebrewLazyLayerPackageRecord,
+} from "./homebrew-lazy-layer-descriptor";
 export type {
   HomebrewRuntimeLayerBaseClosure,
   HomebrewRuntimeLayerBasePackageSourceIdentity,

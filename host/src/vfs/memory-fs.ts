@@ -59,6 +59,12 @@ export interface LazyArchiveFileEntry {
   archivePath?: string;
 }
 
+/** Optional immutable identity for a remotely fetched lazy archive. */
+export interface LazyArchiveIntegrity {
+  sha256: string;
+  bytes: number;
+}
+
 /**
  * A group of files whose content comes from a single zip archive.
  * Accessing any member materializes the entire archive in one fetch.
@@ -66,6 +72,7 @@ export interface LazyArchiveFileEntry {
 export interface LazyArchiveGroup {
   url: string;
   mountPrefix: string;
+  integrity?: LazyArchiveIntegrity;
   materialized: boolean;
   entries: Map<string, LazyArchiveFileEntry>; // keyed by VFS absolute path
 }
@@ -74,6 +81,7 @@ export interface LazyArchiveGroup {
 export interface SerializedLazyArchiveEntry {
   url: string;
   mountPrefix: string;
+  integrity?: LazyArchiveIntegrity;
   materialized: boolean;
   entries: Array<{
     vfsPath: string;
@@ -151,6 +159,8 @@ const O_WRONLY_CREAT_TRUNC = 0o1101;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
+const MAX_LAZY_ARCHIVE_BYTES = 256 * 1024 * 1024;
+const SHA256_RE = /^[0-9a-f]{64}$/;
 
 interface PlannedLazyArchiveEntry {
   entry: ZipEntry;
@@ -394,6 +404,8 @@ function monotonicNow(): number {
 }
 
 function parseContentLength(headers: Headers | undefined): number | undefined {
+  const encoding = headers?.get("content-encoding")?.trim().toLowerCase();
+  if (encoding && encoding !== "identity") return undefined;
   const raw = headers?.get("content-length");
   if (!raw) return undefined;
   const value = Number(raw);
@@ -409,6 +421,66 @@ function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
     offset += chunk.byteLength;
   }
   return out;
+}
+
+function validateLazyArchiveIntegrity(
+  value: unknown,
+): LazyArchiveIntegrity | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Lazy archive integrity must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 2 ||
+    !("sha256" in record) ||
+    !("bytes" in record)
+  ) {
+    throw new Error("Lazy archive integrity has unexpected fields");
+  }
+  if (typeof record.sha256 !== "string" || !SHA256_RE.test(record.sha256)) {
+    throw new Error("Lazy archive integrity has an invalid SHA-256 digest");
+  }
+  if (
+    !Number.isSafeInteger(record.bytes) ||
+    Number(record.bytes) <= 0 ||
+    Number(record.bytes) > MAX_LAZY_ARCHIVE_BYTES
+  ) {
+    throw new Error(
+      `Lazy archive integrity byte count must be between 1 and ` +
+        `${MAX_LAZY_ARCHIVE_BYTES}`,
+    );
+  }
+  return { sha256: record.sha256, bytes: Number(record.bytes) };
+}
+
+async function assertLazyIntegrity(
+  data: Uint8Array,
+  kind: LazyDownloadKind,
+  expected: LazyArchiveIntegrity | undefined,
+): Promise<void> {
+  if (expected === undefined) return;
+  if (data.byteLength !== expected.bytes) {
+    throw new Error(
+      `Lazy ${kind} byte count ${data.byteLength} does not match ` +
+        `expected ${expected.bytes}`,
+    );
+  }
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error(`Lazy ${kind} integrity verification is unavailable`);
+  }
+  const copy = new Uint8Array(data.byteLength);
+  copy.set(data);
+  const digest = new Uint8Array(await subtle.digest("SHA-256", copy));
+  const actual = Array.from(digest, (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+  if (actual !== expected.sha256) {
+    throw new Error(
+      `Lazy ${kind} SHA-256 ${actual} does not match expected ${expected.sha256}`,
+    );
+  }
 }
 
 export class MemoryFileSystem implements FileSystemBackend {
@@ -742,9 +814,10 @@ export class MemoryFileSystem implements FileSystemBackend {
     path?: string;
     mountPrefix?: string;
     fallbackTotalBytes?: number;
+    integrity?: LazyArchiveIntegrity;
   }): Promise<Uint8Array> {
     let loadedBytes = 0;
-    let totalBytes = details.fallbackTotalBytes;
+    let totalBytes = details.integrity?.bytes ?? details.fallbackTotalBytes;
     const base = {
       id: details.id,
       kind: details.kind,
@@ -767,9 +840,20 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
 
       totalBytes = parseContentLength(resp.headers) ?? totalBytes;
+      if (
+        details.integrity &&
+        totalBytes !== undefined &&
+        totalBytes !== details.integrity.bytes
+      ) {
+        throw new Error(
+          `Lazy ${details.kind} byte count ${totalBytes} does not match ` +
+            `expected ${details.integrity.bytes}`,
+        );
+      }
       if (!resp.body) {
         const data = new Uint8Array(await resp.arrayBuffer());
         loadedBytes = data.byteLength;
+        await assertLazyIntegrity(data, details.kind, details.integrity);
         this.emitLazyDownload({
           ...base,
           status: "progress",
@@ -794,6 +878,13 @@ export class MemoryFileSystem implements FileSystemBackend {
           if (!value) continue;
           chunks.push(value);
           loadedBytes += value.byteLength;
+          if (details.integrity && loadedBytes > details.integrity.bytes) {
+            await reader.cancel();
+            throw new Error(
+              `Lazy ${details.kind} exceeded expected byte count ` +
+                `${details.integrity.bytes}`,
+            );
+          }
           this.emitLazyDownload({
             ...base,
             status: "progress",
@@ -806,6 +897,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
 
       const data = concatChunks(chunks, loadedBytes);
+      await assertLazyIntegrity(data, details.kind, details.integrity);
       this.emitLazyDownload({
         ...base,
         status: "complete",
@@ -998,6 +1090,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     zipEntries: ZipEntry[],
     mountPrefix: string,
     symlinkTargets?: Map<string, string>,
+    integrity?: LazyArchiveIntegrity,
   ): LazyArchiveGroup {
     // Validate and plan the entire archive before creating even one directory,
     // stub, symlink, inode mapping, or group. SharedFS resolves `..`, so
@@ -1012,6 +1105,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     const group: LazyArchiveGroup = {
       url,
       mountPrefix,
+      integrity: validateLazyArchiveIntegrity(integrity),
       materialized: false,
       entries: new Map(),
     };
@@ -1125,6 +1219,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       const group: LazyArchiveGroup = {
         url: s.url,
         mountPrefix: s.mountPrefix,
+        integrity: validateLazyArchiveIntegrity(s.integrity),
         materialized:
           s.materialized ||
           Array.from(entries.values()).every(
@@ -1179,6 +1274,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       serialized.push({
         url: group.url,
         mountPrefix: group.mountPrefix,
+        integrity: group.integrity,
         materialized: false,
         entries,
       });
@@ -1269,14 +1365,37 @@ export class MemoryFileSystem implements FileSystemBackend {
       kind: "archive",
       url: group.url,
       mountPrefix: group.mountPrefix,
+      integrity: group.integrity,
     });
 
     const { parseZipCentralDirectory, extractZipEntry } = await import("./zip");
     const zipEntries = parseZipCentralDirectory(zipData);
     const zipLookup = new Map<string, ZipEntry>();
-    for (const ze of zipEntries) zipLookup.set(ze.fileName, ze);
+    for (const ze of zipEntries) {
+      if (zipLookup.has(ze.fileName)) {
+        throw new Error(`Lazy archive contains duplicate member: ${ze.fileName}`);
+      }
+      zipLookup.set(ze.fileName, ze);
+    }
 
     const normalizedPrefix = group.mountPrefix.replace(/\/+$/, "");
+    for (const [vfsPath, archiveEntry] of group.entries) {
+      if (archiveEntry.deleted || archiveEntry.materialized) continue;
+      const zipFileName =
+        archiveEntry.archivePath ??
+        vfsPath.slice(normalizedPrefix.length + 1);
+      const ze = zipLookup.get(zipFileName);
+      if (
+        ze === undefined ||
+        ze.isDirectory ||
+        ze.isSymlink ||
+        ze.uncompressedSize !== archiveEntry.size
+      ) {
+        throw new Error(
+          `Lazy archive member ${zipFileName} does not match its registered metadata`,
+        );
+      }
+    }
     const requestedKey = requested
       ? MemoryFileSystem.inodeKey(requested.ino, requested.generation)
       : null;
