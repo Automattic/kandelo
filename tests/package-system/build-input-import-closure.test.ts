@@ -29,6 +29,21 @@ const sourceExtensions = new Set([
 ]);
 
 describe("package build input import closure", () => {
+  it("maps host runtime changes to the derived images that execute them", () => {
+    for (const changedPath of [
+      "host/src/process.ts",
+      "host/src/kernel-worker.ts",
+    ]) {
+      expect(packagesAffectedBy(changedPath)).toEqual(["lamp", "wordpress"]);
+    }
+
+    expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual([
+      "lamp",
+      "node-vfs",
+      "wordpress",
+    ]);
+  });
+
   for (const packageName of packages) {
     it(`${packageName} declares every repository-local relative import`, () => {
       const buildTomlPath = join(
@@ -94,6 +109,27 @@ describe("package build input import closure", () => {
     });
   }
 });
+
+function packagesAffectedBy(changedPath: string): string[] {
+  const absoluteChangedPath = resolve(repoRoot, changedPath);
+  return packages
+    .filter((packageName) => {
+      const buildTomlPath = join(
+        repoRoot,
+        "packages",
+        "registry",
+        packageName,
+        "build.toml",
+      );
+      const declaredPaths = parseBuildInputs(
+        readFileSync(buildTomlPath, "utf8"),
+      ).map((input) => resolve(repoRoot, input));
+      return declaredPaths.some((declaredPath) =>
+        covers(declaredPath, absoluteChangedPath)
+      );
+    })
+    .sort();
+}
 
 function parseBuildInputs(buildToml: string): string[] {
   const lines = buildToml.split(/\r?\n/);

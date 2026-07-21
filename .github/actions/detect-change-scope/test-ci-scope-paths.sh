@@ -71,8 +71,7 @@ assert_matches package_archive_changed_files \
   "host/src/vfs/sharedfs-vendor.ts" \
   "host/src/vfs/sharedfs-vendor.ts"
 # The shell package lists the exact host-side Homebrew/VFS source closure in
-# build.toml. Every member must stage a replacement shell archive, while
-# unrelated runtime modules must not make package publication wait.
+# build.toml. Every member must stage a replacement shell archive.
 for shell_host_input in \
   host/src/constants.ts \
   host/src/generated/abi.ts \
@@ -95,10 +94,14 @@ done
 assert_matches package_archive_changed_files \
   "images/rootfs/etc/profile" \
   "images/rootfs/etc/profile"
-assert_not_matches package_archive_changed_files \
+# This classifier is intentionally aggregated across the package registry.
+# WordPress and LAMP boot the host runtime while building their derived VFS
+# images, so their recursive host/src input makes these changes package inputs
+# even though the shell package itself does not consume them.
+assert_matches package_archive_changed_files \
   "host/src/process.ts" \
   "host/src/process.ts"
-assert_not_matches package_archive_changed_files \
+assert_matches package_archive_changed_files \
   "host/src/kernel-worker.ts" \
   "host/src/kernel-worker.ts"
 assert_not_matches package_archive_changed_files \

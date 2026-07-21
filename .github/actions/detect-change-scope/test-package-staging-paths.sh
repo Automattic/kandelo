@@ -68,7 +68,11 @@ assert_not_selected "tools/mkrootfs/test/builder.test.ts" "tools/mkrootfs/test/b
 assert_selected "host/src/vfs/memory-fs.ts" "host/src/vfs/memory-fs.ts"
 assert_selected "host/src/vfs/sharedfs-vendor.ts" "host/src/vfs/sharedfs-vendor.ts"
 assert_selected "images/rootfs/etc/profile" "images/rootfs/etc/profile"
-assert_not_selected "host/src/process.ts" "host/src/process.ts"
+# WordPress and LAMP boot the host runtime to derive their VFS images, so a
+# host runtime change must invalidate package staging even when it is outside
+# the shell package's narrower host-side input closure.
+assert_selected "host/src/process.ts" "host/src/process.ts"
+assert_selected "host/src/kernel-worker.ts" "host/src/kernel-worker.ts"
 
 assert_selected "crates/fork-instrument/src/main.rs" "crates/fork-instrument/src/main.rs"
 assert_selected \
