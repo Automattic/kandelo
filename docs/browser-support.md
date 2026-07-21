@@ -430,6 +430,12 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
+Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
+are resolved only after that profile is requested; loading the main shell does
+not require or fetch those image bytes. If the selected profile's local or
+resolver-managed artifact is absent, the browser reports that exact missing
+image and asks the user to run `./run.sh fetch`.
+
 The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
 `mysql` account (uid/gid 101). Their writable `/data` directories are
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a

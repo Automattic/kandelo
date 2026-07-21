@@ -10,7 +10,7 @@ on:
       - "MANIFEST"
       - "apps/browser-demos/package-lock.json"
       - "apps/browser-demos/package.json"
-      - "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts"
+      - "apps/browser-demos/pages/kandelo/**"
       - "apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
       - "apps/browser-demos/vite.config.ts"
       - "crates/kernel/**"
@@ -26,6 +26,7 @@ on:
       - "host/src/node-kernel-host.ts"
       - "host/src/vfs/**"
       - "host/test/homebrew-vfs-*.test.ts"
+      - "host/test/optional-demo-vfs.test.ts"
       - "host/test/vfs-image.test.ts"
       - "images/rootfs/**"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
@@ -48,6 +49,7 @@ on:
       - "scripts/test-homebrew-main-shell-closure.sh"
       - "tools/mkrootfs/**"
       - "web-libs/kandelo-session/src/shell-config.ts"
+      - "web-libs/kandelo-session/src/kernel-host.ts"
       - "web-libs/kandelo-session/src/vfs-capacity.ts"
   push:
     branches: [main]
@@ -59,7 +61,7 @@ on:
       - "MANIFEST"
       - "apps/browser-demos/package-lock.json"
       - "apps/browser-demos/package.json"
-      - "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts"
+      - "apps/browser-demos/pages/kandelo/**"
       - "apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
       - "apps/browser-demos/vite.config.ts"
       - "crates/kernel/**"
@@ -75,6 +77,7 @@ on:
       - "host/src/node-kernel-host.ts"
       - "host/src/vfs/**"
       - "host/test/homebrew-vfs-*.test.ts"
+      - "host/test/optional-demo-vfs.test.ts"
       - "host/test/vfs-image.test.ts"
       - "images/rootfs/**"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
@@ -97,6 +100,7 @@ on:
       - "scripts/test-homebrew-main-shell-closure.sh"
       - "tools/mkrootfs/**"
       - "web-libs/kandelo-session/src/shell-config.ts"
+      - "web-libs/kandelo-session/src/kernel-host.ts"
       - "web-libs/kandelo-session/src/vfs-capacity.ts"
   workflow_dispatch:
 
@@ -115,7 +119,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -173,8 +176,21 @@ jobs:
           abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
             crates/shared/src/lib.rs)
           export WASM_POSIX_BINARY_INDEX_URL="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${abi}/index.toml"
-          WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS} shell" \
-            bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
+          mapfile -t browser_input_packages < <(
+            jq -r '.packages[].registry.name' homebrew/main-shell-migration-lock.json
+          )
+          browser_input_packages+=(
+            dinit
+            nethack-browser-bundle
+            node
+            rootfs
+            vim-browser-bundle
+          )
+          fetch_args=(--fetch-only)
+          for package in "${browser_input_packages[@]}"; do
+            fetch_args+=(--package "$package")
+          done
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh "${fetch_args[@]}"
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
             cargo build --release -p kandelo -Z build-std=core,alloc

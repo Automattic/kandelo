@@ -786,6 +786,28 @@ describe("LiveKernelHost: descriptor + gallery lifecycle defaults", () => {
     const items = await host.galleryQuery({ tab: "presets" });
     expect(items).toHaveLength(0);
   });
+
+  it("preserves a lazy gallery image resolver without invoking it", async () => {
+    const host = new LiveKernelHost();
+    const resolveVfsImageUrl = vi.fn(async () => "/node-vfs.vfs.zst");
+    host.setGalleryItems([{
+      id: "node",
+      title: "Node",
+      summary: "Node preset",
+      base: "kandelo:shell@abi8",
+      packages: ["node@1"],
+      bootCommand: ["node"],
+      resolveVfsImageUrl,
+      accent: "#43853d",
+      glyph: "js",
+      estimatedUrlBytes: 20,
+    }]);
+
+    const [item] = await host.galleryQuery({ tab: "presets" });
+    expect(resolveVfsImageUrl).not.toHaveBeenCalled();
+    await expect(item.resolveVfsImageUrl?.()).resolves.toBe("/node-vfs.vfs.zst");
+    expect(resolveVfsImageUrl).toHaveBeenCalledOnce();
+  });
 });
 
 describe("LiveKernelHost: surface availability", () => {

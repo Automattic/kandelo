@@ -79,13 +79,14 @@ import {
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
 } from "../url-state";
+import {
+  resolveOptionalDemoVfsUrl,
+  type OptionalDemoVfsImage,
+} from "./optional-demo-vfs";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
-import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
-import wordpressVfsUrl from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
-import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
@@ -222,6 +223,7 @@ type LiveVfsImage =
 
 type LiveVfsSource =
   | { kind: "url"; url: string }
+  | { kind: "optional-demo"; image: OptionalDemoVfsImage }
   | { kind: "optional-binary"; label: string; relPaths: string[] };
 
 type ShellProfile = "default" | "node";
@@ -256,7 +258,7 @@ interface LiveProfileSpec {
 
 const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
   shell: { kind: "url", url: shellVfsUrl },
-  node: { kind: "url", url: nodeVfsUrl },
+  node: { kind: "optional-demo", image: "node" },
   nginx: {
     kind: "optional-binary",
     label: "nginx-vfs.vfs.zst",
@@ -273,8 +275,8 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
       "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
     ],
   },
-  wordpress: { kind: "url", url: wordpressVfsUrl },
-  lamp: { kind: "url", url: lampVfsUrl },
+  wordpress: { kind: "optional-demo", image: "wordpress" },
+  lamp: { kind: "optional-demo", image: "lamp" },
 };
 
 const DINIT_NGINX_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"];
@@ -1552,6 +1554,9 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
 
 async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
   if (profile.vfsSource?.kind === "url") return profile.vfsSource.url;
+  if (profile.vfsSource?.kind === "optional-demo") {
+    return resolveOptionalDemoVfsUrl(profile.vfsSource.image);
+  }
   if (profile.vfsSource?.kind === "optional-binary") {
     return optionalBinaryUrl(profile.vfsSource.relPaths, profile.vfsSource.label);
   }
@@ -1908,6 +1913,7 @@ function liveGalleryItems(): GalleryItem[] {
     packages: p.packages,
     bootCommand: p.bootCommand,
     vfsImageUrl: vfsImageUrlForPreset(p.id),
+    resolveVfsImageUrl: vfsImageUrlResolverForPreset(p.id),
     accent: p.accent,
     glyph: p.glyph,
     estimatedUrlBytes: p.estimatedUrlBytes,
@@ -1922,6 +1928,20 @@ function vfsImageUrlForPreset(id: string): string | undefined {
   const url = new URL(source.url, location.href);
   url.hash = liveId;
   return url.href;
+}
+
+function vfsImageUrlResolverForPreset(
+  id: string,
+): (() => Promise<string>) | undefined {
+  const liveId = normalizeDemoId(id);
+  if (!liveId) return undefined;
+  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
+  if (source.kind !== "optional-demo") return undefined;
+  return async () => {
+    const url = new URL(await resolveOptionalDemoVfsUrl(source.image), location.href);
+    url.hash = liveId;
+    return url.href;
+  };
 }
 
 function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {

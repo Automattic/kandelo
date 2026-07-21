@@ -1119,12 +1119,24 @@ canonical path populated and returns it without re-running
 
 `scripts/fetch-binaries.sh` walks every
 `packages/registry/<pkg>/package.toml` that has a sibling `build.toml`
-with a `[binary]` block and
-calls `xtask build-deps --binaries-dir <repo>/binaries resolve
-<pkg>` once per declared arch. Packages without a `[binary]`
-block (kernel, userspace, source-only, and metadata-only entries)
-are skipped silently — those are local-build-only and the resolver's
-fall-through to source build covers them on demand.
+and calls `xtask build-deps --binaries-dir <repo>/binaries resolve
+<pkg>` once per declared arch. Packages without `build.toml` are skipped
+silently — those are local-build-only and the resolver's fall-through to
+source build covers them on demand.
+
+Consumers that need a bounded artifact surface can repeat `--package <name>`:
+
+```bash
+bash scripts/fetch-binaries.sh --fetch-only \
+  --package rootfs --package bash --package dash
+```
+
+With any `--package` flags, only those package roots are handed to the
+resolver, in first-requested order; duplicate flags are ignored. The resolver
+still traverses each root's declared dependency closure. Unknown packages,
+packages without a publishable `build.toml`, unsafe names, and a package that
+is simultaneously selected and listed in `WASM_POSIX_FETCH_SKIP_PKGS` fail
+before materialization. Omitting `--package` preserves the full-registry walk.
 
 The package workflows retain the same per-entry build shape but publish to
 different lifecycle states. `staging-build.yml` writes a per-PR staging tag;

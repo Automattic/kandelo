@@ -501,6 +501,12 @@ export interface GalleryItem {
   bootCommand: string[];
   /** Direct .vfs or .vfs.zst image URL used for bootable deep links. */
   vfsImageUrl?: string;
+  /**
+   * Resolve an optional local image URL only when the user launches this item.
+   * Remote/serialized gallery records should use `vfsImageUrl`; this callback
+   * is for in-process providers whose Vite asset may not be materialized.
+   */
+  resolveVfsImageUrl?: () => Promise<string>;
   accent: string;
   glyph: string;
   estimatedUrlBytes: number;

@@ -124,6 +124,7 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
         `version = "0.2.0"`,
         `revision = 1`,
         `arches = ["wasm32", "wasm64"]`,
+        `depends_on = ["alpha@0.1.0"]`,
         ``,
         `[source]`,
         `url = "https://example.test/bravo.tar.gz"`,
@@ -222,7 +223,10 @@ exit 0
     }
   });
 
-  function runScript(extraArgs: string[]): {
+  function runScript(
+    extraArgs: string[],
+    envOverrides: NodeJS.ProcessEnv = {},
+  ): {
     status: number | null;
     stdout: string;
     stderr: string;
@@ -233,6 +237,8 @@ exit 0
       // Prepend fake-bin so our shim wins over a real `cargo`.
       PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
       CARGO_LOG: cargoLogPath,
+      WASM_POSIX_FETCH_SKIP_PKGS: "",
+      ...envOverrides,
     };
     const r = spawnSync(
       "bash",
@@ -289,6 +295,89 @@ exit 0
     // skipped=1 (delta). The stray dir without package.toml is
     // silently ignored (counted as neither resolved nor skipped).
     expect(stdout).toMatch(/resolved=5\s+total=5\s+skipped=1/);
+  });
+
+  it("selects one package root without changing resolver dependency ownership", () => {
+    const { status, stdout, stderr } = runScript(["--package", "bravo"]);
+    expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
+
+    // bravo declares alpha as a dependency in its package.toml fixture. The
+    // wrapper invokes only the selected root; xtask's resolver owns recursive
+    // dependency materialization and must not be reimplemented by this loop.
+    expect(logLines(/build-deps.*resolve\s+bravo\b/).length).toBe(2);
+    expect(logLines(/build-deps.*resolve\s+alpha\b/).length).toBe(0);
+    expect(logLines(/build-deps.*resolve\s+charlie\b/).length).toBe(0);
+    expect(stdout).toContain("selected package roots: bravo");
+    expect(stdout).toMatch(/resolved=2\s+total=2\s+skipped=0/);
+  });
+
+  it("selects many roots in first-requested order and de-duplicates repeats", () => {
+    const { status, stdout, stderr } = runScript([
+      "--package", "charlie",
+      "--package=alpha",
+      "--package", "charlie",
+    ]);
+    expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
+
+    const selectedOrder = logLines(/build-deps.*resolve\s+(?:alpha|charlie)\b/)
+      .map((line) => line.match(/resolve\s+(alpha|charlie)\b/)?.[1]);
+    expect(selectedOrder).toEqual(["charlie", "charlie", "alpha"]);
+    expect(stdout).toContain("selected package roots: charlie alpha");
+    expect(stdout).toMatch(/resolved=3\s+total=3\s+skipped=0/);
+  });
+
+  it("rejects unknown and non-publishable selected roots before resolving", () => {
+    for (const packageName of ["missing", "delta"]) {
+      const { status, stderr } = runScript(["--package", packageName]);
+      expect(status).toBe(2);
+      expect(stderr).toMatch(
+        packageName === "missing"
+          ? /selected package 'missing' does not exist/
+          : /selected package 'delta' has no publishable build\.toml/,
+      );
+      expect(logLines(/build-deps.*resolve/)).toEqual([]);
+    }
+  });
+
+  it("rejects empty and unsafe selected package names", () => {
+    for (const args of [
+      ["--package", ""],
+      ["--package="],
+      ["--package", "../alpha"],
+      ["--package", "alpha/bravo"],
+      ["--package", "-alpha"],
+      ["--package", "alpha bravo"],
+    ]) {
+      const { status, stderr } = runScript(args);
+      expect(status).toBe(2);
+      expect(stderr).toMatch(/requires a safe non-empty package name/);
+      expect(logLines(/build-deps.*resolve/)).toEqual([]);
+    }
+
+    const missingValue = runScript(["--package"]);
+    expect(missingValue.status).toBe(2);
+    expect(missingValue.stderr).toMatch(/--package requires a package name/);
+    expect(logLines(/build-deps.*resolve/)).toEqual([]);
+  });
+
+  it("rejects a selected root hidden by the existing skip contract", () => {
+    const conflict = runScript(
+      ["--package", "alpha"],
+      { WASM_POSIX_FETCH_SKIP_PKGS: "alpha charlie" },
+    );
+    expect(conflict.status).toBe(2);
+    expect(conflict.stderr).toMatch(
+      /selected package 'alpha' is also listed in WASM_POSIX_FETCH_SKIP_PKGS/,
+    );
+    expect(logLines(/build-deps.*resolve/)).toEqual([]);
+
+    const unrelated = runScript(
+      ["--package", "bravo"],
+      { WASM_POSIX_FETCH_SKIP_PKGS: "alpha" },
+    );
+    expect(unrelated.status, unrelated.stderr).toBe(0);
+    expect(logLines(/build-deps.*resolve\s+bravo\b/).length).toBe(2);
+    expect(logLines(/build-deps.*resolve\s+alpha\b/).length).toBe(0);
   });
 
   it("--allow-stale resolves the same packages as the default (banner printed)", () => {
@@ -398,5 +487,7 @@ exit 0
     // invocation pattern.
     expect(r.stdout).toMatch(/per-package/);
     expect(r.stdout).toMatch(/build-deps resolve/);
+    expect(r.stdout).toMatch(/--package <name>/);
+    expect(r.stdout).toMatch(/declared dependency closure/);
   });
 });

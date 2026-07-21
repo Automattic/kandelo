@@ -34,6 +34,12 @@
 # others.
 #
 # Flags:
+#   --package <name>
+#                  Materialize only this package root. Repeat the flag to
+#                  select more than one root. The resolver still materializes
+#                  each selected root's declared dependency closure. Repeated
+#                  names are de-duplicated in first-requested order. With no
+#                  --package flags, the existing full-registry walk is used.
 #   --offline      Set `WASM_POSIX_OFFLINE=1` so the resolver refuses
 #                  to hit the network. (No-op if every archive is
 #                  already in the cache.)
@@ -94,8 +100,35 @@ PR_NUMBER=""
 ALLOW_STALE=0
 FETCH_ONLY=0
 SKIP_PKGS=" ${WASM_POSIX_FETCH_SKIP_PKGS:-} "
+SELECTED_PKGS=()
+
+add_selected_package() {
+    local pkg="$1"
+    if [[ ! "$pkg" =~ ^[a-z0-9][a-z0-9._+-]*$ ]]; then
+        echo "fetch-binaries: --package requires a safe non-empty package name, got '$pkg'" >&2
+        exit 2
+    fi
+    local selected
+    for selected in "${SELECTED_PKGS[@]}"; do
+        [ "$selected" = "$pkg" ] && return 0
+    done
+    SELECTED_PKGS+=("$pkg")
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
+        --package)
+            [ $# -ge 2 ] || {
+                echo "fetch-binaries: --package requires a package name" >&2
+                exit 2
+            }
+            add_selected_package "$2"
+            shift 2
+            ;;
+        --package=*)
+            add_selected_package "${1#--package=}"
+            shift
+            ;;
         --offline)     OFFLINE=1; shift ;;
         --pr)          PR_NUMBER="$2"; shift 2 ;;
         --allow-stale) ALLOW_STALE=1; shift ;;
@@ -107,7 +140,7 @@ while [ $# -gt 0 ]; do
         --force)       echo "fetch-binaries: --force is now a no-op (cache is content-addressed); ignoring" >&2; shift ;;
         --prune)       echo "fetch-binaries: --prune is now a no-op (cache GC is the resolver's job); ignoring" >&2; shift ;;
         -h|--help)
-            sed -n '3,66p' "$0"
+            sed -n '3,90p' "$0"
             exit 0
             ;;
         *) echo "fetch-binaries: unknown arg $1" >&2; exit 2 ;;
@@ -156,6 +189,29 @@ fi
 # --- Walk packages and resolve each --------------------------------------
 LIBS_DIR="$REPO_ROOT/packages/registry"
 [ -d "$LIBS_DIR" ] || { echo "fetch-binaries: $LIBS_DIR not found" >&2; exit 2; }
+
+PACKAGE_DIRS=()
+if [ ${#SELECTED_PKGS[@]} -gt 0 ]; then
+    for pkg in "${SELECTED_PKGS[@]}"; do
+        pkg_dir="$LIBS_DIR/$pkg"
+        if [ ! -f "$pkg_dir/package.toml" ]; then
+            echo "fetch-binaries: selected package '$pkg' does not exist" >&2
+            exit 2
+        fi
+        if [ ! -f "$pkg_dir/build.toml" ]; then
+            echo "fetch-binaries: selected package '$pkg' has no publishable build.toml" >&2
+            exit 2
+        fi
+        if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
+            echo "fetch-binaries: selected package '$pkg' is also listed in WASM_POSIX_FETCH_SKIP_PKGS" >&2
+            exit 2
+        fi
+        PACKAGE_DIRS+=("$pkg_dir/")
+    done
+    echo "fetch-binaries: selected package roots: ${SELECTED_PKGS[*]}"
+else
+    PACKAGE_DIRS=("$LIBS_DIR"/*/)
+fi
 
 # Collect failures and report them after the loop. A single archive
 # that's been pulled from the release (or whose source build fails on
@@ -223,8 +279,10 @@ read_package_toml() {
     ' "$toml"
 }
 
-# Walk every immediate child directory of packages/registry/.
-for pkg_dir in "$LIBS_DIR"/*/; do
+# Walk every immediate child directory by default, or the exact selected roots
+# in first-requested order. `xtask build-deps resolve` owns dependency closure
+# traversal; this wrapper must not duplicate or second-guess that graph.
+for pkg_dir in "${PACKAGE_DIRS[@]}"; do
     [ -d "$pkg_dir" ] || continue
     pkg=$(basename "$pkg_dir")
     toml="$pkg_dir/package.toml"

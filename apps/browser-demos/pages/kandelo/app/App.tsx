@@ -162,13 +162,26 @@ export const App: React.FC = () => {
   }, [host, closeDockPane]);
 
   const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
-    if (item.vfsImageUrl) {
-      navigateToGalleryItemUrl(item);
-      return;
-    }
+    void (async () => {
+      let vfsImageUrl = item.vfsImageUrl;
+      if (!vfsImageUrl && item.resolveVfsImageUrl) {
+        try {
+          vfsImageUrl = await item.resolveVfsImageUrl();
+        } catch (err) {
+          // Applying the descriptor below lets the host surface the same
+          // missing-artifact error through its normal boot diagnostics.
+          console.warn("resolveVfsImageUrl failed:", err);
+        }
+      }
+      if (vfsImageUrl) {
+        navigateToGalleryItemUrl({ ...item, vfsImageUrl });
+        return;
+      }
 
-    const next = descriptorFromGalleryItem(item, host.getBootDescriptor());
-    void host.applyBootDescriptor(next).then(closeDockPane).catch((err) => {
+      const next = descriptorFromGalleryItem(item, host.getBootDescriptor());
+      await host.applyBootDescriptor(next);
+      closeDockPane();
+    })().catch((err) => {
       console.warn("applyBootDescriptor failed:", err);
     });
   }, [host, closeDockPane]);

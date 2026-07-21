@@ -28,9 +28,9 @@ import type {
   DemoGuideConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { PRESET_LIBRARY } from "../presets";
+import { resolveOptionalDemoVfsUrl } from "./optional-demo-vfs";
 
 import kernelWasmUrl from "@kernel-wasm?url";
-import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
@@ -298,6 +298,8 @@ async function boot(
     assertCurrent();
 
     tick("loading SpiderMonkey Node profile...");
+    const nodeVfsUrl = await resolveOptionalDemoVfsUrl("node");
+    assertCurrent();
     const [
       kernelBytes,
       vfsBytes,

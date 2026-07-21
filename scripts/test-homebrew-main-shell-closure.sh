@@ -48,6 +48,7 @@ push_paths="$(awk '
 for required_path in \
   ".github/actions/setup-nix/**" \
   "MANIFEST" \
+  "apps/browser-demos/pages/kandelo/**" \
   "apps/browser-demos/vite.config.ts" \
   "crates/shared/**" \
   "homebrew/main-shell*" \
@@ -65,6 +66,7 @@ for required_path in \
   "scripts/install-local-binary.sh" \
   "scripts/resolve-binary.sh" \
   "tools/mkrootfs/**" \
+  "web-libs/kandelo-session/src/kernel-host.ts" \
   "web-libs/kandelo-session/src/shell-config.ts"
 do
   grep -Fxq "$required_path" <<<"$pull_paths" ||
@@ -102,8 +104,18 @@ grep -Fq 'bash scripts/dev-shell.sh env \' "$WORKFLOW" ||
   fail "main-shell workflow must forward bottle-composer inputs inside the isolated dev shell"
 grep -Fq 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW" ||
   fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
-grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS} shell"' "$WORKFLOW" ||
-  fail "binary fetch must skip the legacy shell artifact rebuilt from bottles by this workflow"
+grep -Fq "jq -r '.packages[].registry.name' homebrew/main-shell-migration-lock.json" "$WORKFLOW" ||
+  fail "binary fetch must select the reviewed main-shell registry roots"
+grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
+  fail "binary fetch must pass exact positive package selections"
+grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
+  fail "binary fetch must materialize only its declared browser inputs"
+grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
+  fail "main-shell proof must not use a negative package skip list"
+for browser_input in dinit nethack-browser-bundle node rootfs vim-browser-bundle; do
+  grep -Fxq "            $browser_input" "$WORKFLOW" ||
+    fail "main-shell workflow omits direct browser input $browser_input"
+done
 
 expect_failure "KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA requires" \
   env KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA=0000000000000000000000000000000000000000 \

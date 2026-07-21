@@ -619,6 +619,23 @@ For each declared arch in the package's `arches = [...]` (default
    validated cache, so browser/Node image builders load the same bytes without
    re-fetching. Local builds use the identical layout under `local-binaries/`.
 
+The no-argument form above materializes every publishable registry root. A
+bounded consumer should repeat `--package` for its direct roots instead:
+
+```bash
+bash scripts/fetch-binaries.sh --fetch-only \
+  --package rootfs --package bash --package dash
+```
+
+Selection is positive: only the named roots run, duplicates are removed while
+preserving first-requested order, and `xtask build-deps resolve` remains
+responsible for their transitive dependency closures. A selected package must
+exist, have `build.toml`, and not be hidden by
+`WASM_POSIX_FETCH_SKIP_PKGS`; otherwise the command fails with exit code 2.
+This lets focused CI consumers declare what they actually materialize without
+accepting stale unrelated artifacts or maintaining an ever-growing negative
+skip list.
+
 On any verification failure, the resolver logs a warning and falls
 through to a source build (the package's build script). This
 makes ABI bumps and rev bumps non-fatal: as long as the source-build
