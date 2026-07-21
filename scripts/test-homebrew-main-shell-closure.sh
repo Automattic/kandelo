@@ -116,10 +116,25 @@ grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
   fail "binary fetch must materialize only its declared browser inputs"
 grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
   fail "main-shell proof must not use a negative package skip list"
-for browser_input in dinit nethack-browser-bundle node rootfs vim-browser-bundle; do
+for browser_input in dinit node rootfs; do
   grep -Fxq "            $browser_input" "$WORKFLOW" ||
     fail "main-shell workflow omits direct browser input $browser_input"
 done
+for locked_browser_input in nethack-browser-bundle vim-browser-bundle; do
+  grep -Fxq "            $locked_browser_input" "$WORKFLOW" &&
+    fail "main-shell workflow repeats locked browser input $locked_browser_input"
+done
+grep -Fq '[ "${#browser_input_packages[@]}" -eq 35 ]' "$WORKFLOW" ||
+  fail "main-shell workflow does not require exactly 35 browser input roots"
+grep -Fq 'sort -u | wc -l)" -eq 35 ]' "$WORKFLOW" ||
+  fail "main-shell workflow does not require 35 unique browser input roots"
+
+mapfile -t locked_browser_inputs < <(jq -r '.packages[].registry.name' "$SOURCE_LOCK")
+browser_inputs=("${locked_browser_inputs[@]}" dinit node rootfs)
+[ "${#browser_inputs[@]}" -eq 35 ] ||
+  fail "main-shell browser proof must select 32 locked roots plus 3 direct inputs"
+[ "$(printf '%s\n' "${browser_inputs[@]}" | sort -u | wc -l)" -eq 35 ] ||
+  fail "main-shell browser proof inputs must be a unique 35-package set"
 
 # The dev-shell wrapper intentionally reports Nix lookup and shell-hook details
 # on stdout. Playwright must own the JSON file directly so those diagnostics can
@@ -346,9 +361,40 @@ jq '.catalog.tap_commit = "main"' \
 expect_failure "must pin one exact catalog commit" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
-jq 'del(.reviewed_substitutions[-1])' \
+jq '(.reviewed_substitutions[] | select(.kind == "formula_identity" and
+  .registry == "file@5.45")) |= del(.reason)' \
   "$SOURCE_LOCK" >"$lock"
-expect_failure "reviewed migration substitutions are incomplete or stale" \
+expect_failure "reviewed_substitutions[0] is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.reviewed_substitutions += [{
+  "kind":"formula_identity",
+  "registry":"undeclared@1.0",
+  "formula":"kandelo-dev/tap-core/undeclared-formula@1.0",
+  "reason":"Synthetic undeclared substitution."
+}]' "$SOURCE_LOCK" >"$lock"
+expect_failure "extra: formula_identity:undeclared@1.0->kandelo-dev/tap-core/undeclared-formula@1.0" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.reviewed_substitutions += [.reviewed_substitutions[0]]' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "reviewed migration substitutions contains duplicate" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.reviewed_substitutions |= map(select(.registry != "file@5.45"))' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "missing: formula_identity:file@5.45->kandelo-dev/tap-core/file-formula@5.45" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.reviewed_substitutions[] | select(.kind == "version" and
+  .registry == "m4@1.4.19") | .formula) = "kandelo-dev/tap-core/m4@1.4.22"' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "extra: version:m4@1.4.19->kandelo-dev/tap-core/m4@1.4.22" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.packages[] | select(.registry.name == "m4") | .formula.version) = "1.4.19"' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "extra: version:m4@1.4.19->kandelo-dev/tap-core/m4@1.4.21" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
 jq '.consumer.max_vfs_byte_length = 268435456' \

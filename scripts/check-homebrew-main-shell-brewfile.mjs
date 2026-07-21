@@ -174,24 +174,68 @@ function validateReviewedSubstitutions(lock) {
     }
   }
   const actual = lock.reviewed_substitutions.map((entry, index) => {
+    const label = `reviewed_substitutions[${index}]`;
     if (
       !isRecord(entry) ||
+      JSON.stringify(Object.keys(entry).sort()) !==
+        JSON.stringify(["formula", "kind", "reason", "registry"]) ||
       (entry.kind !== "formula_identity" && entry.kind !== "version") ||
-      typeof entry.registry !== "string" ||
-      typeof entry.formula !== "string" ||
       typeof entry.reason !== "string" ||
-      entry.reason.length === 0
+      entry.reason.trim().length === 0
     ) {
-      throw new Error(`reviewed_substitutions[${index}] is invalid`);
+      throw new Error(`${label} is invalid`);
     }
-    return { kind: entry.kind, registry: entry.registry, formula: entry.formula };
+    return {
+      kind: entry.kind,
+      registry: readReviewedRegistryIdentity(entry.registry, `${label}.registry`),
+      formula: readReviewedFormulaIdentity(entry.formula, `${label}.formula`),
+    };
   });
+  assertUnique(
+    actual.map(({ kind, registry, formula }) => `${kind}:${registry}->${formula}`),
+    "reviewed migration substitutions",
+  );
   assertExactSequence(
     actual,
     expected,
     "reviewed migration substitutions are incomplete or stale",
     ({ kind, registry, formula }) => `${kind}:${registry}->${formula}`,
   );
+}
+
+function readReviewedRegistryIdentity(value, label) {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a registry name@version identity`);
+  }
+  const separator = value.lastIndexOf("@");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error(`${label} must be a registry name@version identity`);
+  }
+  readIdentity(
+    { name: value.slice(0, separator), version: value.slice(separator + 1) },
+    label,
+  );
+  return value;
+}
+
+function readReviewedFormulaIdentity(value, label) {
+  const prefix = `${tapName}/`;
+  if (typeof value !== "string" || !value.startsWith(prefix)) {
+    throw new Error(`${label} must be a ${tapName}/<formula>@<version> identity`);
+  }
+  const unqualified = value.slice(prefix.length);
+  const separator = unqualified.lastIndexOf("@");
+  if (separator <= 0 || separator === unqualified.length - 1) {
+    throw new Error(`${label} must be a ${tapName}/<formula>@<version> identity`);
+  }
+  readIdentity(
+    {
+      name: unqualified.slice(0, separator),
+      version: unqualified.slice(separator + 1),
+    },
+    label,
+  );
+  return value;
 }
 
 function validateCompatibilityPolicy(lock) {

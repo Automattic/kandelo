@@ -181,11 +181,11 @@ jobs:
           )
           browser_input_packages+=(
             dinit
-            nethack-browser-bundle
             node
             rootfs
-            vim-browser-bundle
           )
+          [ "${#browser_input_packages[@]}" -eq 35 ]
+          [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" -eq 35 ]
           fetch_args=(--fetch-only)
           for package in "${browser_input_packages[@]}"; do
             fetch_args+=(--package "$package")
