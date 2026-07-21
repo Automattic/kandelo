@@ -145,7 +145,7 @@ describe("declared shell lazy-archive inputs", () => {
     }
   });
 
-  it("locks the shell package and build recipe to declared bundle dependencies", () => {
+  it("locks the shell and bundle build recipes to their declared inputs", () => {
     const packageToml = readFileSync(
       join(repoRoot, "packages/registry/shell/package.toml"),
       "utf8",
@@ -156,6 +156,14 @@ describe("declared shell lazy-archive inputs", () => {
     );
     const buildScript = readFileSync(
       join(repoRoot, "packages/registry/shell/build-shell.sh"),
+      "utf8",
+    );
+    const vimBundleBuildToml = readFileSync(
+      join(repoRoot, "packages/registry/vim-browser-bundle/build.toml"),
+      "utf8",
+    );
+    const nethackBundleBuildToml = readFileSync(
+      join(repoRoot, "packages/registry/nethack-browser-bundle/build.toml"),
       "utf8",
     );
 
@@ -172,6 +180,19 @@ describe("declared shell lazy-archive inputs", () => {
     );
     expect(buildScript).not.toContain(
       "bash \"$REPO_ROOT/images/vfs/scripts/build-nethack-zip.sh\"",
+    );
+    expect(vimBundleBuildToml).toContain(
+      '"packages/registry/vim-browser-bundle/build-vim-browser-bundle.sh"',
+    );
+    expect(vimBundleBuildToml).toContain(
+      '"images/vfs/scripts/build-vim-zip.sh"',
+    );
+    expect(vimBundleBuildToml).toMatch(/^revision\s*=\s*3$/m);
+    expect(nethackBundleBuildToml).toContain(
+      '"packages/registry/nethack-browser-bundle/build-nethack-browser-bundle.sh"',
+    );
+    expect(nethackBundleBuildToml).toContain(
+      '"images/vfs/scripts/build-nethack-zip.sh"',
     );
   });
 });
