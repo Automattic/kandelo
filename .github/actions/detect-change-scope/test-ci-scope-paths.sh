@@ -70,12 +70,37 @@ assert_matches package_archive_changed_files \
 assert_matches package_archive_changed_files \
   "host/src/vfs/sharedfs-vendor.ts" \
   "host/src/vfs/sharedfs-vendor.ts"
+# The shell package lists the exact host-side Homebrew/VFS source closure in
+# build.toml. Every member must stage a replacement shell archive, while
+# unrelated runtime modules must not make package publication wait.
+for shell_host_input in \
+  host/src/constants.ts \
+  host/src/generated/abi.ts \
+  host/src/homebrew-vfs-builder.ts \
+  host/src/homebrew-vfs-fetch.ts \
+  host/src/homebrew-vfs-planner.ts \
+  host/src/pathconf.ts \
+  host/src/statfs.ts \
+  host/src/types.ts \
+  host/src/vfs/image-helpers.ts \
+  host/src/vfs/memory-fs.ts \
+  host/src/vfs/sharedfs-vendor.ts \
+  host/src/vfs/types.ts \
+  host/src/vfs/zip.ts
+do
+  assert_matches package_archive_changed_files \
+    "$shell_host_input" \
+    "$shell_host_input"
+done
 assert_matches package_archive_changed_files \
   "images/rootfs/etc/profile" \
   "images/rootfs/etc/profile"
 assert_not_matches package_archive_changed_files \
   "host/src/process.ts" \
   "host/src/process.ts"
+assert_not_matches package_archive_changed_files \
+  "host/src/kernel-worker.ts" \
+  "host/src/kernel-worker.ts"
 assert_not_matches package_archive_changed_files \
   ".github/workflows/staging-build.yml" \
   ".github/workflows/staging-build.yml"
