@@ -35,6 +35,8 @@ FORBIDDEN_PRIVATE_INSTANCE_METHODS = Set[
 ].freeze
 TIER2_BRIDGE_METHOD = "kandelo_build_package"
 TIER2_BRIDGE_MARKER = "KANDELO_REGISTRY_BRIDGE"
+TIER2_RUNTIME_INITIALIZER_METHOD = "kandelo_load_tier2_runtime!"
+TIER2_RUNTIME_CONSTANT = "KANDELO_TIER2_RUNTIME"
 TIER2_BRIDGE_VERSION = /\A[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}\z/
 TIER2_BRIDGE_SOURCE_SHA256 = /\A[0-9a-f]{64}\z/
 TIER2_RESERVED_ENV = Set[
@@ -55,6 +57,9 @@ FORBIDDEN_DEPENDENCY_IDENTIFIERS = Set[
   "module_eval", "public_method", "public_send", "require_relative", "send", "singleton_method",
   "uses_from_macos",
 ].freeze
+FORBIDDEN_FORMULA_IDENTIFIERS = (
+  FORBIDDEN_DEPENDENCY_IDENTIFIERS + Set[TIER2_RUNTIME_CONSTANT]
+).freeze
 FORBIDDEN_SUPPORT_IDENTIFIERS = (
   FORBIDDEN_DEPENDENCY_IDENTIFIERS +
     Set[
@@ -580,9 +585,86 @@ valid_tier2_support_signature = lambda do |parameters|
     parameters[6].nil? && parameters[7].nil?
 end
 
+canonical_tier2_runtime_initializer = lambda do |statement, lines|
+  next nil unless statement.is_a?(Array) && statement.first == :defs
+
+  receiver = statement[1]
+  separator = statement[2]
+  method_token = statement[3]
+  parameters = statement[4]
+  body = statement[5]
+  self_token = receiver[1] if receiver.is_a?(Array) && receiver.first == :var_ref
+  next nil unless self_token.is_a?(Array) && self_token.first == :@kw && self_token[1] == "self" &&
+                  separator.is_a?(Array) && separator.first == :@period && separator[1] == "." &&
+                  method_token.is_a?(Array) && method_token.first == :@ident &&
+                  method_token[1] == TIER2_RUNTIME_INITIALIZER_METHOD &&
+                  parameters.is_a?(Array) && parameters.first == :params &&
+                  parameters.drop(1).all?(&:nil?) &&
+                  body.is_a?(Array) && body.first == :bodystmt && body.drop(2).all?(&:nil?) &&
+                  body[1].is_a?(Array) && !body[1].empty?
+
+  method_line = method_token.dig(2, 0)
+  next nil unless method_line.is_a?(Integer) &&
+                  lines.fetch(method_line - 1, nil) == "  def self.#{TIER2_RUNTIME_INITIALIZER_METHOD}\n"
+
+  assignment = body[1].first
+  left = assignment[1] if assignment.is_a?(Array) && assignment.first == :assign
+  support_token = left[1] if left.is_a?(Array) && left.first == :var_field
+  right = assignment[2] if assignment.is_a?(Array)
+  pathname_call = right[1] if right.is_a?(Array) && right.first == :call
+  realpath_token = right[3] if right.is_a?(Array) && right.first == :call
+  pathname_fcall = pathname_call[1] if pathname_call.is_a?(Array) &&
+                                          pathname_call.first == :method_add_arg
+  arguments = pathname_call[2] if pathname_call.is_a?(Array) && pathname_call.first == :method_add_arg
+  pathname_token = pathname_fcall[1] if pathname_fcall.is_a?(Array) &&
+                                          pathname_fcall.first == :fcall
+  argument_list = arguments[1] if arguments.is_a?(Array) && arguments.first == :arg_paren
+  file_reference = argument_list[1].first if argument_list.is_a?(Array) &&
+                                                argument_list.first == :args_add_block &&
+                                                argument_list[1].is_a?(Array) &&
+                                                argument_list[1].length == 1 &&
+                                                argument_list[2] == false
+  file_token = file_reference[1] if file_reference.is_a?(Array) && file_reference.first == :var_ref
+  assignment_line = support_token.dig(2, 0) if support_token.is_a?(Array)
+  source_tokens_share_line = [pathname_token, file_token, realpath_token].all? do |token|
+    token&.dig(2, 0) == assignment_line
+  end
+  next nil unless support_token.is_a?(Array) && support_token.first == :@ident &&
+                  support_token[1] == "support_path" &&
+                  pathname_token.is_a?(Array) && pathname_token.first == :@const &&
+                  pathname_token[1] == "Pathname" &&
+                  file_token.is_a?(Array) && file_token.first == :@kw && file_token[1] == "__FILE__" &&
+                  realpath_token.is_a?(Array) && realpath_token.first == :@ident &&
+                  realpath_token[1] == "realpath" && source_tokens_share_line &&
+                  lines.fetch(assignment_line - 1, nil) ==
+                    "    support_path = Pathname(__FILE__).realpath\n"
+
+  file_reference
+end
+
+canonical_tier2_runtime_assignment = lambda do |statement, lines|
+  next false unless statement.is_a?(Array) && statement.first == :assign
+
+  left = statement[1]
+  constant = left[1] if left.is_a?(Array) && left.first == :var_field
+  right = statement[2]
+  call = right[1] if right.is_a?(Array) && right.first == :method_add_arg
+  arguments = right[2] if right.is_a?(Array) && right.first == :method_add_arg
+  method_token = call[1] if call.is_a?(Array) && call.first == :fcall
+  line_number = constant.dig(2, 0) if constant.is_a?(Array)
+  constant.is_a?(Array) && constant.first == :@const &&
+    constant[1] == TIER2_RUNTIME_CONSTANT &&
+    method_token.is_a?(Array) && method_token.first == :@ident &&
+    method_token[1] == TIER2_RUNTIME_INITIALIZER_METHOD && arguments == [] &&
+    method_token.dig(2, 0) == line_number &&
+    lines.fetch(line_number - 1, nil) ==
+      "  #{TIER2_RUNTIME_CONSTANT} = #{TIER2_RUNTIME_INITIALIZER_METHOD}\n"
+end
+
 support_validated = Set.new
 support_methods_by_tap = {}
 support_sha256_by_tap = {}
+support_tier2_runtime_by_tap = {}
 validate_support = lambda do |context|
   context_tap_name = context.fetch("tap_name")
   next if support_validated.include?(context_tap_name)
@@ -609,23 +691,32 @@ validate_support = lambda do |context|
   support_tree = Ripper.sexp(support_source)
   abort "could not parse Kandelo Formula support: #{support_path}" if support_tree.nil?
   top_level = support_tree[1]
-  expected_requires = [
+  legacy_requires = [
     "require \"fileutils\"\n",
     "require \"json\"\n",
     "require \"shellwords\"\n",
     "require \"tempfile\"\n",
   ]
-  unless top_level.is_a?(Array) && top_level.length == expected_requires.length + 1
-    abort "Kandelo Formula support must contain only approved requires and one module: #{support_path}"
-  end
+  runtime_requires = [
+    "require \"digest\"\n",
+    "require \"fileutils\"\n",
+    "require \"json\"\n",
+    "require \"pathname\"\n",
+    "require \"shellwords\"\n",
+    "require \"tempfile\"\n",
+  ]
   support_lines = support_source.lines
-  top_level.first(expected_requires.length).each_with_index do |statement, index|
-    position = call_position.call(statement)
-    line_number = position[0] if position.is_a?(Array)
-    line = support_lines.fetch(line_number - 1) if line_number.is_a?(Integer)
-    unless call_name.call(statement) == "require" && line == expected_requires[index]
-      abort "Kandelo Formula support has a noncanonical require: #{support_path}"
-    end
+  expected_requires = [runtime_requires, legacy_requires].find do |candidate|
+    top_level.is_a?(Array) && top_level.length == candidate.length + 1 &&
+      top_level.first(candidate.length).each_with_index.all? do |statement, index|
+        position = call_position.call(statement)
+        line_number = position[0] if position.is_a?(Array)
+        line = support_lines.fetch(line_number - 1, nil) if line_number.is_a?(Integer)
+        call_name.call(statement) == "require" && line == candidate[index]
+      end
+  end
+  if expected_requires.nil?
+    abort "Kandelo Formula support must contain only approved requires and one module: #{support_path}"
   end
   module_node = top_level.fetch(expected_requires.length)
   module_name = module_node.dig(1, 1) if module_node.is_a?(Array) && module_node.first == :module
@@ -640,14 +731,29 @@ validate_support = lambda do |context|
   module_body = module_bodystmt[1]
   abort "Kandelo Formula support has no canonical statements: #{support_path}" unless module_body.is_a?(Array)
   methods = Set.new
-  module_body.each do |statement|
+  runtime_initializer_index = nil
+  runtime_assignment_index = nil
+  module_body.each_with_index do |statement, statement_index|
     next if statement.is_a?(Array) && statement.first == :void_stmt
 
     case statement.first
+    when :defs
+      file_reference = canonical_tier2_runtime_initializer.call(statement, support_lines)
+      if file_reference.nil? || !runtime_initializer_index.nil?
+        abort "Kandelo Formula support must use one canonical Tier-2 runtime initializer: #{support_path}"
+      end
+      forbidden = find_forbidden_support_token.call(statement, Set[file_reference.object_id])
+      unless forbidden.nil?
+        token, position = forbidden
+        abort "Kandelo Formula support runtime initializer uses forbidden local source operation " \
+              "#{token.inspect} at #{support_path}:#{position.first}"
+      end
+      runtime_initializer_index = statement_index
     when :def
       method_token = statement[1]
       method = method_token[1] if method_token.is_a?(Array) && method_token.first == :@ident
-      unless method&.match?(/\A(?:formula_opt|kandelo)_[a-z0-9_]*[!?]?\z/) && methods.add?(method)
+      unless method != TIER2_RUNTIME_INITIALIZER_METHOD &&
+             method&.match?(/\A(?:formula_opt|kandelo)_[a-z0-9_]*[!?]?\z/) && methods.add?(method)
         abort "Kandelo Formula support may contain only unique approved instance methods: #{support_path}"
       end
       if method == TIER2_BRIDGE_METHOD && !valid_tier2_support_signature.call(statement[2])
@@ -784,16 +890,32 @@ validate_support = lambda do |context|
     when :assign
       left = statement[1]
       constant = left.dig(1) if left.is_a?(Array) && left.first == :var_field
-      unless constant.is_a?(Array) && constant.first == :@const &&
-             constant[1].match?(/\AKANDELO_[A-Z0-9_]+\z/) && static_expression.call(statement[2])
+      if constant.is_a?(Array) && constant.first == :@const &&
+         constant[1] == TIER2_RUNTIME_CONSTANT
+        unless runtime_assignment_index.nil? &&
+               canonical_tier2_runtime_assignment.call(statement, support_lines)
+          abort "Kandelo Formula support must use one canonical Tier-2 runtime assignment: #{support_path}"
+        end
+        runtime_assignment_index = statement_index
+      elsif !(constant.is_a?(Array) && constant.first == :@const &&
+              constant[1].match?(/\AKANDELO_[A-Z0-9_]+\z/) && static_expression.call(statement[2]))
         abort "Kandelo Formula support assignment must be a static KANDELO_ constant: #{support_path}"
       end
     else
       abort "Kandelo Formula support contains executable module structure: #{support_path}"
     end
   end
+  runtime_capable = !runtime_initializer_index.nil? || !runtime_assignment_index.nil?
+  if runtime_capable &&
+     (runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1)
+    abort "Kandelo Formula support must initialize Tier-2 runtime authority exactly once: #{support_path}"
+  end
+  if runtime_capable && expected_requires != runtime_requires
+    abort "Kandelo Formula support Tier-2 runtime initializer requires canonical imports: #{support_path}"
+  end
   support_methods_by_tap[context_tap_name] = methods.freeze
   support_sha256_by_tap[context_tap_name] = Digest::SHA256.hexdigest(support_source)
+  support_tier2_runtime_by_tap[context_tap_name] = runtime_capable
   support_validated.add(context_tap_name)
 end
 
@@ -819,7 +941,7 @@ parse_formula = lambda do |full_name|
   lines = source.lines
 
   forbidden = Ripper.lex(source).find do |_position, type, token, _state|
-    ((type == :on_ident || type == :on_const) && FORBIDDEN_DEPENDENCY_IDENTIFIERS.include?(token)) ||
+    ((type == :on_ident || type == :on_const) && FORBIDDEN_FORMULA_IDENTIFIERS.include?(token)) ||
       (type == :on_ivar && token == "@deps")
   end
   unless forbidden.nil?
@@ -1078,6 +1200,9 @@ parse_formula = lambda do |full_name|
     end
     unless included_support && support_methods_by_tap.fetch(formula_tap_name).include?(TIER2_BRIDGE_METHOD)
       abort "Formula bridge requires the canonical Kandelo Formula support helper: #{path}"
+    end
+    unless support_tier2_runtime_by_tap.fetch(formula_tap_name)
+      abort "Formula bridge requires canonical Tier-2 runtime authority: #{path}"
     end
 
     direct_literal = lambda do |command|

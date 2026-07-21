@@ -2879,12 +2879,21 @@ assert_bottle_build_installs_test_dependencies() {
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
   mkdir -p "$tap/Kandelo/formula_support"
   cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
+require "digest"
 require "fileutils"
 require "json"
+require "pathname"
 require "shellwords"
 require "tempfile"
 
 module KandeloFormulaSupport
+  def self.kandelo_load_tier2_runtime!
+    support_path = Pathname(__FILE__).realpath
+    support_path.freeze
+  end
+
+  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
+
   def kandelo_build_package(script_env: {})
     script_env
   end

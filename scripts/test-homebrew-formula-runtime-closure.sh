@@ -390,12 +390,21 @@ fi
 
 mkdir -p "$TAP_ROOT/Kandelo/formula_support"
 cat >"$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
+require "digest"
 require "fileutils"
 require "json"
+require "pathname"
 require "shellwords"
 require "tempfile"
 
 module KandeloFormulaSupport
+  def self.kandelo_load_tier2_runtime!
+    support_path = Pathname(__FILE__).realpath
+    support_path.freeze
+  end
+
+  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
+
   def kandelo_build_package(script_env: {})
     script_env
   end
@@ -515,6 +524,28 @@ jq -e '.tier2_bridge == null and
   (.support_sha256 | test("^[0-9a-f]{64}$")) and
   (.formula_sha256 | test("^[0-9a-f]{64}$"))' \
   <<<"$support_only_plan" >/dev/null
+
+cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" "$TMP_ROOT/runtime-support.rb"
+ruby - "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+source.sub!(%Q(require "digest"\n), "") or abort "missing digest import"
+source.sub!(%Q(require "pathname"\n), "") or abort "missing pathname import"
+initializer = "  def self.kandelo_load_tier2_runtime!\n" \
+              "    support_path = Pathname(__FILE__).realpath\n" \
+              "    support_path.freeze\n" \
+              "  end\n\n" \
+              "  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!\n\n"
+source.sub!(initializer, "") or abort "missing runtime initializer pair"
+File.binwrite(path, source)
+RUBY
+legacy_support_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only --tier2-bridge-json)"
+jq -e '.tier2_bridge == null and
+  (.support_sha256 | test("^[0-9a-f]{64}$"))' <<<"$legacy_support_plan" >/dev/null
+write_valid_bridge_formula
+expect_bridge_failure legacy-support-bridge \
+  'Formula bridge requires canonical Tier-2 runtime authority'
+cp "$TMP_ROOT/runtime-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 
 write_bridge_formula_with_env_shape exact
 exact_env_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
@@ -653,6 +684,75 @@ sed -i.bak 's/script_env: {}/**script_env/' \
 rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
 write_valid_bridge_formula
 expect_bridge_failure support-signature 'kandelo_build_package has a noncanonical signature'
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+ruby - "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+needle = "  def kandelo_build_package(script_env: {})\n"
+replacement = "  def self.extra_runtime_initializer!\n" \
+              "    true\n" \
+              "  end\n\n" \
+              "  def kandelo_build_package(script_env: {})\n"
+abort "missing support instance method" unless source.sub!(needle, replacement)
+File.binwrite(path, source)
+RUBY
+write_valid_bridge_formula
+expect_bridge_failure extra-singleton 'must use one canonical Tier-2 runtime initializer'
+
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+sed -i.bak \
+  's/KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!/KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!(true)/' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure wrong-runtime-call 'must use one canonical Tier-2 runtime assignment'
+
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+sed -i.bak '/  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!/a\
+  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure duplicate-runtime-assignment 'must use one canonical Tier-2 runtime assignment'
+
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+sed -i.bak '/    support_path = Pathname(__FILE__).realpath/a\
+    File.binread(__FILE__)' "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure extra-file-source 'runtime initializer uses forbidden local source operation "__FILE__"'
+
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+ruby - "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+initializer = "  def self.kandelo_load_tier2_runtime!\n" \
+              "    support_path = Pathname(__FILE__).realpath\n" \
+              "    support_path.freeze\n" \
+              "  end\n\n"
+abort "missing runtime initializer" unless source.sub!(initializer, "")
+File.binwrite(path, source)
+RUBY
+write_valid_bridge_formula
+expect_bridge_failure missing-runtime-loader 'must initialize Tier-2 runtime authority exactly once'
+
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+sed -i.bak '/  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!/d' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure missing-runtime-assignment 'must initialize Tier-2 runtime authority exactly once'
+
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+write_valid_bridge_formula
+sed -i.bak '/  KANDELO_REGISTRY_BRIDGE = true/a\
+  KANDELO_TIER2_RUNTIME = nil' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure formula-runtime-reassignment \
+  'Formula uses forbidden dependency metaprogramming "KANDELO_TIER2_RUNTIME"'
+
 cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 
 write_valid_bridge_formula
