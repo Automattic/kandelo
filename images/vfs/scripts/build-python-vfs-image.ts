@@ -1,86 +1,130 @@
 /**
- * Build a pre-built VFS image containing the CPython 3.13 stdlib.
- *
- * Produces: apps/browser-demos/public/python.vfs
- *
- * Usage: npx tsx images/vfs/scripts/build-python-vfs-image.ts
+ * Build the deterministic CPython 3.13 VFS layer from resolver-owned package
+ * outputs. The image contains the exact validated interpreter, its standard
+ * library, license, executable aliases, and image-owned demo metadata.
  */
-import { join } from "path";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+} from "node:fs";
+import { join, relative } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { MemoryFileSystem as MemoryFileSystemType } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
   ensureDirRecursive,
-  walkAndWrite,
   saveImage,
+  symlink,
+  writeVfsBinary,
 } from "./vfs-image-helpers";
-import { ensureSourceExtract } from "./source-extract-helper";
+import {
+  terminalPresentation,
+  writeKandeloDemoConfig,
+} from "./kandelo-demo-config";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-// Prefer the local CPython source-build tree if present (faster, matches
-// `bash packages/registry/cpython/build-cpython.sh` output). Otherwise download
-// + extract the upstream tarball into the resolver's source cache.
-const LEGACY_SRC = join(REPO_ROOT, "packages", "registry", "cpython", "cpython-src");
-const STDLIB_DIR = join(ensureSourceExtract("cpython", REPO_ROOT, LEGACY_SRC), "Lib");
-const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "python.vfs.zst");
+const LEGACY_RUNTIME_ROOT = join(
+  REPO_ROOT,
+  "packages",
+  "registry",
+  "cpython",
+  "python-runtime-stage",
+);
+const LEGACY_PYTHON_WASM = join(
+  REPO_ROOT,
+  "packages",
+  "registry",
+  "cpython",
+  "bin",
+  "python.wasm",
+);
+const RUNTIME_ROOT = process.env.KANDELO_PYTHON_RUNTIME_ROOT ?? LEGACY_RUNTIME_ROOT;
+const PYTHON_WASM = process.env.KANDELO_PYTHON_WASM ?? LEGACY_PYTHON_WASM;
+const OUT_FILE = process.env.KANDELO_PYTHON_VFS_OUT ??
+  join(REPO_ROOT, "apps", "browser-demos", "public", "python.vfs.zst");
+const PYTHON_STDLIB = "python3.13";
+// Keep enough allocator headroom for downstream images to layer additional
+// Homebrew executables onto the complete interpreter and standard library.
+const VFS_BYTES = 256 * 1024 * 1024;
+const REPRODUCIBLE_TIMESTAMP_MS = 1_700_000_000_000;
 
-// Directories to exclude from the stdlib (test suites, GUI, unnecessary modules)
-const EXCLUDED_DIRS = new Set([
-  "test",
-  "tests",
-  "__pycache__",
-  "idlelib",
-  "tkinter",
-  "turtledemo",
-  "ensurepip",
-  "lib2to3",
-  "pydoc_data",
-  "unittest",
-  "doctest",
-  "xmlrpc",
-  "multiprocessing",
-  "concurrent",
-  "asyncio",
-  "ctypes",
-  "distutils",
-  "venv",
-  "curses",
-]);
+function copyTreeSorted(
+  fs: MemoryFileSystemType,
+  hostRoot: string,
+  guestRoot: string,
+): number {
+  let files = 0;
+  ensureDirRecursive(fs, guestRoot);
 
-function shouldExclude(relPath: string): boolean {
-  // Check if any path segment matches an excluded directory
-  const segments = relPath.split("/");
-  for (const seg of segments) {
-    if (EXCLUDED_DIRS.has(seg)) return true;
+  const walk = (hostDirectory: string): void => {
+    for (const name of readdirSync(hostDirectory).sort()) {
+      const hostPath = join(hostDirectory, name);
+      const relativePath = relative(hostRoot, hostPath);
+      const guestPath = `${guestRoot}/${relativePath}`.replace(/\/+/g, "/");
+      const stat = lstatSync(hostPath);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`CPython runtime output contains an unsupported symlink: ${hostPath}`);
+      }
+      if (stat.isDirectory()) {
+        ensureDirRecursive(fs, guestPath);
+        walk(hostPath);
+        continue;
+      }
+      if (!stat.isFile()) {
+        throw new Error(`CPython runtime output contains an unsupported entry: ${hostPath}`);
+      }
+      writeVfsBinary(fs, guestPath, new Uint8Array(readFileSync(hostPath)), 0o644);
+      files++;
+    }
+  };
+
+  walk(hostRoot);
+  return files;
+}
+
+async function main(): Promise<void> {
+  const stdlibRoot = join(RUNTIME_ROOT, "lib", PYTHON_STDLIB);
+  const license = join(RUNTIME_ROOT, "share", "licenses", "cpython", "LICENSE");
+  for (const required of [PYTHON_WASM, join(stdlibRoot, "os.py"), license]) {
+    if (!existsSync(required)) throw new Error(`required CPython VFS input missing: ${required}`);
   }
-  // Exclude compiled bytecode files
-  if (relPath.endsWith(".pyc") || relPath.endsWith(".pyo")) return true;
-  return false;
-}
 
-async function main() {
-  // Create a MemoryFileSystem sized for the Python stdlib (~32MB).
-  const sab = new SharedArrayBuffer(32 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
-
-  console.log("Creating directories...");
+  const fs = MemoryFileSystem.create(new SharedArrayBuffer(VFS_BYTES));
   ensureDir(fs, "/tmp");
-  fs.chmod("/tmp", 0o777);
-  ensureDir(fs, "/home");
-  ensureDirRecursive(fs, "/usr/lib/python3.13");
+  fs.chmod("/tmp", 0o1777);
+  ensureDirRecursive(fs, "/home");
+  ensureDirRecursive(fs, "/usr/bin");
+  ensureDirRecursive(fs, `/usr/lib/${PYTHON_STDLIB}`);
+  ensureDirRecursive(fs, "/usr/share/licenses/cpython");
 
-  console.log("Writing Python stdlib files...");
-  const fileCount = walkAndWrite(fs, STDLIB_DIR, "/usr/lib/python3.13", {
-    exclude: shouldExclude,
+  writeVfsBinary(fs, "/usr/bin/python3", new Uint8Array(readFileSync(PYTHON_WASM)), 0o755);
+  symlink(fs, "/usr/bin/python3", "/usr/bin/python");
+  symlink(fs, "/usr/bin/python3", "/usr/bin/cpython");
+  const runtimeFiles = copyTreeSorted(fs, stdlibRoot, `/usr/lib/${PYTHON_STDLIB}`);
+  writeVfsBinary(fs, "/usr/share/licenses/cpython/LICENSE", new Uint8Array(readFileSync(license)), 0o644);
+
+  writeKandeloDemoConfig(fs, {
+    version: 1,
+    profiles: {
+      python: {
+        presentation: {
+          ...terminalPresentation(),
+          autoCommand: "PYTHONHOME=/usr PYTHONDONTWRITEBYTECODE=1 python3 -c \"import json, sys; print('Python', sys.version.split()[0]); print(json.dumps({'kandelo': 'software'}))\"",
+        },
+      },
+    },
   });
-  console.log(`  Python stdlib: ${fileCount} files`);
 
-  // Save image
-  await saveImage(fs, OUT_FILE);
-  console.log(`${fileCount} stdlib files total`);
+  await saveImage(fs, OUT_FILE, {
+    normalizeTimestampsMs: REPRODUCIBLE_TIMESTAMP_MS,
+  });
+  console.log(`CPython VFS contents: interpreter + ${runtimeFiles} standard-library files`);
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch((error) => {
+  console.error(error);
   process.exit(1);
 });

@@ -1,10 +1,11 @@
 kind = "program"
 name = "erlang"
 version = "28.2"
-# rev2: package now ships erlang.wasm + erlang-otp.tar.zst (the trimmed
-# OTP runtime tree erlang-vfs needs). Multi-output, so artifacts land
-# under programs/<arch>/erlang/ instead of programs/<arch>/erlang.wasm.
-kernel_abi = 7
+# rev3: the caller-owned build ships the erlang.wasm executable plus
+# erlang-otp.tar.zst (the trimmed OTP runtime tree Homebrew and erlang-vfs
+# need). The executable and runtime file form one resolver closure below
+# programs/<arch>/erlang/.
+kernel_abi = 41
 depends_on = []
 
 [source]
@@ -21,10 +22,11 @@ script_path = "packages/registry/erlang/build-erlang.sh"
 [[outputs]]
 name = "erlang"
 wasm = "erlang.wasm"
+fork_instrumentation = "auto"
 
-[[outputs]]
-name = "erlang-otp"
-wasm = "erlang-otp.tar.zst"
+[[runtime_files]]
+artifact = "erlang-otp.tar.zst"
+guest_path = "/usr/share/erlang/erlang-otp.tar.zst"
 
 # Host-side prerequisites probed before the build runs.
 # OTP 28 cross-compilation requires a host Erlang with BEAM emulator

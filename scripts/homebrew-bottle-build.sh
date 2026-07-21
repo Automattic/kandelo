@@ -304,7 +304,7 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
       (.support_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
     if .tier2_bridge == null then true else
       (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
-      .tier2_bridge.package == $formula and
+      (.tier2_bridge.package | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,254}$")) and
       (.tier2_bridge.script | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")) and
       ([.tier2_bridge.package_toml_sha256, .tier2_bridge.build_toml_sha256,
         .tier2_bridge.script_sha256, .tier2_bridge.source_sha256] |

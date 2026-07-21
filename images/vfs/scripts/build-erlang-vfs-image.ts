@@ -2,14 +2,11 @@
  * Build a pre-built VFS image containing Erlang/OTP 28 runtime files
  * (kernel, stdlib, erts, compiler, and release boot scripts).
  *
- * Produces: apps/browser-demos/public/erlang.vfs.zst
+ * The package wrapper supplies an explicit OTP input tree and output path.
  *
  * Usage: npx tsx images/vfs/scripts/build-erlang-vfs-image.ts
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { execSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { homedir } from "node:os";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
@@ -18,58 +15,60 @@ import {
   walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
-import { tryResolveBinary } from "../../../host/src/binary-resolver";
-
-const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
-const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const LEGACY_INSTALL_DIR = join(REPO_ROOT, "packages", "registry", "erlang", "erlang-install");
-const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "erlang.vfs.zst");
+const OUT_FILE = process.env.KANDELO_ERLANG_VFS_OUT;
+const BLOCK_SIZE = 4096;
+const IMAGE_HEADROOM = 1024 * 1024;
 
 /**
- * Resolve the OTP install tree.
- *
- *   1. If a local source build left the install at
- *      `packages/registry/erlang/erlang-install/`, use it directly.
- *   2. Otherwise, look up the erlang package's `erlang-otp.tar.zst`
- *      output in the resolver-managed cache and extract it once into
- *      a stable cache dir.
+ * Resolve the OTP install tree supplied by the package transaction. Do not
+ * fall back to a recipe-directory side effect or a user cache: either would
+ * let stale bytes satisfy a fresh package build.
  */
 function resolveOtpInstall(): string {
-  if (existsSync(join(LEGACY_INSTALL_DIR, "lib", "kernel-10.4.2", "ebin"))) {
-    return LEGACY_INSTALL_DIR;
+  const root = process.env.KANDELO_ERLANG_OTP_ROOT;
+  const required = [
+    join("bin", "start.boot"),
+    join("erts-16.1.2", "bin", "beam.smp"),
+    join("erts-16.1.2", "bin", "erl_child_setup"),
+    join("lib", "kernel-10.4.2", "ebin"),
+    join("lib", "stdlib-7.1", "ebin"),
+    join("releases", "28", "start_clean.boot"),
+  ];
+  if (!root || required.some((path) => !existsSync(join(root, path)))) {
+    throw new Error("KANDELO_ERLANG_OTP_ROOT must name the resolved OTP runtime tree");
   }
-  const tarball = tryResolveBinary("programs/erlang/erlang-otp.tar.zst");
-  if (!tarball) {
-    console.error(
-      "erlang-otp.tar.zst not resolvable. Run: bash packages/registry/erlang/build-erlang.sh\n" +
-      "or fetch the latest binary release that ships the erlang multi-output package.",
-    );
-    process.exit(1);
-  }
-  const cacheRoot = process.env.XDG_CACHE_HOME
-    ? join(process.env.XDG_CACHE_HOME, "kandelo")
-    : join(homedir(), ".cache", "kandelo");
-  const sha = createHash("sha256").update(readFileSync(tarball)).digest("hex");
-  const dest = join(cacheRoot, "vfs-build-sources", `erlang-otp-${sha.slice(0, 8)}`);
-  if (!existsSync(dest)) {
-    const tmp = `${dest}.tmp-${process.pid}`;
-    rmSync(tmp, { recursive: true, force: true });
-    mkdirSync(tmp, { recursive: true });
-    console.log(`==> Extracting ${tarball} → ${dest}`);
-    execSync(`tar --zstd -xf "${tarball}" -C "${tmp}"`, { stdio: "inherit" });
-    try { renameSync(tmp, dest); } catch (e) {
-      rmSync(tmp, { recursive: true, force: true });
-      if (!existsSync(dest)) throw e;
+  return root;
+}
+
+function stagedByteLength(root: string): number {
+  let total = 0;
+  const visit = (directory: string): void => {
+    for (const name of readdirSync(directory)) {
+      const path = join(directory, name);
+      const stat = lstatSync(path);
+      if (stat.isDirectory()) visit(path);
+      else if (stat.isFile()) total += stat.size;
     }
-  }
-  return dest;
+  };
+  visit(root);
+  return total;
+}
+
+function imageCapacity(stagedBytes: number): number {
+  const requested = stagedBytes * 2 + IMAGE_HEADROOM;
+  return Math.ceil(requested / BLOCK_SIZE) * BLOCK_SIZE;
 }
 
 async function main() {
+  if (!OUT_FILE) throw new Error("KANDELO_ERLANG_VFS_OUT must name the caller-owned output path");
   const INSTALL_DIR = resolveOtpInstall();
 
-  // Create a 16MB MemoryFileSystem — OTP ebin files are relatively small
-  const sab = new SharedArrayBuffer(16 * 1024 * 1024);
+  // Keep enough allocator headroom for the complete relocatable OTP tree,
+  // including the boot contract and target executable helpers. A fixed 16 MB
+  // image silently stopped being sufficient once the VFS began consuming the
+  // publisher-safe archive instead of only selected ebin directories.
+  const bytes = stagedByteLength(INSTALL_DIR);
+  const sab = new SharedArrayBuffer(imageCapacity(bytes));
   const fs = MemoryFileSystem.create(sab);
 
   // Standard directories
@@ -78,30 +77,15 @@ async function main() {
   ensureDir(fs, "/home");
 
   // OTP directory tree
-  ensureDirRecursive(fs, "/usr/local/lib/erlang");
-  ensureDirRecursive(fs, "/usr/local/lib/erlang/lib");
-  ensureDirRecursive(fs, "/usr/local/lib/erlang/releases");
-
-  // Walk specific OTP directories
-  const otpLibs: Array<{ src: string; dest: string }> = [
-    { src: "lib/kernel-10.4.2/ebin",   dest: "/usr/local/lib/erlang/lib/kernel-10.4.2/ebin" },
-    { src: "lib/stdlib-7.1/ebin",       dest: "/usr/local/lib/erlang/lib/stdlib-7.1/ebin" },
-    { src: "lib/erts-16.1.2/ebin",      dest: "/usr/local/lib/erlang/lib/erts-16.1.2/ebin" },
-    { src: "lib/compiler-9.0.3/ebin",   dest: "/usr/local/lib/erlang/lib/compiler-9.0.3/ebin" },
-    { src: "releases/28",               dest: "/usr/local/lib/erlang/releases/28" },
-  ];
-
-  let totalFiles = 0;
-  for (const { src, dest } of otpLibs) {
-    const srcDir = join(INSTALL_DIR, src);
-    console.log(`Writing ${src}...`);
-    const count = walkAndWrite(fs, srcDir, dest);
-    console.log(`  ${count} files`);
-    totalFiles += count;
-  }
-
-  console.log(`Total: ${totalFiles} files`);
-  await saveImage(fs, OUT_FILE);
+  const otpRoot = "/usr/local/lib/erlang";
+  ensureDirRecursive(fs, otpRoot);
+  const totalFiles = walkAndWrite(fs, INSTALL_DIR, otpRoot, {
+    failOnError: true,
+    preserveMode: true,
+    preserveSymlinks: true,
+  });
+  console.log(`Wrote ${totalFiles} OTP runtime files (${bytes} bytes)`);
+  await saveImage(fs, OUT_FILE, { normalizeTimestampsMs: 0 });
 }
 
 main().catch((err) => {

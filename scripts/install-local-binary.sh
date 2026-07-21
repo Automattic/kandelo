@@ -206,9 +206,9 @@ install_local_binary() {
 }
 
 # Install a declared non-Wasm `[[runtime_files]]` artifact into the same local
-# resolver mirror used by published archives. This is intentionally separate
-# from install_local_binary: data files must not pass Wasm/fork guards or be
-# described as executable outputs.
+# and caller-owned resolver destinations used by executable outputs. This is
+# intentionally separate from install_local_binary: data files must not pass
+# Wasm/fork guards or be described as executable outputs.
 install_local_runtime_file() {
     local program="$1"
     local src="$2"

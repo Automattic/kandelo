@@ -734,7 +734,7 @@ There are two consumption patterns for VFS images, depending on whether the demo
 
 | Demo | VFS Image | Build Script | Boot pattern |
 |------|-----------|-------------|--------------|
-| Python | `python.vfs.zst` | `build-python-vfs-image.sh` | `kernel.boot` → `python3` |
+| Python (legacy opt-in) | `python-vfs.vfs.zst` | `packages/registry/python-vfs/build-python-vfs.sh` | `kernel.boot` → `python3` |
 | Perl | `perl.vfs.zst` | `build-perl-vfs-image.sh` | `kernel.boot` → `perl` |
 | PHP | `php.vfs.zst` | `build-php-vfs-image.sh` | `kernel.boot` → `php` |
 | Ruby | `ruby.vfs.zst` | `build-ruby-vfs-image.sh` | `kernel.boot` → `ruby` |
@@ -745,11 +745,11 @@ There are two consumption patterns for VFS images, depending on whether the demo
 | WordPress | `wordpress.vfs.zst` | `build-wp-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx (SQLite WP) |
 | LAMP | `lamp.vfs.zst` | `build-lamp-vfs-image.sh` | `kernel.boot` → dinit → mariadb + php-fpm + nginx |
 | MariaDB test | `mariadb-test.vfs.zst` | `build-mariadb-test-vfs-image.sh` | `kernel.boot` → dinit → mariadb; mysqltest via `kernel.spawn` |
-| Erlang | `erlang.vfs.zst` | `build-erlang-vfs-image.sh` | legacy `kernel.spawn` → BEAM |
+| Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `packages/registry/erlang-vfs/build-erlang-vfs.sh` | legacy `kernel.spawn` → BEAM |
 | Shell | `shell.vfs.zst` | `build-shell-vfs-image.sh` | legacy `kernel.spawn` → dash |
 | Benchmark | (multiple) | (per-suite) | legacy `kernel.spawn` |
 
-Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`).
+Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`). The repaired Python and Erlang recipes remain disabled legacy compatibility paths: staging does not publish them, and they are not Homebrew distribution units.
 
 **Binary format:**
 

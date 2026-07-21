@@ -240,6 +240,17 @@ a complete fetched package, but local, fetched, and installed-package tiers
 are never combined. If artifacts exist but no tier has the complete accepted
 closure, resolution fails loudly.
 
+Build scripts register executable outputs with `install_local_binary` and
+declared data with `install_local_runtime_file`. Normal local builds mirror
+both into `local-binaries/`. A sealed publisher instead sets
+`WASM_POSIX_INSTALL_LOCAL_MIRROR=0`, provides
+`WASM_POSIX_DEP_OUT_DIR`, and supplies the reviewed fork-instrumentation policy
+for executable outputs. In that mode the helpers copy the exact declared
+artifacts only into caller-owned resolver scratch; they do not write into the
+checkout or probe `rustc`, Cargo, or `xtask` merely to discover a local mirror
+path. The resolver still validates every output against `package.toml` before
+it can enter an archive.
+
 Top-level keys are closed-schema: misspellings such as `[[runtime_file]]`
 (singular) are rejected instead of silently dropping a runtime dependency.
 Package names, versions, dependency names, and exact dependency-version tokens
@@ -306,6 +317,43 @@ browser-gallery wording.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.
+
+### Erlang/OTP target runtime contract
+
+The `erlang` package cross-builds OTP; the Erlang executable in the developer
+shell is a native OTP 28 bootstrap tool and is never a target artifact. The
+recipe produces two coupled artifacts: the fork-instrumented `erlang.wasm`
+executable output and `erlang-otp.tar.zst`, a declared runtime file containing
+a relocatable core OTP tree. The archive
+contains the kernel, stdlib, erts, and compiler applications, release boot
+files, the installed `$ROOTDIR/bin/start.boot` contract, and target ERTS
+helpers such as `erlexec` and `erl_child_setup`. Every Wasm helper carries the
+package's declared Kandelo ABI and passes the ordinary artifact guards.
+
+OTP's forker is part of the supported runtime path. Do not restore the retired
+wasm32 patch that disabled it, and do not make allocator or database bounds
+failures return synthetic success. BEAM starts the real forker, forks, and
+execs `erl_child_setup`; Node validation must observe that descendant. The
+remaining source changes are bounded compiler/portability workarounds (selected
+translation units at `-O1`, explicit shadow-stack aggregate initialization,
+and Wasm `call_indirect`-compatible driver signatures), not substitutes for
+Kandelo POSIX behavior.
+
+The trimmed core tree is an OTP embedded release. Launch it with
+`-mode embedded`; its packaged modules are loaded from the release boot tree
+instead of interactive code-server autoloading. This is not a claim that a
+complete interactive OTP installation or every optional OTP application is
+supported. A Homebrew Formula must test the exact keg through `erlexec` in
+both the generic Node and Chromium runners, and the Node proof must require the
+fork descendant rather than accepting output as a proxy for process exit.
+
+The disabled legacy `erlang-vfs` compatibility recipe consumes `erlang`'s
+declared runtime archive through the resolver; it does not read a
+recipe-directory install tree or user cache. Its opt-in VFS image copies the
+complete archive under `/usr/local/lib/erlang`, preserves executable modes,
+and includes ABI metadata. Staging does not publish that image; the Homebrew
+Formula turns the executable and runtime archive into the normal keg and
+bottle distribution unit.
 
 ### `arches`
 

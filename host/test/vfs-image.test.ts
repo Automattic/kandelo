@@ -536,6 +536,30 @@ describe("VFS image save/restore", () => {
   });
 
   describe("zstd-compressed images", () => {
+    it("normalizes timestamps for reproducible compressed build images", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "vfs-zst-deterministic-"));
+      const build = async (runtimeNow: number, name: string): Promise<Buffer> => {
+        const now = vi.spyOn(Date, "now").mockReturnValue(runtimeNow);
+        try {
+          const mfs = createMemfs();
+          writeFile(mfs, "/payload", new Uint8Array([1, 2, 3, 4]));
+          const out = join(dir, name);
+          await saveImage(mfs, out, { normalizeTimestampsMs: 0 });
+          return readFileSync(out);
+        } finally {
+          now.mockRestore();
+        }
+      };
+
+      try {
+        const first = await build(1_700_000_000_000, "first.vfs.zst");
+        const second = await build(1_800_000_000_000, "second.vfs.zst");
+        expect(second.equals(first)).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it("fromImage transparently decompresses a zstd-wrapped image", async () => {
       const mfs = createMemfs();
       writeFile(mfs, "/hello.txt", new TextEncoder().encode("compressed!"));

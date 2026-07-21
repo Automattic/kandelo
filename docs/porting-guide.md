@@ -768,12 +768,22 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | PHP | `packages/registry/php/build-php.sh` | autoconf | CLI + FPM, depends on zlib/libxml2/sqlite/openssl |
 | MariaDB | `packages/registry/mariadb/build-mariadb.sh` | CMake | Host build + cross build, Aria storage engine only |
 | Redis | `packages/registry/redis/build-redis.sh` | Makefile | Custom make invocation |
-| CPython | `packages/registry/cpython/build-cpython.sh` | autoconf | Host build for `_freeze_module`, then cross build |
+| CPython | `packages/registry/cpython/build-cpython.sh` | autoconf | Sealed native-generator + target build; emits the interpreter and complete stdlib runtime closure |
 | nginx | `packages/registry/nginx/build-nginx-local.sh` | custom configure | Shell-based configure script |
 | SQLite | `packages/registry/sqlite/build-sqlite.sh` | custom | Single-file amalgamation |
 | zlib | `packages/registry/zlib/build-zlib.sh` | custom configure | Dependency for PHP |
 | libxml2 | `packages/registry/libxml2/build-libxml2.sh` | CMake | Dependency for PHP |
 | OpenSSL | `packages/registry/openssl/build-openssl.sh` | custom Configure | Dependency for PHP |
+
+CPython's source recipe takes its source, work directory, output directory,
+sysroot, zlib prefix, and guest prefix from the package-resolver contract. It
+builds native generators and the target runtime only under the caller-owned
+work root, layers CPython-specific cross probes on `sdk/config.site`, and emits
+`python.wasm` plus the declared non-Wasm `python-runtime.zip`. The
+disabled legacy `python-vfs` compatibility recipe consumes those two artifacts
+from one resolver dependency root; it does not read CPython's source or build
+directories. Staging does not publish that image; the Homebrew Formula turns
+the same closure into the normal keg and bottle distribution unit.
 
 ## SQLite Official Project Tests
 

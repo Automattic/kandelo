@@ -1,7 +1,23 @@
 script_path = "packages/registry/erlang-vfs/build-erlang-vfs.sh"
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 3
+inputs = [
+  "packages/registry/erlang-vfs/build-erlang-vfs.sh",
+  "images/vfs/scripts/build-erlang-vfs-image.ts",
+  "images/vfs/scripts/build-erlang-vfs-image.sh",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "host/src/constants.ts",
+  "host/src/generated/abi.ts",
+  "host/src/pathconf.ts",
+  "host/src/statfs.ts",
+  "host/src/types.ts",
+  "host/src/vfs/image-helpers.ts",
+  "host/src/vfs/memory-fs.ts",
+  "host/src/vfs/sharedfs-vendor.ts",
+  "host/src/vfs/types.ts",
+  "host/src/vfs/zip.ts",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 4
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
