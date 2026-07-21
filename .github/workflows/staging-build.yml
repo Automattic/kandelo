@@ -590,6 +590,18 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Set up Node for the shell VFS composer
+        if: ${{ matrix.package == 'shell' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tools/mkrootfs/package-lock.json
+
+      - name: Install shell VFS composer dependencies
+        if: ${{ matrix.package == 'shell' }}
+        run: npm --prefix tools/mkrootfs ci --no-audit --no-fund
+
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
         uses: ./.github/actions/package-archive-build

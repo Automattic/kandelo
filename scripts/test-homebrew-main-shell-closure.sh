@@ -7,6 +7,9 @@ CHECKER="$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
+STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
+PREPARE_MERGE_WORKFLOW="$REPO_ROOT/.github/workflows/prepare-merge.yml"
+FORCE_REBUILD_WORKFLOW="$REPO_ROOT/.github/workflows/force-rebuild.yml"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -62,10 +65,10 @@ for required_path in \
   "scripts/dev-shell.sh" \
   "scripts/fetch-binaries.sh" \
   "scripts/homebrew-brewfile-selection.rb" \
-  "scripts/homebrew-checkout-public-tap.sh" \
   "scripts/install-local-binary.sh" \
   "scripts/resolve-binary.sh" \
   "tools/mkrootfs/**" \
+  "tools/xtask/**" \
   "web-libs/kandelo-session/src/kernel-host.ts" \
   "web-libs/kandelo-session/src/shell-config.ts"
 do
@@ -89,8 +92,6 @@ for evidence_file in "$BUILDER" "$WORKFLOW"; do
 done
 
 for variable in \
-  KANDELO_HOMEBREW_MAIN_SHELL_TAP_ROOT \
-  KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA \
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
   KANDELO_HOMEBREW_MAIN_SHELL_SHA256
 do
@@ -100,8 +101,34 @@ do
     fail "dev shell must not globally preserve main-shell-only input $variable"
 done
 
-grep -Fq 'bash scripts/dev-shell.sh env \' "$WORKFLOW" ||
-  fail "main-shell workflow must forward bottle-composer inputs inside the isolated dev shell"
+grep -Fq 'persist-credentials: false' "$WORKFLOW" ||
+  fail "main-shell proof checkout must not persist repository credentials"
+grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WORKFLOW" &&
+  fail "main-shell proof must not expose the workflow token to package composition"
+grep -Fq 'scripts/homebrew-checkout-public-tap.sh' "$WORKFLOW" &&
+  fail "main-shell proof must let the package system provision its immutable Git input"
+grep -Fq 'bash packages/registry/shell/build-shell.sh' "$WORKFLOW" &&
+  fail "main-shell proof must not invoke the shell builder outside archive-stage"
+grep -Fq 'compute-cache-key-sha \' "$WORKFLOW" ||
+  fail "main-shell proof must compute the canonical shell package cache identity"
+grep -Fq 'archive-stage \' "$WORKFLOW" ||
+  fail "main-shell proof must exercise the canonical package archive path"
+grep -Fq -- '--package packages/registry/shell' "$WORKFLOW" ||
+  fail "main-shell proof must stage the shell package"
+grep -Fq -- '--expected-cache-key-sha "$cache_key"' "$WORKFLOW" ||
+  fail "main-shell proof must bind archive-stage to the precomputed package identity"
+grep -Fq 'tar --zstd -xf "$ARCHIVE_PATH" -C "$archive_root" \' "$WORKFLOW" ||
+  fail "main-shell proof must extract the package archive"
+grep -Fq 'manifest.toml artifacts/shell.vfs.zst' "$WORKFLOW" ||
+  fail "main-shell proof must extract the shell package's declared artifact"
+grep -Fq 'cp "$archived" "$installed"' "$WORKFLOW" ||
+  fail "main-shell proof must install the archive-contained bytes for browser resolution"
+grep -Fq -- '--image "$RUNNER_TEMP/shell-archive/artifacts/shell.vfs.zst"' "$WORKFLOW" ||
+  fail "Node proof must boot the archive-contained shell bytes directly"
+grep -Fq '${{ runner.temp }}/staged-shell/*.tar.zst' "$WORKFLOW" ||
+  fail "main-shell evidence must retain the exact canonical package archive"
+grep -Fq '${{ runner.temp }}/shell-archive/artifacts/shell.vfs.zst' "$WORKFLOW" ||
+  fail "main-shell evidence must retain the archive-contained shell bytes"
 grep -Fq 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW" ||
   fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
 grep -Fq 'PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \' "$WORKFLOW" ||
@@ -135,6 +162,25 @@ browser_inputs=("${locked_browser_inputs[@]}" dinit node rootfs)
   fail "main-shell browser proof must select 32 locked roots plus 3 direct inputs"
 [ "$(printf '%s\n' "${browser_inputs[@]}" | sort -u | wc -l)" -eq 35 ] ||
   fail "main-shell browser proof inputs must be a unique 35-package set"
+
+for package_workflow in \
+  "$STAGING_WORKFLOW" \
+  "$PREPARE_MERGE_WORKFLOW" \
+  "$FORCE_REBUILD_WORKFLOW"
+do
+  [ "$(grep -Fc 'npm --prefix tools/mkrootfs ci --no-audit --no-fund' "$package_workflow")" -eq 1 ] ||
+    fail "$package_workflow must install mkrootfs exactly once for the shell program wave"
+  grep -Fq "if: \${{ matrix.package == 'shell' }}" "$package_workflow" ||
+    fail "$package_workflow must limit the mkrootfs prerequisite to the shell package"
+  install_line="$(grep -nF 'npm --prefix tools/mkrootfs ci --no-audit --no-fund' "$package_workflow" | cut -d: -f1)"
+  if [ "$package_workflow" = "$FORCE_REBUILD_WORKFLOW" ]; then
+    build_line="$(grep -nF '              archive-stage \' "$package_workflow" | tail -1 | cut -d: -f1)"
+  else
+    build_line="$(grep -nF 'uses: ./.github/actions/package-archive-build' "$package_workflow" | tail -1 | cut -d: -f1)"
+  fi
+  [ -n "$install_line" ] && [ -n "$build_line" ] && [ "$install_line" -lt "$build_line" ] ||
+    fail "$package_workflow must install mkrootfs before the shell archive build"
+done
 
 # The dev-shell wrapper intentionally reports Nix lookup and shell-hook details
 # on stdout. Playwright must own the JSON file directly so those diagnostics can
