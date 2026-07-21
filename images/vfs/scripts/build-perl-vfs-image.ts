@@ -140,9 +140,17 @@ async function main() {
     }
   }
 
-  // Create a 16MB SharedArrayBuffer + MemoryFileSystem
-  const sab = new SharedArrayBuffer(16 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
+  // The Perl 5.40 stdlib payload is ~26 MiB across ~1290 files, which
+  // overflowed the previous fixed 16 MiB buffer mid-write (the out-of-space
+  // failure was masked and surfaced as a confusing parent-dir ENOENT — see
+  // kd-n6vr). Use a growable SharedArrayBuffer with headroom, matching the
+  // mariadb/redis/sqlite image builders, so the full stdlib fits and the
+  // buffer can grow if future Perl releases add modules. The empty tail
+  // compresses away in saveImage's zstd pass, so a generous size is cheap.
+  const sab = new SharedArrayBuffer(64 * 1024 * 1024, {
+    maxByteLength: 256 * 1024 * 1024,
+  });
+  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
 
   // Create standard directories
   ensureDir(fs, "/tmp");

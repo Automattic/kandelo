@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { saveImage } from "../../images/vfs/scripts/vfs-image-helpers";
+import { ensureDir, symlink, writeVfsBinary } from "../src/vfs/image-helpers";
+import { SFSError, ENOENT, ENOSPC } from "../src/vfs/sharedfs-vendor";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -947,5 +949,74 @@ describe("VFS image save/restore", () => {
         "shared",
       );
     });
+  });
+});
+
+// Regression coverage for kd-n6vr: the perl-vfs image builder overflowed a
+// too-small SharedArrayBuffer mid-write, and ensureDir silently swallowed the
+// resulting ENOSPC from mkdir, so the failure resurfaced far away as a
+// confusing "No such file or directory" (ENOENT) when a later write could not
+// resolve the parent directory that never got created. These tests pin the
+// honest-failure contract of the EEXIST-swallowing memfs helpers.
+describe("image-helpers EEXIST-swallow honesty (kd-n6vr)", () => {
+  it("ensureDir swallows EEXIST so repeated creation is idempotent", () => {
+    const mfs = createMemfs();
+    ensureDir(mfs, "/usr");
+    expect(() => ensureDir(mfs, "/usr")).not.toThrow();
+    expect(mfs.stat("/usr").mode & 0o170000).toBe(0o040000); // still a directory
+  });
+
+  it("ensureDir rethrows a missing-parent failure instead of masking it", () => {
+    const mfs = createMemfs();
+    // /a does not exist, so this single-level mkdir must fail loudly. The old
+    // helper swallowed every error, silently did nothing, and let the real
+    // failure surface later as a confusing ENOENT at an unrelated write.
+    let caught: unknown;
+    try {
+      ensureDir(mfs, "/a/b");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SFSError);
+    expect((caught as SFSError).code).toBe(ENOENT);
+    expect(() => mfs.stat("/a/b")).toThrow(); // nothing was created
+  });
+
+  it("surfaces an out-of-space overflow as ENOSPC, not a masked parent-dir ENOENT", () => {
+    // Reproduce the perl-vfs shape: a fixed, non-growable buffer overflowed by
+    // the write payload. With the honest helper the operation that runs out of
+    // space throws ENOSPC directly; the old masking helper let it resurface as
+    // an ENOENT from a later write whose parent dir silently failed to exist.
+    const sab = new SharedArrayBuffer(1 * 1024 * 1024); // small, non-growable
+    const mfs = MemoryFileSystem.create(sab);
+    const payload = new Uint8Array(8 * 1024); // 8 KiB per "module"
+    let caught: unknown;
+    for (let i = 0; i < 100_000; i++) {
+      try {
+        const dir = `/pkg${i}`;
+        ensureDir(mfs, dir);
+        writeVfsBinary(mfs, `${dir}/mod.pm`, payload, 0o644);
+      } catch (e) {
+        caught = e;
+        break;
+      }
+    }
+    expect(caught).toBeInstanceOf(SFSError);
+    expect((caught as SFSError).code).toBe(ENOSPC);
+  });
+
+  it("symlink swallows EEXIST but rethrows a missing-parent failure", () => {
+    const mfs = createMemfs();
+    writeFile(mfs, "/target", new Uint8Array([1]));
+    symlink(mfs, "/target", "/link");
+    expect(() => symlink(mfs, "/target", "/link")).not.toThrow(); // EEXIST swallowed
+    let caught: unknown;
+    try {
+      symlink(mfs, "/target", "/nope/link"); // parent /nope missing
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SFSError);
+    expect((caught as SFSError).code).toBe(ENOENT);
   });
 });
