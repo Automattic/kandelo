@@ -179,6 +179,23 @@ pkgconfig = ["lib/pkgconfig/zlib.pc"]
 files = ["share/runtime-data.bin"]                   # other runtime data
 ```
 
+The three in-tree Homebrew bridge recipes (`lsof`, `modeset`, and
+`posix-utils-lite`) use a deliberately narrow `in-repository-source`
+exception: `[source].url` is the authoritative Kandelo repository and an
+all-zero SHA-256 is a mode sentinel, not a checksum. Homebrew publication
+must bind such a recipe to a nonzero-checksum Formula URL of the exact form
+`<source.url>/archive/<40-lowercase-hex-commit>.tar.gz`. Other recipes use a
+normal source URL and checksum that must match the Formula exactly.
+
+Source `package.toml` and project `build.toml` apply the same
+`[build].script_path` contract: a nonempty ASCII repository-relative path of
+normal components using only letters, digits, `.`, `_`, `@`, `+`, and `-`.
+The complete path is at most 4096 bytes, each component is at most 255 bytes,
+and absolute paths, empty components, `.`/`..`, backslashes, controls, and
+whitespace are rejected. Historical archived manifests remain parseable for
+artifact compatibility; the source-build resolver never executes their legacy
+script field.
+
 Program packages use `[[outputs]]` for executable/side-module artifacts. A
 non-Wasm file required at runtime is declared separately so it remains part of
 the same reproducible archive and cache key:
@@ -244,7 +261,7 @@ block — those packages don't publish a binary):
 
 ```toml
 script_path = "packages/registry/zlib/build-zlib.sh"   # mirrors package.toml
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
+repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
 
@@ -992,7 +1009,7 @@ And the sibling `packages/registry/zlib/build.toml` (project view):
 
 ```toml
 script_path = "packages/registry/zlib/build-zlib.sh"
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
+repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "<commit>"
 revision    = 1
 

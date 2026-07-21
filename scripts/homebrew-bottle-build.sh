@@ -224,6 +224,10 @@ run_brew_for_kandelo_bottles() {
 INSTALL_LOG="$CONTROL_DIR/brew-install.log"
 NATIVE_INSTALL_LOG="$CONTROL_DIR/native-brew-install.log"
 HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"
+TIER2_BRIDGE_PLAN="$CONTROL_DIR/tier2-bridge-plan.json"
+TIER2_EXECUTION_PLAN="$CONTROL_DIR/tier2-execution-plan.json"
+TIER2_ATTESTATION="$CONTROL_DIR/tier2-attestation.json"
+TIER2_EXECUTION_ATTESTATION="$CONTROL_DIR/tier2-execution-attestation.json"
 TARGET_BOTTLE_IDENTITY="$CONTROL_DIR/target-bottle-identity.json"
 HOST_DEPENDENCY_LIST="$CONTROL_DIR/host-dependencies.txt"
 DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"
@@ -237,6 +241,10 @@ DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
 : >"$INSTALL_LOG"
 : >"$NATIVE_INSTALL_LOG"
 : >"$HOST_DEPENDENCY_PLAN"
+: >"$TIER2_BRIDGE_PLAN"
+: >"$TIER2_EXECUTION_PLAN"
+: >"$TIER2_ATTESTATION"
+: >"$TIER2_EXECUTION_ATTESTATION"
 : >"$TARGET_BOTTLE_IDENTITY"
 : >"$HOST_DEPENDENCY_LIST"
 : >"$DEPENDENCY_LIST"
@@ -251,6 +259,8 @@ for attempt in 1 2 3; do
 done
 chmod 0600 "$INSTALL_LOG" "$NATIVE_INSTALL_LOG" \
   "$HOST_DEPENDENCY_PLAN" "$TARGET_BOTTLE_IDENTITY" \
+  "$TIER2_BRIDGE_PLAN" "$TIER2_EXECUTION_PLAN" \
+  "$TIER2_ATTESTATION" "$TIER2_EXECUTION_ATTESTATION" \
   "$HOST_DEPENDENCY_LIST" "$DEPENDENCY_LIST" \
   "$BUILD_TEST_DEPENDENCY_LIST" "$DEPENDENCY_POUR_LIST" \
   "$ALLOWED_TARGET_TAPS" "$STATIC_RUNTIME_DEPENDENCIES" \
@@ -271,6 +281,46 @@ validate_dependency_list() {
 # bounded list is the only input allowed to select core Formulae later under the
 # isolated native launcher.
 EXPECTED_PLAN_TAP="$TAP_NAME"
+HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+XTASK_BIN="$KANDELO_ROOT/target/$HOST_TARGET/release/xtask"
+if [ -z "$HOST_TARGET" ] || [ ! -f "$XTASK_BIN" ] || [ -L "$XTASK_BIN" ] ||
+   [ ! -x "$XTASK_BIN" ]; then
+  echo "homebrew-bottle-build.sh: exact prebuilt release xtask is unavailable" >&2
+  exit 2
+fi
+ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+  "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --tier2-bridge-json \
+  >"$TIER2_BRIDGE_PLAN"
+"$XTASK_BIN" homebrew-tier2-preflight \
+  --repo-root "$KANDELO_ROOT" --arch "$ARCH" \
+  --bridge-plan "$TIER2_BRIDGE_PLAN" >"$TIER2_ATTESTATION"
+if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
+  --arg arch "$ARCH" '
+    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_sha256", "tap", "tier2_bridge"] and
+    .schema == 1 and .tap == $tap and .formula == $formula and .arch == $arch and
+    .full_name == ($tap + "/" + $formula) and
+    (.formula_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.support_sha256 == null or
+      (.support_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+    if .tier2_bridge == null then true else
+      (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
+      .tier2_bridge.package == $formula and
+      (.tier2_bridge.script | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")) and
+      ([.tier2_bridge.package_toml_sha256, .tier2_bridge.build_toml_sha256,
+        .tier2_bridge.script_sha256, .tier2_bridge.source_sha256] |
+        all(.[]; type == "string" and test("^[0-9a-f]{64}$"))) and
+      (.tier2_bridge.script_env_keys | type == "array" and
+        . == (sort | unique) and length <= 64 and
+        (map(length) | add // 0) <= 4096) and
+      (.tier2_bridge.source_mode == "exact" or
+        .tier2_bridge.source_mode == "in-repository-source") and
+      (.tier2_bridge.source_url | type == "string" and startswith("https://")) and
+      (.tier2_bridge.version | type == "string" and length > 0)
+    end
+  ' "$TIER2_ATTESTATION" >/dev/null; then
+  echo "homebrew-bottle-build.sh: Tier-2 bridge attestation has an invalid schema" >&2
+  exit 2
+fi
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --bottle-identity-json \
   >"$TARGET_BOTTLE_IDENTITY"
@@ -392,6 +442,25 @@ if ! same_file "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"; then
   mkdir -p "$(dirname "$TAPPED_FORMULA_PATH")"
   cp "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"
 fi
+
+# Re-scan the exact Formula/support bytes Homebrew will load and independently
+# re-read every authoritative registry input. No Formula Ruby has run yet.
+ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+  "$TAPPED_TAP_ROOT" "$TAP_NAME" "$FORMULA" --tier2-bridge-json \
+  >"$TIER2_EXECUTION_PLAN"
+cmp -s "$TIER2_BRIDGE_PLAN" "$TIER2_EXECUTION_PLAN" || {
+  echo "homebrew-bottle-build.sh: tapped Formula/support bridge plan differs from the reviewed source" >&2
+  exit 1
+}
+"$XTASK_BIN" homebrew-tier2-preflight \
+  --repo-root "$KANDELO_ROOT" --arch "$ARCH" \
+  --bridge-plan "$TIER2_EXECUTION_PLAN" >"$TIER2_EXECUTION_ATTESTATION"
+cmp -s "$TIER2_ATTESTATION" "$TIER2_EXECUTION_ATTESTATION" || {
+  echo "homebrew-bottle-build.sh: Formula/support/registry execution inputs changed before isolation" >&2
+  exit 1
+}
+homebrew_patched_launcher_stage_tier2_attestation \
+  "$TIER2_EXECUTION_ATTESTATION"
 
 if [ -n "$BUILD_USER" ]; then
   # Formula helpers deliberately remove stale compiled host output before

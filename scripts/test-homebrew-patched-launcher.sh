@@ -539,9 +539,64 @@ rm -rf "$prefix/Cellar"
 [ -L "$HOMEBREW_PATCHED_LAUNCHER" ] || fail "launcher symlink was not created"
 
 local_dependency_plan="$TMPDIR/local-dependency-plan.json"
+local_tier2_attestation="$TMPDIR/local-tier2-attestation.json"
 printf '%s\n' '{"build":[],"build_and_test":[],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":[],"schema":2,"tap":"kandelo-dev/tap-core"}' \
   >"$local_dependency_plan"
 chmod 0600 "$local_dependency_plan"
+active_tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":1,"support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tier2_bridge":{"build_toml_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","package":"hello","package_toml_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","script":"build-hello.sh","script_env_keys":[],"script_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","source_mode":"exact","source_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","source_url":"https://example.test/hello-1.0.tar.gz","version":"1.0"}}'
+printf '%s\n' "$active_tier2_attestation_json" \
+  >"$local_tier2_attestation"
+chmod 0600 "$local_tier2_attestation"
+
+expect_tier2_staging_rejection() {
+  local source="$1" label="$2"
+  if homebrew_patched_launcher_stage_tier2_attestation "$source" \
+    >/dev/null 2>&1; then
+    fail "unsafe $label Tier-2 attestation unexpectedly staged"
+  fi
+  [ -z "$HOMEBREW_PATCHED_TIER2_ATTESTATION" ] &&
+    [ -z "${HOMEBREW_PATCHED_CONTROL_FILE_PATH[tier2_attestation]:-}" ] &&
+    [ ! -e "$prefix/.kandelo-publisher-tier2-attestation.json" ] ||
+    fail "rejected $label Tier-2 attestation retained control-file state"
+}
+
+unsafe_tier2_source="$TMPDIR/unsafe-tier2-source.json"
+printf '%s\n' "$active_tier2_attestation_json" >"$unsafe_tier2_source"
+chmod 0644 "$unsafe_tier2_source"
+expect_tier2_staging_rejection "$unsafe_tier2_source" "non-private"
+chmod 0600 "$unsafe_tier2_source"
+unsafe_tier2_hardlink="$TMPDIR/unsafe-tier2-hardlink.json"
+ln "$unsafe_tier2_source" "$unsafe_tier2_hardlink"
+expect_tier2_staging_rejection "$unsafe_tier2_source" "hard-linked"
+rm "$unsafe_tier2_hardlink"
+unsafe_tier2_symlink="$TMPDIR/unsafe-tier2-symlink.json"
+ln -s "$unsafe_tier2_source" "$unsafe_tier2_symlink"
+expect_tier2_staging_rejection "$unsafe_tier2_symlink" "symlinked"
+unsafe_tier2_empty="$TMPDIR/unsafe-tier2-empty.json"
+: >"$unsafe_tier2_empty"
+chmod 0600 "$unsafe_tier2_empty"
+expect_tier2_staging_rejection "$unsafe_tier2_empty" "empty"
+unsafe_tier2_oversize="$TMPDIR/unsafe-tier2-oversize.json"
+dd if=/dev/zero of="$unsafe_tier2_oversize" bs=16385 count=1 2>/dev/null
+chmod 0600 "$unsafe_tier2_oversize"
+expect_tier2_staging_rejection "$unsafe_tier2_oversize" "oversized"
+if [ "$(id -u)" -ne 0 ] && [ -x /usr/bin/sudo ] &&
+   /usr/bin/sudo -n true >/dev/null 2>&1; then
+  unsafe_tier2_owner="$TMPDIR/unsafe-tier2-owner.json"
+  /usr/bin/sudo -n install -o root -g 0 -m 0600 \
+    "$local_tier2_attestation" "$unsafe_tier2_owner"
+  expect_tier2_staging_rejection "$unsafe_tier2_owner" "foreign-owned"
+  /usr/bin/sudo -n rm -f "$unsafe_tier2_owner"
+fi
+printf '%s\n' occupied >"$prefix/.kandelo-publisher-tier2-attestation.json"
+if homebrew_patched_launcher_stage_tier2_attestation "$local_tier2_attestation" \
+  >/dev/null 2>&1; then
+  fail "Tier-2 attestation staged over an occupied destination"
+fi
+[ -z "${HOMEBREW_PATCHED_CONTROL_FILE_PATH[tier2_attestation]:-}" ] ||
+  fail "occupied Tier-2 destination retained launcher state"
+rm "$prefix/.kandelo-publisher-tier2-attestation.json"
+
 real_cp="$(command -v cp)"
 failing_cp_bin="$TMPDIR/failing-cp-bin"
 mkdir -p "$failing_cp_bin"
@@ -564,6 +619,15 @@ fi
 homebrew_patched_launcher_stage_dependency_plan "$local_dependency_plan"
 staged_dependency_plan="$HOMEBREW_PATCHED_DEPENDENCY_PLAN"
 homebrew_patched_launcher_verify_dependency_plan
+homebrew_patched_launcher_stage_tier2_attestation "$local_tier2_attestation"
+staged_tier2_attestation="$HOMEBREW_PATCHED_TIER2_ATTESTATION"
+homebrew_patched_launcher_verify_tier2_attestation
+if homebrew_patched_launcher_stage_tier2_attestation "$local_tier2_attestation" \
+  >/dev/null 2>&1; then
+  fail "duplicate Tier-2 attestation staging unexpectedly succeeded"
+fi
+[ "$HOMEBREW_PATCHED_TIER2_ATTESTATION" = "$staged_tier2_attestation" ] ||
+  fail "duplicate Tier-2 staging changed the protected destination"
 
 launcher="$HOMEBREW_PATCHED_LAUNCHER"
 overlay="$HOMEBREW_PATCHED_OVERLAY"
@@ -571,6 +635,7 @@ homebrew_patched_launcher_cleanup
 [ ! -e "$launcher" ] || fail "launcher symlink was not removed"
 [ ! -e "$overlay" ] || fail "overlay worktree was not removed"
 [ ! -e "$staged_dependency_plan" ] || fail "publisher dependency plan was not removed"
+[ ! -e "$staged_tier2_attestation" ] || fail "publisher Tier-2 attestation was not removed"
 
 retry_real_work_dir="$TMPDIR/worktree-removal-retry"
 retry_work_dir="$TMPDIR/worktree-removal-retry-alias"
@@ -1121,6 +1186,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_sysroot_owner="$isolated_sysroot_private_parent/sysroot-build"
   isolated_sysroot="$isolated_sysroot_owner/sysroot"
   isolated_dependency_plan="$isolated_output/host-dependencies.json"
+  isolated_tier2_attestation="$isolated_output/tier2-attestation.json"
   isolated_home="/home/$ISOLATION_BUILD_USER"
   daemon_marker="$isolated_work/detached-process-survived"
   daemon_started="$isolated_work/detached-process-started"
@@ -1152,6 +1218,9 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":["ninja"],"schema":3,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
+  tier2_attestation_json="$active_tier2_attestation_json"
+  printf '%s\n' "$tier2_attestation_json" >"$isolated_tier2_attestation"
+  chmod 0600 "$isolated_tier2_attestation"
   mkdir "$isolated_kandelo/runner-control"
   chmod 0700 "$isolated_kandelo/runner-control"
   # Keep the parent traversable so only systemd's InaccessiblePaths protects
@@ -1226,6 +1295,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$isolated_native_prefix" "$isolated_native_cache" "$isolated_native_temp" \
     "$isolated_native_config" "$isolated_native_home"
   homebrew_patched_launcher_stage_dependency_plan "$isolated_dependency_plan"
+  homebrew_patched_launcher_stage_tier2_attestation "$isolated_tier2_attestation"
   [ "$(stat -c '%u:%a' "$isolated_native_base")" = "$(id -u):711" ] ||
     fail "workflow-owned native parent changed during preparation"
   for native_root in "$isolated_native_prefix" "$isolated_native_cache" \
@@ -1349,6 +1419,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   "$HOMEBREW_PATCHED_BREW_BIN" assert-immutable-trust reviewed-trust
   "$HOMEBREW_PATCHED_BREW_BIN" assert-dependency-plan \
     "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" "$dependency_plan_json"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-dependency-plan \
+    "$HOMEBREW_PATCHED_TIER2_ATTESTATION" "$tier2_attestation_json"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-publisher-patch
   "$HOMEBREW_PATCHED_BREW_BIN" assert-bundler-seed
   if "$HOMEBREW_PATCHED_BREW_BIN" trust >/dev/null 2>&1; then
@@ -1520,6 +1592,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "isolated cleanup left the native Formula proxy opt link"
   [ ! -e "$isolated_prefix/.kandelo-publisher-build-dependencies.json" ] ||
     fail "isolated cleanup left the publisher dependency plan"
+  [ ! -e "$isolated_prefix/.kandelo-publisher-tier2-attestation.json" ] ||
+    fail "isolated cleanup left the publisher Tier-2 attestation"
   [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
     [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \
     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \

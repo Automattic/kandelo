@@ -161,8 +161,10 @@ assert_ghcr_auth_env_does_not_cross_dev_shell() {
 FORMULA_RUNNER_FIXTURE_ROOT="$TMPDIR/formula-runner-root"
 
 make_formula_runner_fixture() {
+  local host_target
   mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/scripts" \
     "$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches"
+  FORMULA_RUNNER_FIXTURE_ROOT="$(cd "$FORMULA_RUNNER_FIXTURE_ROOT" && pwd -P)"
   cp "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
@@ -170,6 +172,55 @@ make_formula_runner_fixture() {
     "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/"
   : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
   : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
+  host_target="$(rustc -vV | sed -n 's/^host: //p')"
+  cargo build --quiet --release -p xtask --target "$host_target"
+  mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/target/$host_target/release"
+  cp "$REPO_ROOT/target/$host_target/release/xtask" \
+    "$FORMULA_RUNNER_FIXTURE_ROOT/target/$host_target/release/xtask.real"
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/target/$host_target/release/xtask" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${FAKE_TIER2_PREFLIGHT_LOG:-}" ]; then
+  printf '%s\n' "$*" >>"$FAKE_TIER2_PREFLIGHT_LOG"
+fi
+exec "$(dirname "$0")/xtask.real" "$@"
+EOF
+  chmod 0755 "$FORMULA_RUNNER_FIXTURE_ROOT/target/$host_target/release/xtask"
+  mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello"
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello/package.toml" <<'EOF'
+kind = "program"
+name = "hello"
+version = "1.0"
+kernel_abi = 42
+arches = ["wasm32", "wasm64"]
+depends_on = []
+
+[source]
+url = "https://example.test/hello-1.0.tar.gz"
+sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "packages/registry/hello/build-hello.sh"
+
+[[outputs]]
+name = "hello"
+wasm = "hello.wasm"
+EOF
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello/build.toml" <<'EOF'
+script_path = "packages/registry/hello/build-hello.sh"
+repo_url = "https://github.com/Automattic/kandelo"
+commit = ""
+
+[binary]
+index_url = "https://example.test/index.toml"
+EOF
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello/build-hello.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+EOF
   cat >"$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-patched-launcher.sh" <<'EOF'
 HOMEBREW_PATCHED_BREW_BIN=""
 HOMEBREW_PATCHED_PREFIX=""
@@ -220,6 +271,19 @@ homebrew_patched_launcher_prepare_native_prefix() {
 
 homebrew_patched_launcher_stage_dependency_plan() {
   printf 'stage-dependency-plan\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
+}
+
+homebrew_patched_launcher_stage_tier2_attestation() {
+  jq -e '
+    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_sha256", "tap", "tier2_bridge"] and
+    if .tier2_bridge == null then true else
+      (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"])
+    end
+  ' "$1" >/dev/null || return 2
+  if [ -n "${FAKE_TIER2_ATTESTATION_CAPTURE:-}" ]; then
+    cp "$1" "$FAKE_TIER2_ATTESTATION_CAPTURE"
+  fi
+  printf 'stage-tier2-attestation\n' >>"${FAKE_REALM_LIFECYCLE_LOG:?}"
 }
 
 homebrew_patched_launcher_seed_bundler_groups() {
@@ -2805,13 +2869,51 @@ assert_bottle_build_installs_test_dependencies() {
   local lifecycle_log="$TMPDIR/bottle-test-dependency-lifecycle.log"
   local provenance_capture="$TMPDIR/bottle-test-dependency-provenance.txt"
   local provenance_log_capture="$TMPDIR/bottle-test-dependency-install.log"
+  local tier2_attestation_capture="$TMPDIR/bottle-test-dependency-tier2-attestation.json"
+  local tier2_preflight_log="$TMPDIR/bottle-test-dependency-tier2-preflight.log"
+  local runner_err="$TMPDIR/bottle-test-dependency-runner.err"
   local native_prefix_capture="$TMPDIR/bottle-test-dependency-native-prefix.txt"
   local native_prefix real_python3 gnu_tar_bin host_git_bin
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
+  mkdir -p "$tap/Kandelo/formula_support"
+  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
+require "digest"
+require "fileutils"
+require "json"
+require "pathname"
+require "shellwords"
+require "tempfile"
+
+module KandeloFormulaSupport
+  def self.kandelo_load_tier2_runtime!
+    support_path = Pathname(__FILE__).realpath
+    support_path.freeze
+  end
+
+  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
+
+  def kandelo_build_package(script_env: {})
+    script_env
+  end
+end
+EOF
   cat >"$tap/Formula/hello.rb" <<'EOF'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
 class Hello < Formula
+  include KandeloFormulaSupport
+
+  KANDELO_REGISTRY_BRIDGE = true
+
+  desc "Tier-2 bottle runner fixture"
+  homepage "https://example.test/hello"
+  url "https://example.test/hello-1.0.tar.gz"
+  version "1.0"
+  sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  license "MIT"
+
   bottle do
     root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
     rebuild 1
@@ -2822,6 +2924,11 @@ class Hello < Formula
   depends_on "ninja" => :build
   depends_on "kandelo-dev/tap-core/zlib"
   depends_on "kandelo-dev/tap-core/test-helper" => :test
+
+  def install
+    out = kandelo_build_package(script_env: {})
+    out
+  end
 end
 EOF
   cat >"$tap/Formula/zlib.rb" <<'EOF'
@@ -2836,7 +2943,7 @@ EOF
 class TestHelper < Formula
 end
 EOF
-  git -C "$tap" add Formula
+  git -C "$tap" add Formula Kandelo/formula_support
   git -C "$tap" commit -q -m "add bottle builder fixtures"
   KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap")"
   export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
@@ -2866,7 +2973,14 @@ case "${1:-}" in
       printf '%s\n' "$FAKE_TAP_ROOT"
     fi
     ;;
-  tap|trust) ;;
+  tap)
+    if [ "${FAKE_TIER2_REGISTRY_DRIFT:-}" = 1 ] &&
+       [ ! -e "${FAKE_TIER2_REGISTRY_DRIFT_MARKER:?}" ]; then
+      printf '# execution drift\n' >>"${FAKE_TIER2_REGISTRY_SCRIPT:?}"
+      : >"$FAKE_TIER2_REGISTRY_DRIFT_MARKER"
+    fi
+    ;;
+  trust) ;;
   deps)
     case "$*" in
       'deps --topological --full-name --formula kandelo-dev/tap-core/hello')
@@ -3056,6 +3170,8 @@ EOF
     REAL_PYTHON3="$real_python3" \
     FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
     FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
+    FAKE_TIER2_ATTESTATION_CAPTURE="$tier2_attestation_capture" \
+    FAKE_TIER2_PREFLIGHT_LOG="$tier2_preflight_log" \
     FAKE_BREW_LOG="$log" \
     FAKE_REALM_COMMAND_LOG="$realm_log" \
     FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
@@ -3079,9 +3195,73 @@ EOF
       --arch wasm32 \
       --out "$out" \
       --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
-      >/dev/null 2>&1; then
-    fail "test dependency fixture did not complete"
+      >/dev/null 2>"$runner_err"; then
+    fail "test dependency fixture did not complete: $(cat "$runner_err")"
   fi
+  [ "$(wc -l <"$tier2_preflight_log" | tr -d '[:space:]')" = 2 ] ||
+    fail "bottle build did not run Tier-2 preflight before and after tap materialization"
+  jq -e '
+    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_sha256", "tap", "tier2_bridge"] and
+    .schema == 1 and .arch == "wasm32" and
+    .tap == "kandelo-dev/tap-core" and .formula == "hello" and
+    (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
+    .tier2_bridge.package == "hello" and
+    .tier2_bridge.script == "build-hello.sh" and
+    .tier2_bridge.script_env_keys == [] and
+    .tier2_bridge.source_mode == "exact" and
+    .tier2_bridge.version == "1.0"
+  ' "$tier2_attestation_capture" >/dev/null ||
+    fail "bottle build did not stage the exact active Tier-2 attestation"
+
+  local tier2_drift_out="$TMPDIR/bottle-tier2-drift-out"
+  local tier2_drift_prefix="$TMPDIR/bottle-tier2-drift-prefix"
+  local tier2_drift_err="$TMPDIR/bottle-tier2-drift.err"
+  local tier2_drift_lifecycle="$TMPDIR/bottle-tier2-drift-lifecycle.log"
+  local tier2_drift_marker="$TMPDIR/bottle-tier2-drift.marker"
+  local tier2_drift_preflight="$TMPDIR/bottle-tier2-drift-preflight.log"
+  local tier2_drift_native_capture="$TMPDIR/bottle-tier2-drift-native-prefix.txt"
+  local tier2_registry_script="$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello/build-hello.sh"
+  local tier2_registry_script_backup="$TMPDIR/build-hello.sh.original"
+  local tier2_drift_status
+  cp "$tier2_registry_script" "$tier2_registry_script_backup"
+  mkdir -p "$tier2_drift_prefix"
+  set +e
+  PATH="$fake_bin:$PATH" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
+    FAKE_BREW_LOG="$log" \
+    FAKE_REALM_COMMAND_LOG="$realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$tier2_drift_lifecycle" \
+    FAKE_NATIVE_PREFIX_CAPTURE="$tier2_drift_native_capture" \
+    FAKE_BUILD_TIME=1700000000 \
+    FAKE_BREW_PREFIX="$tier2_drift_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    FAKE_TIER2_PREFLIGHT_LOG="$tier2_drift_preflight" \
+    FAKE_TIER2_REGISTRY_DRIFT=1 \
+    FAKE_TIER2_REGISTRY_DRIFT_MARKER="$tier2_drift_marker" \
+    FAKE_TIER2_REGISTRY_SCRIPT="$tier2_registry_script" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --arch wasm32 \
+      --out "$tier2_drift_out" \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$tier2_drift_err"
+  tier2_drift_status="$?"
+  set -e
+  cp "$tier2_registry_script_backup" "$tier2_registry_script"
+  [ "$tier2_drift_status" -eq 1 ] ||
+    fail "bottle build accepted Tier-2 registry drift: $tier2_drift_status"
+  [ "$(wc -l <"$tier2_drift_preflight" | tr -d '[:space:]')" = 2 ] ||
+    fail "Tier-2 registry-drift fixture did not run both preflights"
+  grep -F 'Formula/support/registry execution inputs changed before isolation' \
+    "$tier2_drift_err" >/dev/null ||
+    fail "bottle build did not explain Tier-2 registry drift"
   native_prefix="$(cat "$native_prefix_capture")"
   case "$native_prefix" in
     /tmp/k.??????/p|/private/tmp/k.??????/p) ;;
@@ -3263,7 +3443,7 @@ EOF
     fail "bottle build installed same-tap, host, or target dependencies out of order"
   ! grep -F 'homebrew/core/dynamic-' "$realm_log" >/dev/null ||
     fail "bottle build selected its native plan from evaluated Formula output"
-  [ "$(cat "$lifecycle_log")" = $'prepare-native\nseed-bundler:bottle formula_test\nstage-dependency-plan\nseal-native\nbridge-native:cmake\nbridge-native:ninja\ncleanup' ] ||
+  [ "$(cat "$lifecycle_log")" = $'prepare-native\nseed-bundler:bottle formula_test\nstage-dependency-plan\nstage-tier2-attestation\nseal-native\nbridge-native:cmake\nbridge-native:ninja\ncleanup' ] ||
     fail "bottle build did not prepare, seal, bridge, and clean up the native realm"
   grep -Fx 'zlib-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
     fail "same-tap runtime dependency lost the Kandelo bottle tag"
