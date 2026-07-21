@@ -739,18 +739,21 @@ match.
 
 The `force` input normally means only "include this Formula in the build
 matrix even when its current cache key matches." It is not a general overwrite
-switch. When a forced run encounters a stale version index left by a partial
-publication, the credential-free composer may recover it only if the exact,
-clean planned tap commit contains neither `Kandelo/formula/<formula>.json` nor
-that Formula in `Kandelo/metadata.json`. The composer first validates the old
-index and children under their own source identity, requires the ABI, Formula,
-version, Formula revision, bottle rebuild, and repository identities to match
-the new children, and then discards every old child instead of mixing source
-closures. Its receipt retains the previous top digest and records the
-`unfinalized-stale-source-identity` transition reason. A finalized Formula,
-dirty or different tap checkout, fixed-identity mismatch, malformed old index,
-or ordinary non-forced run still fails; a finalized bottle with changed bytes
-requires a new Formula bottle `rebuild`.
+switch. When a forced run encounters a version index left by a partial
+publication, the credential-free composer may recover either a stale source
+identity or different child bytes at the same semantic identity. Recovery is
+allowed only if the exact, clean planned tap commit contains neither
+`Kandelo/formula/<formula>.json` nor that Formula in `Kandelo/metadata.json`.
+The composer first validates the complete old index and every child under their
+own identity, requires the ABI, Formula, version, Formula revision, bottle
+rebuild, and repository identities to match the new children, and then discards
+every old child instead of retaining a sibling architecture. Its receipt keeps
+the previous top digest and records either
+`unfinalized-stale-source-identity` or the distinct
+`unfinalized-same-identity-child-replacement` transition reason. A finalized
+Formula, dirty or different tap checkout, fixed-identity mismatch, malformed
+old index, or ordinary non-forced run still fails; a finalized bottle with
+changed bytes requires a new Formula bottle `rebuild`.
 
 The repository-namespace visibility canary was a separate, one-shot transport
 path used to select the production bottle-root contract. Its exact reviewed caller
@@ -989,10 +992,12 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    remain credential-free. A conflicting same-reference child or a stale
    Formula/support closure fails instead of overwriting accepted bytes. The
    sole exception is an explicitly forced retry of an unfinalized partial
-   identity: the composer proves the exact planned tap has no formula-level or
+   index: the composer proves the exact planned tap has no formula-level or
    aggregate sidecar entry, requires every fixed identity field to match,
-   validates the old index under its own identity, and discards all old
-   children. It never carries a sibling architecture across that transition.
+   validates the complete old index under its own identity, and discards all
+   old children. This applies both to stale source identity and to different
+   child bytes under the same semantic identity. It never carries a sibling
+   architecture across either transition.
    The top
    index receipt records the previous digest, transport rechecks that digest
    immediately before its copy, and an anonymous readback verifies the result.
@@ -1711,10 +1716,11 @@ required-acceptance VFS release above.
 - Do not delete GHCR bottle blobs as the normal recovery path. Prefer marking a
   failed attempt and preserving last-green fallback metadata.
 - Publication must compose peer packages and same-identity sibling-architecture
-  bottle tags from refreshed tap state while holding the tap lock. Identity
-  transitions for explicitly forced, unfinalized partial indexes discard all
-  old sibling tags before publishing the selected architecture. Accepted
-  identities require a bottle rebuild instead. Formula source changes after
+  bottle tags from refreshed tap state while holding the tap lock. Stale-source
+  and same-identity child-replacement transitions for explicitly forced,
+  unfinalized partial indexes discard all old sibling tags before publishing
+  the selected architecture. Accepted identities require a bottle rebuild
+  instead. Formula source changes after
   planning, noncanonical bottle
   blocks, required shared Formula-support changes, Formula root/tag/digest
   disagreement with the tap sidecars, or symlinks in refreshed `Formula/` and

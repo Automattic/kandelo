@@ -1380,9 +1380,28 @@ def exact_clean_git_head(root: pathlib.Path, label: str) -> tuple[pathlib.Path, 
     return root, head
 
 
-def validate_unfinalized_recovery_tap(
-    tap_root_name: str, receipt: dict[str, Any]
+def authorize_unfinalized_recovery(
+    tap_root_name: str,
+    receipt: dict[str, Any],
+    existing_semantics: dict[str, str],
+    selected_semantics: dict[str, str],
 ) -> None:
+    fixed_keys = {
+        "dev.kandelo.homebrew.abi",
+        "dev.kandelo.homebrew.bottle_rebuild",
+        "dev.kandelo.homebrew.formula",
+        "dev.kandelo.homebrew.formula_revision",
+        "dev.kandelo.homebrew.pkg_version",
+        "dev.kandelo.homebrew.tap_repository",
+    }
+    if any(
+        existing_semantics[key] != selected_semantics[key] for key in fixed_keys
+    ):
+        fail(
+            "unfinalized recovery cannot change the fixed "
+            "Formula/version/repository identity"
+        )
+
     tap_root, head = exact_clean_git_head(
         pathlib.Path(tap_root_name), "unfinalized recovery tap root"
     )
@@ -1702,29 +1721,36 @@ def merge_index(args: argparse.Namespace) -> None:
             existing_children[ref] = descriptor
 
         identity_changed = existing_semantics != semantics
-        if identity_changed:
-            if not args.recover_unfinalized_tap_root:
-                fail("existing Homebrew top index belongs to a stale Formula identity")
-            fixed_keys = {
-                "dev.kandelo.homebrew.abi",
-                "dev.kandelo.homebrew.bottle_rebuild",
-                "dev.kandelo.homebrew.formula",
-                "dev.kandelo.homebrew.formula_revision",
-                "dev.kandelo.homebrew.pkg_version",
-                "dev.kandelo.homebrew.tap_repository",
-            }
-            if any(existing_semantics[key] != semantics[key] for key in fixed_keys):
-                fail(
-                    "unfinalized recovery cannot change the fixed "
-                    "Formula/version/repository identity"
-                )
-            validate_unfinalized_recovery_tap(
-                args.recover_unfinalized_tap_root, first
+        conflicting_refs = [
+            child["homebrew_ref"]
+            for _layout, _receipt, child in selected
+            if child["homebrew_ref"] in existing_children
+            and existing_children[child["homebrew_ref"]]["digest"]
+            != child["descriptor"]["digest"]
+        ]
+        if identity_changed and not args.recover_unfinalized_tap_root:
+            fail("existing Homebrew top index belongs to a stale Formula identity")
+        if conflicting_refs and not args.recover_unfinalized_tap_root:
+            fail(
+                f"Homebrew child ref {conflicting_refs[0]} already names different "
+                "bytes; bump bottle rebuild"
             )
-            transition_reason = "unfinalized-stale-source-identity"
+
+        if identity_changed or conflicting_refs:
+            authorize_unfinalized_recovery(
+                args.recover_unfinalized_tap_root,
+                first,
+                existing_semantics,
+                semantics,
+            )
+            transition_reason = (
+                "unfinalized-stale-source-identity"
+                if identity_changed
+                else "unfinalized-same-identity-child-replacement"
+            )
             print(
-                "homebrew-oci-layout.py: replacing an unfinalized stale source "
-                f"identity at {previous_top_digest}; discarded "
+                "homebrew-oci-layout.py: replacing an unfinalized Homebrew index "
+                f"for {transition_reason} at {previous_top_digest}; discarded "
                 f"{len(existing_children)} old child manifest(s)",
                 file=sys.stderr,
             )
@@ -1879,7 +1905,11 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
     digest_value(top["digest"], "OCI top receipt digest")
     if top["previous_digest"] is not None:
         digest_value(top["previous_digest"], "OCI previous top digest")
-    if top["transition_reason"] not in (None, "unfinalized-stale-source-identity"):
+    if top["transition_reason"] not in (
+        None,
+        "unfinalized-same-identity-child-replacement",
+        "unfinalized-stale-source-identity",
+    ):
         fail("OCI top receipt has an invalid transition reason")
     if top["transition_reason"] is not None and top["previous_digest"] is None:
         fail("OCI top receipt transition lacks a previous top digest")
