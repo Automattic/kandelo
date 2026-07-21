@@ -18,3 +18,4 @@ script_path = "packages/registry/nethack/build-nethack.sh"
 [[outputs]]
 name = "nethack"
 wasm = "nethack.wasm"
+fork_instrumentation = "auto"

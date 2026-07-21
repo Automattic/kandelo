@@ -154,11 +154,6 @@ if [ ! -f "$NETCAT_BIN" ]; then
     exit 1
 fi
 
-echo "==> Applying fork instrumentation metadata..."
-FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
-(cd "$REPO_ROOT" && "$FORK_INSTRUMENT" "$NETCAT_BIN" -o "$NETCAT_BIN.instr")
-mv "$NETCAT_BIN.instr" "$NETCAT_BIN"
-
 mkdir -p "$BIN_DIR"
 cp "$NETCAT_BIN" "$BIN_DIR/nc.wasm"
 

@@ -77,8 +77,6 @@ install_local_binary() {
     repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     local src_basename
     src_basename="$(basename "$src")"
-    local host_target
-    host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
     local install_local_mirror="${WASM_POSIX_INSTALL_LOCAL_MIRROR:-1}"
     case "$install_local_mirror" in
         0)
@@ -96,6 +94,10 @@ install_local_binary() {
 
     if ! wasm_require_no_legacy_asyncify "$src"; then
         return 1
+    fi
+    local host_target=""
+    if [ "$install_local_mirror" = "1" ]; then
+        host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
     fi
     local fork_instrumentation="${WASM_POSIX_INSTALL_FORK_INSTRUMENTATION:-}"
     if [ -z "$fork_instrumentation" ] && [ -n "$host_target" ]; then
@@ -231,15 +233,42 @@ install_local_runtime_file() {
 
     local repo_root
     repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    local src_basename
+    src_basename="$(basename "$src")"
+    artifact="${artifact:-$src_basename}"
+    case "$artifact" in
+        ""|/*|*\\*|.|..|./*|../*|*/.|*/..|*//*|*/./*|*/../*|*/)
+            echo "install_local_runtime_file: artifact must be a portable relative path: $artifact" >&2
+            return 2
+            ;;
+    esac
+
+    local install_local_mirror="${WASM_POSIX_INSTALL_LOCAL_MIRROR:-1}"
+    case "$install_local_mirror" in
+        0)
+            if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+                echo "install_local_runtime_file: WASM_POSIX_INSTALL_LOCAL_MIRROR=0 requires WASM_POSIX_DEP_OUT_DIR" >&2
+                return 2
+            fi
+            local resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$artifact"
+            mkdir -p "$(dirname "$resolver_dest")"
+            cp "$src" "$resolver_dest"
+            echo "  installed $resolver_dest (resolver scratch)"
+            return 0
+            ;;
+        1) ;;
+        *)
+            echo "install_local_runtime_file: unsupported WASM_POSIX_INSTALL_LOCAL_MIRROR='$install_local_mirror' (expected 0 or 1)" >&2
+            return 2
+            ;;
+    esac
+
     local host_target
     host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
     if [ -z "$host_target" ]; then
         echo "install_local_runtime_file: rustc did not report a host target" >&2
         return 1
     fi
-    local src_basename
-    src_basename="$(basename "$src")"
-    artifact="${artifact:-$src_basename}"
     local rel
     rel="$(cd "$repo_root" && \
         env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \

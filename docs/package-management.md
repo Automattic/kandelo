@@ -203,6 +203,14 @@ remote fetches. It mirrors them at
 number of `[[outputs]]` entries. Missing fetched files make the archive stale
 and trigger source fallback (or a hard failure in fetch-only mode).
 
+Build scripts install declared artifacts through
+`scripts/install-local-binary.sh`. When
+`WASM_POSIX_INSTALL_LOCAL_MIRROR=0` and `WASM_POSIX_DEP_OUT_DIR` are set,
+both executable outputs and runtime files are copied only into that
+caller-owned output root. This packaging-only mode does not require Rust,
+Cargo, or `xtask`; the resolver validates the completed output root against
+`package.toml` after the build script returns.
+
 Repo-side VFS/test builders query the authoritative path and mode with
 `xtask build-deps runtime-file-metadata <package> <artifact>`; they must not
 scan library caches or invent environment-only guest paths. Published VFS
