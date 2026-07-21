@@ -542,6 +542,11 @@ repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
 
+[[git_inputs]]
+name       = "homebrew_tap_core"
+repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+commit     = "<exact 40-character lowercase commit>"
+
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
@@ -550,6 +555,11 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   time, so one `build.toml` survives ABI bumps.
 - `revision` is the publish-time counter the resolver hashes into
   the cache-key — bump it when output bytes legitimately change.
+- Each optional `[[git_inputs]]` tuple is an immutable external build input.
+  The resolver hashes its exact identity, fetches it anonymously at a detached
+  HEAD, exposes a sealed read-only checkout to the build, and records the same
+  tuple under the archive's `[[compatibility.git_inputs]]`. Consumers require
+  exact equality with the current `build.toml` before installing the archive.
 - For a legacy archive that doesn't live in an index, replace the
   `index_url` line with `url = "https://..."` + `sha256 = "..."`.
   The resolver fetches that archive directly without consulting any

@@ -612,6 +612,12 @@ repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "<commit at which the recipe was last touched>"
 revision    = 1
 
+# Optional: exact external repository input used by the build.
+[[git_inputs]]
+name       = "upstream_catalog"
+repository = "https://github.com/example/catalog.git"
+commit     = "<exact 40-character lowercase commit>"
+
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
@@ -625,6 +631,11 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   reads `git rev-parse HEAD` at publish time and writes the result
   back into the archive's internal manifest's `[compatibility]`
   block.
+- Use `[[git_inputs]]` when output bytes depend on another Git repository.
+  Do not clone it in the build script. Read the resolver-provided sealed
+  checkout from `WASM_POSIX_BUILD_GIT_<NAME>_DIR` and verify/use the paired
+  `..._COMMIT`; its identity is already part of the cache key and archived
+  compatibility provenance.
 - For a one-off legacy archive that doesn't live in an index,
   replace the `[binary]` block with the direct form:
   `url = "https://..."` + `sha256 = "..."`. The resolver fetches that

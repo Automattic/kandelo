@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::build_deps::validate_cache_artifacts;
-use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch};
 
 /// Caller-supplied build provenance + the locally-computed cache-key
 /// sha. We don't recompute the sha here so the caller (`archive-stage`
@@ -32,6 +32,10 @@ pub struct StageOptions {
     pub build_timestamp: String,
     /// e.g. `"darwin-arm64"`, `"linux-x86_64"`. Free-form; informational.
     pub build_host: String,
+    /// Exact external Git identities declared by the package recipe. These
+    /// travel with the archive so cache identity and human-auditable
+    /// provenance describe the same immutable inputs.
+    pub git_inputs: Vec<GitBuildInput>,
 }
 
 /// Pack the resolved cache entry at `cache_dir` into a `.tar.zst`
@@ -70,6 +74,18 @@ pub fn stage_archive_with_options(
     // omits; the consumer should never be the first place that notices.
     validate_cache_artifacts(target, cache_dir)
         .map_err(|e| format!("archive_stage: invalid cache entry: {e}"))?;
+
+    let expected_git_inputs = if target.dir.join("build.toml").exists() {
+        BuildToml::load(&target.dir)?.git_inputs
+    } else {
+        Vec::new()
+    };
+    if opts.git_inputs != expected_git_inputs {
+        return Err(format!(
+            "archive_stage: immutable git input provenance differs from current build.toml: options {:?}, current {:?}",
+            opts.git_inputs, expected_git_inputs
+        ));
+    }
 
     let manifest_text = build_archive_manifest_text(target, arch, abi_version, opts)?;
 
@@ -269,6 +285,13 @@ fn build_archive_manifest_text(
         opts.build_timestamp,
         opts.build_host,
     ));
+    for input in &opts.git_inputs {
+        text.push_str("\n[[compatibility.git_inputs]]\n");
+        text.push_str(
+            &toml::to_string(input)
+                .map_err(|e| format!("serialize compatibility git input: {e}"))?,
+        );
+    }
     let _ = DepsManifest::parse_archived(&text, target.dir.clone())
         .map_err(|e| format!("archived manifest fails its own validator: {e}"))?;
     Ok(text)
@@ -316,6 +339,7 @@ spdx = "BSD-3-Clause"
             cache_key_sha: "0".repeat(64),
             build_timestamp: "2026-04-26T10:00:00Z".to_string(),
             build_host: "darwin-arm64".to_string(),
+            git_inputs: vec![],
         };
         let err =
             stage_archive_with_options(&m, TargetArch::Wasm32, 4, &cache_dir, &archive_path, &opts)
@@ -367,6 +391,7 @@ headers = ["include/zlib.h"]
             cache_key_sha: "a".repeat(64),
             build_timestamp: "2026-04-26T10:00:00Z".to_string(),
             build_host: "darwin-arm64".to_string(),
+            git_inputs: vec![],
         };
         (cache_dir, archive_path, m, opts)
     }
@@ -481,6 +506,7 @@ mode = 420
             cache_key_sha: "c".repeat(64),
             build_timestamp: "2026-07-12T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
+            git_inputs: vec![],
         };
         stage_archive_with_options(
             &manifest,
@@ -609,7 +635,29 @@ mode = 420
     fn embedded_manifest_round_trips_through_parse_archived() {
         use std::io::Read;
 
-        let (cache_dir, archive_path, manifest, opts) = fixture_for_round_trip("embed-manifest");
+        let (cache_dir, archive_path, manifest, mut opts) =
+            fixture_for_round_trip("embed-manifest");
+        opts.git_inputs.push(GitBuildInput {
+            name: "homebrew_tap_core".to_string(),
+            repository: "https://github.com/Kandelo-dev/homebrew-tap-core.git".to_string(),
+            commit: "b40a764d47f4f4408790de2c211ccb8efb8e4c46".to_string(),
+        });
+        fs::write(
+            manifest.dir.join("build.toml"),
+            r#"
+script_path = "packages/registry/zlib/build-zlib.sh"
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+[[git_inputs]]
+name = "homebrew_tap_core"
+repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
+[binary]
+index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
 
         stage_archive_with_options(
             &manifest,
@@ -651,6 +699,29 @@ mode = 420
             Some(opts.build_timestamp.as_str())
         );
         assert_eq!(c.build_host.as_deref(), Some(opts.build_host.as_str()));
+        assert_eq!(c.git_inputs, opts.git_inputs);
+    }
+
+    #[test]
+    fn rejects_git_provenance_not_declared_by_current_build() {
+        let (cache_dir, archive_path, manifest, mut opts) =
+            fixture_for_round_trip("git-provenance-mismatch");
+        opts.git_inputs.push(GitBuildInput {
+            name: "tap".to_string(),
+            repository: "https://example.test/different.git".to_string(),
+            commit: "1111111111111111111111111111111111111111".to_string(),
+        });
+        let err = stage_archive_with_options(
+            &manifest,
+            TargetArch::Wasm32,
+            4,
+            &cache_dir,
+            &archive_path,
+            &opts,
+        )
+        .unwrap_err();
+        assert!(err.contains("differs from current build.toml"), "got: {err}");
+        assert!(!archive_path.exists());
     }
 
     #[test]
@@ -677,6 +748,7 @@ mode = 420
             cache_key_sha: "1".repeat(64),
             build_timestamp: "2026-04-26T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
+            git_inputs: vec![],
         };
 
         let a1 = dir.join("a1.tar.zst");
@@ -716,6 +788,7 @@ mode = 420
             cache_key_sha: "0".repeat(64),
             build_timestamp: "2026-04-26T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
+            git_inputs: vec![],
         };
         let err =
             stage_archive_with_options(&m, TargetArch::Wasm32, 4, &empty_cache, &archive, &opts)
@@ -747,6 +820,7 @@ mode = 420
             cache_key_sha: "b".repeat(64),
             build_timestamp: "2026-04-26T10:00:00Z".to_string(),
             build_host: "darwin-arm64".to_string(),
+            git_inputs: vec![],
         };
         let err =
             stage_archive_with_options(&m, TargetArch::Wasm32, 4, &cache_dir, &archive_path, &opts)

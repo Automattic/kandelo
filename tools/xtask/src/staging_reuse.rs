@@ -701,6 +701,7 @@ impl Flags {
 mod tests {
     use super::*;
     use crate::index_toml::{BinaryEntry, PackageEntry};
+    use std::fs;
 
     const ABI: u32 = 39;
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -772,6 +773,108 @@ mod tests {
             "https://github.com/Automattic/kandelo/releases/download/pr-946-staging/",
             mode,
         )
+    }
+
+    #[test]
+    fn staging_reuse_treats_git_input_identity_changes_as_stale() {
+        let registry_path = std::env::temp_dir()
+            .join("kandelo-staging-reuse-git-input")
+            .join(std::process::id().to_string());
+        let _ = fs::remove_dir_all(&registry_path);
+        let package_dir = registry_path.join("demo");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("package.toml"),
+            r#"
+kind = "library"
+name = "demo"
+version = "1.0.0"
+kernel_abi = 39
+depends_on = []
+[source]
+url = "https://example.test/demo.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[build]
+script_path = "packages/registry/demo/build-demo.sh"
+[outputs]
+libs = ["lib/libdemo.a"]
+"#,
+        )
+        .unwrap();
+        let build_path = package_dir.join("build.toml");
+        let first_build = r#"
+script_path = "packages/registry/demo/build-demo.sh"
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+[[git_inputs]]
+name = "tap"
+repository = "https://example.test/tap.git"
+commit = "1111111111111111111111111111111111111111"
+[binary]
+index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
+"#;
+        fs::write(&build_path, first_build).unwrap();
+        let first = build_expected_ledger(&registry_path, ABI, &BTreeSet::new()).unwrap();
+        fs::write(
+            &build_path,
+            first_build.replace(
+                "1111111111111111111111111111111111111111",
+                "2222222222222222222222222222222222222222",
+            ),
+        )
+        .unwrap();
+        let second = build_expected_ledger(&registry_path, ABI, &BTreeSet::new()).unwrap();
+        assert_ne!(first.entries[0].cache_key_sha, second.entries[0].cache_key_sha);
+
+        let mut stale_index = IndexToml {
+            abi_version: ABI,
+            generated_at: "2026-07-14T00:00:00Z".into(),
+            generator: "test".into(),
+            packages: vec![PackageEntry {
+                name: "demo".into(),
+                version: "1.0.0".into(),
+                revision: 1,
+                binary: BTreeMap::new(),
+            }],
+        };
+        let old_sha = first.entries[0].cache_key_sha.clone();
+        stale_index.packages[0].binary.insert(
+            TargetArch::Wasm32,
+            BinaryEntry {
+                status: EntryStatus::Success,
+                archive_url: Some(format!(
+                    "demo-1.0.0-rev1-abi39-wasm32-{}.tar.zst",
+                    &old_sha[..8]
+                )),
+                archive_sha256: Some(ARCHIVE_SHA.into()),
+                cache_key_sha: Some(old_sha),
+                built_at: Some("2026-07-14T00:00:00Z".into()),
+                built_by: Some("test".into()),
+                ..BinaryEntry::default()
+            },
+        );
+        let asset_name = stale_index.packages[0].binary[&TargetArch::Wasm32]
+            .archive_url
+            .clone()
+            .unwrap();
+        let stale_assets = vec![ReleaseAsset {
+            name: asset_name,
+            state: "uploaded".into(),
+            size: 123,
+            digest: Some(format!("sha256:{ARCHIVE_SHA}")),
+        }];
+        assert!(validate_release(
+            &second,
+            &stale_index,
+            &stale_assets,
+            "pr-946-staging",
+            "https://github.com/Automattic/kandelo/releases/download/pr-946-staging/",
+            ValidationMode::Current,
+        )
+        .is_err());
     }
 
     #[test]

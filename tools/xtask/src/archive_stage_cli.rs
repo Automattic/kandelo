@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::archive_stage::{self, StageOptions};
 use crate::build_deps::{self, default_cache_root, parse_target_arch, Registry, ResolveOpts};
-use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{BuildToml, DepsManifest, ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::util::hex;
 
@@ -170,10 +170,16 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
 
+    let git_inputs = if manifest.dir.join("build.toml").exists() {
+        BuildToml::load(&manifest.dir)?.git_inputs
+    } else {
+        Vec::new()
+    };
     let opts = StageOptions {
         cache_key_sha: sha_hex,
         build_timestamp: parsed.build_timestamp.clone(),
         build_host: parsed.build_host.clone(),
+        git_inputs,
     };
     archive_stage::stage_archive_with_options(
         &manifest,

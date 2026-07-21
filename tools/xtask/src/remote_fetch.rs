@@ -22,18 +22,20 @@
 //!   5. **`compatibility.target_arch`** must match the resolver's arch.
 //!   6. **`compatibility.abi_versions`** must contain the consumer's
 //!      kernel ABI version.
-//!   7. **`compatibility.cache_key_sha`** must match the locally-
+//!   7. **`compatibility.git_inputs`** must exactly match the current
+//!      package's declared immutable Git inputs.
+//!   8. **`compatibility.cache_key_sha`** must match the locally-
 //!      computed cache-key sha (i.e. archive's source recipe + build
 //!      tree hash to the same value the consumer would have produced
 //!      from source). This is the strict equivalence check —
 //!      mismatching name/version is implicitly impossible if the cache
 //!      key matches.
-//!   8. **Reshape.** Move `artifacts/*` to the temp dir's root and
+//!   9. **Reshape.** Move `artifacts/*` to the temp dir's root and
 //!      remove the now-empty `artifacts/` plus `manifest.toml`. The
 //!      archive bundle layout (manifest.toml at top, artifacts/ as a
 //!      subdir) is *not* the canonical cache layout (lib/, include/,
 //!      etc. at top); we flatten before installing.
-//!   9. **Atomic rename** into the canonical cache path. If a peer
+//!   10. **Atomic rename** into the canonical cache path. If a peer
 //!      raced us, discard our tmp.
 //!
 //! Any error after step 3 cleans up the temp dir before returning.
@@ -52,7 +54,7 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-use crate::pkg_manifest::{Binary, DepsManifest, TargetArch};
+use crate::pkg_manifest::{Binary, BuildToml, DepsManifest, GitBuildInput, TargetArch};
 use crate::util::hex;
 
 /// Maximum response size we will accept from `fetch_url` and archive
@@ -113,6 +115,11 @@ pub enum FetchError {
     AbiMismatch { current: u32, supported: Vec<u32> },
     /// Archive `cache_key_sha` ≠ locally-computed cache_key sha.
     CacheKeyMismatch { local: String, archived: String },
+    /// Archive external-Git provenance differs from current build.toml.
+    GitInputsMismatch {
+        expected: Vec<GitBuildInput>,
+        archived: Vec<GitBuildInput>,
+    },
     /// Filesystem operation (mkdir / rename / read_dir / …) failed.
     IoError(String),
 }
@@ -143,6 +150,10 @@ impl std::fmt::Display for FetchError {
             FetchError::CacheKeyMismatch { local, archived } => write!(
                 f,
                 "cache_key_sha mismatch: local {local}, archive {archived}"
+            ),
+            FetchError::GitInputsMismatch { expected, archived } => write!(
+                f,
+                "immutable git inputs mismatch: current build.toml {expected:?}, archive {archived:?}"
             ),
             FetchError::IoError(s) => write!(f, "io: {s}"),
         }
@@ -274,7 +285,32 @@ pub fn fetch_and_install_direct(
         });
     }
 
-    // 7. cache_key_sha equivalence.
+    // 7. Immutable external Git inputs must match as exact ordered tuples.
+    // Cache-key participation is necessary but insufficient evidence here:
+    // compare the human-auditable archived provenance directly so an archive
+    // cannot claim a different source identity under a copied cache key.
+    let expected_git_inputs = if target.dir.join("build.toml").exists() {
+        match BuildToml::load(&target.dir) {
+            Ok(build) => build.git_inputs,
+            Err(e) => {
+                let _ = fs::remove_dir_all(&tmp);
+                return Err(FetchError::ManifestParseError(format!(
+                    "load current build.toml git inputs: {e}"
+                )));
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    if compat.git_inputs != expected_git_inputs {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(FetchError::GitInputsMismatch {
+            expected: expected_git_inputs,
+            archived: compat.git_inputs.clone(),
+        });
+    }
+
+    // 8. cache_key_sha equivalence.
     if compat.cache_key_sha != local_cache_key_sha_hex {
         let _ = fs::remove_dir_all(&tmp);
         return Err(FetchError::CacheKeyMismatch {
@@ -283,13 +319,13 @@ pub fn fetch_and_install_direct(
         });
     }
 
-    // 8. Reshape: hoist artifacts/* up to tmp root, drop manifest.toml + artifacts/.
+    // 9. Reshape: hoist artifacts/* up to tmp root, drop manifest.toml + artifacts/.
     if let Err(e) = flatten_archive_layout(&tmp) {
         let _ = fs::remove_dir_all(&tmp);
         return Err(e);
     }
 
-    // 9. Atomic rename. If a peer raced us, discard ours.
+    // 10. Atomic rename. If a peer raced us, discard ours.
     if canonical.exists() {
         let _ = fs::remove_dir_all(&tmp);
         return Ok(());
@@ -1307,6 +1343,98 @@ mod tests {
             }
             other => panic!("unexpected err: {other:?}"),
         }
+    }
+
+    #[test]
+    fn remote_fetch_rejects_git_provenance_different_from_current_build() {
+        let dir = tempdir("git-input-mismatch");
+        let package_dir = dir.join("registry/demo");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("package.toml"),
+            r#"
+kind = "library"
+name = "demo"
+version = "1.0.0"
+depends_on = []
+[source]
+url = "https://example.test/demo.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[outputs]
+libs = ["lib/libdemo.a"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("build.toml"),
+            r#"
+script_path = "packages/registry/demo/build-demo.sh"
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+[[git_inputs]]
+name = "tap"
+repository = "https://example.test/current-tap.git"
+commit = "1111111111111111111111111111111111111111"
+[binary]
+index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+        let target = DepsManifest::load_with_overlay(&package_dir).unwrap();
+        let cache_key = "a".repeat(64);
+        let archived_manifest = format!(
+            r#"
+kind = "library"
+name = "demo"
+version = "1.0.0"
+revision = 1
+depends_on = []
+[source]
+url = "https://example.test/demo.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[outputs]
+libs = ["lib/libdemo.a"]
+[compatibility]
+target_arch = "wasm32"
+abi_versions = [4]
+cache_key_sha = "{cache_key}"
+[[compatibility.git_inputs]]
+name = "tap"
+repository = "https://example.test/different-tap.git"
+commit = "2222222222222222222222222222222222222222"
+"#
+        );
+        let archive = build_test_archive(
+            &archived_manifest,
+            &[("lib/libdemo.a", b"archive bytes")],
+        );
+        let archive_path = dir.join("demo.tar.zst");
+        fs::write(&archive_path, &archive).unwrap();
+        let archive_sha = sha256_hex(&archive);
+        let canonical = dir.join("cache/libs/demo");
+        let err = fetch_and_install_direct(
+            &format!("file://{}", archive_path.display()),
+            &archive_sha,
+            &canonical,
+            &target,
+            TargetArch::Wasm32,
+            4,
+            &cache_key,
+        )
+        .unwrap_err();
+        match err {
+            FetchError::GitInputsMismatch { expected, archived } => {
+                assert_eq!(expected[0].repository, "https://example.test/current-tap.git");
+                assert_eq!(archived[0].repository, "https://example.test/different-tap.git");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(!canonical.exists());
     }
 
     #[test]

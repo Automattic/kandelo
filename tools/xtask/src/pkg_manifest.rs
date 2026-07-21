@@ -139,6 +139,12 @@ pub struct Compatibility {
     pub target_arch: TargetArch,
     pub abi_versions: Vec<u32>,
     pub cache_key_sha: String,
+    /// Immutable external Git inputs used to produce this archive. These are
+    /// copied from the source package's `build.toml` so an archive records the
+    /// exact repositories and commits behind bytes that are not stored in the
+    /// Kandelo source tree.
+    #[serde(default)]
+    pub git_inputs: Vec<GitBuildInput>,
     #[serde(default)]
     #[allow(dead_code)]
     pub build_timestamp: Option<String>,
@@ -571,6 +577,10 @@ pub struct BuildToml {
     /// contents into `compute_sha` so changes to shared build helpers
     /// invalidate package caches automatically.
     pub inputs: Vec<String>,
+    /// Immutable external repositories required by the build recipe. The
+    /// resolver fetches each exact commit anonymously into an isolated,
+    /// detached checkout and exposes it through a stable environment variable.
+    pub git_inputs: Vec<GitBuildInput>,
     /// Informational provenance for the package-source repo that produced
     /// the published binary/index state.
     // Keep provenance fields in the parsed build.toml shape for schema
@@ -622,6 +632,8 @@ struct BuildTomlRaw {
     script_path: String,
     #[serde(default)]
     inputs: Vec<String>,
+    #[serde(default)]
+    git_inputs: Vec<GitBuildInput>,
     repo_url: String,
     commit: String,
     #[serde(default)]
@@ -635,6 +647,20 @@ struct BinaryRaw {
     index_url: Option<String>,
     url: Option<String>,
     sha256: Option<String>,
+}
+
+/// A content-addressed external Git checkout used by a package build.
+///
+/// `name` deliberately accepts only lowercase ASCII letters, digits, and
+/// underscores. Its uppercase form is therefore an injective environment-key
+/// mapping (`homebrew_tap_core` -> `HOMEBREW_TAP_CORE`) with no punctuation
+/// aliases or case folding collisions.
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GitBuildInput {
+    pub name: String,
+    pub repository: String,
+    pub commit: String,
 }
 
 impl BinarySource {
@@ -682,10 +708,12 @@ impl BuildToml {
         for input in &raw.inputs {
             validate_build_input_path(input)?;
         }
+        validate_git_build_inputs(&raw.git_inputs, "build.toml git_inputs")?;
         validate_build_script_path(&raw.script_path, "build.toml")?;
         Ok(BuildToml {
             script_path: raw.script_path,
             inputs: raw.inputs,
+            git_inputs: raw.git_inputs,
             repo_url: raw.repo_url,
             commit: raw.commit,
             revision: raw.revision,
@@ -701,6 +729,69 @@ impl BuildToml {
             std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
+}
+
+fn validate_git_build_inputs(inputs: &[GitBuildInput], context: &str) -> Result<(), String> {
+    let mut names = BTreeSet::new();
+    for input in inputs {
+        if input.name.is_empty()
+            || input.name.len() > 64
+            || !input
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            || !input
+                .name
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_lowercase())
+        {
+            return Err(format!(
+                "{context} name must start with a lowercase ASCII letter and contain only lowercase letters, digits, and underscores, got {:?}",
+                input.name
+            ));
+        }
+        if !names.insert(input.name.as_str()) {
+            return Err(format!(
+                "{context} declares duplicate name {:?}",
+                input.name
+            ));
+        }
+
+        let repository = input.repository.as_str();
+        let remainder = repository.strip_prefix("https://").ok_or_else(|| {
+            format!(
+                "{context} repository must be an anonymous HTTPS URL, got {repository:?}"
+            )
+        })?;
+        let authority = remainder.split('/').next().unwrap_or_default();
+        if repository.len() > 2_048
+            || remainder.is_empty()
+            || !remainder.contains('/')
+            || authority.is_empty()
+            || authority.contains('@')
+            || repository
+                .chars()
+                .any(|character| matches!(character, '?' | '#' | '\0') || character.is_whitespace())
+        {
+            return Err(format!(
+                "{context} repository must be a bounded anonymous HTTPS repository URL without credentials, query, or fragment, got {repository:?}"
+            ));
+        }
+
+        if input.commit.len() != 40
+            || !input
+                .commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(format!(
+                "{context} commit must be an exact 40-character lowercase Git object ID, got {:?}",
+                input.commit
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_build_script_path(path: &str, document: &str) -> Result<(), String> {
@@ -1293,6 +1384,7 @@ impl DepsManifest {
                 c.cache_key_sha
             ));
         }
+        validate_git_build_inputs(&c.git_inputs, "compatibility.git_inputs")?;
         Ok(())
     }
 
@@ -3449,6 +3541,11 @@ inputs = [
 repo_url = "https://github.com/example/foo.git"
 commit = "abc123"
 
+[[git_inputs]]
+name = "homebrew_tap_core"
+repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
+
 [binary]
 index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
 "#;
@@ -3463,11 +3560,78 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
         );
         assert_eq!(bt.repo_url, "https://github.com/example/foo.git");
         assert_eq!(bt.commit, "abc123");
+        assert_eq!(
+            bt.git_inputs,
+            vec![GitBuildInput {
+                name: "homebrew_tap_core".to_string(),
+                repository: "https://github.com/Kandelo-dev/homebrew-tap-core.git".to_string(),
+                commit: "b40a764d47f4f4408790de2c211ccb8efb8e4c46".to_string(),
+            }]
+        );
         assert!(matches!(
             bt.binary,
             BinarySource::Indexed { ref index_url }
                 if index_url == "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
         ));
+    }
+
+    #[test]
+    fn rejects_invalid_or_ambiguous_git_build_inputs() {
+        let cases = [
+            (
+                "name = \"tap-core\"\nrepository = \"https://example.test/tap.git\"\ncommit = \"1111111111111111111111111111111111111111\"",
+                "name",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"http://example.test/tap.git\"\ncommit = \"1111111111111111111111111111111111111111\"",
+                "HTTPS",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"https://user@example.test/tap.git\"\ncommit = \"1111111111111111111111111111111111111111\"",
+                "credentials",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"https://example.test/tap.git\"\ncommit = \"ABCDEF0123456789ABCDEF0123456789ABCDEF01\"",
+                "lowercase",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"https://example.test/tap.git\"\ncommit = \"1111111\"",
+                "40-character",
+            ),
+        ];
+        for (git_input, expected) in cases {
+            let text = format!(
+                r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[[git_inputs]]
+{git_input}
+[binary]
+index_url = "https://example.test/index.toml"
+"#
+            );
+            let err = BuildToml::parse(&text).unwrap_err();
+            assert!(err.contains(expected), "expected {expected:?}, got: {err}");
+        }
+
+        let duplicate = r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[[git_inputs]]
+name = "tap"
+repository = "https://example.test/one.git"
+commit = "1111111111111111111111111111111111111111"
+[[git_inputs]]
+name = "tap"
+repository = "https://example.test/two.git"
+commit = "2222222222222222222222222222222222222222"
+[binary]
+index_url = "https://example.test/index.toml"
+"#;
+        let err = BuildToml::parse(duplicate).unwrap_err();
+        assert!(err.contains("duplicate name"), "got: {err}");
     }
 
     #[test]

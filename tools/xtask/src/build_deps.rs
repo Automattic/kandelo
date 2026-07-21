@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
@@ -50,7 +51,7 @@ use crate::host_tool_probe::{self, ProbeFailure};
 use crate::index_toml::{self, EntryStatus};
 use crate::pkg_manifest::{
     BinarySource, BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, HostTool,
-    ManifestKind, TargetArch,
+    GitBuildInput, ManifestKind, TargetArch,
 };
 use crate::remote_fetch;
 use crate::repo_root;
@@ -837,12 +838,33 @@ fn build_input_digests(
         return Ok(Vec::new());
     }
     let build = BuildToml::load(&target.dir)?;
-    let mut out = Vec::with_capacity(build.inputs.len());
+    let mut out = Vec::with_capacity(build.inputs.len() + build.git_inputs.len());
     for input in &build.inputs {
         let path = resolve_build_input_path(target, registry, input)?;
         out.push(BuildInputDigest {
             label: input.clone(),
             digest: hash_build_input(&path)?,
+        });
+    }
+    // External Git inputs are content-addressed before any network access.
+    // Preserve authored order and length-prefix every field so distinct
+    // tuples cannot collide through concatenation. Adding this section is
+    // intentionally additive: packages without git_inputs retain their
+    // existing cache keys.
+    for (index, input) in build.git_inputs.iter().enumerate() {
+        let mut h = Sha256::new();
+        h.update(b"wasm-posix-build-git-input-v1\0");
+        for field in [
+            input.name.as_bytes(),
+            input.repository.as_bytes(),
+            input.commit.as_bytes(),
+        ] {
+            h.update((field.len() as u64).to_le_bytes());
+            h.update(field);
+        }
+        out.push(BuildInputDigest {
+            label: format!("git-input:{index}:{}", input.name),
+            digest: h.finalize().into(),
         });
     }
     Ok(out)
@@ -1961,6 +1983,448 @@ fn compose_pkgconfig_path(paths: &BTreeSet<PathBuf>) -> String {
         .join(":")
 }
 
+#[derive(Debug)]
+struct ProvisionedGitInput {
+    declaration: GitBuildInput,
+    checkout: PathBuf,
+}
+
+/// Temporary, detached checkouts for a package's declared `git_inputs`.
+/// Dropping the guard removes every checkout, including error paths.
+#[derive(Debug, Default)]
+struct ProvisionedGitInputs {
+    root: Option<PathBuf>,
+    inputs: Vec<ProvisionedGitInput>,
+}
+
+impl ProvisionedGitInputs {
+    fn provision(target: &DepsManifest, canonical: &Path) -> Result<Self, String> {
+        let build_path = target.dir.join("build.toml");
+        if !build_path.exists() {
+            return Ok(Self::default());
+        }
+        let declarations = BuildToml::load(&target.dir)?.git_inputs;
+        if declarations.is_empty() {
+            return Ok(Self::default());
+        }
+
+        Self::provision_declarations(&target.spec(), canonical, declarations)
+    }
+
+    fn provision_declarations(
+        package_spec: &str,
+        canonical: &Path,
+        declarations: Vec<GitBuildInput>,
+    ) -> Result<Self, String> {
+        let parent = canonical.parent().ok_or_else(|| {
+            format!(
+                "{}: canonical cache path has no parent for git inputs: {}",
+                package_spec,
+                canonical.display()
+            )
+        })?;
+        let basename = canonical
+            .file_name()
+            .ok_or_else(|| {
+                format!(
+                    "canonical cache path has no filename: {}",
+                    canonical.display()
+                )
+            })?
+            .to_string_lossy();
+        let root = create_git_input_root(parent, &basename)?;
+
+        let mut provisioned = Self {
+            root: Some(root.clone()),
+            inputs: Vec::with_capacity(declarations.len()),
+        };
+        for declaration in declarations {
+            let checkout = root.join(&declaration.name);
+            std::fs::create_dir(&checkout)
+                .map_err(|e| format!("create git-input checkout {}: {e}", checkout.display()))?;
+            run_git(&checkout, &["init", "--quiet"], &declaration.repository)?;
+            run_git(
+                &checkout,
+                &[
+                    "fetch",
+                    "--quiet",
+                    "--depth=1",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    &declaration.repository,
+                    &declaration.commit,
+                ],
+                &declaration.repository,
+            )?;
+            run_git(
+                &checkout,
+                &["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+                &declaration.repository,
+            )?;
+            verify_git_input(&declaration, &checkout)?;
+            validate_git_input_tree(&declaration, &checkout)?;
+            set_git_input_tree_read_only(&checkout, true)?;
+            provisioned.inputs.push(ProvisionedGitInput {
+                declaration,
+                checkout,
+            });
+        }
+        Ok(provisioned)
+    }
+
+    fn export_to(&self, command: &mut Command) {
+        for input in &self.inputs {
+            let key = input.declaration.name.to_ascii_uppercase();
+            command.env(
+                format!("WASM_POSIX_BUILD_GIT_{key}_DIR"),
+                &input.checkout,
+            );
+            command.env(
+                format!("WASM_POSIX_BUILD_GIT_{key}_COMMIT"),
+                &input.declaration.commit,
+            );
+        }
+    }
+
+    fn verify_unchanged(&self) -> Result<(), String> {
+        for input in &self.inputs {
+            verify_git_input(&input.declaration, &input.checkout)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ProvisionedGitInputs {
+    fn drop(&mut self) {
+        if let Some(root) = self.root.take() {
+            let _ = set_git_input_tree_read_only(&root, false);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
+static GIT_INPUT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn create_git_input_root(parent: &Path, basename: &str) -> Result<PathBuf, String> {
+    for _ in 0..10_000 {
+        let counter = GIT_INPUT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = parent.join(format!(
+            ".{basename}.git-inputs-{}-{counter}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&root) {
+            Ok(()) => return Ok(root),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "create exclusive git-input root {}: {e}",
+                    root.display()
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "could not allocate an exclusive git-input root below {}",
+        parent.display()
+    ))
+}
+
+/// Construct a Git subprocess that cannot inherit source credentials, token
+/// headers, hooks, or repository selection from the caller's environment.
+/// Build-time Git inputs are public source inputs; a private checkout would be
+/// both unreproducible and an accidental credential dependency.
+fn hardened_git_command(repository: &str) -> Command {
+    let mut command = Command::new("git");
+    command
+        .arg("-c")
+        .arg("core.hooksPath=/dev/null")
+        .arg("-c")
+        .arg("credential.helper=")
+        .arg("-c")
+        .arg("http.extraHeader=")
+        .arg("-c")
+        .arg("submodule.recurse=false")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_COUNT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .env("SSH_ASKPASS", "true")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_PROTOCOL_FROM_USER", "0")
+        .env(
+            "GIT_ALLOW_PROTOCOL",
+            if repository.starts_with("file://") {
+                // Private test helpers construct local repositories directly;
+                // BuildToml validation makes this unreachable for real inputs.
+                "https:file"
+            } else {
+                "https"
+            },
+        );
+
+    for key in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "HOMEBREW_GITHUB_PACKAGES_TOKEN",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+    ] {
+        command.env_remove(key);
+    }
+    for (key, _) in std::env::vars_os() {
+        let key_text = key.to_string_lossy();
+        if key_text.starts_with("GIT_CONFIG_KEY_") || key_text.starts_with("GIT_CONFIG_VALUE_") {
+            command.env_remove(key);
+        }
+    }
+    command
+}
+
+fn git_output(
+    checkout: &Path,
+    args: &[&str],
+    repository: &str,
+) -> Result<std::process::Output, String> {
+    let mut command = hardened_git_command(repository);
+    let output = command
+        .arg("-C")
+        .arg(checkout)
+        .args(args)
+        .output()
+        .map_err(|e| format!("spawn isolated git in {}: {e}", checkout.display()))?;
+    Ok(output)
+}
+
+fn run_git(checkout: &Path, args: &[&str], repository: &str) -> Result<(), String> {
+    let output = git_output(checkout, args, repository)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "isolated git {:?} failed in {} with {}: {}",
+        args,
+        checkout.display(),
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+fn verify_git_input(input: &GitBuildInput, checkout: &Path) -> Result<(), String> {
+    let head = git_output(checkout, &["rev-parse", "HEAD^{commit}"], &input.repository)?;
+    if !head.status.success() {
+        return Err(format!(
+            "git input {:?}: cannot resolve detached HEAD in {}: {}",
+            input.name,
+            checkout.display(),
+            String::from_utf8_lossy(&head.stderr).trim()
+        ));
+    }
+    let actual = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    if actual != input.commit {
+        return Err(format!(
+            "git input {:?}: expected commit {}, checkout has {}",
+            input.name, input.commit, actual
+        ));
+    }
+
+    let branch = git_output(
+        checkout,
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        &input.repository,
+    )?;
+    if !branch.status.success() || String::from_utf8_lossy(&branch.stdout).trim() != "HEAD" {
+        return Err(format!(
+            "git input {:?}: checkout must remain at a detached HEAD",
+            input.name
+        ));
+    }
+
+    let status = git_output(
+        checkout,
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignored=matching",
+        ],
+        &input.repository,
+    )?;
+    if !status.status.success() {
+        return Err(format!(
+            "git input {:?}: cannot verify clean checkout: {}",
+            input.name,
+            String::from_utf8_lossy(&status.stderr).trim()
+        ));
+    }
+    if !status.stdout.is_empty() {
+        return Err(format!(
+            "git input {:?}: build mutated immutable checkout {}:\n{}",
+            input.name,
+            checkout.display(),
+            String::from_utf8_lossy(&status.stdout).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_git_input_tree(input: &GitBuildInput, checkout: &Path) -> Result<(), String> {
+    let index = git_output(
+        checkout,
+        &["ls-files", "--stage", "-z"],
+        &input.repository,
+    )?;
+    if !index.status.success() {
+        return Err(format!(
+            "git input {:?}: cannot inspect index: {}",
+            input.name,
+            String::from_utf8_lossy(&index.stderr).trim()
+        ));
+    }
+    for record in index.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
+        let metadata = record.split(|byte| *byte == b'\t').next().unwrap_or(record);
+        let mode = metadata.split(|byte| *byte == b' ').next().unwrap_or(metadata);
+        if mode == b"160000" {
+            return Err(format!(
+                "git input {:?}: submodule gitlinks are not allowed in immutable build inputs",
+                input.name
+            ));
+        }
+    }
+
+    let canonical = std::fs::canonicalize(checkout)
+        .map_err(|e| format!("resolve git input root {}: {e}", checkout.display()))?;
+    validate_git_input_tree_entries(input, checkout, checkout, &canonical)
+}
+
+fn validate_git_input_tree_entries(
+    input: &GitBuildInput,
+    checkout: &Path,
+    directory: &Path,
+    canonical: &Path,
+) -> Result<(), String> {
+    let mut entries = std::fs::read_dir(directory)
+        .map_err(|e| format!("read git input directory {}: {e}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("read git input entry below {}: {e}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if directory == checkout && entry.file_name() == ".git" {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("stat git input entry {}: {e}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            let resolved = std::fs::canonicalize(&path).map_err(|e| {
+                format!(
+                    "git input {:?}: symlink {} cannot be resolved inside its checkout: {e}",
+                    input.name,
+                    path.display()
+                )
+            })?;
+            if !resolved.starts_with(canonical) {
+                return Err(format!(
+                    "git input {:?}: symlink {} escapes immutable checkout {}",
+                    input.name,
+                    path.display(),
+                    checkout.display()
+                ));
+            }
+        } else if metadata.is_dir() {
+            validate_git_input_tree_entries(input, checkout, &path, canonical)?;
+        } else if !metadata.is_file() {
+            return Err(format!(
+                "git input {:?}: {} is not a regular file, directory, or contained symlink",
+                input.name,
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_git_input_tree_read_only(path: &Path, read_only: bool) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("stat immutable git input {}: {e}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_dir() && !read_only {
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() | 0o700);
+        std::fs::set_permissions(path, permissions)
+            .map_err(|e| format!("unseal git input directory {}: {e}", path.display()))?;
+    }
+    if metadata.is_dir() {
+        let entries = std::fs::read_dir(path)
+            .map_err(|e| format!("read immutable git input {}: {e}", path.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("read immutable git input entry: {e}"))?;
+            set_git_input_tree_read_only(&entry.path(), read_only)?;
+        }
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("restat immutable git input {}: {e}", path.display()))?;
+    let mut permissions = metadata.permissions();
+    if read_only {
+        permissions.set_mode(permissions.mode() & !0o222);
+    } else {
+        permissions.set_mode(permissions.mode() | 0o600);
+    }
+    std::fs::set_permissions(path, permissions).map_err(|e| {
+        format!(
+            "{} immutable git input {}: {e}",
+            if read_only { "seal" } else { "unseal" },
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn set_git_input_tree_read_only(path: &Path, read_only: bool) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("stat immutable git input {}: {e}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_dir() && !read_only {
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions)
+            .map_err(|e| format!("unseal git input directory {}: {e}", path.display()))?;
+    }
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)
+            .map_err(|e| format!("read immutable git input {}: {e}", path.display()))?
+        {
+            let entry = entry.map_err(|e| format!("read immutable git input entry: {e}"))?;
+            set_git_input_tree_read_only(&entry.path(), read_only)?;
+        }
+    }
+    let mut permissions = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("restat immutable git input {}: {e}", path.display()))?
+        .permissions();
+    permissions.set_readonly(read_only);
+    std::fs::set_permissions(path, permissions).map_err(|e| {
+        format!(
+            "{} immutable git input {}: {e}",
+            if read_only { "seal" } else { "unseal" },
+            path.display()
+        )
+    })
+}
+
 /// Run the build script with `WASM_POSIX_DEP_*` env vars set, validate
 /// outputs under the temp directory, then `rename(2)` into place.
 ///
@@ -2006,6 +2470,14 @@ fn build_into_cache(
         ));
     }
 
+    let git_inputs = match ProvisionedGitInputs::provision(target, canonical) {
+        Ok(inputs) => inputs,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!("{}: provision immutable git inputs: {e}", target.spec()));
+        }
+    };
+
     let status = {
         let mut cmd = Command::new("bash");
         cmd.arg(&script);
@@ -2036,6 +2508,7 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
+        git_inputs.export_to(&mut cmd);
         for (name, dep) in dep_dirs {
             // Per design 12: library/program deps export under
             // `*_DIR` (built-artifact root), source deps under
@@ -2074,6 +2547,14 @@ fn build_into_cache(
         cmd.status()
             .map_err(|e| format!("spawn bash {}: {e}", script.display()))?
     };
+
+    if let Err(e) = git_inputs.verify_unchanged() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!(
+            "{}: immutable git input verification failed after build: {e}",
+            target.spec()
+        ));
+    }
 
     if !status.success() {
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3519,6 +4000,36 @@ libs = ["lib/lib{name}.a"]
         p
     }
 
+    fn fixture_git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "fixture git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn immutable_git_fixture(label: &str) -> (PathBuf, String) {
+        let repo = tempdir(label).join("source");
+        fs::create_dir_all(&repo).unwrap();
+        fixture_git(&repo, &["init", "--quiet"]);
+        fixture_git(&repo, &["config", "user.name", "Kandelo Test"]);
+        fixture_git(&repo, &["config", "user.email", "test@kandelo.invalid"]);
+        fixture_git(&repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.join("payload.txt"), "immutable payload\n").unwrap();
+        fs::write(repo.join(".gitignore"), "generated.tmp\n").unwrap();
+        fixture_git(&repo, &["add", "payload.txt", ".gitignore"]);
+        fixture_git(&repo, &["commit", "--quiet", "-m", "fixture"]);
+        let commit = fixture_git(&repo, &["rev-parse", "HEAD"]);
+        (repo, commit)
+    }
+
     fn uleb(mut n: u32) -> Vec<u8> {
         let mut out = Vec::new();
         loop {
@@ -3950,6 +4461,107 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
         assert_ne!(
             sha_after, sha_after_dir_change,
             "build.toml directory input content changes must change cache_key_sha"
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_sha_uses_ordered_git_input_identities() {
+        let root = tempdir("ckcs-git-inputs");
+        write(&root, "libGit", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let package = root.join("libGit");
+        let build_path = package.join("build.toml");
+        std::fs::write(
+            &build_path,
+            r#"
+script_path = "packages/registry/libGit/build-libGit.sh"
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+
+[[git_inputs]]
+name = "first"
+repository = "https://example.test/first.git"
+commit = "1111111111111111111111111111111111111111"
+
+[[git_inputs]]
+name = "second"
+repository = "https://example.test/second.git"
+commit = "2222222222222222222222222222222222222222"
+
+[binary]
+index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+        let manifest = reg.load("libGit").unwrap();
+        let sha_before = compute_sha(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let cache_root = root.join("cache");
+        let old_canonical = canonical_path(&cache_root, &manifest, TEST_ARCH, &sha_before);
+        std::fs::create_dir_all(&old_canonical).unwrap();
+        std::fs::write(old_canonical.join("stale"), "old git identity\n").unwrap();
+
+        let original = std::fs::read_to_string(&build_path).unwrap();
+        std::fs::write(
+            &build_path,
+            original.replace(
+                "1111111111111111111111111111111111111111",
+                "3333333333333333333333333333333333333333",
+            ),
+        )
+        .unwrap();
+        let sha_changed_commit = compute_sha(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_ne!(sha_before, sha_changed_commit);
+        let changed_canonical = canonical_path(
+            &cache_root,
+            &manifest,
+            TEST_ARCH,
+            &sha_changed_commit,
+        );
+        assert_ne!(old_canonical, changed_canonical);
+        assert!(
+            !changed_canonical.exists(),
+            "a cache hit built for a prior Git identity must not satisfy the current identity"
+        );
+
+        std::fs::write(
+            &build_path,
+            original
+                .replace("name = \"first\"", "name = \"temporary\"")
+                .replace("name = \"second\"", "name = \"first\"")
+                .replace("name = \"temporary\"", "name = \"second\""),
+        )
+        .unwrap();
+        let sha_reordered = compute_sha(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_ne!(
+            sha_before, sha_reordered,
+            "authored git-input order is part of the cache identity"
         );
     }
 
@@ -4920,6 +5532,162 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
             &resolve_opts(&cache, None),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn immutable_git_inputs_are_exact_detached_exported_and_reverified() {
+        let root = tempdir("git-input-provision");
+        let (source, commit) = immutable_git_fixture("git-input-source");
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let declaration = GitBuildInput {
+            name: "homebrew_tap_core".to_string(),
+            repository: format!("file://{}", source.display()),
+            commit: commit.clone(),
+        };
+
+        let provisioned = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![declaration.clone()],
+        )
+        .unwrap();
+        let concurrent = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![declaration],
+        )
+        .unwrap();
+        assert_ne!(
+            provisioned.root, concurrent.root,
+            "exclusive temporary roots must not collide for concurrent builds"
+        );
+        drop(concurrent);
+        let checkout = provisioned.inputs[0].checkout.clone();
+        assert_eq!(
+            fs::read_to_string(checkout.join("payload.txt")).unwrap(),
+            "immutable payload\n"
+        );
+        assert_eq!(
+            fixture_git(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "HEAD"
+        );
+
+        let mut command = Command::new("bash");
+        command.arg("-c").arg(
+            "printf '%s\\n%s\\n' \"$WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR\" \
+             \"$WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT\"",
+        );
+        provisioned.export_to(&mut command);
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\n{}\n", checkout.display(), commit)
+        );
+
+        let write_error = fs::write(checkout.join("generated.tmp"), "mutation\n").unwrap_err();
+        assert_eq!(write_error.kind(), std::io::ErrorKind::PermissionDenied);
+
+        // Defense in depth: even if a build deliberately changes permissions,
+        // ignored outputs are still mutations of the declared input. Re-seal
+        // the simulated mutation before exercising the post-build verifier.
+        set_git_input_tree_read_only(&checkout, false).unwrap();
+        fs::write(checkout.join("generated.tmp"), "mutation\n").unwrap();
+        set_git_input_tree_read_only(&checkout, true).unwrap();
+        let err = provisioned.verify_unchanged().unwrap_err();
+        assert!(err.contains("mutated immutable checkout"), "got: {err}");
+
+        let temporary_root = provisioned.root.clone().unwrap();
+        drop(provisioned);
+        assert!(
+            !temporary_root.exists(),
+            "temporary Git inputs must be removed when the build guard drops"
+        );
+    }
+
+    #[test]
+    fn immutable_git_input_rejects_a_different_exact_commit() {
+        let root = tempdir("git-input-wrong-commit");
+        let (source, _commit) = immutable_git_fixture("git-input-wrong-source");
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let err = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![GitBuildInput {
+                name: "homebrew_tap_core".to_string(),
+                repository: format!("file://{}", source.display()),
+                commit: "1111111111111111111111111111111111111111".to_string(),
+            }],
+        )
+        .unwrap_err();
+        assert!(err.contains("fetch") && err.contains("failed"), "got: {err}");
+        assert!(
+            fs::read_dir(canonical.parent().unwrap())
+                .unwrap()
+                .next()
+                .is_none(),
+            "failed provisioning must clean its temporary checkout"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn immutable_git_input_rejects_symlinks_that_escape_checkout() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir("git-input-symlink");
+        let (source, _commit) = immutable_git_fixture("git-input-symlink-source");
+        let outside = source.parent().unwrap().join("outside.txt");
+        fs::write(&outside, "outside\n").unwrap();
+        symlink(&outside, source.join("escape")).unwrap();
+        fixture_git(&source, &["add", "escape"]);
+        fixture_git(&source, &["commit", "--quiet", "-m", "escape"]);
+        let commit = fixture_git(&source, &["rev-parse", "HEAD"]);
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let err = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![GitBuildInput {
+                name: "tap".to_string(),
+                repository: format!("file://{}", source.display()),
+                commit,
+            }],
+        )
+        .unwrap_err();
+        assert!(err.contains("symlink") && err.contains("escapes"), "got: {err}");
+    }
+
+    #[test]
+    fn immutable_git_input_rejects_submodule_gitlinks() {
+        let root = tempdir("git-input-gitlink");
+        let (source, first_commit) = immutable_git_fixture("git-input-gitlink-source");
+        fixture_git(
+            &source,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{first_commit},vendor/submodule"),
+            ],
+        );
+        fixture_git(&source, &["commit", "--quiet", "-m", "gitlink"]);
+        let commit = fixture_git(&source, &["rev-parse", "HEAD"]);
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let err = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![GitBuildInput {
+                name: "tap".to_string(),
+                repository: format!("file://{}", source.display()),
+                commit,
+            }],
+        )
+        .unwrap_err();
+        assert!(err.contains("submodule gitlinks"), "got: {err}");
     }
 
     #[test]

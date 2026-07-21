@@ -276,6 +276,11 @@ repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
 
+[[git_inputs]]
+name       = "homebrew_tap_core"
+repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+commit     = "<exact 40-character lowercase commit>"
+
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
@@ -287,6 +292,12 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   the cache-key. Bump when output bytes legitimately change (build
   flag tweaks, fork-instrument output, etc.). Don't bump for doc-only
   changes — it triggers a needless rebuild across the matrix.
+- `[[git_inputs]]` declares an external repository whose exact commit is part
+  of the build recipe. Names start with a lowercase letter and contain only
+  lowercase letters, digits, and underscores; repository URLs are anonymous
+  HTTPS URLs; commits are full 40-character lowercase object IDs. The ordered
+  `(name, repository, commit)` tuples are hashed into the package cache key
+  before network access.
 - `[binary]` declares where binaries are published. Two forms,
   exactly one of which must be present:
 
@@ -297,6 +308,22 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 
 The resolver picks the form by structural deserialization — mixing
 forms in one `[binary]` block is a parse error.
+
+For each declared Git input, the source-build resolver performs an anonymous
+exact-commit fetch with inherited Git credentials, configuration, and hooks
+disabled. It rejects submodule gitlinks and symlinks that escape the checkout,
+verifies a clean detached HEAD, seals the whole checkout read-only for the
+build, and verifies it again afterward. A declaration named
+`homebrew_tap_core` is exposed as:
+
+- `WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR`
+- `WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT`
+
+Published archives record the same ordered declarations as
+`[[compatibility.git_inputs]]`. Archive creation and remote consumption both
+compare that vector exactly with the current `build.toml`; the archive SHA and
+cache key are additional integrity bindings, not substitutes for that direct
+provenance check.
 
 ### Homebrew bottles and package cache keys
 
@@ -398,7 +425,8 @@ same lib, we revisit. Noted as future work; not a near-term priority.
 
 The cache-key sha for a library or program is computed over
 `(name, version, revision, source.url, source.sha256, target_arch,
-abi_version, declared outputs, declared build input digests, global
+abi_version, declared outputs, declared build input digests, immutable
+external Git identities, global
 toolchain/sysroot input digests, sorted transitive dep cache-key
 shas)`, where `revision` is read from `build.toml` (overlaid onto the
 parsed `DepsManifest` at load time) and defaults to 1 when
@@ -455,7 +483,7 @@ in turn, it checks:
    `archive_url`; for `status = failed/pending/building` with a
    `fallback_archive_url` use the last-green fallback. Verify
    archive sha256 + internal `[compatibility]` block
-   (target_arch, abi_versions, cache_key_sha). Any verification
+   (target_arch, abi_versions, cache_key_sha, exact git_inputs). Any verification
    failure logs a warning and falls through to step 4.
 4. **Build from source** — run the declared `build.script_path`,
    validate declared outputs, atomically install into the
@@ -481,6 +509,8 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_WORK_DIR` | Optional caller-owned scratch root. The sealed Homebrew Formula bridge sets this because its reviewed Kandelo checkout is read-only. Direct developer builds may retain a package-local default. |
 | `WASM_POSIX_DEP_SOURCE_DIR` | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
+| `WASM_POSIX_BUILD_GIT_<NAME>_DIR` | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name. |
+| `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout. |
 
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must
