@@ -4882,6 +4882,63 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
     }
 
     #[test]
+    fn compute_cache_key_sha_without_git_inputs_matches_pre_git_schema_key() {
+        let root = tempdir("ckcs-no-git-inputs-golden");
+        let package = root.join("legacy-source");
+        std::fs::create_dir(&package).unwrap();
+        std::fs::write(
+            package.join("package.toml"),
+            r#"
+kind = "source"
+name = "legacy-source"
+version = "1.2.3"
+
+[source]
+url = "https://example.test/legacy-source-1.2.3.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+"#,
+        )
+        .unwrap();
+        std::fs::write(package.join("recipe.txt"), "recipe-v1\n").unwrap();
+        std::fs::write(
+            package.join("build.toml"),
+            r#"
+script_path = "build.sh"
+inputs = ["recipe.txt"]
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 7
+
+[binary]
+index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+        let registry = Registry {
+            roots: vec![root],
+        };
+
+        let actual = compute_cache_key_sha_for_package(
+            &package,
+            &registry,
+            TargetArch::Wasm32,
+            TEST_ABI,
+        )
+        .unwrap();
+
+        // Golden produced by the resolver before build.toml learned the
+        // optional [[git_inputs]] section. Merely adding that schema must not
+        // invalidate every package whose immutable-Git vector remains empty.
+        assert_eq!(
+            actual,
+            "db1f2fac54f8b14e0caf4f8a2e2fe15767f07260a4b0437cdb276ce6d40b5fb5"
+        );
+    }
+
+    #[test]
     fn compute_cache_key_sha_uses_ordered_git_input_identities() {
         let root = tempdir("ckcs-git-inputs");
         write(&root, "libGit", "1.0.0", &[]);
