@@ -468,7 +468,7 @@ index_url = "https://example.invalid/index.toml"
         )
         .unwrap();
         let target = DepsManifest::load_with_overlay(&package_dir).unwrap();
-        let cache = dir.path().join("cache");
+        let cache = dir.path().join(format!("cache-shell-{cache_key}"));
         fs::create_dir_all(&cache).unwrap();
         let output_bytes = b"exact bottle-built shell bytes\n".to_vec();
         fs::write(cache.join("shell.vfs.zst"), &output_bytes).unwrap();
@@ -487,6 +487,7 @@ index_url = "https://example.invalid/index.toml"
                 cache_key_sha: cache_key.clone(),
                 build_timestamp: "2026-07-21T00:00:00Z".to_string(),
                 build_host: "test".to_string(),
+                git_inputs: vec![],
             },
         )
         .unwrap();
