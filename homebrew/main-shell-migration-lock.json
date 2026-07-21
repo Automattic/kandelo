@@ -1,6 +1,10 @@
 {
   "schema": 1,
+  "tap_repository": "kandelo-dev/homebrew-tap-core",
   "tap_name": "kandelo-dev/tap-core",
+  "catalog": {
+    "tap_commit": "dfea689bb93aebcd4583e0a26d7c1e68ed2bd441"
+  },
   "consumer": {
     "profile": "main-shell",
     "max_vfs_byte_length": 536870912

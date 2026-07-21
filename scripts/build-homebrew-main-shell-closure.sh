@@ -15,17 +15,18 @@ MAX_BYTES="$((512 * 1024 * 1024))"
 usage() {
   cat <<'EOF'
 Usage: scripts/build-homebrew-main-shell-closure.sh \
-  --tap-root <exact-homebrew-tap-core-checkout> \
-  --expected-tap-sha <40-character-sha> [options]
+  --tap-root <exact-homebrew-tap-core-checkout> [options]
 
 Materialize today's browser main-shell package closure exclusively from
 successful Homebrew bottle sidecars. The platform-only base contains static
 Kandelo rootfs state but no legacy package-registry program fragment.
 
 Options:
+  --expected-tap-sha <sha> exact catalog SHA; must match the migration lock
   --out <image.vfs.zst>     output image
   --report <report.json>    composition evidence
   --bottle-cache <dir>      verified bottle cache
+  --migration-lock <json>   reviewed package/catalog lock
   --max-bytes <bytes>       VFS capacity (default: 536870912)
   -h, --help                show this help
 EOF
@@ -53,6 +54,10 @@ while [ "$#" -gt 0 ]; do
       BOTTLE_CACHE="${2:-}"
       shift 2
       ;;
+    --migration-lock)
+      MIGRATION_LOCK="${2:-}"
+      shift 2
+      ;;
     --max-bytes)
       MAX_BYTES="${2:-}"
       shift 2
@@ -69,12 +74,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "$TAP_ROOT" ] || [ -z "$EXPECTED_TAP_SHA" ]; then
-  echo "build-homebrew-main-shell-closure: --tap-root and --expected-tap-sha are required" >&2
-  exit 2
-fi
-if ! [[ "$EXPECTED_TAP_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "build-homebrew-main-shell-closure: --expected-tap-sha must be a lowercase 40-character SHA" >&2
+if [ -z "$TAP_ROOT" ]; then
+  echo "build-homebrew-main-shell-closure: --tap-root is required" >&2
   exit 2
 fi
 if ! [[ "$MAX_BYTES" =~ ^[1-9][0-9]*$ ]] || [ $((MAX_BYTES % 4096)) -ne 0 ]; then
@@ -91,6 +92,29 @@ if [ ! -f "$BREWFILE" ] || [ -L "$BREWFILE" ]; then
 fi
 if [ ! -f "$MIGRATION_LOCK" ] || [ -L "$MIGRATION_LOCK" ]; then
   echo "build-homebrew-main-shell-closure: migration lock must be a regular non-symlink file" >&2
+  exit 2
+fi
+
+command -v jq >/dev/null 2>&1 || {
+  echo "build-homebrew-main-shell-closure: missing jq; run through scripts/dev-shell.sh" >&2
+  exit 2
+}
+if ! LOCK_CATALOG_SHA="$(jq -er '.catalog.tap_commit' "$MIGRATION_LOCK")"; then
+  echo "build-homebrew-main-shell-closure: migration lock must pin one catalog commit" >&2
+  exit 2
+fi
+if ! [[ "$LOCK_CATALOG_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "build-homebrew-main-shell-closure: migration lock catalog commit must be a lowercase 40-character SHA" >&2
+  exit 2
+fi
+if [ -z "$EXPECTED_TAP_SHA" ]; then
+  EXPECTED_TAP_SHA="$LOCK_CATALOG_SHA"
+elif [ "$EXPECTED_TAP_SHA" != "$LOCK_CATALOG_SHA" ]; then
+  echo "build-homebrew-main-shell-closure: --expected-tap-sha must match locked catalog $LOCK_CATALOG_SHA" >&2
+  exit 2
+fi
+if ! [[ "$EXPECTED_TAP_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "build-homebrew-main-shell-closure: --expected-tap-sha must be a lowercase 40-character SHA" >&2
   exit 2
 fi
 
@@ -215,6 +239,7 @@ jq -e \
   (.catalog.tap_repository == $tap[0].tap_repository) and
   (.catalog.tap_name == $tap[0].tap_name) and
   (.catalog.checkout_commit == $catalog) and
+  (.catalog.checkout_commit == $lock[0].catalog.tap_commit) and
   (.migration_lock.sha256 == $lock_sha) and
   (.migration_lock.bytes == $lock_bytes) and
   ([.packages[] |

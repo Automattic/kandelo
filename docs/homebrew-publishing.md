@@ -1476,8 +1476,8 @@ or stale mappings and substitutions. In particular, the registry's `file`
 package maps to the reserved-name-safe `file-formula` Formula only because that
 identity substitution is explicit in the lock.
 
-CI materialization uses an exact local tap checkout and its full 40-character
-commit:
+CI materialization uses the exact public tap checkout pinned in the migration
+lock. An explicit SHA is optional, but when supplied it must match the lock:
 
 ```bash
 scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-closure.sh \
@@ -1485,12 +1485,24 @@ scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-closure.sh \
   --expected-tap-sha <full-sha>
 ```
 
+The repository workflow checks out that commit without package credentials and
+invokes `packages/registry/shell/build-shell.sh` with the locked tap. This is the
+normal shell-package build path: it writes the canonical
+`apps/browser-demos/public/shell.vfs.zst`, installs byte-identical resolver
+output, and never creates a parallel Homebrew-only demo artifact. The workflow
+boots those installed bytes through Node and requires Chromium's current
+`?demo=shell` path to fetch the same SHA-256, launch the image-owned shell, and
+exercise the locked command surface. The strict branch is opt-in while the
+migration is staged; an unset tap root retains the existing source-build path.
+
 The wrapper first builds a platform-only VFS from `MANIFEST` and
 `images/rootfs`. It deliberately does not generate or add the
 `images/rootfs/PACKAGES.toml` fragment, so legacy package-registry executables
 cannot remain as a hidden fallback. It then composes the Brewfile with
 `--no-fallback`, a 512 MiB filesystem, the image-owned Homebrew Bash config,
-and a verified bottle cache. Missing package metadata, unsuccessful bottle
+and a verified bottle cache. The catalog lock, public tap checkout, and every
+bottle fetch run with GitHub and Homebrew package-token variables removed.
+Missing package metadata, unsuccessful bottle
 status, missing link sidecars, dependency gaps, digest drift, or a tap checkout
 different from the expected SHA fail the build. The tap checkout must also be
 clean, including no untracked files, and its metadata must name the canonical

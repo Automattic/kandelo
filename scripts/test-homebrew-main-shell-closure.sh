@@ -28,6 +28,18 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
 
+for variable in \
+  KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
+  KANDELO_HOMEBREW_MAIN_SHELL_SHA256
+do
+  grep -Fq -- "--keep $variable " "$REPO_ROOT/scripts/dev-shell.sh" ||
+    fail "dev shell must preserve $variable for exact browser acceptance"
+done
+
+expect_failure "KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA requires" \
+  env KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA=0000000000000000000000000000000000000000 \
+  bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
+
 tap="$TMP_ROOT/tap"
 mkdir -p "$tap/Kandelo"
 git -C "$tap" init -q
@@ -39,14 +51,18 @@ printf '%s\n' \
 git -C "$tap" add Kandelo/metadata.json
 git -C "$tap" commit -qm "Homebrew: Add canonical test metadata"
 tap_sha="$(git -C "$tap" rev-parse HEAD)"
+lock="$TMP_ROOT/main-shell-migration-lock.json"
+jq --arg sha "$tap_sha" '.catalog.tap_commit = $sha' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
 
-expect_failure "does not match expected" \
+expect_failure "must match locked catalog" \
   "$BUILDER" --tap-root "$tap" \
+  --migration-lock "$lock" \
   --expected-tap-sha 0000000000000000000000000000000000000000
 
 printf '%s\n' "untracked" >"$tap/untracked-file"
 expect_failure "exact tap checkout is dirty" \
-  "$BUILDER" --tap-root "$tap" --expected-tap-sha "$tap_sha"
+  "$BUILDER" --tap-root "$tap" --migration-lock "$lock"
 rm "$tap/untracked-file"
 
 printf '%s\n' \
@@ -55,12 +71,25 @@ printf '%s\n' \
 git -C "$tap" add Kandelo/metadata.json
 git -C "$tap" commit -qm "Homebrew: Make test identity invalid"
 tap_sha="$(git -C "$tap" rev-parse HEAD)"
+jq --arg sha "$tap_sha" '.catalog.tap_commit = $sha' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
 expect_failure "tap metadata has the wrong repository identity" \
-  "$BUILDER" --tap-root "$tap" --expected-tap-sha "$tap_sha"
+  "$BUILDER" --tap-root "$tap" --migration-lock "$lock"
 
 node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
 
-lock="$TMP_ROOT/main-shell-migration-lock.json"
+jq 'del(.catalog)' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+expect_failure "must pin one exact catalog commit" \
+  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
+  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+
+jq '.catalog.tap_commit = "main"' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+expect_failure "must pin one exact catalog commit" \
+  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
+  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+
 jq 'del(.reviewed_substitutions[-1])' \
   "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
 expect_failure "reviewed migration substitutions are incomplete or stale" \

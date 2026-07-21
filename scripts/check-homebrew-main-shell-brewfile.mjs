@@ -10,7 +10,9 @@ const lockPath = resolve(
   process.argv[3] ?? `${repoRoot}/homebrew/main-shell-migration-lock.json`,
 );
 const metadataPath = process.argv[4] ? resolve(process.argv[4]) : undefined;
+const tapRepository = "kandelo-dev/homebrew-tap-core";
 const tapName = "kandelo-dev/tap-core";
+const gitShaPattern = /^[0-9a-f]{40}$/;
 
 const rootfsPackages = readDependencies(
   `${repoRoot}/packages/registry/rootfs/package.toml`,
@@ -44,13 +46,26 @@ if (metadataPath !== undefined) validateTapMetadata(lock, metadataPath);
 
 console.log(
   `Homebrew main-shell contract: ${actualFormulae.length} registry roots match ` +
-    "the reviewed migration lock and Brewfile.",
+    `the reviewed migration lock, Brewfile, and catalog ${lock.catalog.tap_commit}.`,
 );
 
 function readMigrationLock(path) {
   const value = JSON.parse(readFileSync(path, "utf8"));
-  if (!isRecord(value) || value.schema !== 1 || value.tap_name !== tapName) {
+  if (
+    !isRecord(value) ||
+    value.schema !== 1 ||
+    value.tap_repository !== tapRepository ||
+    value.tap_name !== tapName
+  ) {
     throw new Error(`invalid main-shell migration lock schema or tap identity: ${path}`);
+  }
+  if (
+    !isRecord(value.catalog) ||
+    JSON.stringify(Object.keys(value.catalog).sort()) !== JSON.stringify(["tap_commit"]) ||
+    typeof value.catalog.tap_commit !== "string" ||
+    !gitShaPattern.test(value.catalog.tap_commit)
+  ) {
+    throw new Error(`main-shell migration lock must pin one exact catalog commit: ${path}`);
   }
   if (!Array.isArray(value.packages) || !Array.isArray(value.reviewed_substitutions)) {
     throw new Error(`main-shell migration lock packages/substitutions must be arrays: ${path}`);
@@ -193,7 +208,12 @@ function validateCompatibilityPolicy(lock) {
 
 function validateTapMetadata(lock, path) {
   const metadata = JSON.parse(readFileSync(path, "utf8"));
-  if (!isRecord(metadata) || metadata.tap_name !== tapName || !Array.isArray(metadata.packages)) {
+  if (
+    !isRecord(metadata) ||
+    metadata.tap_repository !== tapRepository ||
+    metadata.tap_name !== tapName ||
+    !Array.isArray(metadata.packages)
+  ) {
     throw new Error(`tap metadata has the wrong identity or package shape: ${path}`);
   }
   const byName = new Map(metadata.packages.map((pkg) => [pkg?.name, pkg]));
