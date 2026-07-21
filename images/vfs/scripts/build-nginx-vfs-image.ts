@@ -20,6 +20,9 @@ import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 import { loadShellBaseFileSystem } from "./shell-vfs-build";
 import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../../web-libs/kandelo-session/src/vfs-capacity";
+import {
   webPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
@@ -27,7 +30,7 @@ import { nginxGuide } from "./kandelo-demo-guides";
 
 const REPO_ROOT = findRepoRoot();
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "nginx.vfs.zst");
-const NGINX_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+const NGINX_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 

@@ -107,6 +107,26 @@ test("the current main shell boots the exact public-bottle closure", async ({ pa
     throw new Error(`Homebrew main-shell smoke hit a Vite error overlay: ${detail}`);
   }
 
+  await page.waitForFunction(() => {
+    const evidence = (window as typeof window & {
+      __kandeloHomebrewMainShellImageEvidence?: {
+        digests: string[];
+        errors: string[];
+      };
+    }).__kandeloHomebrewMainShellImageEvidence;
+    return Boolean(evidence && (evidence.digests.length > 0 || evidence.errors.length > 0));
+  }, undefined, { timeout: 180_000 });
+  const imageEvidence = await page.evaluate(() =>
+    (window as typeof window & {
+      __kandeloHomebrewMainShellImageEvidence: {
+        digests: string[];
+        errors: string[];
+      };
+    }).__kandeloHomebrewMainShellImageEvidence
+  );
+  expect(imageEvidence.errors).toEqual([]);
+  expect(new Set(imageEvidence.digests)).toEqual(new Set([expectedImageSha256]));
+
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 180_000 });
   await waitForTerminalContent(page, /kandelo\$\s*$/, 240_000);
   await runTerminalCommand(
@@ -128,23 +148,4 @@ test("the current main shell boots the exact public-bottle closure", async ({ pa
   );
 
   expect(legacyArtifactDownloads).toEqual([]);
-  await page.waitForFunction(() => {
-    const evidence = (window as typeof window & {
-      __kandeloHomebrewMainShellImageEvidence?: {
-        digests: string[];
-        errors: string[];
-      };
-    }).__kandeloHomebrewMainShellImageEvidence;
-    return Boolean(evidence && (evidence.digests.length > 0 || evidence.errors.length > 0));
-  });
-  const imageEvidence = await page.evaluate(() =>
-    (window as typeof window & {
-      __kandeloHomebrewMainShellImageEvidence: {
-        digests: string[];
-        errors: string[];
-      };
-    }).__kandeloHomebrewMainShellImageEvidence
-  );
-  expect(imageEvidence.errors).toEqual([]);
-  expect(new Set(imageEvidence.digests)).toEqual(new Set([expectedImageSha256]));
 });

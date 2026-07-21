@@ -9,6 +9,7 @@ import {
   shellLazyPlaceholderUrl,
 } from "../../../../../images/vfs/lib/init/shell-binaries";
 import { stageSpiderMonkeyNpmRuntime } from "../../../../../images/vfs/lib/init/spidermonkey-npm-runtime";
+import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   finalizeKernelOwnedImage,
@@ -27,6 +28,11 @@ import {
 import type {
   DemoGuideConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+  assertVfsImageFitsProfile,
+  declaredVfsMaxByteLength,
+} from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
 import { PRESET_LIBRARY } from "../presets";
 import { resolveOptionalDemoVfsUrl } from "./optional-demo-vfs";
 
@@ -321,8 +327,21 @@ async function boot(
     // Assemble the runtime in a transient build FS, serialize it, and let the
     // kernel worker own the live VFS (kernelOwnedFs) so the main thread never
     // holds a VFS SharedArrayBuffer across demo switches (Safari OOM fix).
-    const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
-      maxByteLength: 256 * 1024 * 1024,
+    const nodeVfsImage = new Uint8Array(vfsBytes);
+    const nodeVfsMetadata = MemoryFileSystem.readImageMetadata(nodeVfsImage);
+    MemoryFileSystem.assertImageKernelAbi(
+      nodeVfsImage,
+      ABI_VERSION,
+      "node-vfs.vfs.zst",
+    );
+    assertVfsImageFitsProfile(
+      MemoryFileSystem.readImageCapacity(nodeVfsImage),
+      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+      declaredVfsMaxByteLength(nodeVfsMetadata),
+      "node-vfs.vfs.zst",
+    );
+    const buildFs = MemoryFileSystem.fromImage(nodeVfsImage, {
+      maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     });
     rewriteShellLazyFileUrls(buildFs);
     rewriteNodeLazyFileUrl(buildFs);

@@ -8,11 +8,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "MANIFEST"
-      - "apps/browser-demos/package-lock.json"
-      - "apps/browser-demos/package.json"
-      - "apps/browser-demos/pages/kandelo/**"
-      - "apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
-      - "apps/browser-demos/vite.config.ts"
+      - "apps/browser-demos/**"
       - "crates/kernel/**"
       - "crates/shared/**"
       - "flake.lock"
@@ -37,6 +33,7 @@ on:
       - "packages/registry/shell/**"
       - "rust-toolchain.toml"
       - "scripts/build-homebrew-main-shell-closure.sh"
+      - "scripts/browser-binary-package-roots.mjs"
       - "scripts/check-homebrew-main-shell-brewfile.mjs"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
@@ -47,6 +44,7 @@ on:
       - "scripts/install-local-binary.sh"
       - "scripts/resolve-binary.sh"
       - "scripts/test-homebrew-main-shell-closure.sh"
+      - "tests/package-system/browser-binary-dependencies.test.ts"
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
       - "web-libs/kandelo-session/src/shell-config.ts"
@@ -60,11 +58,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "MANIFEST"
-      - "apps/browser-demos/package-lock.json"
-      - "apps/browser-demos/package.json"
-      - "apps/browser-demos/pages/kandelo/**"
-      - "apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
-      - "apps/browser-demos/vite.config.ts"
+      - "apps/browser-demos/**"
       - "crates/kernel/**"
       - "crates/shared/**"
       - "flake.lock"
@@ -89,6 +83,7 @@ on:
       - "packages/registry/shell/**"
       - "rust-toolchain.toml"
       - "scripts/build-homebrew-main-shell-closure.sh"
+      - "scripts/browser-binary-package-roots.mjs"
       - "scripts/check-homebrew-main-shell-brewfile.mjs"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
@@ -99,6 +94,7 @@ on:
       - "scripts/install-local-binary.sh"
       - "scripts/resolve-binary.sh"
       - "scripts/test-homebrew-main-shell-closure.sh"
+      - "tests/package-system/browser-binary-dependencies.test.ts"
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
       - "web-libs/kandelo-session/src/shell-config.ts"
@@ -162,19 +158,21 @@ jobs:
           abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
             crates/shared/src/lib.rs)
           export WASM_POSIX_BINARY_INDEX_URL="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${abi}/index.toml"
-          # These imports are needed to bundle the wider demo application, but
-          # are not inputs to the shell VFS. The 32 shell roots below must come
-          # exclusively from public Homebrew bottles during archive-stage.
-          browser_input_packages=(
-            bash
-            coreutils
-            dash
-            dinit
-            node
-            rootfs
-          )
-          [ "${#browser_input_packages[@]}" -eq 6 ]
-          [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" -eq 6 ]
+          # Vite resolves static @binaries imports across the wider demo app.
+          # Derive those registry roots from the imports and package manifests
+          # so adding an import cannot silently leave this browser proof stale.
+          # They are browser bundling inputs, not shell VFS inputs: archive-stage
+          # builds shell's dependency-free package from public bottles, and the
+          # exact archive replaces shell before either runtime proof starts.
+          browser_package_file="$RUNNER_TEMP/browser-binary-packages.txt"
+          node scripts/browser-binary-package-roots.mjs \
+            --exclude-package shell \
+            --include-package rootfs \
+            > "$browser_package_file"
+          mapfile -t browser_input_packages < "$browser_package_file"
+          [ "${#browser_input_packages[@]}" -gt 0 ]
+          [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" \
+            -eq "${#browser_input_packages[@]}" ]
           fetch_args=(--fetch-only)
           for package in "${browser_input_packages[@]}"; do
             fetch_args+=(--package "$package")

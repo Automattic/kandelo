@@ -30,6 +30,9 @@ import {
   NODE_LAZY_BINARY_SPEC,
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
+import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import { stageSpiderMonkeyNpmRuntime } from "../lib/init/spidermonkey-npm-runtime";
 import {
   terminalPresentation,
@@ -43,7 +46,9 @@ const NPM_DIST = join(REPO_ROOT, "packages", "registry", "npm", "dist");
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "node-vfs.vfs.zst");
 
 const NPM_MOUNT = "/usr/local/lib/npm";
-const NODE_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+// The Node image contains the complete canonical shell plus npm. It cannot
+// truthfully advertise a smaller ceiling than its 512 MiB shell base.
+const NODE_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 

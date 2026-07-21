@@ -55,8 +55,7 @@ push_paths="$(awk '
 for required_path in \
   ".github/actions/setup-nix/**" \
   "MANIFEST" \
-  "apps/browser-demos/pages/kandelo/**" \
-  "apps/browser-demos/vite.config.ts" \
+  "apps/browser-demos/**" \
   "crates/shared/**" \
   "homebrew/main-shell*" \
   "host/src/generated/abi.ts" \
@@ -67,11 +66,13 @@ for required_path in \
   "packages/registry/rootfs/package.toml" \
   "packages/registry/shell/**" \
   "scripts/dev-shell.sh" \
+  "scripts/browser-binary-package-roots.mjs" \
   "scripts/fetch-binaries.sh" \
   "scripts/homebrew-brewfile-selection.rb" \
   "scripts/homebrew-main-shell-image-contract*.ts" \
   "scripts/install-local-binary.sh" \
   "scripts/resolve-binary.sh" \
+  "tests/package-system/browser-binary-dependencies.test.ts" \
   "tools/mkrootfs/**" \
   "tools/xtask/**" \
   "web-libs/kandelo-session/src/kernel-host.ts" \
@@ -152,16 +153,16 @@ grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
   fail "binary fetch must materialize only direct browser bundling inputs"
 grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
   fail "main-shell proof must not use a negative package skip list"
-for browser_input in bash coreutils dash dinit node rootfs; do
-  grep -Fxq "            $browser_input" "$WORKFLOW" ||
-    fail "main-shell workflow omits direct browser input $browser_input"
-done
-grep -Fq '[ "${#browser_input_packages[@]}" -eq 6 ]' "$WORKFLOW" ||
-  fail "main-shell workflow does not limit legacy resolution to 6 bundling inputs"
-grep -Fq 'sort -u | wc -l)" -eq 6 ]' "$WORKFLOW" ||
-  fail "main-shell workflow does not require 6 unique bundling inputs"
-grep -Fq '[ "${#browser_input_packages[@]}" -eq 35 ]' "$WORKFLOW" &&
-  fail "main-shell workflow still contains the legacy 35-package prefetch"
+grep -Fq 'node scripts/browser-binary-package-roots.mjs \' "$WORKFLOW" ||
+  fail "main-shell workflow must derive browser package roots from source imports"
+grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
+  fail "browser package derivation must reserve shell for the exact bottle archive"
+grep -Fq -- '--include-package rootfs \' "$WORKFLOW" ||
+  fail "browser package derivation must include the non-@binaries rootfs alias"
+grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
+  fail "main-shell workflow must consume the derived browser package roots"
+grep -Fq 'browser_input_packages=(' "$WORKFLOW" &&
+  fail "main-shell workflow must not hand-maintain a partial browser package list"
 
 for package_workflow in \
   "$STAGING_WORKFLOW" \
@@ -241,6 +242,12 @@ grep -Fq 'scripts/homebrew-main-shell-node-smoke.ts' "$WORKFLOW" ||
   fail "exact archived shell bytes must retain post-archive Node acceptance"
 grep -Eq '^depends_on = \[\]$' "$REPO_ROOT/packages/registry/shell/package.toml" ||
   fail "canonical bottle-only shell package must not pre-resolve the legacy registry graph"
+
+for shell_derived_package in lamp node-vfs wordpress; do
+  shell_derived_build="$REPO_ROOT/packages/registry/$shell_derived_package/build.toml"
+  grep -Fq '"web-libs/kandelo-session/src/vfs-capacity.ts"' "$shell_derived_build" ||
+    fail "$shell_derived_package must bind its cache key to the shell-derived capacity contract"
+done
 
 (
   cd "$REPO_ROOT"

@@ -63,6 +63,7 @@ import {
   CUSTOM_VFS_PROFILE_MAX_BYTES,
   DEFAULT_VFS_PROFILE_MAX_BYTES,
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
   declaredVfsMaxByteLength,
 } from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
@@ -309,11 +310,13 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     shell: "node",
     includeNodeUtility: true,
     memoryPages: 4096,
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     features: ["js-workers"],
   },
   nginx: {
     image: "nginx",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
@@ -325,6 +328,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "nginx-php": {
     image: "nginx-php",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
@@ -336,6 +340,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "wordpress-sqlite": {
     image: "wordpress",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,

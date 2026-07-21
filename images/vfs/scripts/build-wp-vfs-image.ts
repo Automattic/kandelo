@@ -36,6 +36,9 @@ import {
 } from "./smtp-capture-helpers";
 import { loadShellBaseFileSystem } from "./shell-vfs-build";
 import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../../web-libs/kandelo-session/src/vfs-capacity";
+import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   renderWordPressConfig,
   wordpressConfigTemplate,
@@ -70,7 +73,9 @@ const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
 const PHP_FPM_WORKERS = 1;
 const PHP_FPM_UID = 65534;
 const PHP_FPM_GID = 65534;
-const WORDPRESS_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+// WordPress layers service binaries and application data on the complete
+// canonical shell, so its product profile must admit that 512 MiB base.
+const WORDPRESS_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 
 // --- Service configs (reuse logic from init modules) ---
 

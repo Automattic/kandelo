@@ -1,5 +1,10 @@
 export const DEFAULT_VFS_PROFILE_MAX_BYTES = 256 * 1024 * 1024;
 export const MAIN_SHELL_VFS_PROFILE_MAX_BYTES = 512 * 1024 * 1024;
+// Product images layered on the canonical shell must admit the shell's full
+// capacity before adding their own files. Larger products (for example LAMP)
+// may declare a higher, explicit profile ceiling.
+export const SHELL_DERIVED_VFS_PROFILE_MAX_BYTES =
+  MAIN_SHELL_VFS_PROFILE_MAX_BYTES;
 export const CUSTOM_VFS_PROFILE_MAX_BYTES = 512 * 1024 * 1024;
 
 export interface KandeloVfsImageCapacity {
