@@ -23,7 +23,11 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildHomebrewVfs } from "../../../host/src/homebrew-vfs-builder";
+import {
+  buildHomebrewVfs,
+  type HomebrewVfsCompatibilityPolicy,
+  type HomebrewVfsRuntimeStateDeclaration,
+} from "../../../host/src/homebrew-vfs-builder";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
   planFederatedHomebrewVfs,
@@ -36,6 +40,13 @@ import {
   MemoryFileSystem,
   type VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
+import {
+  KANDELO_DEMO_CONFIG_PATH,
+  MAX_KANDELO_DEMO_CONFIG_BYTES,
+  parseKandeloDemoConfig,
+  validateKandeloDemoConfig,
+  type KandeloDemoConfig,
+} from "../../../web-libs/kandelo-session/src/demo-config";
 import {
   KANDELO_SHELL_CONFIG_PATH,
   MAX_KANDELO_SHELL_CONFIG_BYTES,
@@ -66,6 +77,9 @@ interface CliOptions {
   maxBytes?: number;
   writeProfile: boolean;
   shellConfig?: string;
+  demoConfig?: string;
+  catalogCommit?: string;
+  migrationLock?: string;
 }
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
@@ -75,7 +89,9 @@ const MAX_SIDECAR_JSON_BYTES = 16_777_216;
 const MAX_BREWFILE_BYTES = 65_536;
 const MAX_BREWFILE_PACKAGES = 128;
 const MAX_BREWFILE_PARSER_OUTPUT_BYTES = 65_536;
+const MAX_MIGRATION_LOCK_BYTES = 65_536;
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const TAP_NAME_RE = /^[a-z0-9._-]+\/[a-z0-9._-]+$/;
 const PACKAGE_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -111,6 +127,19 @@ interface LoadedShellConfig {
   bytes: number;
 }
 
+interface LoadedDemoConfig {
+  config: KandeloDemoConfig;
+  source: Uint8Array;
+  sha256: string;
+  bytes: number;
+}
+
+interface LoadedMigrationLock {
+  value: unknown;
+  sha256: string;
+  bytes: number;
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const metadata = readJsonFile(options.metadata);
@@ -118,6 +147,15 @@ async function main(): Promise<void> {
   const shellConfig = options.shellConfig
     ? readShellConfig(options.shellConfig)
     : undefined;
+  const demoConfig = options.demoConfig
+    ? readDemoConfig(options.demoConfig)
+    : undefined;
+  const migrationLock = options.migrationLock
+    ? readMigrationLock(options.migrationLock)
+    : undefined;
+  const compatibilityPolicy = migrationLock === undefined
+    ? undefined
+    : migrationLockCompatibilityPolicy(migrationLock.value, options.migrationLock!);
   const brewfileSelection = options.brewfile
     ? readBrewfileSelection(options.brewfile)
     : undefined;
@@ -162,7 +200,7 @@ async function main(): Promise<void> {
       },
     );
 
-  const { fs, baseImage } = createFs(
+  const { fs, baseImage, maxByteLength } = createFs(
     options.baseImage,
     options.maxBytes,
     plan.kandeloAbi,
@@ -178,6 +216,16 @@ async function main(): Promise<void> {
       bytes: brewfileSelection.bytes,
       requestedPackages: brewfileSelection.packages,
     } : undefined,
+    catalogCheckout: options.catalogCommit === undefined ? undefined : {
+      tapRepository: plan.tapRepository,
+      tapName: plan.tapName,
+      checkoutCommit: options.catalogCommit,
+    },
+    compatibilityPolicy,
+    migrationLock: migrationLock === undefined ? undefined : {
+      sha256: migrationLock.sha256,
+      bytes: migrationLock.bytes,
+    },
     loadBottleBytes: (pkg) => loadBottleBytes(pkg, options),
   });
   if (shellConfig) {
@@ -191,18 +239,56 @@ async function main(): Promise<void> {
     writeVfsBinary(fs, KANDELO_SHELL_CONFIG_PATH, shellConfig.source, 0o644);
     assertShellExecutable(fs, shellConfig.config.path);
   }
+  if (demoConfig) {
+    if (vfsPathExists(fs, KANDELO_DEMO_CONFIG_PATH)) {
+      throw new Error(
+        `refusing to overwrite existing demo config: ${KANDELO_DEMO_CONFIG_PATH}`,
+      );
+    }
+    ensureDirRecursive(fs, dirname(KANDELO_DEMO_CONFIG_PATH));
+    writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demoConfig.source, 0o644);
+  }
 
-  await saveImage(fs, options.out, {
+  const imageBytes = await saveImage(fs, options.out, {
     metadata: {
       version: 1,
       kernelAbi: plan.kandeloAbi,
       createdBy: "images/vfs/scripts/build-homebrew-vfs-image.ts",
+      capacity: { maxByteLength },
       ...(baseImage ? { baseImage: baseImage.binding } : {}),
       homebrew: {
         tapRepository: plan.tapRepository,
         tapName: plan.tapName,
         tapCommit: plan.tapCommit,
         releaseTag: plan.releaseTag,
+        ...(result.report.catalog === undefined ? {} : {
+          catalog: {
+            tapRepository: result.report.catalog.tap_repository,
+            tapName: result.report.catalog.tap_name,
+            checkoutCommit: result.report.catalog.checkout_commit,
+          },
+        }),
+        ...(result.report.migration_lock === undefined ? {} : {
+          migrationLock: {
+            sha256: result.report.migration_lock.sha256,
+            bytes: result.report.migration_lock.bytes,
+          },
+        }),
+        ...(result.report.runtime_state === undefined ? {} : {
+          runtimeState: result.report.runtime_state.map((entry) => ({
+            requiresPackage: entry.requires_package,
+            path: entry.path,
+            kind: entry.kind,
+            mode: entry.mode,
+            uid: entry.uid,
+            gid: entry.gid,
+            reason: entry.reason,
+            ...(entry.content_sha256 === undefined ? {} : {
+              contentSha256: entry.content_sha256,
+              contentBytes: entry.content_bytes,
+            }),
+          })),
+        }),
         selection: {
           kind: result.report.selection.kind,
           requestedPackageCount:
@@ -220,6 +306,13 @@ async function main(): Promise<void> {
             configSha256: shellConfig.sha256,
           },
         } : {}),
+        ...(demoConfig ? {
+          demoConfig: {
+            path: KANDELO_DEMO_CONFIG_PATH,
+            sha256: demoConfig.sha256,
+            bytes: demoConfig.bytes,
+          },
+        } : {}),
         packages: plan.packages.map((pkg) => ({
           name: pkg.name,
           fullName: pkg.fullName,
@@ -230,10 +323,26 @@ async function main(): Promise<void> {
           arch: pkg.arch,
           sourceStatus: pkg.sourceStatus,
           cacheKeySha: pkg.cacheKeySha,
+          ...(pkg.builtFrom === undefined ? {} : {
+            builtFrom: {
+              tapRepository: pkg.builtFrom.tapRepository,
+              tapCommit: pkg.builtFrom.tapCommit,
+              kandeloRepository: pkg.builtFrom.kandeloRepository,
+              kandeloCommit: pkg.builtFrom.kandeloCommit,
+              formulaSha256: pkg.builtFrom.formulaSha256,
+            },
+          }),
         })),
       },
     },
   });
+  const imageCapacity = MemoryFileSystem.readImageCapacity(imageBytes);
+  if (imageCapacity.maxByteLength !== maxByteLength) {
+    throw new Error(
+      `saved VFS capacity ${imageCapacity.maxByteLength} does not match ` +
+        `the declared consumer contract ${maxByteLength}`,
+    );
+  }
 
   const report = {
     ...result.report,
@@ -245,12 +354,23 @@ async function main(): Promise<void> {
         config_bytes: shellConfig.bytes,
       },
     } : {}),
+    ...(demoConfig ? {
+      demo_config: {
+        path: KANDELO_DEMO_CONFIG_PATH,
+        sha256: demoConfig.sha256,
+        bytes: demoConfig.bytes,
+      },
+    } : {}),
     ...(baseImage ? {
       base_image: {
         ...baseImage.binding,
         metadata: baseImage.metadata,
       },
     } : {}),
+    image_capacity: {
+      byte_length: imageCapacity.byteLength,
+      max_byte_length: imageCapacity.maxByteLength,
+    },
     image: options.out,
   };
   mkdirSync(dirname(options.report), { recursive: true });
@@ -260,6 +380,7 @@ async function main(): Promise<void> {
 
 function parseArgs(args: string[]): CliOptions {
   const options: Partial<CliOptions> & {
+    dependencyTapRoots: Record<string, string>;
     packages: string[];
     expectedCacheKeys: Record<string, string>;
   } = {
@@ -342,6 +463,24 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.shellConfig = requireValue(args, ++i, arg);
         break;
+      case "--demo-config":
+        if (options.demoConfig !== undefined) {
+          usage("--demo-config may be provided only once");
+        }
+        options.demoConfig = requireValue(args, ++i, arg);
+        break;
+      case "--catalog-commit":
+        if (options.catalogCommit !== undefined) {
+          usage("--catalog-commit may be provided only once");
+        }
+        options.catalogCommit = requireValue(args, ++i, arg);
+        break;
+      case "--migration-lock":
+        if (options.migrationLock !== undefined) {
+          usage("--migration-lock may be provided only once");
+        }
+        options.migrationLock = requireValue(args, ++i, arg);
+        break;
       case "--help":
       case "-h":
         usage(undefined, 0);
@@ -365,6 +504,18 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.shellConfig && !options.writeProfile) {
     usage("--shell-config requires --write-profile so the Homebrew environment is initialized");
+  }
+  if (options.catalogCommit !== undefined && !GIT_SHA_RE.test(options.catalogCommit)) {
+    usage("--catalog-commit must be a lowercase 40-character git SHA");
+  }
+  if (options.catalogCommit !== undefined && Object.keys(options.dependencyTapRoots).length > 0) {
+    usage("--catalog-commit currently supports only a single-tap catalog checkout");
+  }
+  if (options.migrationLock && !existsSync(options.migrationLock)) {
+    usage(`migration lock does not exist: ${options.migrationLock}`);
+  }
+  if (options.demoConfig && !existsSync(options.demoConfig)) {
+    usage(`demo config does not exist: ${options.demoConfig}`);
   }
 
   return options as CliOptions;
@@ -427,7 +578,7 @@ function createFs(
   baseImage: string | undefined,
   maxBytes: number | undefined,
   expectedAbi: number,
-): { fs: MemoryFileSystem; baseImage?: LoadedBaseImage } {
+): { fs: MemoryFileSystem; baseImage?: LoadedBaseImage; maxByteLength: number } {
   if (baseImage) {
     const image = new Uint8Array(readFileSync(baseImage));
     const restored = MemoryFileSystem.fromImagePreservingCapacity(image);
@@ -478,11 +629,13 @@ function createFs(
       return {
         fs: restored.rebaseToNewFileSystem(targetMaxBytes),
         baseImage: loadedBase,
+        maxByteLength: targetMaxBytes,
       };
     }
     return {
       fs: restored,
       baseImage: loadedBase,
+      maxByteLength: targetMaxBytes,
     };
   }
 
@@ -494,7 +647,10 @@ function createFs(
   const sab = new SharedArrayBufferCtor(initialBytes, {
     maxByteLength: initialBytes,
   });
-  return { fs: MemoryFileSystem.create(sab, initialBytes) };
+  return {
+    fs: MemoryFileSystem.create(sab, initialBytes),
+    maxByteLength: initialBytes,
+  };
 }
 
 function formatMib(bytes: number): string {
@@ -527,6 +683,135 @@ function readJsonFile(path: string): unknown {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
+function readMigrationLock(path: string): LoadedMigrationLock {
+  const source = readBoundedRegularFile(
+    path,
+    MAX_MIGRATION_LOCK_BYTES,
+    "Homebrew migration lock",
+  );
+  return {
+    value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(source)),
+    sha256: createHash("sha256").update(source).digest("hex"),
+    bytes: source.byteLength,
+  };
+}
+
+function migrationLockCompatibilityPolicy(
+  value: unknown,
+  path: string,
+): HomebrewVfsCompatibilityPolicy {
+  if (!isRecord(value) || value.schema !== 1 || !isRecord(value.compatibility)) {
+    throw new Error(`Homebrew migration lock has an invalid schema: ${path}`);
+  }
+  const compatibility = value.compatibility;
+  if (
+    !isRecord(compatibility.mirror_link_manifest_bin) ||
+    !Array.isArray(compatibility.mirror_link_manifest_bin.targets) ||
+    !compatibility.mirror_link_manifest_bin.targets.every(
+      (entry) => typeof entry === "string",
+    ) ||
+    !Array.isArray(compatibility.link_conflict_owners) ||
+    !Array.isArray(compatibility.aliases) ||
+    (compatibility.runtime_state !== undefined &&
+      !Array.isArray(compatibility.runtime_state))
+  ) {
+    throw new Error(`Homebrew migration lock has an invalid compatibility policy: ${path}`);
+  }
+  const linkConflictOwners = compatibility.link_conflict_owners.map((value, index) => {
+    if (
+      !isRecord(value) ||
+      typeof value.target !== "string" ||
+      typeof value.package !== "string" ||
+      typeof value.reason !== "string"
+    ) {
+      throw new Error(
+        `Homebrew migration lock compatibility.link_conflict_owners[${index}] is invalid: ${path}`,
+      );
+    }
+    return {
+      target: value.target,
+      package: value.package,
+      reason: value.reason,
+    };
+  });
+  const aliases = compatibility.aliases.map<
+    HomebrewVfsCompatibilityPolicy["aliases"][number]
+  >((value, index) => {
+    if (
+      !isRecord(value) ||
+      typeof value.package !== "string" ||
+      (value.source_kind !== "link" && value.source_kind !== "keg") ||
+      typeof value.source !== "string" ||
+      !Array.isArray(value.targets) ||
+      !value.targets.every((entry) => typeof entry === "string")
+    ) {
+      throw new Error(
+        `Homebrew migration lock compatibility.aliases[${index}] is invalid: ${path}`,
+      );
+    }
+    return {
+      package: value.package,
+      source_kind: value.source_kind,
+      source: value.source,
+      targets: [...value.targets],
+    };
+  });
+  const runtimeState = (compatibility.runtime_state ?? []).map<
+    HomebrewVfsRuntimeStateDeclaration
+  >((value, index) => {
+    if (!isRecord(value)) {
+      throw new Error(
+        `Homebrew migration lock compatibility.runtime_state[${index}] is invalid: ${path}`,
+      );
+    }
+    const expectedKeys = [
+      "gid",
+      "kind",
+      "mode",
+      "path",
+      "reason",
+      "requires_package",
+      "uid",
+    ];
+    if (value.kind === "text_file") expectedKeys.push("contents");
+    if (
+      Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0") ||
+      typeof value.requires_package !== "string" ||
+      typeof value.path !== "string" ||
+      (value.kind !== "directory" &&
+        value.kind !== "empty_file" &&
+        value.kind !== "text_file") ||
+      typeof value.mode !== "number" ||
+      typeof value.uid !== "number" ||
+      typeof value.gid !== "number" ||
+      typeof value.reason !== "string" ||
+      (value.kind === "text_file" && typeof value.contents !== "string")
+    ) {
+      throw new Error(
+        `Homebrew migration lock compatibility.runtime_state[${index}] is invalid: ${path}`,
+      );
+    }
+    return {
+      requires_package: value.requires_package,
+      path: value.path,
+      kind: value.kind,
+      mode: value.mode,
+      uid: value.uid,
+      gid: value.gid,
+      reason: value.reason,
+      ...(value.kind === "text_file" ? { contents: value.contents as string } : {}),
+    };
+  });
+  return {
+    mirror_link_manifest_bin: {
+      targets: [...compatibility.mirror_link_manifest_bin.targets] as string[],
+    },
+    link_conflict_owners: linkConflictOwners,
+    aliases,
+    runtime_state: runtimeState,
+  };
+}
+
 function readShellConfig(path: string): LoadedShellConfig {
   const bytes = readBoundedRegularFile(
     path,
@@ -537,6 +822,41 @@ function readShellConfig(path: string): LoadedShellConfig {
   const config = parseKandeloShellConfig(source);
   if (!config) {
     throw new Error(`Kandelo default shell config has an unsupported version: ${path}`);
+  }
+  return {
+    config,
+    source: bytes,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    bytes: bytes.byteLength,
+  };
+}
+
+function readDemoConfig(path: string): LoadedDemoConfig {
+  const bytes = readBoundedRegularFile(
+    path,
+    MAX_KANDELO_DEMO_CONFIG_BYTES,
+    "Kandelo demo config",
+  );
+  let source: string;
+  try {
+    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`Kandelo demo config is not valid UTF-8: ${path}`);
+  }
+  let config: KandeloDemoConfig | null;
+  try {
+    config = parseKandeloDemoConfig(source);
+  } catch {
+    throw new Error(`Kandelo demo config is not valid JSON: ${path}`);
+  }
+  if (config === null) {
+    throw new Error(`Kandelo demo config has an unsupported version: ${path}`);
+  }
+  try {
+    validateKandeloDemoConfig(config);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Kandelo demo config is invalid: ${path}: ${detail}`);
   }
   return {
     config,
@@ -689,7 +1009,9 @@ function usage(message?: string, code = 2): never {
   [--expected-cache-key <name>=<sha256>] [--no-fallback] \\
   [--bottle-cache <dir>] [--base-image <base.vfs[.zst]>] \\
   [--max-bytes <bytes|MiB>] [--write-profile] \\
-  [--shell-config <shell.json>]`);
+  [--shell-config <shell.json>] [--demo-config <demo.json>] \\
+  [--catalog-commit <full-sha>] \\
+  [--migration-lock <lock.json>]`);
   process.exit(code);
 }
 

@@ -1,0 +1,696 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUILDER="$REPO_ROOT/scripts/build-homebrew-main-shell-closure.sh"
+CHECKER="$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
+BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
+SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
+WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
+IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
+IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
+STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
+PREPARE_MERGE_WORKFLOW="$REPO_ROOT/.github/workflows/prepare-merge.yml"
+FORCE_REBUILD_WORKFLOW="$REPO_ROOT/.github/workflows/force-rebuild.yml"
+SHELL_BUILD_TOML="$REPO_ROOT/packages/registry/shell/build.toml"
+SHELL_BUILDER="$REPO_ROOT/packages/registry/shell/build-shell.sh"
+RUN_SH="$REPO_ROOT/run.sh"
+TMP_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TMP_ROOT"' EXIT
+
+fail() {
+  echo "test-homebrew-main-shell-closure: $*" >&2
+  exit 1
+}
+
+expect_failure() {
+  local expected="$1"
+  shift
+  local output
+  if output="$("$@" 2>&1)"; then
+    fail "command unexpectedly succeeded: $*"
+  fi
+  grep -Fq -- "$expected" <<<"$output" || {
+    printf '%s\n' "$output" >&2
+    fail "failure did not contain: $expected"
+  }
+}
+
+command -v git >/dev/null 2>&1 || fail "git is required"
+command -v jq >/dev/null 2>&1 || fail "jq is required"
+command -v node >/dev/null 2>&1 || fail "node is required"
+
+pull_paths="$(awk '
+  /^  pull_request:$/ { active = 1; next }
+  /^  push:$/ { active = 0 }
+  active && /^      - "/ { line = $0; sub(/^      - "/, "", line); sub(/"$/, "", line); print line }
+' "$WORKFLOW")"
+push_paths="$(awk '
+  /^  push:$/ { active = 1; next }
+  /^  workflow_dispatch:$/ { active = 0 }
+  active && /^      - "/ { line = $0; sub(/^      - "/, "", line); sub(/"$/, "", line); print line }
+' "$WORKFLOW")"
+[ "$pull_paths" = "$push_paths" ] ||
+  fail "Homebrew main-shell pull_request and push path filters must stay aligned"
+
+for required_path in \
+  ".github/actions/setup-nix/**" \
+  "MANIFEST" \
+  "apps/browser-demos/**" \
+  "crates/shared/**" \
+  "homebrew/main-shell*" \
+  "host/src/generated/abi.ts" \
+  "host/src/homebrew-vfs-*.ts" \
+  "host/src/vfs/**" \
+  "images/rootfs/**" \
+  "images/vfs/scripts/build-shell-vfs-image.ts" \
+  "images/vfs/scripts/main-shell-demo-config.ts" \
+  "images/vfs/scripts/vfs-image-helpers.ts" \
+  "packages/registry/rootfs/package.toml" \
+  "packages/registry/shell/**" \
+  "scripts/dev-shell.sh" \
+  "scripts/browser-binary-package-roots.mjs" \
+  "scripts/fetch-binaries.sh" \
+  "scripts/homebrew-brewfile-selection.rb" \
+  "scripts/homebrew-main-shell-image-contract*.ts" \
+  "scripts/install-local-binary.sh" \
+  "scripts/resolve-binary.sh" \
+  "tests/package-system/browser-binary-dependencies.test.ts" \
+  "tools/mkrootfs/**" \
+  "tools/xtask/**" \
+  "web-libs/kandelo-session/src/kernel-host.ts" \
+  "web-libs/kandelo-session/src/demo-config*.ts" \
+  "web-libs/kandelo-session/src/shell-config.ts"
+do
+  grep -Fxq "$required_path" <<<"$pull_paths" ||
+    fail "Homebrew main-shell workflow does not watch authoritative input $required_path"
+done
+
+setup_node_line="$(grep -n 'uses: actions/setup-node@' "$WORKFLOW" | cut -d: -f1)"
+checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$WORKFLOW" | cut -d: -f1)"
+[ -n "$setup_node_line" ] && [ -n "$checker_line" ] &&
+  [ "$setup_node_line" -lt "$checker_line" ] ||
+  fail "pinned Node setup must precede the main-shell contract checker"
+
+grep -Fq '(.packages | length) == 38' "$BUILDER" ||
+  fail "$BUILDER does not require the exact 38-Formula composition report"
+grep -Fq '[.packages[].full_name] | sort' "$BUILDER" ||
+  fail "$BUILDER does not compare exact Formula composition identities"
+grep -Fq 'formula_closure | sort' "$BUILDER" ||
+  fail "$BUILDER does not bind composition identities to the migration lock"
+grep -Fq 'const EXPECTED_ROOT_COUNT = 32' "$IMAGE_CONTRACT" ||
+  fail "post-archive image contract does not require the exact 32 roots"
+grep -Fq 'const EXPECTED_CLOSURE_COUNT = 38' "$IMAGE_CONTRACT" ||
+  fail "post-archive image contract does not require the exact 38-Formula closure"
+
+for variable in \
+  KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
+  KANDELO_HOMEBREW_MAIN_SHELL_SHA256
+do
+  grep -Fq -- "$variable=\"\$" "$WORKFLOW" ||
+    fail "main-shell workflow must pass $variable explicitly to its isolated consumer"
+  grep -Fq -- "--keep $variable " "$REPO_ROOT/scripts/dev-shell.sh" &&
+    fail "dev shell must not globally preserve main-shell-only input $variable"
+done
+
+grep -Fq 'persist-credentials: false' "$WORKFLOW" ||
+  fail "main-shell proof checkout must not persist repository credentials"
+grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WORKFLOW" &&
+  fail "main-shell proof must not expose the workflow token to package composition"
+grep -Fq 'scripts/homebrew-checkout-public-tap.sh' "$WORKFLOW" &&
+  fail "main-shell proof must let the package system provision its immutable Git input"
+grep -Fq 'bash packages/registry/shell/build-shell.sh' "$WORKFLOW" &&
+  fail "main-shell proof must not invoke the shell builder outside archive-stage"
+grep -Fq 'compute-cache-key-sha \' "$WORKFLOW" ||
+  fail "main-shell proof must compute the canonical shell package cache identity"
+grep -Fq 'archive-stage \' "$WORKFLOW" ||
+  fail "main-shell proof must exercise the canonical package archive path"
+grep -Fq -- '--package packages/registry/shell' "$WORKFLOW" ||
+  fail "main-shell proof must stage the shell package"
+grep -Fq -- '--expected-cache-key-sha "$cache_key"' "$WORKFLOW" ||
+  fail "main-shell proof must bind archive-stage to the precomputed package identity"
+grep -Fq -- '--force-source-build' "$WORKFLOW" ||
+  fail "main-shell proof must execute the shell composer instead of reusing its package archive"
+grep -Fq 'tar --zstd -xf "$ARCHIVE_PATH" -C "$archive_root" \' "$WORKFLOW" ||
+  fail "main-shell proof must extract the package archive"
+grep -Fq 'manifest.toml artifacts/shell.vfs.zst' "$WORKFLOW" ||
+  fail "main-shell proof must extract the shell package's declared artifact"
+grep -Fq 'cp "$archived" "$installed"' "$WORKFLOW" ||
+  fail "main-shell proof must install the archive-contained bytes for browser resolution"
+grep -Fq -- '--image "$RUNNER_TEMP/shell-archive/artifacts/shell.vfs.zst"' "$WORKFLOW" ||
+  fail "Node proof must boot the archive-contained shell bytes directly"
+grep -Fq -- '--migration-lock homebrew/main-shell-migration-lock.json' "$WORKFLOW" ||
+  fail "post-archive Node proof must validate against the reviewed migration lock"
+grep -Fq -- '--demo-config homebrew/main-shell-demo.json' "$WORKFLOW" ||
+  fail "post-archive Node proof must validate the canonical demo config bytes"
+grep -Fq '${{ runner.temp }}/staged-shell/*.tar.zst' "$WORKFLOW" ||
+  fail "main-shell evidence must retain the exact canonical package archive"
+grep -Fq '${{ runner.temp }}/shell-archive/artifacts/shell.vfs.zst' "$WORKFLOW" ||
+  fail "main-shell evidence must retain the archive-contained shell bytes"
+grep -Fq 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW" ||
+  fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
+grep -Fq 'PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \' "$WORKFLOW" ||
+  fail "browser acceptance must have Playwright write JSON directly to its report file"
+grep -Fq -- '--project=chromium --reporter=json >"$report"' "$WORKFLOW" &&
+  fail "browser acceptance must not mix dev-shell stdout into the Playwright JSON report"
+grep -Fq "jq -r '.packages[].registry.name' homebrew/main-shell-migration-lock.json" "$WORKFLOW" &&
+  fail "main-shell workflow must not prefetch the legacy 32-package registry closure"
+grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
+  fail "browser bundling input fetch must pass exact positive package selections"
+grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
+  fail "binary fetch must materialize only direct browser bundling inputs"
+grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
+  fail "main-shell proof must not use a negative package skip list"
+grep -Fq 'node scripts/browser-binary-package-roots.mjs \' "$WORKFLOW" ||
+  fail "main-shell workflow must derive browser package roots from source imports"
+grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
+  fail "browser package derivation must reserve shell for the exact bottle archive"
+grep -Fq -- '--include-package rootfs \' "$WORKFLOW" ||
+  fail "browser package derivation must include the non-@binaries rootfs alias"
+grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
+  fail "main-shell workflow must consume the derived browser package roots"
+grep -Fq 'browser_input_packages=(' "$WORKFLOW" &&
+  fail "main-shell workflow must not hand-maintain a partial browser package list"
+
+for package_workflow in \
+  "$STAGING_WORKFLOW" \
+  "$PREPARE_MERGE_WORKFLOW" \
+  "$FORCE_REBUILD_WORKFLOW"
+do
+  [ "$(grep -Fc 'npm --prefix tools/mkrootfs ci --no-audit --no-fund' "$package_workflow")" -eq 1 ] ||
+    fail "$package_workflow must install mkrootfs exactly once for the shell program wave"
+  grep -Fq "if: \${{ matrix.package == 'shell' }}" "$package_workflow" ||
+    fail "$package_workflow must limit the mkrootfs prerequisite to the shell package"
+  install_line="$(grep -nF 'npm --prefix tools/mkrootfs ci --no-audit --no-fund' "$package_workflow" | cut -d: -f1)"
+  if [ "$package_workflow" = "$FORCE_REBUILD_WORKFLOW" ]; then
+    build_line="$(grep -nF '              archive-stage \' "$package_workflow" | tail -1 | cut -d: -f1)"
+  else
+    build_line="$(grep -nF 'uses: ./.github/actions/package-archive-build' "$package_workflow" | tail -1 | cut -d: -f1)"
+  fi
+  [ -n "$install_line" ] && [ -n "$build_line" ] && [ "$install_line" -lt "$build_line" ] ||
+    fail "$package_workflow must install mkrootfs before the shell archive build"
+done
+
+# The dev-shell wrapper intentionally reports Nix lookup and shell-hook details
+# on stdout. Playwright must own the JSON file directly so those diagnostics can
+# remain visible without corrupting machine-readable acceptance evidence.
+playwright_report="$TMP_ROOT/playwright-report.json"
+wrapper_log="$TMP_ROOT/dev-shell-stdout.log"
+(
+  echo "path does not contain a flake.nix, searching up"
+  echo "kandelo dev shell — declared tools are ready"
+  PLAYWRIGHT_JSON_OUTPUT_FILE="$playwright_report" node -e '
+    const fs = require("node:fs");
+    process.stdout.write("playwright command stdout remains diagnostic-only\n");
+    fs.writeFileSync(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify({
+      stats: { expected: 1, unexpected: 0, flaky: 0, skipped: 0 },
+    }));
+  '
+) >"$wrapper_log"
+grep -Fq "path does not contain a flake.nix" "$wrapper_log" ||
+  fail "noisy-wrapper fixture did not preserve dev-shell diagnostics"
+grep -Fq "playwright command stdout remains diagnostic-only" "$wrapper_log" ||
+  fail "noisy-wrapper fixture did not preserve command diagnostics"
+jq -e '
+  .stats.expected == 1 and .stats.unexpected == 0 and
+  .stats.flaky == 0 and .stats.skipped == 0
+' "$playwright_report" >/dev/null ||
+  fail "direct Playwright JSON report was corrupted by noisy wrapper stdout"
+grep -Fq "flake.nix" "$playwright_report" &&
+  fail "dev-shell diagnostics leaked into the direct Playwright JSON report"
+
+grep -Fq 'name = "homebrew_tap_core"' "$SHELL_BUILD_TOML" ||
+  fail "shell build.toml must declare the canonical tap Git input"
+grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
+  "$SHELL_BUILD_TOML" ||
+  fail "shell Git input must use the public canonical tap repository"
+locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
+grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
+  fail "shell Git input commit must equal the reviewed migration lock"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*16$' "$SHELL_BUILD_TOML" ||
+  fail "bottle-built shell parity changes must advance the shell recipe to revision 16"
+for shell_input in \
+  homebrew/main-shell-demo.json \
+  web-libs/kandelo-session/src/demo-config.ts
+do
+  grep -Fq "\"$shell_input\"" "$SHELL_BUILD_TOML" ||
+    fail "shell build cache inputs omit $shell_input"
+done
+for generic_input in \
+  WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR \
+  WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT
+do
+  grep -Fq "$generic_input" "$SHELL_BUILDER" ||
+    fail "shell builder must consume generic resolver input $generic_input"
+done
+grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_TAP_' "$SHELL_BUILDER" &&
+  fail "shell builder must not retain the workflow-only tap injection path"
+grep -Fq 'build-shell-vfs-image.sh' "$SHELL_BUILDER" &&
+  fail "shell builder must not retain the legacy registry-composition fallback"
+for isolated_flag in '--work-dir "$WORK_DIR"' '--report "$REPORT"' '--bottle-cache "$BOTTLE_CACHE"'; do
+  grep -Fq -- "$isolated_flag" "$SHELL_BUILDER" ||
+    fail "shell builder must pass isolated composer option $isolated_flag"
+done
+grep -Fq 'WORK_DIR="$REPO_ROOT/target/homebrew-main-shell"' "$BUILDER" &&
+  fail "Homebrew composer must not use a shared repository target workspace"
+grep -Fq 'homebrew-main-shell-node-smoke.ts' "$BUILDER" &&
+  fail "cached shell composition must not consume ambient runtime acceptance artifacts"
+grep -Fq 'scripts/homebrew-main-shell-node-smoke.ts' "$WORKFLOW" ||
+  fail "exact archived shell bytes must retain post-archive Node acceptance"
+grep -Eq '^depends_on = \[\]$' "$REPO_ROOT/packages/registry/shell/package.toml" ||
+  fail "canonical bottle-only shell package must not pre-resolve the legacy registry graph"
+
+shell_build_function="$TMP_ROOT/build-shell-vfs-function.sh"
+sed -n '/^build_shell_vfs()/,/^}/p' "$RUN_SH" >"$shell_build_function"
+grep -Fq 'resolve_args+=(resolve shell)' "$shell_build_function" ||
+  fail "run.sh must resolve the shell package through the package system"
+grep -Fq 'need_shell_vfs_build_tools' "$shell_build_function" ||
+  fail "run.sh must prepare lockfile-owned tools before shell source fallback"
+grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
+  "$shell_build_function" ||
+  fail "run.sh must distinguish an explicit fetch-only resolve from normal fallback"
+grep -Fq 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
+  "$shell_build_function" ||
+  fail "run.sh must forward the caller's fetch-only contract to the shell resolver"
+fetch_condition_line="$(grep -nF 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
+  "$shell_build_function" | cut -d: -f1)"
+fetch_forward_line="$(grep -nF 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
+  "$shell_build_function" | cut -d: -f1)"
+fallback_else_line="$(grep -nE '^    else$' "$shell_build_function" | cut -d: -f1)"
+fallback_tools_line="$(grep -nF '        need_shell_vfs_build_tools' \
+  "$shell_build_function" | cut -d: -f1)"
+fallback_fi_line="$(awk -v start="$fallback_tools_line" \
+  'NR > start && /^    fi$/ { print NR; exit }' "$shell_build_function")"
+[ "$fetch_condition_line" -lt "$fetch_forward_line" ] &&
+  [ "$fetch_forward_line" -lt "$fallback_else_line" ] &&
+  [ "$fallback_else_line" -lt "$fallback_tools_line" ] &&
+  [ "$fallback_tools_line" -lt "$fallback_fi_line" ] ||
+  fail "run.sh must skip composer tools only on the fetch-only branch"
+shell_tools_function="$TMP_ROOT/need-shell-vfs-build-tools-function.sh"
+sed -n '/^need_shell_vfs_build_tools()/,/^}/p' "$RUN_SH" >"$shell_tools_function"
+grep -Fq 'npm ci --no-audit --no-fund --prefer-offline' \
+  "$shell_tools_function" ||
+  fail "run.sh must install root shell-composer dependencies from the lockfile"
+grep -Fq 'npm --prefix "$REPO_ROOT/tools/mkrootfs" ci' \
+  "$shell_tools_function" ||
+  fail "run.sh must install mkrootfs dependencies from the lockfile"
+grep -Eq '(^|[[:space:]])if[[:space:]]' "$shell_tools_function" &&
+  fail "shell source fallback must not accept dependency presence as lockfile identity"
+grep -Fq -- '--binaries-dir "$REPO_ROOT/local-binaries"' "$RUN_SH" ||
+  fail "run.sh must materialize the resolved shell package for local consumers"
+grep -Fq 'pkg_has_output shell shell.vfs.zst' "$RUN_SH" ||
+  fail "run.sh must validate the shell package's declared output"
+grep -Fq 'packages/registry/shell/build-shell.sh' "$RUN_SH" &&
+  fail "run.sh must not bypass the resolver by invoking the shell recipe directly"
+grep -Fq 'build_fbdoom' "$shell_build_function" &&
+  fail "the bottle-built shell resolver path must not retain the obsolete fbdoom prerequisite"
+grep -Fq '[ "${KANDELO_REBUILD_TARGET:-}" != "shell-vfs" ] && has_shell_vfs' \
+  "$shell_build_function" ||
+  fail "rebuild shell-vfs must not short-circuit on a fetched or local artifact"
+grep -Fq 'KANDELO_REBUILD_TARGET="$t" build_target "$t"' "$RUN_SH" ||
+  fail "run.sh rebuild must identify the target whose availability guard is bypassed"
+
+local_output_function="$TMP_ROOT/pkg-local-output-path-function.sh"
+sed -n '/^pkg_local_output_path()/,/^}/p' "$RUN_SH" >"$local_output_function"
+grep -Fq 'rel=$(pkg_output_rel "$pkg" "$wasm" "$arch")' "$local_output_function" ||
+  fail "local package cleanup must derive output layout from package metadata"
+clean_target_function="$TMP_ROOT/clean-target-function.sh"
+sed -n '/^clean_target()/,/^}/p' "$RUN_SH" >"$clean_target_function"
+shell_clean_case="$TMP_ROOT/clean-shell-vfs-case.sh"
+sed -n '/^        shell-vfs)/,/;;/p' "$clean_target_function" >"$shell_clean_case"
+grep -Fq 'pkg_remove_local_output shell shell.vfs.zst wasm32' "$shell_clean_case" ||
+  fail "clean shell-vfs must remove the resolver-owned local output"
+grep -Fq '"$REPO_ROOT/binaries/' "$shell_clean_case" &&
+  fail "clean shell-vfs must preserve immutable fetched package artifacts"
+
+for shell_derived_package in lamp node-vfs wordpress; do
+  shell_derived_build="$REPO_ROOT/packages/registry/$shell_derived_package/build.toml"
+  grep -Fq '"web-libs/kandelo-session/src/vfs-capacity.ts"' "$shell_derived_build" ||
+    fail "$shell_derived_package must bind its cache key to the shell-derived capacity contract"
+done
+
+(
+  cd "$REPO_ROOT"
+  npx tsx --test "$IMAGE_CONTRACT_TEST"
+) || fail "post-archive image contract unit tests failed"
+
+# Exercise the package wrapper twice at once while replacing only its composer
+# subprocess. Each invocation must receive an exclusive resolver-owned
+# workspace, publish only the declared VFS, discard its report/cache scratch,
+# and remove every ambient GitHub/Homebrew credential before composition.
+fake_bin="$TMP_ROOT/fake-composer-bin"
+fake_log="$TMP_ROOT/fake-composer.log"
+mkdir -p "$fake_bin"
+apply_fake_composer="$fake_bin/bash"
+cat >"$apply_fake_composer" <<'FAKE_COMPOSER'
+#!/bin/bash
+set -euo pipefail
+composer="${1:-}"
+shift
+[[ "$composer" == */scripts/build-homebrew-main-shell-closure.sh ]]
+for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+  if [ "${!token+x}" = x ]; then
+    echo "credential leaked to composer: $token" >&2
+    exit 80
+  fi
+done
+work="" report="" cache="" out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --work-dir) work="$2"; shift 2 ;;
+    --report) report="$2"; shift 2 ;;
+    --bottle-cache) cache="$2"; shift 2 ;;
+    --out) out="$2"; shift 2 ;;
+    --tap-root|--expected-tap-sha) shift 2 ;;
+    *) echo "unexpected fake-composer option: $1" >&2; exit 81 ;;
+  esac
+done
+[ -n "$work" ] && [ -n "$report" ] && [ -n "$cache" ] && [ -n "$out" ]
+[ ! -e "$work" ] && [ ! -L "$work" ]
+mkdir "$work"
+mkdir "$cache"
+printf '%s\n' "$WASM_POSIX_DEP_OUT_DIR" >"$out"
+printf '{}\n' >"$report"
+printf '%s|%s|%s|%s|%s\n' \
+  "$WASM_POSIX_DEP_OUT_DIR" "$work" "$report" "$cache" "$out" \
+  >>"$FAKE_COMPOSER_LOG"
+FAKE_COMPOSER
+chmod 0755 "$apply_fake_composer"
+
+tap_sha=1111111111111111111111111111111111111111
+parallel_one="$TMP_ROOT/parallel-shell-one"
+parallel_two="$TMP_ROOT/parallel-shell-two"
+mkdir "$parallel_one" "$parallel_two"
+run_fake_shell_build() {
+  local out_dir="$1"
+  env \
+    PATH="$fake_bin:$PATH" \
+    FAKE_COMPOSER_LOG="$fake_log" \
+    GH_TOKEN=forbidden \
+    GITHUB_TOKEN=forbidden \
+    HOMEBREW_GITHUB_API_TOKEN=forbidden \
+    HOMEBREW_GITHUB_PACKAGES_TOKEN=forbidden \
+    HOMEBREW_DOCKER_REGISTRY_TOKEN=forbidden \
+    WASM_POSIX_DEP_OUT_DIR="$out_dir" \
+    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
+    WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR="$TMP_ROOT/fake-tap" \
+    WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT="$tap_sha" \
+    /bin/bash "$SHELL_BUILDER"
+}
+run_fake_shell_build "$parallel_one" &
+parallel_one_pid=$!
+run_fake_shell_build "$parallel_two" &
+parallel_two_pid=$!
+wait "$parallel_one_pid" || fail "first concurrent shell wrapper failed"
+wait "$parallel_two_pid" || fail "second concurrent shell wrapper failed"
+
+[ "$(wc -l <"$fake_log" | tr -d '[:space:]')" -eq 2 ] ||
+  fail "concurrent shell wrappers did not produce two composer records"
+for out_dir in "$parallel_one" "$parallel_two"; do
+  [ -f "$out_dir/shell.vfs.zst" ] || fail "shell wrapper omitted final VFS in $out_dir"
+  [ "$(find "$out_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" -eq 1 ] ||
+    fail "shell wrapper leaked scratch outputs into $out_dir"
+  [ ! -e "$out_dir/.homebrew-shell-build" ] ||
+    fail "shell wrapper did not clean resolver-owned scratch in $out_dir"
+  grep -Fq "$out_dir|$out_dir/.homebrew-shell-build/work|" "$fake_log" ||
+    fail "composer did not receive the exclusive workspace below $out_dir"
+done
+[ "$(cut -d'|' -f2 "$fake_log" | sort -u | wc -l | tr -d '[:space:]')" -eq 2 ] ||
+  fail "concurrent shell wrappers shared one composer workspace"
+grep -Fq "$REPO_ROOT/target/homebrew-main-shell" "$fake_log" &&
+  fail "composer reused the repository-global Homebrew target workspace"
+
+expect_failure "requires build.toml git input homebrew_tap_core" \
+  env WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/missing-git-input" \
+    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
+  bash "$SHELL_BUILDER"
+
+tap="$TMP_ROOT/tap"
+mkdir -p "$tap/Kandelo"
+git -C "$tap" init -q
+git -C "$tap" config user.email "homebrew-contract-test@example.invalid"
+git -C "$tap" config user.name "Homebrew contract test"
+printf '%s\n' \
+  '{"tap_repository":"kandelo-dev/homebrew-tap-core","tap_name":"kandelo-dev/tap-core"}' \
+  >"$tap/Kandelo/metadata.json"
+git -C "$tap" add Kandelo/metadata.json
+git -C "$tap" commit -qm "Homebrew: Add canonical test metadata"
+tap_sha="$(git -C "$tap" rev-parse HEAD)"
+lock="$TMP_ROOT/main-shell-migration-lock.json"
+jq --arg sha "$tap_sha" '.catalog.tap_commit = $sha' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+
+expect_failure "must match locked catalog" \
+  "$BUILDER" --tap-root "$tap" \
+  --work-dir "$TMP_ROOT/work-mismatched-catalog" \
+  --migration-lock "$lock" \
+  --expected-tap-sha 0000000000000000000000000000000000000000
+
+printf '%s\n' "untracked" >"$tap/untracked-file"
+expect_failure "exact tap checkout is dirty" \
+  "$BUILDER" --tap-root "$tap" --work-dir "$TMP_ROOT/work-dirty-tap" \
+  --migration-lock "$lock"
+rm "$tap/untracked-file"
+
+tap_worktree="$TMP_ROOT/tap-worktree"
+git -C "$tap" worktree add --detach "$tap_worktree" "$tap_sha" >/dev/null
+[ -f "$tap_worktree/.git" ] ||
+  fail "linked tap fixture does not exercise a .git worktree file"
+expect_failure "--max-bytes must match the locked consumer capacity" \
+  "$BUILDER" --tap-root "$tap_worktree" --work-dir "$TMP_ROOT/work-bad-capacity" \
+  --migration-lock "$lock" --max-bytes 4096
+
+printf '%s\n' \
+  '{"tap_repository":"example/wrong-tap","tap_name":"example/wrong"}' \
+  >"$tap/Kandelo/metadata.json"
+git -C "$tap" add Kandelo/metadata.json
+git -C "$tap" commit -qm "Homebrew: Make test identity invalid"
+tap_sha="$(git -C "$tap" rev-parse HEAD)"
+jq --arg sha "$tap_sha" '.catalog.tap_commit = $sha' \
+  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+expect_failure "tap metadata has the wrong repository identity" \
+  "$BUILDER" --tap-root "$tap" --work-dir "$TMP_ROOT/work-wrong-tap" \
+  --migration-lock "$lock"
+
+baseline_output="$(node "$CHECKER")"
+grep -Fq "32 reviewed migration roots and 38 Formulae" <<<"$baseline_output" ||
+  fail "main-shell checker does not report both exact closure counts"
+
+metadata="$TMP_ROOT/main-shell-metadata.json"
+jq '
+  def dependencies:
+    if . == "bash" then ["ncurses"]
+    elif . == "ncurses" then ["libcxx"]
+    elif . == "file-formula" then ["bzip2", "libmagic", "xz", "zlib"]
+    elif . == "m4" or . == "make" then ["dash"]
+    elif . == "diffutils" then ["coreutils", "ed"]
+    elif . == "tar" then ["dash", "gzip"]
+    elif . == "curl" then ["libcurl", "openssl", "zlib"]
+    elif . == "wget" then ["openssl", "zlib"]
+    elif . == "git" then
+      ["coreutils", "dash", "diffutils", "grep", "less", "libcurl", "openssl", "sed", "vim", "zlib"]
+    elif . == "zip" then ["unzip"]
+    elif . == "libmagic" then ["bzip2", "xz", "zlib"]
+    elif . == "libcurl" then ["openssl", "zlib"]
+    else []
+    end;
+  (
+    [.packages[].formula | {
+      name,
+      version: (if .revision == 0 then .version else "\(.version)_\(.revision)" end),
+      formula_revision: .revision,
+      bottle_rebuild
+    }] + [
+      {"name":"libcxx","version":"21.1.7_1","formula_revision":1,"bottle_rebuild":0},
+      {"name":"zlib","version":"1.3.1_4","formula_revision":4,"bottle_rebuild":1},
+      {"name":"libmagic","version":"5.45","formula_revision":0,"bottle_rebuild":0},
+      {"name":"ed","version":"1.22.5_1","formula_revision":1,"bottle_rebuild":0},
+      {"name":"openssl","version":"3.3.2_2","formula_revision":2,"bottle_rebuild":1},
+      {"name":"libcurl","version":"8.11.1_1","formula_revision":1,"bottle_rebuild":2}
+    ]
+  ) as $formulae |
+  {
+    schema: 1,
+    tap_repository,
+    tap_name,
+    packages: [$formulae[] | . as $formula | {
+      name: $formula.name,
+      full_name: ("kandelo-dev/tap-core/" + $formula.name),
+      version: $formula.version,
+      formula_revision: $formula.formula_revision,
+      bottle_rebuild: $formula.bottle_rebuild,
+      dependencies: [($formula.name | dependencies)[] | . as $dependency | {
+        name: $dependency,
+        full_name: ("kandelo-dev/tap-core/" + $dependency)
+      }]
+    }]
+  }
+' "$SOURCE_LOCK" >"$metadata"
+
+metadata_output="$(node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$metadata")"
+grep -Fq "32 reviewed migration roots and 38 Formulae" <<<"$metadata_output" ||
+  fail "main-shell checker did not validate the exact synthetic tap closure"
+
+jq 'del(.formula_closure)' "$SOURCE_LOCK" >"$lock"
+expect_failure "packages/formula_closure/substitutions must be arrays" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.formula_closure |= .[:-1]' "$SOURCE_LOCK" >"$lock"
+expect_failure "must contain exactly 38 closure Formulae" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.formula_closure[37] = .formula_closure[36]' "$SOURCE_LOCK" >"$lock"
+expect_failure "migration lock formula_closure contains duplicate" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.formula_closure[] | select(. == "kandelo-dev/tap-core/dash")) =
+  "kandelo-dev/tap-core/replacement-root"' "$SOURCE_LOCK" >"$lock"
+expect_failure "formula_closure omits registry-root Formulae" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.formula_closure[0] = "other/tap/dash"' "$SOURCE_LOCK" >"$lock"
+expect_failure "must be a canonical kandelo-dev/tap-core/<formula> identity" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.formula_closure[] | select(. == "kandelo-dev/tap-core/libmagic")) =
+  "kandelo-dev/tap-core/unexpected"' "$SOURCE_LOCK" >"$lock"
+expect_failure "tap metadata dependency closure does not match reviewed formula_closure" \
+  node "$CHECKER" "$BREWFILE" "$lock" "$metadata"
+
+jq '.packages |= map(select(.name != "libmagic"))' "$metadata" >"$TMP_ROOT/missing-dependency.json"
+expect_failure "missing dependency of file-formula Formula libmagic" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/missing-dependency.json"
+
+jq '(.packages[] | select(.name == "file-formula") | .dependencies) |=
+  map(select(.name != "libmagic"))' "$metadata" >"$TMP_ROOT/short-closure.json"
+expect_failure "resolves 37 main-shell Formulae" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/short-closure.json"
+
+jq '
+  (.packages[] | select(.name == "dash") | .dependencies) +=
+    [{"name":"unexpected","full_name":"kandelo-dev/tap-core/unexpected"}] |
+  .packages += [{
+    "name":"unexpected",
+    "full_name":"kandelo-dev/tap-core/unexpected",
+    "version":"1.0",
+    "formula_revision":0,
+    "bottle_rebuild":0,
+    "dependencies":[]
+  }]
+' "$metadata" >"$TMP_ROOT/long-closure.json"
+expect_failure "resolves 39 main-shell Formulae" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/long-closure.json"
+
+jq '
+  (.packages[] | select(.name == "file-formula") | .dependencies[] |
+    select(.name == "libmagic")) =
+      {"name":"unexpected","full_name":"kandelo-dev/tap-core/unexpected"} |
+  .packages += [{
+    "name":"unexpected",
+    "full_name":"kandelo-dev/tap-core/unexpected",
+    "version":"1.0",
+    "formula_revision":0,
+    "bottle_rebuild":0,
+    "dependencies":[]
+  }]
+' "$metadata" >"$TMP_ROOT/wrong-closure.json"
+expect_failure "tap metadata dependency closure does not match reviewed formula_closure" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/wrong-closure.json"
+
+jq '(.packages[] | select(.name == "libcxx") | .dependencies) =
+  [{"name":"ncurses","full_name":"kandelo-dev/tap-core/ncurses"}]' \
+  "$metadata" >"$TMP_ROOT/cyclic-closure.json"
+expect_failure "tap metadata dependency cycle: ncurses -> libcxx -> ncurses" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/cyclic-closure.json"
+
+jq '.packages += [.packages[0]]' "$metadata" >"$TMP_ROOT/duplicate-formula.json"
+expect_failure "tap metadata contains duplicate Formula" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/duplicate-formula.json"
+
+jq '(.packages[] | select(.name == "bash") | .dependencies[0].full_name) =
+  "other/tap/ncurses"' "$metadata" >"$TMP_ROOT/cross-tap-dependency.json"
+expect_failure "is not a canonical same-tap dependency" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/cross-tap-dependency.json"
+
+jq 'del(.catalog)' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "must pin one exact catalog commit" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.catalog.tap_commit = "main"' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "must pin one exact catalog commit" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.reviewed_substitutions[] | select(.kind == "formula_identity" and
+  .registry == "file@5.45")) |= del(.reason)' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "reviewed_substitutions[0] is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.reviewed_substitutions += [{
+  "kind":"formula_identity",
+  "registry":"undeclared@1.0",
+  "formula":"kandelo-dev/tap-core/undeclared-formula@1.0",
+  "reason":"Synthetic undeclared substitution."
+}]' "$SOURCE_LOCK" >"$lock"
+expect_failure "extra: formula_identity:undeclared@1.0->kandelo-dev/tap-core/undeclared-formula@1.0" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.reviewed_substitutions += [.reviewed_substitutions[0]]' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "reviewed migration substitutions contains duplicate" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.reviewed_substitutions |= map(select(.registry != "file@5.45"))' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "missing: formula_identity:file@5.45->kandelo-dev/tap-core/file-formula@5.45" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.reviewed_substitutions[] | select(.kind == "version" and
+  .registry == "m4@1.4.19") | .formula) = "kandelo-dev/tap-core/m4@1.4.22"' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "extra: version:m4@1.4.19->kandelo-dev/tap-core/m4@1.4.22" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.packages[] | select(.registry.name == "m4") | .formula.version) = "1.4.19"' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "extra: version:m4@1.4.19->kandelo-dev/tap-core/m4@1.4.21" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.consumer.max_vfs_byte_length = 268435456' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "must declare the 512 MiB consumer profile" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.link_conflict_owners[0].package = "kandelo-dev/tap-core/not-locked"' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility.link_conflict_owners[0] is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq 'del(.compatibility.aliases[0].source_kind)' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility.aliases[0] is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.aliases[1].targets[0] = .compatibility.aliases[0].targets[0]' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility alias target is duplicated" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq 'del(.compatibility.runtime_state)' "$SOURCE_LOCK" >"$lock"
+expect_failure "main-shell migration compatibility policy is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.runtime_state[0].requires_package =
+  "kandelo-dev/tap-core/not-locked"' "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility.runtime_state[0] is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.runtime_state[1].path = .compatibility.runtime_state[0].path' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility runtime state path is duplicated" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+echo "test-homebrew-main-shell-closure: ok"

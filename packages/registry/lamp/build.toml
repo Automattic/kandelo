@@ -13,6 +13,7 @@ inputs = [
   "images/vfs/scripts/kandelo-demo-guides.ts",
   "images/vfs/scripts/mariadb-image-helpers.ts",
   "images/vfs/scripts/opcache-prewarm.ts",
+  "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/shell-vfs-build.ts",
   "images/vfs/scripts/smtp-capture-helpers.ts",
   "images/vfs/scripts/source-extract-helper.ts",
@@ -21,19 +22,14 @@ inputs = [
   "images/vfs/scripts/wordpress-preinstall.ts",
   "apps/browser-demos/lib/init/mysql-benchmark.ts",
   "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
-  "host/src/binary-resolver.ts",
-  "host/src/constants.ts",
-  "host/src/statfs.ts",
-  "host/src/types.ts",
-  "host/src/vfs/image-helpers.ts",
-  "host/src/vfs/memory-fs.ts",
-  "host/src/vfs/sharedfs-vendor.ts",
-  "host/src/vfs/types.ts",
-  "host/src/vfs/zip.ts",
+  "host/src",
+  "web-libs/kandelo-session/src/demo-config.ts",
+  "web-libs/kandelo-session/src/demo-guides.ts",
+  "web-libs/kandelo-session/src/vfs-capacity.ts",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 9
+revision    = 10
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

@@ -1,0 +1,297 @@
+name: Homebrew main-shell closure
+
+on:
+  pull_request:
+    paths:
+      - ".github/actions/setup-nix/**"
+      - ".github/workflows/homebrew-main-shell-ci.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MANIFEST"
+      - "apps/browser-demos/**"
+      - "crates/kernel/**"
+      - "crates/shared/**"
+      - "flake.lock"
+      - "flake.nix"
+      - "homebrew/main-shell*"
+      - "host/package-lock.json"
+      - "host/package.json"
+      - "host/src/binary-resolver.ts"
+      - "host/src/generated/abi.ts"
+      - "host/src/homebrew-vfs-*.ts"
+      - "host/src/node-kernel-host.ts"
+      - "host/src/vfs/**"
+      - "host/test/homebrew-vfs-*.test.ts"
+      - "host/test/optional-demo-vfs.test.ts"
+      - "host/test/vfs-image.test.ts"
+      - "images/rootfs/**"
+      - "images/vfs/scripts/build-homebrew-vfs-image.ts"
+      - "images/vfs/scripts/build-shell-vfs-image.ts"
+      - "images/vfs/scripts/main-shell-demo-config.ts"
+      - "images/vfs/scripts/vfs-image-helpers.ts"
+      - "package-lock.json"
+      - "package.json"
+      - "packages/registry/rootfs/package.toml"
+      - "packages/registry/shell/**"
+      - "rust-toolchain.toml"
+      - "scripts/build-homebrew-main-shell-closure.sh"
+      - "scripts/browser-binary-package-roots.mjs"
+      - "scripts/check-homebrew-main-shell-brewfile.mjs"
+      - "scripts/dev-shell.sh"
+      - "scripts/fetch-binaries.sh"
+      - "scripts/homebrew-brewfile-selection.rb"
+      - "scripts/homebrew-main-shell-node-smoke.ts"
+      - "scripts/homebrew-main-shell-image-contract*.ts"
+      - "scripts/homebrew-vfs-acceptance-smoke.ts"
+      - "scripts/install-local-binary.sh"
+      - "scripts/resolve-binary.sh"
+      - "scripts/test-homebrew-main-shell-closure.sh"
+      - "tests/package-system/browser-binary-dependencies.test.ts"
+      - "tools/mkrootfs/**"
+      - "tools/xtask/**"
+      - "web-libs/kandelo-session/src/shell-config.ts"
+      - "web-libs/kandelo-session/src/demo-config*.ts"
+      - "web-libs/kandelo-session/src/kernel-host.ts"
+      - "web-libs/kandelo-session/src/vfs-capacity.ts"
+  push:
+    branches: [main]
+    paths:
+      - ".github/actions/setup-nix/**"
+      - ".github/workflows/homebrew-main-shell-ci.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MANIFEST"
+      - "apps/browser-demos/**"
+      - "crates/kernel/**"
+      - "crates/shared/**"
+      - "flake.lock"
+      - "flake.nix"
+      - "homebrew/main-shell*"
+      - "host/package-lock.json"
+      - "host/package.json"
+      - "host/src/binary-resolver.ts"
+      - "host/src/generated/abi.ts"
+      - "host/src/homebrew-vfs-*.ts"
+      - "host/src/node-kernel-host.ts"
+      - "host/src/vfs/**"
+      - "host/test/homebrew-vfs-*.test.ts"
+      - "host/test/optional-demo-vfs.test.ts"
+      - "host/test/vfs-image.test.ts"
+      - "images/rootfs/**"
+      - "images/vfs/scripts/build-homebrew-vfs-image.ts"
+      - "images/vfs/scripts/build-shell-vfs-image.ts"
+      - "images/vfs/scripts/main-shell-demo-config.ts"
+      - "images/vfs/scripts/vfs-image-helpers.ts"
+      - "package-lock.json"
+      - "package.json"
+      - "packages/registry/rootfs/package.toml"
+      - "packages/registry/shell/**"
+      - "rust-toolchain.toml"
+      - "scripts/build-homebrew-main-shell-closure.sh"
+      - "scripts/browser-binary-package-roots.mjs"
+      - "scripts/check-homebrew-main-shell-brewfile.mjs"
+      - "scripts/dev-shell.sh"
+      - "scripts/fetch-binaries.sh"
+      - "scripts/homebrew-brewfile-selection.rb"
+      - "scripts/homebrew-main-shell-node-smoke.ts"
+      - "scripts/homebrew-main-shell-image-contract*.ts"
+      - "scripts/homebrew-vfs-acceptance-smoke.ts"
+      - "scripts/install-local-binary.sh"
+      - "scripts/resolve-binary.sh"
+      - "scripts/test-homebrew-main-shell-closure.sh"
+      - "tests/package-system/browser-binary-dependencies.test.ts"
+      - "tools/mkrootfs/**"
+      - "tools/xtask/**"
+      - "web-libs/kandelo-session/src/shell-config.ts"
+      - "web-libs/kandelo-session/src/demo-config*.ts"
+      - "web-libs/kandelo-session/src/kernel-host.ts"
+      - "web-libs/kandelo-session/src/vfs-capacity.ts"
+  workflow_dispatch:
+
+concurrency:
+  group: homebrew-main-shell-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  exact-public-bottle-closure:
+    name: exact public-bottle closure (Node + Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/browser-demos/package-lock.json
+            host/package-lock.json
+            tools/mkrootfs/package-lock.json
+
+      - name: Validate the exact catalog lock
+        run: |
+          set -euo pipefail
+          node scripts/check-homebrew-main-shell-brewfile.mjs
+
+      - uses: ./.github/actions/setup-nix
+
+      - name: Install exact-image and browser dependencies
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm --prefix tools/mkrootfs ci --no-audit --no-fund
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm --prefix host ci --no-audit --no-fund
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm --prefix apps/browser-demos ci --no-audit --no-fund
+          (
+            cd apps/browser-demos
+            npx playwright install chromium --with-deps
+          )
+
+      - name: Fetch direct browser bundling inputs and build the exact candidate kernel
+        run: |
+          set -euo pipefail
+          abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            crates/shared/src/lib.rs)
+          export WASM_POSIX_BINARY_INDEX_URL="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${abi}/index.toml"
+          # Vite resolves static @binaries imports across the wider demo app.
+          # Derive those registry roots from the imports and package manifests
+          # so adding an import cannot silently leave this browser proof stale.
+          # They are browser bundling inputs, not shell VFS inputs: archive-stage
+          # builds shell's dependency-free package from public bottles, and the
+          # exact archive replaces shell before either runtime proof starts.
+          browser_package_file="$RUNNER_TEMP/browser-binary-packages.txt"
+          node scripts/browser-binary-package-roots.mjs \
+            --exclude-package shell \
+            --include-package rootfs \
+            > "$browser_package_file"
+          mapfile -t browser_input_packages < "$browser_package_file"
+          [ "${#browser_input_packages[@]}" -gt 0 ]
+          [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" \
+            -eq "${#browser_input_packages[@]}" ]
+          fetch_args=(--fetch-only)
+          for package in "${browser_input_packages[@]}"; do
+            fetch_args+=(--package "$package")
+          done
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh "${fetch_args[@]}"
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            cargo build --release -p kandelo -Z build-std=core,alloc
+            mkdir -p local-binaries
+            cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+              local-binaries/kernel.wasm
+          '
+
+      - name: Build the canonical shell package archive from public bottles
+        id: archive
+        run: |
+          set -euo pipefail
+          stage_dir="$RUNNER_TEMP/staged-shell"
+          rm -rf "$stage_dir"
+          # The single-quoted program is expanded by the inner dev-shell Bash.
+          # shellcheck disable=SC2016
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            bash scripts/dev-shell.sh bash -c '
+              set -euo pipefail
+              HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+              cache_key=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+                compute-cache-key-sha \
+                  --package packages/registry/shell \
+                  --arch wasm32)
+              [[ "$cache_key" =~ ^[0-9a-f]{64}$ ]]
+              cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+                archive-stage \
+                  --package packages/registry/shell \
+                  --arch wasm32 \
+                  --out "$RUNNER_TEMP/staged-shell" \
+                  --build-timestamp "$(git log -1 --format=%aI HEAD)" \
+                  --build-host "$GITHUB_REPOSITORY@$GITHUB_SHA" \
+                  --binaries-dir "$(pwd)/binaries" \
+                  --force-source-build \
+                  --expected-cache-key-sha "$cache_key"
+            '
+          mapfile -t archives < <(find "$stage_dir" -maxdepth 1 -type f -name '*.tar.zst' -print)
+          [ "${#archives[@]}" -eq 1 ]
+          echo "path=${archives[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract and install the archive's exact shell bytes
+        id: image
+        env:
+          ARCHIVE_PATH: ${{ steps.archive.outputs.path }}
+        run: |
+          set -euo pipefail
+          archive_root="$RUNNER_TEMP/shell-archive"
+          rm -rf "$archive_root"
+          mkdir -p "$archive_root"
+          mapfile -t archive_entries < <(tar --zstd -tf "$ARCHIVE_PATH")
+          [ "$(printf '%s\n' "${archive_entries[@]}" | grep -Fxc 'artifacts/shell.vfs.zst')" -eq 1 ]
+          [ "$(printf '%s\n' "${archive_entries[@]}" | grep -Fxc 'manifest.toml')" -eq 1 ]
+          tar --zstd -xf "$ARCHIVE_PATH" -C "$archive_root" \
+            manifest.toml artifacts/shell.vfs.zst
+          archived="$archive_root/artifacts/shell.vfs.zst"
+          installed=local-binaries/programs/wasm32/shell.vfs.zst
+          browser_copy=apps/browser-demos/public/shell.vfs.zst
+          test -f "$archived"
+          mkdir -p "$(dirname "$installed")" "$(dirname "$browser_copy")"
+          cp "$archived" "$installed"
+          cp "$archived" "$browser_copy"
+          cmp "$archived" "$installed"
+          cmp "$archived" "$browser_copy"
+          resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
+          test "$(realpath "$resolved")" = "$(realpath "$installed")"
+          image_sha=$(sha256sum "$archived" | awk '{print $1}')
+          [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
+          echo "sha256=$image_sha" >> "$GITHUB_OUTPUT"
+      - name: Boot the exact installed bytes in Node
+        run: |
+          bash scripts/dev-shell.sh npx tsx \
+            scripts/homebrew-main-shell-node-smoke.ts \
+            --image "$RUNNER_TEMP/shell-archive/artifacts/shell.vfs.zst" \
+            --migration-lock homebrew/main-shell-migration-lock.json \
+            --demo-config homebrew/main-shell-demo.json
+
+      - name: Boot the current main-shell path in Chromium
+        env:
+          KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
+          KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
+          (
+            cd apps/browser-demos
+            bash ../../scripts/dev-shell.sh env \
+              PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \
+              KANDELO_HOMEBREW_MAIN_SHELL_STRICT="$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
+              KANDELO_HOMEBREW_MAIN_SHELL_SHA256="$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
+              npx playwright test test/kandelo-homebrew-main-shell.spec.ts \
+              --project=chromium --reporter=json
+          )
+          jq -e '
+            .stats.expected == 1 and .stats.unexpected == 0 and
+            .stats.flaky == 0 and .stats.skipped == 0
+          ' "$report" >/dev/null
+
+      - name: Upload exact closure evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-main-shell-closure
+          path: |
+            ${{ runner.temp }}/staged-shell/*.tar.zst
+            ${{ runner.temp }}/shell-archive/artifacts/shell.vfs.zst
+            ${{ runner.temp }}/homebrew-main-shell-playwright.json
+          retention-days: 7
+          if-no-files-found: warn

@@ -96,6 +96,13 @@ export interface HomebrewVfsAcceptanceEvidence {
     full_name: string;
     tap_repository: string;
     tap_commit: string;
+    built_from?: {
+      tap_repository: string;
+      tap_commit: string;
+      kandelo_repository: string;
+      kandelo_commit: string;
+      formula_sha256: string;
+    };
     version: string;
     sha256: string;
     bytes: number;
@@ -349,6 +356,15 @@ export async function validateHomebrewVfsAcceptance(
         full_name: pkg.fullName,
         tap_repository: pkg.tapRepository,
         tap_commit: pkg.tapCommit,
+        ...(pkg.builtFrom === undefined ? {} : {
+          built_from: {
+            tap_repository: pkg.builtFrom.tapRepository,
+            tap_commit: pkg.builtFrom.tapCommit,
+            kandelo_repository: pkg.builtFrom.kandeloRepository,
+            kandelo_commit: pkg.builtFrom.kandeloCommit,
+            formula_sha256: pkg.builtFrom.formulaSha256,
+          },
+        }),
         version: pkg.version,
         sha256: pkg.sha256,
         bytes: pkg.bytes,
@@ -507,6 +523,7 @@ function assertEquivalentPlans(nodePlan: HomebrewVfsPlan, browserPlan: HomebrewV
       sourceStatus: pkg.sourceStatus,
       metadataStatus: pkg.metadataStatus,
       linkManifestPath: pkg.linkManifestPath,
+      builtFrom: pkg.builtFrom,
     })),
   });
   if (identity(nodePlan) !== identity(browserPlan)) {
@@ -635,6 +652,7 @@ function assertReportMatchesPlan(
     for (const [key, value] of Object.entries(expected)) {
       expectEqual(actual, key, value, `VFS report package ${pkg.name}`);
     }
+    assertSnakeCaseBuildSource(actual, pkg, `VFS report package ${pkg.name}`);
   });
 }
 
@@ -722,6 +740,13 @@ function assertImageMetadata(
     sourceStatus: "success",
     cacheKeySha: pkg.cacheKeySha,
   }));
+  plan.packages.forEach((pkg, index) => {
+    assertCamelCaseBuildSource(
+      requireRecord(packages[index], `composed VFS package ${index}`),
+      pkg,
+      `composed VFS package ${pkg.name}`,
+    );
+  });
 }
 
 function assertGuestManifest(
@@ -761,8 +786,9 @@ function assertGuestManifest(
   for (const [key, value] of Object.entries(expectedMetadata)) {
     expectEqual(metadata, key, value, "guest Homebrew metadata");
   }
+  const packages = requiredArray(manifest, "packages", "guest Homebrew manifest");
   assertPackageRecords(
-    requiredArray(manifest, "packages", "guest Homebrew manifest"),
+    packages,
     plan,
     "guest Homebrew package",
     (pkg) => ({
@@ -784,6 +810,13 @@ function assertGuestManifest(
       keg: pkg.keg,
     }),
   );
+  plan.packages.forEach((pkg, index) => {
+    assertSnakeCaseBuildSource(
+      requireRecord(packages[index], `guest Homebrew package ${index}`),
+      pkg,
+      `guest Homebrew package ${pkg.name}`,
+    );
+  });
 }
 
 function assertPackageRecords(
@@ -801,6 +834,71 @@ function assertPackageRecords(
       expectEqual(actual, key, value, `${label} ${pkg.name}`);
     }
   });
+}
+
+function assertSnakeCaseBuildSource(
+  actual: Record<string, unknown>,
+  pkg: HomebrewVfsPlan["packages"][number],
+  label: string,
+): void {
+  assertBuildSource(actual, "built_from", pkg, label, {
+    tapRepository: "tap_repository",
+    tapCommit: "tap_commit",
+    kandeloRepository: "kandelo_repository",
+    kandeloCommit: "kandelo_commit",
+    formulaSha256: "formula_sha256",
+  });
+}
+
+function assertCamelCaseBuildSource(
+  actual: Record<string, unknown>,
+  pkg: HomebrewVfsPlan["packages"][number],
+  label: string,
+): void {
+  assertBuildSource(actual, "builtFrom", pkg, label, {
+    tapRepository: "tapRepository",
+    tapCommit: "tapCommit",
+    kandeloRepository: "kandeloRepository",
+    kandeloCommit: "kandeloCommit",
+    formulaSha256: "formulaSha256",
+  });
+}
+
+function assertBuildSource(
+  actual: Record<string, unknown>,
+  key: "built_from" | "builtFrom",
+  pkg: HomebrewVfsPlan["packages"][number],
+  label: string,
+  fields: {
+    tapRepository: string;
+    tapCommit: string;
+    kandeloRepository: string;
+    kandeloCommit: string;
+    formulaSha256: string;
+  },
+): void {
+  if (pkg.builtFrom === undefined) {
+    if (Object.hasOwn(actual, key)) {
+      fail(`${label} unexpectedly declares ${key}`);
+    }
+    return;
+  }
+  const source = requiredRecord(actual, key, label);
+  const expected: Array<[string, string]> = [
+    [fields.tapRepository, pkg.builtFrom.tapRepository],
+    [fields.tapCommit, pkg.builtFrom.tapCommit],
+    [fields.kandeloRepository, pkg.builtFrom.kandeloRepository],
+    [fields.kandeloCommit, pkg.builtFrom.kandeloCommit],
+    [fields.formulaSha256, pkg.builtFrom.formulaSha256],
+  ];
+  const actualKeys = Object.keys(source).sort();
+  const expectedKeys = expected.map(([field]) => field).sort();
+  if (actualKeys.join("\0") !== expectedKeys.join("\0")) {
+    fail(`${label}.${key} has unsupported fields`);
+  }
+  for (const [field, value] of expected) {
+    expectEqual(source, field, value, `${label}.${key}`);
+  }
 }
 
 function assertExecutableBelongsToBottle(

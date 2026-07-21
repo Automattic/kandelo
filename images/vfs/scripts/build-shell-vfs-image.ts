@@ -16,19 +16,7 @@ import {
   writeVfsBinary,
 } from "./vfs-image-helpers";
 import { populateShellEnvironment, resolveVfsArtifact } from "./shell-vfs-build";
-import {
-  externalAsset,
-  framebufferPresentation,
-  type DemoPresentationConfig,
-  terminalPresentation,
-  writeKandeloDemoConfig,
-} from "./kandelo-demo-config";
-import {
-  DOOM_COMMAND,
-  DOOM_WAD_SHA256,
-  DOOM_WAD_URL,
-  shellGuide,
-} from "./kandelo-demo-guides";
+import { writeMainShellDemoConfig } from "./main-shell-demo-config";
 
 const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
 
@@ -53,30 +41,7 @@ async function main() {
   populateDoomRuntime(fs);
   console.log("Populating modeset runtime...");
   populateModesetRuntime(fs);
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      shell: {
-        presentation: terminalPresentation(),
-        guide: shellGuide(),
-      },
-      doom: {
-        presentation: framebufferPresentation(DOOM_COMMAND),
-        assets: [
-          externalAsset({
-            path: "/doom1.wad",
-            url: DOOM_WAD_URL,
-            sha256: DOOM_WAD_SHA256,
-            mode: 0o644,
-            devCorsProxy: true,
-          }),
-        ],
-      },
-      modeset: {
-        presentation: kmsPresentation("/usr/local/bin/modeset"),
-      },
-    },
-  });
+  writeMainShellDemoConfig(fs);
 
   await saveImage(fs, OUT_FILE);
 }
@@ -94,14 +59,4 @@ function populateDoomRuntime(fs: MemoryFileSystem): void {
 function populateModesetRuntime(fs: MemoryFileSystem): void {
   const modesetBytes = readFileSync(resolveVfsArtifact("programs/modeset.wasm", "modeset"));
   writeVfsBinary(fs, "/usr/local/bin/modeset", new Uint8Array(modesetBytes), 0o755);
-}
-
-function kmsPresentation(autoCommand: string): DemoPresentationConfig {
-  return {
-    bootPrimary: "syslog",
-    runningPrimary: ["kms", "terminal", "syslog"],
-    terminalAccess: "drawer",
-    internalsAccess: "drawer",
-    autoCommand,
-  };
 }

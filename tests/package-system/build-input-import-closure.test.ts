@@ -1,0 +1,207 @@
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+} from "node:fs";
+import {
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const packages = ["node-vfs", "wordpress", "lamp"] as const;
+const sourceExtensions = new Set([
+  ".cjs",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".mts",
+  ".ts",
+  ".tsx",
+]);
+
+describe("package build input import closure", () => {
+  it("maps host runtime changes to the derived images that execute them", () => {
+    for (const changedPath of [
+      "host/src/process.ts",
+      "host/src/kernel-worker.ts",
+    ]) {
+      expect(packagesAffectedBy(changedPath)).toEqual(["lamp", "wordpress"]);
+    }
+
+    expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual([
+      "lamp",
+      "node-vfs",
+      "wordpress",
+    ]);
+  });
+
+  for (const packageName of packages) {
+    it(`${packageName} declares every repository-local relative import`, () => {
+      const buildTomlPath = join(
+        repoRoot,
+        "packages",
+        "registry",
+        packageName,
+        "build.toml",
+      );
+      const declaredInputs = parseBuildInputs(readFileSync(buildTomlPath, "utf8"));
+      const declaredPaths = declaredInputs.map((input) => resolve(repoRoot, input));
+
+      expect(declaredInputs.length).toBeGreaterThan(0);
+      expect(declaredInputs).toEqual([...new Set(declaredInputs)]);
+      for (const declaredPath of declaredPaths) {
+        expect(
+          existsSync(declaredPath),
+          `${packageName} declares missing input ${relative(repoRoot, declaredPath)}`,
+        ).toBe(true);
+      }
+
+      // Directories are recursive cache coverage boundaries. They are not all
+      // execution roots: follow imports into them from the declared build
+      // scripts instead of treating unrelated siblings as build dependencies.
+      const sourceQueue = declaredPaths.filter(
+        (inputPath) =>
+          !lstatSync(inputPath).isDirectory() &&
+          sourceExtensions.has(extname(inputPath)),
+      );
+      const inspected = new Set<string>();
+      const missing = new Set<string>();
+
+      while (sourceQueue.length > 0) {
+        const sourcePath = sourceQueue.pop()!;
+        if (inspected.has(sourcePath)) continue;
+        inspected.add(sourcePath);
+
+        for (const specifier of relativeImportSpecifiers(
+          readFileSync(sourcePath, "utf8"),
+        )) {
+          const importedPath = resolveImport(sourcePath, specifier);
+          expect(
+            importedPath,
+            `${relative(repoRoot, sourcePath)} has unresolved import ${specifier}`,
+          ).not.toBeNull();
+          if (importedPath === null) continue;
+
+          expect(
+            isWithin(repoRoot, importedPath),
+            `${relative(repoRoot, sourcePath)} imports outside the repository: ${specifier}`,
+          ).toBe(true);
+
+          if (!declaredPaths.some((declaredPath) => covers(declaredPath, importedPath))) {
+            missing.add(
+              `${relative(repoRoot, importedPath)} (imported by ${relative(repoRoot, sourcePath)})`,
+            );
+          }
+          if (sourceExtensions.has(extname(importedPath))) sourceQueue.push(importedPath);
+        }
+      }
+
+      expect([...missing].sort()).toEqual([]);
+    });
+  }
+});
+
+function packagesAffectedBy(changedPath: string): string[] {
+  const absoluteChangedPath = resolve(repoRoot, changedPath);
+  return packages
+    .filter((packageName) => {
+      const buildTomlPath = join(
+        repoRoot,
+        "packages",
+        "registry",
+        packageName,
+        "build.toml",
+      );
+      const declaredPaths = parseBuildInputs(
+        readFileSync(buildTomlPath, "utf8"),
+      ).map((input) => resolve(repoRoot, input));
+      return declaredPaths.some((declaredPath) =>
+        covers(declaredPath, absoluteChangedPath)
+      );
+    })
+    .sort();
+}
+
+function parseBuildInputs(buildToml: string): string[] {
+  const lines = buildToml.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^inputs\s*=\s*\[\s*$/.test(line));
+  if (start < 0) throw new Error("build.toml has no multiline inputs array");
+
+  const inputs: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*\]\s*$/.test(line)) return inputs;
+    const match = line.match(/^\s*"([^"]+)"\s*,?\s*(?:#.*)?$/);
+    if (match) inputs.push(match[1]);
+  }
+  throw new Error("build.toml inputs array is not terminated");
+}
+
+function relativeImportSpecifiers(source: string): string[] {
+  const specifiers = new Set<string>();
+  // The image builders run through tsx, which strips type-only imports. Those
+  // declarations cannot change the generated image bytes and are therefore
+  // outside this cache-input contract. Mixed imports remain runtime inputs.
+  const runtimeSource = source.replace(
+    /\b(?:import|export)\s+type\b[^;]*?\bfrom\s*["'][^"']+["']\s*;?/gs,
+    "",
+  );
+  const patterns = [
+    /\b(?:import|export)\s+(?:[^"'();]*?\s+from\s*)?["'](\.[^"']*)["']/gs,
+    /\bimport\s*\(\s*["'](\.[^"']*)["']\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of runtimeSource.matchAll(pattern)) specifiers.add(match[1]);
+  }
+  return [...specifiers];
+}
+
+function resolveImport(sourcePath: string, rawSpecifier: string): string | null {
+  const specifier = rawSpecifier.replace(/[?#].*$/, "");
+  const unresolved = resolve(dirname(sourcePath), specifier);
+  const extension = extname(unresolved);
+  const candidates = [unresolved];
+
+  if (extension === ".js") {
+    candidates.push(
+      unresolved.slice(0, -3) + ".ts",
+      unresolved.slice(0, -3) + ".tsx",
+    );
+  } else if (extension === ".mjs") {
+    candidates.push(unresolved.slice(0, -4) + ".mts");
+  } else if (extension === ".cjs") {
+    candidates.push(unresolved.slice(0, -4) + ".cts");
+  } else if (extension === "") {
+    for (const sourceExtension of sourceExtensions) {
+      candidates.push(unresolved + sourceExtension);
+      candidates.push(join(unresolved, `index${sourceExtension}`));
+    }
+    candidates.push(unresolved + ".json");
+  }
+
+  return candidates.find(
+    (candidate) => existsSync(candidate) && !lstatSync(candidate).isDirectory(),
+  ) ?? null;
+}
+
+function covers(declaredPath: string, importedPath: string): boolean {
+  if (declaredPath === importedPath) return true;
+  return lstatSync(declaredPath).isDirectory() && isWithin(declaredPath, importedPath);
+}
+
+function isWithin(parent: string, child: string): boolean {
+  const childRelative = relative(parent, child);
+  return childRelative === "" || (
+    !isAbsolute(childRelative) &&
+    childRelative !== ".." &&
+    !childRelative.startsWith(`..${sep}`)
+  );
+}

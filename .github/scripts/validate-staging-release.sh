@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Freeze and validate one PR-staging package release. The output directory is
 # published only after index.toml and release-asset metadata agree. In current
-# mode, --materialize also downloads every validated archive and verifies the
-# snapshotted size and sha256 before exposing a local file:// index. Structural
-# snapshots may be materialized as an input to a separately validated union.
+# mode, metadata-only preflight downloads the current entries that declare
+# immutable Git inputs and compares their embedded manifests with the exact
+# ledger. --materialize downloads and validates every archive, retains those
+# verified bytes, and exposes a local file:// index. Structural snapshots may
+# be materialized as an input to a separately validated union.
 set -euo pipefail
 
 TAG=""
@@ -96,19 +98,44 @@ fi
   --output "$TMP_ROOT/snapshot.json" \
   --localized-index "$TMP_ROOT/index.toml"
 
+mkdir "$TMP_ROOT/archives"
 if [ "$MATERIALIZE" = 1 ]; then
-  mkdir "$TMP_ROOT/archives"
-  while IFS=$'\t' read -r asset sha size; do
-    bash "$SCRIPT_DIR/download-verified-release-asset.sh" \
-      --tag "$TAG" \
-      --asset "$asset" \
-      --sha256 "$sha" \
-      --size "$size" \
-      --output "$TMP_ROOT/archives/$asset"
-  done < <(jq -r '.entries[] | [.asset, .archive_sha256, (.size | tostring)] | @tsv' \
-    "$TMP_ROOT/snapshot.json")
+  archive_scope=all
+  jq -r '.entries[] | [.asset, .archive_sha256, (.size | tostring)] | @tsv' \
+    "$TMP_ROOT/snapshot.json" > "$TMP_ROOT/archive-selection.tsv"
+else
+  archive_scope=current-declared-git-inputs
+  jq -r --slurpfile expected "$EXPECTED_LEDGER" '
+    .entries[] as $snapshot |
+    select($snapshot.current == true) |
+    select(any($expected[0].entries[];
+      .package == $snapshot.package and
+      .arch == $snapshot.arch and
+      ((.git_inputs // []) | length) > 0)) |
+    [$snapshot.asset, $snapshot.archive_sha256, ($snapshot.size | tostring)] | @tsv
+  ' "$TMP_ROOT/snapshot.json" > "$TMP_ROOT/archive-selection.tsv"
+fi
+while IFS=$'\t' read -r asset sha size; do
+  [ -n "$asset" ] || continue
+  bash "$SCRIPT_DIR/download-verified-release-asset.sh" \
+    --tag "$TAG" \
+    --asset "$asset" \
+    --sha256 "$sha" \
+    --size "$size" \
+    --output "$TMP_ROOT/archives/$asset"
+done < "$TMP_ROOT/archive-selection.tsv"
+
+"$XTASK" staging-reuse validate-archives \
+  --expected-ledger "$EXPECTED_LEDGER" \
+  --snapshot "$TMP_ROOT/snapshot.json" \
+  --archives-dir "$TMP_ROOT/archives" \
+  --scope "$archive_scope"
+
+if [ "$MATERIALIZE" = 1 ]; then
   cp "$TMP_ROOT/index.toml" "$TMP_ROOT/archives/index.toml"
   printf 'file://%s/index.toml\n' "$OUTPUT_DIR/archives" > "$TMP_ROOT/index-url.txt"
+else
+  rm -rf "$TMP_ROOT/archives"
 fi
 
 mv "$TMP_ROOT" "$OUTPUT_DIR"

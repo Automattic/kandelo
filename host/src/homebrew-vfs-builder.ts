@@ -24,7 +24,11 @@ const MODE_BITS = 0o7777;
 const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 const TEXT_ENCODER = new TextEncoder();
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const MAX_BREWFILE_BYTES = 65_536;
+const MAX_MIGRATION_LOCK_BYTES = 65_536;
+const MAX_RUNTIME_STATE_TEXT_BYTES = 65_536;
+const MAX_RUNTIME_STATE_ID = 0x7fff_ffff;
 
 export class HomebrewVfsBuildError extends Error {
   constructor(message: string) {
@@ -41,6 +45,86 @@ export interface HomebrewVfsBuildOptions {
   writeProfile?: boolean;
   createdBy?: string;
   selectionSource?: HomebrewVfsSelectionSource;
+  catalogCheckout?: HomebrewVfsCatalogCheckout;
+  compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
+  migrationLock?: HomebrewVfsMigrationLockBinding;
+}
+
+export interface HomebrewVfsMigrationLockBinding {
+  sha256: string;
+  bytes: number;
+}
+
+export interface HomebrewVfsCompatibilityPolicy {
+  mirror_link_manifest_bin: {
+    targets: string[];
+  };
+  link_conflict_owners: Array<{
+    target: string;
+    package: string;
+    reason: string;
+  }>;
+  aliases: Array<{
+    package: string;
+    source_kind: "link" | "keg";
+    source: string;
+    targets: string[];
+  }>;
+  runtime_state?: HomebrewVfsRuntimeStateDeclaration[];
+}
+
+export interface HomebrewVfsRuntimeStateDeclaration {
+  /** Apply this consumer-owned state only when the exact Formula is selected. */
+  requires_package: string;
+  path: string;
+  kind: "directory" | "empty_file" | "text_file";
+  mode: number;
+  uid: number;
+  gid: number;
+  reason: string;
+  contents?: string;
+}
+
+export interface HomebrewVfsCompatibilityLinkReport {
+  path: string;
+  target: string;
+  package: string;
+  source: string;
+  ownership: "bottle-link-manifest" | "bottle-keg";
+}
+
+export interface HomebrewVfsLinkConflictReport {
+  path: string;
+  target: string;
+  owners: string[];
+  selected_package: string;
+  skipped_packages: string[];
+  reason: string;
+  resolution: "migration-lock";
+}
+
+export interface HomebrewVfsRuntimeStateReport {
+  requires_package: string;
+  path: string;
+  kind: HomebrewVfsRuntimeStateDeclaration["kind"];
+  mode: number;
+  uid: number;
+  gid: number;
+  reason: string;
+  content_sha256?: string;
+  content_bytes?: number;
+}
+
+export interface HomebrewVfsCatalogCheckout {
+  tapRepository: string;
+  tapName: string;
+  checkoutCommit: string;
+}
+
+export interface HomebrewVfsCatalogReport {
+  tap_repository: string;
+  tap_name: string;
+  checkout_commit: string;
 }
 
 export interface HomebrewVfsSelectionSource {
@@ -85,6 +169,13 @@ export interface HomebrewVfsPackageReport {
   receipts: string[];
   links: string[];
   opt_link: HomebrewVfsOptLinkReport;
+  built_from?: {
+    tap_repository: string;
+    tap_commit: string;
+    kandelo_repository: string;
+    kandelo_commit: string;
+    formula_sha256: string;
+  };
 }
 
 export interface HomebrewVfsOptLinkReport {
@@ -96,6 +187,11 @@ export interface HomebrewVfsBuildReport {
   schema: 1;
   image?: string;
   selection: HomebrewVfsSelectionReport;
+  catalog?: HomebrewVfsCatalogReport;
+  compatibility_links?: HomebrewVfsCompatibilityLinkReport[];
+  link_conflicts?: HomebrewVfsLinkConflictReport[];
+  runtime_state?: HomebrewVfsRuntimeStateReport[];
+  migration_lock?: HomebrewVfsMigrationLockBinding;
   metadata: {
     tap_repository: string;
     tap_name: string;
@@ -113,7 +209,7 @@ export interface HomebrewVfsBuildResult {
   report: HomebrewVfsBuildReport;
 }
 
-type TarEntryType = "file" | "directory" | "symlink";
+type TarEntryType = "file" | "directory" | "symlink" | "hardlink";
 
 interface TarEntry {
   path: string;
@@ -129,6 +225,18 @@ interface StagePackageResult {
   symlinks: number;
 }
 
+interface PendingHardlink {
+  archivePath: string;
+  path: string;
+  targetArchivePath: string;
+  targetPath: string;
+}
+
+interface HomebrewVfsLinkResolution {
+  selectedPackageByPath: Map<string, string>;
+  reports: HomebrewVfsLinkConflictReport[];
+}
+
 export async function buildHomebrewVfs(
   plan: HomebrewVfsPlan,
   options: HomebrewVfsBuildOptions,
@@ -136,6 +244,13 @@ export async function buildHomebrewVfs(
   const fs = options.fs ?? createDefaultFs();
   const packageReports: HomebrewVfsPackageReport[] = [];
   const selection = createSelectionReport(plan, options.selectionSource);
+  const catalog = createCatalogReport(plan, options.catalogCheckout);
+  const migrationLock = createMigrationLockBinding(options.migrationLock);
+  const linkResolution = resolveLinkConflicts(plan, options.compatibilityPolicy);
+  const runtimeStateDeclarations = prepareRuntimeState(
+    plan,
+    options.compatibilityPolicy?.runtime_state,
+  );
 
   ensureDirRecursive(fs, "/etc/kandelo");
 
@@ -145,7 +260,7 @@ export async function buildHomebrewVfs(
     const tarEntries = parseBottleTarGz(pkg, bottleBytes);
     const staged = stagePackage(fs, pkg, tarEntries);
     validateReceipts(fs, pkg);
-    const links = applyLinks(fs, pkg);
+    const links = applyLinks(fs, pkg, linkResolution);
 
     packageReports.push({
       name: pkg.name,
@@ -170,14 +285,39 @@ export async function buildHomebrewVfs(
       receipts: [...pkg.linkManifest.receipts],
       links,
       opt_link: canonicalOptLink(pkg),
+      ...(pkg.builtFrom === undefined ? {} : {
+        built_from: {
+          tap_repository: pkg.builtFrom.tapRepository,
+          tap_commit: pkg.builtFrom.tapCommit,
+          kandelo_repository: pkg.builtFrom.kandeloRepository,
+          kandelo_commit: pkg.builtFrom.kandeloCommit,
+          formula_sha256: pkg.builtFrom.formulaSha256,
+        },
+      }),
     });
   }
 
   applyCanonicalOptLinks(fs, plan.packages);
+  const compatibilityLinks = options.compatibilityPolicy === undefined
+    ? undefined
+    : applyCompatibilityLinks(fs, plan, options.compatibilityPolicy, linkResolution);
+  if (options.writeProfile) {
+    writeProfileFragment(fs, plan);
+  }
+  const runtimeState = applyRuntimeState(fs, runtimeStateDeclarations);
 
   const report: HomebrewVfsBuildReport = {
     schema: 1,
     selection,
+    ...(catalog === undefined ? {} : { catalog }),
+    ...(compatibilityLinks === undefined ? {} : {
+      compatibility_links: compatibilityLinks,
+    }),
+    ...(linkResolution.reports.length === 0 ? {} : {
+      link_conflicts: linkResolution.reports,
+    }),
+    ...(runtimeState.length === 0 ? {} : { runtime_state: runtimeState }),
+    ...(migrationLock === undefined ? {} : { migration_lock: migrationLock }),
     metadata: {
       tap_repository: plan.tapRepository,
       tap_name: plan.tapName,
@@ -197,6 +337,15 @@ export async function buildHomebrewVfs(
       schema: 1,
       created_by: options.createdBy ?? "host/src/homebrew-vfs-builder.ts",
       selection,
+      ...(catalog === undefined ? {} : { catalog }),
+      ...(compatibilityLinks === undefined ? {} : {
+        compatibility_links: compatibilityLinks,
+      }),
+      ...(linkResolution.reports.length === 0 ? {} : {
+        link_conflicts: linkResolution.reports,
+      }),
+      ...(runtimeState.length === 0 ? {} : { runtime_state: runtimeState }),
+      ...(migrationLock === undefined ? {} : { migration_lock: migrationLock }),
       metadata: report.metadata,
       packages: packageReports.map((pkg) => ({
         name: pkg.name,
@@ -216,17 +365,54 @@ export async function buildHomebrewVfs(
         prefix: pkg.prefix,
         keg: pkg.keg,
         opt_link: pkg.opt_link,
+        ...(pkg.built_from === undefined ? {} : { built_from: pkg.built_from }),
         env: plan.packages.find((planned) => planned.fullName === pkg.full_name)?.linkManifest.env ?? {},
       })),
     }, null, 2) + "\n",
     0o644,
   );
 
-  if (options.writeProfile) {
-    writeProfileFragment(fs, plan);
-  }
-
   return { fs, report };
+}
+
+function createCatalogReport(
+  plan: HomebrewVfsPlan,
+  checkout: HomebrewVfsCatalogCheckout | undefined,
+): HomebrewVfsCatalogReport | undefined {
+  if (checkout === undefined) return undefined;
+  if (
+    checkout.tapRepository !== plan.tapRepository ||
+    checkout.tapName !== plan.tapName
+  ) {
+    throw new HomebrewVfsBuildError(
+      "Homebrew consumer catalog identity does not match the planned root tap",
+    );
+  }
+  if (!GIT_SHA_RE.test(checkout.checkoutCommit)) {
+    throw new HomebrewVfsBuildError(
+      "Homebrew consumer catalog checkout must be a lowercase 40-character git SHA",
+    );
+  }
+  return {
+    tap_repository: checkout.tapRepository,
+    tap_name: checkout.tapName,
+    checkout_commit: checkout.checkoutCommit,
+  };
+}
+
+function createMigrationLockBinding(
+  binding: HomebrewVfsMigrationLockBinding | undefined,
+): HomebrewVfsMigrationLockBinding | undefined {
+  if (binding === undefined) return undefined;
+  if (
+    !SHA256_RE.test(binding.sha256) ||
+    !Number.isSafeInteger(binding.bytes) ||
+    binding.bytes <= 0 ||
+    binding.bytes > MAX_MIGRATION_LOCK_BYTES
+  ) {
+    throw new HomebrewVfsBuildError("Homebrew migration lock provenance is invalid");
+  }
+  return { sha256: binding.sha256, bytes: binding.bytes };
 }
 
 function createSelectionReport(
@@ -317,6 +503,7 @@ function stagePackage(
   ensureDirRecursive(fs, pkg.keg);
 
   const stagedPaths = new Set<string>();
+  const pendingHardlinks: PendingHardlink[] = [];
   let files = 0;
   let directories = 0;
   let symlinks = 0;
@@ -349,15 +536,90 @@ function stagePackage(
     if (entry.type === "file") {
       writeVfsBinary(fs, targetPath, entry.data, entry.mode || 0o644);
       files += 1;
-    } else {
+    } else if (entry.type === "symlink") {
       const linkName = entry.linkName ?? "";
       validateArchiveSymlink(pkg, targetPath, linkName);
       fs.symlink(linkName, targetPath);
       symlinks += 1;
+    } else {
+      const targetArchivePath = entry.linkName ?? "";
+      const hardlinkTarget = mapBottleEntryToGuestPath(pkg, targetArchivePath);
+      if (
+        !guestPathIsUnder(targetPath, pkg.keg) ||
+        hardlinkTarget === null ||
+        !guestPathIsUnder(hardlinkTarget, pkg.keg)
+      ) {
+        fail(
+          pkg,
+          `bottle hardlink ${entry.path} -> ${targetArchivePath} ` +
+            `is not contained in keg ${pkg.keg}`,
+        );
+      }
+      pendingHardlinks.push({
+        archivePath: entry.path,
+        path: targetPath,
+        targetArchivePath,
+        targetPath: hardlinkTarget,
+      });
     }
   }
 
+  files += stageHardlinks(fs, pkg, pendingHardlinks, stagedPaths);
+
   return { files, directories, symlinks };
+}
+
+function stageHardlinks(
+  fs: MemoryFileSystem,
+  pkg: HomebrewVfsPackagePlan,
+  hardlinks: PendingHardlink[],
+  stagedPaths: Set<string>,
+): number {
+  for (const hardlink of hardlinks) {
+    if (!stagedPaths.has(hardlink.targetPath)) {
+      fail(
+        pkg,
+        `bottle hardlink ${hardlink.archivePath} target ` +
+          `${hardlink.targetArchivePath} is not staged by this bottle`,
+      );
+    }
+  }
+
+  let pending = hardlinks;
+  let linked = 0;
+
+  while (pending.length > 0) {
+    const unresolved: PendingHardlink[] = [];
+    let progressed = false;
+
+    for (const hardlink of pending) {
+      const target = tryLstat(fs, hardlink.targetPath);
+      if (target === null) {
+        unresolved.push(hardlink);
+        continue;
+      }
+      if (kind(target) !== S_IFREG) {
+        fail(
+          pkg,
+          `bottle hardlink ${hardlink.archivePath} target ` +
+            `${hardlink.targetArchivePath} is not a regular file`,
+        );
+      }
+      fs.link(hardlink.targetPath, hardlink.path);
+      linked += 1;
+      progressed = true;
+    }
+
+    if (!progressed) {
+      const details = unresolved
+        .map((entry) => `${entry.archivePath} -> ${entry.targetArchivePath}`)
+        .join(", ");
+      fail(pkg, `bottle hardlink target is missing or cyclic: ${details}`);
+    }
+    pending = unresolved;
+  }
+
+  return linked;
 }
 
 function validateReceipts(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): void {
@@ -369,7 +631,126 @@ function validateReceipts(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): vo
   }
 }
 
-function applyLinks(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): string[] {
+function resolveLinkConflicts(
+  plan: HomebrewVfsPlan,
+  policy: HomebrewVfsCompatibilityPolicy | undefined,
+): HomebrewVfsLinkResolution {
+  const entriesByPath = new Map<
+    string,
+    Array<{ pkg: HomebrewVfsPackagePlan; entry: HomebrewLinkEntry }>
+  >();
+  const packageByFullName = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
+
+  for (const pkg of plan.packages) {
+    const seenTargets = new Set<string>();
+    for (const entry of pkg.linkManifest.links) {
+      if (seenTargets.has(entry.target)) {
+        fail(pkg, `link target ${entry.target} is duplicated`);
+      }
+      seenTargets.add(entry.target);
+      const path = joinGuestPath(pkg.prefix, entry.target);
+      if (!guestPathIsUnder(path, pkg.prefix)) {
+        fail(pkg, `link target ${entry.target} escapes prefix ${pkg.prefix}`);
+      }
+      const entries = entriesByPath.get(path) ?? [];
+      entries.push({ pkg, entry });
+      entriesByPath.set(path, entries);
+    }
+  }
+
+  if (policy !== undefined && !Array.isArray(policy.link_conflict_owners)) {
+    throw new HomebrewVfsBuildError(
+      "Homebrew compatibility link_conflict_owners policy is invalid",
+    );
+  }
+  const declarations = new Map<
+    string,
+    { target: string; package: string; reason: string }
+  >();
+  for (const declaration of policy?.link_conflict_owners ?? []) {
+    if (
+      typeof declaration?.target !== "string" ||
+      typeof declaration.package !== "string" ||
+      typeof declaration.reason !== "string" ||
+      declaration.reason.trim().length === 0
+    ) {
+      throw new HomebrewVfsBuildError(
+        "Homebrew compatibility link conflict owner is invalid",
+      );
+    }
+    validateSafeRelativePath(
+      declaration.target,
+      "Homebrew compatibility link conflict target",
+    );
+    if (declarations.has(declaration.target)) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility link conflict target ${declaration.target} is declared more than once`,
+      );
+    }
+    declarations.set(declaration.target, declaration);
+  }
+
+  const selectedPackageByPath = new Map<string, string>();
+  const reports: HomebrewVfsLinkConflictReport[] = [];
+  for (const [path, entries] of entriesByPath) {
+    const owners = Array.from(new Set(entries.map(({ pkg }) => pkg.fullName)));
+    if (owners.length < 2) continue;
+    const targets = Array.from(new Set(entries.map(({ entry }) => entry.target)));
+    if (targets.length !== 1) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew link conflict at ${path} has non-canonical target identities`,
+      );
+    }
+    const target = targets[0];
+    const declaration = declarations.get(target);
+    if (declaration === undefined) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew link target ${target} is owned by ${owners.join(", ")}; ` +
+          "the migration lock must select an owner",
+      );
+    }
+    if (!owners.includes(declaration.package)) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew migration-lock owner ${declaration.package} does not own conflicting target ${target}`,
+      );
+    }
+    selectedPackageByPath.set(path, declaration.package);
+    reports.push({
+      path,
+      target,
+      owners,
+      selected_package: declaration.package,
+      skipped_packages: owners.filter((owner) => owner !== declaration.package),
+      reason: declaration.reason,
+      resolution: "migration-lock",
+    });
+  }
+
+  for (const declaration of declarations.values()) {
+    const selectedPackage = packageByFullName.get(declaration.package);
+    if (selectedPackage === undefined) {
+      // A full migration lock is also used for focused partial selections.
+      // Its conflict policy becomes active as soon as its selected owner is
+      // present; the complete main-shell plan therefore checks every entry.
+      continue;
+    }
+    const path = joinGuestPath(selectedPackage.prefix, declaration.target);
+    if (selectedPackageByPath.get(path) !== declaration.package) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew migration-lock owner declaration for ${declaration.target} ` +
+          "is stale or unnecessary",
+      );
+    }
+  }
+
+  return { selectedPackageByPath, reports };
+}
+
+function applyLinks(
+  fs: MemoryFileSystem,
+  pkg: HomebrewVfsPackagePlan,
+  resolution: HomebrewVfsLinkResolution,
+): string[] {
   const linkedTargets: string[] = [];
   const seenTargets = new Set<string>();
 
@@ -388,12 +769,17 @@ function applyLinks(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): string[]
     if (sourceStat === null) {
       fail(pkg, `link source ${entry.source} is missing at ${sourcePath}`);
     }
+    validateLinkEntrySource(pkg, entry, sourceStat);
+    const selectedPackage = resolution.selectedPackageByPath.get(targetPath);
+    if (selectedPackage !== undefined && selectedPackage !== pkg.fullName) {
+      continue;
+    }
     if (tryLstat(fs, targetPath) !== null) {
       fail(pkg, `link target ${entry.target} already exists at ${targetPath}`);
     }
 
     ensureParentDir(fs, targetPath);
-    applyLinkEntry(fs, pkg, entry, sourcePath, sourceStat, targetPath);
+    applyLinkEntry(fs, entry, sourcePath, sourceStat, targetPath);
     linkedTargets.push(entry.target);
   }
 
@@ -421,6 +807,376 @@ function applyCanonicalOptLinks(
   }
 }
 
+function applyCompatibilityLinks(
+  fs: MemoryFileSystem,
+  plan: HomebrewVfsPlan,
+  policy: HomebrewVfsCompatibilityPolicy,
+  resolution: HomebrewVfsLinkResolution,
+): HomebrewVfsCompatibilityLinkReport[] {
+  if (
+    !policy ||
+    !policy.mirror_link_manifest_bin ||
+    !Array.isArray(policy.mirror_link_manifest_bin.targets) ||
+    !Array.isArray(policy.link_conflict_owners) ||
+    !Array.isArray(policy.aliases)
+  ) {
+    throw new HomebrewVfsBuildError("Homebrew compatibility policy is invalid");
+  }
+
+  const packageByFullName = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
+  const ownedBinLinks = new Map<
+    string,
+    {
+      pkg: HomebrewVfsPackagePlan;
+      source: string;
+      sourcePath: string;
+      ownership: "bottle-link-manifest";
+    }
+  >();
+  for (const pkg of plan.packages) {
+    for (const entry of pkg.linkManifest.links) {
+      if (!/^bin\/[^/]+$/.test(entry.target)) continue;
+      const path = joinGuestPath(pkg.prefix, entry.target);
+      const selectedPackage = resolution.selectedPackageByPath.get(path);
+      if (selectedPackage !== undefined && selectedPackage !== pkg.fullName) continue;
+      const key = `${pkg.fullName}\0${entry.target}`;
+      ownedBinLinks.set(key, {
+        pkg,
+        source: entry.target,
+        sourcePath: joinGuestPath(pkg.prefix, entry.target),
+        ownership: "bottle-link-manifest",
+      });
+    }
+  }
+
+  const reports: HomebrewVfsCompatibilityLinkReport[] = [];
+  const targetedPaths = new Set<string>();
+  const mirrorTargets = new Set(policy.mirror_link_manifest_bin.targets);
+  if (mirrorTargets.size !== policy.mirror_link_manifest_bin.targets.length) {
+    throw new HomebrewVfsBuildError("Homebrew compatibility mirror targets are duplicated");
+  }
+  for (const targetDirectory of mirrorTargets) {
+    validateCompatibilityAbsolutePath(targetDirectory, "mirror target directory");
+    if (guestPathIsUnder(targetDirectory, plan.packages[0]?.prefix ?? "/home/linuxbrew/.linuxbrew")) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility mirror target ${targetDirectory} must be outside the Homebrew prefix`,
+      );
+    }
+    for (const owned of ownedBinLinks.values()) {
+      const basename = owned.source.slice("bin/".length);
+      createCompatibilityLink(
+        fs,
+        owned,
+        `${targetDirectory.replace(/\/+$/g, "")}/${basename}`,
+        targetedPaths,
+        reports,
+      );
+    }
+  }
+
+  for (const alias of policy.aliases) {
+    if (
+      typeof alias?.package !== "string" ||
+      (alias.source_kind !== "link" && alias.source_kind !== "keg") ||
+      typeof alias.source !== "string" ||
+      !Array.isArray(alias.targets) ||
+      alias.targets.some((target) => typeof target !== "string")
+    ) {
+      throw new HomebrewVfsBuildError("Homebrew compatibility alias is invalid");
+    }
+    validateSafeRelativePath(alias.source, "Homebrew compatibility alias source");
+    const pkg = packageByFullName.get(alias.package);
+    if (pkg === undefined) {
+      continue;
+    }
+    const manifestOwned = ownedBinLinks.get(`${pkg.fullName}\0${alias.source}`);
+    if (alias.source_kind === "link" && manifestOwned === undefined) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility alias ${alias.package}:${alias.source} ` +
+          "is not owned by that bottle's link manifest",
+      );
+    }
+    if (alias.source_kind === "keg" && manifestOwned !== undefined) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility alias ${alias.package}:${alias.source} is a linked source; ` +
+          'declare source_kind "link"',
+      );
+    }
+    const owned = manifestOwned ?? {
+      pkg,
+      source: alias.source,
+      sourcePath: resolveManifestSource(pkg, alias.source),
+      ownership: "bottle-keg" as const,
+    };
+    if (new Set(alias.targets).size !== alias.targets.length) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility alias ${alias.package}:${alias.source} has duplicate targets`,
+      );
+    }
+    for (const target of alias.targets) {
+      validateCompatibilityAbsolutePath(target, "alias target");
+      createCompatibilityLink(fs, owned, target, targetedPaths, reports);
+    }
+  }
+
+  return reports;
+}
+
+function createCompatibilityLink(
+  fs: MemoryFileSystem,
+  owned: {
+    pkg: HomebrewVfsPackagePlan;
+    source: string;
+    sourcePath: string;
+    ownership: "bottle-link-manifest" | "bottle-keg";
+  },
+  targetPath: string,
+  targetedPaths: Set<string>,
+  reports: HomebrewVfsCompatibilityLinkReport[],
+): void {
+  if (targetedPaths.has(targetPath)) {
+    throw new HomebrewVfsBuildError(
+      `Homebrew compatibility target ${targetPath} is assigned more than once`,
+    );
+  }
+  targetedPaths.add(targetPath);
+  const sourceStat = tryStat(fs, owned.sourcePath);
+  if (sourceStat === null || kind(sourceStat) !== S_IFREG || (sourceStat.mode & 0o111) === 0) {
+    fail(
+      owned.pkg,
+      `compatibility source ${owned.source} is not an executable regular bottle file`,
+    );
+  }
+  if (tryLstat(fs, targetPath) !== null) {
+    throw new HomebrewVfsBuildError(
+      `Homebrew compatibility target ${targetPath} already exists in the platform base or another package`,
+    );
+  }
+  ensureParentDir(fs, targetPath);
+  fs.symlink(owned.sourcePath, targetPath);
+  reports.push({
+    path: targetPath,
+    target: owned.sourcePath,
+    package: owned.pkg.fullName,
+    source: owned.source,
+    ownership: owned.ownership,
+  });
+}
+
+function validateCompatibilityAbsolutePath(path: string, label: string): void {
+  if (
+    !path.startsWith("/") ||
+    path === "/" ||
+    path.endsWith("/") ||
+    path.includes("\\") ||
+    path.includes("\0") ||
+    path.split("/").slice(1).some((segment) =>
+      segment.length === 0 || segment === "." || segment === ".."
+    )
+  ) {
+    throw new HomebrewVfsBuildError(
+      `Homebrew compatibility ${label} ${JSON.stringify(path)} is not a normalized absolute path`,
+    );
+  }
+}
+
+function prepareRuntimeState(
+  plan: HomebrewVfsPlan,
+  declarations: HomebrewVfsRuntimeStateDeclaration[] | undefined,
+): HomebrewVfsRuntimeStateDeclaration[] {
+  if (declarations === undefined) return [];
+  if (!Array.isArray(declarations)) {
+    throw new HomebrewVfsBuildError("Homebrew compatibility runtime_state policy is invalid");
+  }
+
+  const selectedPackages = new Set(plan.packages.map((pkg) => pkg.fullName));
+  const prefixes = new Set(plan.packages.map((pkg) => pkg.prefix));
+  const byPath = new Map<string, HomebrewVfsRuntimeStateDeclaration>();
+  for (const [index, declaration] of declarations.entries()) {
+    if (!declaration || typeof declaration !== "object" || Array.isArray(declaration)) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] is invalid`,
+      );
+    }
+    const expectedKeys = [
+      "gid",
+      "kind",
+      "mode",
+      "path",
+      "reason",
+      "requires_package",
+      "uid",
+    ];
+    if (declaration.kind === "text_file") expectedKeys.push("contents");
+    const actualKeys = Object.keys(declaration).sort();
+    expectedKeys.sort();
+    if (actualKeys.join("\0") !== expectedKeys.join("\0")) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] has an unsupported shape`,
+      );
+    }
+    if (
+      typeof declaration.requires_package !== "string" ||
+      !selectedPackages.has(declaration.requires_package)
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] requires_package is not in the selected plan`,
+      );
+    }
+    if (
+      declaration.kind !== "directory" &&
+      declaration.kind !== "empty_file" &&
+      declaration.kind !== "text_file"
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] kind is invalid`,
+      );
+    }
+    if (typeof declaration.path !== "string") {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] path is invalid`,
+      );
+    }
+    validateCompatibilityAbsolutePath(
+      declaration.path,
+      `runtime state path at index ${index}`,
+    );
+    if (
+      declaration.path === "/etc/kandelo" ||
+      guestPathIsUnder(declaration.path, "/etc/kandelo")
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime state path ${declaration.path} is reserved for image metadata`,
+      );
+    }
+    for (const prefix of prefixes) {
+      if (declaration.path === prefix || guestPathIsUnder(declaration.path, prefix)) {
+        throw new HomebrewVfsBuildError(
+          `Homebrew compatibility runtime state path ${declaration.path} must be outside bottle prefixes`,
+        );
+      }
+    }
+    if (
+      !Number.isSafeInteger(declaration.mode) ||
+      declaration.mode < 0 ||
+      declaration.mode > MODE_BITS
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] mode is invalid`,
+      );
+    }
+    for (const field of ["uid", "gid"] as const) {
+      const value = declaration[field];
+      if (!Number.isSafeInteger(value) || value < 0 || value > MAX_RUNTIME_STATE_ID) {
+        throw new HomebrewVfsBuildError(
+          `Homebrew compatibility runtime_state[${index}] ${field} is invalid`,
+        );
+      }
+    }
+    if (
+      typeof declaration.reason !== "string" ||
+      declaration.reason.trim().length === 0 ||
+      declaration.reason.length > 1024
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] reason is invalid`,
+      );
+    }
+    if (declaration.kind === "text_file") {
+      if (
+        typeof declaration.contents !== "string" ||
+        TEXT_ENCODER.encode(declaration.contents).byteLength > MAX_RUNTIME_STATE_TEXT_BYTES
+      ) {
+        throw new HomebrewVfsBuildError(
+          `Homebrew compatibility runtime_state[${index}] contents are invalid`,
+        );
+      }
+    }
+    if (byPath.has(declaration.path)) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime state path ${declaration.path} is declared more than once`,
+      );
+    }
+    byPath.set(declaration.path, declaration);
+  }
+
+  for (const declaration of declarations) {
+    let ancestor = dirnameGuestPath(declaration.path);
+    while (ancestor !== "/") {
+      const parent = byPath.get(ancestor);
+      if (parent !== undefined && parent.kind !== "directory") {
+        throw new HomebrewVfsBuildError(
+          `Homebrew compatibility runtime state ${parent.path} cannot contain ${declaration.path}`,
+        );
+      }
+      ancestor = dirnameGuestPath(ancestor);
+    }
+  }
+
+  return declarations.map((declaration) => ({ ...declaration }));
+}
+
+function applyRuntimeState(
+  fs: MemoryFileSystem,
+  declarations: readonly HomebrewVfsRuntimeStateDeclaration[],
+): HomebrewVfsRuntimeStateReport[] {
+  const reports = new Map<string, HomebrewVfsRuntimeStateReport>();
+  const ordered = [...declarations].sort((left, right) =>
+    pathDepth(left.path) - pathDepth(right.path)
+  );
+  for (const declaration of ordered) {
+    if (tryLstat(fs, declaration.path) !== null) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime state path ${declaration.path} already exists in the platform base or a bottle`,
+      );
+    }
+    const parent = dirnameGuestPath(declaration.path);
+    const parentStat = tryLstat(fs, parent);
+    if (parentStat === null || kind(parentStat) !== S_IFDIR) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime state parent ${parent} is not an existing directory`,
+      );
+    }
+
+    const report: HomebrewVfsRuntimeStateReport = {
+      requires_package: declaration.requires_package,
+      path: declaration.path,
+      kind: declaration.kind,
+      mode: declaration.mode,
+      uid: declaration.uid,
+      gid: declaration.gid,
+      reason: declaration.reason,
+    };
+    if (declaration.kind === "directory") {
+      fs.mkdirWithOwner(
+        declaration.path,
+        declaration.mode,
+        declaration.uid,
+        declaration.gid,
+      );
+    } else {
+      const content = declaration.kind === "text_file"
+        ? TEXT_ENCODER.encode(declaration.contents!)
+        : new Uint8Array();
+      fs.createFileWithOwner(
+        declaration.path,
+        declaration.mode,
+        declaration.uid,
+        declaration.gid,
+        content,
+      );
+      report.content_sha256 = sha256(content);
+      report.content_bytes = content.byteLength;
+    }
+    reports.set(declaration.path, report);
+  }
+  return declarations.map((declaration) => reports.get(declaration.path)!);
+}
+
+function pathDepth(path: string): number {
+  return path.split("/").length;
+}
+
 function canonicalOptLink(pkg: HomebrewVfsPackagePlan): HomebrewVfsOptLinkReport {
   const path = `opt/${pkg.name}`;
   const targetPath = joinGuestPath(pkg.prefix, path);
@@ -436,7 +1192,6 @@ function canonicalOptLink(pkg: HomebrewVfsPackagePlan): HomebrewVfsOptLinkReport
 
 function applyLinkEntry(
   fs: MemoryFileSystem,
-  pkg: HomebrewVfsPackagePlan,
   entry: HomebrewLinkEntry,
   sourcePath: string,
   sourceStat: StatResult,
@@ -447,20 +1202,27 @@ function applyLinkEntry(
       fs.symlink(sourcePath, targetPath);
       return;
     case "file": {
-      if (kind(sourceStat) !== S_IFREG) {
-        fail(pkg, `file link source ${entry.source} is not a regular file`);
-      }
       writeVfsBinary(fs, targetPath, readVfsFile(fs, sourcePath), parseManifestMode(entry, sourceStat));
       return;
     }
     case "directory": {
-      if (kind(sourceStat) !== S_IFDIR) {
-        fail(pkg, `directory link source ${entry.source} is not a directory`);
-      }
       ensureDirRecursive(fs, targetPath);
       fs.chmod(targetPath, parseManifestMode(entry, sourceStat));
       return;
     }
+  }
+}
+
+function validateLinkEntrySource(
+  pkg: HomebrewVfsPackagePlan,
+  entry: HomebrewLinkEntry,
+  sourceStat: StatResult,
+): void {
+  if (entry.type === "file" && kind(sourceStat) !== S_IFREG) {
+    fail(pkg, `file link source ${entry.source} is not a regular file`);
+  }
+  if (entry.type === "directory" && kind(sourceStat) !== S_IFDIR) {
+    fail(pkg, `directory link source ${entry.source} is not a directory`);
   }
 }
 
@@ -607,7 +1369,19 @@ function parseTar(bytes: Uint8Array, label: string): TarEntry[] {
         });
         break;
       case "1":
-        throw new HomebrewVfsBuildError(`${label}: unsupported tar hardlink ${path}`);
+        if (size !== 0) {
+          throw new HomebrewVfsBuildError(
+            `${label}: hardlink ${path} has nonzero payload size ${size}`,
+          );
+        }
+        entries.push({
+          path,
+          type: "hardlink",
+          mode: mode || 0o644,
+          data: new Uint8Array(),
+          linkName: normalizeTarEntryPath(linkName, `${label}: hardlink target`),
+        });
+        break;
       case "3":
       case "4":
       case "6":

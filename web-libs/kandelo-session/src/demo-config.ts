@@ -4,6 +4,7 @@ import type {
 } from "./kernel-host";
 
 export const KANDELO_DEMO_CONFIG_PATH = "/etc/kandelo/demo.json";
+export const MAX_KANDELO_DEMO_CONFIG_BYTES = 256 * 1024;
 
 export interface DemoPresentationConfig {
   bootPrimary: PrimarySurface;
@@ -127,6 +128,28 @@ export function parseKandeloDemoConfig(text: string): KandeloDemoConfig | null {
   return value as unknown as KandeloDemoConfig;
 }
 
+/**
+ * Validate every image-owned demo profile eagerly. Runtime resolution stays
+ * profile-specific, but an image builder must not publish malformed metadata
+ * for a profile that its smoke test happened not to select.
+ */
+export function validateKandeloDemoConfig(config: KandeloDemoConfig): void {
+  if (!isRecord(config) || config.version !== 1) {
+    throw new Error("demo config must use version 1");
+  }
+  validateProfileFields(config, "demo config");
+  if (config.profiles === undefined) return;
+  if (!isRecord(config.profiles)) {
+    throw new Error("profiles must be an object");
+  }
+  for (const [profileId, profile] of Object.entries(config.profiles)) {
+    if (!isRecord(profile)) {
+      throw new Error(`profiles.${profileId} must be an object`);
+    }
+    validateProfileFields(profile, `profiles.${profileId}`);
+  }
+}
+
 export function resolveDemoPresentation(
   config: KandeloDemoConfig,
   profileId: string,
@@ -172,6 +195,19 @@ function profileConfig(
   profileId: string,
 ): KandeloDemoProfileConfig | undefined {
   return isRecord(config.profiles) ? config.profiles[profileId] : undefined;
+}
+
+function validateProfileFields(
+  value: Record<string, unknown>,
+  field: string,
+): void {
+  if (value.presentation !== undefined) {
+    normalizePresentationConfig(value.presentation);
+  }
+  normalizeAssets(value.assets, `${field}.assets`);
+  if (value.guide !== undefined) {
+    normalizeGuide(value.guide, `${field}.guide`);
+  }
 }
 
 function normalizePresentationConfig(config: unknown): DemoPresentation {

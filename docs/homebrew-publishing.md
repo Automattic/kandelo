@@ -1348,6 +1348,13 @@ The builder writes `/etc/kandelo/homebrew-vfs.json` and emits a build report;
 both record each `opt_link` path and target. Each package record retains its
 full Formula name, tap repository, tap name, and exact tap commit.
 
+Bottle tar hardlinks are supported only between regular files inside the same
+validated keg. The extractor resolves forward hardlinks after ordinary files,
+preserves their shared inode identity, and rejects unsafe paths, cross-keg
+Cellar entries or targets, targets not staged by the same bottle, non-regular
+targets, missing or cyclic targets, and hardlink headers with payload bytes.
+Device nodes and FIFOs remain unsupported.
+
 The CLI starts with an empty VFS by default. Pass `--base-image` to overlay the
 same verified bottle plan onto an explicit platform-only `.vfs` or `.vfs.zst`
 base image. The base must declare the same kernel ABI as the bottle metadata
@@ -1454,6 +1461,155 @@ executable and startup arguments explicitly. The browser remains independent
 of the selected Formula and executes the declared VFS path normally. Add
 `--write-profile --shell-config /path/to/shell.json` to the builder command
 when the Brewfile actually includes that declared shell.
+
+`--demo-config` likewise copies reviewed, image-owned presentation metadata to
+`/etc/kandelo/demo.json`; it does not infer UI behavior from Formula names. The
+input must be a regular, non-symlink file no larger than 256 KiB, valid UTF-8,
+valid JSON, and version 1. The builder validates every profile, including ones
+not selected by the current page, refuses to replace an existing image path,
+and records the exact byte count and SHA-256 in both the report and bounded
+image metadata. This is an exact-byte copy: callers that need a canonical
+configuration should track one JSON source rather than regenerate equivalent
+JSON in each image builder.
+
+### Strict Main-Shell Bottle Closure
+
+`homebrew/main-shell.Brewfile` is the reviewed direct-root contract for the
+current rootfs plus browser shell/demo package closure.
+`homebrew/main-shell-migration-lock.json` maps every exact registry
+`name@version` to its Formula identity, version, revision, and bottle rebuild;
+it also records every reviewed identity or version substitution. Its
+`formula_closure` is the separately reviewed distribution contract: all 32
+direct roots plus the six transitive Formula identities, exactly 38 unique
+Formulae. The checker derives the closure again from the pinned tap metadata,
+and both the composer and CI require the report to contain exactly that set;
+root inclusion alone is not sufficient evidence. Keep the lock and Brewfile
+in the same reviewed order; the checker rejects missing, reordered, or stale
+mappings and substitutions. In particular, the registry's `file`
+package maps to the reserved-name-safe `file-formula` Formula only because that
+identity substitution is explicit in the lock.
+
+CI materialization uses the exact public tap checkout pinned in the migration
+lock. An explicit SHA is optional, but when supplied it must match the lock:
+
+```bash
+scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-closure.sh \
+  --tap-root /path/to/exact/homebrew-tap-core \
+  --expected-tap-sha <full-sha> \
+  --work-dir /path/to/new-exclusive-work-dir
+```
+
+The package resolver anonymously provisions that exact commit from the
+`build.toml` Git input and invokes `packages/registry/shell/build-shell.sh`.
+Every composition scratch file, report, and downloaded bottle lives in a new
+resolver-owned workspace below `WASM_POSIX_DEP_OUT_DIR`; the wrapper removes
+that workspace before publishing the single declared `shell.vfs.zst` output.
+There is no legacy registry-composition fallback. The dedicated workflow then
+passes `archive-stage --force-source-build`, which bypasses cache and index
+reuse for the `shell` package only. Its dependencies retain normal resolver
+semantics; in this case the package has no registry dependencies because the
+38 public bottles are the composer's immutable inputs. This guarantees the
+composer executes even after a prior shell archive has been published. The
+workflow extracts the exact newly archived bytes, boots them through Node, and
+requires Chromium's current `?demo=shell` path to fetch the same SHA-256,
+launch the image-owned shell, and exercise the locked command surface. Runtime
+acceptance intentionally happens after archive creation so a package cache hit
+cannot skip it and a package build cannot depend on ambient kernel build
+artifacts.
+
+For local use, `./run.sh build shell-vfs` takes the ordinary resolver path and
+materializes the declared output under `local-binaries`. It may reuse a valid
+public package archive; before allowing normal source fallback, it prepares
+the root `tsx` and `tools/mkrootfs` dependency trees from their committed npm
+lockfiles. The explicit `--fetch-only` mode skips those build prerequisites
+and continues to refuse source fallback.
+
+The wrapper first builds a platform-only VFS from `MANIFEST` and
+`images/rootfs`. It deliberately does not generate or add the
+`images/rootfs/PACKAGES.toml` fragment, so legacy package-registry executables
+cannot remain as a hidden fallback. It then composes the Brewfile with
+`--no-fallback`, a 512 MiB filesystem, the image-owned Homebrew Bash config,
+and a verified bottle cache. The catalog lock, public tap checkout, and every
+bottle fetch run with GitHub and Homebrew package-token variables removed.
+Missing package metadata, unsuccessful bottle
+status, missing link sidecars, dependency gaps, digest drift, or a tap checkout
+different from the expected SHA fail the build. The tap checkout must also be
+clean, including no untracked files, and its metadata must name the canonical
+`kandelo-dev/homebrew-tap-core` repository and `kandelo-dev/tap-core` tap.
+
+The selected consumer catalog and each selected bottle have distinct
+provenance. The report and image metadata bind the clean catalog checkout's
+repository, tap name, and full Git SHA. In strict single-tap mode, every bottle
+must independently carry a complete `built_from` record: tap repository and
+commit, Kandelo repository and commit, and Formula SHA-256. Those per-bottle
+commits are authoritative for historical bottles and need not equal the
+aggregate metadata document's last publication commits. Reporting the
+aggregate commits as if they built every bottle is rejected. The artifact and
+report also bind the exact migration-lock SHA-256 and byte length.
+
+The 512 MiB limit is a consumer contract, not merely builder headroom. It is
+recorded in the migration lock, VFS superblock, image metadata, and composition
+report. The browser's main-shell and custom-VFS profiles allocate that same
+capacity and reject a metadata/superblock mismatch or an image larger than the
+profile. Other built-in profiles retain their smaller default unless they use
+the shell image.
+
+Homebrew bottles own commands under the Homebrew prefix. To preserve the
+current shell's POSIX path surface, the migration lock permits the composer to
+mirror only direct `bin/<name>` entries from each verified bottle link manifest
+into `/bin` and `/usr/bin`. Reviewed aliases provide `/bin/sh` and
+`/usr/bin/sh` from Dash and preserve the existing `/usr/local/bin/fbdoom` and
+`/usr/local/bin/modeset` paths. The composer does not scan arbitrary bottle
+files, and it rejects unowned alias sources, duplicate targets, non-executable
+sources, or any collision with a platform/base-image path. When two selected
+bottles own the same Homebrew-prefix link target, composition fails before
+pouring unless the migration lock explicitly selects the observable owner.
+The current shell selects `posix-utils-lite` for `bin/ed`, `bin/more`, and
+`bin/ex`, preserving the legacy shell behavior while retaining the standalone
+Ed, Less, and Vim commands under their non-conflicting names. Missing, stale,
+duplicate, and unnecessary owner declarations fail; package order never picks
+a winner. The report attributes generated compatibility links to their bottle
+source and records every conflict's owners, selected package, skipped packages,
+and reviewed reason.
+
+The same lock can declare small pieces of consumer-owned runtime state under
+`compatibility.runtime_state`. Each entry is guarded by an exact
+`requires_package` Formula identity and explicitly declares a normalized
+absolute path, `directory`, `empty_file`, or `text_file` kind, mode, uid, gid,
+and reviewed reason. Text is limited to 64 KiB. These declarations may not
+write under `/etc/kandelo`, under a bottle prefix, or over any platform,
+bottle, link, profile, or earlier runtime-state path. Parents must already be
+real directories or be declared as directories in the same policy. The report,
+guest Homebrew manifest, and bounded image metadata bind every applied entry;
+file entries additionally bind their content SHA-256 and byte count. This
+mechanism preserves package-conditioned machine state without assigning that
+state to a bottle or adding package-name branches to the image builder.
+
+The main-shell composer copies the exact tracked
+`homebrew/main-shell-demo.json` bytes into the image and uses runtime-state
+declarations for the existing color aliases, Git defaults, and NetHack player
+files. The platform base intentionally does not serialize `/dev`: Node and
+browser hosts both mount the authoritative `DeviceFileSystem` at `/dev` and a
+shared-memory filesystem at `/dev/shm` during boot. Exact-byte acceptance
+therefore checks `/dev/null` after the runtime mounts rather than manufacturing
+a placeholder device in the image.
+
+The wrapper currently selects sidecars with `--runtime node` because older
+finalized sidecars predate truthful browser-compatibility recording. That is a
+selection compatibility boundary, not browser evidence. A produced image is
+not ready to replace the browser main shell until the exact emitted bytes have
+booted and exercised the closure in both Node and Chromium. Prefer
+`--runtime browser` once every selected bottle sidecar records browser support
+from exact-byte browser acceptance.
+
+The wrapper's Node gate boots those exact emitted bytes through
+`NodeKernelHost` as the demo uid and executes `/bin/sh -c`, including
+representative Bash, Dash, `/usr/bin/env`, login-profile, Git, `/dev/null`, and
+NetHack score-file paths. The final Chromium gate fetches that same digest,
+checks the image-owned shell guide and Git defaults, exercises the NetHack
+state, and boots the image-owned modeset profile through the real KMS canvas.
+Together these gates cover the bottle-composed image in both hosts; neither
+host substitutes legacy registry package bytes.
 
 Repeatable `--package <name>` remains available for lower-level tooling and
 focused tests. It preserves the provided root order and uses the same planner,

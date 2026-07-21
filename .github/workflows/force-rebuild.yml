@@ -589,6 +589,12 @@ jobs:
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
+      - name: Install shell VFS composer dependencies
+        if: ${{ matrix.package == 'shell' }}
+        run: |
+          bash scripts/dev-shell.sh \
+            npm --prefix tools/mkrootfs ci --no-audit --no-fund
+
       - name: Resolve selected library artifacts
         if: needs.preflight.outputs.library_matrix != '[]'
         run: |

@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { saveImage } from "../../images/vfs/scripts/vfs-image-helpers";
+import {
+  MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+  assertVfsImageFitsProfile,
+  declaredVfsMaxByteLength,
+} from "../../web-libs/kandelo-session/src/vfs-capacity";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -831,6 +836,39 @@ describe("VFS image save/restore", () => {
 
       writeFile(restored, "/grown.bin", new Uint8Array(2 * 1024 * 1024));
       expect(restored.sharedBuffer.byteLength).toBeGreaterThan(initialBytes);
+    });
+
+    it("loads a 512 MiB main-shell capacity contract and rejects a 256 MiB profile", async () => {
+      const initialBytes = 4 * 1024 * 1024;
+      const maxBytes = MAIN_SHELL_VFS_PROFILE_MAX_BYTES;
+      const sab = new SharedArrayBuffer(initialBytes, { maxByteLength: maxBytes });
+      const mfs = MemoryFileSystem.create(sab, maxBytes);
+      const image = await mfs.saveImage({
+        metadata: {
+          version: 1,
+          capacity: { maxByteLength: maxBytes },
+        },
+      });
+      const capacity = MemoryFileSystem.readImageCapacity(image);
+      const metadata = MemoryFileSystem.readImageMetadata(image);
+
+      expect(() => assertVfsImageFitsProfile(
+        capacity,
+        maxBytes,
+        declaredVfsMaxByteLength(metadata),
+        "main-shell.vfs.zst",
+      )).not.toThrow();
+      const restored = MemoryFileSystem.fromImage(image, {
+        maxByteLength: maxBytes,
+      });
+      expect(restored.sharedBuffer.maxByteLength).toBe(maxBytes);
+
+      expect(() => assertVfsImageFitsProfile(
+        capacity,
+        256 * 1024 * 1024,
+        declaredVfsMaxByteLength(metadata),
+        "main-shell.vfs.zst",
+      )).toThrow("profile permits 268435456");
     });
   });
 

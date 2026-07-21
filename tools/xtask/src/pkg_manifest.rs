@@ -46,6 +46,7 @@
 //! flags" that are not already declared as build inputs.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -139,6 +140,12 @@ pub struct Compatibility {
     pub target_arch: TargetArch,
     pub abi_versions: Vec<u32>,
     pub cache_key_sha: String,
+    /// Immutable external Git inputs used to produce this archive. These are
+    /// copied from the source package's `build.toml` so an archive records the
+    /// exact repositories and commits behind bytes that are not stored in the
+    /// Kandelo source tree.
+    #[serde(default)]
+    pub git_inputs: Vec<GitBuildInput>,
     #[serde(default)]
     #[allow(dead_code)]
     pub build_timestamp: Option<String>,
@@ -571,6 +578,10 @@ pub struct BuildToml {
     /// contents into `compute_sha` so changes to shared build helpers
     /// invalidate package caches automatically.
     pub inputs: Vec<String>,
+    /// Immutable external repositories required by the build recipe. The
+    /// resolver fetches each exact commit anonymously into an isolated,
+    /// detached checkout and exposes it through a stable environment variable.
+    pub git_inputs: Vec<GitBuildInput>,
     /// Informational provenance for the package-source repo that produced
     /// the published binary/index state.
     // Keep provenance fields in the parsed build.toml shape for schema
@@ -622,6 +633,8 @@ struct BuildTomlRaw {
     script_path: String,
     #[serde(default)]
     inputs: Vec<String>,
+    #[serde(default)]
+    git_inputs: Vec<GitBuildInput>,
     repo_url: String,
     commit: String,
     #[serde(default)]
@@ -635,6 +648,302 @@ struct BinaryRaw {
     index_url: Option<String>,
     url: Option<String>,
     sha256: Option<String>,
+}
+
+/// A content-addressed external Git checkout used by a package build.
+///
+/// `name` deliberately accepts only lowercase ASCII letters, digits, and
+/// underscores. Its uppercase form is therefore an injective environment-key
+/// mapping (`homebrew_tap_core` -> `HOMEBREW_TAP_CORE`) with no punctuation
+/// aliases or case folding collisions.
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GitBuildInput {
+    pub name: String,
+    pub repository: String,
+    pub commit: String,
+}
+
+/// Resolver-owned metadata stored beside (never inside) a materialized cache
+/// entry. Package source/build trees therefore expose exactly their authored
+/// bytes, while local cache hits can still compare immutable external-source
+/// provenance directly and verify it agrees with the full cache-key directory.
+const CACHE_PROVENANCE_SCHEMA: u32 = 1;
+const MAX_CACHE_PROVENANCE_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct CacheProvenance {
+    schema: u32,
+    package: String,
+    kind: String,
+    target_arch: String,
+    abi_version: Option<u32>,
+    cache_key_sha: String,
+    git_inputs: Vec<GitBuildInput>,
+}
+
+/// Load the exact ordered immutable-Git identity currently declared for one
+/// package. Packages predating `build.toml` have an empty identity.
+pub(crate) fn current_git_inputs(target: &DepsManifest) -> Result<Vec<GitBuildInput>, String> {
+    if target.dir.join("build.toml").exists() {
+        Ok(BuildToml::load(&target.dir)?.git_inputs)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn cache_provenance_arch(target: &DepsManifest, arch: TargetArch) -> &'static str {
+    match target.kind {
+        ManifestKind::Source => "source-independent",
+        ManifestKind::Library | ManifestKind::Program => arch.as_str(),
+    }
+}
+
+fn cache_provenance_kind(target: &DepsManifest) -> &'static str {
+    match target.kind {
+        ManifestKind::Library => "library",
+        ManifestKind::Program => "program",
+        ManifestKind::Source => "source",
+    }
+}
+
+fn validate_cache_provenance_sha(value: &str) -> Result<(), String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "cache provenance cache_key_sha must be 64 lowercase hexadecimal characters, got {value:?}"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn cache_provenance_path(
+    canonical: &Path,
+    cache_key_sha: &str,
+) -> Result<PathBuf, String> {
+    validate_cache_provenance_sha(cache_key_sha)?;
+    let parent = canonical.parent().ok_or_else(|| {
+        format!(
+            "canonical cache path has no parent for provenance: {}",
+            canonical.display()
+        )
+    })?;
+    let basename = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "canonical cache path has no UTF-8 name: {}",
+                canonical.display()
+            )
+        })?;
+    let expected_suffix = format!("-{cache_key_sha}");
+    if !basename.ends_with(&expected_suffix) {
+        return Err(format!(
+            "canonical cache path {} does not end in its full cache key {cache_key_sha}",
+            canonical.display()
+        ));
+    }
+    Ok(parent.join(format!(".{basename}.kandelo-provenance.toml")))
+}
+
+fn expected_cache_provenance(
+    target: &DepsManifest,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<Option<CacheProvenance>, String> {
+    let git_inputs = current_git_inputs(target)?;
+    if git_inputs.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(CacheProvenance {
+        schema: CACHE_PROVENANCE_SCHEMA,
+        package: target.spec(),
+        kind: cache_provenance_kind(target).to_string(),
+        target_arch: cache_provenance_arch(target, arch).to_string(),
+        abi_version: if target.kind == ManifestKind::Source {
+            None
+        } else {
+            Some(abi_version)
+        },
+        cache_key_sha: cache_key_sha.to_string(),
+        git_inputs,
+    }))
+}
+
+/// Atomically publish the adjacent provenance marker before publishing a new
+/// artifact directory. A crash can leave a harmless marker without artifacts;
+/// a later writer for the same full identity validates and reuses it.
+pub(crate) fn write_cache_provenance(
+    target: &DepsManifest,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<(), String> {
+    let Some(marker) = expected_cache_provenance(target, arch, abi_version, cache_key_sha)? else {
+        return Ok(());
+    };
+    let path = cache_provenance_path(canonical, cache_key_sha)?;
+    let text = toml::to_string(&marker)
+        .map_err(|e| format!("encode cache provenance for {}: {e}", target.spec()))?;
+    let parent = path.parent().expect("cache provenance path has parent");
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("create cache provenance parent {}: {e}", parent.display()))?;
+    for counter in 0..1000u32 {
+        let temp = parent.join(format!(
+            ".cache-provenance-tmp-{}-{counter}",
+            std::process::id()
+        ));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "create temporary cache provenance {}: {e}",
+                    temp.display()
+                ));
+            }
+        };
+        if let Err(e) = file
+            .write_all(text.as_bytes())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!(
+                "write temporary cache provenance {}: {e}",
+                temp.display()
+            ));
+        }
+        drop(file);
+
+        match std::fs::hard_link(&temp, &path) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&temp);
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = std::fs::remove_file(&temp);
+                return validate_cache_provenance(
+                    target,
+                    canonical,
+                    arch,
+                    abi_version,
+                    cache_key_sha,
+                );
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(format!(
+                    "publish cache provenance {} atomically: {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "could not allocate temporary cache provenance below {}",
+        parent.display()
+    ))
+}
+
+/// Validate a local cache entry against the package's exact current immutable
+/// Git identities. Legacy entries without a marker remain valid only for
+/// packages that still declare no immutable Git inputs.
+pub(crate) fn validate_cache_provenance(
+    target: &DepsManifest,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<(), String> {
+    let expected = expected_cache_provenance(target, arch, abi_version, cache_key_sha)?;
+    let path = cache_provenance_path(canonical, cache_key_sha)?;
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && expected.is_none() => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "{}: cache entry lacks immutable Git provenance marker {}",
+                target.spec(),
+                path.display()
+            ));
+        }
+        Err(e) => return Err(format!("inspect cache provenance {}: {e}", path.display())),
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{}: cache provenance must be a regular non-symlink file: {}",
+            target.spec(),
+            path.display()
+        ));
+    }
+    if metadata.len() > MAX_CACHE_PROVENANCE_BYTES {
+        return Err(format!(
+            "{}: cache provenance exceeds {} bytes: {}",
+            target.spec(),
+            MAX_CACHE_PROVENANCE_BYTES,
+            path.display()
+        ));
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read cache provenance {}: {e}", path.display()))?;
+    let marker: CacheProvenance = toml::from_str(&text)
+        .map_err(|e| format!("parse cache provenance {}: {e}", path.display()))?;
+    if marker.schema != CACHE_PROVENANCE_SCHEMA {
+        return Err(format!(
+            "{}: cache provenance schema {} is unsupported (expected {})",
+            target.spec(),
+            marker.schema,
+            CACHE_PROVENANCE_SCHEMA
+        ));
+    }
+    validate_git_build_inputs(&marker.git_inputs, "cache provenance git_inputs")?;
+    let Some(expected) = expected else {
+        return Err(format!(
+            "{}: cache entry has unexpected immutable Git provenance marker {}",
+            target.spec(),
+            path.display()
+        ));
+    };
+    if marker.package != expected.package
+        || marker.kind != expected.kind
+        || marker.target_arch != expected.target_arch
+        || marker.abi_version != expected.abi_version
+        || marker.cache_key_sha != expected.cache_key_sha
+        || marker.git_inputs != expected.git_inputs
+    {
+        return Err(format!(
+            "{}: cached immutable Git provenance differs from current identity",
+            target.spec(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn remove_cache_provenance(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
+    let path = cache_provenance_path(canonical, cache_key_sha)?;
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("remove cache provenance {}: {e}", path.display()))
+        }
+        Ok(_) => Err(format!(
+            "refusing to remove non-file cache provenance path {}",
+            path.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("inspect cache provenance {}: {e}", path.display())),
+    }
 }
 
 impl BinarySource {
@@ -682,10 +991,12 @@ impl BuildToml {
         for input in &raw.inputs {
             validate_build_input_path(input)?;
         }
+        validate_git_build_inputs(&raw.git_inputs, "build.toml git_inputs")?;
         validate_build_script_path(&raw.script_path, "build.toml")?;
         Ok(BuildToml {
             script_path: raw.script_path,
             inputs: raw.inputs,
+            git_inputs: raw.git_inputs,
             repo_url: raw.repo_url,
             commit: raw.commit,
             revision: raw.revision,
@@ -701,6 +1012,70 @@ impl BuildToml {
             std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
+}
+
+pub(crate) fn validate_git_build_inputs(
+    inputs: &[GitBuildInput],
+    context: &str,
+) -> Result<(), String> {
+    let mut names = BTreeSet::new();
+    for input in inputs {
+        if input.name.is_empty()
+            || input.name.len() > 64
+            || !input
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            || !input
+                .name
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_lowercase())
+        {
+            return Err(format!(
+                "{context} name must start with a lowercase ASCII letter and contain only lowercase letters, digits, and underscores, got {:?}",
+                input.name
+            ));
+        }
+        if !names.insert(input.name.as_str()) {
+            return Err(format!(
+                "{context} declares duplicate name {:?}",
+                input.name
+            ));
+        }
+
+        let repository = input.repository.as_str();
+        let remainder = repository.strip_prefix("https://").ok_or_else(|| {
+            format!("{context} repository must be an anonymous HTTPS URL, got {repository:?}")
+        })?;
+        let authority = remainder.split('/').next().unwrap_or_default();
+        if repository.len() > 2_048
+            || remainder.is_empty()
+            || !remainder.contains('/')
+            || authority.is_empty()
+            || authority.contains('@')
+            || repository
+                .chars()
+                .any(|character| matches!(character, '?' | '#' | '\0') || character.is_whitespace())
+        {
+            return Err(format!(
+                "{context} repository must be a bounded anonymous HTTPS repository URL without credentials, query, or fragment, got {repository:?}"
+            ));
+        }
+
+        if input.commit.len() != 40
+            || !input
+                .commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(format!(
+                "{context} commit must be an exact 40-character lowercase Git object ID, got {:?}",
+                input.commit
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_build_script_path(path: &str, document: &str) -> Result<(), String> {
@@ -1293,6 +1668,7 @@ impl DepsManifest {
                 c.cache_key_sha
             ));
         }
+        validate_git_build_inputs(&c.git_inputs, "compatibility.git_inputs")?;
         Ok(())
     }
 
@@ -1847,6 +2223,284 @@ fn apply_pr_overlay(manifest: &mut DepsManifest, overlay_text: &str) -> Result<(
 mod tests {
     use super::*;
 
+    fn provenance_git_inputs() -> Vec<GitBuildInput> {
+        vec![
+            GitBuildInput {
+                name: "tap".into(),
+                repository: "https://example.test/tap.git".into(),
+                commit: "1".repeat(40),
+            },
+            GitBuildInput {
+                name: "support".into(),
+                repository: "https://example.test/support.git".into(),
+                commit: "2".repeat(40),
+            },
+        ]
+    }
+
+    fn write_provenance_build_toml(dir: &Path, git_inputs: &[GitBuildInput]) {
+        let blocks = git_inputs
+            .iter()
+            .map(|input| {
+                format!(
+                    "[[git_inputs]]\nname = {:?}\nrepository = {:?}\ncommit = {:?}\n",
+                    input.name, input.repository, input.commit,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(
+            dir.join("build.toml"),
+            format!(
+                r#"script_path = "packages/registry/zlib/build-zlib.sh"
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+{blocks}
+[binary]
+index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
+"#,
+            ),
+        )
+        .unwrap();
+    }
+
+    fn provenance_fixture(label: &str) -> (DepsManifest, PathBuf, String) {
+        let dir = overlay_fixture_dir(label, EXAMPLE, None);
+        write_provenance_build_toml(&dir, &provenance_git_inputs());
+        let manifest = DepsManifest::load(&dir.join("package.toml")).unwrap();
+        let key = "a".repeat(64);
+        let canonical = dir
+            .join("cache")
+            .join(format!("zlib-1.3.1-rev1-wasm32-{key}"));
+        (manifest, canonical, key)
+    }
+
+    #[test]
+    fn cache_provenance_path_requires_matching_full_cache_key_suffix() {
+        let key = "a".repeat(64);
+        let canonical = Path::new("/cache/libs").join(format!("zlib-1.3.1-rev1-wasm32-{key}"));
+        assert_eq!(
+            cache_provenance_path(&canonical, &key).unwrap(),
+            canonical.parent().unwrap().join(format!(
+                ".{}.kandelo-provenance.toml",
+                canonical.file_name().unwrap().to_string_lossy()
+            ))
+        );
+
+        let wrong_key = "b".repeat(64);
+        let error = cache_provenance_path(&canonical, &wrong_key).unwrap_err();
+        assert!(
+            error.contains("does not end in its full cache key"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn cache_provenance_is_adjacent_exact_and_never_part_of_artifact_tree() {
+        let (manifest, canonical, key) = provenance_fixture("cache-provenance-adjacent");
+        std::fs::create_dir_all(canonical.join("lib")).unwrap();
+        std::fs::write(canonical.join("lib/libz.a"), b"artifact").unwrap();
+
+        write_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key).unwrap();
+        validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key).unwrap();
+
+        let marker_path = cache_provenance_path(&canonical, &key).unwrap();
+        assert_eq!(marker_path.parent(), canonical.parent());
+        assert!(!canonical.join(marker_path.file_name().unwrap()).exists());
+        let marker: CacheProvenance =
+            toml::from_str(&std::fs::read_to_string(&marker_path).unwrap()).unwrap();
+        assert_eq!(marker.package, "zlib@1.3.1");
+        assert_eq!(marker.kind, "library");
+        assert_eq!(marker.target_arch, "wasm32");
+        assert_eq!(marker.abi_version, Some(41));
+        assert_eq!(marker.cache_key_sha, key);
+        assert_eq!(marker.git_inputs, provenance_git_inputs());
+    }
+
+    #[test]
+    fn source_cache_provenance_is_arch_and_abi_independent() {
+        let source = r#"
+kind = "source"
+name = "pcre2-source"
+version = "10.42"
+
+[source]
+url = "https://example.test/pcre2.tar.bz2"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+"#;
+        let dir = overlay_fixture_dir("source-cache-provenance", source, None);
+        write_provenance_build_toml(&dir, &provenance_git_inputs());
+        let manifest = DepsManifest::load(&dir.join("package.toml")).unwrap();
+        let key = "e".repeat(64);
+        let canonical = dir
+            .join("cache")
+            .join(format!("pcre2-source-10.42-rev1-{key}"));
+
+        write_cache_provenance(&manifest, &canonical, TargetArch::Wasm64, 999, &key).unwrap();
+        validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key).unwrap();
+
+        let marker: CacheProvenance = toml::from_str(
+            &std::fs::read_to_string(cache_provenance_path(&canonical, &key).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(marker.kind, "source");
+        assert_eq!(marker.target_arch, "source-independent");
+        assert_eq!(marker.abi_version, None);
+    }
+
+    #[test]
+    fn cache_provenance_rejects_missing_malformed_and_every_wrong_identity_field() {
+        let (manifest, canonical, key) = provenance_fixture("cache-provenance-reject");
+        let marker_path = cache_provenance_path(&canonical, &key).unwrap();
+        let missing =
+            validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key)
+                .unwrap_err();
+        assert!(
+            missing.contains("lacks immutable Git provenance"),
+            "{missing}"
+        );
+
+        std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+        std::fs::write(&marker_path, "not = [valid").unwrap();
+        let malformed =
+            validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key)
+                .unwrap_err();
+        assert!(malformed.contains("parse cache provenance"), "{malformed}");
+
+        std::fs::remove_file(&marker_path).unwrap();
+        write_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key).unwrap();
+        let valid = std::fs::read_to_string(&marker_path).unwrap();
+        let mutations = [
+            (
+                "package",
+                valid.replace("package = \"zlib@1.3.1\"", "package = \"other@1.0\""),
+            ),
+            (
+                "kind",
+                valid.replace("kind = \"library\"", "kind = \"program\""),
+            ),
+            (
+                "arch",
+                valid.replace("target_arch = \"wasm32\"", "target_arch = \"wasm64\""),
+            ),
+            ("abi", valid.replace("abi_version = 41", "abi_version = 42")),
+            (
+                "key",
+                valid.replace(
+                    &format!("cache_key_sha = \"{key}\""),
+                    &format!("cache_key_sha = \"{}\"", "b".repeat(64)),
+                ),
+            ),
+            (
+                "git",
+                valid.replace(
+                    "commit = \"1111111111111111111111111111111111111111\"",
+                    "commit = \"3333333333333333333333333333333333333333\"",
+                ),
+            ),
+        ];
+        for (label, text) in mutations {
+            std::fs::write(&marker_path, text).unwrap();
+            let error =
+                validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key)
+                    .unwrap_err();
+            assert!(
+                error.contains("differs from current identity"),
+                "{label}: {error}"
+            );
+        }
+
+        let mut parsed: CacheProvenance = toml::from_str(&valid).unwrap();
+        parsed.git_inputs.reverse();
+        std::fs::write(&marker_path, toml::to_string(&parsed).unwrap()).unwrap();
+        let reordered =
+            validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key)
+                .unwrap_err();
+        assert!(
+            reordered.contains("differs from current identity"),
+            "{reordered}"
+        );
+    }
+
+    #[test]
+    fn cache_provenance_reuses_valid_crash_orphan_and_refuses_corrupt_one() {
+        let (manifest, canonical, key) = provenance_fixture("cache-provenance-orphan");
+        write_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key).unwrap();
+        assert!(
+            !canonical.exists(),
+            "marker publication must precede artifact publication"
+        );
+        std::fs::create_dir_all(&canonical).unwrap();
+        validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key).unwrap();
+
+        let marker_path = cache_provenance_path(&canonical, &key).unwrap();
+        std::fs::remove_dir_all(&canonical).unwrap();
+        std::fs::write(&marker_path, "corrupt").unwrap();
+        let error = write_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key)
+            .unwrap_err();
+        assert!(error.contains("parse cache provenance"), "{error}");
+        assert_eq!(std::fs::read_to_string(&marker_path).unwrap(), "corrupt");
+    }
+
+    #[test]
+    fn cache_provenance_rejects_oversized_and_non_regular_markers() {
+        let (manifest, canonical, key) = provenance_fixture("cache-provenance-file-shape");
+        let marker_path = cache_provenance_path(&canonical, &key).unwrap();
+        std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+
+        std::fs::write(
+            &marker_path,
+            vec![b'x'; (MAX_CACHE_PROVENANCE_BYTES + 1) as usize],
+        )
+        .unwrap();
+        let oversized =
+            validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key)
+                .unwrap_err();
+        assert!(oversized.contains("exceeds"), "{oversized}");
+
+        std::fs::remove_file(&marker_path).unwrap();
+        std::fs::create_dir(&marker_path).unwrap();
+        let directory =
+            validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key)
+                .unwrap_err();
+        assert!(directory.contains("regular non-symlink"), "{directory}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_provenance_rejects_symlink_markers() {
+        use std::os::unix::fs::symlink;
+
+        let (manifest, canonical, key) = provenance_fixture("cache-provenance-symlink");
+        let marker_path = cache_provenance_path(&canonical, &key).unwrap();
+        std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+        let target = marker_path
+            .parent()
+            .unwrap()
+            .join("attacker-controlled.toml");
+        std::fs::write(&target, "attacker-controlled").unwrap();
+        symlink(&target, &marker_path).unwrap();
+
+        let error = validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key)
+            .unwrap_err();
+        assert!(error.contains("regular non-symlink"), "{error}");
+    }
+
+    #[test]
+    fn packages_without_git_inputs_never_get_a_provenance_marker() {
+        let dir = overlay_fixture_dir("cache-provenance-empty", EXAMPLE, None);
+        let manifest = DepsManifest::load(&dir.join("package.toml")).unwrap();
+        let key = "d".repeat(64);
+        let canonical = dir.join(format!("zlib-cache-{key}"));
+        write_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key).unwrap();
+        assert!(!cache_provenance_path(&canonical, &key).unwrap().exists());
+        validate_cache_provenance(&manifest, &canonical, TargetArch::Wasm32, 41, &key).unwrap();
+    }
+
     // Source package.toml fixture used across most pkg_manifest tests.
     // Reflects the post-binary-resolution-via-index-ledger schema: no
     // revision, no [binary], no [build].repo_url, no [build].commit.
@@ -1927,10 +2581,8 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
                 ("source", EXAMPLE, false),
                 ("archived", EXAMPLE_ARCHIVED, true),
             ] {
-                let text = fixture.replace(
-                    "version = \"1.3.1\"",
-                    &format!("version = {version:?}"),
-                );
+                let text =
+                    fixture.replace("version = \"1.3.1\"", &format!("version = {version:?}"));
                 let result = if archived {
                     DepsManifest::parse_archived(&text, PathBuf::from("/x"))
                 } else {
@@ -2340,10 +2992,7 @@ spdx = "TestLicense"
             );
         }
 
-        let text = EXAMPLE.replace(
-            "depends_on = []",
-            r#"depends_on = ["../outside@1.0"]"#,
-        );
+        let text = EXAMPLE.replace("depends_on = []", r#"depends_on = ["../outside@1.0"]"#);
         let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
         assert!(
             err.contains("dep name") && err.contains("safe single path component"),
@@ -2619,7 +3268,8 @@ wasm = "vim.wasm"
     fn program_with_runtime_file(artifact: &str, guest_path: &str, mode: Option<u32>) -> String {
         format!(
             "{PROGRAM_EXAMPLE}\n[[runtime_files]]\nartifact = {artifact:?}\nguest_path = {guest_path:?}\n{}",
-            mode.map(|value| format!("mode = {value}\n")).unwrap_or_default(),
+            mode.map(|value| format!("mode = {value}\n"))
+                .unwrap_or_default(),
         )
     }
 
@@ -2967,10 +3617,12 @@ install_hints = { darwin = "brew install cmake", linux = "apt install cmake" }
 
         // cmake has explicit probe + hints.
         assert_eq!(m.host_tools[1].name, "cmake");
-        assert!(m.host_tools[1]
-            .probe
-            .version_regex
-            .starts_with("cmake version"));
+        assert!(
+            m.host_tools[1]
+                .probe
+                .version_regex
+                .starts_with("cmake version")
+        );
         assert_eq!(
             m.host_tools[1]
                 .install_hints
@@ -3449,6 +4101,11 @@ inputs = [
 repo_url = "https://github.com/example/foo.git"
 commit = "abc123"
 
+[[git_inputs]]
+name = "homebrew_tap_core"
+repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
+
 [binary]
 index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
 "#;
@@ -3463,11 +4120,78 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
         );
         assert_eq!(bt.repo_url, "https://github.com/example/foo.git");
         assert_eq!(bt.commit, "abc123");
+        assert_eq!(
+            bt.git_inputs,
+            vec![GitBuildInput {
+                name: "homebrew_tap_core".to_string(),
+                repository: "https://github.com/Kandelo-dev/homebrew-tap-core.git".to_string(),
+                commit: "b40a764d47f4f4408790de2c211ccb8efb8e4c46".to_string(),
+            }]
+        );
         assert!(matches!(
             bt.binary,
             BinarySource::Indexed { ref index_url }
                 if index_url == "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
         ));
+    }
+
+    #[test]
+    fn rejects_invalid_or_ambiguous_git_build_inputs() {
+        let cases = [
+            (
+                "name = \"tap-core\"\nrepository = \"https://example.test/tap.git\"\ncommit = \"1111111111111111111111111111111111111111\"",
+                "name",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"http://example.test/tap.git\"\ncommit = \"1111111111111111111111111111111111111111\"",
+                "HTTPS",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"https://user@example.test/tap.git\"\ncommit = \"1111111111111111111111111111111111111111\"",
+                "credentials",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"https://example.test/tap.git\"\ncommit = \"ABCDEF0123456789ABCDEF0123456789ABCDEF01\"",
+                "lowercase",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"https://example.test/tap.git\"\ncommit = \"1111111\"",
+                "40-character",
+            ),
+        ];
+        for (git_input, expected) in cases {
+            let text = format!(
+                r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[[git_inputs]]
+{git_input}
+[binary]
+index_url = "https://example.test/index.toml"
+"#
+            );
+            let err = BuildToml::parse(&text).unwrap_err();
+            assert!(err.contains(expected), "expected {expected:?}, got: {err}");
+        }
+
+        let duplicate = r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[[git_inputs]]
+name = "tap"
+repository = "https://example.test/one.git"
+commit = "1111111111111111111111111111111111111111"
+[[git_inputs]]
+name = "tap"
+repository = "https://example.test/two.git"
+commit = "2222222222222222222222222222222222222222"
+[binary]
+index_url = "https://example.test/index.toml"
+"#;
+        let err = BuildToml::parse(duplicate).unwrap_err();
+        assert!(err.contains("duplicate name"), "got: {err}");
     }
 
     #[test]

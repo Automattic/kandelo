@@ -75,10 +75,30 @@ export function resolveVfsArtifact(relPath: string, depName?: string): string {
 export function loadShellBaseFileSystem(maxByteLength: number): MemoryFileSystem {
   const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   const shellImage = new Uint8Array(readFileSync(shellImagePath));
-  const fs = MemoryFileSystem.fromImage(shellImage, { maxByteLength });
+  return loadShellBaseFileSystemFromImage(shellImage, maxByteLength);
+}
+
+/**
+ * Restore the canonical shell contents for composition into another product
+ * image. The source image's capacity is a runtime contract, so it must first
+ * be restored with its own ceiling. A downstream image that declares a
+ * different ceiling gets a fresh filesystem containing the same logical
+ * files and lazy metadata.
+ *
+ * In particular, a 512 MiB shell image cannot be restored directly into a
+ * 256 MiB growable SharedArrayBuffer: the serialized source buffer is already
+ * larger than that target. Restoring first and then rebasing makes the
+ * build-time transformation explicit without weakening runtime profile
+ * validation for the canonical image itself.
+ */
+export function loadShellBaseFileSystemFromImage(
+  shellImage: Uint8Array,
+  maxByteLength: number,
+): MemoryFileSystem {
+  const fs = MemoryFileSystem.fromImagePreservingCapacity(shellImage);
   const stats = fs.statfs("/");
   const effectiveMaxByteLength = stats.blocks * stats.bsize;
-  if (effectiveMaxByteLength >= maxByteLength) return fs;
+  if (effectiveMaxByteLength === maxByteLength) return fs;
 
   console.log(
     `Rebasing shell base VFS capacity from ${Math.round(effectiveMaxByteLength / 1024 / 1024)} MiB ` +

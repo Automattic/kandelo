@@ -334,6 +334,19 @@ Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
 
+The runtime treats this file as untrusted image input. It must be a regular
+file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
+version. The loader validates every profile before using any of them, so a
+malformed unselected profile cannot hide behind the current URL. Producers
+that already have a reviewed canonical JSON file may copy those exact bytes;
+the bottle-built main shell uses `homebrew/main-shell-demo.json` as the single
+source shared with the legacy image builder.
+
+VFS images do not need to serialize placeholder device nodes. Both Node and
+browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
+shared memory at `/dev/shm`; image acceptance should exercise devices such as
+`/dev/null` only after those runtime mounts exist.
+
 KMS demos use the same metadata path. A profile can set
 `runningPrimary` to include `"kms"` and provide an `autoCommand` such as
 `/usr/local/bin/modeset`; the VFS image must contain that executable. The
@@ -424,18 +437,27 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `bash images/vfs/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the exact reviewed 38-Formula public Homebrew bottle closure, compatibility links, profile, and image-owned Homebrew Bash |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
+
+Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
+are resolved only after that profile is requested; loading the main shell does
+not require or fetch those image bytes. If the selected profile's local or
+resolver-managed artifact is absent, the browser reports that exact missing
+image and asks the user to run `./run.sh fetch`.
 
 The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
 `mysql` account (uid/gid 101). Their writable `/data` directories are
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
 root-owned `01777` sticky directory.
 
-VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
+Generated VFS images are `.gitignore`d rather than committed. Package-backed
+images can be materialized from a current public package archive; the normal
+resolver falls back to the package's source recipe when needed. The `run.sh`
+script handles this automatically before starting the browser.
 
 Homebrew-derived browser images are external artifacts, not bundled into the
 app. The trusted Homebrew publisher first pours wasm32 bottles into a
@@ -475,6 +497,14 @@ orchestrates explicit resolver builds:
 ./run.sh build shell-vfs     # Build Shell VFS image
 ./run.sh build all            # Build everything including all VFS images
 ```
+
+The main shell target resolves the `shell` package into `local-binaries`; it
+does not invoke the image recipe directly or source-build fbDOOM first. On a
+cache or index miss, that package's source recipe anonymously provisions the
+immutable `homebrew-tap-core` commit declared in `build.toml`, verifies the
+reviewed Brewfile and migration lock, and composes exclusively from public
+bottles. `./run.sh --fetch-only build shell-vfs` keeps the stricter consumer
+contract and refuses that source fallback.
 
 ### Adding a new VFS image
 

@@ -20,6 +20,9 @@ import { addDinitInit } from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
 import { loadShellBaseFileSystem } from "./shell-vfs-build";
 import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../../web-libs/kandelo-session/src/vfs-capacity";
+import {
   webPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
@@ -27,7 +30,7 @@ import { nginxPhpGuide } from "./kandelo-demo-guides";
 
 const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php.vfs.zst");
 const PHP_FPM_WORKERS = 6;
-const NGINX_PHP_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+const NGINX_PHP_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 

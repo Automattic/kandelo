@@ -43,9 +43,7 @@ import {
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
-  KANDELO_DEMO_CONFIG_PATH,
   genericDemoPresentation,
-  parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoPresentation,
@@ -53,12 +51,23 @@ import {
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import {
+  readKandeloDemoConfigFromVfs,
+} from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
+import {
   KANDELO_SHELL_CONFIG_PATH,
   MAX_KANDELO_SHELL_CONFIG_BYTES,
   MAX_KANDELO_SHELL_EXECUTABLE_BYTES,
   parseKandeloShellConfig,
   type KandeloShellConfig,
 } from "../../../../../web-libs/kandelo-session/src/shell-config";
+import {
+  CUSTOM_VFS_PROFILE_MAX_BYTES,
+  DEFAULT_VFS_PROFILE_MAX_BYTES,
+  MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+  assertVfsImageFitsProfile,
+  declaredVfsMaxByteLength,
+} from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
 import {
   builtinDemoAssets,
   builtinDemoGuide,
@@ -72,13 +81,14 @@ import {
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
 } from "../url-state";
+import {
+  resolveOptionalDemoVfsUrl,
+  type OptionalDemoVfsImage,
+} from "./optional-demo-vfs";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
-import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
-import wordpressVfsUrl from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
-import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
@@ -215,6 +225,7 @@ type LiveVfsImage =
 
 type LiveVfsSource =
   | { kind: "url"; url: string }
+  | { kind: "optional-demo"; image: OptionalDemoVfsImage }
   | { kind: "optional-binary"; label: string; relPaths: string[] };
 
 type ShellProfile = "default" | "node";
@@ -249,7 +260,7 @@ interface LiveProfileSpec {
 
 const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
   shell: { kind: "url", url: shellVfsUrl },
-  node: { kind: "url", url: nodeVfsUrl },
+  node: { kind: "optional-demo", image: "node" },
   nginx: {
     kind: "optional-binary",
     label: "nginx-vfs.vfs.zst",
@@ -266,8 +277,8 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
       "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
     ],
   },
-  wordpress: { kind: "url", url: wordpressVfsUrl },
-  lamp: { kind: "url", url: lampVfsUrl },
+  wordpress: { kind: "optional-demo", image: "wordpress" },
+  lamp: { kind: "optional-demo", image: "lamp" },
 };
 
 const DINIT_NGINX_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"];
@@ -300,11 +311,13 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     shell: "node",
     includeNodeUtility: true,
     memoryPages: 4096,
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     features: ["js-workers"],
   },
   nginx: {
     image: "nginx",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
@@ -316,6 +329,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "nginx-php": {
     image: "nginx-php",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
@@ -327,6 +341,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "wordpress-sqlite": {
     image: "wordpress",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
@@ -703,7 +718,7 @@ function customVfsProfile(
     descriptor: desc,
     shell: "default",
     includeNodeUtility: false,
-    maxVfsByteLength: 256 * 1024 * 1024,
+    maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
     framebufferTest: fb === "test",
   };
 }
@@ -719,7 +734,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       descriptor: desc,
       shell: "default",
       includeNodeUtility: false,
-      maxVfsByteLength: 256 * 1024 * 1024,
+      maxVfsByteLength: DEFAULT_VFS_PROFILE_MAX_BYTES,
       autoCommand: software.autoCommand,
       fallbackPresentation: software.presentation,
       init: software.init,
@@ -738,7 +753,10 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     descriptor: desc,
     shell: spec.shell ?? "default",
     includeNodeUtility: spec.includeNodeUtility ?? false,
-    maxVfsByteLength: spec.maxVfsByteLength ?? 256 * 1024 * 1024,
+    maxVfsByteLength: spec.maxVfsByteLength ??
+      (spec.image === "shell"
+        ? MAIN_SHELL_VFS_PROFILE_MAX_BYTES
+        : DEFAULT_VFS_PROFILE_MAX_BYTES),
     autoCommand: spec.autoCommand,
     init: spec.init && {
       argv: spec.init.argv.slice(),
@@ -1080,8 +1098,16 @@ async function bootProfile(
   assertCurrent();
 
   tick(`kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`);
+  const fetchedVfsImageBytes = new Uint8Array(vfsBytes);
+  const vfsMetadata = MemoryFileSystem.readImageMetadata(fetchedVfsImageBytes);
+  assertVfsImageFitsProfile(
+    MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes),
+    profile.maxVfsByteLength,
+    declaredVfsMaxByteLength(vfsMetadata),
+    `${profile.id}.vfs.zst`,
+  );
   MemoryFileSystem.assertImageKernelAbi(
-    new Uint8Array(vfsBytes),
+    fetchedVfsImageBytes,
     ABI_VERSION,
     `${profile.id}.vfs.zst`,
   );
@@ -1092,7 +1118,7 @@ async function bootProfile(
   // out of the live-VFS ownership set so WebKit reclaims it on teardown via
   // Worker.terminate() rather than lazy GC — the root fix for the Safari
   // image-switch OOM.
-  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
+  const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
     maxByteLength: profile.maxVfsByteLength,
   });
   const shellConfig = readImageShellConfig(buildFs);
@@ -1534,6 +1560,9 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
 
 async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
   if (profile.vfsSource?.kind === "url") return profile.vfsSource.url;
+  if (profile.vfsSource?.kind === "optional-demo") {
+    return resolveOptionalDemoVfsUrl(profile.vfsSource.image);
+  }
   if (profile.vfsSource?.kind === "optional-binary") {
     return optionalBinaryUrl(profile.vfsSource.relPaths, profile.vfsSource.label);
   }
@@ -1890,6 +1919,7 @@ function liveGalleryItems(): GalleryItem[] {
     packages: p.packages,
     bootCommand: p.bootCommand,
     vfsImageUrl: vfsImageUrlForPreset(p.id),
+    resolveVfsImageUrl: vfsImageUrlResolverForPreset(p.id),
     accent: p.accent,
     glyph: p.glyph,
     estimatedUrlBytes: p.estimatedUrlBytes,
@@ -1904,6 +1934,20 @@ function vfsImageUrlForPreset(id: string): string | undefined {
   const url = new URL(source.url, location.href);
   url.hash = liveId;
   return url.href;
+}
+
+function vfsImageUrlResolverForPreset(
+  id: string,
+): (() => Promise<string>) | undefined {
+  const liveId = normalizeDemoId(id);
+  if (!liveId) return undefined;
+  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
+  if (source.kind !== "optional-demo") return undefined;
+  return async () => {
+    const url = new URL(await resolveOptionalDemoVfsUrl(source.image), location.href);
+    url.hash = liveId;
+    return url.href;
+  };
 }
 
 function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
@@ -2363,13 +2407,7 @@ function assertImageShellExecutable(fs: MemoryFileSystem, path: string): void {
 }
 
 function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
-  const json = readOptionalVfsText(fs, KANDELO_DEMO_CONFIG_PATH);
-  if (json === null) return null;
-  const config = parseKandeloDemoConfig(json);
-  if (!config) {
-    throw new Error(`VFS image has unsupported ${KANDELO_DEMO_CONFIG_PATH} version`);
-  }
-  return config;
+  return readKandeloDemoConfigFromVfs(fs);
 }
 
 function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null {

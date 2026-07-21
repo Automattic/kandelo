@@ -276,6 +276,11 @@ repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
 
+[[git_inputs]]
+name       = "homebrew_tap_core"
+repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+commit     = "<exact 40-character lowercase commit>"
+
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
@@ -287,6 +292,12 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   the cache-key. Bump when output bytes legitimately change (build
   flag tweaks, fork-instrument output, etc.). Don't bump for doc-only
   changes — it triggers a needless rebuild across the matrix.
+- `[[git_inputs]]` declares an external repository whose exact commit is part
+  of the build recipe. Names start with a lowercase letter and contain only
+  lowercase letters, digits, and underscores; repository URLs are anonymous
+  HTTPS URLs; commits are full 40-character lowercase object IDs. The ordered
+  `(name, repository, commit)` tuples are hashed into the package cache key
+  before network access.
 - `[binary]` declares where binaries are published. Two forms,
   exactly one of which must be present:
 
@@ -297,6 +308,22 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 
 The resolver picks the form by structural deserialization — mixing
 forms in one `[binary]` block is a parse error.
+
+For each declared Git input, the source-build resolver performs an anonymous
+exact-commit fetch with inherited Git credentials, configuration, and hooks
+disabled. It rejects submodule gitlinks and symlinks that escape the checkout,
+verifies a clean detached HEAD, seals the whole checkout read-only for the
+build, and verifies it again afterward. A declaration named
+`homebrew_tap_core` is exposed as:
+
+- `WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR`
+- `WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT`
+
+Published archives record the same ordered declarations as
+`[[compatibility.git_inputs]]`. Archive creation and remote consumption both
+compare that vector exactly with the current `build.toml`; the archive SHA and
+cache key are additional integrity bindings, not substitutes for that direct
+provenance check.
 
 ### Homebrew bottles and package cache keys
 
@@ -398,7 +425,8 @@ same lib, we revisit. Noted as future work; not a near-term priority.
 
 The cache-key sha for a library or program is computed over
 `(name, version, revision, source.url, source.sha256, target_arch,
-abi_version, declared outputs, declared build input digests, global
+abi_version, declared outputs, declared build input digests, immutable
+external Git identities, global
 toolchain/sysroot input digests, sorted transitive dep cache-key
 shas)`, where `revision` is read from `build.toml` (overlaid onto the
 parsed `DepsManifest` at load time) and defaults to 1 when
@@ -431,7 +459,7 @@ Inspect:
 
 ```bash
 cargo xtask build-deps sha     zlib   # → e33c5e9a4383afdd…
-cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a
+cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a4383afdd…
 cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
@@ -444,9 +472,22 @@ in turn, it checks:
 1. **`<repo>/local-libs/<name>/build/`** — hand-patched, in-progress.
    Returned as-is; the build script never runs. Per-worktree,
    gitignored. Mirrors `local-binaries/`.
-2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<shortsha>/`** —
-   canonical cache. Trusted by presence: users invalidate by
-   deleting the directory or bumping `revision`.
+2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<cache-key-sha>/`** —
+   canonical cache. The suffix is the complete 64-character SHA-256 so two
+   identities that share an archive filename's eight-character label cannot
+   alias locally. Packages with immutable Git inputs also require a matching
+   adjacent provenance marker; users invalidate an entry by deleting it or
+   bumping `revision`. Old short-key cache entries are left unused and rebuilt
+   under the full-key path rather than migrated or trusted in place.
+
+   The marker is a resolver-owned sibling named
+   `.<canonical-cache-basename>.kandelo-provenance.toml`. It binds the schema,
+   package identity and kind, target architecture (or `source-independent`),
+   ABI when applicable, complete cache key, and ordered `git_inputs`. It is
+   never copied into the package tree or release archive. Publication writes
+   the marker before atomically installing the artifact, so a crash may leave
+   a harmless marker-only orphan; the next build reuses it only if every field
+   still matches and otherwise fails closed.
 3. **Index-based remote fetch** — load `build.toml`, resolve its
    `[binary]` block (typically to an `index_url`), fetch
    `index.toml` from that URL (with offline cache fallback at
@@ -455,7 +496,7 @@ in turn, it checks:
    `archive_url`; for `status = failed/pending/building` with a
    `fallback_archive_url` use the last-green fallback. Verify
    archive sha256 + internal `[compatibility]` block
-   (target_arch, abi_versions, cache_key_sha). Any verification
+   (target_arch, abi_versions, cache_key_sha, exact git_inputs). Any verification
    failure logs a warning and falls through to step 4.
 4. **Build from source** — run the declared `build.script_path`,
    validate declared outputs, atomically install into the
@@ -481,6 +522,8 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_WORK_DIR` | Optional caller-owned scratch root. The sealed Homebrew Formula bridge sets this because its reviewed Kandelo checkout is read-only. Direct developer builds may retain a package-local default. |
 | `WASM_POSIX_DEP_SOURCE_DIR` | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
+| `WASM_POSIX_BUILD_GIT_<NAME>_DIR` | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name. |
+| `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout. |
 
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must
@@ -866,6 +909,14 @@ cache tree into
 /tmp/archives/<name>-<version>-rev<N>-abi<N>-<arch>-<shortsha>.tar.zst
 ```
 
+By default, `archive-stage` preserves normal resolver behavior: a valid local
+cache entry or indexed archive may satisfy the selected package. Exact source
+execution proofs can add `--force-source-build`. That flag bypasses cache and
+binary-index reuse only for the package passed to `--package`; dependencies
+continue through ordinary resolution. For example, the main-shell proof uses
+it to guarantee that the shell composer runs while its reviewed Homebrew
+bottles remain ordinary immutable inputs.
+
 Each matrix entry then publishes via `scripts/index-update.sh`:
 
 ```bash
@@ -1010,6 +1061,15 @@ PR with CI write access. Prepare merge uses a separate run-specific
 candidate initialized from canonical state; it never promotes the PR staging
 ledger directly into the canonical release.
 
+Staging reuse validates more than the release index. Its frozen snapshot binds
+each package's version, revision, full cache key, archive size, and archive
+SHA-256. Metadata-only preflight downloads every current entry that declares
+`git_inputs` and compares the archive's embedded ordered vector with the fresh
+expected ledger. A materialized candidate downloads and validates every archive
+before exposing the localized `file://` index. Missing, extra, changed, or
+reordered Git inputs; a mismatched archive identity; duplicate/noncanonical
+`manifest.toml`; or a symlinked archive fails closed.
+
 For pre-push iteration on packages whose source build is fast,
 just rely on the resolver's fall-through: edit `package.toml`,
 run `./run.sh browser`, and accept a one-time source build for
@@ -1073,9 +1133,9 @@ one archive lands as
 ```
 
 (short sha `e33c5e9a` is the first 8 chars of the cache-key sha
-for this manifest, identical to the canonical cache directory
-suffix — `cargo xtask build-deps sha zlib` prints the full
-form).
+for this manifest. Release asset filenames use that compact transport
+label, while the canonical local cache directory uses the full 64-character
+key — `cargo xtask build-deps sha zlib` prints the full form).
 
 After publish, the matrix flow's `scripts/index-update.sh`
 invocation has added an entry to the release's `index.toml`:
@@ -1119,12 +1179,24 @@ canonical path populated and returns it without re-running
 
 `scripts/fetch-binaries.sh` walks every
 `packages/registry/<pkg>/package.toml` that has a sibling `build.toml`
-with a `[binary]` block and
-calls `xtask build-deps --binaries-dir <repo>/binaries resolve
-<pkg>` once per declared arch. Packages without a `[binary]`
-block (kernel, userspace, source-only, and metadata-only entries)
-are skipped silently — those are local-build-only and the resolver's
-fall-through to source build covers them on demand.
+and calls `xtask build-deps --binaries-dir <repo>/binaries resolve
+<pkg>` once per declared arch. Packages without `build.toml` are skipped
+silently — those are local-build-only and the resolver's fall-through to
+source build covers them on demand.
+
+Consumers that need a bounded artifact surface can repeat `--package <name>`:
+
+```bash
+bash scripts/fetch-binaries.sh --fetch-only \
+  --package rootfs --package bash --package dash
+```
+
+With any `--package` flags, only those package roots are handed to the
+resolver, in first-requested order; duplicate flags are ignored. The resolver
+still traverses each root's declared dependency closure. Unknown packages,
+packages without a publishable `build.toml`, unsafe names, and a package that
+is simultaneously selected and listed in `WASM_POSIX_FETCH_SKIP_PKGS` fail
+before materialization. Omitting `--package` preserves the full-registry walk.
 
 The package workflows retain the same per-entry build shape but publish to
 different lifecycle states. `staging-build.yml` writes a per-PR staging tag;
@@ -1244,10 +1316,11 @@ library and program builds: the script reads the same
 **Cache layout**
 
 ```
-<cache_root>/sources/<name>-<version>-rev<N>-<shortsha>/
+<cache_root>/sources/<name>-<version>-rev<N>-<cache-key-sha>/
 ```
 
-No `<arch>` segment — sources are arch-agnostic by definition.
+`<cache-key-sha>` is the complete 64-character SHA-256. No `<arch>` segment —
+sources are arch-agnostic by definition.
 That is the visible difference from the `libs/` and `programs/`
 cache trees.
 
