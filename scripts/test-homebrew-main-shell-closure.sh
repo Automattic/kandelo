@@ -3,6 +3,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILDER="$REPO_ROOT/scripts/build-homebrew-main-shell-closure.sh"
+CHECKER="$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
+BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
+SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
+WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -27,6 +31,60 @@ expect_failure() {
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
+
+pull_paths="$(awk '
+  /^  pull_request:$/ { active = 1; next }
+  /^  push:$/ { active = 0 }
+  active && /^      - "/ { line = $0; sub(/^      - "/, "", line); sub(/"$/, "", line); print line }
+' "$WORKFLOW")"
+push_paths="$(awk '
+  /^  push:$/ { active = 1; next }
+  /^  workflow_dispatch:$/ { active = 0 }
+  active && /^      - "/ { line = $0; sub(/^      - "/, "", line); sub(/"$/, "", line); print line }
+' "$WORKFLOW")"
+[ "$pull_paths" = "$push_paths" ] ||
+  fail "Homebrew main-shell pull_request and push path filters must stay aligned"
+
+for required_path in \
+  ".github/actions/setup-nix/**" \
+  "MANIFEST" \
+  "apps/browser-demos/vite.config.ts" \
+  "crates/shared/**" \
+  "homebrew/main-shell*" \
+  "host/src/generated/abi.ts" \
+  "host/src/homebrew-vfs-*.ts" \
+  "host/src/vfs/**" \
+  "images/rootfs/**" \
+  "images/vfs/scripts/vfs-image-helpers.ts" \
+  "packages/registry/rootfs/package.toml" \
+  "packages/registry/shell/**" \
+  "scripts/dev-shell.sh" \
+  "scripts/fetch-binaries.sh" \
+  "scripts/homebrew-brewfile-selection.rb" \
+  "scripts/homebrew-checkout-public-tap.sh" \
+  "scripts/install-local-binary.sh" \
+  "scripts/resolve-binary.sh" \
+  "tools/mkrootfs/**" \
+  "web-libs/kandelo-session/src/shell-config.ts"
+do
+  grep -Fxq "$required_path" <<<"$pull_paths" ||
+    fail "Homebrew main-shell workflow does not watch authoritative input $required_path"
+done
+
+setup_node_line="$(grep -n 'uses: actions/setup-node@' "$WORKFLOW" | cut -d: -f1)"
+checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$WORKFLOW" | cut -d: -f1)"
+[ -n "$setup_node_line" ] && [ -n "$checker_line" ] &&
+  [ "$setup_node_line" -lt "$checker_line" ] ||
+  fail "pinned Node setup must precede the main-shell contract checker"
+
+for evidence_file in "$BUILDER" "$WORKFLOW"; do
+  grep -Fq '(.packages | length) == 38' "$evidence_file" ||
+    fail "$evidence_file does not require the exact 38-Formula closure"
+  grep -Fq '[.packages[].full_name] | sort' "$evidence_file" ||
+    fail "$evidence_file does not compare exact Formula closure identities"
+  grep -Fq 'formula_closure | sort' "$evidence_file" ||
+    fail "$evidence_file does not bind report identities to the migration lock"
+done
 
 for variable in \
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
@@ -76,36 +134,169 @@ jq --arg sha "$tap_sha" '.catalog.tap_commit = $sha' \
 expect_failure "tap metadata has the wrong repository identity" \
   "$BUILDER" --tap-root "$tap" --migration-lock "$lock"
 
-node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
+baseline_output="$(node "$CHECKER")"
+grep -Fq "32 registry roots and 38 Formulae" <<<"$baseline_output" ||
+  fail "main-shell checker does not report both exact closure counts"
+
+metadata="$TMP_ROOT/main-shell-metadata.json"
+jq '
+  def dependencies:
+    if . == "bash" then ["ncurses"]
+    elif . == "ncurses" then ["libcxx"]
+    elif . == "file-formula" then ["bzip2", "libmagic", "xz", "zlib"]
+    elif . == "m4" or . == "make" then ["dash"]
+    elif . == "diffutils" then ["coreutils", "ed"]
+    elif . == "tar" then ["dash", "gzip"]
+    elif . == "curl" then ["libcurl", "openssl", "zlib"]
+    elif . == "wget" then ["openssl", "zlib"]
+    elif . == "git" then
+      ["coreutils", "dash", "diffutils", "grep", "less", "libcurl", "openssl", "sed", "vim", "zlib"]
+    elif . == "zip" then ["unzip"]
+    elif . == "libmagic" then ["bzip2", "xz", "zlib"]
+    elif . == "libcurl" then ["openssl", "zlib"]
+    else []
+    end;
+  (
+    [.packages[].formula | {
+      name,
+      version: (if .revision == 0 then .version else "\(.version)_\(.revision)" end),
+      formula_revision: .revision,
+      bottle_rebuild
+    }] + [
+      {"name":"libcxx","version":"21.1.7_1","formula_revision":1,"bottle_rebuild":0},
+      {"name":"zlib","version":"1.3.1_4","formula_revision":4,"bottle_rebuild":1},
+      {"name":"libmagic","version":"5.45","formula_revision":0,"bottle_rebuild":0},
+      {"name":"ed","version":"1.22.5_1","formula_revision":1,"bottle_rebuild":0},
+      {"name":"openssl","version":"3.3.2_2","formula_revision":2,"bottle_rebuild":1},
+      {"name":"libcurl","version":"8.11.1_1","formula_revision":1,"bottle_rebuild":2}
+    ]
+  ) as $formulae |
+  {
+    schema: 1,
+    tap_repository,
+    tap_name,
+    packages: [$formulae[] | . as $formula | {
+      name: $formula.name,
+      full_name: ("kandelo-dev/tap-core/" + $formula.name),
+      version: $formula.version,
+      formula_revision: $formula.formula_revision,
+      bottle_rebuild: $formula.bottle_rebuild,
+      dependencies: [($formula.name | dependencies)[] | . as $dependency | {
+        name: $dependency,
+        full_name: ("kandelo-dev/tap-core/" + $dependency)
+      }]
+    }]
+  }
+' "$SOURCE_LOCK" >"$metadata"
+
+metadata_output="$(node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$metadata")"
+grep -Fq "32 registry roots and 38 Formulae" <<<"$metadata_output" ||
+  fail "main-shell checker did not validate the exact synthetic tap closure"
+
+jq 'del(.formula_closure)' "$SOURCE_LOCK" >"$lock"
+expect_failure "packages/formula_closure/substitutions must be arrays" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.formula_closure |= .[:-1]' "$SOURCE_LOCK" >"$lock"
+expect_failure "must contain exactly 38 closure Formulae" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.formula_closure[37] = .formula_closure[36]' "$SOURCE_LOCK" >"$lock"
+expect_failure "migration lock formula_closure contains duplicate" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.formula_closure[] | select(. == "kandelo-dev/tap-core/dash")) =
+  "kandelo-dev/tap-core/replacement-root"' "$SOURCE_LOCK" >"$lock"
+expect_failure "formula_closure omits registry-root Formulae" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.formula_closure[0] = "other/tap/dash"' "$SOURCE_LOCK" >"$lock"
+expect_failure "must be a canonical kandelo-dev/tap-core/<formula> identity" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '(.formula_closure[] | select(. == "kandelo-dev/tap-core/libmagic")) =
+  "kandelo-dev/tap-core/unexpected"' "$SOURCE_LOCK" >"$lock"
+expect_failure "tap metadata dependency closure does not match reviewed formula_closure" \
+  node "$CHECKER" "$BREWFILE" "$lock" "$metadata"
+
+jq '.packages |= map(select(.name != "libmagic"))' "$metadata" >"$TMP_ROOT/missing-dependency.json"
+expect_failure "missing dependency of file-formula Formula libmagic" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/missing-dependency.json"
+
+jq '(.packages[] | select(.name == "file-formula") | .dependencies) |=
+  map(select(.name != "libmagic"))' "$metadata" >"$TMP_ROOT/short-closure.json"
+expect_failure "resolves 37 main-shell Formulae" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/short-closure.json"
+
+jq '
+  (.packages[] | select(.name == "dash") | .dependencies) +=
+    [{"name":"unexpected","full_name":"kandelo-dev/tap-core/unexpected"}] |
+  .packages += [{
+    "name":"unexpected",
+    "full_name":"kandelo-dev/tap-core/unexpected",
+    "version":"1.0",
+    "formula_revision":0,
+    "bottle_rebuild":0,
+    "dependencies":[]
+  }]
+' "$metadata" >"$TMP_ROOT/long-closure.json"
+expect_failure "resolves 39 main-shell Formulae" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/long-closure.json"
+
+jq '
+  (.packages[] | select(.name == "file-formula") | .dependencies[] |
+    select(.name == "libmagic")) =
+      {"name":"unexpected","full_name":"kandelo-dev/tap-core/unexpected"} |
+  .packages += [{
+    "name":"unexpected",
+    "full_name":"kandelo-dev/tap-core/unexpected",
+    "version":"1.0",
+    "formula_revision":0,
+    "bottle_rebuild":0,
+    "dependencies":[]
+  }]
+' "$metadata" >"$TMP_ROOT/wrong-closure.json"
+expect_failure "tap metadata dependency closure does not match reviewed formula_closure" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/wrong-closure.json"
+
+jq '(.packages[] | select(.name == "libcxx") | .dependencies) =
+  [{"name":"ncurses","full_name":"kandelo-dev/tap-core/ncurses"}]' \
+  "$metadata" >"$TMP_ROOT/cyclic-closure.json"
+expect_failure "tap metadata dependency cycle: ncurses -> libcxx -> ncurses" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/cyclic-closure.json"
+
+jq '.packages += [.packages[0]]' "$metadata" >"$TMP_ROOT/duplicate-formula.json"
+expect_failure "tap metadata contains duplicate Formula" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/duplicate-formula.json"
+
+jq '(.packages[] | select(.name == "bash") | .dependencies[0].full_name) =
+  "other/tap/ncurses"' "$metadata" >"$TMP_ROOT/cross-tap-dependency.json"
+expect_failure "is not a canonical same-tap dependency" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/cross-tap-dependency.json"
 
 jq 'del(.catalog)' \
-  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+  "$SOURCE_LOCK" >"$lock"
 expect_failure "must pin one exact catalog commit" \
-  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
-  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+  node "$CHECKER" "$BREWFILE" "$lock"
 
 jq '.catalog.tap_commit = "main"' \
-  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+  "$SOURCE_LOCK" >"$lock"
 expect_failure "must pin one exact catalog commit" \
-  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
-  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+  node "$CHECKER" "$BREWFILE" "$lock"
 
 jq 'del(.reviewed_substitutions[-1])' \
-  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+  "$SOURCE_LOCK" >"$lock"
 expect_failure "reviewed migration substitutions are incomplete or stale" \
-  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
-  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+  node "$CHECKER" "$BREWFILE" "$lock"
 
 jq '.consumer.max_vfs_byte_length = 268435456' \
-  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+  "$SOURCE_LOCK" >"$lock"
 expect_failure "must declare the 512 MiB consumer profile" \
-  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
-  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+  node "$CHECKER" "$BREWFILE" "$lock"
 
 jq '.compatibility.link_conflict_owners[0].package = "kandelo-dev/tap-core/not-locked"' \
-  "$REPO_ROOT/homebrew/main-shell-migration-lock.json" >"$lock"
+  "$SOURCE_LOCK" >"$lock"
 expect_failure "compatibility.link_conflict_owners[0] is invalid" \
-  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
-  "$REPO_ROOT/homebrew/main-shell.Brewfile" "$lock"
+  node "$CHECKER" "$BREWFILE" "$lock"
 
 echo "test-homebrew-main-shell-closure: ok"

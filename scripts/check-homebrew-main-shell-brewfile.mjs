@@ -13,6 +13,9 @@ const metadataPath = process.argv[4] ? resolve(process.argv[4]) : undefined;
 const tapRepository = "kandelo-dev/homebrew-tap-core";
 const tapName = "kandelo-dev/tap-core";
 const gitShaPattern = /^[0-9a-f]{40}$/;
+const formulaIdentityPattern = /^kandelo-dev\/tap-core\/[a-z0-9][a-z0-9._-]*$/;
+const expectedRootCount = 32;
+const expectedClosureCount = 38;
 
 const rootfsPackages = readDependencies(
   `${repoRoot}/packages/registry/rootfs/package.toml`,
@@ -45,8 +48,9 @@ validateCompatibilityPolicy(lock);
 if (metadataPath !== undefined) validateTapMetadata(lock, metadataPath);
 
 console.log(
-  `Homebrew main-shell contract: ${actualFormulae.length} registry roots match ` +
-    `the reviewed migration lock, Brewfile, and catalog ${lock.catalog.tap_commit}.`,
+  `Homebrew main-shell contract: ${actualFormulae.length} registry roots and ` +
+    `${lock.formula_closure.length} Formulae match the reviewed migration lock, ` +
+    `Brewfile, and catalog ${lock.catalog.tap_commit}.`,
 );
 
 function readMigrationLock(path) {
@@ -67,8 +71,14 @@ function readMigrationLock(path) {
   ) {
     throw new Error(`main-shell migration lock must pin one exact catalog commit: ${path}`);
   }
-  if (!Array.isArray(value.packages) || !Array.isArray(value.reviewed_substitutions)) {
-    throw new Error(`main-shell migration lock packages/substitutions must be arrays: ${path}`);
+  if (
+    !Array.isArray(value.packages) ||
+    !Array.isArray(value.formula_closure) ||
+    !Array.isArray(value.reviewed_substitutions)
+  ) {
+    throw new Error(
+      `main-shell migration lock packages/formula_closure/substitutions must be arrays: ${path}`,
+    );
   }
   if (
     !isRecord(value.consumer) ||
@@ -97,7 +107,30 @@ function readMigrationLock(path) {
       },
     };
   });
-  return { ...value, packages };
+  if (packages.length !== expectedRootCount) {
+    throw new Error(
+      `main-shell migration lock must contain exactly ${expectedRootCount} registry roots: ${path}`,
+    );
+  }
+  const formulaClosure = value.formula_closure.map((entry, index) =>
+    readFormulaIdentity(entry, `formula_closure[${index}]`)
+  );
+  if (formulaClosure.length !== expectedClosureCount) {
+    throw new Error(
+      `main-shell migration lock must contain exactly ${expectedClosureCount} closure Formulae: ${path}`,
+    );
+  }
+  assertUnique(formulaClosure, "migration lock formula_closure");
+  const missingRoots = packages
+    .map(({ formula }) => `${tapName}/${formula.name}`)
+    .filter((identity) => !formulaClosure.includes(identity));
+  if (missingRoots.length > 0) {
+    throw new Error(
+      `main-shell migration lock formula_closure omits registry-root Formulae: ` +
+        missingRoots.join(", "),
+    );
+  }
+  return { ...value, packages, formula_closure: formulaClosure };
 }
 
 function readIdentity(value, label) {
@@ -110,6 +143,16 @@ function readIdentity(value, label) {
     throw new Error(`${label} must contain a valid name and non-empty version`);
   }
   return { name: value.name, version: value.version };
+}
+
+function readFormulaIdentity(value, label) {
+  if (
+    typeof value !== "string" ||
+    !formulaIdentityPattern.test(value)
+  ) {
+    throw new Error(`${label} must be a canonical ${tapName}/<formula> identity`);
+  }
+  return value;
 }
 
 function validateReviewedSubstitutions(lock) {
@@ -164,9 +207,7 @@ function validateCompatibilityPolicy(lock) {
     throw new Error("main-shell migration compatibility policy is invalid");
   }
 
-  const lockedPackages = new Set(
-    lock.packages.map(({ formula }) => `${tapName}/${formula.name}`),
-  );
+  const lockedPackages = new Set(lock.formula_closure);
   const conflictTargets = new Set();
   for (const [index, entry] of compatibility.link_conflict_owners.entries()) {
     if (
@@ -210,13 +251,21 @@ function validateTapMetadata(lock, path) {
   const metadata = JSON.parse(readFileSync(path, "utf8"));
   if (
     !isRecord(metadata) ||
+    metadata.schema !== 1 ||
     metadata.tap_repository !== tapRepository ||
     metadata.tap_name !== tapName ||
     !Array.isArray(metadata.packages)
   ) {
     throw new Error(`tap metadata has the wrong identity or package shape: ${path}`);
   }
-  const byName = new Map(metadata.packages.map((pkg) => [pkg?.name, pkg]));
+  const byName = new Map();
+  for (const [index, value] of metadata.packages.entries()) {
+    const pkg = readTapMetadataPackage(value, `metadata.packages[${index}]`);
+    if (byName.has(pkg.name)) {
+      throw new Error(`tap metadata contains duplicate Formula ${pkg.name}`);
+    }
+    byName.set(pkg.name, pkg);
+  }
   for (const { formula } of lock.packages) {
     const pkg = byName.get(formula.name);
     if (!isRecord(pkg)) {
@@ -237,6 +286,81 @@ function validateTapMetadata(lock, path) {
       );
     }
   }
+  const actualClosure = resolveTapFormulaClosure(
+    lock.packages.map(({ formula }) => formula.name),
+    byName,
+  );
+  if (actualClosure.length !== expectedClosureCount) {
+    throw new Error(
+      `tap metadata resolves ${actualClosure.length} main-shell Formulae; ` +
+        `the reviewed closure requires ${expectedClosureCount}`,
+    );
+  }
+  assertExactSet(
+    actualClosure,
+    lock.formula_closure,
+    "tap metadata dependency closure does not match reviewed formula_closure",
+    (value) => value,
+  );
+}
+
+function readTapMetadataPackage(value, label) {
+  if (
+    !isRecord(value) ||
+    typeof value.name !== "string" ||
+    !/^[a-z0-9][a-z0-9._-]*$/.test(value.name) ||
+    value.full_name !== `${tapName}/${value.name}` ||
+    typeof value.version !== "string" ||
+    !Number.isInteger(value.formula_revision) ||
+    !Number.isInteger(value.bottle_rebuild) ||
+    !Array.isArray(value.dependencies)
+  ) {
+    throw new Error(`${label} is not a canonical Formula metadata record`);
+  }
+  const dependencies = value.dependencies.map((dependency, index) => {
+    const dependencyLabel = `${label}.dependencies[${index}]`;
+    if (
+      !isRecord(dependency) ||
+      typeof dependency.name !== "string" ||
+      !/^[a-z0-9][a-z0-9._-]*$/.test(dependency.name) ||
+      (dependency.full_name !== undefined &&
+        dependency.full_name !== `${tapName}/${dependency.name}`)
+    ) {
+      throw new Error(`${dependencyLabel} is not a canonical same-tap dependency`);
+    }
+    return dependency.name;
+  });
+  assertUnique(dependencies, `${label}.dependencies`);
+  return { ...value, dependencies };
+}
+
+function resolveTapFormulaClosure(rootNames, byName) {
+  const ordered = [];
+  const state = new Map();
+  const stack = [];
+
+  function visit(name, requiredBy) {
+    if (state.get(name) === "done") return;
+    if (state.get(name) === "visiting") {
+      const cycleStart = stack.indexOf(name);
+      const cycle = [...stack.slice(cycleStart < 0 ? 0 : cycleStart), name];
+      throw new Error(`tap metadata dependency cycle: ${cycle.join(" -> ")}`);
+    }
+    const pkg = byName.get(name);
+    if (pkg === undefined) {
+      const context = requiredBy === undefined ? "registry root" : `dependency of ${requiredBy}`;
+      throw new Error(`tap metadata is missing ${context} Formula ${name}`);
+    }
+    state.set(name, "visiting");
+    stack.push(name);
+    for (const dependency of pkg.dependencies) visit(dependency, name);
+    stack.pop();
+    state.set(name, "done");
+    ordered.push(`${tapName}/${name}`);
+  }
+
+  for (const name of rootNames) visit(name);
+  return ordered;
 }
 
 function readDependencies(path) {
@@ -287,6 +411,18 @@ function assertExactSequence(actual, expected, message, render) {
   throw new Error(
     `${message}\n  missing: ${missing.join(", ") || "(none)"}` +
       `\n  extra: ${extra.join(", ") || "(none)"}\n  ordering must also match`,
+  );
+}
+
+function assertExactSet(actual, expected, message, render) {
+  const actualValues = actual.map(render).sort();
+  const expectedValues = expected.map(render).sort();
+  if (JSON.stringify(actualValues) === JSON.stringify(expectedValues)) return;
+  const missing = expectedValues.filter((value) => !actualValues.includes(value));
+  const extra = actualValues.filter((value) => !expectedValues.includes(value));
+  throw new Error(
+    `${message}\n  missing: ${missing.join(", ") || "(none)"}` +
+      `\n  extra: ${extra.join(", ") || "(none)"}`,
   );
 }
 

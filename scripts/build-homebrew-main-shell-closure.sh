@@ -227,7 +227,10 @@ jq -e \
   .schema == 1 and
   .selection.kind == "brewfile" and
   .selection.requested_packages == $selection[0].packages and
+  (.selection.requested_packages | length) == 32 and
   (($selection[0].packages - [.packages[].name]) | length == 0) and
+  (.packages | length) == 38 and
+  (([.packages[].full_name] | sort) == ($lock[0].formula_closure | sort)) and
   (.metadata.tap_repository == $tap[0].tap_repository) and
   (.metadata.tap_name == $tap[0].tap_name) and
   (.metadata.tap_commit == $tap[0].tap_commit) and

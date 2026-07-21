@@ -1468,8 +1468,13 @@ when the Brewfile actually includes that declared shell.
 current rootfs plus browser shell/demo package closure.
 `homebrew/main-shell-migration-lock.json` maps every exact registry
 `name@version` to its Formula identity, version, revision, and bottle rebuild;
-it also records every reviewed identity or version substitution. Keep the lock
-and Brewfile in the same order as `packages/registry/rootfs/package.toml`
+it also records every reviewed identity or version substitution. Its
+`formula_closure` is the separately reviewed distribution contract: all 32
+direct roots plus the six transitive Formula identities, exactly 38 unique
+Formulae. The checker derives the closure again from the pinned tap metadata,
+and both the composer and CI require the report to contain exactly that set;
+root inclusion alone is not sufficient evidence. Keep the lock and Brewfile
+in the same order as `packages/registry/rootfs/package.toml`
 followed by the non-rootfs dependencies in
 `packages/registry/shell/package.toml`. The checker rejects missing, reordered,
 or stale mappings and substitutions. In particular, the registry's `file`

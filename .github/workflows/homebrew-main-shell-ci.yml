@@ -3,36 +3,100 @@ name: Homebrew main-shell closure
 on:
   pull_request:
     paths:
+      - ".github/actions/setup-nix/**"
       - ".github/workflows/homebrew-main-shell-ci.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MANIFEST"
+      - "apps/browser-demos/package-lock.json"
+      - "apps/browser-demos/package.json"
       - "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts"
       - "apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
+      - "apps/browser-demos/vite.config.ts"
+      - "crates/kernel/**"
+      - "crates/shared/**"
+      - "flake.lock"
+      - "flake.nix"
       - "homebrew/main-shell*"
+      - "host/package-lock.json"
+      - "host/package.json"
+      - "host/src/binary-resolver.ts"
+      - "host/src/generated/abi.ts"
       - "host/src/homebrew-vfs-*.ts"
+      - "host/src/node-kernel-host.ts"
+      - "host/src/vfs/**"
       - "host/test/homebrew-vfs-*.test.ts"
       - "host/test/vfs-image.test.ts"
+      - "images/rootfs/**"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
+      - "images/vfs/scripts/vfs-image-helpers.ts"
+      - "package-lock.json"
+      - "package.json"
       - "packages/registry/rootfs/package.toml"
       - "packages/registry/shell/**"
+      - "rust-toolchain.toml"
       - "scripts/build-homebrew-main-shell-closure.sh"
       - "scripts/check-homebrew-main-shell-brewfile.mjs"
+      - "scripts/dev-shell.sh"
+      - "scripts/fetch-binaries.sh"
+      - "scripts/homebrew-brewfile-selection.rb"
+      - "scripts/homebrew-checkout-public-tap.sh"
       - "scripts/homebrew-main-shell-node-smoke.ts"
       - "scripts/homebrew-vfs-acceptance-smoke.ts"
+      - "scripts/install-local-binary.sh"
+      - "scripts/resolve-binary.sh"
       - "scripts/test-homebrew-main-shell-closure.sh"
+      - "tools/mkrootfs/**"
+      - "web-libs/kandelo-session/src/shell-config.ts"
       - "web-libs/kandelo-session/src/vfs-capacity.ts"
   push:
     branches: [main]
     paths:
+      - ".github/actions/setup-nix/**"
       - ".github/workflows/homebrew-main-shell-ci.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MANIFEST"
+      - "apps/browser-demos/package-lock.json"
+      - "apps/browser-demos/package.json"
       - "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts"
       - "apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
+      - "apps/browser-demos/vite.config.ts"
+      - "crates/kernel/**"
+      - "crates/shared/**"
+      - "flake.lock"
+      - "flake.nix"
       - "homebrew/main-shell*"
+      - "host/package-lock.json"
+      - "host/package.json"
+      - "host/src/binary-resolver.ts"
+      - "host/src/generated/abi.ts"
       - "host/src/homebrew-vfs-*.ts"
+      - "host/src/node-kernel-host.ts"
+      - "host/src/vfs/**"
+      - "host/test/homebrew-vfs-*.test.ts"
+      - "host/test/vfs-image.test.ts"
+      - "images/rootfs/**"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
+      - "images/vfs/scripts/vfs-image-helpers.ts"
+      - "package-lock.json"
+      - "package.json"
       - "packages/registry/rootfs/package.toml"
       - "packages/registry/shell/**"
+      - "rust-toolchain.toml"
       - "scripts/build-homebrew-main-shell-closure.sh"
       - "scripts/check-homebrew-main-shell-brewfile.mjs"
+      - "scripts/dev-shell.sh"
+      - "scripts/fetch-binaries.sh"
+      - "scripts/homebrew-brewfile-selection.rb"
+      - "scripts/homebrew-checkout-public-tap.sh"
       - "scripts/homebrew-main-shell-node-smoke.ts"
+      - "scripts/homebrew-vfs-acceptance-smoke.ts"
+      - "scripts/install-local-binary.sh"
+      - "scripts/resolve-binary.sh"
+      - "scripts/test-homebrew-main-shell-closure.sh"
+      - "tools/mkrootfs/**"
+      - "web-libs/kandelo-session/src/shell-config.ts"
       - "web-libs/kandelo-session/src/vfs-capacity.ts"
   workflow_dispatch:
 
@@ -55,6 +119,16 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/browser-demos/package-lock.json
+            host/package-lock.json
+            tools/mkrootfs/package-lock.json
+
       - name: Validate and expose the exact catalog lock
         id: catalog
         run: |
@@ -76,16 +150,6 @@ jobs:
             bash scripts/homebrew-checkout-public-tap.sh \
               kandelo-dev/homebrew-tap-core "$TAP_COMMIT" \
               "$GITHUB_WORKSPACE/dependency-taps/core"
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            apps/browser-demos/package-lock.json
-            host/package-lock.json
-            tools/mkrootfs/package-lock.json
 
       - uses: ./.github/actions/setup-nix
 
@@ -150,10 +214,13 @@ jobs:
           [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$image_sha" >> "$GITHUB_OUTPUT"
           jq -e \
+            --slurpfile lock homebrew/main-shell-migration-lock.json \
             --arg catalog "$TAP_COMMIT" '
               .catalog.checkout_commit == $catalog and
               (.selection.requested_packages | length) == 32 and
               ((.selection.requested_packages - [.packages[].name]) | length) == 0 and
+              (.packages | length) == 38 and
+              (([.packages[].full_name] | sort) == ($lock[0].formula_closure | sort)) and
               ([.packages[].source_status] | all(. == "success")) and
               ([.packages[].metadata_status] | all(. == "success")) and
               .default_shell.path == "/home/linuxbrew/.linuxbrew/bin/bash"
