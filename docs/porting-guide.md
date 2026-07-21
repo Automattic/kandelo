@@ -94,30 +94,49 @@ A porter producing a lazy-archive-backed program creates three things:
 
 1. **`packages/registry/<program>/build-<program>.sh`** — cross-compiles the wasm binary into `packages/registry/<program>/bin/<program>.wasm`.
 2. **`packages/registry/<program>/bundle-runtime.sh`** (only if the source tree already has runtime files that need trimming) — copies the minimal runtime tree into `packages/registry/<program>/runtime/`.
-3. **`images/vfs/scripts/build-<program>-zip.sh`** — stages `bin/<program>` and `share/<program>/…` into `apps/browser-demos/public/<program>.zip`. Paths inside the archive are relative (e.g. `bin/vim`, `share/vim/vim91/syntax/c.vim`), and the mount prefix chosen at registration time (usually `/usr/`) turns them into absolute VFS paths.
+3. **A declared `<program>-browser-bundle` package output** — its build script stages `bin/<program>` and `share/<program>/…` into `<program>.zip`, and its `package.toml` declares that ZIP as the output. Paths inside the archive are relative (e.g. `bin/vim`, `share/vim/vim91/syntax/c.vim`), and the mount prefix chosen at registration time (usually `/usr/`) turns them into absolute VFS paths.
+
+The VFS-image package depends on that bundle package and resolves its exact
+`programs/wasm32/<program>.zip` output. It must not run the ZIP builder again:
+the package output is the one distribution identity that both the image
+composer and the eventual Node/browser fetch consume.
+
+Bundle builders must create the archive through
+`images/vfs/scripts/create-deterministic-zip.sh`. The helper gives independent
+package and image builds the same byte identity by sorting entry paths,
+normalizing distribution modes and ZIP-compatible timestamps, and stripping
+host-specific extra fields. Both the bundle wrapper and every helper that
+determines its bytes belong in the bundle package's `build.toml` `inputs`.
 
 Programs whose runtime files are small enough to version in-tree (NetHack's `nhdat` after DLB packing, for instance) can skip step 2 and have the zip script pull directly from the build's `out/` directory.
 
 ### Registration
 
-`images/vfs/scripts/build-shell-vfs-image.ts` is the reference example:
+`images/vfs/scripts/shell-lazy-archives.ts` and the shell package are the
+reference example:
 
 ```typescript
-import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
-
-function populateVimArchive(fs: MemoryFileSystem): number {
-  const zipBytes = readFileSync("apps/browser-demos/public/vim.zip");
-  const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
-  const group = fs.registerLazyArchiveFromEntries("vim.zip", entries, "/usr/");
-  return group.entries.size;
-}
+const archive = registerDeclaredShellLazyArchive(
+  fs,
+  SHELL_LAZY_ARCHIVE_SPECS[0],
+  resolveVfsArtifact,
+);
 ```
 
-The call creates `/usr/bin/vim` and `/usr/share/vim/vim91/...` as stubs inside the shell VFS. The Kandelo UI does **not** need a matching `registerLazyFiles` entry for the binary - the stub from the archive is enough.
+The call resolves `vim-browser-bundle`'s declared `vim.zip`, reads those bytes
+once for central-directory indexing and hashing, and creates `/usr/bin/vim`
+and `/usr/share/vim/vim91/...` as stubs inside the shell VFS. The Kandelo UI
+does **not** need a matching `registerLazyFiles` entry for the binary - the
+stub from the archive is enough.
 
 ### When you also want `/bin/<program>` symlinks
 
-Create them in the VFS image builder (see `populateExtendedSymlinks` in `build-shell-vfs-image.ts`) — not inside the archive. Symlinks are a VFS concern, not a packaging concern.
+Create image-level aliases in the VFS image builder (see
+`populateExtendedSymlinks` in `build-shell-vfs-image.ts`), not inside the
+archive. Package-owned links that are part of a program's runtime may remain
+inside its archive; the deterministic ZIP helper preserves them and the
+registrar validates every member path and link target before adding anything
+to the VFS.
 
 ### Reference implementation
 
@@ -125,8 +144,9 @@ Vim:
 
 - `packages/registry/vim/build-vim.sh` — cross build.
 - `packages/registry/vim/bundle-runtime.sh` — minimal runtime tree.
-- `images/vfs/scripts/build-vim-zip.sh` — stage + zip.
-- `images/vfs/scripts/build-shell-vfs-image.ts` — `populateVimArchive()`.
+- `packages/registry/vim-browser-bundle/` — declared `vim.zip` package output.
+- `images/vfs/scripts/shell-lazy-archives.ts` — resolve, validate, index, and hash the exact package output.
+- `packages/registry/shell/` — direct consumer of the bundle dependency.
 - `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` - rewrites lazy archive URLs when loading image-backed gallery entries.
 
 Follow the same layout for new ports; reviewers will expect it.

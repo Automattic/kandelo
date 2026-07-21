@@ -152,6 +152,111 @@ const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
 
+interface PlannedLazyArchiveEntry {
+  entry: ZipEntry;
+  archivePath: string;
+  vfsPath: string;
+}
+
+function normalizeLazyArchiveMountPrefix(mountPrefix: string): string {
+  if (
+    !mountPrefix.startsWith("/") ||
+    mountPrefix.includes("\0") ||
+    mountPrefix.includes("\\")
+  ) {
+    throw new Error(
+      `Lazy archive mount prefix must be an absolute POSIX path: ${JSON.stringify(mountPrefix)}`,
+    );
+  }
+  const normalized = mountPrefix.replace(/\/+$/, "");
+  if (normalized === "") return normalized;
+  const segments = normalized.slice(1).split("/");
+  if (
+    segments.some(
+      (segment) => segment === "" || segment === "." || segment === "..",
+    )
+  ) {
+    throw new Error(
+      `Lazy archive mount prefix is not canonical: ${JSON.stringify(mountPrefix)}`,
+    );
+  }
+  return normalized;
+}
+
+function planLazyArchiveEntries(
+  url: string,
+  zipEntries: ZipEntry[],
+  mountPrefix: string,
+  symlinkTargets?: Map<string, string>,
+): PlannedLazyArchiveEntry[] {
+  const normalizedPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
+  const seen = new Map<string, ZipEntry>();
+  const planned = zipEntries.map((entry): PlannedLazyArchiveEntry => {
+    const member = entry.fileName;
+    const context = `Lazy archive ${JSON.stringify(url)} member ${JSON.stringify(member)}`;
+    if (member.length === 0) {
+      throw new Error(`${context} has an empty path`);
+    }
+    if (member.includes("\0")) {
+      throw new Error(`${context} contains a NUL byte`);
+    }
+    if (member.includes("\\")) {
+      throw new Error(`${context} contains a backslash`);
+    }
+    if (member.startsWith("/") || /^[A-Za-z]:\//.test(member)) {
+      throw new Error(`${context} must be relative, not absolute`);
+    }
+    if (entry.isDirectory && entry.isSymlink) {
+      throw new Error(`${context} has conflicting directory and symlink types`);
+    }
+    if (entry.isDirectory !== member.endsWith("/")) {
+      throw new Error(`${context} has inconsistent directory metadata`);
+    }
+
+    const archivePath = entry.isDirectory ? member.slice(0, -1) : member;
+    const segments = archivePath.split("/");
+    if (
+      archivePath.length === 0 ||
+      segments.some(
+        (segment) => segment === "" || segment === "." || segment === "..",
+      )
+    ) {
+      throw new Error(
+        `${context} is not a canonical relative POSIX path`,
+      );
+    }
+    if (seen.has(archivePath)) {
+      throw new Error(
+        `${context} collides with another member at ${JSON.stringify(archivePath)}`,
+      );
+    }
+    if (entry.isSymlink && !symlinkTargets?.has(member)) {
+      throw new Error(`Lazy archive symlink target was not provided: ${member}`);
+    }
+    seen.set(archivePath, entry);
+    return {
+      entry,
+      archivePath,
+      vfsPath: `${normalizedPrefix}/${archivePath}`,
+    };
+  });
+
+  for (const { archivePath } of planned) {
+    const segments = archivePath.split("/");
+    for (let length = 1; length < segments.length; length++) {
+      const ancestorPath = segments.slice(0, length).join("/");
+      const ancestor = seen.get(ancestorPath);
+      if (ancestor && !ancestor.isDirectory) {
+        throw new Error(
+          `Lazy archive member ${JSON.stringify(archivePath)} descends ` +
+            `through non-directory ${JSON.stringify(ancestorPath)}`,
+        );
+      }
+    }
+  }
+  return planned;
+}
+
 function cloneMetadata(
   metadata: VfsImageMetadata | null,
 ): VfsImageMetadata | null {
@@ -894,6 +999,16 @@ export class MemoryFileSystem implements FileSystemBackend {
     mountPrefix: string,
     symlinkTargets?: Map<string, string>,
   ): LazyArchiveGroup {
+    // Validate and plan the entire archive before creating even one directory,
+    // stub, symlink, inode mapping, or group. SharedFS resolves `..`, so
+    // validating only while registering would allow an archive member to
+    // escape its mount prefix or leave partial state after a later failure.
+    const plannedEntries = planLazyArchiveEntries(
+      url,
+      zipEntries,
+      mountPrefix,
+      symlinkTargets,
+    );
     const group: LazyArchiveGroup = {
       url,
       mountPrefix,
@@ -901,11 +1016,9 @@ export class MemoryFileSystem implements FileSystemBackend {
       entries: new Map(),
     };
 
-    const normalized = mountPrefix.replace(/\/+$/, "");
-    for (const ze of zipEntries) {
+    for (const { entry: ze, vfsPath } of plannedEntries) {
       if (ze.isDirectory) continue;
 
-      const vfsPath = normalized + "/" + ze.fileName;
       const parts = vfsPath.split("/").filter(Boolean);
       let current = "";
       for (let i = 0; i < parts.length - 1; i++) {
@@ -918,12 +1031,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
 
       if (ze.isSymlink) {
-        if (!symlinkTargets?.has(ze.fileName)) {
-          throw new Error(
-            `Lazy archive symlink target was not provided: ${ze.fileName}`,
-          );
-        }
-        const target = symlinkTargets.get(ze.fileName)!;
+        const target = symlinkTargets!.get(ze.fileName)!;
         this.fs.symlink(target, vfsPath);
         const st = this.fs.lstat(vfsPath);
         const entry: LazyArchiveFileEntry = {

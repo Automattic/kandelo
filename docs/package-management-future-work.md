@@ -53,12 +53,13 @@ The pattern only works for `.zip` because per-entry deflate gives
 random access; `.tar.zst` is a monolithic compressed stream with no
 per-entry seek.
 
-**Today's workaround** (acceptable for now): the browser VFS build repacks
-a separate `vim.zip` via `images/vfs/scripts/build-vim-zip.sh`
-that includes vim.wasm + the runtime tree. The release ships
-`vim-9.1.0900-...tar.zst` containing only `vim.wasm`. Two parallel
-formats coexist; nothing in the release is consumed directly by
-the lazy-mount VFS.
+**Today's implementation:** `vim-browser-bundle` declares `vim.zip` as a
+package output, alongside the ordinary `vim` package that ships `vim.wasm` and
+its runtime inputs. The shell image depends on the bundle and consumes its
+exact resolver output; it does not repack a second ZIP during image assembly.
+The package system still wraps the declared ZIP output in its normal
+`.tar.zst` transport archive, so two formats coexist, but the resolver exposes
+the immutable inner ZIP directly to both the VFS composer and browser assets.
 
 **Future work — two options:**
 

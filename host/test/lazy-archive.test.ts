@@ -322,6 +322,114 @@ describe("Lazy archive group registration", () => {
     expect(() => mfs.stat("/bin/tool")).toThrow();
   });
 
+  it("rejects regular-file traversal before mutating the VFS", () => {
+    const mfs = createMemfs();
+    const template = makeFakeEntries()[0];
+    const entries: ZipEntry[] = [
+      {
+        ...template,
+        fileName: "safe/first.txt",
+        fileNameBytes: new TextEncoder().encode("safe/first.txt"),
+      },
+      {
+        ...template,
+        fileName: "../escaped.txt",
+        fileNameBytes: new TextEncoder().encode("../escaped.txt"),
+      },
+    ];
+
+    expect(() =>
+      mfs.registerLazyArchiveFromEntries(
+        "http://example.com/traversal.zip",
+        entries,
+        "/sandbox",
+      ),
+    ).toThrow(/member "\.\.\/escaped\.txt" is not a canonical relative POSIX path/);
+    expect(() => mfs.stat("/sandbox")).toThrow();
+    expect(() => mfs.stat("/escaped.txt")).toThrow();
+    expect(mfs.exportLazyArchiveEntries()).toEqual([]);
+  });
+
+  it("rejects symlink traversal before mutating the VFS", () => {
+    const mfs = createMemfs();
+    const template = makeFakeEntries()[0];
+    const entries: ZipEntry[] = [
+      {
+        ...template,
+        fileName: "safe/first.txt",
+        fileNameBytes: new TextEncoder().encode("safe/first.txt"),
+      },
+      {
+        ...template,
+        fileName: "../escaped-link",
+        fileNameBytes: new TextEncoder().encode("../escaped-link"),
+        mode: 0o120777,
+        isSymlink: true,
+      },
+    ];
+    const symlinkTargets = new Map([["../escaped-link", "target"]]);
+
+    expect(() =>
+      mfs.registerLazyArchiveFromEntries(
+        "http://example.com/symlink-traversal.zip",
+        entries,
+        "/sandbox",
+        symlinkTargets,
+      ),
+    ).toThrow(/member "\.\.\/escaped-link" is not a canonical relative POSIX path/);
+    expect(() => mfs.stat("/sandbox")).toThrow();
+    expect(() => mfs.lstat("/escaped-link")).toThrow();
+    expect(mfs.exportLazyArchiveEntries()).toEqual([]);
+  });
+
+  it.each([
+    {
+      label: "an absolute member",
+      names: ["/absolute.txt"],
+      error: /must be relative, not absolute/,
+    },
+    {
+      label: "a backslash member",
+      names: ["bad\\name.txt"],
+      error: /contains a backslash/,
+    },
+    {
+      label: "an empty path component",
+      names: ["bad//name.txt"],
+      error: /not a canonical relative POSIX path/,
+    },
+    {
+      label: "duplicate members",
+      names: ["duplicate.txt", "duplicate.txt"],
+      error: /collides with another member/,
+    },
+    {
+      label: "a file used as an ancestor",
+      names: ["parent", "parent/child.txt"],
+      error: /descends through non-directory "parent"/,
+    },
+  ])("rejects $label before mutating the VFS", ({ names, error }) => {
+    const mfs = createMemfs();
+    const template = makeFakeEntries()[0];
+    const entries = names.map(
+      (fileName): ZipEntry => ({
+        ...template,
+        fileName,
+        fileNameBytes: new TextEncoder().encode(fileName),
+      }),
+    );
+
+    expect(() =>
+      mfs.registerLazyArchiveFromEntries(
+        "http://example.com/invalid.zip",
+        entries,
+        "/sandbox",
+      ),
+    ).toThrow(error);
+    expect(() => mfs.stat("/sandbox")).toThrow();
+    expect(mfs.exportLazyArchiveEntries()).toEqual([]);
+  });
+
   it("handles symlink entries with known targets", () => {
     const mfs = createMemfs();
     const entries: ZipEntry[] = [

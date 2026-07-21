@@ -2,10 +2,11 @@ script_path = "packages/registry/nethack-browser-bundle/build-nethack-browser-bu
 inputs = [
   "packages/registry/nethack-browser-bundle/build-nethack-browser-bundle.sh",
   "images/vfs/scripts/build-nethack-zip.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "c46eaaffa6721192983ad1f4e8ec2f763b5043c1"
-revision    = 3
+revision    = 4
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

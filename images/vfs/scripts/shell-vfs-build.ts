@@ -16,7 +16,6 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
   resolveBinary,
   tryResolveBinary,
@@ -27,6 +26,10 @@ import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
+import {
+  registerDeclaredShellLazyArchive,
+  SHELL_LAZY_ARCHIVE_SPECS,
+} from "./shell-lazy-archives";
 import {
   writeVfsFile,
   writeVfsBinary,
@@ -483,34 +486,18 @@ function populateMagic(fs: MemoryFileSystem): void {
 
 // ── Lazy archives ───────────────────────────────────────────────
 
-function resolveLazyArchivePath(programRel: string, legacyPublicRel: string): string | null {
-  const released = tryResolveBinary(programRel);
-  if (released) return released;
-  const legacy = join(findRepoRoot(), legacyPublicRel);
-  if (existsSync(legacy)) return legacy;
-  return null;
-}
-
 function populateVimArchive(fs: MemoryFileSystem): void {
-  const path = resolveLazyArchivePath("programs/vim.zip", "apps/browser-demos/public/vim.zip");
-  if (!path) {
-    throw new Error(
-      "vim.zip not found. Run: bash images/vfs/scripts/build-vim-zip.sh",
-    );
-  }
-  const zipBytes = readFileSync(path);
-  const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
-  fs.registerLazyArchiveFromEntries("vim.zip", entries, "/usr/");
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[0],
+    resolveVfsArtifact,
+  );
 }
 
 function populateNetHackArchive(fs: MemoryFileSystem): void {
-  const path = resolveLazyArchivePath("programs/nethack.zip", "apps/browser-demos/public/nethack.zip");
-  if (!path) {
-    throw new Error(
-      "nethack.zip not found. Run: bash images/vfs/scripts/build-nethack-zip.sh",
-    );
-  }
-  const zipBytes = readFileSync(path);
-  const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
-  fs.registerLazyArchiveFromEntries("nethack.zip", entries, "/usr/");
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[1],
+    resolveVfsArtifact,
+  );
 }
