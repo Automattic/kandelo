@@ -1,0 +1,12 @@
+[[helper_inputs]]
+name = "npm"
+owner = "node-vfs"
+disposition = "homebrew_resource_helper"
+registry_identity = false
+version = "10.9.2"
+source_url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
+sha256 = "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4"
+license_spdx = "Artistic-2.0"
+license_url = "https://github.com/npm/cli/blob/v10.9.2/LICENSE"
+helper_path = "packages/registry/npm/fetch-npm.sh"
+dist_behavior = "fetch-npm.sh verifies sha256, strips the registry package/ prefix into packages/registry/npm/dist, and node-vfs prunes npm man/ and docs while mounting the dist tree at /usr/local/lib/npm."

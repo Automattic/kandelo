@@ -1151,6 +1151,26 @@ standalone library or program artifacts. Typical cases:
 Source manifests are arch-agnostic and ABI-agnostic — they describe
 unpacked source trees, not built artifacts.
 
+During the Homebrew bridge, source/helper inputs that are consumed by one
+owning Formula or runtime tooling path must also be recorded in that owner's
+`packages/registry/<owner>/helper-inputs.toml` sidecar. These sidecars are not
+legacy resolver manifests. They preserve source URL, sha256, version, license,
+owner, disposition, and dist behavior for helpers that should not become
+standalone package identities.
+
+Current owner-local helper sidecars:
+
+- `packages/registry/mariadb/helper-inputs.toml` owns `pcre2-source` as the
+  MariaDB PCRE2 source resource/helper.
+- `packages/registry/node-vfs/helper-inputs.toml` owns the npm tarball and
+  `packages/registry/npm/fetch-npm.sh` dist behavior.
+- `packages/registry/spidermonkey/helper-inputs.toml` owns the shared
+  `node-compat` bootstrap as SpiderMonkey/Node-compatible runtime tooling data.
+
+Do not add these helpers to package sets as top-level packages. Keep legacy
+resolver dependency edges such as `mariadb -> pcre2-source` only while the
+registry bridge still needs them for source extraction.
+
 **Schema fields**
 
 Required:

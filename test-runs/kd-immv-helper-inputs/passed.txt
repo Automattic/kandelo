@@ -1,0 +1,20 @@
+git diff --check
+npx vitest run tests/package-system :: tests/package-system/browser-binary-dependencies.test.ts > requires a build.toml sidecar for every fetchable registry package
+npx vitest run tests/package-system :: tests/package-system/browser-binary-dependencies.test.ts > keeps helper inputs out of fetchable package identity discovery
+npx vitest run tests/package-system :: tests/package-system/browser-binary-dependencies.test.ts > backs every browser @binaries import with a fetchable package output
+npx vitest run tests/package-system :: tests/package-system/fetch-binaries-allow-stale.test.ts > walks every package with build.toml, once per declared arch
+npx vitest run tests/package-system :: tests/package-system/fetch-binaries-allow-stale.test.ts > --allow-stale resolves the same packages as the default (banner printed)
+npx vitest run tests/package-system :: tests/package-system/fetch-binaries-allow-stale.test.ts > --fetch-only passes the resolver source-build guard
+npx vitest run tests/package-system :: tests/package-system/fetch-binaries-allow-stale.test.ts > --allow-stale degrades per-package failures to warnings (exit 0)
+npx vitest run tests/package-system :: tests/package-system/fetch-binaries-allow-stale.test.ts > propagates a build-deps failure as a non-zero exit + stderr listing
+npx vitest run tests/package-system :: tests/package-system/fetch-binaries-allow-stale.test.ts > --help mentions the per-package walk
+npx vitest run tests/package-system :: tests/package-system/registry-helper-inputs.test.ts > models pcre2-source as a MariaDB-owned resource helper
+npx vitest run tests/package-system :: tests/package-system/registry-helper-inputs.test.ts > models npm as a node-vfs-owned resource helper with pinned dist behavior
+npx vitest run tests/package-system :: tests/package-system/registry-helper-inputs.test.ts > models node-compat as SpiderMonkey runtime tooling data
+npx vitest run tests/package-system :: tests/package-system/registry-helper-inputs.test.ts > excludes helper inputs from package set identities
+bash scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin --quiet -- build-deps parse pcre2-source
+bash scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin --quiet -- build-deps parse mariadb
+bash scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin --quiet -- build-deps parse node-vfs
+bash scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin --quiet -- build-deps parse spidermonkey
+bash scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin --quiet -- build-deps parse spidermonkey-node
+bash scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin --quiet -- build-deps parse node
