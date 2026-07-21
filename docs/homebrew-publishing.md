@@ -1950,6 +1950,25 @@ the layer descriptor is a durable input for that follow-up rather than a claim
 that Perl, Python, Erlang, or any other selected package is already available
 in the default shell. It also does not publish one VFS image per language.
 
+`homebrew/runtime-layer-policy.json` is the reviewed planning contract for the
+next consumer step. It names the canonical `shell` package-output receipt as
+the lower image and defines independent `python`, `ruby`, and `erlang` package
+roots. The host policy selector walks each root's verified dependency closure,
+excludes package names already owned by the verified lower shell composition,
+and requires the root itself to remain layer-owned. The lazy-layer builder
+still verifies exact bottle identities before reuse. The selector rejects an
+empty delta instead of publishing a no-op layer. It also rejects any non-base
+package shared by two runtime deltas; such a dependency must move into the
+common base or into an explicit shared-layer design before the layers have
+disjoint package ownership.
+
+This selection policy does not yet publish three descriptors or register any
+archive in a browser session. Those remain consumer and publication follow-ups,
+and a runtime must have finalized bottle sidecars before it can produce a real
+policy-selected layer. The publisher must additionally prove pairwise archive
+path disjointness; distinct package closures alone do not make filesystem
+overlays safe to mix.
+
 The release publisher never uses `--clobber`. A content-tag state lock
 serializes writers. An absent release starts as a draft; an interrupted exact
 draft may be completed, while unexpected assets or existing bytes with a

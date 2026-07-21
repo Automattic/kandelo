@@ -67,3 +67,16 @@ export type {
   HomebrewVfsPlanOptions,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+export {
+  HOMEBREW_RUNTIME_LAYER_POLICY_KIND,
+  parseHomebrewRuntimeLayerPolicy,
+  selectHomebrewRuntimeLayer,
+  selectHomebrewRuntimeLayers,
+} from "./homebrew-runtime-layer-policy";
+export type {
+  HomebrewRuntimeLayerBaseClosure,
+  HomebrewRuntimeLayerBasePackageSourceIdentity,
+  HomebrewRuntimeLayerPolicy,
+  HomebrewRuntimeLayerPolicyEntry,
+  HomebrewRuntimeLayerSelection,
+} from "./homebrew-runtime-layer-policy";
