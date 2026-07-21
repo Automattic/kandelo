@@ -2,9 +2,16 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
+  extractZipEntry,
   parseZipCentralDirectory,
   type ZipEntry,
 } from "../../../host/src/vfs/zip";
+
+const symlinkTargetDecoder = new TextDecoder("utf-8", {
+  fatal: true,
+  ignoreBOM: true,
+});
+const textEncoder = new TextEncoder();
 
 export interface ShellLazyArchiveSpec {
   id: "vim" | "nethack";
@@ -40,6 +47,7 @@ export interface DeclaredShellLazyArchive {
   /** The one exact byte sequence used for indexing and integrity metadata. */
   bytes: Uint8Array;
   entries: ZipEntry[];
+  symlinkTargets: Map<string, string>;
   integrity: {
     compressedBytes: number;
     sha256: string;
@@ -50,6 +58,43 @@ export type ShellLazyArchiveResolver = (
   resolverPath: string,
   dependency: string,
 ) => string;
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  return left.every((byte, index) => byte === right[index]);
+}
+
+function readSymlinkTargets(
+  dependency: string,
+  sourcePath: string,
+  bytes: Uint8Array,
+  entries: ZipEntry[],
+): Map<string, string> {
+  const targets = new Map<string, string>();
+  for (const entry of entries) {
+    if (!entry.isSymlink) continue;
+    const targetBytes = extractZipEntry(bytes, entry);
+    const context = `${dependency} output ${sourcePath} symlink ${entry.fileName}`;
+    if (targetBytes.byteLength === 0) {
+      throw new Error(`${context} has an empty target`);
+    }
+    if (targetBytes.includes(0)) {
+      throw new Error(`${context} target contains a NUL byte`);
+    }
+
+    let target: string;
+    try {
+      target = symlinkTargetDecoder.decode(targetBytes);
+    } catch {
+      throw new Error(`${context} target is not valid UTF-8`);
+    }
+    if (!bytesEqual(targetBytes, textEncoder.encode(target))) {
+      throw new Error(`${context} target cannot be preserved byte-for-byte`);
+    }
+    targets.set(entry.fileName, target);
+  }
+  return targets;
+}
 
 /**
  * Load one declared browser-bundle output through the package resolver.
@@ -88,11 +133,19 @@ export function loadDeclaredShellLazyArchive(
     );
   }
 
+  const symlinkTargets = readSymlinkTargets(
+    spec.dependency,
+    sourcePath,
+    bytes,
+    entries,
+  );
+
   return {
     spec,
     sourcePath,
     bytes,
     entries,
+    symlinkTargets,
     integrity: {
       compressedBytes: bytes.byteLength,
       sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -111,6 +164,7 @@ export function registerDeclaredShellLazyArchive(
     spec.archiveUrl,
     archive.entries,
     spec.mountPrefix,
+    archive.symlinkTargets,
   );
   return archive;
 }

@@ -65,7 +65,7 @@ chmod 755 "$STAGING/bin/vim"
 mkdir -p "$STAGING/share/vim/vim91"
 cp -R "$RUNTIME_DIR/." "$STAGING/share/vim/vim91/"
 
-(cd "$STAGING" && zip -r -q "$OUTPUT_FILE" .)
+bash "$SCRIPT_DIR/create-deterministic-zip.sh" "$STAGING" "$OUTPUT_FILE"
 
 echo "    $(find "$STAGING" -type f | wc -l | tr -d ' ') files"
 ls -lh "$OUTPUT_FILE"

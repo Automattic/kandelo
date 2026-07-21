@@ -68,7 +68,7 @@ mkdir -p "$STAGING/share/nethack"
 cp -R "$RUNTIME_ROOT/." "$STAGING/share/nethack/"
 chmod -R a+rX "$STAGING/share/nethack"
 
-(cd "$STAGING" && zip -r -q "$OUTPUT_FILE" .)
+bash "$SCRIPT_DIR/create-deterministic-zip.sh" "$STAGING" "$OUTPUT_FILE"
 
 echo "    $(find "$STAGING" -type f | wc -l | tr -d ' ') files"
 ls -lh "$OUTPUT_FILE"

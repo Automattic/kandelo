@@ -101,6 +101,13 @@ The VFS-image package depends on that bundle package and resolves its exact
 the package output is the one distribution identity that both the image
 composer and the eventual Node/browser fetch consume.
 
+Bundle builders must create the archive through
+`images/vfs/scripts/create-deterministic-zip.sh`. The helper gives independent
+package and image builds the same byte identity by sorting entry paths,
+normalizing distribution modes and ZIP-compatible timestamps, and stripping
+host-specific extra fields. Both the bundle wrapper and every helper that
+determines its bytes belong in the bundle package's `build.toml` `inputs`.
+
 Programs whose runtime files are small enough to version in-tree (NetHack's `nhdat` after DLB packing, for instance) can skip step 2 and have the zip script pull directly from the build's `out/` directory.
 
 ### Registration
@@ -124,7 +131,12 @@ stub from the archive is enough.
 
 ### When you also want `/bin/<program>` symlinks
 
-Create them in the VFS image builder (see `populateExtendedSymlinks` in `build-shell-vfs-image.ts`) — not inside the archive. Symlinks are a VFS concern, not a packaging concern.
+Create image-level aliases in the VFS image builder (see
+`populateExtendedSymlinks` in `build-shell-vfs-image.ts`), not inside the
+archive. Package-owned links that are part of a program's runtime may remain
+inside its archive; the deterministic ZIP helper preserves them and the
+registrar validates every member path and link target before adding anything
+to the VFS.
 
 ### Reference implementation
 
