@@ -330,6 +330,15 @@ Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stac
 8. Each instrumented function's preamble requests and validates the next committed frame, then re-enters the call site where the parent was interrupted. Eventually it reaches the `kernel_fork` call site in the leaf function, which returns 0.
 9. `wpk_fork_rewind_end` resets state; parent and child independently unmap their continuation chunks; fork returns 0 in child and the child PID in the parent.
 
+If the root continuation mapping cannot be allocated, `kernel_fork` returns the
+negative mmap errno before unwind starts. If a later node allocation fails,
+the owning module enters `ABORT_UNWINDING`: the live failing activation
+restarts at its call site, committed inner nodes replay to the original fork
+import, and the host releases the partial chain before returning the negative
+errno. A negative `SYS_FORK` result after step 4 instead uses the complete
+parent rewind. These resource failures create no child and leave the parent in
+`NORMAL`, able to continue or retry `fork()`.
+
 The instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
 
 A fork reached directly inside an instrumented dlopened side module uses two

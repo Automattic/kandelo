@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ContinuationAllocationError,
   LinkedForkContinuation,
   readLinkedFrameFormat,
   type LinkedFrameFormatDescriptor,
@@ -9,7 +10,7 @@ const FORMAT: LinkedFrameFormatDescriptor = {
   version: 1,
   ptrWidth: 4,
   alignment: 8,
-  flags: 1,
+  flags: 3,
   chunkHeaderSize: 32,
   nodeHeaderSize: 24,
   fixedPrefixSize: 128,
@@ -43,7 +44,7 @@ function linkedDescriptorBytes(): number[] {
   view.setUint16(6, 24, true);
   view.setUint8(8, 4);
   view.setUint8(9, 8);
-  view.setUint16(10, 1, true);
+  view.setUint16(10, 3, true);
   view.setUint32(12, 32, true);
   view.setUint32(16, 24, true);
   view.setUint32(20, 128, true);
@@ -58,7 +59,7 @@ describe("readLinkedFrameFormat", () => {
 
   it("rejects unknown flags before instantiation", () => {
     const bytes = linkedDescriptorBytes();
-    bytes[10] = 3;
+    bytes[10] = 7;
     expect(() => readLinkedFrameFormat(moduleWithLinkedDescriptor(bytes)))
       .toThrow("unsupported linked continuation flags");
   });
@@ -222,6 +223,48 @@ describe("LinkedForkContinuation", () => {
       /committed_frames=1 committed_bytes=32 requested_next_frame=65536.*synthetic ENOMEM/,
     );
     expect(releases).toEqual([{ addr: 65536, size: 65536 }]);
+  });
+
+  it("retains committed frames for recoverable abort replay", () => {
+    const memory = new WebAssembly.Memory({ initial: 8 });
+    const releases: Array<{ addr: number; size: number }> = [];
+    let allocations = 0;
+    const arena = new LinkedForkContinuation(
+      memory,
+      FORMAT,
+      (size) => {
+        if (allocations++ > 0) {
+          throw new ContinuationAllocationError(12, size, "synthetic ENOMEM");
+        }
+        return 65536;
+      },
+      (addr, size) => releases.push({ addr, size }),
+      "recoverable-allocation-failure",
+    );
+    arena.beginUnwind();
+    const committed = arena.reserveFrame(32);
+    arena.commitFrame(committed);
+
+    expect(arena.reserveFrame(65536)).toBe(0);
+    expect(arena.abortErrno()).toBe(12);
+    expect(releases).toEqual([]);
+    expect(Number(arena.nextFrame(32))).toBe(Number(committed));
+    arena.finishAbortReplayAndRelease();
+    expect(releases).toEqual([{ addr: 65536, size: 65536 }]);
+  });
+
+  it("propagates typed root allocation failure without activating unwind", () => {
+    const memory = new WebAssembly.Memory({ initial: 2 });
+    const arena = new LinkedForkContinuation(
+      memory,
+      FORMAT,
+      (size) => { throw new ContinuationAllocationError(12, size, "root ENOMEM"); },
+      () => { throw new Error("nothing was allocated"); },
+      "recoverable-root-failure",
+    );
+
+    expect(() => arena.beginUnwind()).toThrow(ContinuationAllocationError);
+    expect(arena.hasActiveContinuation()).toBe(false);
   });
 
   it("reports an initial allocation failure before any frame write", () => {

@@ -7,6 +7,9 @@ export const LINKED_FRAME_RECORD_ALIGNMENT = 8;
 const DESCRIPTOR_SIZE = 24;
 const DESCRIPTOR_MAGIC = 0x46434c4b; // "KLCF", little-endian
 const DESCRIPTOR_FLAG_TRANSACTIONAL_NODES = 1 << 0;
+const DESCRIPTOR_FLAG_ABORT_UNWINDING = 1 << 1;
+const DESCRIPTOR_REQUIRED_FLAGS =
+  DESCRIPTOR_FLAG_TRANSACTIONAL_NODES | DESCRIPTOR_FLAG_ABORT_UNWINDING;
 const CHUNK_MAGIC = 0x4843464b; // "KFCH", little-endian
 const NODE_MAGIC = 0x4e43464b; // "KFCN", little-endian
 const NODE_RESERVED = 1;
@@ -25,6 +28,23 @@ export interface LinkedFrameFormatDescriptor {
 
 export type ContinuationAllocate = (size: number) => number;
 export type ContinuationDeallocate = (addr: number, size: number) => void;
+
+export class ContinuationAllocationError extends Error {
+  constructor(
+    readonly errno: number,
+    readonly requestedSize: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ContinuationAllocationError";
+  }
+}
+
+interface AbortFailure {
+  errno: number;
+  requestedFrame?: number;
+  diagnostic: string;
+}
 
 export function writeForkContinuationAnchor(
   memory: WebAssembly.Memory,
@@ -118,7 +138,7 @@ export function readLinkedFrameFormat(
     throw new Error(`unsupported linked continuation alignment ${alignment}`);
   }
   const flags = view.getUint16(10, true);
-  if (flags !== DESCRIPTOR_FLAG_TRANSACTIONAL_NODES) {
+  if (flags !== DESCRIPTOR_REQUIRED_FLAGS) {
     throw new Error(`unsupported linked continuation flags 0x${flags.toString(16)}`);
   }
   const chunkHeaderSize = view.getUint32(12, true);
@@ -161,6 +181,7 @@ export class LinkedForkContinuation {
   private chunks: Array<{ addr: number; size: number }> = [];
   private committedFrames = 0;
   private committedBytes = 0;
+  private abortFailure: AbortFailure | null = null;
 
   constructor(
     private readonly memory: WebAssembly.Memory,
@@ -181,10 +202,14 @@ export class LinkedForkContinuation {
     const capacity = alignUp(Math.max(initialUsed, WASM_PAGE_SIZE), WASM_PAGE_SIZE);
     this.committedFrames = 0;
     this.committedBytes = 0;
+    this.abortFailure = null;
     let root: number;
     try {
       root = this.allocateChunk(capacity, 0, 0);
     } catch (error) {
+      if (error instanceof ContinuationAllocationError) {
+        this.releaseAfterFailure(error);
+      }
       this.abortAndRelease(undefined, error);
     }
     this.root = root;
@@ -223,7 +248,7 @@ export class LinkedForkContinuation {
   }
 
   beginReplay(): void {
-    if (this.root === 0 || this.pending) {
+    if (this.root === 0 || this.pending || this.abortFailure) {
       throw new Error(`${this.label}: cannot begin replay from incomplete continuation`);
     }
     this.replayNode = this.readPtr(this.root + 8 + 5 * this.format.ptrWidth);
@@ -236,6 +261,9 @@ export class LinkedForkContinuation {
     }
     if (this.pending) {
       throw new Error(`${this.label}: a frame reservation is already pending`);
+    }
+    if (this.abortFailure) {
+      throw new Error(`${this.label}: frame reservation after abort began`);
     }
     const nodeSize = alignUp(
       this.format.nodeHeaderSize + size,
@@ -253,6 +281,10 @@ export class LinkedForkContinuation {
       try {
         next = this.allocateChunk(nextCapacity, this.root, chunk);
       } catch (error) {
+        if (error instanceof ContinuationAllocationError) {
+          this.beginAbortReplay(error.errno, size, error.message);
+          return this.asGuestPtr(0);
+        }
         this.abortAndRelease(size, error);
       }
       this.writePtr(chunk + 8 + 2 * this.format.ptrWidth, next);
@@ -279,6 +311,9 @@ export class LinkedForkContinuation {
   }
 
   commitFrame(payload: number | bigint): void {
+    if (this.abortFailure) {
+      throw new Error(`${this.label}: frame commit after abort began`);
+    }
     const payloadNumber = this.fromGuestPtr(payload);
     const pending = this.pending;
     if (!pending || pending.payload !== payloadNumber) {
@@ -338,8 +373,56 @@ export class LinkedForkContinuation {
   }
 
   finishReplayAndRelease(): void {
+    if (this.abortFailure) {
+      throw new Error(`${this.label}: normal replay ended during abort recovery`);
+    }
     if (this.replayNode !== 0) {
       throw new Error(`${this.label}: rewind ended before all linked frames were consumed`);
+    }
+    this.release();
+  }
+
+  beginAbortReplay(
+    errno: number,
+    requestedFrame?: number,
+    diagnostic = `fork continuation allocation failed with errno=${errno}`,
+  ): void {
+    if (!Number.isInteger(errno) || errno <= 0) {
+      throw new Error(`${this.label}: invalid abort errno ${errno}`);
+    }
+    if (this.root === 0 || this.pending) {
+      throw new Error(`${this.label}: cannot abort-replay an incomplete continuation`);
+    }
+    if (this.abortFailure && this.abortFailure.errno !== errno) {
+      throw new Error(`${this.label}: conflicting continuation abort failures`);
+    }
+    this.abortFailure ??= { errno, requestedFrame, diagnostic };
+    this.replayNode = this.readPtr(this.root + 8 + 5 * this.format.ptrWidth);
+  }
+
+  abortErrno(): number {
+    if (!this.abortFailure) {
+      throw new Error(`${this.label}: no continuation abort is active`);
+    }
+    return this.abortFailure.errno;
+  }
+
+  finishAbortReplayAndRelease(): void {
+    if (!this.abortFailure) {
+      throw new Error(`${this.label}: abort replay ended without an allocation failure`);
+    }
+    if (this.replayNode !== 0) {
+      throw new Error(`${this.label}: abort replay ended before all linked frames were consumed`);
+    }
+    this.release();
+  }
+
+  cancelUnwindAndRelease(): void {
+    if (this.pending) {
+      throw new Error(`${this.label}: cannot cancel an unwind with a pending frame`);
+    }
+    if (this.root === 0) {
+      throw new Error(`${this.label}: cannot cancel an inactive unwind`);
     }
     this.release();
   }
@@ -371,6 +454,7 @@ export class LinkedForkContinuation {
     try {
       addr = this.allocate(capacity);
     } catch (error) {
+      if (error instanceof ContinuationAllocationError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
         `${this.label}: continuation allocation of ${capacity} bytes failed: ${message}`,
@@ -441,6 +525,7 @@ export class LinkedForkContinuation {
     this.root = 0;
     this.activeChunk = 0;
     this.replayNode = 0;
+    this.abortFailure = null;
     let firstError: unknown;
     for (const chunk of chunks) {
       try {
@@ -450,6 +535,18 @@ export class LinkedForkContinuation {
       }
     }
     if (firstError !== undefined) throw firstError;
+  }
+
+  private releaseAfterFailure(error: unknown): never {
+    try {
+      this.release();
+    } catch (releaseError) {
+      throw new Error(
+        `${this.label}: continuation cleanup after allocation failure failed: ` +
+          `${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+      );
+    }
+    throw error;
   }
 
   private view(): DataView {

@@ -9,8 +9,8 @@
 //! - **posix_spawn-class**: code between call sites must NOT re-execute,
 //!   including shadow-stack manipulation.
 
-use fork_instrument::{instrument, Options};
-use walrus::{ir::*, FunctionId, FunctionKind, ImportKind, LocalFunction, Module};
+use fork_instrument::{Options, instrument};
+use walrus::{FunctionId, FunctionKind, ImportKind, LocalFunction, Module, ir::*};
 
 fn validate(bytes: &[u8]) {
     let mut validator =
@@ -287,8 +287,9 @@ fn no_catch_switch_dispatch_omits_frame_header_state_locals() {
     let caller = extract_function_text(&printed, "caller");
     let locals = declared_scalar_local_count(&caller);
     assert_eq!(
-        locals, 1,
-        "no-catch top-level fork path should declare only the original local; \
+        locals, 2,
+        "no-catch top-level fork path should declare only the original local and \
+         abort_live_frame; \
          call_idx and frame_ptr are loaded from the frame header, and \
          unconditional catch metadata locals would raise this count:\n{caller}"
     );
@@ -321,9 +322,9 @@ fn top_level_indirect_switch_dispatch_omits_frame_header_state_locals() {
     let caller = extract_function_text(&printed, "caller");
     let locals = declared_scalar_local_count(&caller);
     assert_eq!(
-        locals, 0,
-        "top-level indirect call with a pure table index should need no arg, \
-         frame_ptr, or call_idx locals:\n{caller}"
+        locals, 1,
+        "top-level indirect call with a pure table index should need only \
+         abort_live_frame, with no arg, frame_ptr, or call_idx locals:\n{caller}"
     );
 }
 
@@ -338,8 +339,9 @@ fn nested_direct_switch_dispatch_omits_frame_header_state_locals() {
     let main = extract_function_text(&printed, "main");
     let locals = declared_scalar_local_count(&main);
     assert_eq!(
-        locals, 2,
-        "nested block dispatch should retain only the two source locals; \
+        locals, 3,
+        "nested block dispatch should retain only the two source locals and \
+         abort_live_frame; \
          frame_ptr and call_idx must not be declared locals:\n{main}"
     );
 }
@@ -366,10 +368,10 @@ fn nested_if_else_dispatch_omits_frame_header_state_locals() {
     let main = extract_function_text(&printed, "main");
     let locals = declared_scalar_local_count(&main);
     assert_eq!(
-        locals, 0,
+        locals, 1,
         "nested if/else dispatch should replay a pure condition without cond_swap; \
-         params are not declared locals, and frame_ptr/call_idx must be loaded from \
-         the frame:\n{main}"
+         abort_live_frame is the only declared local, params are not declared locals, \
+         and frame_ptr/call_idx must be loaded from the frame:\n{main}"
     );
 }
 
@@ -401,17 +403,17 @@ fn pr701_shape_replays_pure_condition_and_recursive_arg() {
     let walk = extract_function_text(&printed, "walk");
     let locals = declared_scalar_local_count(&walk);
     assert_eq!(
-        locals, 0,
+        locals, 1,
         "PR701-shaped pure condition and recursive arg should not allocate \
-         arg-spill or condition/carryover locals:\n{walk}"
+         arg-spill or condition/carryover locals beyond abort_live_frame:\n{walk}"
     );
     assert!(
-        walk.contains("local.get 0\n      i32.eqz\n      global.get $_wpk_fork_state"),
+        walk.contains("local.get 0\n        i32.eqz\n        global.get $_wpk_fork_state"),
         "rewritten IfElse landing should replay the pure eqz(depth) condition \
          before selecting NORMAL vs REWIND:\n{walk}"
     );
     assert!(
-        walk.contains("local.get 0\n        i32.const 1\n        i32.sub\n        call $walk"),
+        walk.contains("local.get 0\n          i32.const 1\n          i32.sub\n          call $walk"),
         "recursive call landing should replay pure depth - 1 argument tail \
          before the call:\n{walk}"
     );

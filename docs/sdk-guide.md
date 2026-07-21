@@ -492,7 +492,7 @@ wasm-opt -O2 program.wasm -o program.wasm
 mv program.wasm.instr program.wasm
 ```
 
-The tool emits five `wpk_fork_*` exports that the host runtime drives during
+The tool emits seven `wpk_fork_*` exports that the host runtime drives during
 fork. Programs that don't use fork can skip this step entirely, but a program
 that reaches `kernel_fork` without complete `wpk_fork_*` instrumentation is
 invalid.

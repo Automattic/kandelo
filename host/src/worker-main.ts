@@ -42,6 +42,7 @@ import {
   FORK_SAVE_CONTROL_PREFIX_SIZE,
 } from "./process-memory";
 import {
+  ContinuationAllocationError,
   LinkedForkContinuation,
   readLinkedFrameFormat,
   writeForkContinuationAnchor,
@@ -92,7 +93,12 @@ function continuationMmap(
   const err = view.getUint32(base + CH_ERRNO, true);
   Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
   if (err || result < 0) {
-    throw new Error(`${label}: mmap(${size}) failed errno=${err || -result}`);
+    const errno = err || -result;
+    throw new ContinuationAllocationError(
+      errno,
+      size,
+      `${label}: mmap(${size}) failed errno=${errno}`,
+    );
   }
   return result;
 }
@@ -266,6 +272,8 @@ export interface DlopenSupport {
   completeSideModuleForkUnwind: () => void;
   /** Begin the active side-module rewind after fork-child dlopen replay. */
   beginSideModuleForkRewind: () => void;
+  /** Replay and discard active side-module frames after main allocation failure. */
+  beginSideModuleForkAbort: (errno: number) => void;
   /** Reject a leaked active side-module identity on a normal main return. */
   assertNoActiveSideModuleFork: () => void;
   /** Clear a fork parent's copied archive lock in the child's private memory. */
@@ -329,6 +337,7 @@ function buildDlopenImports(
   longjmpTag: WebAssembly.Tag | undefined,
   cppExceptionTag: WebAssembly.Tag | undefined,
   mainHasDylinkForkRole: boolean,
+  beginMainForkAbort?: (errno: number) => void,
 ): DlopenSupport {
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
@@ -551,16 +560,25 @@ function buildDlopenImports(
             updateArchiveForkBuffer(state.name, 0);
             writePtr(view, activeSideForkSlot, 0);
           },
-          invokeMainFork: (expectedStateAfter: 0 | 1): number => {
+          invokeMainFork: (expectedStateAfter: 0 | 1 | readonly (0 | 1)[]): number => {
             const result = Number((mainFork as () => number)());
             const actualState = Number((mainForkState as () => number)());
-            if (actualState !== expectedStateAfter) {
+            const expectedStates = Array.isArray(expectedStateAfter)
+              ? expectedStateAfter
+              : [expectedStateAfter];
+            if (!expectedStates.includes(actualState as 0 | 1)) {
               throw new Error(
                 `main-module fork transition ended in state ${actualState}; ` +
-                  `expected ${expectedStateAfter}`,
+                  `expected ${expectedStates.join(" or ")}`,
               );
             }
             return result;
+          },
+          beginMainAbort: (errno: number): void => {
+            if (!beginMainForkAbort) {
+              throw new Error("main-module continuation abort coordinator is unavailable");
+            }
+            beginMainForkAbort(errno);
           },
         }
       : undefined;
@@ -819,6 +837,21 @@ function buildDlopenImports(
     }
   };
 
+  const beginSideModuleForkAbort = (errno: number): void => {
+    const state = findActiveSideFork();
+    if (!state) return;
+    if (sideForkState(state) !== 1) {
+      throw new Error(`${state.name}: expected UNWINDING before side-module abort replay`);
+    }
+    state.continuation.beginAbortReplay(errno);
+    (state.instance.exports.wpk_fork_abort_begin as (addr: number) => void)(
+      state.forkBufAddr,
+    );
+    if (sideForkState(state) !== 3) {
+      throw new Error(`${state.name}: side-module abort did not enter ABORT_UNWINDING`);
+    }
+  };
+
   const assertNoActiveSideModuleFork = (): void => {
     const persisted = readPtr(new DataView(memory.buffer), activeSideForkSlot);
     if (activeSideFork || persisted !== 0) {
@@ -911,6 +944,7 @@ function buildDlopenImports(
     replayDlopens,
     completeSideModuleForkUnwind,
     beginSideModuleForkRewind,
+    beginSideModuleForkAbort,
     assertNoActiveSideModuleFork,
     resetForkChildLock,
   };
@@ -935,6 +969,7 @@ function buildImportObject(
     seconds: number,
   ) => void,
   forkContinuation?: LinkedForkContinuation,
+  onContinuationAbort?: () => void,
 ): WebAssembly.Imports {
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
@@ -962,8 +997,11 @@ function buildImportObject(
     if (!forkContinuation) {
       throw new Error("linked fork instrumentation requested without continuation storage");
     }
-    envImports.__wpk_fork_frame_reserve = (size: number | bigint) =>
-      forkContinuation.reserveFrame(size);
+    envImports.__wpk_fork_frame_reserve = (size: number | bigint) => {
+      const frame = forkContinuation.reserveFrame(size);
+      if (frame === 0 || frame === 0n) onContinuationAbort?.();
+      return frame;
+    };
     envImports.__wpk_fork_frame_commit = (payload: number | bigint) =>
       forkContinuation.commitFrame(payload);
     envImports.__wpk_fork_frame_next = (size: number | bigint) =>
@@ -1334,6 +1372,8 @@ const WPK_FORK_EXPORTS = [
   "wpk_fork_unwind_end",
   "wpk_fork_rewind_begin",
   "wpk_fork_rewind_end",
+  "wpk_fork_abort_begin",
+  "wpk_fork_abort_end",
   "wpk_fork_state",
 ] as const;
 
@@ -1548,13 +1588,26 @@ export async function centralizedWorkerMain(
           forkBufAddr = 0;
           return forkResult;
         }
+        if (state === 3) {
+          const errno = forkContinuation.abortErrno();
+          (processInstance.exports.wpk_fork_abort_end as () => void)();
+          forkContinuation.finishAbortReplayAndRelease();
+          writeForkContinuationAnchor(memory, dlopenArchiveControlAddr, ptrWidth, 0);
+          forkBufAddr = 0;
+          return -errno;
+        }
 
         // Normal call: start unwind to save the call stack.
         // SYS_FORK is sent after _start returns (unwind complete).
         // wpk_fork_unwind_begin self-initializes current_pos and snapshots
         // saved_globals (including __tls_base and __stack_pointer) into the
         // buffer — the host no longer pre-seeds the header.
-        forkBufAddr = Number(forkContinuation.beginUnwind());
+        try {
+          forkBufAddr = Number(forkContinuation.beginUnwind());
+        } catch (error) {
+          if (error instanceof ContinuationAllocationError) return -error.errno;
+          throw error;
+        }
         writeForkContinuationAnchor(
           memory,
           dlopenArchiveControlAddr,
@@ -1577,6 +1630,11 @@ export async function centralizedWorkerMain(
         processLongjmpTag,
         processCppExceptionTag,
         hasDylinkForkRole,
+        (errno) => {
+          if (!processInstance) throw new Error(`pid=${pid}: side abort before main instantiation`);
+          forkContinuation.beginAbortReplay(errno);
+          (processInstance.exports.wpk_fork_abort_begin as (addr: number) => void)(forkBufAddr);
+        },
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
         () => processInstance ?? undefined, ptrWidth, processLongjmpTag, processCppExceptionTag,
@@ -1589,7 +1647,13 @@ export async function centralizedWorkerMain(
             seconds,
           } satisfies WorkerToHostMessage);
         },
-        forkContinuation);
+        forkContinuation,
+        () => {
+          if (!processInstance) throw new Error(`pid=${pid}: continuation abort before instantiation`);
+          const errno = forkContinuation.abortErrno();
+          dlopenSupport.beginSideModuleForkAbort(errno);
+          (processInstance.exports.wpk_fork_abort_begin as (addr: number) => void)(forkBufAddr);
+        });
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
       if (initData.isForkChild) {
@@ -1712,7 +1776,9 @@ export async function centralizedWorkerMain(
             // fork save buffer populated (saved_globals + frames).
             const childPid = sendForkSyscall(memory, channelOffset);
             if (childPid < 0) {
-              throw new Error(`Fork failed: errno=${-childPid}`);
+              forkResult = childPid;
+              needsRewind = true;
+              continue;
             }
             forkResult = childPid;
             needsRewind = true;
@@ -2559,6 +2625,18 @@ export async function centralizedThreadWorkerMain(
           }
           return forkResult;
         }
+        if (state === 3) {
+          const errno = threadForkContinuation!.abortErrno();
+          try {
+            (threadInstance.exports.wpk_fork_abort_end as () => void)();
+            threadForkContinuation!.finishAbortReplayAndRelease();
+            writeForkContinuationAnchor(memory, forkAnchorAddr, ptrWidth, 0);
+            forkBufAddr = 0;
+          } finally {
+            releasePthreadForkLock();
+          }
+          return -errno;
+        }
 
         // Side modules live in the process main worker's module/table/tag
         // graph. A pthread worker cannot replay that graph into its own
@@ -2584,6 +2662,7 @@ export async function centralizedThreadWorkerMain(
           (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         } catch (error) {
           releasePthreadForkLock();
+          if (error instanceof ContinuationAllocationError) return -error.errno;
           throw error;
         }
         return 0;
@@ -2612,7 +2691,13 @@ export async function centralizedThreadWorkerMain(
           seconds,
         } satisfies WorkerToHostMessage);
       },
-      threadForkContinuation ?? undefined);
+      threadForkContinuation ?? undefined,
+      () => {
+        if (!threadInstance) {
+          throw new Error(`pid=${pid} tid=${tid}: continuation abort before instantiation`);
+        }
+        (threadInstance.exports.wpk_fork_abort_begin as (addr: number) => void)(forkBufAddr);
+      });
     const instance = new WebAssembly.Instance(module, importObject);
     threadInstance = instance;
 
@@ -2698,8 +2783,9 @@ export async function centralizedThreadWorkerMain(
           }
           const childPid = sendForkSyscall(memory, channelOffset);
           if (childPid < 0) {
-            releasePthreadForkLock();
-            throw new Error(`Fork failed: errno=${-childPid}`);
+            forkResult = childPid;
+            needsRewind = true;
+            continue;
           }
           forkResult = childPid;
           needsRewind = true;

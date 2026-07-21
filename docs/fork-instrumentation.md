@@ -81,7 +81,7 @@ The host drives the state machine externally. User code never writes to
 
 ## Exported ABI
 
-The tool injects five exports into every instrumented module. Names are
+The tool injects seven exports into every instrumented module. Names are
 exact — they are part of the kernel ABI and tracked by the snapshot check
 (see [abi-versioning.md](abi-versioning.md)).
 
@@ -107,6 +107,17 @@ wpk_fork_rewind_end() -> ()
   Precondition:  state == REWINDING and all frames have been reloaded.
   Postcondition: state := NORMAL
 
+wpk_fork_abort_begin(buf: ptr) -> ()
+  Precondition:  state == UNWINDING after a typed frame-allocation failure.
+  Postcondition: state := ABORT_UNWINDING
+                 _wpk_fork_buf := buf
+                 All saved mutable scalar globals restored from buf.
+
+wpk_fork_abort_end() -> ()
+  Precondition:  state == ABORT_UNWINDING and all committed inner frames
+                 have been reloaded.
+  Postcondition: state := NORMAL
+
 wpk_fork_state() -> i32
   Returns current state. Exported for host-side assertions.
 ```
@@ -128,7 +139,7 @@ __wpk_fork_frame_next(expected_frame_size: ptr) -> ptr
   mismatches before generated code reads it.
 ```
 
-The five exports identify the state-machine ABI, but they do not prove which
+The control exports identify the state-machine ABI, but they do not prove which
 import seeded call-graph discovery. The tool therefore also emits the custom
 section `kandelo.wpk_fork.capabilities`. Its two-byte payload is
 `[version, flags]`; version 1 defines:
@@ -298,9 +309,10 @@ chunks contain only a chunk header and nodes. Version-1 chunk headers are:
 | `+8+5P` | `P` | committed tail | Newest committed node; meaningful on root |
 
 The module prefix retains the runtime's pointer word, reserved pointer word,
-saved scalar globals, and B1 plain-catch scratch. Its size is
-`frames_start_offset = 2P + N + B`, where `N` and `B` are fixed for the module.
-Frame nodes are not stored in that prefix.
+saved scalar globals, B1 plain-catch scratch, and a 16-byte abort selector.
+`frames_start_offset = 2P + N + B` identifies the selector, while the
+host-visible fixed-prefix size is `frames_start_offset + 16`. Frame nodes are
+not stored in that prefix.
 
 At the first fork call, the host maps one page-rounded root large enough for
 the chunk header and fixed prefix. Each postamble already knows its own exact
@@ -310,12 +322,19 @@ not fit the next complete node, the host maps another page-rounded chunk. A
 single node larger than a WebAssembly page receives a multi-page chunk.
 
 Allocation is transactional: a reserved node is not linked from the committed
-tail until all scalar and reference writes finish. Allocation failure releases
-all parent-owned continuation mappings and throws before `SYS_FORK`, so no
-child is created from a partial chain. Version 1 terminates that process because
-the generated unwind cannot yet reverse already-returned frames. Converting
-this boundary into guest-visible `ENOMEM` requires the future
-`ABORT_UNWINDING` state documented in [future-improvements.md](future-improvements.md).
+tail until all scalar and reference writes finish. If a later chunk allocation
+fails, the reserve import records the positive errno, enters
+`ABORT_UNWINDING`, and returns a zero pointer. The still-live activation stores
+only its call-site selector in the fixed-prefix scratch and restarts; already
+committed inner nodes replay back to the original fork import. The import ends
+abort replay, unmaps every owned chunk, restores `NORMAL`, and returns the
+negative errno. Invalid metadata, impossible transitions, and cleanup failures
+remain fatal integrity errors.
+
+A root allocation failure occurs before `wpk_fork_unwind_begin` and therefore
+returns its negative errno without replay. A negative `SYS_FORK` result after a
+complete unwind uses the ordinary parent rewind and is likewise returned to
+the guest; neither case terminates the parent or creates a child.
 
 The child receives the mappings through the normal process-memory copy and the
 kernel's inherited mmap metadata, at the same virtual addresses in version 1.
@@ -366,10 +385,10 @@ resume](#catch-handler-resume).
 Every fork-path function uses **one of two dispatch shapes**, chosen by the
 tool per-function based on call-site topology:
 
-| Scheme                       | When picked                                                                                                                                                                                                                                                                                                                       | How REWIND reaches the resumed call                                                                                                                                                                                            |
+| Scheme                       | When picked                                                                                                                                                                                                                                                                                                                       | How replay reaches the resumed call                                                                                                                                                                                            |
 |------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
-| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c). Pure scalar direct-call args and condition-only `IfElse` carryovers can be replayed instead of spilled. | Cascading `POST_K` blocks plus a per-region `br_table` route REWIND through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
+| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table`, gated by `state >= REWINDING`, jumps directly to the matching `$POST_K` label for ordinary or abort replay. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
+| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c). Pure scalar direct-call args and condition-only `IfElse` carryovers can be replayed instead of spilled. | Cascading `POST_K` blocks plus a per-region `br_table` route ordinary or abort replay through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
 
 A third path — **guard-dispatch** — existed before commits 3-4 of the
 fork-instrument mega-PR (2026-05-14). It wrapped each fork-path call site
@@ -696,7 +715,7 @@ end                          ;; close POST_K (Simple(None) is satisfied).
 ;; post-landing sequence — re-create cond for the IfElse:
 push force_flag              ;; 1 if active call_idx in THEN's range, else 0.
 local.get $cond_swap         ;; re-push orig_cond.
-push (state == REWINDING)
+push (state >= REWINDING)    ;; ordinary or abort replay
 select                       ;; (is_rewind ? force_flag : orig_cond)
 if (then ...) (else ...)     ;; original IfElse, untouched.
 ```
@@ -1067,8 +1086,14 @@ page-rounded anonymous mapping; another mapping is added only when the current
 chunk cannot hold the next complete node. An individual frame larger than a
 Wasm page is allocated in a correspondingly larger page-rounded chunk.
 
-The module-format cost is three imports plus the 24-byte
-`kandelo.wpk_fork.linked_frames` descriptor and normal Wasm section/name
+ABORT_UNWINDING adds one i32 local and a result-typed restart-loop guard to each
+transformed function, a zero-reservation branch at each fork-path call site,
+two control exports, and a 16-byte root-prefix selector. This code executes
+only on replay checks or allocation failure; ordinary execution adds the local
+and loop structure but does not allocate continuation memory.
+
+The module-format fixed cost is three imports, two abort exports, plus the
+24-byte `kandelo.wpk_fork.linked_frames` descriptor and normal Wasm section/name
 encoding. The fixed 60 KiB host-reserved control-region geometry remains in
 ABI 42, but it is no longer continuation capacity: only its anchor word is
 used to find the dynamically allocated root chunk.
@@ -1079,6 +1104,14 @@ and 52,330 bytes with the ABI 42 linked-frame instrumenter: 1,457 additional
 bytes (2.86%). This is one small fixture, not a general application-size
 claim; the fixed import/metadata cost and the number of transformed call sites
 change the percentage substantially between programs.
+
+Using the same dev-shell compiler invocation on 2026-07-21, the current P-10
+source produced a 27,608-byte raw module. Commit `a4789e2c6` (linked frames
+before abort recovery) instrumented it to 52,052 bytes; ABORT_UNWINDING
+instrumented the identical raw input to 58,370 bytes. The recovery state
+machine therefore added 6,318 bytes (12.14%) to this instrumented fixture.
+P-10 deliberately creates a very large conservative fork-path closure, so this
+is a stress-fixture result rather than a general package-size estimate.
 
 Performance comparisons must use the fork-heavy benchmark suites with
 `npx tsx benchmarks/run.ts --rounds=3` on both the Node.js and browser hosts.
@@ -1103,7 +1136,7 @@ to identify which switch-dispatch shape the offending function uses:
 wasm-tools print "$BIN" | awk '/^\s+\(func [^;]*main/{found=1} found{print}' | head -200
 ```
 
-A leading `block ... block ... if (state == REWINDING) ... br_table ...`
+A leading `loop ... block ... block ... if (state >= REWINDING) ... br_table ...`
 shape at the function's entry means switch-dispatch is active. A historical
 `block $unwind_save` followed by per-call `(state == NORMAL || (REWINDING &&
 call_idx == K))` if-elses means an old guard-dispatch binary is being
@@ -1111,7 +1144,7 @@ inspected, not current PR output.
 
 To distinguish top-level switch-dispatch from nested switch-dispatch,
 look inside the enclosing instructions: nested switch-dispatch emits the
-same `if (state == REWINDING) ... br_table ...` shape inside any
+same `if (state >= REWINDING) ... br_table ...` shape inside any
 fork-bearing `block` / `loop` / `if` / `try_table`, plus a `select`
 rewriting any fork-bearing IfElse's condition afterwards. Impure IfElse
 conditions also show a `local.set $cond_swap_local` at the end of the

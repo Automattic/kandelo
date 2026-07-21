@@ -34,7 +34,7 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`,
   `WasmStatfs`), or changing a field's type in a way that shifts offsets
   or span.
-- Changing the five `wpk_fork_*` export names or the save-buffer /
+- Changing the required `wpk_fork_*` export names or the save-buffer /
   frame format emitted by
   [`wasm-fork-instrument`](fork-instrumentation.md) into every
   fork-using user program. The kernel does not read these exports
@@ -134,18 +134,21 @@ mapped linked chunks. Instrumented modules carry the strict version-1
 `env.__wpk_fork_frame_next`. The host validates the descriptor, owns chunk
 allocation and cleanup, and rejects incomplete or stale instrumentation.
 
-The transition is incompatible even though the five `wpk_fork_*` export names
-remain unchanged: generated postambles now depend on reserve-before-write and
-commit-after-write semantics, replay uses a validated linked-node order, and
-the old channel-adjacent area is only an active-root handoff anchor. ABI 41 and
-older programs must be rebuilt with the ABI 42 instrumenter and package/VFS
-artifacts must be republished for the new ABI epoch.
+The transition is incompatible: generated postambles depend on
+reserve-before-write and commit-after-write semantics, replay uses a validated
+linked-node order, and instrumented modules require the seven-export control
+set including `wpk_fork_abort_begin` and `wpk_fork_abort_end`. The old
+channel-adjacent area is only an active-root handoff anchor. ABI 41 and older
+programs must be rebuilt with the ABI 42 instrumenter and package/VFS artifacts
+must be republished for the new ABI epoch.
 
 Version 1 keeps inherited chunks at the parent's virtual addresses in the
 child. Relocating and rebasing a serialized continuation is not part of this
-ABI. Allocation failure before `SYS_FORK` is truthful but process-fatal after
-unwind has begun; a recoverable `ENOMEM` result requires the future
-`ABORT_UNWINDING` state.
+ABI. The linked descriptor requires transactional-node and abort-unwinding
+flags. A typed allocation failure before unwind returns its errno directly; a
+later failure enters `ABORT_UNWINDING`, reconstructs the committed inner
+frames, releases the partial continuation, and returns the errno from the
+original `fork()` call without terminating the parent.
 
 ## The snapshot
 

@@ -402,7 +402,7 @@ describe("wasm artifact policy helpers", () => {
 
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
     expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([
-      "incomplete wasm-fork-instrument exports; missing wpk_fork_unwind_begin, wpk_fork_unwind_end, wpk_fork_rewind_begin, wpk_fork_rewind_end",
+      "incomplete wasm-fork-instrument exports; missing wpk_fork_unwind_begin, wpk_fork_unwind_end, wpk_fork_rewind_begin, wpk_fork_rewind_end, wpk_fork_abort_begin, wpk_fork_abort_end",
       "imports kernel.kernel_fork without complete wasm-fork-instrument exports",
     ]);
   });
@@ -418,6 +418,8 @@ describe("wasm artifact policy helpers", () => {
         { name: "wpk_fork_unwind_end", kind: 0, index: 1 },
         { name: "wpk_fork_rewind_begin", kind: 0, index: 1 },
         { name: "wpk_fork_rewind_end", kind: 0, index: 1 },
+        { name: "wpk_fork_abort_begin", kind: 0, index: 1 },
+        { name: "wpk_fork_abort_end", kind: 0, index: 1 },
         { name: "wpk_fork_state", kind: 0, index: 1 },
       ],
     });
