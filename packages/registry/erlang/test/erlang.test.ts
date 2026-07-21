@@ -5,12 +5,20 @@
  * protection, Erlang-specific boot args) so tests use the serve.ts
  * launcher as a subprocess rather than the generic test helper.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tryResolveBinary, findRepoRoot } from "../../../../host/src/binary-resolver";
+import {
+  cases as miscompCases,
+  activeCases,
+  pendingCases,
+  buildBatchProgram,
+  parseBatchOutput,
+  type BatchResult,
+} from "./wasm32-miscompilation-matrix";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = findRepoRoot();
@@ -69,4 +77,44 @@ describe.skipIf(!hasErlang)("Erlang BEAM", () => {
     expect(output).toContain("Ring benchmark:");
     expect(output).toContain("Completed in");
   });
+});
+
+// wasm32 -O2 miscompilation detection matrix (kd-jin7 / kd-r8h7 Layer A).
+// The matrix source (oracles + Erlang exprs) lives in
+// ./wasm32-miscompilation-matrix.ts and is shared with the CI gate runner
+// (test/run-wasm32-miscompilation-smoke.mjs) so coverage cannot drift.
+//
+// This local runner is a dev convenience: it `skipIf`s without a local erlang
+// build, exactly like the suite above. The AUTHORITATIVE runner is the CI gate,
+// which has the OTP runtime tree. To keep this cheap even locally, the whole
+// matrix runs in ONE BEAM boot (startup dominates), and each case asserts its
+// own line so a failure names the offending operation. Cases whose `-O1`/patch
+// is not yet on this base (e.g. chksum/compile behind PR #824) are reported as
+// pending skips rather than run.
+describe.skipIf(!hasErlang)("wasm32 -O2 miscompilation smoke matrix", () => {
+  let batch: BatchResult;
+
+  beforeAll(() => {
+    const output = runErlang(buildBatchProgram(), 120_000);
+    batch = parseBatchOutput(output, miscompCases.length);
+  }, 130_000);
+
+  it("runs the whole matrix to completion (no silent truncation)", () => {
+    expect(batch.completed).toBe(true);
+    // No case may FAIL; the message surfaces the expected/got on regression.
+    expect([...batch.failures.values()]).toEqual([]);
+  });
+
+  for (const c of activeCases()) {
+    it(`${c.name} — ${c.exercises}`, () => {
+      const detail =
+        batch.failures.get(c.name) ?? `no 'ok ${c.name}' line in BEAM output`;
+      expect(batch.ok.has(c.name), detail).toBe(true);
+    });
+  }
+
+  for (const c of pendingCases()) {
+    // Not a bug: the guarding workaround lands with its PR; flip in that change.
+    it.skip(`${c.name} — pending PR #${c.pendingPr} (${c.exercises})`, () => {});
+  }
 });

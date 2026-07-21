@@ -1,0 +1,6 @@
+wasm32 -O2 miscompilation smoke — oracle OTP 28.2 (oracles validated on ERTS 16.4; results format-stable across OTP 28.x)
+  passed:  8/8 active  [copy_large_term, ets_match, format_p_deep, iolist_to_binary_deep, phash2_deep, term_compare_sort, term_to_binary_roundtrip, unicode_deep]
+  skipped: 2 pending  [chksum_iolist, compile_module]
+
+GATE PASS: all active miscompilation guards green.
+GATE_EXIT=0

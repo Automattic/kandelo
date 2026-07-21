@@ -1,0 +1,8 @@
+copy_large_term
+ets_match
+format_p_deep
+iolist_to_binary_deep
+phash2_deep
+term_compare_sort
+term_to_binary_roundtrip
+unicode_deep

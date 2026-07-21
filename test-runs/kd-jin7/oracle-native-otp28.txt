@@ -1,0 +1,12 @@
+warning: Git tree '/Users/brandon/src/kandelo' has uncommitted changes
+kandelo dev shell — LLVM 21.1.7, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+term_to_binary_roundtrip	{true,2741}
+unicode_deep	{650,88400}
+chksum_iolist	{<<140,120,254,181,217,34,17,213,230,74,169,247,123,44,26,193>>,2948946130,2665225928}
+ets_match	{50,3775,51,100}
+term_compare_sort	{true,45350027}
+phash2_deep	64685795
+copy_large_term	{true,60113841}
+format_p_deep	{293,100105088}
+iolist_to_binary_deep	{200,100,120,200}
+compile_module	{5050,true,true}

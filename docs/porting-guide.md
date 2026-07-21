@@ -711,6 +711,19 @@ hardcoding it.
   in `depends_on`. The resolver builds deps before you and exports
   their paths via `WASM_POSIX_DEP_<NAME>_DIR` / `_SRC_DIR`. Hidden
   source-tree reads break on clean force-rebuild runs.
+- **wasm32 `-O2` miscompilations returning plausible-but-wrong
+  results.** LLVM's wasm32 backend can miscompile C code that walks
+  deep/recursive structures via a stack whose pointers alias a local
+  array (returning garbage or reading out of bounds), only once inputs
+  are large enough to leave the inline fast path. Symptoms are silent
+  wrong output, not a crash. If a port fails a term/iodata/traversal
+  operation but is correct on the native build, suspect this class:
+  rebuild the suspect translation unit at `-O1` to confirm, then
+  **land the `-O1` with both a registry row and a detection smoke row
+  in the same change** so it can never silently regress. Erlang is the
+  worked example — see `packages/registry/erlang/wasm32-miscompilations.md`
+  (triage runbook, workaround table, removal checklist) and the smoke
+  matrix `packages/registry/erlang/test/wasm32-miscompilation-matrix.ts`.
 
 ## Homebrew Formula Authoring
 
