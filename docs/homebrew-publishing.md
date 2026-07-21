@@ -1625,12 +1625,27 @@ Brewfile roots and dependency edges, accepted command, optional image-owned
 default shell, and the image and evidence assets' public URLs, SHA-256 digests,
 and byte counts. Its
 `launch` object has `query_parameter: "vfs"` and a `value` containing the
-public image URL. Pass that value through the browser's normal direct-image
-path:
+public image URL. That direct-image value remains useful for publisher
+acceptance and low-level diagnosis:
 
 ```text
 ?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
 ```
+
+For normal immutable downstream consumption, pass the descriptor asset itself:
+
+```text
+?homebrewVfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew-vfs.json
+```
+
+That path resolves through the boot descriptor's root image mount and verifies
+the descriptor's ABI, content tag, repository/tap identity, exact image byte
+count, and image SHA-256 before restoring the VFS. Interactive Homebrew release
+sources require the image's shell path and arguments to match the descriptor's
+default-shell contract and never silently substitute the legacy browser shell.
+Conventional third-party tap repositories may be selected explicitly; they
+receive the same untrusted-input validation and do not inherit first-party
+trust.
 
 The release publisher never uses `--clobber`. A content-tag state lock
 serializes writers. An absent release starts as a draft; an interrupted exact

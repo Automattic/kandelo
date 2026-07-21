@@ -162,7 +162,7 @@ export const App: React.FC = () => {
   }, [host, closeDockPane]);
 
   const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
-    if (item.vfsImageUrl) {
+    if (item.vfsImageUrl || item.vfsImageResolver) {
       navigateToGalleryItemUrl(item);
       return;
     }

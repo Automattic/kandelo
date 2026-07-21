@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
@@ -172,6 +173,24 @@ async function writeHomebrewDefaultShellFixture(): Promise<string> {
   return `${FIXTURE_BASE_PATH}/default-shell/${fixtureName}`;
 }
 
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function releaseEvidenceAsset(
+  repository: string,
+  tag: string,
+  asset: string,
+): { asset: string; url: string; sha256: string; bytes: number } {
+  const bytes = new TextEncoder().encode(asset);
+  return {
+    asset,
+    url: `https://github.com/${repository}/releases/download/${tag}/${asset}`,
+    sha256: sha256(bytes),
+    bytes: bytes.byteLength,
+  };
+}
+
 test.afterAll(async () => {
   await rm(FIXTURE_ROOT, { recursive: true, force: true });
 });
@@ -290,5 +309,222 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
     120_000,
   );
 
+  expect(legacyShellFetches).toEqual([]);
+});
+
+test("Homebrew release mounts do not inherit colliding built-in profile policy", async ({
+  page,
+}) => {
+  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+
+  const profiles = await page.evaluate(async (abiVersion) => {
+    const { profileForDescriptor } = await import(
+      "/pages/kandelo/kernel-host/live-setup.ts"
+    );
+    const imageUrl =
+      "https://github.com/Example/homebrew-tools/releases/download/" +
+      `homebrew-vfs-sha256-${"a".repeat(64)}/kandelo-homebrew.vfs.zst`;
+    const descriptorUrl = imageUrl.replace(
+      "kandelo-homebrew.vfs.zst",
+      "kandelo-homebrew-vfs.json",
+    );
+    return ["shell", "wordpress-sqlite"].map((id) => {
+      const profile = profileForDescriptor({
+        version: 1,
+        id,
+        title: "Known-ID Homebrew shell",
+        base: `kandelo:shell@abi${abiVersion}`,
+        runtime: {
+          arch: "wasm32",
+          kernel: "kernel@local",
+          memoryPages: 2048,
+          features: ["shared-array-buffer", "pty"],
+          time: "real",
+        },
+        packages: [],
+        mounts: [{
+          path: "/",
+          source: "image",
+          ref: imageUrl,
+          resolver: {
+            kind: "homebrew-vfs-release",
+            descriptorUrl,
+            requireDefaultShell: true,
+          },
+          integrity: {
+            algorithm: "sha256",
+            digest: "a".repeat(64),
+            bytes: 4096,
+          },
+          readonly: false,
+        }],
+        boot: {
+          argv: ["dash", "-l", "-i"],
+          cwd: "/home/user",
+          env: { HOME: "/home/user" },
+          uid: 1000,
+          gid: 1000,
+        },
+      }, "none", {
+        path: "/home/linuxbrew/.linuxbrew/bin/dash",
+        argv: ["dash", "-l", "-i"],
+      });
+      return {
+        requestedId: id,
+        profileId: profile.id,
+        vfsUrl: profile.vfsUrl,
+        hasBuiltInVfsSource: Object.hasOwn(profile, "vfsSource"),
+        hasBuiltInInit: Object.hasOwn(profile, "init"),
+        expectedImageShell: profile.expectedImageShell,
+      };
+    });
+  }, ABI_VERSION);
+
+  for (const profile of profiles) {
+    expect(profile.profileId).toBe(profile.requestedId);
+    expect(profile.vfsUrl).toContain("/Example/homebrew-tools/releases/download/");
+    expect(profile.hasBuiltInVfsSource).toBe(false);
+    expect(profile.hasBuiltInInit).toBe(false);
+    expect(profile.expectedImageShell).toEqual({
+      path: "/home/linuxbrew/.linuxbrew/bin/dash",
+      argv: ["dash", "-l", "-i"],
+    });
+  }
+});
+
+test("an immutable Homebrew release boots its exact shell and rejects shell drift", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await writeHomebrewDefaultShellFixture();
+  const imageBytes = new Uint8Array(await readFile(
+    new URL("default-shell/homebrew-default-shell.vfs", FIXTURE_ROOT),
+  ));
+  const imageSha256 = sha256(imageBytes);
+  const repository = "Example/homebrew-tools";
+  const tag = `homebrew-vfs-sha256-${imageSha256}`;
+  const releaseBase = `https://github.com/${repository}/releases/download/${tag}`;
+  const descriptorUrl = `${releaseBase}/kandelo-homebrew-vfs.json`;
+  const imageUrl = `${releaseBase}/kandelo-homebrew.vfs.zst`;
+  const descriptor = {
+    schema: 1,
+    kind: "kandelo-homebrew-vfs",
+    formula: "file-formula",
+    arch: "wasm32",
+    tap: {
+      repository,
+      name: "example/tools",
+      commit: "1111111111111111111111111111111111111111",
+    },
+    kandelo: {
+      repository: "Automattic/kandelo",
+      commit: "2222222222222222222222222222222222222222",
+      abi: ABI_VERSION,
+    },
+    bottle_release_tag: `bottles-abi-v${ABI_VERSION}`,
+    selection: {
+      requested_packages: ["dash", "file-formula"],
+      dependency_edges: [{
+        from: "example/tools/file-formula",
+        to: "example/tools/dash",
+        version: "0.5.12",
+      }],
+    },
+    acceptance: {
+      node: "success",
+      browser: "chromium",
+      executable: "/home/linuxbrew/.linuxbrew/bin/dash",
+      argv: ["dash", "-c", "printf accepted"],
+    },
+    release: { repository, tag },
+    image: {
+      asset: "kandelo-homebrew.vfs.zst",
+      url: imageUrl,
+      sha256: imageSha256,
+      bytes: imageBytes.byteLength,
+      kernel_abi: ABI_VERSION,
+    },
+    evidence: {
+      report: releaseEvidenceAsset(repository, tag, "kandelo-homebrew-vfs-report.json"),
+      node: releaseEvidenceAsset(repository, tag, "kandelo-homebrew-node-evidence.json"),
+      browser: releaseEvidenceAsset(repository, tag, "kandelo-homebrew-browser-evidence.json"),
+    },
+    launch: { query_parameter: "vfs", value: imageUrl },
+    default_shell: {
+      path: "/home/linuxbrew/.linuxbrew/bin/dash",
+      argv: ["dash", "-l", "-i"],
+    },
+  };
+  await page.route(descriptorUrl, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(descriptor),
+    });
+  });
+  await page.route(imageUrl, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/octet-stream",
+      body: Buffer.from(imageBytes),
+    });
+  });
+  // Once the page is cross-origin isolated, its service worker deliberately
+  // sends external artifacts through the configured CORS proxy. Intercept the
+  // service worker's outbound request as well as the direct pre-control form.
+  await page.context().route(
+    (url) =>
+      url.pathname === "/__kandelo_cors_proxy" &&
+      [descriptorUrl, imageUrl].includes(url.searchParams.get("url") ?? ""),
+    async (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url");
+      await route.fulfill({
+        status: 200,
+        contentType: target === descriptorUrl
+          ? "application/json"
+          : "application/octet-stream",
+        body: target === descriptorUrl
+          ? JSON.stringify(descriptor)
+          : Buffer.from(imageBytes),
+      });
+    },
+  );
+  const legacyShellFetches: string[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (
+      request.resourceType() === "fetch" &&
+      /\/(?:bash|dash)\.wasm(?:\?|$)/.test(url) &&
+      !url.includes("?import&url")
+    ) {
+      legacyShellFetches.push(url);
+    }
+  });
+
+  await gotoOrSkip(
+    page,
+    `/?homebrewVfs=${encodeURIComponent(descriptorUrl)}`,
+    false,
+  );
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  await waitForTerminalContent(page, /kandelo\$\s*$/, 180_000);
+  await runTerminalCommand(
+    page,
+    "printf 'IMMUTABLE_HOMEBREW:%s:%s\\n' \"$0\" \"${PATH%%:*}\"",
+    "IMMUTABLE_HOMEBREW:dash:/home/linuxbrew/.linuxbrew/bin",
+  );
+  expect(legacyShellFetches).toEqual([]);
+
+  descriptor.default_shell.argv = ["dash", "-i"];
+  legacyShellFetches.length = 0;
+  await gotoOrSkip(
+    page,
+    `/?homebrewVfs=${encodeURIComponent(descriptorUrl)}`,
+    false,
+  );
+  await expect(page.locator("main")).toContainText(
+    `${KANDELO_SHELL_CONFIG_PATH} does not match its immutable release descriptor`,
+    { timeout: 30_000 },
+  );
   expect(legacyShellFetches).toEqual([]);
 });

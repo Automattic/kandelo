@@ -248,10 +248,27 @@ export interface DescriptorMount {
   path: string;
   source: MountSource;
   ref?: string;                     // content hash for image / package-layer / cas
+  /** Resolver for an external artifact contract. Kept with a resolved ref as provenance. */
+  resolver?: DescriptorMountResolver;
+  /** Exact transport bytes required before a remote image may be restored. */
+  integrity?: DescriptorArtifactIntegrity;
   name?: string;                    // workspace name for opfs
   data?: string;                    // base64url(zstd(cbor(...))) for inline-overlay
   readonly?: boolean;
   ephemeral?: boolean;
+}
+
+export interface DescriptorMountResolver {
+  kind: "homebrew-vfs-release";
+  descriptorUrl: string;
+  /** Interactive Homebrew sources fail instead of downloading a legacy shell. */
+  requireDefaultShell: true;
+}
+
+export interface DescriptorArtifactIntegrity {
+  algorithm: "sha256";
+  digest: string;
+  bytes: number;
 }
 
 export interface BootCommand {
@@ -501,6 +518,8 @@ export interface GalleryItem {
   bootCommand: string[];
   /** Direct .vfs or .vfs.zst image URL used for bootable deep links. */
   vfsImageUrl?: string;
+  /** Immutable release descriptor resolved through the root image mount. */
+  vfsImageResolver?: DescriptorMountResolver;
   accent: string;
   glyph: string;
   estimatedUrlBytes: number;

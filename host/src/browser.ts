@@ -67,3 +67,22 @@ export type {
   HomebrewVfsPlanOptions,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+export {
+  HOMEBREW_VFS_DESCRIPTOR_ASSET,
+  HOMEBREW_VFS_IMAGE_ASSET,
+  MAX_HOMEBREW_VFS_DESCRIPTOR_BYTES,
+  MAX_HOMEBREW_VFS_IMAGE_BYTES,
+  HomebrewVfsReleaseError,
+  fetchHomebrewVfsReleaseDescriptor,
+  fetchVerifiedHomebrewVfsImage,
+  parseHomebrewVfsReleaseDescriptor,
+  resolveHomebrewVfsRelease,
+} from "./homebrew-vfs-release";
+export type {
+  HomebrewVfsAsset,
+  HomebrewVfsDefaultShell,
+  HomebrewVfsFetchOptions,
+  HomebrewVfsImageAsset,
+  HomebrewVfsReleaseDescriptor,
+  ResolvedHomebrewVfsRelease,
+} from "./homebrew-vfs-release";

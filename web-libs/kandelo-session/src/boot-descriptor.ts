@@ -33,6 +33,8 @@ export const HARD_CAPS = {
   maxPathLen: 1024,
   /** Max bytes for a single inline-overlay's `data` field. */
   maxInlineOverlayBytes: 32 * 1024,
+  /** Max transport bytes accepted for a remote root image. */
+  maxRemoteImageBytes: 256 * 1024 * 1024,
   /** Allowed mount source kinds. */
   allowedMountSources: new Set<MountSource>([
     "image", "package-layer", "inline-overlay", "remote-overlay",
@@ -177,6 +179,57 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
         );
       }
     }
+    if (m.resolver !== undefined) {
+      if (m.source !== "image" || m.path !== "/") {
+        throw new BootDescriptorError(
+          "E_MOUNT_RESOLVER",
+          "mount.resolver is supported only for the root image mount",
+        );
+      }
+      if (!m.resolver || typeof m.resolver !== "object" || Array.isArray(m.resolver)) {
+        throw new BootDescriptorError("E_MOUNT_RESOLVER", "mount.resolver must be an object");
+      }
+      const resolver = m.resolver as Record<string, unknown>;
+      if (
+        Object.keys(resolver).sort().join(",") !== "descriptorUrl,kind,requireDefaultShell" ||
+        resolver.kind !== "homebrew-vfs-release" ||
+        resolver.requireDefaultShell !== true ||
+        typeof resolver.descriptorUrl !== "string" ||
+        resolver.descriptorUrl.length > 4096 ||
+        !isSafeHttpsUrl(resolver.descriptorUrl)
+      ) {
+        throw new BootDescriptorError(
+          "E_MOUNT_RESOLVER",
+          "Homebrew VFS resolver requires kind, requireDefaultShell=true, and a safe absolute HTTPS descriptorUrl",
+        );
+      }
+    }
+    if (m.integrity !== undefined) {
+      if (m.source !== "image" || typeof m.ref !== "string") {
+        throw new BootDescriptorError(
+          "E_MOUNT_INTEGRITY",
+          "mount.integrity requires an image mount with a resolved ref",
+        );
+      }
+      if (!m.integrity || typeof m.integrity !== "object" || Array.isArray(m.integrity)) {
+        throw new BootDescriptorError("E_MOUNT_INTEGRITY", "mount.integrity must be an object");
+      }
+      const integrity = m.integrity as Record<string, unknown>;
+      if (
+        Object.keys(integrity).sort().join(",") !== "algorithm,bytes,digest" ||
+        integrity.algorithm !== "sha256" ||
+        typeof integrity.digest !== "string" ||
+        !/^[0-9a-f]{64}$/.test(integrity.digest) ||
+        !Number.isSafeInteger(integrity.bytes) ||
+        (integrity.bytes as number) < 1 ||
+        (integrity.bytes as number) > HARD_CAPS.maxRemoteImageBytes
+      ) {
+        throw new BootDescriptorError(
+          "E_MOUNT_INTEGRITY",
+          `mount.integrity requires sha256, a lowercase digest, and 1 to ${HARD_CAPS.maxRemoteImageBytes} bytes`,
+        );
+      }
+    }
   }
   if (!d.boot || typeof d.boot !== "object") {
     throw new BootDescriptorError("E_MISSING_FIELD", "boot must be an object");
@@ -199,6 +252,23 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
       throw new BootDescriptorError("E_BOOT_USER", `boot.${field} must be an integer from 0 to 65535`);
     }
   }
+}
+
+function isSafeHttpsUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "https:" &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    url.href === value
+  );
 }
 
 // ── Encode / decode ────────────────────────────────────────────────────────

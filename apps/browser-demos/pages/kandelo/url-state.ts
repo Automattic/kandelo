@@ -1,10 +1,13 @@
 import type {
   BootDescriptor,
+  DescriptorArtifactIntegrity,
   DescriptorMount,
+  DescriptorMountResolver,
   GalleryItem,
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
 
 export const VFS_IMAGE_QUERY_PARAM = "vfs";
+export const HOMEBREW_VFS_QUERY_PARAM = "homebrewVfs";
 
 const VFS_IMAGE_QUERY_ALIASES = [
   VFS_IMAGE_QUERY_PARAM,
@@ -14,14 +17,35 @@ const VFS_IMAGE_QUERY_ALIASES = [
   "image",
 ] as const;
 
+const HOMEBREW_VFS_QUERY_ALIASES = [
+  HOMEBREW_VFS_QUERY_PARAM,
+  "homebrewVfsDescriptor",
+] as const;
+
 export interface KandeloBootQuery {
   vfsImageUrl: string | null;
+  homebrewVfsDescriptorUrl: string | null;
 }
 
 export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery {
   const params = new URLSearchParams(search);
+  const rawVfsImageUrl = firstVfsImageQueryValue(params);
+  const rawHomebrewDescriptorUrl = firstHomebrewVfsQueryValue(params);
+  const vfsImageUrl = normalizeVfsImageUrl(rawVfsImageUrl);
+  const homebrewVfsDescriptorUrl = normalizeHomebrewVfsDescriptorUrl(
+    rawHomebrewDescriptorUrl,
+  );
+  if (rawVfsImageUrl && !vfsImageUrl) {
+    throw new Error("vfs must name an HTTP(S) VFS image URL");
+  }
+  if (rawHomebrewDescriptorUrl && !homebrewVfsDescriptorUrl) {
+    throw new Error(
+      "homebrewVfs must name an absolute canonical HTTPS release descriptor URL",
+    );
+  }
   return {
-    vfsImageUrl: normalizeVfsImageUrl(firstVfsImageQueryValue(params)),
+    vfsImageUrl,
+    homebrewVfsDescriptorUrl,
   };
 }
 
@@ -33,10 +57,36 @@ export function galleryItemUrl(
   url.searchParams.delete("demo");
   url.searchParams.delete("idle");
   clearVfsImageQueryParams(url.searchParams);
-  if (item.vfsImageUrl) {
+  clearHomebrewVfsQueryParams(url.searchParams);
+  if (item.vfsImageResolver?.kind === "homebrew-vfs-release") {
+    url.searchParams.set(
+      HOMEBREW_VFS_QUERY_PARAM,
+      item.vfsImageResolver.descriptorUrl,
+    );
+  } else if (item.vfsImageUrl) {
     url.searchParams.set(VFS_IMAGE_QUERY_PARAM, item.vfsImageUrl);
   }
   return url.href;
+}
+
+export function vfsImageResolverFromDescriptor(
+  descriptor: BootDescriptor,
+): DescriptorMountResolver | null {
+  const root = descriptor.mounts.find((mount) =>
+    mount.path === "/" &&
+    mount.source === "image" &&
+    mount.resolver?.kind === "homebrew-vfs-release"
+  );
+  return root?.resolver ?? null;
+}
+
+export function vfsImageIntegrityFromDescriptor(
+  descriptor: BootDescriptor,
+): DescriptorArtifactIntegrity | null {
+  const root = descriptor.mounts.find((mount) =>
+    mount.path === "/" && mount.source === "image"
+  );
+  return root?.integrity ?? null;
 }
 
 export function navigateToGalleryItemUrl(item: GalleryItem): void {
@@ -79,18 +129,71 @@ export function descriptorWithVfsImageUrl(
   };
 }
 
+export function descriptorWithVfsImageResolver(
+  descriptor: BootDescriptor,
+  resolver: DescriptorMountResolver,
+  opts: {
+    id?: string;
+    title?: string;
+    packages?: string[];
+  } = {},
+): BootDescriptor {
+  return {
+    ...descriptor,
+    id: opts.id ?? "homebrew-vfs",
+    title: opts.title ?? "Homebrew VFS",
+    packages: opts.packages ?? descriptor.packages.slice(),
+    mounts: mountsWithRootImageResolver(descriptor.mounts, resolver),
+  };
+}
+
 export function mountsWithRootImageUrl(
   mounts: DescriptorMount[],
   vfsImageUrl: string,
+  options: {
+    integrity?: DescriptorArtifactIntegrity;
+    resolver?: DescriptorMountResolver;
+  } = {},
 ): DescriptorMount[] {
   let replaced = false;
   const next = mounts.map((mount) => {
     if (mount.path !== "/" || mount.source !== "image") return { ...mount };
     replaced = true;
-    return { ...mount, ref: vfsImageUrl, readonly: false };
+    const { ref: _ref, resolver: _resolver, integrity: _integrity, ...base } = mount;
+    return {
+      ...base,
+      ref: vfsImageUrl,
+      ...(options.resolver ? { resolver: options.resolver } : {}),
+      ...(options.integrity ? { integrity: options.integrity } : {}),
+      readonly: false,
+    };
   });
   if (!replaced) {
-    next.unshift({ path: "/", source: "image", ref: vfsImageUrl, readonly: false });
+    next.unshift({
+      path: "/",
+      source: "image",
+      ref: vfsImageUrl,
+      ...(options.resolver ? { resolver: options.resolver } : {}),
+      ...(options.integrity ? { integrity: options.integrity } : {}),
+      readonly: false,
+    });
+  }
+  return next;
+}
+
+export function mountsWithRootImageResolver(
+  mounts: DescriptorMount[],
+  resolver: DescriptorMountResolver,
+): DescriptorMount[] {
+  let replaced = false;
+  const next = mounts.map((mount) => {
+    if (mount.path !== "/" || mount.source !== "image") return { ...mount };
+    replaced = true;
+    const { ref: _ref, resolver: _resolver, integrity: _integrity, ...base } = mount;
+    return { ...base, resolver, readonly: false };
+  });
+  if (!replaced) {
+    next.unshift({ path: "/", source: "image", resolver, readonly: false });
   }
   return next;
 }
@@ -108,6 +211,30 @@ export function normalizeVfsImageUrl(
     return null;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return url.href;
+}
+
+export function normalizeHomebrewVfsDescriptorUrl(
+  raw: string | null | undefined,
+): string | null {
+  const trimmed = nonEmpty(raw);
+  if (!trimmed || raw !== trimmed) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.href !== trimmed
+  ) {
+    return null;
+  }
   return url.href;
 }
 
@@ -145,8 +272,22 @@ function firstVfsImageQueryValue(params: URLSearchParams): string | null {
   return null;
 }
 
+function firstHomebrewVfsQueryValue(params: URLSearchParams): string | null {
+  for (const key of HOMEBREW_VFS_QUERY_ALIASES) {
+    const value = nonEmpty(params.get(key));
+    if (value) return value;
+  }
+  return null;
+}
+
 function clearVfsImageQueryParams(params: URLSearchParams): void {
   for (const key of VFS_IMAGE_QUERY_ALIASES) {
+    params.delete(key);
+  }
+}
+
+function clearHomebrewVfsQueryParams(params: URLSearchParams): void {
+  for (const key of HOMEBREW_VFS_QUERY_ALIASES) {
     params.delete(key);
   }
 }

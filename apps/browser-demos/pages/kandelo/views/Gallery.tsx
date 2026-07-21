@@ -4,7 +4,12 @@
 
 import * as React from "react";
 import { useGalleryItems, useKernelHost, useStatus } from "../kernel-host/react";
-import { galleryItemUrl, mountsWithRootImageUrl, vfsImageUrlFromDescriptor } from "../url-state";
+import {
+  galleryItemUrl,
+  mountsWithRootImageResolver,
+  mountsWithRootImageUrl,
+  vfsImageUrlFromDescriptor,
+} from "../url-state";
 import { buildShareUrl, encodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
   GalleryItem,
@@ -269,7 +274,7 @@ async function shareUrlForGalleryItem(
   item: GalleryItem,
   currentDescriptor: BootDescriptor,
 ): Promise<string> {
-  if (item.vfsImageUrl) return galleryItemUrl(item);
+  if (item.vfsImageUrl || item.vfsImageResolver) return galleryItemUrl(item);
 
   const descriptor = descriptorFromGalleryItem(item, currentDescriptor);
   const encoded = await encodeBootDescriptor(descriptor);
@@ -302,16 +307,18 @@ async function writeClipboardText(text: string): Promise<void> {
 /**
  * Apply a GalleryItem to a base BootDescriptor — used by the App to convert
  * a row click into an applyBootDescriptor() call. Lifts argv, packages, any
- * direct VFS image URL, and the expected user context from the gallery item;
+ * direct VFS image URL or immutable image resolver, and the expected user context from the gallery item;
  * other fields stay from the current descriptor.
  */
 export function descriptorFromGalleryItem(
   item: GalleryItem,
   base: BootDescriptor,
 ): BootDescriptor {
-  const mounts = item.vfsImageUrl
-    ? mountsWithRootImageUrl(base.mounts, item.vfsImageUrl)
-    : base.mounts;
+  const mounts = item.vfsImageResolver
+    ? mountsWithRootImageResolver(base.mounts, item.vfsImageResolver)
+    : item.vfsImageUrl
+      ? mountsWithRootImageUrl(base.mounts, item.vfsImageUrl)
+      : base.mounts;
   const rootBoot = item.bootCommand[0] === "/sbin/dinit";
   const nodeBoot = item.id === "node";
   const userEnv = nodeBoot

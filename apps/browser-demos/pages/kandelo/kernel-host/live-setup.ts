@@ -1,6 +1,12 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import {
+  MAX_HOMEBREW_VFS_IMAGE_BYTES,
+  fetchHomebrewVfsReleaseDescriptor,
+  fetchVerifiedHomebrewVfsImage,
+  type HomebrewVfsDefaultShell,
+} from "@host/homebrew-vfs-release";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
@@ -39,6 +45,7 @@ import { decompress as decompressZstd } from "fzstd";
 import {
   LiveKernelHost,
   type BootDescriptor,
+  type DescriptorArtifactIntegrity,
   type DemoPresentation,
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
@@ -66,10 +73,15 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/demo-guides";
 import { PRESET_LIBRARY } from "../presets";
 import {
+  descriptorWithVfsImageResolver,
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
+  mountsWithRootImageUrl,
+  normalizeHomebrewVfsDescriptorUrl,
   normalizeVfsImageUrl,
   titleFromVfsImageUrl,
+  vfsImageIntegrityFromDescriptor,
+  vfsImageResolverFromDescriptor,
   vfsImageUrlFromDescriptor,
 } from "../url-state";
 
@@ -86,6 +98,13 @@ import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 const DEFAULT_SOFTWARE_MANIFEST_URLS = [
   `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/gallery.json`,
 ];
+
+// The production pin is filled from an exact immutable release descriptor.
+// The environment override keeps local/preview validation explicit without a
+// mutable fallback URL. A failed configured source remains a visible failure.
+const PINNED_HOMEBREW_SHELL_VFS_DESCRIPTOR_URL = (
+  (import.meta.env.VITE_KANDELO_HOMEBREW_SHELL_VFS_DESCRIPTOR_URL as string | undefined) ?? ""
+).trim();
 
 const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/fbtest.wasm", {
@@ -391,6 +410,8 @@ interface LiveProfile {
   shell: ShellProfile;
   includeNodeUtility: boolean;
   maxVfsByteLength: number;
+  vfsIntegrity?: DescriptorArtifactIntegrity;
+  expectedImageShell?: HomebrewVfsDefaultShell;
   autoCommand?: string;
   fallbackPresentation?: DemoPresentation;
   init?: {
@@ -501,6 +522,7 @@ export type FbDemo = "none" | "test";
 export interface CreateLiveHostOptions {
   demo?: string | null;
   vfsUrl?: string | null;
+  homebrewVfsDescriptorUrl?: string | null;
   fb?: FbDemo;
 }
 
@@ -510,13 +532,17 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const localGalleryItems = liveGalleryItems();
 
-  const initialDescriptor = descriptorForBootQuery(opts.vfsUrl, opts.demo);
+  const initialDescriptor = descriptorForBootQuery(
+    opts.vfsUrl,
+    opts.homebrewVfsDescriptorUrl,
+    opts.demo,
+  );
   const host = new LiveKernelHost({
     status: "booting",
     descriptor: initialDescriptor,
     galleryItems: localGalleryItems,
     applyBootDescriptor: async (desc, h) => {
-      await startBoot(h, profileForDescriptor(desc, "none"), desc);
+      await startBoot(h, desc, "none");
     },
   });
 
@@ -561,7 +587,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     return ready;
   };
 
-  void startBoot(host, profileForDescriptor(initialDescriptor, opts.fb), initialDescriptor);
+  void startBoot(host, initialDescriptor, opts.fb);
   void requireServiceWorker()
     .then(() => refreshSoftwareGallery(host, localGalleryItems))
     .catch((err) => {
@@ -572,8 +598,8 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
 
   async function startBoot(
     h: LiveKernelHost,
-    profile: LiveProfile,
     descriptor: BootDescriptor,
+    fb: FbDemo = "none",
   ): Promise<void> {
     const seq = ++bootSeq;
     const previousKernel = currentKernel;
@@ -584,12 +610,19 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     }
     h.detachKernel();
     const bootStartedAt = performance.now();
+    let effectiveDescriptor = descriptor;
 
     try {
+      const resolved = await resolveBootDescriptorImage(descriptor);
+      effectiveDescriptor = resolved.descriptor;
       const kernel = await bootProfile(
         h,
-        profile,
-        descriptor,
+        profileForDescriptor(
+          effectiveDescriptor,
+          fb,
+          resolved.expectedImageShell,
+        ),
+        effectiveDescriptor,
         bootStartedAt,
         () => seq === bootSeq,
         requireServiceWorker,
@@ -603,7 +636,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
       if (err instanceof BootSuperseded || seq !== bootSeq) return;
       currentKernel = null;
       h.detachKernel();
-      showBootError(h, descriptor, err, bootStartedAt);
+      showBootError(h, effectiveDescriptor, err, bootStartedAt);
     }
   }
 }
@@ -644,6 +677,13 @@ function showBootError(
       facility: "kandelo-software",
       msg: "The third-party gallery entry may be temporarily unavailable or its release artifact may have been deleted.",
     });
+  } else if (vfsImageResolverFromDescriptor(descriptor)) {
+    host.pushDmesg({
+      t: bootElapsedMs(bootStartedAt),
+      level: "warn",
+      facility: "homebrew",
+      msg: "The immutable Homebrew VFS release is unavailable or inconsistent with its descriptor.",
+    });
   }
   host.setStatus("error");
 }
@@ -654,9 +694,27 @@ function bootElapsedMs(bootStartedAt: number): number {
 
 function descriptorForBootQuery(
   vfsUrl: string | null | undefined,
+  homebrewVfsDescriptorUrl: string | null | undefined,
   demo: string | null | undefined,
 ): BootDescriptor {
+  const normalizedHomebrewDescriptorUrl = normalizeHomebrewVfsDescriptorUrl(
+    homebrewVfsDescriptorUrl,
+  );
   const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl);
+  if (normalizedHomebrewDescriptorUrl && normalizedVfsUrl) {
+    throw new Error("Choose either a Homebrew VFS release descriptor or a direct VFS image, not both");
+  }
+  if (normalizedHomebrewDescriptorUrl) {
+    return descriptorWithVfsImageResolver(descriptorFor("shell"), {
+      kind: "homebrew-vfs-release",
+      descriptorUrl: normalizedHomebrewDescriptorUrl,
+      requireDefaultShell: true,
+    }, {
+      id: "homebrew-vfs",
+      title: "Homebrew VFS",
+      packages: [],
+    });
+  }
   if (!normalizedVfsUrl) return descriptorFor(normalizeDemoId(demo) ?? "shell");
 
   const liveId = liveDemoIdForVfsImageUrl(normalizedVfsUrl);
@@ -674,11 +732,84 @@ function descriptorForBootQuery(
     });
 }
 
-function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
+interface ResolvedBootDescriptorImage {
+  descriptor: BootDescriptor;
+  expectedImageShell?: HomebrewVfsDefaultShell;
+}
+
+async function resolveBootDescriptorImage(
+  descriptor: BootDescriptor,
+): Promise<ResolvedBootDescriptorImage> {
+  const resolver = vfsImageResolverFromDescriptor(descriptor);
+  if (!resolver) return { descriptor };
+
+  const release = await fetchHomebrewVfsReleaseDescriptor(
+    resolver.descriptorUrl,
+    ABI_VERSION,
+    { maxImageBytes: MAX_HOMEBREW_VFS_IMAGE_BYTES },
+  );
+  if (resolver.requireDefaultShell && !release.default_shell) {
+    throw new Error(
+      `Homebrew VFS release ${release.release.tag} does not declare an image-owned default shell`,
+    );
+  }
+  const integrity: DescriptorArtifactIntegrity = {
+    algorithm: "sha256",
+    digest: release.image.sha256,
+    bytes: release.image.bytes,
+  };
+  const resolvedMounts = mountsWithRootImageUrl(
+    descriptor.mounts,
+    release.image.url,
+    { resolver, integrity },
+  );
+  const packages = Array.from(new Set([
+    ...release.selection.requested_packages.map(
+      (name) => `${release.tap.name}/${name}`,
+    ),
+    ...release.selection.dependency_edges.flatMap(({ from, to }) => [from, to]),
+  ]));
+  const genericQueryDescriptor = descriptor.id === "homebrew-vfs";
+  return {
+    descriptor: {
+      ...descriptor,
+      // A shared descriptor is untrusted input. Derive the runtime profile ID
+      // from the verified Homebrew identity so a caller cannot select built-in
+      // demo setup (including its VFS source, init process, or image patches)
+      // by reusing an ID such as "shell" or "wordpress-sqlite".
+      id: homebrewVfsId(release.tap.name, release.formula),
+      title: genericQueryDescriptor
+        ? `${release.formula} Homebrew VFS`
+        : descriptor.title,
+      packages,
+      mounts: resolvedMounts,
+    },
+    ...(release.default_shell
+      ? { expectedImageShell: release.default_shell }
+      : {}),
+  };
+}
+
+function homebrewVfsId(tapName: string, formula: string): string {
+  return `${tapName}-${formula}-homebrew-vfs`
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function profileForDescriptor(
+  desc: BootDescriptor,
+  fb?: FbDemo,
+  expectedImageShell?: HomebrewVfsDefaultShell,
+): LiveProfile {
   const vfsUrl = vfsImageUrlFromDescriptor(desc);
   if (!vfsUrl) return profileFor(desc.id, fb);
 
-  const knownDemo = normalizeDemoId(desc.id);
+  // Resolver-backed mounts never inherit built-in demo behavior from an
+  // untrusted descriptor ID. The resolved release URL and image-owned policy
+  // are authoritative for this machine.
+  const knownDemo = vfsImageResolverFromDescriptor(desc)
+    ? null
+    : normalizeDemoId(desc.id);
   const profile = knownDemo
     ? profileFor(knownDemo, fb)
     : customVfsProfile(desc, vfsUrl, fb);
@@ -689,6 +820,8 @@ function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
     vfsUrl,
     software: undefined,
     descriptor: desc,
+    vfsIntegrity: vfsImageIntegrityFromDescriptor(desc) ?? undefined,
+    expectedImageShell,
   };
 }
 
@@ -1096,6 +1229,25 @@ async function bootProfile(
     maxByteLength: profile.maxVfsByteLength,
   });
   const shellConfig = readImageShellConfig(buildFs);
+  const expectedImageShell = profile.expectedImageShell;
+  if (expectedImageShell) {
+    if (!shellConfig) {
+      throw new Error(
+        `Homebrew VFS image is missing ${KANDELO_SHELL_CONFIG_PATH}`,
+      );
+    }
+    if (
+      shellConfig.path !== expectedImageShell.path ||
+      shellConfig.argv.length !== expectedImageShell.argv.length ||
+      shellConfig.argv.some(
+        (value, index) => value !== expectedImageShell.argv[index],
+      )
+    ) {
+      throw new Error(
+        `Homebrew VFS image ${KANDELO_SHELL_CONFIG_PATH} does not match its immutable release descriptor`,
+      );
+    }
+  }
   if (
     profile.id === "nginx-php" ||
     profile.id === "wordpress-sqlite" ||
@@ -1521,6 +1673,19 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
   if (!profile.software) {
     const vfsUrl = await resolveProfileVfsUrl(profile);
+    if (profile.vfsIntegrity) {
+      const bytes = await fetchVerifiedHomebrewVfsImage({
+        url: vfsUrl,
+        sha256: profile.vfsIntegrity.digest,
+        bytes: profile.vfsIntegrity.bytes,
+      }, {
+        maxImageBytes: MAX_HOMEBREW_VFS_IMAGE_BYTES,
+      });
+      return bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer;
+    }
     return fetch(vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer());
   }
   const vfsImage = await loadArchiveArtifact(
@@ -1882,7 +2047,7 @@ function descriptorFor(id: string): BootDescriptor {
 }
 
 function liveGalleryItems(): GalleryItem[] {
-  return PRESET_LIBRARY.map((p) => ({
+  const items: GalleryItem[] = PRESET_LIBRARY.map((p) => ({
     id: p.id,
     title: p.title,
     summary: p.summary,
@@ -1894,6 +2059,36 @@ function liveGalleryItems(): GalleryItem[] {
     glyph: p.glyph,
     estimatedUrlBytes: p.estimatedUrlBytes,
   }));
+  if (PINNED_HOMEBREW_SHELL_VFS_DESCRIPTOR_URL) {
+    const descriptorUrl = normalizeHomebrewVfsDescriptorUrl(
+      PINNED_HOMEBREW_SHELL_VFS_DESCRIPTOR_URL,
+    );
+    if (!descriptorUrl) {
+      throw new Error(
+        "VITE_KANDELO_HOMEBREW_SHELL_VFS_DESCRIPTOR_URL must be an absolute canonical HTTPS URL",
+      );
+    }
+    items.push({
+      id: "homebrew-shell",
+      title: "Homebrew shell",
+      summary: "Immutable Homebrew Dash and file utilities, proven in Node and Chromium.",
+      base: `kandelo:shell@abi${ABI_VERSION}`,
+      packages: [
+        "kandelo-dev/tap-core/dash",
+        "kandelo-dev/tap-core/file-formula",
+      ],
+      bootCommand: ["dash", "-l", "-i"],
+      vfsImageResolver: {
+        kind: "homebrew-vfs-release",
+        descriptorUrl,
+        requireDefaultShell: true,
+      },
+      accent: "#cf5c36",
+      glyph: "hb",
+      estimatedUrlBytes: descriptorUrl.length + 32,
+    });
+  }
+  return items;
 }
 
 function vfsImageUrlForPreset(id: string): string | undefined {
