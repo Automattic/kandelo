@@ -893,6 +893,31 @@ describe("Lazy archive export/import", () => {
     );
   });
 
+  it("ignores a live archive member made stale by a peer write", async () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const owner = MemoryFileSystem.create(sab);
+    const { entries } = makeRealZip();
+    owner.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+    const serialized = owner.exportLazyArchiveEntries();
+
+    const writer = owner.open("/opt/bin/hello", O_WRONLY | O_TRUNC, 0o644);
+    owner.write(writer, new Uint8Array([9]), null, 1);
+    owner.close(writer);
+
+    const peer = MemoryFileSystem.fromExisting(sab);
+    expect(() => peer.importLazyArchiveEntries(serialized)).not.toThrow();
+    await expect(peer.ensureMaterialized("/opt/bin/hello")).resolves.toBe(
+      false,
+    );
+    expect(peer.exportLazyArchiveEntries()[0].entries).not.toContainEqual(
+      expect.objectContaining({ vfsPath: "/opt/bin/hello" }),
+    );
+  });
+
   it("rebaseToNewFileSystem preserves unmaterialized archive metadata", () => {
     const mfs = createMemfs();
     const entries = makeFakeEntries();

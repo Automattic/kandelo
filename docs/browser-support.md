@@ -58,7 +58,14 @@ Service Worker ──MessagePort──> Kernel Worker       │
   mutations through the mounted VFS; the main thread never receives the live
   VFS `SharedArrayBuffer`.
 - **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the kernel worker allocates and returns its pid so top-level spawns and guest forks share one authoritative sequence.
-- **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
+- **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from
+  the kernel-side `MemoryFileSystem`. Programs may be baked into the VFS image,
+  written by a legacy page before spawning, or represented by a lazy file/ZIP
+  stub. Both Node and browser workers verify a lazy response before replacing
+  its stub. Lazy ZIPs are bound to their exact compressed byte count and
+  SHA-256 by current builders, then every declared member is validated before
+  the group becomes concrete. Symlinks are used for multicall binaries (e.g.,
+  coreutils).
 - **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.

@@ -6,11 +6,14 @@ export type {
   LazyDownloadKind,
   LazyDownloadListener,
   LazyDownloadStatus,
+  LazyArchiveIntegrity,
+  LazyArchiveLoadRequest,
   LazyFileEntry,
   VfsImageCapacity,
   VfsImageMetadata,
   VfsImageOptions,
 } from "./memory-fs";
+export { MAX_LAZY_CONTENT_BYTES } from "./lazy-fetch";
 export { loadVfsImage } from "./load-image";
 export { DeviceFileSystem } from "./device-fs";
 export { OpfsFileSystem } from "./opfs";

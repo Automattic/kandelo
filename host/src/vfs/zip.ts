@@ -7,6 +7,7 @@
  */
 
 import { inflateSync } from "fflate";
+import { assertValidLazyContentSize } from "./lazy-fetch";
 
 // --- Zip format signatures ---
 
@@ -181,6 +182,10 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
  * directory entry. Supports store (method 0) and deflate (method 8).
  */
 export function extractZipEntry(data: Uint8Array, entry: ZipEntry): Uint8Array {
+  assertValidLazyContentSize(
+    `zip member ${entry.fileName}`,
+    entry.uncompressedSize,
+  );
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
 
   // Read local file header to get actual variable-length field sizes
@@ -200,13 +205,36 @@ export function extractZipEntry(data: Uint8Array, entry: ZipEntry): Uint8Array {
     dataStart,
     dataStart + entry.compressedSize,
   );
+  if (compressedData.byteLength !== entry.compressedSize) {
+    throw new Error(`Zip member is truncated: ${entry.fileName}`);
+  }
 
   if (entry.compressionMethod === COMPRESSION_STORE) {
+    if (entry.compressedSize !== entry.uncompressedSize) {
+      throw new Error(
+        `Zip member size mismatch for ${entry.fileName}: expected ` +
+        `${entry.uncompressedSize} bytes, received ${entry.compressedSize}`,
+      );
+    }
     // Stored — no compression, return raw bytes
     return new Uint8Array(compressedData);
   } else if (entry.compressionMethod === COMPRESSION_DEFLATE) {
-    // Deflate — decompress using fflate
-    return inflateSync(compressedData);
+    // A caller-supplied output prevents corrupt central-directory metadata
+    // from making fflate allocate an unbounded decoded buffer. The extra byte
+    // is an overflow sentinel.
+    const content = inflateSync(compressedData, {
+      out: new Uint8Array(entry.uncompressedSize + 1),
+    });
+    if (content.byteLength !== entry.uncompressedSize) {
+      const received = content.byteLength > entry.uncompressedSize
+        ? `at least ${content.byteLength}`
+        : String(content.byteLength);
+      throw new Error(
+        `Zip member size mismatch for ${entry.fileName}: expected ` +
+        `${entry.uncompressedSize} bytes, received ${received}`,
+      );
+    }
+    return content;
   } else {
     throw new Error(
       `Unsupported compression method: ${entry.compressionMethod}`,
