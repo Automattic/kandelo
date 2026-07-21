@@ -263,6 +263,127 @@ if wasm_has_stale_abi "$work/no-abi.wasm" 18; then
     exit 1
 fi
 
+# The bottle inspector limits each validator child to 16 MiB of regular-file
+# output. Large programs such as Ruby legitimately produce more structural
+# decoder text than that, so ABI validation must consume it as a stream rather
+# than asking Bash to materialize it as a here-string temporary file.
+mkdir "$work/inflated-details-bin"
+cat >"$work/inflated-details-bin/wasm-objdump" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-x" ]; then
+    awk 'BEGIN {
+        line = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        for (i = 0; i < 265000; i++) print line
+    }'
+fi
+exec "$REAL_WASM_OBJDUMP" "$@"
+SH
+chmod +x "$work/inflated-details-bin/wasm-objdump"
+inflated_details_bytes="$(
+    PATH="$work/inflated-details-bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+        wasm-objdump -x "$work/abi.wasm" | wc -c | tr -d ' '
+)"
+[ "$inflated_details_bytes" -gt $((16 * 1024 * 1024)) ] || {
+    echo "ERROR: large ABI fixture did not cross the inspector's 16 MiB boundary" >&2
+    exit 1
+}
+
+cat >"$work/validated-abi.wat" <<'WAT'
+(module
+  (memory (export "memory") 1)
+  (func (export "__abi_version") (result i32)
+    i32.const 18))
+WAT
+wat2wasm "$work/validated-abi.wat" -o "$work/validated-abi.wasm"
+
+python3 - \
+    "$REPO_ROOT/scripts/wasm-artifact-guards.sh" \
+    "$REPO_ROOT/scripts/homebrew-validate-wasm-executable.sh" \
+    "$work/abi.wasm" \
+    "$work/no-abi.wasm" \
+    "$work/argument-abi.wasm" \
+    "$work/validated-abi.wasm" \
+    "$work/inflated-details-bin" \
+    "$real_objdump" <<'PY'
+import os
+import resource
+import subprocess
+import sys
+
+(
+    guards,
+    validator,
+    valid_abi,
+    missing_abi,
+    malformed_abi,
+    validated_abi,
+    inflated_bin,
+    real_objdump,
+) = sys.argv[1:]
+limit = 16 * 1024 * 1024
+environment = os.environ.copy()
+environment["PATH"] = f"{inflated_bin}:{environment['PATH']}"
+environment["REAL_WASM_OBJDUMP"] = real_objdump
+
+
+def set_file_limit() -> None:
+    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+
+def extract(path: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"\nshift\nwasm_extract_abi_version "$1"',
+            "_",
+            guards,
+            path,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        preexec_fn=set_file_limit,
+    )
+
+
+valid = extract(valid_abi)
+if valid.returncode != 0 or valid.stdout.strip() != "18":
+    raise SystemExit(
+        f"large streamed ABI extraction failed ({valid.returncode}): {valid.stderr}"
+    )
+
+missing = extract(missing_abi)
+if missing.returncode != 1 or missing.stdout:
+    raise SystemExit(
+        "large streamed ABI extraction did not report an absent export truthfully: "
+        f"status={missing.returncode} stdout={missing.stdout!r} stderr={missing.stderr!r}"
+    )
+
+malformed = extract(malformed_abi)
+if malformed.returncode <= 1 or malformed.stdout:
+    raise SystemExit(
+        "large streamed ABI extraction did not classify a malformed export as unsafe: "
+        f"status={malformed.returncode} stdout={malformed.stdout!r} "
+        f"stderr={malformed.stderr!r}"
+    )
+
+validated = subprocess.run(
+    ["bash", validator, validated_abi, "18", "wasm32"],
+    check=False,
+    capture_output=True,
+    text=True,
+    env=environment,
+    preexec_fn=set_file_limit,
+)
+if validated.returncode != 0 or validated.stdout.strip() != "not-required":
+    raise SystemExit(
+        f"large streamed Wasm validation failed ({validated.returncode}): "
+        f"{validated.stderr}"
+    )
+PY
+
 cat >"$work/complete-fork.wat" <<'WAT'
 (module
   (import "kernel" "kernel_fork" (func $kernel_fork))
