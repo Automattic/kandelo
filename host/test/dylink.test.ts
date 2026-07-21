@@ -132,7 +132,7 @@ function buildDylinkWat(
       LINKED_FRAME_FORMAT_SECTION,
       new Uint8Array([
         0x4b, 0x4c, 0x43, 0x46,
-        1, 0, 24, 0, 4, 8, 1, 0,
+        1, 0, 24, 0, 4, 8, 3, 0,
         32, 0, 0, 0,
         24, 0, 0, 0,
         8, 0, 0, 0,
@@ -671,6 +671,7 @@ describe("side-module fork contract", () => {
       setActiveFork: () => {},
       clearActiveFork: () => {},
       invokeMainFork: () => 0,
+      beginMainAbort: () => {},
     };
 
     expect(() => loadSharedLibrarySync("libbadfork.so", wasmBytes, options))
@@ -686,6 +687,8 @@ describe("side-module fork contract", () => {
         (func (export "wpk_fork_unwind_end"))
         (func (export "wpk_fork_rewind_begin") (param i32))
         (func (export "wpk_fork_rewind_end"))
+        (func (export "wpk_fork_abort_begin") (param i32))
+        (func (export "wpk_fork_abort_end"))
         (func (export "wpk_fork_state") (result i32) i32.const 0)
         (func (export "side_fork") (result i32) call $fork))
     `, "side-fork-generic");
@@ -694,6 +697,7 @@ describe("side-module fork contract", () => {
       setActiveFork: () => {},
       clearActiveFork: () => {},
       invokeMainFork: () => 0,
+      beginMainAbort: () => {},
     };
 
     const load = () => loadSharedLibrarySync("liblegacyfork.so", wasmBytes, options);
@@ -736,6 +740,8 @@ describe("side-module fork contract", () => {
         (func (export "wpk_fork_unwind_end"))
         (func (export "wpk_fork_rewind_begin") (param i32))
         (func (export "wpk_fork_rewind_end"))
+        (func (export "wpk_fork_abort_begin") (param i32))
+        (func (export "wpk_fork_abort_end"))
         (func (export "wpk_fork_state") (result i32) i32.const 0)
         (func (export "side_fork") (result i32) call $fork))
     `, "side-fork-wrong-marker", 0);
@@ -744,6 +750,7 @@ describe("side-module fork contract", () => {
       setActiveFork: () => {},
       clearActiveFork: () => {},
       invokeMainFork: () => 0,
+      beginMainAbort: () => {},
     };
 
     expect(() => loadSharedLibrarySync("libwrongmarker.so", wasmBytes, options))
@@ -786,6 +793,8 @@ describe("side-module fork contract", () => {
         (func (export "wpk_fork_unwind_end"))
         (func (export "wpk_fork_rewind_begin") (param i32))
         (func (export "wpk_fork_rewind_end"))
+        (func (export "wpk_fork_abort_begin") (param i32))
+        (func (export "wpk_fork_abort_end"))
         (func (export "wpk_fork_state") (result i32) i32.const 0)
         (func (export "side_fork") (result i32) call $fork))
     `, "side-with-stale-main", FORK_CAP_SIDE_ENTRY);
@@ -806,6 +815,8 @@ describe("side-module fork contract", () => {
         (func (export "wpk_fork_unwind_end"))
         (func (export "wpk_fork_rewind_begin") (param i32))
         (func (export "wpk_fork_rewind_end"))
+        (func (export "wpk_fork_abort_begin") (param i32))
+        (func (export "wpk_fork_abort_end"))
         (func (export "wpk_fork_state") (result i32) i32.const 0)
         (func (export "side_fork") (result i32) call $fork))
     `, "side-without-continuation-mapping", FORK_CAP_SIDE_ENTRY);
@@ -816,6 +827,7 @@ describe("side-module fork contract", () => {
       setActiveFork: () => {},
       clearActiveFork: () => {},
       invokeMainFork: () => 0,
+      beginMainAbort: () => {},
     };
 
     expect(() => loadSharedLibrarySync("libunmappedfork.so", wasmBytes, options))
@@ -845,6 +857,14 @@ describe("side-module fork contract", () => {
         (func (export "wpk_fork_rewind_end")
           i32.const 0
           global.set $state)
+        (func (export "wpk_fork_abort_begin") (param $addr i32)
+          local.get $addr
+          global.set $buf
+          i32.const 3
+          global.set $state)
+        (func (export "wpk_fork_abort_end")
+          i32.const 0
+          global.set $state)
         (func (export "wpk_fork_state") (result i32)
           global.get $state)
         (func (export "side_fork_with_local") (result i32)
@@ -865,6 +885,7 @@ describe("side-module fork contract", () => {
         active = null;
       },
       invokeMainFork: () => forkResult,
+      beginMainAbort: () => {},
     };
 
     const lib = loadSharedLibrarySync("libsidefork.so", wasmBytes, options);
@@ -872,6 +893,15 @@ describe("side-module fork contract", () => {
     const state = lib.instance.exports.wpk_fork_state as () => number;
     const unwindEnd = lib.instance.exports.wpk_fork_unwind_end as () => void;
     const rewindBegin = lib.instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
+
+    // A main root-allocation failure returns synchronously before either Wasm
+    // stack has unwound. The side owner must cancel its just-opened root and
+    // clear the persisted active identity without entering replay.
+    forkResult = -12;
+    expect(sideFork()).toBe(29);
+    expect(state()).toBe(0);
+    expect(active).toBeNull();
+    expect(lib.forkContinuation?.hasActiveContinuation()).toBe(false);
 
     for (const expectedForkResult of [101, 202]) {
       forkResult = 0;
@@ -895,6 +925,7 @@ describe("side-module fork contract", () => {
       setActiveFork: () => {},
       clearActiveFork: () => {},
       invokeMainFork: () => 0,
+      beginMainAbort: () => {},
     };
     const provider = buildDylinkWat(`
       (module
@@ -914,6 +945,9 @@ describe("side-module fork contract", () => {
         (func (export "wpk_fork_rewind_begin") (param i32)
           i32.const 2 global.set $state)
         (func (export "wpk_fork_rewind_end") i32.const 0 global.set $state)
+        (func (export "wpk_fork_abort_begin") (param i32)
+          i32.const 3 global.set $state)
+        (func (export "wpk_fork_abort_end") i32.const 0 global.set $state)
         (func (export "wpk_fork_state") (result i32) global.get $state)
         (func (export "side_fork") (result i32) call $fork))
     `, "independent-fork-side", FORK_CAP_SIDE_ENTRY);

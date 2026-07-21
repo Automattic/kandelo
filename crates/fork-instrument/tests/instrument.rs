@@ -12,16 +12,16 @@
 //!   if-else guard that fires on `(NORMAL) || (REWIND && call_idx ==
 //!   N)`; Phase 4g gates state-mutating ops during REWIND replay.
 //!
-//! Both schemes share the same frame layout and the entry-block shape
-//! `[preamble-ifelse, Block($unwind_save), postamble]`.
+//! Both schemes share the same frame layout and a result-typed restart loop
+//! containing `[preamble-ifelse, Block($unwind_save), postamble]`.
 
 use std::collections::HashSet;
 
 use fork_instrument::runtime::names as runtime_names;
-use fork_instrument::{instrument, Options};
+use fork_instrument::{Options, instrument};
 use walrus::{
-    ir::{self, Instr, InstrSeqId},
     ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
+    ir::{self, Instr, InstrSeqId},
 };
 
 // --- Helpers ----------------------------------------------------------
@@ -57,9 +57,18 @@ fn local_func(module: &Module, id: FunctionId) -> &LocalFunction {
     }
 }
 
+fn logical_entry_seq(f: &LocalFunction) -> InstrSeqId {
+    let entry = f.block(f.entry_block());
+    if let [(Instr::Loop(ir::Loop { seq }), _)] = entry.instrs.as_slice() {
+        *seq
+    } else {
+        f.entry_block()
+    }
+}
+
 fn entry_instr_kinds(module: &Module, id: FunctionId) -> Vec<InstrKind> {
     let f = local_func(module, id);
-    f.block(f.entry_block())
+    f.block(logical_entry_seq(f))
         .instrs
         .iter()
         .map(|(i, _)| InstrKind::of(i))
@@ -75,13 +84,11 @@ fn seq_kinds(module: &Module, func_id: FunctionId, seq_id: InstrSeqId) -> Vec<In
         .collect()
 }
 
-/// Return the single `Block(seq)` at the top level of the entry
-/// block. Instrumented fork-path functions have exactly one top-level
-/// block (`$unwind_save`).
+/// Return the single `Block(seq)` in the entry restart-loop body.
 fn entry_wrapper_seq(module: &Module, id: FunctionId) -> InstrSeqId {
     let f = local_func(module, id);
     let blocks: Vec<InstrSeqId> = f
-        .block(f.entry_block())
+        .block(logical_entry_seq(f))
         .instrs
         .iter()
         .filter_map(|(i, _)| match i {
@@ -109,6 +116,7 @@ enum InstrKind {
     GlobalGet,
     LocalGet,
     LocalSet,
+    Unop,
     Binop,
     IfElse,
     BrIf,
@@ -129,6 +137,7 @@ impl InstrKind {
             Instr::GlobalGet(_) => InstrKind::GlobalGet,
             Instr::LocalGet(_) => InstrKind::LocalGet,
             Instr::LocalSet(_) => InstrKind::LocalSet,
+            Instr::Unop(_) => InstrKind::Unop,
             Instr::Binop(_) => InstrKind::Binop,
             Instr::IfElse(_) => InstrKind::IfElse,
             Instr::BrIf(_) => InstrKind::BrIf,
@@ -176,7 +185,7 @@ fn entry_preamble_and_postamble(
     func_id: FunctionId,
 ) -> (InstrSeqId, InstrSeqId, usize) {
     let f = local_func(module, func_id);
-    let entry = f.block(f.entry_block());
+    let entry = f.block(logical_entry_seq(f));
 
     let mut preamble_then: Option<InstrSeqId> = None;
     let mut wrapper: Option<InstrSeqId> = None;
@@ -387,12 +396,12 @@ fn direct_caller_entry_shape_is_preamble_wrapper_postamble() {
     let caller = func_by_name(&module, "caller");
     let kinds = entry_instr_kinds(&module, caller);
 
-    // Entry opens with the preamble's `if state == REWINDING` check.
+    // The restart-loop body opens with the replay-state preamble check.
     assert!(
         matches!(kinds.first(), Some(InstrKind::GlobalGet)),
-        "entry should start with GlobalGet (state) for REWINDING check: {kinds:?}",
+        "restart loop should start with GlobalGet (state) for replay check: {kinds:?}",
     );
-    // Exactly one wrapper Block ($unwind_save).
+    // Exactly one wrapper Block ($unwind_save) inside the restart loop.
     assert_eq!(
         kinds.iter().filter(|k| **k == InstrKind::Block).count(),
         1,
@@ -519,7 +528,7 @@ fn multivalue_return_wraps_and_validates() {
 #[test]
 fn instrument_functions_returns_rewritten_set() {
     use fork_instrument::call_graph;
-    use fork_instrument::instrument::{instrument_functions, B1ScratchPlan};
+    use fork_instrument::instrument::{B1ScratchPlan, instrument_functions};
     use fork_instrument::runtime::inject_runtime;
 
     let bytes = wat::parse_str(FIXTURE_TRANSITIVE).unwrap();
@@ -860,17 +869,18 @@ fn two_calls_assign_sequential_call_idx() {
     }
 
     let mut idxs: Vec<i32> = Vec::new();
+    let mut reserve_calls = 0usize;
     walk_seqs(f, f.entry_block(), &mut |seq| {
         let instrs = &f.block(seq).instrs;
+        reserve_calls += instrs
+            .iter()
+            .filter(
+                |(instr, _)| matches!(instr, Instr::Call(ir::Call { func }) if *func == reserve),
+            )
+            .count();
         for i in 1..instrs.len() {
             if let Instr::Store(store) = &instrs[i].0 {
                 if store.arg.offset == 4 {
-                    assert!(
-                        instrs[..i].iter().any(|(instr, _)| {
-                            matches!(instr, Instr::Call(ir::Call { func }) if *func == reserve)
-                        }),
-                        "frame must be reserved before call_index is written",
-                    );
                     if let Instr::Const(c) = &instrs[i - 1].0 {
                         if let ir::Value::I32(v) = c.value {
                             idxs.push(v);
@@ -886,7 +896,12 @@ fn two_calls_assign_sequential_call_idx() {
     // inner $POST_1 body has call 0's post-sequence. Sort before
     // asserting the set of assigned indices.
     idxs.sort();
-    assert_eq!(idxs, vec![0, 1], "call_idx should count up from 0 per site");
+    assert_eq!(reserve_calls, 2, "each call site should reserve one frame");
+    assert_eq!(
+        idxs,
+        vec![0, 0, 1, 1],
+        "each call_idx should appear in its committed frame and abort scratch selector",
+    );
 }
 
 #[test]
@@ -943,17 +958,20 @@ fn preamble_starts_with_rewinding_state_check() {
     let kinds = entry_instr_kinds(&module, caller);
 
     assert_eq!(
-        &kinds[..4],
+        &kinds[..7],
         &[
             InstrKind::GlobalGet,
             InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::LocalGet,
+            InstrKind::Unop,
             InstrKind::Binop,
             InstrKind::IfElse,
         ],
     );
 
     let f = local_func(&module, caller);
-    let entry = f.block(f.entry_block());
+    let entry = f.block(logical_entry_seq(f));
     let rewinding_const = match &entry.instrs[1].0 {
         Instr::Const(c) => c.value,
         other => panic!("expected Const at entry[1], got {other:?}"),

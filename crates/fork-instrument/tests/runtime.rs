@@ -1,6 +1,6 @@
 //! Tests for Phase 4a: runtime injection.
 //!
-//! After instrumentation, every module must expose the five control
+//! After instrumentation, every module must expose the seven control
 //! exports with the documented ABI. We verify this by:
 //!
 //! - Re-parsing the instrumented module with walrus.
@@ -11,10 +11,10 @@
 //! - Independently validating via wasmparser that the emitted module
 //!   is well-formed.
 
-use fork_instrument::runtime::names;
 use fork_instrument::linked_frames::{
     FrameFormatDescriptor, LINKED_FRAME_FORMAT_SECTION, PointerWidth,
 };
+use fork_instrument::runtime::names;
 use fork_instrument::{
     FORK_CAP_DYLINK_MAIN, FORK_CAP_SIDE_ENTRY, FORK_CAPABILITIES_SECTION,
     FORK_CAPABILITIES_VERSION, Options, instrument,
@@ -28,9 +28,8 @@ fn instrument_wat(wat_src: &str) -> Vec<u8> {
 }
 
 fn validate(bytes: &[u8]) {
-    let mut validator = wasmparser::Validator::new_with_features(
-        wasmparser::WasmFeatures::default(),
-    );
+    let mut validator =
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default());
     validator.validate_all(bytes).expect("valid wasm");
 }
 
@@ -86,7 +85,10 @@ fn linked_runtime_imports_transaction_hooks_and_emits_exact_prefix_metadata() {
         names::IMPORT_FRAME_NEXT,
     ] {
         assert!(
-            module.imports.iter().any(|import| import.module == "env" && import.name == name),
+            module
+                .imports
+                .iter()
+                .any(|import| import.module == "env" && import.name == name),
             "missing linked continuation import {name}",
         );
     }
@@ -102,7 +104,7 @@ fn linked_runtime_imports_transaction_hooks_and_emits_exact_prefix_metadata() {
         .collect();
     assert_eq!(
         descriptors,
-        vec![FrameFormatDescriptor::current(PointerWidth::Wasm32, 8)],
+        vec![FrameFormatDescriptor::current(PointerWidth::Wasm32, 24)],
     );
 }
 
@@ -258,6 +260,16 @@ fn exports_rewind_begin_taking_ptr() {
 }
 
 #[test]
+fn exports_abort_begin_taking_ptr_and_abort_end_taking_no_args() {
+    let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let begin = export_function_id(&module, names::EXPORT_ABORT_BEGIN);
+    let end = export_function_id(&module, names::EXPORT_ABORT_END);
+    assert_eq!(func_signature(&module, begin), (vec![ValType::I32], vec![]));
+    assert_eq!(func_signature(&module, end), (vec![], vec![]));
+}
+
+#[test]
 fn exports_state_returning_i32() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -268,7 +280,7 @@ fn exports_state_returning_i32() {
 }
 
 #[test]
-fn all_five_control_exports_present() {
+fn all_seven_control_exports_present() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     let module = Module::from_buffer(&bytes).unwrap();
 
@@ -277,6 +289,8 @@ fn all_five_control_exports_present() {
         names::EXPORT_UNWIND_END,
         names::EXPORT_REWIND_BEGIN,
         names::EXPORT_REWIND_END,
+        names::EXPORT_ABORT_BEGIN,
+        names::EXPORT_ABORT_END,
         names::EXPORT_STATE,
     ] {
         assert!(
@@ -295,10 +309,7 @@ use walrus::ir::Instr;
 
 /// Helper: count `Store` / `Load` instructions in the body of the
 /// named export by re-parsing the instrumented module.
-fn export_body_instr_counts(
-    module: &Module,
-    export: &str,
-) -> (usize, usize) {
+fn export_body_instr_counts(module: &Module, export: &str) -> (usize, usize) {
     let id = match module
         .exports
         .iter()
@@ -344,8 +355,7 @@ fn unwind_begin_stores_one_per_saved_global() {
     // state+buf globals are added *after* the scan so they are also
     // excluded. Plus Phase 7 Task 1 adds one store for `current_pos` at
     // buf+0. Expected: 1 (current_pos) + 2 (saved globals) = 3 stores.
-    let (stores, loads) =
-        export_body_instr_counts(&module, names::EXPORT_UNWIND_BEGIN);
+    let (stores, loads) = export_body_instr_counts(&module, names::EXPORT_UNWIND_BEGIN);
     assert_eq!(
         stores, 3,
         "unwind_begin should store current_pos + one per saved global",
@@ -358,8 +368,7 @@ fn rewind_begin_loads_one_per_saved_global() {
     let bytes = instrument_wat(MODULE_WITH_EXTRA_GLOBAL);
     let module = Module::from_buffer(&bytes).unwrap();
 
-    let (stores, loads) =
-        export_body_instr_counts(&module, names::EXPORT_REWIND_BEGIN);
+    let (stores, loads) = export_body_instr_counts(&module, names::EXPORT_REWIND_BEGIN);
     assert_eq!(loads, 2, "rewind_begin should load each saved global");
     assert_eq!(stores, 0, "rewind_begin never writes the save buffer");
 }
@@ -507,10 +516,9 @@ fn unwind_begin_writes_absolute_frames_start_wasm32() {
     let offset_instr = &instrs[store_idx - 2];
     match offset_instr {
         Instr::Const(c) => match c.value {
-            walrus::ir::Value::I32(v) => assert_eq!(
-                v, 8,
-                "wasm32 empty-globals frames_start_offset is 2*4 = 8",
-            ),
+            walrus::ir::Value::I32(v) => {
+                assert_eq!(v, 8, "wasm32 empty-globals frames_start_offset is 2*4 = 8",)
+            }
             other => panic!("expected I32 const, got {other:?}"),
         },
         other => panic!("expected frame offset const before add, got {other:?}"),

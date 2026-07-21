@@ -277,6 +277,8 @@ export const WPK_FORK_EXPORTS = [
   "wpk_fork_unwind_end",
   "wpk_fork_rewind_begin",
   "wpk_fork_rewind_end",
+  "wpk_fork_abort_begin",
+  "wpk_fork_abort_end",
   "wpk_fork_state",
 ] as const;
 

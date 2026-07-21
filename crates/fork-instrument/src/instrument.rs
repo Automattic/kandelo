@@ -114,14 +114,14 @@
 use std::collections::{HashMap, HashSet};
 
 use walrus::{
+    AbstractHeapType, ExportItem, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId,
+    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
     ir::{
         AtomicWidth, BinaryOp, Binop, Block, Br, BrTable, Call, CallIndirect, Const, GlobalGet,
         IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
         LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return, StoreKind,
         TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
     },
-    AbstractHeapType, ExportItem, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId,
-    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
 };
 
 use crate::runtime::{self, Runtime};
@@ -227,6 +227,12 @@ struct CallSiteInfo {
 struct CatchStateLocals {
     catch_region_id: LocalId,
     exnref_slot: LocalId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AbortDispatch {
+    live_frame: LocalId,
+    restart_loop: InstrSeqId,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -435,6 +441,7 @@ fn instrument_one_function_switch(
             exnref_slot: module.locals.add(ValType::I32),
         })
     };
+    let abort_live_frame = module.locals.add(ValType::I32);
 
     // Per-call argument materialization. The default is the existing
     // spill-local path; a conservative pure scalar suffix can instead
@@ -512,6 +519,7 @@ fn instrument_one_function_switch(
         let ty_id = module.funcs.get(func_id).ty();
         module.types.get(ty_id).results().to_vec()
     };
+    let restart_loop_ty = InstrSeqType::new(&mut module.types, &[], &result_types);
 
     // Plan catch-handler entry-capture (Phase 6d). We allocate in_catch
     // and captured_exnref locals now; the IR rewrite is applied later,
@@ -566,6 +574,11 @@ fn instrument_one_function_switch(
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
+    let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
+    let abort = AbortDispatch {
+        live_frame: abort_live_frame,
+        restart_loop,
+    };
     let post_seqs: Vec<InstrSeqId> = (0..n_calls)
         .map(|_| {
             local
@@ -603,6 +616,7 @@ fn instrument_one_function_switch(
         ptr_ty,
         frame_size,
         catch_state_locals,
+        abort,
     );
 
     // Postamble lives outside $unwind_save, in the entry block, right
@@ -623,10 +637,10 @@ fn instrument_one_function_switch(
         &result_types,
     );
 
-    // Rebuild the entry block: [preamble if/else, Block($unwind_save),
-    // postamble].
-    let entry_seq = &mut local.block_mut(entry_id).instrs;
-    entry_seq.clear();
+    // Rebuild the function body around a result-typed restart loop. A partial
+    // allocation failure branches here from the still-live activation; fresh
+    // inner activations keep abort_live_frame=0 and restore committed nodes.
+    let entry_seq = &mut local.block_mut(restart_loop).instrs;
     push_instr(
         entry_seq,
         Instr::GlobalGet(GlobalGet {
@@ -642,7 +656,25 @@ fn instrument_one_function_switch(
     push_instr(
         entry_seq,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::LocalGet(LocalGet {
+            local: abort_live_frame,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Unop(walrus::ir::Unop {
+            op: UnaryOp::I32Eqz,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32And,
         }),
     );
     push_instr(
@@ -654,6 +686,9 @@ fn instrument_one_function_switch(
     );
     push_instr(entry_seq, Instr::Block(Block { seq: unwind_save }));
     entry_seq.extend(postamble);
+    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    entry_seq.clear();
+    push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
 
     // Phase 6d application: replaces each fork-path try_table with
     // an $outer/$capture wrap so caught exnrefs are stashed and the
@@ -2187,7 +2222,7 @@ fn populate_dispatch_normal(
     push_instr(
         s,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
         }),
     );
     push_instr(
@@ -2277,7 +2312,7 @@ fn populate_internal_dispatch(
     push_instr(
         s,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
         }),
     );
     push_instr(
@@ -2307,6 +2342,7 @@ fn populate_dispatch_structure(
     ptr_ty: ValType,
     frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
     let n_calls = call_sites.len();
 
@@ -2340,6 +2376,7 @@ fn populate_dispatch_structure(
         ptr_ty,
         frame_size,
         catch_state_locals,
+        abort,
     );
 }
 
@@ -2365,6 +2402,7 @@ fn emit_dispatch_node(
     ptr_ty: ValType,
     frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
     match node {
         DispatchTree::Leaf { start, end } => emit_leaf_dispatch(
@@ -2385,6 +2423,7 @@ fn emit_dispatch_node(
             ptr_ty,
             frame_size,
             catch_state_locals,
+            abort,
         ),
         DispatchTree::Internal {
             children,
@@ -2407,6 +2446,7 @@ fn emit_dispatch_node(
             ptr_ty,
             frame_size,
             catch_state_locals,
+            abort,
         ),
     }
 }
@@ -2448,6 +2488,7 @@ fn emit_internal_dispatch(
     ptr_ty: ValType,
     frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
     let b = children.len();
     debug_assert!(b >= 2, "internal dispatch node must have >= 2 children");
@@ -2511,6 +2552,7 @@ fn emit_internal_dispatch(
             ptr_ty,
             frame_size,
             catch_state_locals,
+            abort,
         );
     }
 
@@ -2540,6 +2582,7 @@ fn emit_internal_dispatch(
         ptr_ty,
         frame_size,
         catch_state_locals,
+        abort,
     );
 }
 
@@ -2568,6 +2611,7 @@ fn emit_leaf_dispatch(
     ptr_ty: ValType,
     frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
     debug_assert!(
         leaf_end > leaf_start,
@@ -2638,6 +2682,7 @@ fn emit_leaf_dispatch(
             frame_size,
             catch_state_locals,
             function_unwind_save,
+            abort,
         );
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
@@ -2675,6 +2720,7 @@ fn emit_leaf_dispatch(
         frame_size,
         catch_state_locals,
         function_unwind_save,
+        abort,
     );
     if is_last_leaf {
         let s = &mut local.block_mut(exit_seq).instrs;
@@ -2834,18 +2880,29 @@ fn emit_call_index_store_and_unwind_branch(
     frame_size: u32,
     call_idx: u32,
     unwind_save: InstrSeqId,
+    catch_handlers: &[CatchHandlerInfo],
+    catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
-    let if_then = local
+    let unwind_then = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
-    let if_else = local
+    let normal_else = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let reserve_succeeded = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let reserve_failed = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
 
     {
-        let s = &mut local.block_mut(if_then).instrs;
+        let s = &mut local.block_mut(unwind_then).instrs;
         if let Some(frame_reserve) = runtime.frame_reserve {
             // This is the first frame write on the unwind path. Reserve the
             // complete node before publishing call_index or any postamble
@@ -2857,9 +2914,105 @@ fn emit_call_index_store_and_unwind_branch(
                 }),
             );
             push_instr(s, ptr_const(ptr_ty, frame_size as i64));
-            push_instr(s, Instr::Call(Call { func: frame_reserve }));
+            push_instr(
+                s,
+                Instr::Call(Call {
+                    func: frame_reserve,
+                }),
+            );
             push_instr(s, store_ptr(memory, ptr_ty, 0));
+
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
+            );
+            push_instr(s, load_ptr(memory, ptr_ty, 0));
+            push_instr(
+                s,
+                Instr::Unop(walrus::ir::Unop {
+                    op: match ptr_ty {
+                        ValType::I32 => UnaryOp::I32Eqz,
+                        ValType::I64 => UnaryOp::I64Eqz,
+                        other => unreachable!("unsupported pointer type {other:?}"),
+                    },
+                }),
+            );
+            push_instr(
+                s,
+                Instr::IfElse(IfElse {
+                    consequent: reserve_failed,
+                    alternative: reserve_succeeded,
+                }),
+            );
+        } else {
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: reserve_succeeded,
+                }),
+            );
         }
+    }
+
+    {
+        let s = &mut local.block_mut(reserve_failed).instrs;
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(1),
+            }),
+        );
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: abort.live_frame,
+            }),
+        );
+        // Select the module-owned abort scratch frame. Linked chunks begin
+        // after the descriptor's larger fixed prefix, so this header-sized
+        // area can carry the live activation's call index without touching a
+        // committed node.
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_instr(s, ptr_const(ptr_ty, runtime.frames_start_offset as i64));
+        push_instr(
+            s,
+            Instr::Binop(Binop {
+                op: ptr_add(ptr_ty),
+            }),
+        );
+        push_instr(s, store_ptr(memory, ptr_ty, 0));
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(call_idx as i32),
+            }),
+        );
+        push_instr(s, store_i32(memory, CALL_INDEX_OFFSET));
+        push_instr(
+            s,
+            Instr::Br(Br {
+                block: abort.restart_loop,
+            }),
+        );
+    }
+
+    emit_phase_6e_writes(local, reserve_succeeded, catch_handlers, catch_state_locals);
+    {
+        let s = &mut local.block_mut(reserve_succeeded).instrs;
         push_current_frame_ptr(s, runtime, memory, ptr_ty);
         push_instr(
             s,
@@ -2870,6 +3023,8 @@ fn emit_call_index_store_and_unwind_branch(
         push_instr(s, store_i32(memory, CALL_INDEX_OFFSET));
         push_instr(s, Instr::Br(Br { block: unwind_save }));
     }
+
+    emit_phase_6e_writes(local, normal_else, catch_handlers, catch_state_locals);
 
     let s = &mut local.block_mut(seq_id).instrs;
     push_instr(
@@ -2893,8 +3048,8 @@ fn emit_call_index_store_and_unwind_branch(
     push_instr(
         s,
         Instr::IfElse(IfElse {
-            consequent: if_then,
-            alternative: if_else,
+            consequent: unwind_then,
+            alternative: normal_else,
         }),
     );
 }
@@ -3135,6 +3290,7 @@ fn emit_post_call_via_local(
     frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
 ) {
     // Reload carryovers (deepest first), then args (deepest first).
     // The call pops only its args, leaving the carryovers + result on
@@ -3155,8 +3311,6 @@ fn emit_post_call_via_local(
         s.push((call_instr, call.loc));
     }
 
-    emit_phase_6e_writes(local, seq_id, catch_handlers, catch_state_locals);
-
     emit_call_index_store_and_unwind_branch(
         local,
         seq_id,
@@ -3166,6 +3320,9 @@ fn emit_post_call_via_local(
         frame_size,
         call_idx as u32,
         unwind_save,
+        catch_handlers,
+        catch_state_locals,
+        abort,
     );
 }
 
@@ -3891,7 +4048,9 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
             let mut slots: Vec<PlainCatchArmSlot> = Vec::with_capacity(arm_list.len());
             for arm in arm_list {
                 debug_assert!(
-                    arm.operand_tys.iter().all(|t| !matches!(t, ValType::Ref(_))),
+                    arm.operand_tys
+                        .iter()
+                        .all(|t| !matches!(t, ValType::Ref(_))),
                     "B1 plan_b1_scratch invariant: caller must filter ref-payload arms via Stage 2 \
                      b2_carveout (excluded from fork-path) before reaching the planner. Affected \
                      function has a tag with a ref-typed operand."
@@ -4061,7 +4220,7 @@ fn inject_rewind_throw_stubs(
                 .id()
         };
 
-        // Prepend the outer guard `if state==REWINDING && cri == K`
+        // Prepend the outer guard `if state>=REWINDING && cri == K`
         // to the try_table body.
         let local = local_mut(module, func_id);
         let original: Vec<(Instr, InstrLocId)> =
@@ -4083,7 +4242,7 @@ fn inject_rewind_throw_stubs(
         push_instr(
             body,
             Instr::Binop(Binop {
-                op: BinaryOp::I32Eq,
+                op: BinaryOp::I32GeU,
             }),
         );
         push_instr(
@@ -6106,6 +6265,7 @@ fn instrument_one_function_nested_switch(
     // (preserve original cond while computing force_flag and
     // is_rewind without touching the operand stack).
     let cond_swap_local = module.locals.add(ValType::I32);
+    let abort_live_frame = module.locals.add(ValType::I32);
 
     // Pre-pass: walk each fork-bearing seq, identify its
     // SubRegion-with-1-i32-carryover landings, and pre-allocate spill
@@ -6260,6 +6420,7 @@ fn instrument_one_function_nested_switch(
         let ty_id = module.funcs.get(func_id).ty();
         module.types.get(ty_id).results().to_vec()
     };
+    let restart_loop_ty = InstrSeqType::new(&mut module.types, &[], &result_types);
 
     // Plan catch handlers (Phase 6d). These remain dead code for the
     // nested transform's MVP (no fork-from-catch), but the plumbing is
@@ -6301,6 +6462,11 @@ fn instrument_one_function_nested_switch(
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
+    let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
+    let abort = AbortDispatch {
+        live_frame: abort_live_frame,
+        restart_loop,
+    };
 
     populate_preamble_then(
         local,
@@ -6375,6 +6541,7 @@ fn instrument_one_function_nested_switch(
             cond_swap_local,
             catch_state_locals,
             unwind_save,
+            abort,
             body_params,
         );
     }
@@ -6404,6 +6571,7 @@ fn instrument_one_function_nested_switch(
         cond_swap_local,
         catch_state_locals,
         unwind_save,
+        abort,
         &result_types,
     );
 
@@ -6434,7 +6602,7 @@ fn instrument_one_function_nested_switch(
         s.extend(entry_body);
     }
 
-    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    let entry_seq = &mut local.block_mut(restart_loop).instrs;
     push_instr(
         entry_seq,
         Instr::GlobalGet(GlobalGet {
@@ -6450,7 +6618,25 @@ fn instrument_one_function_nested_switch(
     push_instr(
         entry_seq,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::LocalGet(LocalGet {
+            local: abort_live_frame,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Unop(walrus::ir::Unop {
+            op: UnaryOp::I32Eqz,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32And,
         }),
     );
     push_instr(
@@ -6462,6 +6648,9 @@ fn instrument_one_function_nested_switch(
     );
     push_instr(entry_seq, Instr::Block(Block { seq: unwind_save }));
     entry_seq.extend(postamble);
+    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    entry_seq.clear();
+    push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
 
     apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
 
@@ -6594,6 +6783,7 @@ fn transform_region_seq(
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
     // Sub-commit 2.6c: this seq's declared type-params (only set for
     // multi-value Block/Loop/TryTable bodies). Pre-spilled at body
     // entry so the cascading POST_K Simple(None) blocks can re-expose
@@ -6690,6 +6880,7 @@ fn transform_region_seq(
         cond_swap_local,
         catch_state_locals,
         unwind_save,
+        abort,
         false, // don't append `return` at end
     );
 
@@ -6731,6 +6922,7 @@ fn transform_entry_region(
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
     _result_types: &[ValType],
 ) {
     let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
@@ -6804,6 +6996,7 @@ fn transform_entry_region(
         cond_swap_local,
         catch_state_locals,
         unwind_save,
+        abort,
         true, // append `return` for normal-path exit
     );
 }
@@ -7133,7 +7326,7 @@ fn populate_region_dispatch(
     push_instr(
         s,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
         }),
     );
     push_instr(
@@ -7164,6 +7357,7 @@ fn populate_region_dispatch_structure(
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
     append_return: bool,
 ) {
     let n_landings = landings.len();
@@ -7226,6 +7420,7 @@ fn populate_region_dispatch_structure(
             cond_swap_local,
             catch_state_locals,
             unwind_save,
+            abort,
         );
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
@@ -7268,6 +7463,7 @@ fn populate_region_dispatch_structure(
         cond_swap_local,
         catch_state_locals,
         unwind_save,
+        abort,
     );
     {
         let s = &mut local.block_mut(outer_seq).instrs;
@@ -7296,6 +7492,7 @@ fn emit_post_landing(
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
 ) {
     match &landing.kind {
         LandingKind::DirectCall { call_idx } => {
@@ -7325,8 +7522,9 @@ fn emit_post_landing(
                 };
                 s.push((call_instr, site.loc));
             }
-            // Phase 6e + call_idx frame write + UNWIND branch.
-            emit_phase_6e_writes(local, seq_id, catch_handlers, catch_state_locals);
+            // Phase 6e + call_idx frame write + UNWIND branch. Phase 6e is
+            // delayed until after frame reservation succeeds so an abort can
+            // replay the still-live activation without publishing state.
             emit_call_index_store_and_unwind_branch(
                 local,
                 seq_id,
@@ -7336,6 +7534,9 @@ fn emit_post_landing(
                 frame_size,
                 *call_idx,
                 unwind_save,
+                catch_handlers,
+                catch_state_locals,
+                abort,
             );
         }
         LandingKind::SubRegion { .. } => {
@@ -7516,7 +7717,7 @@ fn emit_post_landing(
             push_instr(
                 s,
                 Instr::Binop(Binop {
-                    op: BinaryOp::I32Eq,
+                    op: BinaryOp::I32GeU,
                 }),
             );
             push_instr(s, Instr::Select(walrus::ir::Select { ty: None }));

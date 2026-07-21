@@ -159,11 +159,7 @@ fn dispatcher_call_count(bytes: &[u8]) -> usize {
         panic!("dispatcher should be local");
     };
     let mut count = 0usize;
-    fn walk(
-        func: &LocalFunction,
-        seq: walrus::ir::InstrSeqId,
-        count: &mut usize,
-    ) {
+    fn walk(func: &LocalFunction, seq: walrus::ir::InstrSeqId, count: &mut usize) {
         for (instr, _) in &func.block(seq).instrs {
             if matches!(instr, Instr::Call(_) | Instr::CallIndirect(_)) {
                 *count += 1;
@@ -186,12 +182,16 @@ fn dispatcher_call_count(bytes: &[u8]) -> usize {
     count
 }
 
-/// `instrument_one_function_switch` shapes the entry block as
-/// `[preamble-if/else, Block($unwind_save), postamble…]`, so the only
-/// `Block(_)` at entry level is `$unwind_save` itself.
+/// `instrument_one_function_switch` places the preamble, unwind-save block,
+/// and postamble inside one result-typed restart loop.
 fn dispatcher_unwind_save(local: &LocalFunction) -> InstrSeqId {
+    let entry = local.block(local.entry_block());
+    let restart = match entry.instrs.as_slice() {
+        [(Instr::Loop(ir::Loop { seq }), _)] => *seq,
+        other => panic!("expected one top-level restart Loop, got {other:?}"),
+    };
     let blocks: Vec<InstrSeqId> = local
-        .block(local.entry_block())
+        .block(restart)
         .instrs
         .iter()
         .filter_map(|(i, _)| match i {
@@ -199,7 +199,11 @@ fn dispatcher_unwind_save(local: &LocalFunction) -> InstrSeqId {
             _ => None,
         })
         .collect();
-    assert_eq!(blocks.len(), 1, "expected one top-level Block in entry");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "expected one unwind-save Block in restart loop"
+    );
     blocks[0]
 }
 
@@ -382,8 +386,8 @@ fn bucketed_depth_indirect_dispatcher_passes_v8_limit() {
 /// `$unwind_save`. A regression re-pointing them at a leaf-local
 /// `$child_K` / `$dispatch_normal` would still validate as wasm but
 /// scramble the fork frame on the next REWIND. The dispatcher
-/// fixtures emit no other direct `br`s, so "every Br → $unwind_save"
-/// pins the invariant without pattern-matching the surrounding
+/// fixtures emit only the successful-unwind branch and the allocation-failure
+/// branch back to the restart loop, so their exact target counts pin
 /// `(global.get state, const UNWINDING, i32.eq, if)` sequence.
 ///
 /// N=33 straddles `BUCKET_SIZE=32` to force one full leaf + one
@@ -407,18 +411,29 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
             };
 
             let unwind_save = dispatcher_unwind_save(local);
+            let restart_loop = match local.block(local.entry_block()).instrs.as_slice() {
+                [(Instr::Loop(ir::Loop { seq }), _)] => *seq,
+                other => panic!("expected restart loop, got {other:?}"),
+            };
             let targets = collect_br_targets(local);
 
-            assert!(
-                !targets.is_empty(),
-                "{label} N={n}: dispatcher has no direct Br",
+            assert_eq!(
+                targets
+                    .iter()
+                    .filter(|&&target| target == unwind_save)
+                    .count(),
+                n,
+                "{label} N={n}: each call site must branch to unwind-save after commit",
             );
-            for (idx, target) in targets.iter().enumerate() {
-                assert_eq!(
-                    *target, unwind_save,
-                    "{label} N={n}: Br #{idx} targets {target:?}, expected $unwind_save ({unwind_save:?})",
-                );
-            }
+            assert_eq!(
+                targets
+                    .iter()
+                    .filter(|&&target| target == restart_loop)
+                    .count(),
+                n,
+                "{label} N={n}: each call site must branch to restart on allocation failure",
+            );
+            assert_eq!(targets.len(), 2 * n, "{label} N={n}: unexpected Br target");
         }
     }
 }

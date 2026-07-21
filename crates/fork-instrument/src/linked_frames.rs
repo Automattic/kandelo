@@ -20,7 +20,9 @@ pub const LINKED_FRAME_FORMAT_SECTION: &str = "kandelo.wpk_fork.linked_frames";
 const FORMAT_DESCRIPTOR_MAGIC: [u8; 4] = *b"KLCF";
 const FORMAT_DESCRIPTOR_SIZE: usize = 24;
 const FORMAT_FLAG_TRANSACTIONAL_NODES: u16 = 1 << 0;
-const FORMAT_KNOWN_FLAGS: u16 = FORMAT_FLAG_TRANSACTIONAL_NODES;
+const FORMAT_FLAG_ABORT_UNWINDING: u16 = 1 << 1;
+const FORMAT_REQUIRED_FLAGS: u16 = FORMAT_FLAG_TRANSACTIONAL_NODES | FORMAT_FLAG_ABORT_UNWINDING;
+const FORMAT_KNOWN_FLAGS: u16 = FORMAT_REQUIRED_FLAGS;
 
 /// Transactional lifecycle for one linked frame node.
 ///
@@ -213,7 +215,7 @@ impl FrameFormatDescriptor {
             version: LINKED_FRAME_FORMAT_VERSION,
             pointer_width,
             alignment: RECORD_ALIGNMENT as u8,
-            flags: FORMAT_FLAG_TRANSACTIONAL_NODES,
+            flags: FORMAT_REQUIRED_FLAGS,
             chunk_header_size: chunk_header_size as u32,
             node_header_size: node_header_size as u32,
             fixed_prefix_size,
@@ -266,9 +268,9 @@ impl FrameFormatDescriptor {
         if flags & !FORMAT_KNOWN_FLAGS != 0 {
             return Err(MetadataError::UnknownFlags { flags });
         }
-        if flags & FORMAT_FLAG_TRANSACTIONAL_NODES == 0 {
+        if flags & FORMAT_REQUIRED_FLAGS != FORMAT_REQUIRED_FLAGS {
             return Err(MetadataError::MissingRequiredFlags {
-                flags: FORMAT_FLAG_TRANSACTIONAL_NODES,
+                flags: FORMAT_REQUIRED_FLAGS,
             });
         }
         let chunk_size = u32::from_le_bytes(encoded[12..16].try_into().unwrap());
@@ -423,17 +425,14 @@ impl LinkedContinuationPlan {
         &mut self,
         payload_size: u64,
     ) -> Result<PendingFrameReservation, PlanError> {
-        let capacity = chunk_capacity_for_frame(
-            self.width,
-            self.preferred_chunk_capacity,
-            payload_size,
-        )?;
+        let capacity =
+            chunk_capacity_for_frame(self.width, self.preferred_chunk_capacity, payload_size)?;
         let used = chunk_header_size(self.width)?;
         let frame = match reserve_frame(self.width, capacity, used, payload_size)? {
             ReserveFrame::Reserved(frame) => frame,
-            ReserveFrame::NeedsAnotherChunk { .. } => unreachable!(
-                "chunk_capacity_for_frame must accommodate its requested frame"
-            ),
+            ReserveFrame::NeedsAnotherChunk { .. } => {
+                unreachable!("chunk_capacity_for_frame must accommodate its requested frame")
+            }
         };
         let chunk_index = self.chunks.len();
         self.chunks.push(PlannedChunk { capacity, used });
@@ -646,7 +645,7 @@ mod tests {
         assert_eq!(
             FrameFormatDescriptor::decode(&encoded),
             Err(MetadataError::MissingRequiredFlags {
-                flags: FORMAT_FLAG_TRANSACTIONAL_NODES,
+                flags: FORMAT_REQUIRED_FLAGS,
             })
         );
     }
@@ -810,7 +809,10 @@ mod tests {
         let mut plan = LinkedContinuationPlan::new(PointerWidth::Wasm32, WASM_PAGE_SIZE);
         let pending = plan.reserve(WASM_PAGE_SIZE + 29_000).unwrap();
 
-        assert_eq!(plan.chunks()[pending.chunk_index].capacity, 2 * WASM_PAGE_SIZE);
+        assert_eq!(
+            plan.chunks()[pending.chunk_index].capacity,
+            2 * WASM_PAGE_SIZE
+        );
         plan.commit(pending.token).unwrap();
     }
 
