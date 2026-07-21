@@ -28,6 +28,11 @@ import {
   type HomebrewVfsCompatibilityPolicy,
   type HomebrewVfsRuntimeStateDeclaration,
 } from "../../../host/src/homebrew-vfs-builder";
+import {
+  buildHomebrewLazyLayer,
+  encodeHomebrewLazyLayerDescriptor,
+  parseHomebrewLazyLayerBasePackageSource,
+} from "../../../host/src/homebrew-lazy-layer";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
   planFederatedHomebrewVfs,
@@ -80,6 +85,10 @@ interface CliOptions {
   demoConfig?: string;
   catalogCommit?: string;
   migrationLock?: string;
+  lazyLayerOut?: string;
+  lazyLayerDescriptor?: string;
+  lazyLayerBaseImage?: string;
+  lazyLayerBasePackageSource?: string;
 }
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
@@ -205,6 +214,14 @@ async function main(): Promise<void> {
     options.maxBytes,
     plan.kandeloAbi,
   );
+  const loadedBottleBytes = new Map<string, Uint8Array>();
+  const loadPlannedBottle = async (pkg: HomebrewVfsPackagePlan) => {
+    const existing = loadedBottleBytes.get(pkg.fullName);
+    if (existing !== undefined) return existing;
+    const bytes = await loadBottleBytes(pkg, options);
+    loadedBottleBytes.set(pkg.fullName, bytes);
+    return bytes;
+  };
   const result = await buildHomebrewVfs(plan, {
     fs,
     writeProfile: options.writeProfile,
@@ -226,7 +243,7 @@ async function main(): Promise<void> {
       sha256: migrationLock.sha256,
       bytes: migrationLock.bytes,
     },
-    loadBottleBytes: (pkg) => loadBottleBytes(pkg, options),
+    loadBottleBytes: loadPlannedBottle,
   });
   if (shellConfig) {
     assertShellExecutable(fs, shellConfig.config.path);
@@ -342,6 +359,41 @@ async function main(): Promise<void> {
       `saved VFS capacity ${imageCapacity.maxByteLength} does not match ` +
         `the declared consumer contract ${maxByteLength}`,
     );
+  }
+
+  if (options.lazyLayerOut && options.lazyLayerDescriptor) {
+    const lazyBase = loadLazyLayerBaseVfs(
+      options.lazyLayerBaseImage!,
+      options.lazyLayerBasePackageSource!,
+      plan.kandeloAbi,
+      options.arch,
+    );
+    const layerFs = createFs(undefined, options.maxBytes, plan.kandeloAbi).fs;
+    const layer = await buildHomebrewLazyLayer(plan, {
+      fs: layerFs,
+      baseVfs: lazyBase,
+      acceptanceVfs: {
+        sha256: createHash("sha256").update(imageBytes).digest("hex"),
+        bytes: imageBytes.byteLength,
+      },
+      loadBottleBytes: loadPlannedBottle,
+      selectionSource: brewfileSelection ? {
+        kind: "brewfile",
+        parser: brewfileSelection.kind,
+        sha256: brewfileSelection.sha256,
+        bytes: brewfileSelection.bytes,
+        requestedPackages: brewfileSelection.packages,
+      } : undefined,
+    });
+    mkdirSync(dirname(options.lazyLayerOut), { recursive: true });
+    mkdirSync(dirname(options.lazyLayerDescriptor), { recursive: true });
+    writeFileSync(options.lazyLayerOut, layer.archive);
+    writeFileSync(
+      options.lazyLayerDescriptor,
+      encodeHomebrewLazyLayerDescriptor(layer.descriptor),
+    );
+    console.log(`Homebrew lazy shell layer: ${options.lazyLayerOut}`);
+    console.log(`Homebrew lazy shell layer descriptor: ${options.lazyLayerDescriptor}`);
   }
 
   const report = {
@@ -481,6 +533,32 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.migrationLock = requireValue(args, ++i, arg);
         break;
+      case "--lazy-layer-out":
+        if (options.lazyLayerOut !== undefined) {
+          usage("--lazy-layer-out may be provided only once");
+        }
+        options.lazyLayerOut = requireValue(args, ++i, arg);
+        break;
+      case "--lazy-layer-descriptor":
+        if (options.lazyLayerDescriptor !== undefined) {
+          usage("--lazy-layer-descriptor may be provided only once");
+        }
+        options.lazyLayerDescriptor = requireValue(args, ++i, arg);
+        break;
+      case "--lazy-layer-base-image":
+        if (options.lazyLayerBaseImage !== undefined) {
+          usage("--lazy-layer-base-image may be provided only once");
+        }
+        options.lazyLayerBaseImage = parseBaseImagePath(
+          requireValue(args, ++i, arg),
+        );
+        break;
+      case "--lazy-layer-base-package-source":
+        if (options.lazyLayerBasePackageSource !== undefined) {
+          usage("--lazy-layer-base-package-source may be provided only once");
+        }
+        options.lazyLayerBasePackageSource = requireValue(args, ++i, arg);
+        break;
       case "--help":
       case "-h":
         usage(undefined, 0);
@@ -516,6 +594,36 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.demoConfig && !existsSync(options.demoConfig)) {
     usage(`demo config does not exist: ${options.demoConfig}`);
+  }
+  if (Boolean(options.lazyLayerOut) !== Boolean(options.lazyLayerDescriptor)) {
+    usage("--lazy-layer-out and --lazy-layer-descriptor must be provided together");
+  }
+  if (
+    options.lazyLayerOut &&
+    (!options.lazyLayerBaseImage || !options.lazyLayerBasePackageSource)
+  ) {
+    usage(
+      "lazy layer output requires --lazy-layer-base-image and " +
+        "--lazy-layer-base-package-source",
+    );
+  }
+  if (options.lazyLayerBaseImage && !options.lazyLayerOut) {
+    usage("--lazy-layer-base-image requires lazy layer outputs");
+  }
+  if (options.lazyLayerBasePackageSource && !options.lazyLayerOut) {
+    usage("--lazy-layer-base-package-source requires lazy layer outputs");
+  }
+  if (options.lazyLayerBaseImage && !existsSync(options.lazyLayerBaseImage)) {
+    usage(`lazy layer base image does not exist: ${options.lazyLayerBaseImage}`);
+  }
+  if (
+    options.lazyLayerBasePackageSource &&
+    !existsSync(options.lazyLayerBasePackageSource)
+  ) {
+    usage(
+      `lazy layer base package source does not exist: ` +
+        options.lazyLayerBasePackageSource,
+    );
   }
 
   return options as CliOptions;
@@ -650,6 +758,58 @@ function createFs(
   return {
     fs: MemoryFileSystem.create(sab, initialBytes),
     maxByteLength: initialBytes,
+  };
+}
+
+function loadLazyLayerBaseVfs(
+  path: string,
+  packageSourcePath: string,
+  expectedAbi: number,
+  expectedArch: HomebrewBottleArch,
+): {
+  fs: MemoryFileSystem;
+  image: { sha256: string; bytes: number };
+  source: ReturnType<typeof parseHomebrewLazyLayerBasePackageSource>;
+} {
+  const image = new Uint8Array(readFileSync(path));
+  const source = parseHomebrewLazyLayerBasePackageSource(
+    readJsonFile(packageSourcePath),
+    expectedArch,
+    expectedAbi,
+  );
+  const imageBinding = {
+    sha256: createHash("sha256").update(image).digest("hex"),
+    bytes: image.byteLength,
+  };
+  if (
+    source.output.sha256 !== imageBinding.sha256 ||
+    source.output.bytes !== imageBinding.bytes
+  ) {
+    throw new Error(
+      `lazy layer base image ${path} does not match package source ` +
+        packageSourcePath,
+    );
+  }
+  const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
+  const metadata = fs.getImageMetadata();
+  if (metadata?.kernelAbi !== expectedAbi) {
+    throw new Error(
+      `lazy layer base image ${path} declares kernel ABI ` +
+        `${String(metadata?.kernelAbi)}, but bottle metadata requires ABI ${expectedAbi}`,
+    );
+  }
+  if (
+    metadata.homebrew === undefined ||
+    !vfsPathExists(fs, HOMEBREW_COMPOSITION_PATH)
+  ) {
+    throw new Error(
+      `lazy layer base image ${path} is not a bottle-built Homebrew composition`,
+    );
+  }
+  return {
+    fs,
+    image: imageBinding,
+    source,
   };
 }
 
@@ -1011,7 +1171,11 @@ function usage(message?: string, code = 2): never {
   [--max-bytes <bytes|MiB>] [--write-profile] \\
   [--shell-config <shell.json>] [--demo-config <demo.json>] \\
   [--catalog-commit <full-sha>] \\
-  [--migration-lock <lock.json>]`);
+  [--migration-lock <lock.json>] \\
+  [--lazy-layer-out <layer.zip> \\
+   --lazy-layer-descriptor <layer.json> \\
+   --lazy-layer-base-image <main-shell.vfs[.zst]> \\
+   --lazy-layer-base-package-source <source.json>]`);
   process.exit(code);
 }
 

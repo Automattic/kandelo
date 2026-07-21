@@ -1272,6 +1272,55 @@ grep -F "already contains a Homebrew composition" \
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$TAP/Kandelo/metadata.json" \
   --tap-root "$TAP" \
+  --package sidecar-dep \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --max-bytes "$BASE_REQUESTED_MAX_BYTES" \
+  --write-profile \
+  --no-fallback \
+  --out "$TMPDIR/sidecar-dep-base.vfs.zst" \
+  --report "$TMPDIR/sidecar-dep-base-report.json" >/dev/null
+LAYER_BASE_VFS_SHA256="$(sha256_file "$TMPDIR/sidecar-dep-base.vfs.zst")"
+LAYER_BASE_VFS_BYTES="$(wc -c <"$TMPDIR/sidecar-dep-base.vfs.zst" | tr -d '[:space:]')"
+LAYER_BASE_PACKAGE_SOURCE="$TMPDIR/shell-package-output.json"
+jq -nS \
+  --arg output_sha256 "$LAYER_BASE_VFS_SHA256" \
+  --argjson output_bytes "$LAYER_BASE_VFS_BYTES" \
+  --argjson abi "$ABI_VERSION" \
+  '{
+    schema: 1,
+    kind: "kandelo-package-output",
+    index: {
+      url: "https://packages.example.invalid/abi/index.toml",
+      sha256: ("a" * 64),
+      bytes: 123,
+      abi: $abi
+    },
+    package: {
+      name: "shell",
+      version: "0.1.0",
+      revision: 1,
+      arch: "wasm32",
+      cache_key_sha: ("b" * 64)
+    },
+    archive: {
+      format: "kandelo-package-tar-zstd-v2",
+      url: "https://packages.example.invalid/shell.tar.zst",
+      sha256: ("c" * 64),
+      bytes: 456
+    },
+    output: {
+      name: "shell",
+      path: "shell.vfs.zst",
+      sha256: $output_sha256,
+      bytes: $output_bytes
+    }
+  }' >"$LAYER_BASE_PACKAGE_SOURCE"
+npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
   --brewfile "$BREWFILE" \
   --arch wasm32 \
   --runtime node \
@@ -1282,8 +1331,85 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --shell-config "$SHELL_CONFIG" \
   --demo-config "$DEMO_CONFIG" \
   --no-fallback \
+  --lazy-layer-out "$TMPDIR/kandelo-homebrew-shell-layer.zip" \
+  --lazy-layer-descriptor "$TMPDIR/kandelo-homebrew-shell-layer.json" \
+  --lazy-layer-base-image "$TMPDIR/sidecar-dep-base.vfs.zst" \
+  --lazy-layer-base-package-source "$LAYER_BASE_PACKAGE_SOURCE" \
   --out "$TMPDIR/sidecar-tool.vfs.zst" \
   --report "$TMPDIR/sidecar-tool-report.json" >/dev/null
+
+LAYER_ACCEPTANCE_VFS_SHA256="$(sha256_file "$TMPDIR/sidecar-tool.vfs.zst")"
+jq -e '
+  .schema == 2 and .kind == "kandelo-homebrew-lazy-archive" and
+  .mount_prefix == "/" and
+  .selection.requested_packages == ["sidecar-tool"] and
+  .selection.package_order == [
+    "kandelo-dev/tap-core/sidecar-dep",
+    "kandelo-dev/tap-core/sidecar-tool"
+  ] and
+  .selection.base_package_order == ["kandelo-dev/tap-core/sidecar-dep"] and
+  .selection.layer_package_order == ["kandelo-dev/tap-core/sidecar-tool"] and
+  [.packages.base[].name] == ["sidecar-dep"] and
+  [.packages.layer[].name] == ["sidecar-tool"] and
+  .base_vfs.sha256 == $base_vfs_sha and
+  .base_vfs.package_source.output == {
+    "name":"shell",
+    "path":"shell.vfs.zst",
+    "sha256":$base_vfs_sha,
+    "bytes":$base_vfs_bytes
+  } and
+  .acceptance_vfs.sha256 == $acceptance_vfs_sha and
+  .archive.asset == "kandelo-homebrew-shell-layer.zip" and
+  (.archive.sha256 | test("^[0-9a-f]{64}$")) and
+  .archive.entry_count == (.entries | length) and
+  .archive.layer_entry_count == ([.entries[] | select(.ownership == "layer")] | length) and
+  .archive.shared_base_directory_count ==
+    ([.entries[] | select(.ownership == "shared-base-directory")] | length) and
+  ([.entries[].path] == ([.entries[].path] | sort))
+' --arg base_vfs_sha "$LAYER_BASE_VFS_SHA256" \
+  --argjson base_vfs_bytes "$LAYER_BASE_VFS_BYTES" \
+  --arg acceptance_vfs_sha "$LAYER_ACCEPTANCE_VFS_SHA256" \
+  "$TMPDIR/kandelo-homebrew-shell-layer.json" >/dev/null
+python3 - "$TMPDIR/kandelo-homebrew-shell-layer.zip" \
+  "$TMPDIR/kandelo-homebrew-shell-layer.json" <<'PY'
+import json, pathlib, stat, sys, zipfile
+
+archive_path, descriptor_path = map(pathlib.Path, sys.argv[1:])
+descriptor = json.loads(descriptor_path.read_text())
+with zipfile.ZipFile(archive_path) as archive:
+    infos = archive.infolist()
+    expected = [
+        entry["path"] + ("/" if entry["type"] == "directory" else "")
+        for entry in descriptor["entries"]
+    ]
+    actual_names = [info.filename for info in infos]
+    assert actual_names == expected
+    assert archive.comment == b""
+    kinds = {
+        "directory": stat.S_IFDIR,
+        "file": stat.S_IFREG,
+        "symlink": stat.S_IFLNK,
+    }
+    for info, entry in zip(infos, descriptor["entries"], strict=True):
+        mode = info.external_attr >> 16
+        assert info.create_system == 3
+        assert info.date_time == (1980, 1, 1, 0, 0, 0)
+        assert info.comment == b"" and info.extra == b""
+        assert stat.S_IFMT(mode) == kinds[entry["type"]]
+        assert (mode & 0o7777) == entry["mode"]
+        assert len(archive.read(info)) == entry["size"]
+    executable = archive.getinfo(
+        "home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
+    )
+    assert ((executable.external_attr >> 16) & 0o7777) == 0o755
+    linked = archive.getinfo("home/linuxbrew/.linuxbrew/bin/sidecar-tool")
+    assert stat.S_ISLNK(linked.external_attr >> 16)
+    assert archive.read(linked).decode() == (
+        "/home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
+    )
+    assert not any(name.startswith("etc/") for name in actual_names)
+    assert not any("/Cellar/sidecar-dep/" in name for name in actual_names)
+PY
 
 jq -e --slurpfile metadata "$TAP/Kandelo/metadata.json" '
   [.packages[].name] == ["sidecar-dep", "sidecar-tool"] and

@@ -207,6 +207,39 @@ pub fn fetch_and_install_direct(
     abi_version: u32,
     local_cache_key_sha_hex: &str,
 ) -> Result<(), FetchError> {
+    fetch_and_install_direct_with_metadata(
+        archive_url,
+        archive_sha256,
+        canonical,
+        target,
+        arch,
+        abi_version,
+        local_cache_key_sha_hex,
+    )
+    .map(|_| ())
+}
+
+/// Verified archive metadata returned to consumers that must bind a produced
+/// file to its immutable package archive, rather than merely populate the
+/// resolver cache.
+pub(crate) struct FetchInstallMetadata {
+    pub archive_bytes: u64,
+}
+
+/// The strict fetch/install path with the verified archive size retained for
+/// provenance receipts. Keeping this beside the normal resolver path ensures
+/// receipt-producing consumers cannot drift into a second archive parser or a
+/// weaker validation chain.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fetch_and_install_direct_with_metadata(
+    archive_url: &str,
+    archive_sha256: &str,
+    canonical: &Path,
+    target: &DepsManifest,
+    arch: TargetArch,
+    abi_version: u32,
+    local_cache_key_sha_hex: &str,
+) -> Result<FetchInstallMetadata, FetchError> {
     // 1. Prepare cache parent and stream the archive into a sibling temp file.
     let parent = canonical.parent().ok_or_else(|| {
         FetchError::IoError(format!("canonical has no parent: {}", canonical.display()))
@@ -216,6 +249,16 @@ pub fn fetch_and_install_direct(
     })?;
     let archive_file =
         fetch_archive_to_temp_file(archive_url, archive_sha256, parent, &target.spec())?;
+    let archive_bytes = archive_file
+        .path()
+        .metadata()
+        .map_err(|e| {
+            FetchError::IoError(format!(
+                "stat verified archive {}: {e}",
+                archive_file.path().display()
+            ))
+        })?
+        .len();
 
     // 2. Decompress + extract into `<canonical>.tmp-<pid>/`.
     let tmp_name = format!(
@@ -345,7 +388,7 @@ pub fn fetch_and_install_direct(
             local_cache_key_sha_hex,
         )
         .map_err(FetchError::IoError)?;
-        return Ok(());
+        return Ok(FetchInstallMetadata { archive_bytes });
     }
     if let Err(e) = fs::rename(&tmp, canonical) {
         // The rename may have failed because a peer process beat us
@@ -363,7 +406,7 @@ pub fn fetch_and_install_direct(
                 local_cache_key_sha_hex,
             )
             .map_err(FetchError::IoError)?;
-            return Ok(());
+            return Ok(FetchInstallMetadata { archive_bytes });
         }
         return Err(FetchError::IoError(format!(
             "atomic rename {} -> {}: {e}",
@@ -371,7 +414,7 @@ pub fn fetch_and_install_direct(
             canonical.display()
         )));
     }
-    Ok(())
+    Ok(FetchInstallMetadata { archive_bytes })
 }
 
 /// Fetch the archive bytes. Supports `file://` (for tests + local

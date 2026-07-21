@@ -24,9 +24,9 @@ PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "2fb7c3d3f1191fea9bb08518ce9b103f20c1d20b6b44aa749d5416b282779551"
+PUBLISHER_VERIFY_DIGEST = "dc86c77897c0d8d91e57a6930de312f503005edd8f2e850535927118f868dce6"
 PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
-PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
+PUBLISHER_VFS_RELEASE_DIGEST = "56905a52f68c3bae6f34e52d151cd96077b1f303f2fc35e21d4e69aa253f8b77"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
@@ -3470,7 +3470,18 @@ def check_publisher(workflow)
     'platform base did not resolve from the Kandelo package registry tree',
     'kernel="${resolved_platform_artifacts[1]}"',
     'verification kernel did not resolve from the exact worktree build',
-    '--runtime node', '--no-fallback',
+    'shell_package_image="$acceptance_root/shell.vfs.zst"',
+    'shell_package_source="$acceptance_root/shell-package-output.json"',
+    'xtask="target/$host/release/xtask"',
+    '"$xtask" materialize-package-output',
+    '--package "$PWD/packages/registry/shell"',
+    '--output-name shell',
+    '--out "$1"', '--receipt "$2"',
+    '--runtime node', '--max-bytes 256MiB', '--no-fallback',
+    '--lazy-layer-out "$lazy_layer"',
+    '--lazy-layer-descriptor "$lazy_layer_descriptor"',
+    '--lazy-layer-base-image "$shell_package_image"',
+    '--lazy-layer-base-package-source "$shell_package_source"',
     'bash scripts/dev-shell.sh npx tsx',
     'scripts/homebrew-vfs-acceptance-smoke.ts',
     '--base-origin kandelo-package-registry', '--kernel-origin worktree-build',
@@ -3659,6 +3670,9 @@ def check_publisher(workflow)
         ) &&
         vfs_publish.fetch("run").include?('--receipt "$RUNNER_TEMP/homebrew-vfs-release-receipt.json"') &&
         vfs_publish.fetch("run").include?('echo "descriptor-url=$descriptor_url"') &&
+        vfs_publish.fetch("run").include?(
+          'echo "lazy-layer-descriptor-url=$lazy_layer_descriptor_url"'
+        ) &&
         vfs_publish.fetch("run").include?('echo "Browser launch input: \\`?vfs=$image_url\\`"'),
         "publisher VFS write step does not preserve validation, receipt, and launch outputs")
 
@@ -3669,6 +3683,8 @@ def check_publisher(workflow)
     'browser image digest', 'selected formula tap commit', 'Node dependency edge',
     'expected Kandelo ABI', 'expected bottle release tag',
     'browser legacy shell downloads', 'query_parameter": "vfs"',
+    'LAZY_LAYER_ASSET = "kandelo-homebrew-shell-layer.zip"',
+    'validate_lazy_layer_zip', 'canonical path order',
   ].each do |fragment|
     check(vfs_validator_source.include?(fragment),
           "Homebrew VFS release validator lacks #{fragment}")
@@ -3691,6 +3707,8 @@ def check_publisher(workflow)
     'publish response was ambiguous; reconciling',
     'anonymous readback failed', '.object.type == "commit"',
     'visibility: "public-anonymous-readback"',
+    'kandelo-homebrew-shell-layer.zip',
+    'kandelo-homebrew-shell-layer.json',
   ].each do |fragment|
     check(vfs_publisher_source.include?(fragment),
           "Homebrew VFS release publisher lacks #{fragment}")
@@ -3719,6 +3737,7 @@ def check_publisher(workflow)
     "transient anonymous release propagation", "ambiguous successful publish",
     "public release without GitHub immutability",
     "Kandelo ABI outside the trusted plan", "bottle release tag outside the trusted plan",
+    "tampered lazy ZIP layer", "lazy ZIP index that differs from its archive",
   ].each do |fragment|
     check(vfs_test_source.include?(fragment), "Homebrew VFS release tests lack #{fragment}")
   end
@@ -4849,6 +4868,22 @@ def self_test(publisher, maintenance, repository_canary)
         w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
       )
       step["run"] = step.fetch("run").sub("--no-fallback", "")
+    },
+    "lazy layer base package receipt dropped" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        '--lazy-layer-base-package-source "$shell_package_source"', ""
+      )
+    },
+    "canonical shell package materializer bypassed" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        '"$xtask" materialize-package-output', 'cp "$base_image" "$1"'
+      )
     },
     "dependency-bearing VFS resolver escapes the dev shell" => lambda { |w|
       step = mutate_named_step(

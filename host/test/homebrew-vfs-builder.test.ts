@@ -23,12 +23,21 @@ import {
   type HomebrewVfsSelectionSource,
 } from "../src/homebrew-vfs-builder";
 import {
+  buildHomebrewLazyLayer,
+  type HomebrewLazyLayerBasePackageSource,
+} from "../src/homebrew-lazy-layer";
+import {
   planHomebrewVfs,
   type HomebrewLinkManifest,
   type HomebrewTapMetadata,
+  type HomebrewVfsPlan,
 } from "../src/homebrew-vfs-planner";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsFile } from "../src/vfs/image-helpers";
+import {
+  extractZipEntry,
+  parseZipCentralDirectory,
+} from "../src/vfs/zip";
 
 const PREFIX = "/home/linuxbrew/.linuxbrew";
 const CELLAR = `${PREFIX}/Cellar`;
@@ -409,7 +418,371 @@ function readVfsFile(fs: MemoryFileSystem, path: string): string {
   }
 }
 
+async function lazyLayerFixture(options: {
+  mutateBase?: (fs: MemoryFileSystem) => void;
+  mutatePlan?: (plan: HomebrewVfsPlan) => void;
+  mutateBaseSource?: (source: HomebrewLazyLayerBasePackageSource) => void;
+} = {}) {
+  const baseBytes = bottleTar(standardEntries());
+  const baseManifest = linkManifest(baseBytes);
+  const basePlan = await planHomebrewVfs(metadataForBottle(baseBytes), {
+    packages: ["hello"],
+    arch: "wasm32",
+    runtime: "node",
+    loadLinkManifest: () => baseManifest,
+  });
+  basePlan.packages[0].tapCommit = "8".repeat(40);
+  basePlan.packages[0].kandeloCommit = "7".repeat(40);
+  basePlan.packages[0].builtFrom = {
+    tapRepository: "kandelo-dev/homebrew-tap-core",
+    tapCommit: basePlan.packages[0].tapCommit,
+    kandeloRepository: "Automattic/kandelo",
+    kandeloCommit: basePlan.packages[0].kandeloCommit,
+    formulaSha256: "6".repeat(64),
+  };
+  const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
+  await buildHomebrewVfs(basePlan, {
+    fs: baseFs,
+    loadBottleBytes: () => baseBytes,
+  });
+  baseFs.setImageMetadata({
+    version: 1,
+    kernelAbi: ABI_VERSION,
+    homebrew: {
+      packages: [{ fullName: basePlan.packages[0].fullName }],
+    },
+  });
+  options.mutateBase?.(baseFs);
+
+  const runtimeVersion = "3.0";
+  const runtimeKeg = `${CELLAR}/runtime/${runtimeVersion}`;
+  const runtimeBytes = bottleTar([
+    {
+      path: `runtime/${runtimeVersion}/bin/runtime`,
+      data: "#!/bin/sh\necho runtime\n",
+      mode: 0o755,
+    },
+    {
+      path: `runtime/${runtimeVersion}/.brew/runtime.rb`,
+      data: "class Runtime < Formula\nend\n",
+    },
+    {
+      path: `runtime/${runtimeVersion}/INSTALL_RECEIPT.json`,
+      data: "{}\n",
+    },
+  ]);
+  const runtimeCacheKey =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const runtimePackage = {
+    ...basePlan.packages[0],
+    name: "runtime",
+    fullName: "kandelo-dev/tap-core/runtime",
+    version: runtimeVersion,
+    url: "file:///tmp/runtime.bottle.tar.gz",
+    sha256: sha256(runtimeBytes),
+    bytes: runtimeBytes.byteLength,
+    cacheKeySha: runtimeCacheKey,
+    keg: runtimeKeg,
+    payloadRoot: `runtime/${runtimeVersion}`,
+    linkManifestPath: "Kandelo/link/runtime-3.0-rebuild0-wasm32.json",
+    dependencies: [{
+      name: "hello",
+      full_name: "kandelo-dev/tap-core/hello",
+      version: "2.12.1",
+    }],
+    linkManifest: {
+      ...baseManifest,
+      package: "runtime",
+      version: runtimeVersion,
+      keg: runtimeKeg,
+      bottle: {
+        ...baseManifest.bottle,
+        url: "file:///tmp/runtime.bottle.tar.gz",
+        sha256: sha256(runtimeBytes),
+        bytes: runtimeBytes.byteLength,
+        cache_key_sha: runtimeCacheKey,
+        payload_root: `runtime/${runtimeVersion}`,
+      },
+      links: [{
+        type: "symlink" as const,
+        source: `Cellar/runtime/${runtimeVersion}/bin/runtime`,
+        target: "bin/runtime",
+      }],
+      receipts: [
+        `Cellar/runtime/${runtimeVersion}/.brew/runtime.rb`,
+        `Cellar/runtime/${runtimeVersion}/INSTALL_RECEIPT.json`,
+      ],
+    },
+  };
+  const plan = {
+    ...basePlan,
+    requestedPackages: ["runtime"],
+    packages: [basePlan.packages[0], runtimePackage],
+  };
+  options.mutatePlan?.(plan);
+  const baseSource: HomebrewLazyLayerBasePackageSource = {
+    schema: 1,
+    kind: "kandelo-package-output",
+    index: {
+      url: `https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${ABI_VERSION}/index.toml`,
+      sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+      bytes: 1234,
+      abi: ABI_VERSION,
+    },
+    package: {
+      name: "shell",
+      version: "0.1.0",
+      revision: 14,
+      arch: "wasm32",
+      cache_key_sha:
+        "2222222222222222222222222222222222222222222222222222222222222222",
+    },
+    archive: {
+      format: "kandelo-package-tar-zstd-v2",
+      url: `https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${ABI_VERSION}/shell-0.1.0-rev14-abi${ABI_VERSION}-wasm32-22222222.tar.zst`,
+      sha256: "3333333333333333333333333333333333333333333333333333333333333333",
+      bytes: 45678,
+    },
+    output: {
+      name: "shell",
+      path: "shell.vfs.zst",
+      sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      bytes: 12345,
+    },
+  };
+  options.mutateBaseSource?.(baseSource);
+  const build = () => buildHomebrewLazyLayer(plan, {
+    fs: MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024)),
+    baseVfs: {
+      fs: baseFs,
+      image: {
+        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        bytes: 12345,
+      },
+      source: baseSource,
+    },
+    acceptanceVfs: {
+      sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      bytes: 23456,
+    },
+    loadBottleBytes: (pkg) => pkg.name === "hello" ? baseBytes : runtimeBytes,
+  });
+  return { baseFs, plan, build, baseBytes, runtimeBytes, runtimeKeg };
+}
+
+function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
+  const rootRepository = "example/homebrew-runtimes";
+  const rootTap = "example/runtimes";
+  const rootCommit = "3333333333333333333333333333333333333333";
+  const runtime = plan.packages[1];
+  runtime.fullName = `${rootTap}/runtime`;
+  runtime.tapRepository = rootRepository;
+  runtime.tapName = rootTap;
+  runtime.tapCommit = rootCommit;
+  runtime.builtFrom = {
+    tapRepository: rootRepository,
+    tapCommit: rootCommit,
+    kandeloRepository: runtime.kandeloRepository,
+    kandeloCommit: runtime.kandeloCommit,
+    formulaSha256: "5".repeat(64),
+  };
+  plan.tapRepository = rootRepository;
+  plan.tapName = rootTap;
+  plan.tapCommit = rootCommit;
+  Object.assign(plan, {
+    requestedFullNames: [`${rootTap}/runtime`],
+    taps: [
+      {
+        tapRepository: "kandelo-dev/homebrew-tap-core",
+        tapName: "kandelo-dev/tap-core",
+        tapCommit: TAP_COMMIT,
+        kandeloRepository: "Automattic/kandelo",
+        kandeloCommit: KANDELO_COMMIT,
+        kandeloAbi: ABI_VERSION,
+        releaseTag: `bottles-abi-v${ABI_VERSION}`,
+      },
+      {
+        tapRepository: rootRepository,
+        tapName: rootTap,
+        tapCommit: rootCommit,
+        kandeloRepository: "Automattic/kandelo",
+        kandeloCommit: KANDELO_COMMIT,
+        kandeloAbi: ABI_VERSION,
+        releaseTag: `bottles-abi-v${ABI_VERSION}`,
+      },
+    ],
+  });
+}
+
 describe("Homebrew VFS builder", () => {
+  it("builds a deterministic lazy ZIP containing only base-exclusive package output", async () => {
+    const fixture = await lazyLayerFixture();
+    const first = await fixture.build();
+    const second = await fixture.build();
+    expect(Array.from(first.archive)).toEqual(Array.from(second.archive));
+    expect(first.descriptor).toEqual(second.descriptor);
+    expect(first.descriptor.selection).toEqual({
+      requested_packages: ["runtime"],
+      package_order: [
+        "kandelo-dev/tap-core/hello",
+        "kandelo-dev/tap-core/runtime",
+      ],
+      base_package_order: ["kandelo-dev/tap-core/hello"],
+      layer_package_order: ["kandelo-dev/tap-core/runtime"],
+    });
+    expect(first.descriptor.schema).toBe(2);
+    expect(first.descriptor.base_vfs).toMatchObject({
+      sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      bytes: 12345,
+      kernel_abi: ABI_VERSION,
+      package_source: {
+        kind: "kandelo-package-output",
+        package: {
+          name: "shell",
+          arch: "wasm32",
+        },
+        output: {
+          path: "shell.vfs.zst",
+          sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      },
+      composition: {
+        package_count: 1,
+        package_order: ["kandelo-dev/tap-core/hello"],
+      },
+    });
+    expect(first.descriptor.release.tag).toBe(
+      "homebrew-vfs-sha256-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    );
+    expect(first.descriptor.packages.base).toEqual([expect.objectContaining({
+      full_name: "kandelo-dev/tap-core/hello",
+      sha256: sha256(fixture.baseBytes),
+      link_manifest: "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json",
+    })]);
+    expect(first.descriptor.packages.layer).toEqual([expect.objectContaining({
+      full_name: "kandelo-dev/tap-core/runtime",
+      sha256: sha256(fixture.runtimeBytes),
+    })]);
+
+    const entries = parseZipCentralDirectory(first.archive);
+    expect(entries.map((entry) => entry.fileName)).toEqual(
+      first.descriptor.entries.map((entry) =>
+        entry.type === "directory" ? `${entry.path}/` : entry.path
+      ),
+    );
+    const executable = entries.find(
+      (entry) => entry.fileName === "home/linuxbrew/.linuxbrew/Cellar/runtime/3.0/bin/runtime",
+    );
+    expect(executable?.mode & 0o7777).toBe(0o755);
+    expect(new TextDecoder().decode(extractZipEntry(first.archive, executable!)))
+      .toContain("echo runtime");
+    const linked = entries.find(
+      (entry) => entry.fileName === "home/linuxbrew/.linuxbrew/bin/runtime",
+    );
+    expect(linked?.isSymlink).toBe(true);
+    expect(new TextDecoder().decode(extractZipEntry(first.archive, linked!)))
+      .toBe(`${fixture.runtimeKeg}/bin/runtime`);
+    expect(entries.some((entry) => entry.fileName.startsWith("etc/"))).toBe(false);
+    expect(entries.some((entry) => entry.fileName.includes("/hello/"))).toBe(false);
+    expect(first.descriptor.entries).toContainEqual(expect.objectContaining({
+      path: "home/linuxbrew/.linuxbrew/bin",
+      type: "directory",
+      ownership: "shared-base-directory",
+    }));
+  });
+
+  it("rejects a base dependency with a different selected bottle identity", async () => {
+    const fixture = await lazyLayerFixture({
+      mutatePlan(plan) {
+        plan.packages[0].sha256 = WRONG_SHA;
+      },
+    });
+    await expect(fixture.build()).rejects.toThrow(
+      "base owns kandelo-dev/tap-core/hello with a different bottle identity",
+    );
+  });
+
+  it("rejects a package commit that differs from its bottle build provenance", async () => {
+    const fixture = await lazyLayerFixture({
+      mutatePlan(plan) {
+        plan.packages[0].tapCommit = "9".repeat(40);
+      },
+    });
+    await expect(fixture.build()).rejects.toThrow(
+      "kandelo-dev/tap-core/hello has inconsistent bottle build provenance",
+    );
+  });
+
+  it("rejects a base image whose bytes do not match its package-output receipt", async () => {
+    const fixture = await lazyLayerFixture({
+      mutateBaseSource(source) {
+        source.output.sha256 = WRONG_SHA;
+      },
+    });
+    await expect(fixture.build()).rejects.toThrow(
+      "base bytes do not match their canonical package output",
+    );
+  });
+
+  it("rejects a layer file that would replace a base-owned path", async () => {
+    const fixture = await lazyLayerFixture({
+      mutateBase(fs) {
+        writeVfsFile(fs, `${PREFIX}/bin/runtime`, "base-owned\n", 0o755);
+      },
+    });
+    await expect(fixture.build()).rejects.toThrow(
+      `path collides with base-owned path: ${PREFIX}/bin/runtime`,
+    );
+  });
+
+  it("reuses an exact base dependency across a locked third-party tap plan", async () => {
+    const fixture = await lazyLayerFixture({ mutatePlan: makeLazyLayerPlanFederated });
+    const result = await fixture.build();
+    expect(result.descriptor.tap).toEqual({
+      repository: "example/homebrew-runtimes",
+      name: "example/runtimes",
+      commit: "3333333333333333333333333333333333333333",
+    });
+    expect(result.descriptor.tap_lock.map((tap) => ({
+      repository: tap.repository,
+      name: tap.name,
+      commit: tap.commit,
+    }))).toEqual([
+      {
+        repository: "example/homebrew-runtimes",
+        name: "example/runtimes",
+        commit: "3333333333333333333333333333333333333333",
+      },
+      {
+        repository: "kandelo-dev/homebrew-tap-core",
+        name: "kandelo-dev/tap-core",
+        commit: TAP_COMMIT,
+      },
+    ]);
+    expect(result.descriptor.selection.base_package_order).toEqual([
+      "kandelo-dev/tap-core/hello",
+    ]);
+    expect(result.descriptor.selection.layer_package_order).toEqual([
+      "example/runtimes/runtime",
+    ]);
+  });
+
+  it("rejects a package whose dependency tap differs from the federated lock", async () => {
+    const fixture = await lazyLayerFixture({
+      mutatePlan(plan) {
+        makeLazyLayerPlanFederated(plan);
+        const taps = (plan as HomebrewVfsPlan & {
+          taps: Array<{ tapName: string; tapRepository: string }>;
+        }).taps;
+        const core = taps.find((tap) => tap.tapName === "kandelo-dev/tap-core")!;
+        core.tapRepository = "other/homebrew-tap-core";
+      },
+    });
+    await expect(fixture.build()).rejects.toThrow(
+      "kandelo-dev/tap-core/hello is not owned by its exact locked tap",
+    );
+  });
+
   it("pours a verified bottle, creates its canonical opt link, and writes metadata", async () => {
     const bytes = bottleTar(standardEntries());
     const result = await buildFixture(bytes);

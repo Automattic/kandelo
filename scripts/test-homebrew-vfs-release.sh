@@ -46,6 +46,8 @@ git -C "$tap" add .
 git -C "$tap" commit -q -m "acceptance tap"
 tap_commit="$(git -C "$tap" rev-parse HEAD)"
 kandelo_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+bottle_tap_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+bottle_kandelo_commit="9999999999999999999999999999999999999999"
 
 source_root="$TMP_ROOT/source"
 mkdir "$source_root"
@@ -67,6 +69,8 @@ empty_sha="$(printf '' | sha256sum | awk '{print $1}')"
 jq -nS \
   --arg tap_commit "$tap_commit" \
   --arg kandelo_commit "$kandelo_commit" \
+  --arg bottle_tap_commit "$bottle_tap_commit" \
+  --arg bottle_kandelo_commit "$bottle_kandelo_commit" \
   --arg brewfile_sha "$brewfile_sha" \
   --argjson brewfile_bytes "$brewfile_bytes" \
   --arg base_sha "$base_sha" \
@@ -100,6 +104,25 @@ jq -nS \
     base_image: {sha256: $base_sha, bytes: 1024, kernelAbi: 42},
     packages: [
       {
+        name: "dash", full_name: "kandelo-dev/tap-core/dash",
+        tap_repository: "kandelo-dev/homebrew-tap-core", tap_name: "kandelo-dev/tap-core",
+        tap_commit: $bottle_tap_commit, version: "0.5.12", arch: "wasm32",
+        source_status: "success", metadata_status: "success",
+        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + $dash_sha),
+        sha256: $dash_sha, bytes: 150, cache_key_sha: $dash_sha,
+        link_manifest: "Kandelo/links/dash.json",
+        prefix: "/home/linuxbrew/.linuxbrew",
+        keg: "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12",
+        opt_link: {path: "opt/dash", target: "../Cellar/dash/0.5.12"},
+        built_from: {
+          tap_repository: "kandelo-dev/homebrew-tap-core",
+          tap_commit: $bottle_tap_commit,
+          kandelo_repository: "Automattic/kandelo",
+          kandelo_commit: $bottle_kandelo_commit,
+          formula_sha256: $dash_sha
+        }
+      },
+      {
         name: "file-formula", full_name: "kandelo-dev/tap-core/file-formula",
         tap_repository: "kandelo-dev/homebrew-tap-core", tap_name: "kandelo-dev/tap-core",
         tap_commit: $tap_commit, version: "5.46", arch: "wasm32",
@@ -107,17 +130,16 @@ jq -nS \
         url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/file-formula/blobs/sha256:" + $file_sha),
         sha256: $file_sha, bytes: 200, cache_key_sha: $file_sha,
         link_manifest: "Kandelo/links/file-formula.json",
-        prefix: "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46", keg: "5.46"
-      },
-      {
-        name: "dash", full_name: "kandelo-dev/tap-core/dash",
-        tap_repository: "kandelo-dev/homebrew-tap-core", tap_name: "kandelo-dev/tap-core",
-        tap_commit: $tap_commit, version: "0.5.12", arch: "wasm32",
-        source_status: "success", metadata_status: "success",
-        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + $dash_sha),
-        sha256: $dash_sha, bytes: 150, cache_key_sha: $dash_sha,
-        link_manifest: "Kandelo/links/dash.json",
-        prefix: "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12", keg: "0.5.12"
+        prefix: "/home/linuxbrew/.linuxbrew",
+        keg: "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46",
+        opt_link: {path: "opt/file-formula", target: "../Cellar/file-formula/5.46"},
+        built_from: {
+          tap_repository: "kandelo-dev/homebrew-tap-core",
+          tap_commit: $tap_commit,
+          kandelo_repository: "Automattic/kandelo",
+          kandelo_commit: $kandelo_commit,
+          formula_sha256: $file_sha
+        }
       }
     ],
     image: "/untrusted/runner/path.vfs.zst"
@@ -126,6 +148,7 @@ jq -nS \
 
 jq -nS \
   --arg tap_commit "$tap_commit" \
+  --arg bottle_tap_commit "$bottle_tap_commit" \
   --arg image_sha "$image_sha" \
   --argjson image_bytes "$image_bytes" \
   --arg brewfile_sha "$brewfile_sha" \
@@ -150,21 +173,21 @@ jq -nS \
     ],
     browser_plan: {
       compatibility_basis: "pending-exact-image-runtime-test",
-      packages: ["kandelo-dev/tap-core/file-formula", "kandelo-dev/tap-core/dash"]
+      packages: ["kandelo-dev/tap-core/dash", "kandelo-dev/tap-core/file-formula"]
     },
     homebrew_bottles: [
+      {
+        name: "dash", full_name: "kandelo-dev/tap-core/dash",
+        tap_repository: "kandelo-dev/homebrew-tap-core", tap_commit: $bottle_tap_commit,
+        version: "0.5.12", sha256: $dash_sha, bytes: 150, cache_key_sha: $dash_sha,
+        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + $dash_sha),
+        declared_runtime_support: ["node"], declared_browser_compatible: false
+      },
       {
         name: "file-formula", full_name: "kandelo-dev/tap-core/file-formula",
         tap_repository: "kandelo-dev/homebrew-tap-core", tap_commit: $tap_commit,
         version: "5.46", sha256: $file_sha, bytes: 200, cache_key_sha: $file_sha,
         url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/file-formula/blobs/sha256:" + $file_sha),
-        declared_runtime_support: ["node"], declared_browser_compatible: false
-      },
-      {
-        name: "dash", full_name: "kandelo-dev/tap-core/dash",
-        tap_repository: "kandelo-dev/homebrew-tap-core", tap_commit: $tap_commit,
-        version: "0.5.12", sha256: $dash_sha, bytes: 150, cache_key_sha: $dash_sha,
-        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + $dash_sha),
         declared_runtime_support: ["node"], declared_browser_compatible: false
       }
     ],
@@ -197,6 +220,211 @@ jq -nS --arg image_sha "$image_sha" --arg kernel_sha "$kernel_sha" '
   }
   ' >"$source_root/browser.json"
 
+python3 - "$source_root" "$tap_commit" "$kandelo_commit" "$image_sha" \
+  "$image_bytes" "$file_sha" "$dash_sha" "$bottle_tap_commit" \
+  "$bottle_kandelo_commit" <<'PY'
+import hashlib, json, pathlib, stat, sys, zipfile
+
+root = pathlib.Path(sys.argv[1])
+tap_commit, kandelo_commit, image_sha = sys.argv[2:5]
+image_bytes = int(sys.argv[5])
+file_sha, dash_sha, bottle_tap_commit, bottle_kandelo_commit = sys.argv[6:10]
+archive_path = root / "layer.zip"
+entries = [
+    {
+        "path": "home/linuxbrew/.linuxbrew", "type": "directory",
+        "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar", "type": "directory",
+        "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula",
+        "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46",
+        "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin",
+        "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file",
+        "type": "file", "ownership": "layer", "mode": 0o755,
+        "size": len(b"file-5.46\n"),
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/bin", "type": "directory",
+        "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/bin/file", "type": "symlink",
+        "ownership": "layer", "mode": 0o777,
+        "target": "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file",
+        "size": len(b"/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file"),
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/opt", "type": "directory",
+        "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/opt/file-formula", "type": "symlink",
+        "ownership": "layer", "mode": 0o777,
+        "target": "../Cellar/file-formula/5.46",
+        "size": len(b"../Cellar/file-formula/5.46"),
+    },
+]
+payloads = {
+    entries[5]["path"]: b"file-5.46\n",
+    entries[7]["path"]: entries[7]["target"].encode(),
+    entries[9]["path"]: entries[9]["target"].encode(),
+}
+with zipfile.ZipFile(archive_path, "w") as archive:
+    for entry in entries:
+        name = entry["path"] + ("/" if entry["type"] == "directory" else "")
+        info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        kind = {"directory": stat.S_IFDIR, "file": stat.S_IFREG,
+                "symlink": stat.S_IFLNK}[entry["type"]]
+        info.external_attr = (kind | entry["mode"]) << 16
+        info.compress_type = (zipfile.ZIP_STORED if entry["type"] != "file"
+                              else zipfile.ZIP_DEFLATED)
+        archive.writestr(info, payloads.get(entry["path"], b""))
+archive_bytes = archive_path.read_bytes()
+tag = "homebrew-vfs-sha256-" + image_sha
+release_root = (
+    "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/" + tag
+)
+
+
+def package_record(name, version, bottle_sha, bottle_bytes):
+    keg = f"/home/linuxbrew/.linuxbrew/Cellar/{name}/{version}"
+    package_tap_commit = bottle_tap_commit if name == "dash" else tap_commit
+    package_kandelo_commit = (
+        bottle_kandelo_commit if name == "dash" else kandelo_commit
+    )
+    return {
+        "name": name, "full_name": f"kandelo-dev/tap-core/{name}",
+        "tap_repository": "kandelo-dev/homebrew-tap-core",
+        "tap_name": "kandelo-dev/tap-core", "tap_commit": package_tap_commit,
+        "version": version, "formula_revision": 0, "bottle_rebuild": 0,
+        "arch": "wasm32", "source_status": "success",
+        "metadata_status": "success",
+        "url": (
+            f"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/{name}"
+            f"/blobs/sha256:{bottle_sha}"
+        ),
+        "sha256": bottle_sha, "bytes": bottle_bytes,
+        "cache_key_sha": bottle_sha,
+        "link_manifest": f"Kandelo/links/{name}.json",
+        "prefix": "/home/linuxbrew/.linuxbrew", "keg": keg,
+        "opt_link": {"path": f"opt/{name}", "target": f"../Cellar/{name}/{version}"},
+        "built_from": {
+            "tap_repository": "kandelo-dev/homebrew-tap-core",
+            "tap_commit": package_tap_commit,
+            "kandelo_repository": "Automattic/kandelo",
+            "kandelo_commit": package_kandelo_commit,
+            "formula_sha256": bottle_sha,
+        },
+    }
+
+
+dash_package = package_record("dash", "0.5.12", dash_sha, 150)
+file_package = package_record("file-formula", "5.46", file_sha, 200)
+base_package_order = [dash_package["full_name"]]
+layer_package_order = [file_package["full_name"]]
+package_order = base_package_order + layer_package_order
+base_source = {
+    "schema": 1, "kind": "kandelo-package-output",
+    "index": {
+        "url": (
+            "https://github.com/Automattic/kandelo/releases/download/"
+            "binaries-abi-v42/index.toml"
+        ),
+        "sha256": "1" * 64, "bytes": 4096, "abi": 42,
+    },
+    "package": {
+        "name": "shell", "version": "0.1.0", "revision": 14,
+        "arch": "wasm32", "cache_key_sha": "2" * 64,
+    },
+    "archive": {
+        "format": "kandelo-package-tar-zstd-v2",
+        "url": (
+            "https://github.com/Automattic/kandelo/releases/download/"
+            "binaries-abi-v42/shell-0.1.0-rev14-abi42-wasm32-22222222.tar.zst"
+        ),
+        "sha256": "3" * 64, "bytes": 2048,
+    },
+    "output": {
+        "name": "shell", "path": "shell.vfs.zst",
+        "sha256": "d" * 64, "bytes": 1024,
+    },
+}
+descriptor = {
+    "schema": 2, "kind": "kandelo-homebrew-lazy-archive", "arch": "wasm32",
+    "mount_prefix": "/",
+    "tap": {
+        "repository": "kandelo-dev/homebrew-tap-core",
+        "name": "kandelo-dev/tap-core", "commit": tap_commit,
+    },
+    "tap_lock": [{
+        "repository": "kandelo-dev/homebrew-tap-core",
+        "name": "kandelo-dev/tap-core", "commit": tap_commit,
+        "kandelo_repository": "Automattic/kandelo",
+        "kandelo_commit": kandelo_commit, "kandelo_abi": 42,
+        "bottle_release_tag": "bottles-abi-v42",
+    }],
+    "kandelo": {
+        "repository": "Automattic/kandelo", "commit": kandelo_commit, "abi": 42,
+    },
+    "bottle_release_tag": "bottles-abi-v42",
+    "selection": {
+        "requested_packages": ["file-formula", "dash"],
+        "package_order": package_order,
+        "base_package_order": base_package_order,
+        "layer_package_order": layer_package_order,
+    },
+    "packages": {"base": [dash_package], "layer": [file_package]},
+    "base_vfs": {
+        "sha256": "d" * 64, "bytes": 1024, "kernel_abi": 42,
+        "package_source": base_source,
+        "composition": {
+            "path": "/etc/kandelo/homebrew-vfs.json",
+            "sha256": "4" * 64, "bytes": 16384,
+            "requested_packages_sha256": "5" * 64,
+            "package_set_sha256": "6" * 64,
+            "package_count": 1, "package_order": base_package_order,
+        },
+    },
+    "release": {
+        "repository": "kandelo-dev/homebrew-tap-core", "tag": tag,
+    },
+    "acceptance_vfs": {
+        "asset": "kandelo-homebrew.vfs.zst",
+        "url": release_root + "/kandelo-homebrew.vfs.zst",
+        "sha256": image_sha, "bytes": image_bytes,
+    },
+    "archive": {
+        "format": "zip", "asset": "kandelo-homebrew-shell-layer.zip",
+        "url": release_root + "/kandelo-homebrew-shell-layer.zip",
+        "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+        "bytes": len(archive_bytes), "entry_count": len(entries),
+        "layer_entry_count": sum(
+            entry["ownership"] == "layer" for entry in entries
+        ),
+        "shared_base_directory_count": sum(
+            entry["ownership"] == "shared-base-directory" for entry in entries
+        ),
+        "uncompressed_bytes": sum(entry["size"] for entry in entries),
+    },
+    "entries": entries,
+}
+(root / "layer.json").write_text(json.dumps(descriptor, sort_keys=True, indent=2) + "\n")
+PY
+
 common_identity_args=(
   --tap-root "$tap"
   --tap-repository kandelo-dev/homebrew-tap-core
@@ -216,6 +444,8 @@ python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
   --report "$source_root/report.json" \
   --node-evidence "$source_root/node.json" \
   --browser-evidence "$source_root/browser.json" \
+  --lazy-layer "$source_root/layer.zip" \
+  --lazy-layer-descriptor "$source_root/layer.json" \
   --out "$handoff" "${common_args[@]}" >/dev/null
 python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$handoff" "${common_args[@]}" >/dev/null
@@ -234,6 +464,17 @@ jq -e --arg image_sha "$image_sha" '
   .launch.query_parameter == "vfs" and .launch.value == .image.url and
   .default_shell.path == "/home/linuxbrew/.linuxbrew/bin/dash"
 ' "$handoff/kandelo-homebrew-vfs.json" >/dev/null || fail "descriptor contract changed"
+jq -e --arg image_sha "$image_sha" '
+  .schema == 2 and .kind == "kandelo-homebrew-lazy-archive" and
+  .acceptance_vfs.sha256 == $image_sha and .mount_prefix == "/" and
+  .base_vfs.sha256 == .base_vfs.package_source.output.sha256 and
+  .selection.base_package_order == ["kandelo-dev/tap-core/dash"] and
+  .selection.layer_package_order == ["kandelo-dev/tap-core/file-formula"] and
+  .archive.asset == "kandelo-homebrew-shell-layer.zip" and
+  .archive.entry_count == (.entries | length) and
+  .archive.layer_entry_count == ([.entries[] | select(.ownership == "layer")] | length)
+' "$handoff/kandelo-homebrew-shell-layer.json" >/dev/null ||
+  fail "lazy layer descriptor contract changed"
 
 negative="$TMP_ROOT/negative"
 cp -a "$handoff" "$negative"
@@ -247,6 +488,52 @@ jq '.image_sha256 = "00000000000000000000000000000000000000000000000000000000000
   "$negative/kandelo-homebrew-browser-evidence.json" >"$negative/browser.tmp"
 mv "$negative/browser.tmp" "$negative/kandelo-homebrew-browser-evidence.json"
 expect_failure "validator accepted browser evidence for different bytes" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+printf 'tamper' >>"$negative/kandelo-homebrew-shell-layer.zip"
+expect_failure "validator accepted a tampered lazy ZIP layer" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.entries[0].size += 1' "$negative/kandelo-homebrew-shell-layer.json" \
+  >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+expect_failure "validator accepted a lazy ZIP index that differs from its archive" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.base_vfs.package_source.output.sha256 = ("0" * 64)' \
+  "$negative/kandelo-homebrew-shell-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+expect_failure "validator accepted a base VFS outside its package-output receipt" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.tap_lock[0].commit = ("b" * 40)' \
+  "$negative/kandelo-homebrew-shell-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+expect_failure "validator accepted a layer package outside its exact tap lock" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.packages.layer[0].full_name = "other/runtime/file-formula"' \
+  "$negative/kandelo-homebrew-shell-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+expect_failure "validator accepted a package name outside its locked tap identity" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.entries[-1].ownership = "shared-base-directory"' \
+  "$negative/kandelo-homebrew-shell-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+expect_failure "validator accepted a shared non-directory collision" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
@@ -418,7 +705,9 @@ run_publisher >/dev/null
 jq -e --arg image_sha "$image_sha" '
   .schema == 1 and .status == "success" and
   .visibility == "public-anonymous-readback" and
-  .image.sha256 == $image_sha and (.assets | length) == 5
+  .image.sha256 == $image_sha and
+  .lazy_layer.archive.asset == "kandelo-homebrew-shell-layer.zip" and
+  (.assets | length) == 7
 ' "$TMP_ROOT/receipt.json" >/dev/null || fail "publisher receipt contract changed"
 
 FAKE_CURL_FAIL_ONCE=kandelo-homebrew.vfs.zst run_publisher >/dev/null ||
@@ -439,13 +728,13 @@ expect_failure "publisher filled a missing asset in an existing public release" 
 cp "$fake_state/public-state.json" "$fake_state/state.json"
 
 # A partial exact draft is recoverable: the publisher fills only the missing
-# asset and publishes after all five authenticated checks succeed.
+# asset and publishes after all seven authenticated checks succeed.
 jq '.draft = true | del(.assets["kandelo-homebrew-browser-evidence.json"])' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
 : >"$fake_state/gh.log"
 run_publisher >/dev/null
-jq -e '.draft == false and (.assets | length) == 5' "$fake_state/state.json" >/dev/null ||
+jq -e '.draft == false and (.assets | length) == 7' "$fake_state/state.json" >/dev/null ||
   fail "publisher did not recover an exact partial draft"
 if ! jq -s -e '
   any(.[]; .[0:3] == ["api", "--paginate", "--slurp"]) and

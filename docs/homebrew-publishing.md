@@ -178,7 +178,7 @@ Homebrew publishing is a sibling to Kandelo package archive publishing:
 | `Kandelo/reports/*.provenance.json` | Same as metadata | Durable publication and validation evidence. |
 | `Kandelo/vfs-acceptance.json` and its Brewfile | Tap git repository | Optional tap-owned dependency-bearing acceptance selection. |
 | `Kandelo/dependency-taps.json` | Primary tap git repository | Exact reviewed public tap source lock. |
-| Required-gate VFS image, descriptor, report, and Node/browser evidence | Source tap GitHub Release `homebrew-vfs-sha256-<image-sha256>` | Kandelo browser direct-`vfs` launch, audit tooling, and operators. |
+| Required-gate VFS image, lazy shell layer, descriptors, report, and Node/browser evidence | Source tap GitHub Release `homebrew-vfs-sha256-<image-sha256>` | Kandelo browser direct-`vfs` launch, future lazy shell composition, audit tooling, and operators. |
 | Browser gallery assets | Run-scoped diagnostic artifact | Review evidence only; not a durable public gallery. |
 
 Do not publish Homebrew bottles into Kandelo's `binaries-abi-v<N>` package
@@ -1161,8 +1161,9 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    in the credentialed role.
 6. `publish-vfs-release` runs only when `require-vfs-acceptance: true`, every
    verifier matrix entry succeeded, and the atomic tap finalizer succeeded. The
-   verifier exports only the selected wasm32 image, its VFS report, the exact
-   Node and Chromium evidence, and a deterministic descriptor. A fresh job
+   verifier exports only the selected wasm32 image, its deterministic lazy
+   shell ZIP, both descriptors, its VFS report, and the exact Node and Chromium
+   evidence. A fresh job
    checks out the exact planned Kandelo and tap commits, revalidates that inert
    bundle without a token in its environment, compares its ABI and bottle
    release tag to the trusted plan outputs, and only then exposes the scoped
@@ -1170,7 +1171,7 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    That step serializes on the content tag, creates or resumes an exact draft,
    rejects duplicate, unexpected, missing-public, or byte-mismatched assets,
    and publishes only after authenticated byte checks succeed. It finally
-   reads all five public URLs with token variables removed and verifies every
+   reads all seven public URLs with token variables removed and verifies every
    SHA-256 and byte count. It requires the published release API record to set
    `immutable: true` before emitting success. A public release retry is
    read-only and idempotent.
@@ -1471,6 +1472,40 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --report target/homebrew-tools.vfs-report.json
 ```
 
+The required-acceptance publisher also passes `--lazy-layer-out`,
+`--lazy-layer-descriptor`, `--lazy-layer-base-image`, and
+`--lazy-layer-base-package-source`. The eager acceptance image still uses the
+platform-only base described above. The lazy layer has a different lower
+filesystem: the exact bottle-built `shell.vfs.zst` declared by the canonical
+`shell` package, materialized without credentials or source fallback from the
+package's current index and immutable archive. The package-output receipt binds
+the fetched index snapshot, exact recipe cache key, immutable archive, and
+declared output bytes. The archive digest also transitively binds the
+producer's archived external Git inputs.
+
+The lazy composer restores that exact shell image, verifies the receipt against
+its bytes and ABI, and reads its Homebrew composition manifest. A selected
+package is reused from the lower image only when its full artifact identity
+matches the dependency-first plan, including tap repository, tap name, tap
+commit, bottle digest, cache key, and build provenance. This applies equally to
+a package from the root tap or an exact dependency tap; a mismatched dependency
+tap lock or bottle identity fails instead of silently reusing similarly named
+files. The federated tap lock binds the current catalogs separately; a bottle's
+package-specific `built_from` commit remains its historical build identity and
+need not equal the catalog commit that now selects it. The remaining packages
+are poured into a fresh filesystem with a
+256 MiB ceiling. A directory already present in the lower image may be shared,
+but any file, symlink, or type collision fails composition.
+
+The resulting deterministic ZIP contains only layer-owned paths under
+`/home/linuxbrew/.linuxbrew`; it does not duplicate the lower shell image,
+`/etc` metadata, a gallery profile, or a language-specific VFS image. The
+schema-2 descriptor indexes every directory, regular file, and symlink,
+including ownership, POSIX modes, sizes, and symlink targets. It also binds the
+complete federated tap lock, base and layer package orders, exact lower-image
+package receipt and composition, separately browser-proven eager acceptance
+image, archive digest, and immutable release URLs.
+
 `--dependency-tap-root owner/tap=/exact/checkout` is repeatable for lower-level
 federated planning. The publisher derives these arguments only from the
 committed dependency-tap lock and its exact checkouts; callers must not use the
@@ -1567,6 +1602,26 @@ public package archive; before allowing normal source fallback, it prepares
 the root `tsx` and `tools/mkrootfs` dependency trees from their committed npm
 lockfiles. The explicit `--fetch-only` mode skips those build prerequisites
 and continues to refuse source fallback.
+
+Downstream jobs that need those released bytes use the package system rather
+than a parallel VFS download convention:
+
+```bash
+scripts/dev-shell.sh cargo run --release -p xtask -- \
+  materialize-package-output \
+  --package packages/registry/shell \
+  --arch wasm32 \
+  --output-name shell \
+  --out target/shell.vfs.zst \
+  --receipt target/shell-package-output.json
+```
+
+The command computes the exact local recipe cache key, fetches the canonical
+index configured by `build.toml`, requires a successful matching ABI, package,
+version, revision, architecture, and cache key, then installs the indexed
+immutable archive through the normal strict package validator. It extracts only
+the declared regular output and emits its verification receipt. It never falls
+back to a source build.
 
 The wrapper first builds a platform-only VFS from `MANIFEST` and
 `images/rootfs`. It deliberately does not generate or add the
@@ -1766,6 +1821,11 @@ migration:
   from Kandelo's ABI-matched package release, and the verification kernel comes
   from the exact Kandelo workflow source. Their origin, digest, byte count, and
   ABI are recorded separately and never count as migrated package evidence.
+- **Lazy lower filesystem:** the exact bottle-built main-shell VFS comes from
+  the canonical `shell` package index and verified immutable archive. Its
+  package-output receipt and composition are bound into the lazy descriptor.
+  It is not the eager acceptance image and is not treated as independent
+  evidence for that image's Node or Chromium run.
 
 The Node runner boots the exact composed image bytes and records their digest.
 The Chromium runner fetches the same file and passes those bytes directly to
@@ -1854,6 +1914,8 @@ kandelo-homebrew-vfs.json
 kandelo-homebrew-vfs-report.json
 kandelo-homebrew-node-evidence.json
 kandelo-homebrew-browser-evidence.json
+kandelo-homebrew-shell-layer.zip
+kandelo-homebrew-shell-layer.json
 ```
 
 `kandelo-homebrew-vfs.json` is the stable machine-readable entry point. It
@@ -1869,6 +1931,25 @@ path:
 ?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
 ```
 
+`kandelo-homebrew-shell-layer.json` is a separate schema-2 entry point for the
+lazy transport artifact. Keeping it separate preserves the stable whole-image
+descriptor contract. It records mount prefix `/`, the complete federated tap
+lock, dependency-first base and layer package orders, exact bottle and
+link-manifest provenance, the canonical shell package-output receipt, lower
+composition identity, separately browser-proven eager VFS identity, and a
+bounded ownership-aware entry index for `kandelo-homebrew-shell-layer.zip`.
+The release validator opens the ZIP, checks every indexed
+path/type/ownership/mode/size and symlink target, and reads every member so the
+ZIP CRCs are verified before publication. It also rejects a shared lower path
+unless that path is a directory. Both assets receive authenticated and
+anonymous digest-and-size readback.
+
+This publisher change does not register the ZIP in the main shell VFS yet.
+Until the browser runtime gains integrity-checked lazy archive registration,
+the layer descriptor is a durable input for that follow-up rather than a claim
+that Perl, Python, Erlang, or any other selected package is already available
+in the default shell. It also does not publish one VFS image per language.
+
 The release publisher never uses `--clobber`. A content-tag state lock
 serializes writers. An absent release starts as a draft; an interrupted exact
 draft may be completed, while unexpected assets or existing bytes with a
@@ -1878,7 +1959,7 @@ authenticated, paginated release list and refreshes that draft by its database
 ID. Once public, the release is never mutated. Publication creates the tag,
 after which it must be a direct commit reference to the exact tap source
 commit. Success requires GitHub-enforced release immutability plus anonymous
-digest-and-size readback of all five assets. The run retains a small publication
+digest-and-size readback of all seven assets. The run retains a small publication
 receipt with the descriptor and direct-image URLs, but that Actions artifact is
 only a receipt; the release assets are the durable public product.
 
@@ -2291,8 +2372,11 @@ rollback path instead.
 
 The implemented path covers a trusted bottle build, public repository-rooted
 GHCR package creation plus anonymous readback, sidecar validation, verified VFS
-image building, Node and Chromium smoke, immutable public release of the exact
-required-acceptance image, diagnostic gallery gating, and lossless under-lock
-tap composition with Formula source-closure drift rejection. Durable generic
+image building, exact canonical package materialization of the bottle-built
+main shell, base-exclusive deterministic lazy ZIP generation, Node and
+Chromium smoke of the eager acceptance image, immutable public release of that
+image and its lazy transport layer, diagnostic gallery gating, and lossless
+under-lock tap composition with Formula source-closure drift rejection.
+Main-shell lazy layer registration and integrity checking, durable generic
 gallery publication, broader package coverage, general guest `brew install`,
 and broader release/gallery operator runbooks remain separate work.

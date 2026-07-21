@@ -1984,7 +1984,7 @@ fn try_index_install(
 /// passes through unchanged; otherwise it's appended to `base`'s
 /// parent directory (i.e. `https://host/dir/index.toml` + `foo.tar.zst`
 /// → `https://host/dir/foo.tar.zst`).
-fn resolve_relative_url(base: &str, rel: &str) -> String {
+pub(crate) fn resolve_relative_url(base: &str, rel: &str) -> String {
     if rel.starts_with("file://") || rel.starts_with("http://") || rel.starts_with("https://") {
         return rel.to_string();
     }
