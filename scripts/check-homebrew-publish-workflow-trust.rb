@@ -25,7 +25,7 @@ PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
 PUBLISHER_VERIFY_DIGEST = "2fb7c3d3f1191fea9bb08518ce9b103f20c1d20b6b44aa749d5416b282779551"
-PUBLISHER_FINALIZE_DIGEST = "da1c21fa1d85e7ce92a270bf75a5187880dae20296914516319378a664c63abc"
+PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
 PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
@@ -3016,6 +3016,12 @@ def check_publisher(workflow)
         publication_limits.include?(
           "readonly HOMEBREW_MAX_SIDECAR_JSON_BYTES=16777216"
         ) &&
+        publication_limits.include?(
+          "readonly HOMEBREW_MAX_FAILURE_ERROR_BYTES=2048"
+        ) &&
+        publication_limits.include?(
+          "readonly HOMEBREW_MAX_FAILURE_ERROR_DETAIL_BYTES=16384"
+        ) &&
         publication_limits.include?("readonly HOMEBREW_MAX_BOTTLE_BYTES=2147483648") &&
         publication_limits.include?(
           "readonly HOMEBREW_MAX_EXPANDED_BOTTLE_BYTES=17179869184"
@@ -3689,20 +3695,46 @@ def check_publisher(workflow)
   )
   publish_checkout = named_step(finalize_steps,
                                 "Checkout tap publication branch after payload validation")
+  payload_validation_run = payload_validation.fetch("run")
   check(payload_validation["id"] == "validate-payload" &&
         payload_validation["continue-on-error"] == true &&
-        payload_validation.fetch("run").include?("scripts/homebrew-validate-publish-handoff.sh") &&
-        payload_validation.fetch("run").include?("--defer-whole-tap-validation") &&
-        payload_validation.fetch("run").include?('cmp "$expected" "$actual"') &&
-        payload_validation.fetch("run").include?('[ ! -d "$entry" ] || [ -L "$entry" ]') &&
-        payload_validation.fetch("run").include?(
-          'homebrew-publish-handoff-${formula}-${arch}-attempt-${KANDELO_HOMEBREW_RUN_ATTEMPT}'
-        ) &&
-        !payload_validation.fetch("run").include?("--allow-dry-run") &&
+        payload_validation_run.include?("scripts/homebrew-publish-handoff-paths.sh") &&
+        payload_validation_run.include?('--planned-matrix "$KANDELO_HOMEBREW_PLANNED_MATRIX"') &&
+        payload_validation_run.include?('--run-attempt "$KANDELO_HOMEBREW_RUN_ATTEMPT"') &&
+        payload_validation_run.include?('--out "$handoff_paths"') &&
+        payload_validation_run.include?("scripts/homebrew-validate-publish-handoff.sh") &&
+        payload_validation_run.include?("--defer-whole-tap-validation") &&
+        payload_validation_run.include?("IFS= read -r -d '' formula") &&
+        payload_validation_run.include?("IFS= read -r -d '' arch") &&
+        payload_validation_run.include?("IFS= read -r -d '' handoff") &&
+        payload_validation_run.include?('done <"$handoff_paths"') &&
+        payload_validation_run.include?(') 2>"$error_file"') &&
+        payload_validation_run.include?('validation_status=$?') &&
+        !payload_validation_run.include?('2> >(') &&
+        !payload_validation_run.include?('cmp "$expected" "$actual"') &&
+        !payload_validation_run.include?("--allow-dry-run") &&
         finalize_steps.index(payload_validation) < finalize_steps.index(publish_checkout),
         "publisher finalizer does not validate a write-only strict handoff before credentialed checkout")
-  check_forbidden_root_args(payload_validation.fetch("run"),
+  check_forbidden_root_args(payload_validation_run,
                             "publisher final payload validation", trusted_runner_roots)
+  handoff_topology_helper = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-publish-handoff-paths.sh")
+  )
+  [
+    'keys != ["arch", "formula"]',
+    'planned matrix contains a duplicate publication',
+    'output path must be outside the artifact download',
+    'artifact download contains a symlink or special file',
+    'flattened handoff is only valid for one planned publication',
+    'flattened handoff contains unexpected entries',
+    'nested handoffs differ from the exact planned matrix',
+    'nested handoff directory is not in the exact planned matrix',
+    'normalized handoff count differs from the planned matrix',
+    "printf '%s\\0%s\\0%s\\0'",
+  ].each do |fragment|
+    check(handoff_topology_helper.include?(fragment),
+          "publisher publication handoff topology helper lacks #{fragment}")
+  end
   forbidden_root_lines = values_for_key(workflow, "run").flat_map do |run|
     next [] unless run.is_a?(String)
     run.lines.filter_map do |line|
@@ -3720,7 +3752,12 @@ def check_publisher(workflow)
   publish_run = publish_step.fetch("run")
   check(publish_run.include?("scripts/homebrew-publish-sidecars.sh") &&
         publish_run.include?('publish_args+=(--publication "$formula" "$arch" "$handoff")') &&
-        publish_run.include?('KANDELO_HOMEBREW_PLANNED_MATRIX') &&
+        publish_run.include?('[ -f "$handoff_paths" ] && [ ! -L "$handoff_paths" ]') &&
+        publish_run.include?('done <"$handoff_paths"') &&
+        publish_run.include?(') 2>"$error_file"') &&
+        publish_run.include?('publish_status=$?') &&
+        !publish_run.include?('2> >(') &&
+        !publish_run.include?('homebrew-publish-handoffs/homebrew-publish-handoff-') &&
         !publish_run.include?("--sidecar-root"),
         "publisher finalizer bypasses under-lock coordinated package composition")
   finalizer_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-publish-sidecars.sh"))
@@ -3739,6 +3776,19 @@ def check_publisher(workflow)
   end
   check(!finalizer_source.include?('commit_and_push "homebrew:'),
         "publisher finalizer still generates a lowercase Homebrew commit prefix")
+  [
+    '--error-detail-file) ERROR_DETAIL_FILE=',
+    '--error-detail-file is only valid for an attempt report',
+    '--error-detail-file must be a regular non-symlink file',
+    'HOMEBREW_MAX_FAILURE_ERROR_BYTES',
+    'HOMEBREW_MAX_FAILURE_ERROR_DETAIL_BYTES',
+    'data.decode("utf-8", errors="strict")',
+    'IFS= read -r -d \'\' safe_error_detail',
+    'error_detail: (if $error_detail == "" then null else $error_detail end)',
+  ].each do |fragment|
+    check(finalizer_source.include?(fragment),
+          "publisher failure report lacks bounded exact finalizer detail: #{fragment}")
+  end
   [
     'PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap-$planned_index"',
     'git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit"',
@@ -3811,6 +3861,17 @@ def check_publisher(workflow)
     'atomic batch metadata did not contain both exact bottle handoffs',
     'deferred whole-tap validation weakened selected bottle evidence',
     'bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"',
+    'assert_publish_handoff_download_topologies',
+    'correctly named nested single-publication handoff was not accepted',
+    'publication handoff collector accepted mixed flattened and nested layouts',
+    'publication handoff collector accepted an extra artifact directory',
+    'publication handoff collector accepted an identity outside the planned matrix',
+    'publication handoff collector accepted a symlinked payload entry',
+    'publication handoff collector wrote its manifest inside untrusted artifact data',
+    'failure report did not preserve exact bounded validation stderr',
+    'oversized failure detail was not replaced by the bounded omission marker',
+    'non-text failure detail was not replaced by the bounded omission marker',
+    'failure reporter accepted an oversized summary error',
   ].each do |fragment|
     check(publisher_test_source.include?(fragment),
           "publisher workflow tests do not cover dependency drift: #{fragment}")
@@ -3835,9 +3896,18 @@ def check_publisher(workflow)
         "publisher failed-attempt path changed")
   report_run = report.fetch("run")
   check(report_run.include?('--tap-root "$GITHUB_WORKSPACE/tap-report"') &&
-        !report_run.include?("tap-publish") && !report_run.include?("homebrew-finalize-error.txt") &&
+        !report_run.include?("tap-publish") &&
+        report_run.include?('validation_error_file="$RUNNER_TEMP/homebrew-finalize-validation-error.txt"') &&
+        report_run.include?('publication_error_file="$RUNNER_TEMP/homebrew-finalize-publish-error.txt"') &&
+        report_run.include?('[ "$VALIDATE_PAYLOAD_OUTCOME" != "success" ]') &&
+        report_run.include?('elif [ "$PUBLISH_OUTCOME" != "success" ]') &&
+        report_run.include?('error_detail_file="$validation_error_file"') &&
+        report_run.include?('error_detail_file="$publication_error_file"') &&
+        report_run.include?('[ -f "$error_detail_file" ] && [ ! -L "$error_detail_file" ]') &&
+        report_run.include?('report_args+=(--error-detail-file "$error_detail_file")') &&
+        !report_run.match?(/^\s*(?:cat|head|tail|sed)\b/) &&
         report_run.include?('error_text="publish-handoff=$PUBLISH_HANDOFF_OUTCOME; '),
-        "publisher failure report does not use a clean checkout and sanitized outcomes")
+        "publisher failure report does not use a clean checkout and bounded stage diagnostics")
 
   check(!values_for_key(workflow, "run").join("\n").include?("GITHUB_SHA"),
         "publisher uses caller-context SHA as source provenance")
@@ -4766,7 +4836,7 @@ def self_test(publisher, maintenance, repository_canary)
     "raw failure stderr" => lambda { |w|
       step = mutate_named_step(w, "finalize-tap",
                                "Record failed attempt without replacing last-green metadata")
-      step["run"] = "tail \"$RUNNER_TEMP/homebrew-finalize-error.txt\"\n#{step.fetch('run')}"
+      step["run"] = "tail \"$RUNNER_TEMP/homebrew-finalize-validation-error.txt\"\n#{step.fetch('run')}"
     },
     "untrusted executable step" => lambda { |w|
       w.fetch("jobs").fetch("verify-bottle").fetch("steps") << {
