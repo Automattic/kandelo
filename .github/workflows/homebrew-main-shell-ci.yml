@@ -260,10 +260,11 @@ jobs:
           (
             cd apps/browser-demos
             bash ../../scripts/dev-shell.sh env \
+              PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \
               KANDELO_HOMEBREW_MAIN_SHELL_STRICT="$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
               KANDELO_HOMEBREW_MAIN_SHELL_SHA256="$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
               npx playwright test test/kandelo-homebrew-main-shell.spec.ts \
-              --project=chromium --reporter=json >"$report"
+              --project=chromium --reporter=json
           )
           jq -e '
             .stats.expected == 1 and .stats.unexpected == 0 and

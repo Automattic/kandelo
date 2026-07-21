@@ -104,6 +104,10 @@ grep -Fq 'bash scripts/dev-shell.sh env \' "$WORKFLOW" ||
   fail "main-shell workflow must forward bottle-composer inputs inside the isolated dev shell"
 grep -Fq 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW" ||
   fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
+grep -Fq 'PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \' "$WORKFLOW" ||
+  fail "browser acceptance must have Playwright write JSON directly to its report file"
+grep -Fq -- '--project=chromium --reporter=json >"$report"' "$WORKFLOW" &&
+  fail "browser acceptance must not mix dev-shell stdout into the Playwright JSON report"
 grep -Fq "jq -r '.packages[].registry.name' homebrew/main-shell-migration-lock.json" "$WORKFLOW" ||
   fail "binary fetch must select the reviewed main-shell registry roots"
 grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
@@ -116,6 +120,34 @@ for browser_input in dinit nethack-browser-bundle node rootfs vim-browser-bundle
   grep -Fxq "            $browser_input" "$WORKFLOW" ||
     fail "main-shell workflow omits direct browser input $browser_input"
 done
+
+# The dev-shell wrapper intentionally reports Nix lookup and shell-hook details
+# on stdout. Playwright must own the JSON file directly so those diagnostics can
+# remain visible without corrupting machine-readable acceptance evidence.
+playwright_report="$TMP_ROOT/playwright-report.json"
+wrapper_log="$TMP_ROOT/dev-shell-stdout.log"
+(
+  echo "path does not contain a flake.nix, searching up"
+  echo "kandelo dev shell — declared tools are ready"
+  PLAYWRIGHT_JSON_OUTPUT_FILE="$playwright_report" node -e '
+    const fs = require("node:fs");
+    process.stdout.write("playwright command stdout remains diagnostic-only\n");
+    fs.writeFileSync(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify({
+      stats: { expected: 1, unexpected: 0, flaky: 0, skipped: 0 },
+    }));
+  '
+) >"$wrapper_log"
+grep -Fq "path does not contain a flake.nix" "$wrapper_log" ||
+  fail "noisy-wrapper fixture did not preserve dev-shell diagnostics"
+grep -Fq "playwright command stdout remains diagnostic-only" "$wrapper_log" ||
+  fail "noisy-wrapper fixture did not preserve command diagnostics"
+jq -e '
+  .stats.expected == 1 and .stats.unexpected == 0 and
+  .stats.flaky == 0 and .stats.skipped == 0
+' "$playwright_report" >/dev/null ||
+  fail "direct Playwright JSON report was corrupted by noisy wrapper stdout"
+grep -Fq "flake.nix" "$playwright_report" &&
+  fail "dev-shell diagnostics leaked into the direct Playwright JSON report"
 
 expect_failure "KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA requires" \
   env KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA=0000000000000000000000000000000000000000 \
