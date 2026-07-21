@@ -27,6 +27,8 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const MAX_BREWFILE_BYTES = 65_536;
 const MAX_MIGRATION_LOCK_BYTES = 65_536;
+const MAX_RUNTIME_STATE_TEXT_BYTES = 65_536;
+const MAX_RUNTIME_STATE_ID = 0x7fff_ffff;
 
 export class HomebrewVfsBuildError extends Error {
   constructor(message: string) {
@@ -68,6 +70,19 @@ export interface HomebrewVfsCompatibilityPolicy {
     source: string;
     targets: string[];
   }>;
+  runtime_state?: HomebrewVfsRuntimeStateDeclaration[];
+}
+
+export interface HomebrewVfsRuntimeStateDeclaration {
+  /** Apply this consumer-owned state only when the exact Formula is selected. */
+  requires_package: string;
+  path: string;
+  kind: "directory" | "empty_file" | "text_file";
+  mode: number;
+  uid: number;
+  gid: number;
+  reason: string;
+  contents?: string;
 }
 
 export interface HomebrewVfsCompatibilityLinkReport {
@@ -86,6 +101,18 @@ export interface HomebrewVfsLinkConflictReport {
   skipped_packages: string[];
   reason: string;
   resolution: "migration-lock";
+}
+
+export interface HomebrewVfsRuntimeStateReport {
+  requires_package: string;
+  path: string;
+  kind: HomebrewVfsRuntimeStateDeclaration["kind"];
+  mode: number;
+  uid: number;
+  gid: number;
+  reason: string;
+  content_sha256?: string;
+  content_bytes?: number;
 }
 
 export interface HomebrewVfsCatalogCheckout {
@@ -163,6 +190,7 @@ export interface HomebrewVfsBuildReport {
   catalog?: HomebrewVfsCatalogReport;
   compatibility_links?: HomebrewVfsCompatibilityLinkReport[];
   link_conflicts?: HomebrewVfsLinkConflictReport[];
+  runtime_state?: HomebrewVfsRuntimeStateReport[];
   migration_lock?: HomebrewVfsMigrationLockBinding;
   metadata: {
     tap_repository: string;
@@ -219,6 +247,10 @@ export async function buildHomebrewVfs(
   const catalog = createCatalogReport(plan, options.catalogCheckout);
   const migrationLock = createMigrationLockBinding(options.migrationLock);
   const linkResolution = resolveLinkConflicts(plan, options.compatibilityPolicy);
+  const runtimeStateDeclarations = prepareRuntimeState(
+    plan,
+    options.compatibilityPolicy?.runtime_state,
+  );
 
   ensureDirRecursive(fs, "/etc/kandelo");
 
@@ -269,6 +301,10 @@ export async function buildHomebrewVfs(
   const compatibilityLinks = options.compatibilityPolicy === undefined
     ? undefined
     : applyCompatibilityLinks(fs, plan, options.compatibilityPolicy, linkResolution);
+  if (options.writeProfile) {
+    writeProfileFragment(fs, plan);
+  }
+  const runtimeState = applyRuntimeState(fs, runtimeStateDeclarations);
 
   const report: HomebrewVfsBuildReport = {
     schema: 1,
@@ -280,6 +316,7 @@ export async function buildHomebrewVfs(
     ...(linkResolution.reports.length === 0 ? {} : {
       link_conflicts: linkResolution.reports,
     }),
+    ...(runtimeState.length === 0 ? {} : { runtime_state: runtimeState }),
     ...(migrationLock === undefined ? {} : { migration_lock: migrationLock }),
     metadata: {
       tap_repository: plan.tapRepository,
@@ -307,6 +344,7 @@ export async function buildHomebrewVfs(
       ...(linkResolution.reports.length === 0 ? {} : {
         link_conflicts: linkResolution.reports,
       }),
+      ...(runtimeState.length === 0 ? {} : { runtime_state: runtimeState }),
       ...(migrationLock === undefined ? {} : { migration_lock: migrationLock }),
       metadata: report.metadata,
       packages: packageReports.map((pkg) => ({
@@ -333,10 +371,6 @@ export async function buildHomebrewVfs(
     }, null, 2) + "\n",
     0o644,
   );
-
-  if (options.writeProfile) {
-    writeProfileFragment(fs, plan);
-  }
 
   return { fs, report };
 }
@@ -944,6 +978,203 @@ function validateCompatibilityAbsolutePath(path: string, label: string): void {
       `Homebrew compatibility ${label} ${JSON.stringify(path)} is not a normalized absolute path`,
     );
   }
+}
+
+function prepareRuntimeState(
+  plan: HomebrewVfsPlan,
+  declarations: HomebrewVfsRuntimeStateDeclaration[] | undefined,
+): HomebrewVfsRuntimeStateDeclaration[] {
+  if (declarations === undefined) return [];
+  if (!Array.isArray(declarations)) {
+    throw new HomebrewVfsBuildError("Homebrew compatibility runtime_state policy is invalid");
+  }
+
+  const selectedPackages = new Set(plan.packages.map((pkg) => pkg.fullName));
+  const prefixes = new Set(plan.packages.map((pkg) => pkg.prefix));
+  const byPath = new Map<string, HomebrewVfsRuntimeStateDeclaration>();
+  for (const [index, declaration] of declarations.entries()) {
+    if (!declaration || typeof declaration !== "object" || Array.isArray(declaration)) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] is invalid`,
+      );
+    }
+    const expectedKeys = [
+      "gid",
+      "kind",
+      "mode",
+      "path",
+      "reason",
+      "requires_package",
+      "uid",
+    ];
+    if (declaration.kind === "text_file") expectedKeys.push("contents");
+    const actualKeys = Object.keys(declaration).sort();
+    expectedKeys.sort();
+    if (actualKeys.join("\0") !== expectedKeys.join("\0")) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] has an unsupported shape`,
+      );
+    }
+    if (
+      typeof declaration.requires_package !== "string" ||
+      !selectedPackages.has(declaration.requires_package)
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] requires_package is not in the selected plan`,
+      );
+    }
+    if (
+      declaration.kind !== "directory" &&
+      declaration.kind !== "empty_file" &&
+      declaration.kind !== "text_file"
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] kind is invalid`,
+      );
+    }
+    if (typeof declaration.path !== "string") {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] path is invalid`,
+      );
+    }
+    validateCompatibilityAbsolutePath(
+      declaration.path,
+      `runtime state path at index ${index}`,
+    );
+    if (
+      declaration.path === "/etc/kandelo" ||
+      guestPathIsUnder(declaration.path, "/etc/kandelo")
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime state path ${declaration.path} is reserved for image metadata`,
+      );
+    }
+    for (const prefix of prefixes) {
+      if (declaration.path === prefix || guestPathIsUnder(declaration.path, prefix)) {
+        throw new HomebrewVfsBuildError(
+          `Homebrew compatibility runtime state path ${declaration.path} must be outside bottle prefixes`,
+        );
+      }
+    }
+    if (
+      !Number.isSafeInteger(declaration.mode) ||
+      declaration.mode < 0 ||
+      declaration.mode > MODE_BITS
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] mode is invalid`,
+      );
+    }
+    for (const field of ["uid", "gid"] as const) {
+      const value = declaration[field];
+      if (!Number.isSafeInteger(value) || value < 0 || value > MAX_RUNTIME_STATE_ID) {
+        throw new HomebrewVfsBuildError(
+          `Homebrew compatibility runtime_state[${index}] ${field} is invalid`,
+        );
+      }
+    }
+    if (
+      typeof declaration.reason !== "string" ||
+      declaration.reason.trim().length === 0 ||
+      declaration.reason.length > 1024
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime_state[${index}] reason is invalid`,
+      );
+    }
+    if (declaration.kind === "text_file") {
+      if (
+        typeof declaration.contents !== "string" ||
+        TEXT_ENCODER.encode(declaration.contents).byteLength > MAX_RUNTIME_STATE_TEXT_BYTES
+      ) {
+        throw new HomebrewVfsBuildError(
+          `Homebrew compatibility runtime_state[${index}] contents are invalid`,
+        );
+      }
+    }
+    if (byPath.has(declaration.path)) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime state path ${declaration.path} is declared more than once`,
+      );
+    }
+    byPath.set(declaration.path, declaration);
+  }
+
+  for (const declaration of declarations) {
+    let ancestor = dirnameGuestPath(declaration.path);
+    while (ancestor !== "/") {
+      const parent = byPath.get(ancestor);
+      if (parent !== undefined && parent.kind !== "directory") {
+        throw new HomebrewVfsBuildError(
+          `Homebrew compatibility runtime state ${parent.path} cannot contain ${declaration.path}`,
+        );
+      }
+      ancestor = dirnameGuestPath(ancestor);
+    }
+  }
+
+  return declarations.map((declaration) => ({ ...declaration }));
+}
+
+function applyRuntimeState(
+  fs: MemoryFileSystem,
+  declarations: readonly HomebrewVfsRuntimeStateDeclaration[],
+): HomebrewVfsRuntimeStateReport[] {
+  const reports = new Map<string, HomebrewVfsRuntimeStateReport>();
+  const ordered = [...declarations].sort((left, right) =>
+    pathDepth(left.path) - pathDepth(right.path)
+  );
+  for (const declaration of ordered) {
+    if (tryLstat(fs, declaration.path) !== null) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime state path ${declaration.path} already exists in the platform base or a bottle`,
+      );
+    }
+    const parent = dirnameGuestPath(declaration.path);
+    const parentStat = tryLstat(fs, parent);
+    if (parentStat === null || kind(parentStat) !== S_IFDIR) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility runtime state parent ${parent} is not an existing directory`,
+      );
+    }
+
+    const report: HomebrewVfsRuntimeStateReport = {
+      requires_package: declaration.requires_package,
+      path: declaration.path,
+      kind: declaration.kind,
+      mode: declaration.mode,
+      uid: declaration.uid,
+      gid: declaration.gid,
+      reason: declaration.reason,
+    };
+    if (declaration.kind === "directory") {
+      fs.mkdirWithOwner(
+        declaration.path,
+        declaration.mode,
+        declaration.uid,
+        declaration.gid,
+      );
+    } else {
+      const content = declaration.kind === "text_file"
+        ? TEXT_ENCODER.encode(declaration.contents!)
+        : new Uint8Array();
+      fs.createFileWithOwner(
+        declaration.path,
+        declaration.mode,
+        declaration.uid,
+        declaration.gid,
+        content,
+      );
+      report.content_sha256 = sha256(content);
+      report.content_bytes = content.byteLength;
+    }
+    reports.set(declaration.path, report);
+  }
+  return declarations.map((declaration) => reports.get(declaration.path)!);
+}
+
+function pathDepth(path: string): number {
+  return path.split("/").length;
 }
 
 function canonicalOptLink(pkg: HomebrewVfsPackagePlan): HomebrewVfsOptLinkReport {

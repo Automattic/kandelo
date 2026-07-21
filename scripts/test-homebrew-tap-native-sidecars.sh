@@ -978,6 +978,27 @@ cat >> "$SHELL_CONFIG" <<'EOF'
 EOF
 SHELL_CONFIG_SHA256="$(sha256_file "$SHELL_CONFIG")"
 SHELL_CONFIG_BYTES="$(wc -c < "$SHELL_CONFIG" | tr -d ' ')"
+DEMO_CONFIG="$TMPDIR/demo.json"
+cat > "$DEMO_CONFIG" <<'EOF'
+{
+  "version": 1,
+  "profiles": {
+    "selected": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["terminal", "syslog"],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      }
+    },
+    "unselected": {
+      "guide": { "title": "Still validated" }
+    }
+  }
+}
+EOF
+DEMO_CONFIG_SHA256="$(sha256_file "$DEMO_CONFIG")"
+DEMO_CONFIG_BYTES="$(wc -c < "$DEMO_CONFIG" | tr -d ' ')"
 BASE_ROOT="$TMPDIR/base-root"
 BASE_MANIFEST="$TMPDIR/base.MANIFEST"
 BASE_IMAGE="$TMPDIR/base.vfs"
@@ -1157,6 +1178,60 @@ if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
 fi
 grep -F -- "--shell-config requires --write-profile" \
   "$TMPDIR/shell-without-profile.err" >/dev/null
+
+expect_demo_config_failure() {
+  local config_path="$1"
+  local fixture_name="$2"
+  local expected="$3"
+  if npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+    --metadata "$TAP/Kandelo/metadata.json" \
+    --tap-root "$TAP" \
+    --package sidecar-tool \
+    --demo-config "$config_path" \
+    --out "$TMPDIR/demo-$fixture_name.vfs.zst" \
+    --report "$TMPDIR/demo-$fixture_name-report.json" \
+    > /dev/null 2>"$TMPDIR/demo-$fixture_name.err"; then
+    echo "Homebrew VFS builder accepted invalid demo config fixture: $fixture_name" >&2
+    exit 1
+  fi
+  grep -F -- "$expected" "$TMPDIR/demo-$fixture_name.err" >/dev/null
+}
+
+head -c 262145 /dev/zero > "$TMPDIR/demo-oversized.json"
+expect_demo_config_failure \
+  "$TMPDIR/demo-oversized.json" oversized "exceeds 262144 bytes"
+ln -s "$DEMO_CONFIG" "$TMPDIR/demo-symlink.json"
+expect_demo_config_failure \
+  "$TMPDIR/demo-symlink.json" symlink "must be a regular non-symlink file"
+printf '\377' > "$TMPDIR/demo-bad-utf8.json"
+expect_demo_config_failure \
+  "$TMPDIR/demo-bad-utf8.json" bad-utf8 "is not valid UTF-8"
+printf '%s' '{"version":1' > "$TMPDIR/demo-bad-json.json"
+expect_demo_config_failure \
+  "$TMPDIR/demo-bad-json.json" bad-json "is not valid JSON"
+printf '%s\n' '{"version":2}' > "$TMPDIR/demo-unsupported.json"
+expect_demo_config_failure \
+  "$TMPDIR/demo-unsupported.json" unsupported "has an unsupported version"
+cat > "$TMPDIR/demo-malformed-unselected.json" <<'EOF'
+{
+  "version": 1,
+  "profiles": {
+    "selected": {},
+    "unselected": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["not-a-surface"],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      }
+    }
+  }
+}
+EOF
+expect_demo_config_failure \
+  "$TMPDIR/demo-malformed-unselected.json" malformed-unselected \
+  "presentation.runningPrimary[0] must be one of"
+
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$TAP/Kandelo/metadata.json" \
   --tap-root "$TAP" \
@@ -1205,6 +1280,7 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --max-bytes "$BASE_REQUESTED_MAX_BYTES" \
   --write-profile \
   --shell-config "$SHELL_CONFIG" \
+  --demo-config "$DEMO_CONFIG" \
   --no-fallback \
   --out "$TMPDIR/sidecar-tool.vfs.zst" \
   --report "$TMPDIR/sidecar-tool-report.json" >/dev/null
@@ -1233,6 +1309,11 @@ jq -e --slurpfile metadata "$TAP/Kandelo/metadata.json" '
     "argv":["sidecar-tool-helper","--interactive"],
     "config_sha256":$shell_config_sha,
     "config_bytes":$shell_config_bytes
+  } and
+  .demo_config == {
+    "path":"/etc/kandelo/demo.json",
+    "sha256":$demo_config_sha,
+    "bytes":$demo_config_bytes
   } and
   (.packages[] | select(.name == "sidecar-tool") | .links) == [
     "bin/sidecar-tool",
@@ -1263,6 +1344,8 @@ jq -e --slurpfile metadata "$TAP/Kandelo/metadata.json" '
   --argjson brewfile_bytes "$BREWFILE_BYTES" \
   --arg shell_config_sha "$SHELL_CONFIG_SHA256" \
   --argjson shell_config_bytes "$SHELL_CONFIG_BYTES" \
+  --arg demo_config_sha "$DEMO_CONFIG_SHA256" \
+  --argjson demo_config_bytes "$DEMO_CONFIG_BYTES" \
   --argjson abi "$ABI_VERSION" \
   "$TMPDIR/sidecar-tool-report.json" >/dev/null
 npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
@@ -1291,6 +1374,7 @@ jq -e '
   --argjson brewfile_bytes "$BREWFILE_BYTES" \
   "$TMPDIR/sidecar-tool-root/etc/kandelo/homebrew-vfs.json" >/dev/null
 cmp "$SHELL_CONFIG" "$TMPDIR/sidecar-tool-root/etc/kandelo/shell.json"
+cmp "$DEMO_CONFIG" "$TMPDIR/sidecar-tool-root/etc/kandelo/demo.json"
 grep -F '/home/linuxbrew/.linuxbrew/bin' \
   "$TMPDIR/sidecar-tool-root/etc/profile.d/kandelo-homebrew.sh" >/dev/null
 npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
@@ -1319,6 +1403,11 @@ jq -e '
     "argv":["sidecar-tool-helper","--interactive"],
     "configSha256":$shell_config_sha
   } and
+  .metadata.homebrew.demoConfig == {
+    "path":"/etc/kandelo/demo.json",
+    "sha256":$demo_config_sha,
+    "bytes":$demo_config_bytes
+  } and
   ($requested_sha | test("^[0-9a-f]{64}$")) and
   (.metadata.baseImage | has("metadata") | not) and
   (.metadata | has("platformBase") | not) and
@@ -1332,6 +1421,8 @@ jq -e '
   --arg brewfile_sha "$BREWFILE_SHA256" \
   --argjson brewfile_bytes "$BREWFILE_BYTES" \
   --arg shell_config_sha "$SHELL_CONFIG_SHA256" \
+  --arg demo_config_sha "$DEMO_CONFIG_SHA256" \
+  --argjson demo_config_bytes "$DEMO_CONFIG_BYTES" \
   --argjson base_bytes "$BASE_IMAGE_BYTES" \
   --argjson abi "$ABI_VERSION" "$TMPDIR/sidecar-tool-inspect.json" >/dev/null
 

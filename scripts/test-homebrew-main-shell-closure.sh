@@ -63,6 +63,8 @@ for required_path in \
   "host/src/homebrew-vfs-*.ts" \
   "host/src/vfs/**" \
   "images/rootfs/**" \
+  "images/vfs/scripts/build-shell-vfs-image.ts" \
+  "images/vfs/scripts/main-shell-demo-config.ts" \
   "images/vfs/scripts/vfs-image-helpers.ts" \
   "packages/registry/rootfs/package.toml" \
   "packages/registry/shell/**" \
@@ -77,6 +79,7 @@ for required_path in \
   "tools/mkrootfs/**" \
   "tools/xtask/**" \
   "web-libs/kandelo-session/src/kernel-host.ts" \
+  "web-libs/kandelo-session/src/demo-config*.ts" \
   "web-libs/kandelo-session/src/shell-config.ts"
 do
   grep -Fxq "$required_path" <<<"$pull_paths" ||
@@ -138,6 +141,8 @@ grep -Fq -- '--image "$RUNNER_TEMP/shell-archive/artifacts/shell.vfs.zst"' "$WOR
   fail "Node proof must boot the archive-contained shell bytes directly"
 grep -Fq -- '--migration-lock homebrew/main-shell-migration-lock.json' "$WORKFLOW" ||
   fail "post-archive Node proof must validate against the reviewed migration lock"
+grep -Fq -- '--demo-config homebrew/main-shell-demo.json' "$WORKFLOW" ||
+  fail "post-archive Node proof must validate the canonical demo config bytes"
 grep -Fq '${{ runner.temp }}/staged-shell/*.tar.zst' "$WORKFLOW" ||
   fail "main-shell evidence must retain the exact canonical package archive"
 grep -Fq '${{ runner.temp }}/shell-archive/artifacts/shell.vfs.zst' "$WORKFLOW" ||
@@ -222,6 +227,15 @@ grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
 locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
 grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*16$' "$SHELL_BUILD_TOML" ||
+  fail "bottle-built shell parity changes must advance the shell recipe to revision 16"
+for shell_input in \
+  homebrew/main-shell-demo.json \
+  web-libs/kandelo-session/src/demo-config.ts
+do
+  grep -Fq "\"$shell_input\"" "$SHELL_BUILD_TOML" ||
+    fail "shell build cache inputs omit $shell_input"
+done
 for generic_input in \
   WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR \
   WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT
@@ -663,6 +677,20 @@ expect_failure "compatibility.aliases[0] is invalid" \
 jq '.compatibility.aliases[1].targets[0] = .compatibility.aliases[0].targets[0]' \
   "$SOURCE_LOCK" >"$lock"
 expect_failure "compatibility alias target is duplicated" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq 'del(.compatibility.runtime_state)' "$SOURCE_LOCK" >"$lock"
+expect_failure "main-shell migration compatibility policy is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.runtime_state[0].requires_package =
+  "kandelo-dev/tap-core/not-locked"' "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility.runtime_state[0] is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.runtime_state[1].path = .compatibility.runtime_state[0].path' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility runtime state path is duplicated" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
 echo "test-homebrew-main-shell-closure: ok"

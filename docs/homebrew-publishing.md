@@ -1462,6 +1462,16 @@ of the selected Formula and executes the declared VFS path normally. Add
 `--write-profile --shell-config /path/to/shell.json` to the builder command
 when the Brewfile actually includes that declared shell.
 
+`--demo-config` likewise copies reviewed, image-owned presentation metadata to
+`/etc/kandelo/demo.json`; it does not infer UI behavior from Formula names. The
+input must be a regular, non-symlink file no larger than 256 KiB, valid UTF-8,
+valid JSON, and version 1. The builder validates every profile, including ones
+not selected by the current page, refuses to replace an existing image path,
+and records the exact byte count and SHA-256 in both the report and bounded
+image metadata. This is an exact-byte copy: callers that need a canonical
+configuration should track one JSON source rather than regenerate equivalent
+JSON in each image builder.
+
 ### Strict Main-Shell Bottle Closure
 
 `homebrew/main-shell.Brewfile` is the reviewed direct-root contract for the
@@ -1562,6 +1572,28 @@ a winner. The report attributes generated compatibility links to their bottle
 source and records every conflict's owners, selected package, skipped packages,
 and reviewed reason.
 
+The same lock can declare small pieces of consumer-owned runtime state under
+`compatibility.runtime_state`. Each entry is guarded by an exact
+`requires_package` Formula identity and explicitly declares a normalized
+absolute path, `directory`, `empty_file`, or `text_file` kind, mode, uid, gid,
+and reviewed reason. Text is limited to 64 KiB. These declarations may not
+write under `/etc/kandelo`, under a bottle prefix, or over any platform,
+bottle, link, profile, or earlier runtime-state path. Parents must already be
+real directories or be declared as directories in the same policy. The report,
+guest Homebrew manifest, and bounded image metadata bind every applied entry;
+file entries additionally bind their content SHA-256 and byte count. This
+mechanism preserves package-conditioned machine state without assigning that
+state to a bottle or adding package-name branches to the image builder.
+
+The main-shell composer copies the exact tracked
+`homebrew/main-shell-demo.json` bytes into the image and uses runtime-state
+declarations for the existing color aliases, Git defaults, and NetHack player
+files. The platform base intentionally does not serialize `/dev`: Node and
+browser hosts both mount the authoritative `DeviceFileSystem` at `/dev` and a
+shared-memory filesystem at `/dev/shm` during boot. Exact-byte acceptance
+therefore checks `/dev/null` after the runtime mounts rather than manufacturing
+a placeholder device in the image.
+
 The wrapper currently selects sidecars with `--runtime node` because older
 finalized sidecars predate truthful browser-compatibility recording. That is a
 selection compatibility boundary, not browser evidence. A produced image is
@@ -1571,9 +1603,13 @@ booted and exercised the closure in both Node and Chromium. Prefer
 from exact-byte browser acceptance.
 
 The wrapper's Node gate boots those exact emitted bytes through
-`NodeKernelHost` and executes `/bin/sh -c`, including representative Bash,
-Dash, and `/usr/bin/env` paths. This proves the bottle-composed shell image's
-Node path contract; it does not replace the final exact-byte Chromium gate.
+`NodeKernelHost` as the demo uid and executes `/bin/sh -c`, including
+representative Bash, Dash, `/usr/bin/env`, login-profile, Git, `/dev/null`, and
+NetHack score-file paths. The final Chromium gate fetches that same digest,
+checks the image-owned shell guide and Git defaults, exercises the NetHack
+state, and boots the image-owned modeset profile through the real KMS canvas.
+Together these gates cover the bottle-composed image in both hosts; neither
+host substitutes legacy registry package bytes.
 
 Repeatable `--package <name>` remains available for lower-level tooling and
 focused tests. It preserves the provided root order and uses the same planner,

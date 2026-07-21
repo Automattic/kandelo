@@ -8,6 +8,9 @@ import { assertMainShellImageContract } from "./homebrew-main-shell-image-contra
 const lock = JSON.parse(
   readFileSync(resolve("homebrew/main-shell-migration-lock.json"), "utf8"),
 ) as Record<string, any>;
+const demoConfigSource = new Uint8Array(
+  readFileSync(resolve("homebrew/main-shell-demo.json")),
+);
 
 function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
   const roots = lock.packages.map((entry: any) => entry.formula.name);
@@ -80,6 +83,55 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
     sha256: "7".repeat(64),
     bytes: 123,
   };
+  const runtimeState = lock.compatibility.runtime_state.map((entry: any) => {
+    const contents = entry.kind === "text_file"
+      ? new TextEncoder().encode(entry.contents)
+      : entry.kind === "empty_file"
+      ? new Uint8Array()
+      : undefined;
+    return {
+      path: entry.path,
+      kind: entry.kind,
+      mode: entry.mode,
+      uid: entry.uid,
+      gid: entry.gid,
+      ...(contents === undefined ? {} : { contents }),
+    };
+  });
+  const guestRuntimeState = lock.compatibility.runtime_state.map((entry: any) => {
+    const contents = entry.kind === "text_file"
+      ? new TextEncoder().encode(entry.contents)
+      : entry.kind === "empty_file"
+      ? new Uint8Array()
+      : undefined;
+    return {
+      requires_package: entry.requires_package,
+      path: entry.path,
+      kind: entry.kind,
+      mode: entry.mode,
+      uid: entry.uid,
+      gid: entry.gid,
+      reason: entry.reason,
+      ...(contents === undefined ? {} : {
+        content_sha256: createHash("sha256").update(contents).digest("hex"),
+        content_bytes: contents.byteLength,
+      }),
+    };
+  });
+  const metadataRuntimeState = guestRuntimeState.map((entry: any) => ({
+    requiresPackage: entry.requires_package,
+    path: entry.path,
+    kind: entry.kind,
+    mode: entry.mode,
+    uid: entry.uid,
+    gid: entry.gid,
+    reason: entry.reason,
+    ...(entry.content_sha256 === undefined ? {} : {
+      contentSha256: entry.content_sha256,
+      contentBytes: entry.content_bytes,
+    }),
+  }));
+  const demoSha256 = createHash("sha256").update(demoConfigSource).digest("hex");
   return {
     migrationLock: structuredClone(lock),
     migrationLockSha256: lockSha,
@@ -100,6 +152,7 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
         release_tag: "bottles-abi-v41",
       },
       migration_lock: { sha256: lockSha, bytes: lockBytes },
+      runtime_state: guestRuntimeState,
       packages: snakePackages,
     },
     imageMetadata: {
@@ -115,6 +168,7 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
           checkoutCommit: catalog.checkout_commit,
         },
         migrationLock: { sha256: lockSha, bytes: lockBytes },
+        runtimeState: metadataRuntimeState,
         selection: {
           kind: "brewfile",
           requestedPackageCount: roots.length,
@@ -124,6 +178,11 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
         defaultShell: {
           path: "/home/linuxbrew/.linuxbrew/bin/bash",
           argv: ["bash", "-l", "-i"],
+        },
+        demoConfig: {
+          path: "/etc/kandelo/demo.json",
+          sha256: demoSha256,
+          bytes: demoConfigSource.byteLength,
         },
         packages: camelPackages,
       },
@@ -137,6 +196,9 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
       path: "/home/linuxbrew/.linuxbrew/bin/bash",
       argv: ["bash", "-l", "-i"],
     },
+    demoConfigSource: demoConfigSource.slice(),
+    expectedDemoConfigSource: demoConfigSource.slice(),
+    runtimeState,
   };
 }
 
@@ -202,6 +264,31 @@ for (const [name, mutate, expected] of [
     "rejects a non-Homebrew default shell",
     (value: any) => { value.shellConfig.path = "/bin/sh"; },
     "guest shell config path",
+  ],
+  [
+    "rejects demo config bytes that differ from the canonical contract",
+    (value: any) => { value.demoConfigSource[0] ^= 1; },
+    "guest demo config bytes differ",
+  ],
+  [
+    "rejects stale demo config metadata",
+    (value: any) => { value.imageMetadata.homebrew.demoConfig.sha256 = "0".repeat(64); },
+    "demoConfig sha256",
+  ],
+  [
+    "rejects runtime-state metadata that differs from the lock",
+    (value: any) => { value.guestManifest.runtime_state[0].mode = 0o777; },
+    "guest runtime_state\\[0\\] mode",
+  ],
+  [
+    "rejects decoded runtime-state permissions that differ from the lock",
+    (value: any) => { value.runtimeState[0].mode = 0o777; },
+    "decoded mode",
+  ],
+  [
+    "rejects decoded runtime-state contents that differ from the lock",
+    (value: any) => { value.runtimeState[0].contents[0] ^= 1; },
+    "decoded contents differ",
   ],
 ] as const) {
   test(name, () => {

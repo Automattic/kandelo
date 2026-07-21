@@ -43,15 +43,16 @@ import {
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
-  KANDELO_DEMO_CONFIG_PATH,
   genericDemoPresentation,
-  parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoPresentation,
   type DemoAssetConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import {
+  readKandeloDemoConfigFromVfs,
+} from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
 import {
   KANDELO_SHELL_CONFIG_PATH,
   MAX_KANDELO_SHELL_CONFIG_BYTES,
@@ -2406,13 +2407,7 @@ function assertImageShellExecutable(fs: MemoryFileSystem, path: string): void {
 }
 
 function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
-  const json = readOptionalVfsText(fs, KANDELO_DEMO_CONFIG_PATH);
-  if (json === null) return null;
-  const config = parseKandeloDemoConfig(json);
-  if (!config) {
-    throw new Error(`VFS image has unsupported ${KANDELO_DEMO_CONFIG_PATH} version`);
-  }
-  return config;
+  return readKandeloDemoConfigFromVfs(fs);
 }
 
 function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null {

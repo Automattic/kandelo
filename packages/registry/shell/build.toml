@@ -6,6 +6,7 @@ inputs = [
   "scripts/homebrew-brewfile-selection.rb",
   "homebrew/main-shell.Brewfile",
   "homebrew/main-shell-default.json",
+  "homebrew/main-shell-demo.json",
   "homebrew/main-shell-migration-lock.json",
   "images/vfs/scripts/build-homebrew-vfs-image.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
@@ -35,15 +36,16 @@ inputs = [
   "host/src/vfs/types.ts",
   "host/src/vfs/zip.ts",
   "web-libs/kandelo-session/src/shell-config.ts",
+  "web-libs/kandelo-session/src/demo-config.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 15
+revision    = 16
 
 [[git_inputs]]
 name = "homebrew_tap_core"
 repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
-commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
+commit = "74359eeeaf01908c78fbb4ed398b41ae361ee90d"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

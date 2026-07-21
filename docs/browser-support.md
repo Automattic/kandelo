@@ -334,6 +334,19 @@ Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
 
+The runtime treats this file as untrusted image input. It must be a regular
+file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
+version. The loader validates every profile before using any of them, so a
+malformed unselected profile cannot hide behind the current URL. Producers
+that already have a reviewed canonical JSON file may copy those exact bytes;
+the bottle-built main shell uses `homebrew/main-shell-demo.json` as the single
+source shared with the legacy image builder.
+
+VFS images do not need to serialize placeholder device nodes. Both Node and
+browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
+shared memory at `/dev/shm`; image acceptance should exercise devices such as
+`/dev/null` only after those runtime mounts exist.
+
 KMS demos use the same metadata path. A profile can set
 `runningPrimary` to include `"kms"` and provide an `autoCommand` such as
 `/usr/local/bin/modeset`; the VFS image must contain that executable. The

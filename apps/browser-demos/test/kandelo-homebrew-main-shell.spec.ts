@@ -38,7 +38,7 @@ async function runTerminalCommand(
   await waitForTerminalContent(page, expected, timeout);
 }
 
-test("the current main shell boots the exact public-bottle closure", async ({ page }) => {
+test("the exact public-bottle shell preserves shell, NetHack, and modeset behavior", async ({ page }) => {
   test.skip(!strict, "exact Homebrew main-shell CI configures this acceptance test");
   if (!expectedImageSha256 || !/^[0-9a-f]{64}$/.test(expectedImageSha256)) {
     throw new Error(
@@ -129,6 +129,9 @@ test("the current main shell boots the exact public-bottle closure", async ({ pa
 
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 180_000 });
   await waitForTerminalContent(page, /kandelo\$\s*$/, 240_000);
+  await expect(page.getByRole("heading", { name: "Shell demo" })).toBeVisible({
+    timeout: 60_000,
+  });
   await runTerminalCommand(
     page,
     "printf 'HOMEBREW_MAIN_SHELL_PATH:%s:%s\\n' \"$0\" \"${PATH%%:*}\"",
@@ -142,10 +145,60 @@ test("the current main shell boots the exact public-bottle closure", async ({ pa
       "bunzip2 bzcat netcat git-remote-http git-remote-https git-remote-ftp " +
       "git-remote-ftps nano vim nethack fbdoom modeset; " +
       "do command -v \"$cmd\" >/dev/null; done; " +
+      "test \"$(git config --get user.name)\" = User; " +
       "printf \"HOMEBREW_MAIN_SHELL_OK:%s\\n\" \"$(git --version)\"'",
     "HOMEBREW_MAIN_SHELL_OK:git version 2.47.1",
     240_000,
   );
+  await runTerminalCommand(
+    page,
+    "/bin/bash -c 'set -e; " +
+      "touch /home/.nethack/record; " +
+      "nethack -s all >/tmp/homebrew-nethack.out 2>&1; " +
+      "if grep -q \"Cannot open record file\" /tmp/homebrew-nethack.out; then " +
+      "cat /tmp/homebrew-nethack.out >&2; exit 1; fi; " +
+      "printf \"HOMEBREW_NETHACK_STATE_OK\\n\"'",
+    "HOMEBREW_NETHACK_STATE_OK",
+    180_000,
+  );
+
+  await page.goto("/?demo=modeset", { waitUntil: "domcontentloaded" });
+  const modesetControls = page
+    .locator(".kdemo-surface-controls")
+    .filter({ has: page.locator(".kdemo-surface-title", { hasText: /MODESET/ }) })
+    .first();
+  await expect(modesetControls).toBeVisible({ timeout: 180_000 });
+  await expect
+    .poll(() => modesetControls.innerText(), { timeout: 180_000 })
+    .toMatch(/[1-9]\d*\s+flips/i);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible({ timeout: 60_000 });
+  await expect
+    .poll(
+      async () => (await canvas.screenshot()).byteLength,
+      { timeout: 60_000, intervals: [1_000, 2_000, 5_000] },
+    )
+    .toBeGreaterThan(5_000);
+
+  await page.waitForFunction(() => {
+    const evidence = (window as typeof window & {
+      __kandeloHomebrewMainShellImageEvidence?: {
+        digests: string[];
+        errors: string[];
+      };
+    }).__kandeloHomebrewMainShellImageEvidence;
+    return Boolean(evidence && (evidence.digests.length > 0 || evidence.errors.length > 0));
+  }, undefined, { timeout: 180_000 });
+  const modesetImageEvidence = await page.evaluate(() =>
+    (window as typeof window & {
+      __kandeloHomebrewMainShellImageEvidence: {
+        digests: string[];
+        errors: string[];
+      };
+    }).__kandeloHomebrewMainShellImageEvidence
+  );
+  expect(modesetImageEvidence.errors).toEqual([]);
+  expect(new Set(modesetImageEvidence.digests)).toEqual(new Set([expectedImageSha256]));
 
   expect(legacyArtifactDownloads).toEqual([]);
 });

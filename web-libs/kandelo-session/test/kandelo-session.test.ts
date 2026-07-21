@@ -9,11 +9,14 @@ import {
 } from "../src/kernel-host";
 import {
   genericDemoPresentation,
+  MAX_KANDELO_DEMO_CONFIG_BYTES,
   parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoPresentation,
+  validateKandeloDemoConfig,
 } from "../src/demo-config";
+import { readKandeloDemoConfigFromVfs } from "../src/demo-config-vfs";
 import {
   DOOM_COMMAND,
   builtinDemoAssets,
@@ -978,6 +981,41 @@ describe("Kandelo demo config", () => {
     expect(() => resolveDemoPresentation(config!, "webapp")).toThrow("runningPrimary[0]");
   });
 
+  it("eagerly validates malformed metadata in every profile", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        selected: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["terminal"],
+            terminalAccess: "primary",
+            internalsAccess: "drawer",
+          },
+        },
+        unselected: {
+          assets: [{ path: "relative.dat", url: "https://example.invalid/data" }],
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(() => validateKandeloDemoConfig(config!)).toThrow(
+      "profiles.unselected.assets[0].path must be absolute",
+    );
+  });
+
+  it("requires profiles to be an object during eager validation", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: [],
+    }));
+    expect(config).not.toBeNull();
+    expect(() => validateKandeloDemoConfig(config!)).toThrow(
+      "profiles must be an object",
+    );
+  });
+
   it("resolves and validates profile assets", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
@@ -1118,6 +1156,129 @@ describe("Kandelo demo config", () => {
     expect(config).not.toBeNull();
 
     expect(resolveDemoPresentation(config!, "missing")).toBeNull();
+  });
+});
+
+describe("image-owned Kandelo demo config", () => {
+  function fixture(
+    source: string | Uint8Array,
+    options: { mode?: number; size?: number; missing?: boolean } = {},
+  ) {
+    const bytes = typeof source === "string"
+      ? new TextEncoder().encode(source)
+      : source;
+    let cursor = 0;
+    const state = { openCalls: 0, closeCalls: 0 };
+    const fs = {
+      lstat() {
+        if (options.missing) throw Object.assign(new Error("ENOENT"), { code: -2 });
+        return {
+          mode: options.mode ?? (0x8000 | 0o644),
+          size: options.size ?? bytes.byteLength,
+        };
+      },
+      open() {
+        state.openCalls += 1;
+        return 1;
+      },
+      read(_handle: number, buffer: Uint8Array, _offset: number | null, length: number) {
+        const count = Math.min(length, bytes.byteLength - cursor);
+        if (count > 0) buffer.set(bytes.subarray(cursor, cursor + count));
+        cursor += count;
+        return count;
+      },
+      close() {
+        state.closeCalls += 1;
+      },
+    };
+    return { fs, state };
+  }
+
+  it("reads and eagerly validates a bounded regular config", () => {
+    const { fs } = fixture(JSON.stringify({
+      version: 1,
+      profiles: {
+        shell: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["terminal"],
+            terminalAccess: "primary",
+            internalsAccess: "drawer",
+          },
+        },
+      },
+    }));
+    expect(readKandeloDemoConfigFromVfs(fs)?.profiles).toHaveProperty("shell");
+  });
+
+  it("returns null when the image has no demo config", () => {
+    const { fs } = fixture("", { missing: true });
+    expect(readKandeloDemoConfigFromVfs(fs)).toBeNull();
+  });
+
+  it("rejects oversized config before opening it", () => {
+    const { fs, state } = fixture("", {
+      size: MAX_KANDELO_DEMO_CONFIG_BYTES + 1,
+    });
+    expect(() => readKandeloDemoConfigFromVfs(fs)).toThrow("exceeds 262144 bytes");
+    expect(state.openCalls).toBe(0);
+  });
+
+  it.each([-1, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid stat size %s before opening it",
+    (size) => {
+      const { fs, state } = fixture("", { size });
+      expect(() => readKandeloDemoConfigFromVfs(fs)).toThrow("has an invalid size");
+      expect(state.openCalls).toBe(0);
+    },
+  );
+
+  it("rejects an incomplete read and still closes the file", () => {
+    const { fs, state } = fixture("{}", { size: 3 });
+    expect(() => readKandeloDemoConfigFromVfs(fs)).toThrow(
+      "could not be read completely",
+    );
+    expect(state.openCalls).toBe(1);
+    expect(state.closeCalls).toBe(1);
+  });
+
+  it("rejects non-regular config nodes", () => {
+    const { fs } = fixture("{}", { mode: 0xa000 | 0o777 });
+    expect(() => readKandeloDemoConfigFromVfs(fs)).toThrow("must be a regular file");
+  });
+
+  it("rejects invalid UTF-8 and unsupported versions", () => {
+    const invalidUtf8 = fixture(new Uint8Array([0xff])).fs;
+    expect(() => readKandeloDemoConfigFromVfs(invalidUtf8)).toThrow(
+      "is not valid UTF-8",
+    );
+    const unsupported = fixture('{"version":2}').fs;
+    expect(() => readKandeloDemoConfigFromVfs(unsupported)).toThrow(
+      "has unsupported /etc/kandelo/demo.json version",
+    );
+  });
+
+  it("rejects malformed JSON", () => {
+    const { fs } = fixture('{"version":1');
+    expect(() => readKandeloDemoConfigFromVfs(fs)).toThrow("is not valid JSON");
+  });
+
+  it("rejects malformed metadata in an unselected profile", () => {
+    const { fs } = fixture(JSON.stringify({
+      version: 1,
+      profiles: {
+        selected: {},
+        unselected: {
+          guide: {
+            title: "Broken",
+            groups: [{ title: "Actions", actions: "not-an-array" }],
+          },
+        },
+      },
+    }));
+    expect(() => readKandeloDemoConfigFromVfs(fs)).toThrow(
+      "profiles.unselected.guide.groups[0].actions must be an array",
+    );
   });
 });
 

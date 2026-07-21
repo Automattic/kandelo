@@ -3,7 +3,7 @@
   "tap_repository": "kandelo-dev/homebrew-tap-core",
   "tap_name": "kandelo-dev/tap-core",
   "catalog": {
-    "tap_commit": "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
+    "tap_commit": "74359eeeaf01908c78fbb4ed398b41ae361ee90d"
   },
   "consumer": {
     "profile": "main-shell",
@@ -29,7 +29,7 @@
     { "registry": { "name": "curl", "version": "8.11.1" }, "formula": { "name": "curl", "version": "8.11.1", "revision": 0, "bottle_rebuild": 0 } },
     { "registry": { "name": "netcat", "version": "0.7.1" }, "formula": { "name": "netcat", "version": "0.7.1", "revision": 0, "bottle_rebuild": 1 } },
     { "registry": { "name": "wget", "version": "1.25.0" }, "formula": { "name": "wget", "version": "1.25.0", "revision": 0, "bottle_rebuild": 0 } },
-    { "registry": { "name": "git", "version": "2.47.1" }, "formula": { "name": "git", "version": "2.47.1", "revision": 0, "bottle_rebuild": 0 } },
+    { "registry": { "name": "git", "version": "2.47.1" }, "formula": { "name": "git", "version": "2.47.1", "revision": 1, "bottle_rebuild": 0 } },
     { "registry": { "name": "gzip", "version": "1.13" }, "formula": { "name": "gzip", "version": "1.14", "revision": 0, "bottle_rebuild": 0 } },
     { "registry": { "name": "bzip2", "version": "1.0.8" }, "formula": { "name": "bzip2", "version": "1.0.8", "revision": 2, "bottle_rebuild": 0 } },
     { "registry": { "name": "xz", "version": "5.6.2" }, "formula": { "name": "xz", "version": "5.6.2", "revision": 1, "bottle_rebuild": 0 } },
@@ -172,6 +172,75 @@
         "source_kind": "link",
         "source": "bin/modeset",
         "targets": ["/usr/local/bin/modeset"]
+      }
+    ],
+    "runtime_state": [
+      {
+        "requires_package": "kandelo-dev/tap-core/coreutils",
+        "path": "/etc/profile.d/kandelo-coreutils.sh",
+        "kind": "text_file",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "reason": "Preserve the current main-shell color alias when coreutils is selected.",
+        "contents": "alias ls='ls --color=auto'\n"
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/grep",
+        "path": "/etc/profile.d/kandelo-grep.sh",
+        "kind": "text_file",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "reason": "Preserve the current main-shell color alias when grep is selected.",
+        "contents": "alias grep='grep --color=auto'\n"
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/git",
+        "path": "/etc/gitconfig",
+        "kind": "text_file",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "reason": "Preserve the current main-shell Git defaults when Git is selected.",
+        "contents": "[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n[core]\n\tpager = cat\n[user]\n\tname = User\n\temail = user@wasm.local\n[init]\n\tdefaultBranch = main\n"
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/nethack",
+        "path": "/etc/profile.d/kandelo-nethack.sh",
+        "kind": "text_file",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "reason": "Preserve the current main-shell NetHack player identity and curses options.",
+        "contents": "export USER=player\nexport NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'\n"
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/nethack",
+        "path": "/home/.nethack",
+        "kind": "directory",
+        "mode": 511,
+        "uid": 1000,
+        "gid": 1000,
+        "reason": "NetHack VAR_PLAYGROUND must be writable by the browser demo user."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/nethack",
+        "path": "/home/.nethack/perm",
+        "kind": "empty_file",
+        "mode": 438,
+        "uid": 1000,
+        "gid": 1000,
+        "reason": "NetHack expects its lock marker before score-listing commands run."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/nethack",
+        "path": "/home/.nethack/record",
+        "kind": "empty_file",
+        "mode": 438,
+        "uid": 1000,
+        "gid": 1000,
+        "reason": "NetHack expects a writable score database before score-listing commands run."
       }
     ]
   }

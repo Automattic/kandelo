@@ -10,6 +10,7 @@ REPORT=""
 BOTTLE_CACHE=""
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SHELL_CONFIG="$REPO_ROOT/homebrew/main-shell-default.json"
+DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
 MIGRATION_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 MAX_BYTES="$((512 * 1024 * 1024))"
 
@@ -110,6 +111,10 @@ if [ ! -f "$MIGRATION_LOCK" ] || [ -L "$MIGRATION_LOCK" ]; then
   echo "build-homebrew-main-shell-closure: migration lock must be a regular non-symlink file" >&2
   exit 2
 fi
+if [ ! -f "$DEMO_CONFIG" ] || [ -L "$DEMO_CONFIG" ]; then
+  echo "build-homebrew-main-shell-closure: demo config must be a regular non-symlink file" >&2
+  exit 2
+fi
 
 command -v jq >/dev/null 2>&1 || {
   echo "build-homebrew-main-shell-closure: missing jq; run through scripts/dev-shell.sh" >&2
@@ -169,6 +174,9 @@ fi
 LOCK_SHA="$(sha256sum "$MIGRATION_LOCK")"
 LOCK_SHA="${LOCK_SHA%% *}"
 LOCK_BYTES="$(wc -c <"$MIGRATION_LOCK" | tr -d '[:space:]')"
+DEMO_CONFIG_SHA="$(sha256sum "$DEMO_CONFIG")"
+DEMO_CONFIG_SHA="${DEMO_CONFIG_SHA%% *}"
+DEMO_CONFIG_BYTES="$(wc -c <"$DEMO_CONFIG" | tr -d '[:space:]')"
 
 node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
   "$BREWFILE" "$MIGRATION_LOCK" "$TAP_ROOT/Kandelo/metadata.json"
@@ -227,6 +235,7 @@ node "$REPO_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
   --migration-lock "$MIGRATION_LOCK" \
   --write-profile \
   --shell-config "$SHELL_CONFIG" \
+  --demo-config "$DEMO_CONFIG" \
   --out "$OUT" \
   --report "$REPORT"
 
@@ -238,6 +247,8 @@ jq -e \
   --arg catalog "$EXPECTED_TAP_SHA" \
   --arg lock_sha "$LOCK_SHA" \
   --argjson lock_bytes "$LOCK_BYTES" \
+  --arg demo_config_sha "$DEMO_CONFIG_SHA" \
+  --argjson demo_config_bytes "$DEMO_CONFIG_BYTES" \
   --argjson max_bytes "$MAX_BYTES" '
   .schema == 1 and
   .selection.kind == "brewfile" and
@@ -260,6 +271,11 @@ jq -e \
   (.catalog.checkout_commit == $lock[0].catalog.tap_commit) and
   (.migration_lock.sha256 == $lock_sha) and
   (.migration_lock.bytes == $lock_bytes) and
+  (.demo_config == {
+    path: "/etc/kandelo/demo.json",
+    sha256: $demo_config_sha,
+    bytes: $demo_config_bytes
+  }) and
   ([.packages[] |
     .arch == "wasm32" and
     .tap_repository == $tap[0].tap_repository and
@@ -313,6 +329,32 @@ jq -e \
     (.owners | index($selected)) != null and
     (.skipped_packages == [.owners[] | select(. != $selected)]) and
     (.path == ("/home/linuxbrew/.linuxbrew/" + .target))
+  ] | all) and
+  (([.runtime_state[] | {
+      requires_package,
+      path,
+      kind,
+      mode,
+      uid,
+      gid,
+      reason
+    }]) ==
+    ([$lock[0].compatibility.runtime_state[] | {
+      requires_package,
+      path,
+      kind,
+      mode,
+      uid,
+      gid,
+      reason
+    }])) and
+  ([.runtime_state[] |
+    if .kind == "directory" then
+      (has("content_sha256") | not) and (has("content_bytes") | not)
+    else
+      (.content_sha256 | test("^[0-9a-f]{64}$")) and
+      (.content_bytes >= 0)
+    end
   ] | all) and
   (.image_capacity.byte_length <= $max_bytes) and
   (.image_capacity.max_byte_length == $max_bytes) and

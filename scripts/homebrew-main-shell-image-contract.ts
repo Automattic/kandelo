@@ -1,4 +1,17 @@
 import { createHash } from "node:crypto";
+import {
+  KANDELO_DEMO_CONFIG_PATH,
+  parseKandeloDemoConfig,
+  resolveDemoAssets,
+  resolveDemoGuide,
+  resolveDemoPresentation,
+  validateKandeloDemoConfig,
+} from "../web-libs/kandelo-session/src/demo-config";
+import {
+  DOOM_COMMAND,
+  DOOM_WAD_SHA256,
+  DOOM_WAD_URL,
+} from "../web-libs/kandelo-session/src/demo-guides";
 
 const EXPECTED_ROOT_COUNT = 32;
 const EXPECTED_CLOSURE_COUNT = 38;
@@ -14,6 +27,18 @@ export interface MainShellImageContractInput {
   imageMetadata: unknown;
   imageCapacity: unknown;
   shellConfig: unknown;
+  demoConfigSource: Uint8Array;
+  expectedDemoConfigSource: Uint8Array;
+  runtimeState: MainShellRuntimeStateEntry[];
+}
+
+export interface MainShellRuntimeStateEntry {
+  path: string;
+  kind: "directory" | "empty_file" | "text_file";
+  mode: number;
+  uid: number;
+  gid: number;
+  contents?: Uint8Array;
 }
 
 /**
@@ -167,6 +192,181 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     EXPECTED_SHELL_ARGV,
     "VFS metadata defaultShell argv",
   );
+
+  assertDemoConfig(input, homebrew);
+  assertRuntimeState(input, lock, guest, homebrew, formulaClosure);
+}
+
+function assertDemoConfig(
+  input: MainShellImageContractInput,
+  homebrew: Record<string, unknown>,
+): void {
+  expectExactBytes(
+    input.demoConfigSource,
+    input.expectedDemoConfigSource,
+    "guest demo config bytes",
+  );
+  const sha256 = createHash("sha256").update(input.demoConfigSource).digest("hex");
+  const binding = requiredRecord(homebrew.demoConfig, "VFS metadata demoConfig");
+  expectEqual(binding.path, KANDELO_DEMO_CONFIG_PATH, "VFS metadata demoConfig path");
+  expectEqual(binding.sha256, sha256, "VFS metadata demoConfig sha256");
+  expectEqual(
+    binding.bytes,
+    input.demoConfigSource.byteLength,
+    "VFS metadata demoConfig bytes",
+  );
+
+  let config;
+  try {
+    config = parseKandeloDemoConfig(
+      new TextDecoder("utf-8", { fatal: true }).decode(input.demoConfigSource),
+    );
+  } catch (error) {
+    fail(`guest demo config is not valid UTF-8 JSON: ${String(error)}`);
+  }
+  if (config === null) fail("guest demo config does not use version 1");
+  validateKandeloDemoConfig(config);
+
+  const shellPresentation = resolveDemoPresentation(config, "shell");
+  expectEqual(
+    shellPresentation?.runningPrimary.join(","),
+    "terminal,syslog",
+    "shell demo presentation",
+  );
+  expectEqual(resolveDemoGuide(config, "shell")?.title, "Shell demo", "shell demo guide");
+  const doomPresentation = resolveDemoPresentation(config, "doom");
+  expectEqual(doomPresentation?.autoCommand, DOOM_COMMAND, "Doom demo autoCommand");
+  const doomAssets = resolveDemoAssets(config, "doom");
+  if (doomAssets.length !== 1) fail("Doom demo must declare exactly one asset");
+  expectEqual(doomAssets[0].path, "/doom1.wad", "Doom demo asset path");
+  expectEqual(doomAssets[0].url, DOOM_WAD_URL, "Doom demo asset URL");
+  expectEqual(doomAssets[0].sha256, DOOM_WAD_SHA256, "Doom demo asset sha256");
+  const modesetPresentation = resolveDemoPresentation(config, "modeset");
+  expectEqual(
+    modesetPresentation?.autoCommand,
+    "/usr/local/bin/modeset",
+    "modeset demo autoCommand",
+  );
+  expectEqual(
+    modesetPresentation?.runningPrimary.join(","),
+    "kms,terminal,syslog",
+    "modeset demo presentation",
+  );
+}
+
+function assertRuntimeState(
+  input: MainShellImageContractInput,
+  lock: Record<string, unknown>,
+  guest: Record<string, unknown>,
+  homebrew: Record<string, unknown>,
+  formulaClosure: string[],
+): void {
+  const compatibility = requiredRecord(lock.compatibility, "migration lock compatibility");
+  const declarations = requiredRecordArray(
+    compatibility.runtime_state,
+    "migration lock runtime_state",
+  );
+  const guestState = requiredRecordArray(guest.runtime_state, "guest runtime_state");
+  const metadataState = requiredRecordArray(
+    homebrew.runtimeState,
+    "VFS metadata runtimeState",
+  );
+  if (
+    guestState.length !== declarations.length ||
+    metadataState.length !== declarations.length ||
+    input.runtimeState.length !== declarations.length
+  ) {
+    fail("runtime-state copies do not have the reviewed declaration count");
+  }
+  const actualByPath = new Map(input.runtimeState.map((entry) => [entry.path, entry]));
+  if (actualByPath.size !== input.runtimeState.length) {
+    fail("decoded runtime state contains a duplicate path");
+  }
+
+  declarations.forEach((declaration, index) => {
+    const label = `migration lock runtime_state[${index}]`;
+    const requiresPackage = requiredString(declaration, "requires_package", label);
+    if (!formulaClosure.includes(requiresPackage)) {
+      fail(`${label} requires_package is outside the reviewed Formula closure`);
+    }
+    const path = requiredString(declaration, "path", label);
+    const kind = requiredString(declaration, "kind", label);
+    if (kind !== "directory" && kind !== "empty_file" && kind !== "text_file") {
+      fail(`${label} kind is invalid`);
+    }
+    const mode = requiredNonNegativeInteger(declaration, "mode", label);
+    const uid = requiredNonNegativeInteger(declaration, "uid", label);
+    const gid = requiredNonNegativeInteger(declaration, "gid", label);
+    const reason = requiredString(declaration, "reason", label);
+    const guestEntry = guestState[index];
+    const metadataEntry = metadataState[index];
+    const actual = actualByPath.get(path);
+    if (actual === undefined) fail(`decoded runtime state omits ${path}`);
+    for (const [key, expected] of Object.entries({
+      requires_package: requiresPackage,
+      path,
+      kind,
+      mode,
+      uid,
+      gid,
+      reason,
+    })) {
+      expectEqual(guestEntry[key], expected, `guest runtime_state[${index}] ${key}`);
+    }
+    for (const [key, expected] of Object.entries({
+      requiresPackage,
+      path,
+      kind,
+      mode,
+      uid,
+      gid,
+      reason,
+    })) {
+      expectEqual(metadataEntry[key], expected, `VFS metadata runtimeState[${index}] ${key}`);
+    }
+    expectEqual(actual.kind, kind, `${path} decoded kind`);
+    expectEqual(actual.mode, mode, `${path} decoded mode`);
+    expectEqual(actual.uid, uid, `${path} decoded uid`);
+    expectEqual(actual.gid, gid, `${path} decoded gid`);
+
+    if (kind === "directory") {
+      if (actual.contents !== undefined) fail(`${path} directory unexpectedly has contents`);
+      if (guestEntry.content_sha256 !== undefined || guestEntry.content_bytes !== undefined) {
+        fail(`guest runtime state directory ${path} has file-content provenance`);
+      }
+      if (metadataEntry.contentSha256 !== undefined || metadataEntry.contentBytes !== undefined) {
+        fail(`VFS runtime state directory ${path} has file-content provenance`);
+      }
+      return;
+    }
+
+    const expectedContents = kind === "text_file"
+      ? new TextEncoder().encode(requiredString(declaration, "contents", label))
+      : new Uint8Array();
+    if (actual.contents === undefined) fail(`${path} decoded file contents are missing`);
+    expectExactBytes(actual.contents, expectedContents, `${path} decoded contents`);
+    const contentSha256 = createHash("sha256").update(expectedContents).digest("hex");
+    expectEqual(
+      guestEntry.content_sha256,
+      contentSha256,
+      `guest runtime state ${path} content_sha256`,
+    );
+    expectEqual(
+      guestEntry.content_bytes,
+      expectedContents.byteLength,
+      `guest runtime state ${path} content_bytes`,
+    );
+    expectEqual(
+      metadataEntry.contentSha256,
+      contentSha256,
+      `VFS runtime state ${path} contentSha256`,
+    );
+    expectEqual(
+      metadataEntry.contentBytes,
+      expectedContents.byteLength,
+      `VFS runtime state ${path} contentBytes`,
+    );
+  });
 }
 
 function assertBrewfileBinding(
@@ -413,6 +613,18 @@ function expectExactStrings(actual: string[], expected: string[], label: string)
     fail(
       `${label} differs from the reviewed lock: ` +
         `actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`,
+    );
+  }
+}
+
+function expectExactBytes(actual: Uint8Array, expected: Uint8Array, label: string): void {
+  if (
+    actual.byteLength !== expected.byteLength ||
+    actual.some((value, index) => value !== expected[index])
+  ) {
+    fail(
+      `${label} differ: actual_sha256=${createHash("sha256").update(actual).digest("hex")} ` +
+        `expected_sha256=${createHash("sha256").update(expected).digest("hex")}`,
     );
   }
 }

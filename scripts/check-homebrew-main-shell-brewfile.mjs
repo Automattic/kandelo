@@ -252,7 +252,8 @@ function validateCompatibilityPolicy(lock) {
     JSON.stringify(compatibility.mirror_link_manifest_bin.targets) !==
       JSON.stringify(["/usr/bin", "/bin"]) ||
     !Array.isArray(compatibility.link_conflict_owners) ||
-    !Array.isArray(compatibility.aliases)
+    !Array.isArray(compatibility.aliases) ||
+    !Array.isArray(compatibility.runtime_state)
   ) {
     throw new Error("main-shell migration compatibility policy is invalid");
   }
@@ -303,6 +304,66 @@ function validateCompatibilityPolicy(lock) {
         throw new Error(`compatibility alias target is duplicated: ${target}`);
       }
       aliasTargets.add(target);
+    }
+  }
+
+  const runtimePaths = new Map();
+  for (const [index, entry] of compatibility.runtime_state.entries()) {
+    const expectedKeys = [
+      "gid",
+      "kind",
+      "mode",
+      "path",
+      "reason",
+      "requires_package",
+      "uid",
+    ];
+    if (entry?.kind === "text_file") expectedKeys.push("contents");
+    if (
+      !isRecord(entry) ||
+      Object.keys(entry).sort().join("\0") !== expectedKeys.sort().join("\0") ||
+      typeof entry.requires_package !== "string" ||
+      !lockedPackages.has(entry.requires_package) ||
+      typeof entry.path !== "string" ||
+      !/^\/(?:[A-Za-z0-9._+-]+\/)*[A-Za-z0-9._+-]+$/.test(entry.path) ||
+      entry.path === "/etc/kandelo" ||
+      entry.path.startsWith("/etc/kandelo/") ||
+      entry.path === "/home/linuxbrew/.linuxbrew" ||
+      entry.path.startsWith("/home/linuxbrew/.linuxbrew/") ||
+      !["directory", "empty_file", "text_file"].includes(entry.kind) ||
+      !Number.isSafeInteger(entry.mode) ||
+      entry.mode < 0 ||
+      entry.mode > 0o7777 ||
+      !Number.isSafeInteger(entry.uid) ||
+      entry.uid < 0 ||
+      entry.uid > 0x7fff_ffff ||
+      !Number.isSafeInteger(entry.gid) ||
+      entry.gid < 0 ||
+      entry.gid > 0x7fff_ffff ||
+      typeof entry.reason !== "string" ||
+      entry.reason.trim().length === 0 ||
+      entry.reason.length > 1024 ||
+      (entry.kind === "text_file" &&
+        (typeof entry.contents !== "string" ||
+          Buffer.byteLength(entry.contents, "utf8") > 65_536))
+    ) {
+      throw new Error(`compatibility.runtime_state[${index}] is invalid`);
+    }
+    if (runtimePaths.has(entry.path)) {
+      throw new Error(`compatibility runtime state path is duplicated: ${entry.path}`);
+    }
+    runtimePaths.set(entry.path, entry);
+  }
+  for (const entry of runtimePaths.values()) {
+    let ancestor = entry.path.slice(0, entry.path.lastIndexOf("/")) || "/";
+    while (ancestor !== "/") {
+      const parent = runtimePaths.get(ancestor);
+      if (parent !== undefined && parent.kind !== "directory") {
+        throw new Error(
+          `compatibility runtime state ${parent.path} cannot contain ${entry.path}`,
+        );
+      }
+      ancestor = ancestor.slice(0, ancestor.lastIndexOf("/")) || "/";
     }
   }
 }

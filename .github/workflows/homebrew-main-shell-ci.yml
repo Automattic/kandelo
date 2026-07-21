@@ -26,6 +26,8 @@ on:
       - "host/test/vfs-image.test.ts"
       - "images/rootfs/**"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
+      - "images/vfs/scripts/build-shell-vfs-image.ts"
+      - "images/vfs/scripts/main-shell-demo-config.ts"
       - "images/vfs/scripts/vfs-image-helpers.ts"
       - "package-lock.json"
       - "package.json"
@@ -48,6 +50,7 @@ on:
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
       - "web-libs/kandelo-session/src/shell-config.ts"
+      - "web-libs/kandelo-session/src/demo-config*.ts"
       - "web-libs/kandelo-session/src/kernel-host.ts"
       - "web-libs/kandelo-session/src/vfs-capacity.ts"
   push:
@@ -76,6 +79,8 @@ on:
       - "host/test/vfs-image.test.ts"
       - "images/rootfs/**"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
+      - "images/vfs/scripts/build-shell-vfs-image.ts"
+      - "images/vfs/scripts/main-shell-demo-config.ts"
       - "images/vfs/scripts/vfs-image-helpers.ts"
       - "package-lock.json"
       - "package.json"
@@ -98,6 +103,7 @@ on:
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
       - "web-libs/kandelo-session/src/shell-config.ts"
+      - "web-libs/kandelo-session/src/demo-config*.ts"
       - "web-libs/kandelo-session/src/kernel-host.ts"
       - "web-libs/kandelo-session/src/vfs-capacity.ts"
   workflow_dispatch:
@@ -254,7 +260,8 @@ jobs:
           bash scripts/dev-shell.sh npx tsx \
             scripts/homebrew-main-shell-node-smoke.ts \
             --image "$RUNNER_TEMP/shell-archive/artifacts/shell.vfs.zst" \
-            --migration-lock homebrew/main-shell-migration-lock.json
+            --migration-lock homebrew/main-shell-migration-lock.json \
+            --demo-config homebrew/main-shell-demo.json
 
       - name: Boot the current main-shell path in Chromium
         env:

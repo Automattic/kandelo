@@ -318,6 +318,7 @@ async function buildFixture(
     compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
     seedFs?: (fs: MemoryFileSystem) => void;
     migrationLock?: { sha256: string; bytes: number };
+    onLoadBottle?: () => void;
   } = {},
 ): Promise<HomebrewVfsBuildResult> {
   const manifest = linkManifest(bytes, opts.linkOverrides);
@@ -336,7 +337,10 @@ async function buildFixture(
     catalogCheckout: opts.catalogCheckout,
     compatibilityPolicy: opts.compatibilityPolicy,
     migrationLock: opts.migrationLock,
-    loadBottleBytes: () => opts.loadBytes ?? bytes,
+    loadBottleBytes: () => {
+      opts.onLoadBottle?.();
+      return opts.loadBytes ?? bytes;
+    },
   });
 }
 
@@ -574,6 +578,187 @@ describe("Homebrew VFS builder", () => {
     await expect(buildFixture(bytes, {
       migrationLock: { sha256: "not-a-sha", bytes: 4096 },
     })).rejects.toThrow("migration lock provenance is invalid");
+  });
+
+  it("applies and reports exact package-conditioned runtime state", async () => {
+    const bytes = bottleTar(standardEntries());
+    const contents = "export DEMO=1\n";
+    const compatibilityPolicy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [],
+      aliases: [],
+      // Deliberately put the child before its declared directory. The builder
+      // validates the graph first and applies directory parents before files.
+      runtime_state: [
+        {
+          requires_package: "kandelo-dev/tap-core/hello",
+          path: "/etc/profile.d/demo.sh",
+          kind: "text_file",
+          mode: 0o640,
+          uid: 0,
+          gid: 12,
+          reason: "Exercise a package-conditioned profile fragment.",
+          contents,
+        },
+        {
+          requires_package: "kandelo-dev/tap-core/hello",
+          path: "/home/.demo/record",
+          kind: "empty_file",
+          mode: 0o660,
+          uid: 1000,
+          gid: 1000,
+          reason: "Exercise a package-conditioned writable file.",
+        },
+        {
+          requires_package: "kandelo-dev/tap-core/hello",
+          path: "/home/.demo",
+          kind: "directory",
+          mode: 0o770,
+          uid: 1000,
+          gid: 1000,
+          reason: "Own the parent runtime directory.",
+        },
+      ],
+    };
+    const result = await buildFixture(bytes, {
+      compatibilityPolicy,
+      seedFs(fs) {
+        ensureDirRecursive(fs, "/etc/profile.d");
+        ensureDirRecursive(fs, "/home");
+      },
+    });
+
+    expect(readVfsFile(result.fs, "/etc/profile.d/demo.sh")).toBe(contents);
+    expect(readVfsFile(result.fs, "/home/.demo/record")).toBe("");
+    expect(result.fs.lstat("/etc/profile.d/demo.sh")).toMatchObject({
+      uid: 0,
+      gid: 12,
+    });
+    expect(result.fs.lstat("/etc/profile.d/demo.sh").mode & 0o7777).toBe(0o640);
+    expect(result.fs.lstat("/home/.demo")).toMatchObject({ uid: 1000, gid: 1000 });
+    expect(result.fs.lstat("/home/.demo").mode & 0o7777).toBe(0o770);
+    expect(result.fs.lstat("/home/.demo/record")).toMatchObject({
+      uid: 1000,
+      gid: 1000,
+      size: 0,
+    });
+    expect(result.fs.lstat("/home/.demo/record").mode & 0o7777).toBe(0o660);
+    expect(result.report.runtime_state).toEqual([
+      expect.objectContaining({
+        requires_package: "kandelo-dev/tap-core/hello",
+        path: "/etc/profile.d/demo.sh",
+        kind: "text_file",
+        mode: 0o640,
+        uid: 0,
+        gid: 12,
+        content_sha256: sha256(utf8(contents)),
+        content_bytes: utf8(contents).byteLength,
+      }),
+      expect.objectContaining({
+        path: "/home/.demo/record",
+        kind: "empty_file",
+        content_sha256: sha256(new Uint8Array()),
+        content_bytes: 0,
+      }),
+      expect.objectContaining({
+        path: "/home/.demo",
+        kind: "directory",
+      }),
+    ]);
+    expect(JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    ).runtime_state).toEqual(result.report.runtime_state);
+  });
+
+  it("rejects invalid runtime-state declarations before pouring bottles", async () => {
+    const bytes = bottleTar(standardEntries());
+    const valid = {
+      requires_package: "kandelo-dev/tap-core/hello",
+      path: "/etc/runtime-state",
+      kind: "empty_file" as const,
+      mode: 0o600,
+      uid: 0,
+      gid: 0,
+      reason: "Test state.",
+    };
+    const policy = (runtime_state: unknown[]): HomebrewVfsCompatibilityPolicy => ({
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [],
+      aliases: [],
+      runtime_state: runtime_state as HomebrewVfsCompatibilityPolicy["runtime_state"],
+    });
+    let bottleLoads = 0;
+
+    for (const [declaration, expected] of [
+      [{ ...valid, requires_package: "kandelo-dev/tap-core/missing" }, "requires_package"],
+      [{ ...valid, path: 42 }, "path is invalid"],
+      [{ ...valid, path: "/etc/../runtime-state" }, "normalized absolute path"],
+      [{ ...valid, path: "/etc/kandelo/owned" }, "reserved for image metadata"],
+      [{ ...valid, path: `${PREFIX}/unowned` }, "outside bottle prefixes"],
+      [{ ...valid, kind: "socket" }, "kind is invalid"],
+      [{ ...valid, mode: 0o10000 }, "mode is invalid"],
+      [{ ...valid, uid: -1 }, "uid is invalid"],
+      [{ ...valid, gid: 0x8000_0000 }, "gid is invalid"],
+      [{ ...valid, reason: "" }, "reason is invalid"],
+      [{ ...valid, contents: "not allowed" }, "unsupported shape"],
+      [{ ...valid, extra: true }, "unsupported shape"],
+      [{
+        ...valid,
+        kind: "text_file",
+        contents: "x".repeat(65_537),
+      }, "contents are invalid"],
+    ] as const) {
+      await expect(buildFixture(bytes, {
+        compatibilityPolicy: policy([declaration]),
+        onLoadBottle: () => { bottleLoads += 1; },
+      })).rejects.toThrow(expected);
+    }
+    expect(bottleLoads).toBe(0);
+
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy([valid, valid]),
+    })).rejects.toThrow("declared more than once");
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy([
+        { ...valid, path: "/home/state", kind: "text_file", contents: "parent" },
+        { ...valid, path: "/home/state/child" },
+      ]),
+    })).rejects.toThrow("cannot contain");
+  });
+
+  it("rejects runtime-state overwrites and missing or non-directory parents", async () => {
+    const bytes = bottleTar(standardEntries());
+    const policy = (path: string): HomebrewVfsCompatibilityPolicy => ({
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [],
+      aliases: [],
+      runtime_state: [{
+        requires_package: "kandelo-dev/tap-core/hello",
+        path,
+        kind: "empty_file",
+        mode: 0o600,
+        uid: 0,
+        gid: 0,
+        reason: "Test state.",
+      }],
+    });
+
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy("/etc/existing"),
+      seedFs(fs) {
+        ensureDirRecursive(fs, "/etc");
+        writeVfsFile(fs, "/etc/existing", "base-owned", 0o644);
+      },
+    })).rejects.toThrow("already exists in the platform base or a bottle");
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy("/missing/child"),
+    })).rejects.toThrow("parent /missing is not an existing directory");
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy("/etc-file/child"),
+      seedFs(fs) {
+        writeVfsFile(fs, "/etc-file", "not a directory", 0o644);
+      },
+    })).rejects.toThrow("parent /etc-file is not an existing directory");
   });
 
   it("mirrors only bottle-owned bin links into POSIX command paths", async () => {
