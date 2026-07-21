@@ -17,24 +17,30 @@ const formulaIdentityPattern = /^kandelo-dev\/tap-core\/[a-z0-9][a-z0-9._-]*$/;
 const expectedRootCount = 32;
 const expectedClosureCount = 38;
 
+const lock = readMigrationLock(lockPath);
 const rootfsPackages = readDependencies(
   `${repoRoot}/packages/registry/rootfs/package.toml`,
 );
-const shellPackages = readDependencies(
+const shellDependencies = readDependencies(
   `${repoRoot}/packages/registry/shell/package.toml`,
-).filter(({ name }) => name !== "rootfs");
-const registryPackages = [...rootfsPackages, ...shellPackages];
-const lock = readMigrationLock(lockPath);
+);
+if (shellDependencies.length !== 0) {
+  throw new Error(
+    "the canonical shell package must stay bottle-only (depends_on = []); " +
+      `found ${shellDependencies.map(({ name, version }) => `${name}@${version}`).join(", ")}`,
+  );
+}
+const lockedRegistryPackages = lock.packages.map(({ registry }) => registry);
 const expectedFormulae = lock.packages.map(({ formula }) => formula.name);
 const actualFormulae = readBrewfilePackages(brewfile);
 
-assertUnique(registryPackages.map(({ name }) => name), "package manifests");
+assertUnique(lockedRegistryPackages.map(({ name }) => name), "migration lock registry roots");
 assertUnique(expectedFormulae, "migration lock Formulae");
 assertUnique(actualFormulae, "main-shell Brewfile");
 assertExactSequence(
-  lock.packages.map(({ registry }) => registry),
-  registryPackages,
-  "migration lock registry identities do not match rootfs + shell dependencies",
+  lock.packages.slice(0, rootfsPackages.length).map(({ registry }) => registry),
+  rootfsPackages,
+  "migration lock base identities do not match rootfs dependencies",
   ({ name, version }) => `${name}@${version}`,
 );
 assertExactSequence(
@@ -48,7 +54,7 @@ validateCompatibilityPolicy(lock);
 if (metadataPath !== undefined) validateTapMetadata(lock, metadataPath);
 
 console.log(
-  `Homebrew main-shell contract: ${actualFormulae.length} registry roots and ` +
+  `Homebrew main-shell contract: ${actualFormulae.length} reviewed migration roots and ` +
     `${lock.formula_closure.length} Formulae match the reviewed migration lock, ` +
     `Brewfile, and catalog ${lock.catalog.tap_commit}.`,
 );
@@ -419,10 +425,9 @@ function resolveTapFormulaClosure(rootNames, byName) {
 
 function readDependencies(path) {
   const source = readFileSync(path, "utf8");
-  const match = /(?:^|\n)depends_on\s*=\s*\[([\s\S]*?)\n\]/.exec(source);
+  const match = /(?:^|\n)depends_on\s*=\s*\[([\s\S]*?)\]/.exec(source);
   if (!match) throw new Error(`cannot find depends_on array in ${path}`);
   const entries = Array.from(match[1].matchAll(/"([^"]+)"/g), (item) => item[1]);
-  if (entries.length === 0) throw new Error(`depends_on array is empty in ${path}`);
   return entries.map((entry) => {
     const at = entry.lastIndexOf("@");
     if (at <= 0 || at === entry.length - 1) {

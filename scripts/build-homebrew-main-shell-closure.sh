@@ -4,9 +4,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TAP_ROOT=""
 EXPECTED_TAP_SHA=""
-OUT="$REPO_ROOT/target/homebrew-main-shell/main-shell.vfs.zst"
-REPORT="$REPO_ROOT/target/homebrew-main-shell/main-shell-report.json"
-BOTTLE_CACHE="$REPO_ROOT/target/homebrew-main-shell/bottle-cache"
+WORK_DIR=""
+OUT=""
+REPORT=""
+BOTTLE_CACHE=""
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SHELL_CONFIG="$REPO_ROOT/homebrew/main-shell-default.json"
 MIGRATION_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
@@ -15,7 +16,8 @@ MAX_BYTES="$((512 * 1024 * 1024))"
 usage() {
   cat <<'EOF'
 Usage: scripts/build-homebrew-main-shell-closure.sh \
-  --tap-root <exact-homebrew-tap-core-checkout> [options]
+  --tap-root <exact-homebrew-tap-core-checkout> \
+  --work-dir <new-exclusive-directory> [options]
 
 Materialize today's browser main-shell package closure exclusively from
 successful Homebrew bottle sidecars. The platform-only base contains static
@@ -23,6 +25,7 @@ Kandelo rootfs state but no legacy package-registry program fragment.
 
 Options:
   --expected-tap-sha <sha> exact catalog SHA; must match the migration lock
+  --work-dir <new-dir>      exclusive caller-owned composition workspace
   --out <image.vfs.zst>     output image
   --report <report.json>    composition evidence
   --bottle-cache <dir>      verified bottle cache
@@ -40,6 +43,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --expected-tap-sha)
       EXPECTED_TAP_SHA="${2:-}"
+      shift 2
+      ;;
+    --work-dir)
+      WORK_DIR="${2:-}"
       shift 2
       ;;
     --out)
@@ -78,6 +85,14 @@ if [ -z "$TAP_ROOT" ]; then
   echo "build-homebrew-main-shell-closure: --tap-root is required" >&2
   exit 2
 fi
+if [ -z "$WORK_DIR" ] || [ "$WORK_DIR" = / ] || [ -e "$WORK_DIR" ] || [ -L "$WORK_DIR" ]; then
+  echo "build-homebrew-main-shell-closure: --work-dir must name a new exclusive directory" >&2
+  exit 2
+fi
+mkdir "$WORK_DIR"
+OUT="${OUT:-$WORK_DIR/main-shell.vfs.zst}"
+REPORT="${REPORT:-$WORK_DIR/main-shell-report.json}"
+BOTTLE_CACHE="${BOTTLE_CACHE:-$WORK_DIR/bottle-cache}"
 if ! [[ "$MAX_BYTES" =~ ^[1-9][0-9]*$ ]] || [ $((MAX_BYTES % 4096)) -ne 0 ]; then
   echo "build-homebrew-main-shell-closure: --max-bytes must be a positive multiple of 4096" >&2
   exit 2
@@ -174,7 +189,6 @@ if [ -z "$ABI_VERSION" ]; then
   exit 1
 fi
 
-WORK_DIR="$REPO_ROOT/target/homebrew-main-shell"
 PLATFORM_BASE="$WORK_DIR/platform-only.vfs"
 SELECTION="$WORK_DIR/main-shell-selection.json"
 mkdir -p "$WORK_DIR" "$BOTTLE_CACHE" "$(dirname "$OUT")" "$(dirname "$REPORT")"
@@ -306,10 +320,6 @@ jq -e \
   (.base_image.metadata.kernelAbi == $abi) and
   (.base_image.metadata.homebrew == null)
 ' "$REPORT" >/dev/null
-
-"$REPO_ROOT/node_modules/.bin/tsx" \
-  "$REPO_ROOT/scripts/homebrew-main-shell-node-smoke.ts" \
-  --image "$OUT"
 
 echo "Homebrew main-shell closure image: $OUT"
 echo "Homebrew main-shell closure report: $REPORT"

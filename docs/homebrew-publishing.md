@@ -1474,10 +1474,8 @@ direct roots plus the six transitive Formula identities, exactly 38 unique
 Formulae. The checker derives the closure again from the pinned tap metadata,
 and both the composer and CI require the report to contain exactly that set;
 root inclusion alone is not sufficient evidence. Keep the lock and Brewfile
-in the same order as `packages/registry/rootfs/package.toml`
-followed by the non-rootfs dependencies in
-`packages/registry/shell/package.toml`. The checker rejects missing, reordered,
-or stale mappings and substitutions. In particular, the registry's `file`
+in the same reviewed order; the checker rejects missing, reordered, or stale
+mappings and substitutions. In particular, the registry's `file`
 package maps to the reserved-name-safe `file-formula` Formula only because that
 identity substitution is explicit in the lock.
 
@@ -1487,18 +1485,22 @@ lock. An explicit SHA is optional, but when supplied it must match the lock:
 ```bash
 scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-closure.sh \
   --tap-root /path/to/exact/homebrew-tap-core \
-  --expected-tap-sha <full-sha>
+  --expected-tap-sha <full-sha> \
+  --work-dir /path/to/new-exclusive-work-dir
 ```
 
-The repository workflow checks out that commit without package credentials and
-invokes `packages/registry/shell/build-shell.sh` with the locked tap. This is the
-normal shell-package build path: it writes the canonical
-`apps/browser-demos/public/shell.vfs.zst`, installs byte-identical resolver
-output, and never creates a parallel Homebrew-only demo artifact. The workflow
-boots those installed bytes through Node and requires Chromium's current
-`?demo=shell` path to fetch the same SHA-256, launch the image-owned shell, and
-exercise the locked command surface. The strict branch is opt-in while the
-migration is staged; an unset tap root retains the existing source-build path.
+The package resolver anonymously provisions that exact commit from the
+`build.toml` Git input and invokes `packages/registry/shell/build-shell.sh`.
+Every composition scratch file, report, and downloaded bottle lives in a new
+resolver-owned workspace below `WASM_POSIX_DEP_OUT_DIR`; the wrapper removes
+that workspace before publishing the single declared `shell.vfs.zst` output.
+There is no legacy registry-composition fallback. The dedicated workflow then
+archives that normal package output, extracts the exact archived bytes, boots
+them through Node, and requires Chromium's current `?demo=shell` path to fetch
+the same SHA-256, launch the image-owned shell, and exercise the locked command
+surface. Runtime acceptance intentionally happens after archive creation so a
+package cache hit cannot skip it and a package build cannot depend on ambient
+kernel build artifacts.
 
 The wrapper first builds a platform-only VFS from `MANIFEST` and
 `images/rootfs`. It deliberately does not generate or add the

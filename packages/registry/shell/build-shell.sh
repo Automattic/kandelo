@@ -1,48 +1,65 @@
 #!/usr/bin/env bash
-# package-system build wrapper. Delegates to the existing
-# images/vfs/scripts/build-shell-vfs-image.sh which produces
-# apps/browser-demos/public/shell.vfs.zst, then installs that file into
-# local-binaries/programs/ + the resolver scratch dir.
+# Canonical package-system build for today's browser shell. The resolver
+# provisions the exact public Homebrew tap commit declared in build.toml; this
+# script composes the declared output exclusively from that tap's bottles.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-VFS="$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
+OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
+HOMEBREW_TAP_ROOT="${WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR:-}"
+HOMEBREW_TAP_SHA="${WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT:-}"
 
-HOMEBREW_TAP_ROOT="${KANDELO_HOMEBREW_MAIN_SHELL_TAP_ROOT:-}"
-HOMEBREW_TAP_SHA="${KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA:-}"
-if [ -n "$HOMEBREW_TAP_SHA" ] && [ -z "$HOMEBREW_TAP_ROOT" ]; then
-    echo "ERROR: KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA requires KANDELO_HOMEBREW_MAIN_SHELL_TAP_ROOT" >&2
+if [ -z "$OUT_DIR" ]; then
+    echo "ERROR: shell is a resolver-owned package build; WASM_POSIX_DEP_OUT_DIR is required" >&2
+    exit 2
+fi
+if [ -z "$HOMEBREW_TAP_ROOT" ] || [ -z "$HOMEBREW_TAP_SHA" ]; then
+    echo "ERROR: shell requires build.toml git input homebrew_tap_core (DIR and COMMIT)" >&2
+    exit 2
+fi
+if [ "${WASM_POSIX_DEP_TARGET_ARCH:-}" != "wasm32" ]; then
+    echo "ERROR: shell Homebrew closure currently supports only wasm32" >&2
     exit 2
 fi
 
-if [ -n "$HOMEBREW_TAP_ROOT" ]; then
-    # This is the strict migration path for the current shell artifact, not a
-    # parallel demo image. The composer starts from platform-only rootfs state,
-    # disables source and registry fallback, writes the canonical browser
-    # shell.vfs.zst, and boots those exact bytes through NodeKernelHost.
-    homebrew_args=(
-        --tap-root "$HOMEBREW_TAP_ROOT"
-        --out "$VFS"
-    )
-    if [ -n "$HOMEBREW_TAP_SHA" ]; then
-        homebrew_args+=(--expected-tap-sha "$HOMEBREW_TAP_SHA")
-    fi
-    bash "$REPO_ROOT/scripts/build-homebrew-main-shell-closure.sh" \
-        "${homebrew_args[@]}"
-else
-    # Keep direct/source package builds available until the pinned public
-    # bottle catalog is the default release input. CI exercises the branch
-    # above with the exact catalog commit from the migration lock.
+# Public bottles and the public tap are package inputs, never credentialed
+# ambient state. Fixed locale/time inputs also make mkrootfs bytes independent
+# of the invoking developer or CI runner.
+unset GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN
+export SOURCE_DATE_EPOCH=0
+export TZ=UTC
+export LC_ALL=C
+export LANG=C
 
-    # `vim-browser-bundle` and `nethack-browser-bundle` own the exact ZIP
-    # bytes. The resolver exposes those declared direct-dependency outputs to
-    # the image composer; rebuilding either archive here would create a second
-    # byte identity that browser delivery could not safely reproduce.
-    bash "$REPO_ROOT/images/vfs/scripts/build-shell-vfs-image.sh"
+BUILD_DIR="$OUT_DIR/.homebrew-shell-build"
+WORK_DIR="$BUILD_DIR/work"
+VFS="$BUILD_DIR/shell.vfs.zst"
+REPORT="$BUILD_DIR/main-shell-report.json"
+BOTTLE_CACHE="$BUILD_DIR/bottle-cache"
+if [ -e "$BUILD_DIR" ] || [ -L "$BUILD_DIR" ]; then
+    echo "ERROR: resolver-owned shell workspace already exists: $BUILD_DIR" >&2
+    exit 1
 fi
+mkdir "$BUILD_DIR"
+cleanup() {
+    rm -rf -- "$BUILD_DIR"
+}
+trap cleanup EXIT
+
+# The checkout is sealed read-only by the resolver. Disable Git's optional
+# index refresh while the strict composer independently verifies exact HEAD,
+# cleanliness, and the migration-lock commit.
+GIT_OPTIONAL_LOCKS=0 \
+bash "$REPO_ROOT/scripts/build-homebrew-main-shell-closure.sh" \
+    --tap-root "$HOMEBREW_TAP_ROOT" \
+    --expected-tap-sha "$HOMEBREW_TAP_SHA" \
+    --work-dir "$WORK_DIR" \
+    --report "$REPORT" \
+    --bottle-cache "$BOTTLE_CACHE" \
+    --out "$VFS"
 
 [ -f "$VFS" ] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
-
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary shell "$VFS"
+[ -f "$REPORT" ] || { echo "ERROR: $REPORT not produced by builder" >&2; exit 1; }
+cp "$VFS" "$OUT_DIR/shell.vfs.zst"

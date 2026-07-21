@@ -1,30 +1,37 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
   "packages/registry/shell/build-shell.sh",
-  "images/vfs/scripts/build-shell-vfs-image.sh",
-  "images/vfs/scripts/build-shell-vfs-image.ts",
-  "images/vfs/scripts/shell-lazy-archives.ts",
-  "images/vfs/scripts/shell-vfs-build.ts",
+  "scripts/build-homebrew-main-shell-closure.sh",
+  "scripts/check-homebrew-main-shell-brewfile.mjs",
+  "scripts/homebrew-brewfile-selection.rb",
+  "homebrew/main-shell.Brewfile",
+  "homebrew/main-shell-default.json",
+  "homebrew/main-shell-migration-lock.json",
+  "images/vfs/scripts/build-homebrew-vfs-image.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
-  "images/vfs/scripts/kandelo-demo-config.ts",
-  "images/vfs/scripts/kandelo-demo-guides.ts",
-  "web-libs/kandelo-session/src/demo-guides.ts",
-  "images/vfs/lib/init/shell-binaries.ts",
-  "packages/registry/modeset/build-modeset.sh",
-  "programs/modeset.c",
-  "host/src/binary-resolver.ts",
-  "host/src/constants.ts",
-  "host/src/statfs.ts",
-  "host/src/types.ts",
-  "host/src/vfs/image-helpers.ts",
-  "host/src/vfs/memory-fs.ts",
-  "host/src/vfs/sharedfs-vendor.ts",
-  "host/src/vfs/types.ts",
-  "host/src/vfs/zip.ts",
+  "MANIFEST",
+  "images/rootfs",
+  "tools/mkrootfs/bin",
+  "tools/mkrootfs/src",
+  "tools/mkrootfs/package.json",
+  "tools/mkrootfs/package-lock.json",
+  "tools/mkrootfs/tsconfig.json",
+  "package.json",
+  "package-lock.json",
+  "crates/shared/src/lib.rs",
+  "host/package.json",
+  "host/package-lock.json",
+  "host/src",
+  "web-libs/kandelo-session/src/shell-config.ts",
 ]
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
+repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 14
+revision    = 15
+
+[[git_inputs]]
+name = "homebrew_tap_core"
+repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
