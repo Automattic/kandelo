@@ -37,6 +37,7 @@ TIER2_BRIDGE_METHOD = "kandelo_build_package"
 TIER2_BRIDGE_MARKER = "KANDELO_REGISTRY_BRIDGE"
 TIER2_RUNTIME_INITIALIZER_METHOD = "kandelo_load_tier2_runtime!"
 TIER2_RUNTIME_CONSTANT = "KANDELO_TIER2_RUNTIME"
+TIER2_BRIDGE_PACKAGE = /\A[a-z0-9][a-z0-9._-]{0,254}\z/
 TIER2_BRIDGE_VERSION = /\A[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}\z/
 TIER2_BRIDGE_SOURCE_SHA256 = /\A[0-9a-f]{64}\z/
 TIER2_RESERVED_ENV = Set[
@@ -491,17 +492,29 @@ canonical_command_arguments = lambda do |node, expected_name|
   arguments[1]
 end
 
-script_env_keys = lambda do |node, lines|
+tier2_bridge_arguments = lambda do |node, lines|
   next nil unless node.is_a?(Array) && node.first == :bare_assoc_hash &&
-                  node[1].is_a?(Array) && node[1].length == 1
-  association = node[1].first
-  next nil unless association.is_a?(Array) && association.first == :assoc_new &&
-                  association.dig(1, 0) == :@label && association.dig(1, 1) == "script_env:"
+                  node[1].is_a?(Array)
 
-  value = association[2]
+  associations = node[1]
+  labels = associations.map do |association|
+    break nil unless association.is_a?(Array) && association.first == :assoc_new &&
+                     association.dig(1, 0) == :@label
+
+    association.dig(1, 1)
+  end
+  next nil unless labels == ["script_env:"] || labels == ["package:", "script_env:"]
+
+  package = nil
+  if labels.first == "package:"
+    package = canonical_literal_value.call(associations.first[2], lines)
+    next nil unless package&.match?(TIER2_BRIDGE_PACKAGE)
+  end
+
+  value = associations.last[2]
   next nil unless value.is_a?(Array) && value.first == :hash
   list = value[1]
-  next [] if list.nil?
+  next({ "package" => package, "script_env_keys" => [] }) if list.nil?
   next nil unless list.is_a?(Array) && list.first == :assoclist_from_args && list[1].is_a?(Array)
 
   keys = list[1].map do |entry|
@@ -510,7 +523,12 @@ script_env_keys = lambda do |node, lines|
     break nil unless key&.match?(/\A[A-Z][A-Z0-9_]{0,254}\z/)
     key
   end
-  keys
+  next nil if keys.nil?
+
+  {
+    "package" => package,
+    "script_env_keys" => keys,
+  }
 end
 
 direct_statement = nil
@@ -570,19 +588,39 @@ end
 
 valid_tier2_support_signature = lambda do |parameters|
   parameters = parameters[1] if parameters.is_a?(Array) && parameters.first == :paren
-  next false unless parameters.is_a?(Array) && parameters.first == :params &&
+  next nil unless parameters.is_a?(Array) && parameters.first == :params &&
                     parameters.length == 8
 
   required = parameters[1]
   keywords = parameters[5]
-  keyword = keywords.first if keywords.is_a?(Array) && keywords.length == 1
-  keyword_default = keyword[1] if keyword.is_a?(Array) && keyword.length == 2
-  required.nil? &&
-    parameters[2].nil? && parameters[3].nil? && parameters[4].nil? &&
-    keyword.is_a?(Array) &&
-    keyword.dig(0, 0) == :@label && keyword.dig(0, 1) == "script_env:" &&
-    keyword_default.is_a?(Array) && keyword_default.first == :hash && keyword_default[1].nil? &&
-    parameters[6].nil? && parameters[7].nil?
+  next nil unless required.nil? &&
+                  parameters[2].nil? && parameters[3].nil? && parameters[4].nil? &&
+                  keywords.is_a?(Array) &&
+                  parameters[6].nil? && parameters[7].nil?
+
+  canonical_keyword = lambda do |keyword, label, default_kind|
+    next false unless keyword.is_a?(Array) && keyword.length == 2 &&
+                      keyword.dig(0, 0) == :@label && keyword.dig(0, 1) == label
+
+    default = keyword[1]
+    case default_kind
+    when :empty_hash
+      default.is_a?(Array) && default.first == :hash && default[1].nil?
+    when :nil
+      default.is_a?(Array) && default.first == :var_ref &&
+        default.dig(1, 0) == :@kw && default.dig(1, 1) == "nil"
+    else
+      false
+    end
+  end
+
+  if keywords.length == 1 && canonical_keyword.call(keywords.first, "script_env:", :empty_hash)
+    :legacy
+  elsif keywords.length == 2 &&
+        canonical_keyword.call(keywords.first, "package:", :nil) &&
+        canonical_keyword.call(keywords.last, "script_env:", :empty_hash)
+    :package
+  end
 end
 
 canonical_tier2_runtime_initializer = lambda do |statement, lines|
@@ -665,6 +703,7 @@ support_validated = Set.new
 support_methods_by_tap = {}
 support_sha256_by_tap = {}
 support_tier2_runtime_by_tap = {}
+support_tier2_package_keyword_by_tap = {}
 validate_support = lambda do |context|
   context_tap_name = context.fetch("tap_name")
   next if support_validated.include?(context_tap_name)
@@ -733,6 +772,7 @@ validate_support = lambda do |context|
   methods = Set.new
   runtime_initializer_index = nil
   runtime_assignment_index = nil
+  tier2_package_keyword = false
   module_body.each_with_index do |statement, statement_index|
     next if statement.is_a?(Array) && statement.first == :void_stmt
 
@@ -756,8 +796,12 @@ validate_support = lambda do |context|
              method&.match?(/\A(?:formula_opt|kandelo)_[a-z0-9_]*[!?]?\z/) && methods.add?(method)
         abort "Kandelo Formula support may contain only unique approved instance methods: #{support_path}"
       end
-      if method == TIER2_BRIDGE_METHOD && !valid_tier2_support_signature.call(statement[2])
-        abort "Kandelo Formula support #{TIER2_BRIDGE_METHOD} has a noncanonical signature: #{support_path}"
+      if method == TIER2_BRIDGE_METHOD
+        signature = valid_tier2_support_signature.call(statement[2])
+        if signature.nil?
+          abort "Kandelo Formula support #{TIER2_BRIDGE_METHOD} has a noncanonical signature: #{support_path}"
+        end
+        tier2_package_keyword = signature == :package
       end
       allowed_nodes = Set.new
       support_child_binding = nil
@@ -916,6 +960,7 @@ validate_support = lambda do |context|
   support_methods_by_tap[context_tap_name] = methods.freeze
   support_sha256_by_tap[context_tap_name] = Digest::SHA256.hexdigest(support_source)
   support_tier2_runtime_by_tap[context_tap_name] = runtime_capable
+  support_tier2_package_keyword_by_tap[context_tap_name] = tier2_package_keyword
   support_validated.add(context_tap_name)
 end
 
@@ -1133,16 +1178,25 @@ parse_formula = lambda do |full_name|
 
         arg_paren = node[2]
         argument_list = arg_paren[1] if arg_paren.is_a?(Array) && arg_paren.first == :arg_paren
-        arguments = argument_list[1] if argument_list.is_a?(Array) &&
-                                         argument_list.first == :args_add_block &&
-                                         argument_list[2] == false
+        arguments = if argument_list.is_a?(Array) &&
+                       argument_list.first == :args_add_block &&
+                       argument_list[2] == false
+          argument_list[1]
+        elsif argument_list.is_a?(Array) && argument_list.length == 1 &&
+              argument_list.dig(0, 0) == :bare_assoc_hash
+          # Ripper represents a trailing comma after a sole keyword hash as a
+          # direct argument array rather than :args_add_block.
+          argument_list
+        end
         unless arguments.is_a?(Array) && arguments.length == 1
-          abort "#{TIER2_BRIDGE_METHOD} must use only one script_env: keyword: #{path}"
+          abort "#{TIER2_BRIDGE_METHOD} must use one canonical keyword hash: #{path}"
         end
 
-        keys = script_env_keys.call(arguments.first, lines)
+        bridge_arguments = tier2_bridge_arguments.call(arguments.first, lines)
+        keys = bridge_arguments&.fetch("script_env_keys", nil)
         if keys.nil? || keys.uniq.length != keys.length
-          abort "#{TIER2_BRIDGE_METHOD} script_env must be one literal hash with unique literal keys: #{path}"
+          abort "#{TIER2_BRIDGE_METHOD} must use an optional literal package followed by one " \
+                "literal script_env hash with unique literal keys: #{path}"
         end
         if keys.length > 64 || keys.sum(&:bytesize) > 4096
           abort "#{TIER2_BRIDGE_METHOD} script_env exceeds the static key limit: #{path}"
@@ -1151,7 +1205,8 @@ parse_formula = lambda do |full_name|
         unless reserved.empty?
           abort "#{TIER2_BRIDGE_METHOD} script_env overrides reserved variables #{reserved.to_a.sort.inspect}: #{path}"
         end
-        package_prefix = "#{name.upcase.gsub(/[^A-Z0-9]/, "_")}_"
+        package = bridge_arguments.fetch("package") || name
+        package_prefix = "#{package.upcase.gsub(/[^A-Z0-9]/, "_")}_"
         invalid_namespace = keys.reject do |key|
           key.start_with?("WASM_POSIX_DEP_") || key.start_with?(package_prefix)
         end
@@ -1159,6 +1214,7 @@ parse_formula = lambda do |full_name|
           abort "#{TIER2_BRIDGE_METHOD} script_env uses keys outside the approved namespace #{invalid_namespace.sort.inspect}: #{path}"
         end
         bridge_calls << {
+          "package" => bridge_arguments.fetch("package"),
           "script_env_keys" => keys.sort,
           "position" => node.dig(1, 1, 2),
         }
@@ -1201,6 +1257,10 @@ parse_formula = lambda do |full_name|
     unless included_support && support_methods_by_tap.fetch(formula_tap_name).include?(TIER2_BRIDGE_METHOD)
       abort "Formula bridge requires the canonical Kandelo Formula support helper: #{path}"
     end
+    if !bridge_calls.first.fetch("package").nil? &&
+       !support_tier2_package_keyword_by_tap.fetch(formula_tap_name)
+      abort "Formula bridge package mapping requires canonical package: support: #{path}"
+    end
     unless support_tier2_runtime_by_tap.fetch(formula_tap_name)
       abort "Formula bridge requires canonical Tier-2 runtime authority: #{path}"
     end
@@ -1231,7 +1291,7 @@ parse_formula = lambda do |full_name|
     end
 
     tier2_bridge = {
-      "package" => name,
+      "package" => bridge_calls.first.fetch("package") || name,
       "script_env_keys" => bridge_calls.first.fetch("script_env_keys"),
       "source_sha256" => sha256_value,
       "source_url" => url_value,

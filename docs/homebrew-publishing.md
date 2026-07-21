@@ -285,6 +285,34 @@ For formulae that build Kandelo Wasm artifacts:
    for Homebrew bottle selection. Update Kandelo `build.toml` `revision` only
    when the underlying Kandelo package output bytes legitimately change.
 
+The transitional Tier-2 bridge keeps the Homebrew Formula identity and the
+Kandelo registry package identity separate. When they have the same name, use
+the default mapping:
+
+```ruby
+out_dir = kandelo_build_package(script_env: {})
+```
+
+When the public Formula name intentionally differs from the registry directory,
+declare the registry package as one literal keyword before `script_env`:
+
+```ruby
+out_dir = kandelo_build_package(
+  package: "cpython",
+  script_env: {},
+)
+```
+
+Here `python` can remain the Formula, bottle, sidecar, and GHCR package name,
+while `cpython` selects `packages/registry/cpython`. The static Formula parser
+rejects dynamic, interpolated, reordered, duplicated, or malformed mappings.
+The publisher attests both identities and then validates the selected registry
+directory, manifest name and version, source, build script, and hashes. The
+runtime helper defaults an omitted `package` to the Formula name and requires
+the resulting value to equal the publisher attestation before it runs the
+script. A mapping is therefore an explicit identity binding, not a path escape
+or a way to bypass the registry contract.
+
 Formula Ruby should read these `HOMEBREW_KANDELO_*` variables for values that
 must survive Homebrew environment handling:
 

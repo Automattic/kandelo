@@ -236,13 +236,6 @@ fn validate(
         ));
     }
 
-    if plan.formula != bridge.package {
-        return Err(format!(
-            "Formula name {:?} differs from bridge package {:?}",
-            plan.formula, bridge.package
-        ));
-    }
-
     let expected_script_prefix = format!("packages/registry/{}/", bridge.package);
     let script_path = manifest.build.script_path.as_deref().ok_or_else(|| {
         format!(
@@ -981,19 +974,21 @@ index_url = "https://example.test/index.toml"
     }
 
     #[test]
-    fn rejects_formula_package_and_script_env_contract_mismatches() {
+    fn accepts_explicit_formula_to_registry_package_mapping() {
         let fixture = Fixture::new();
         let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
-        plan["formula"] = serde_json::json!("other");
-        plan["full_name"] = serde_json::json!("kandelo-dev/tap-core/other");
+        plan["formula"] = serde_json::json!("python");
+        plan["full_name"] = serde_json::json!("kandelo-dev/tap-core/python");
+        plan["tier2_bridge"]["script_env_keys"] = serde_json::json!(["BRIDGE_CONFIGURE"]);
         fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("differs from bridge package")
-        );
+        let attestation = fixture.validate(TargetArch::Wasm32).unwrap();
+        assert_eq!(attestation.formula, "python");
+        assert_eq!(attestation.full_name, "kandelo-dev/tap-core/python");
+        assert_eq!(attestation.tier2_bridge.unwrap().package, "bridge");
+    }
 
+    #[test]
+    fn rejects_script_env_contract_mismatches() {
         for (keys, expected) in [
             (serde_json::json!(["Z_KEY", "A_KEY"]), "sorted and unique"),
             (
@@ -1004,6 +999,7 @@ index_url = "https://example.test/index.toml"
                 serde_json::json!(["WASM_POSIX_INSTALL_LOCAL_MIRROR"]),
                 "reserved variable",
             ),
+            (serde_json::json!(["PYTHON_CONFIGURE"]), "approved namespace"),
             (serde_json::json!(["PATH"]), "approved namespace"),
         ] {
             let fixture = Fixture::new();

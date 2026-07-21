@@ -405,8 +405,8 @@ module KandeloFormulaSupport
 
   KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
 
-  def kandelo_build_package(script_env: {})
-    script_env
+  def kandelo_build_package(package: nil, script_env: {})
+    [package, script_env]
   end
 end
 RUBY
@@ -437,6 +437,18 @@ class Bridge < Formula
     kandelo_install_bin(out_dir, "bridge.wasm", "bridge")
   end
 end
+RUBY
+}
+
+write_mapped_bridge_formula() {
+  write_valid_bridge_formula
+  ruby - "$TAP_ROOT/Formula/bridge.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+needle = "    out_dir = kandelo_build_package(\n      script_env: {\n"
+replacement = "    out_dir = kandelo_build_package(\n      package: \"cpython\",\n      script_env: {\n"
+abort "missing canonical bridge call" unless source.sub!(needle, replacement)
+File.binwrite(path, source)
 RUBY
 }
 
@@ -502,6 +514,40 @@ jq -e '
 ' <<<"$bridge_plan" >/dev/null
 [ "$bridge_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)" ]
 
+write_mapped_bridge_formula
+mapped_bridge_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
+jq -e '
+  .formula == "bridge" and
+  .full_name == "kandelo-dev/tap-core/bridge" and
+  .tier2_bridge.package == "cpython" and
+  .tier2_bridge.script_env_keys == ["WASM_POSIX_DEP_ZLIB_DIR"]
+' <<<"$mapped_bridge_plan" >/dev/null
+
+write_mapped_bridge_formula
+ruby - "$TAP_ROOT/Formula/bridge.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+abort "missing script_env close" unless source.sub!("      }\n    )\n", "      },\n    )\n")
+File.binwrite(path, source)
+RUBY
+trailing_comma_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
+[ "$(jq -c '.tier2_bridge' <<<"$trailing_comma_plan")" = \
+  "$(jq -c '.tier2_bridge' <<<"$mapped_bridge_plan")" ]
+
+write_mapped_bridge_formula
+sed -i.bak 's/WASM_POSIX_DEP_ZLIB_DIR/CPYTHON_CONFIGURE/' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+mapped_namespace_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
+jq -e '.tier2_bridge.package == "cpython" and
+  .tier2_bridge.script_env_keys == ["CPYTHON_CONFIGURE"]' \
+  <<<"$mapped_namespace_plan" >/dev/null
+
+write_mapped_bridge_formula
+sed -i.bak 's/WASM_POSIX_DEP_ZLIB_DIR/BRIDGE_CONFIGURE/' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure formula-env-for-mapped-package \
+  'script_env uses keys outside the approved namespace ["BRIDGE_CONFIGURE"]'
+
 idiomatic_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core required --tier2-bridge-json)"
 jq -e '.tier2_bridge == null and .support_sha256 == null and
   (.formula_sha256 | test("^[0-9a-f]{64}$"))' <<<"$idiomatic_plan" >/dev/null
@@ -524,6 +570,20 @@ jq -e '.tier2_bridge == null and
   (.support_sha256 | test("^[0-9a-f]{64}$")) and
   (.formula_sha256 | test("^[0-9a-f]{64}$"))' \
   <<<"$support_only_plan" >/dev/null
+
+cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" "$TMP_ROOT/package-keyword-support.rb"
+sed -i.bak 's/package: nil, script_env: {}/script_env: {}/' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+legacy_same_name_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
+jq -e '.formula == "bridge" and .tier2_bridge.package == "bridge"' \
+  <<<"$legacy_same_name_plan" >/dev/null
+write_mapped_bridge_formula
+expect_bridge_failure legacy-support-package-mapping \
+  'Formula bridge package mapping requires canonical package: support'
+cp "$TMP_ROOT/package-keyword-support.rb" \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 
 cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" "$TMP_ROOT/runtime-support.rb"
 ruby - "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
@@ -602,7 +662,82 @@ write_valid_bridge_formula
 sed -i.bak '/    out_dir = kandelo_build_package(/a\
       "wrong",' "$TAP_ROOT/Formula/bridge.rb"
 rm "$TAP_ROOT/Formula/bridge.rb.bak"
-expect_bridge_failure positional-identity 'must use only one script_env: keyword'
+expect_bridge_failure positional-identity 'must use one canonical keyword hash'
+
+write_mapped_bridge_formula
+sed -i.bak 's/package: "cpython"/package: PACKAGE_NAME/' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure dynamic-package \
+  'must use an optional literal package followed by one literal script_env hash'
+
+write_mapped_bridge_formula
+sed -i.bak 's/package: "cpython"/package: "cpy\\x74hon"/' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure escaped-package \
+  'must use an optional literal package followed by one literal script_env hash'
+
+write_mapped_bridge_formula
+sed -i.bak 's/package: "cpython"/package: "cpy#{\"thon\"}"/' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure interpolated-package \
+  'must use an optional literal package followed by one literal script_env hash'
+
+write_mapped_bridge_formula
+sed -i.bak 's/package: "cpython"/package: "..\/cpython"/' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure invalid-package \
+  'must use an optional literal package followed by one literal script_env hash'
+
+write_mapped_bridge_formula
+ruby - "$TAP_ROOT/Formula/bridge.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+abort "missing package mapping" unless source.sub!('package: "cpython"', "package: #{('p' * 255).inspect}")
+File.binwrite(path, source)
+RUBY
+maximum_package_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
+[ "$(jq -r '.tier2_bridge.package | length' <<<"$maximum_package_plan")" = 255 ]
+
+write_mapped_bridge_formula
+ruby - "$TAP_ROOT/Formula/bridge.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+abort "missing package mapping" unless source.sub!('package: "cpython"', "package: #{('p' * 256).inspect}")
+File.binwrite(path, source)
+RUBY
+expect_bridge_failure oversized-package \
+  'must use an optional literal package followed by one literal script_env hash'
+
+write_mapped_bridge_formula
+ruby - "$TAP_ROOT/Formula/bridge.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+needle = "      package: \"cpython\",\n      script_env: {\n"
+replacement = "      script_env: {\n"
+abort "missing package mapping" unless source.sub!(needle, replacement)
+source.sub!("      }\n    )\n", "      },\n      package: \"cpython\"\n    )\n") or abort "missing script_env close"
+File.binwrite(path, source)
+RUBY
+expect_bridge_failure reversed-package-keyword \
+  'must use an optional literal package followed by one literal script_env hash'
+
+write_mapped_bridge_formula
+sed -i.bak '/      package: "cpython",/a\
+      package: "cpython",' "$TAP_ROOT/Formula/bridge.rb"
+rm "$TAP_ROOT/Formula/bridge.rb.bak"
+expect_bridge_failure duplicate-package-keyword \
+  'must use an optional literal package followed by one literal script_env hash'
+
+write_mapped_bridge_formula
+ruby - "$TAP_ROOT/Formula/bridge.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+pattern = /      script_env: \{\n.*?      \}\n/m
+abort "missing script_env mapping" unless source.sub!(pattern, "")
+File.binwrite(path, source)
+RUBY
+expect_bridge_failure missing-script-env \
+  'must use an optional literal package followed by one literal script_env hash'
 
 write_valid_bridge_formula
 sed -i.bak 's/"WASM_POSIX_DEP_ZLIB_DIR"/"WASM_POSIX_DEP_VERSION"/' \
@@ -632,7 +767,8 @@ write_valid_bridge_formula
 sed -i.bak 's/WASM_POSIX_DEP_ZLIB_DIR/WASM_POSIX_DEP_NA\\x4dE/' \
   "$TAP_ROOT/Formula/bridge.rb"
 rm "$TAP_ROOT/Formula/bridge.rb.bak"
-expect_bridge_failure escaped-env 'script_env must be one literal hash with unique literal keys'
+expect_bridge_failure escaped-env \
+  'must use an optional literal package followed by one literal script_env hash'
 
 write_valid_bridge_formula
 sed -i.bak 's#bridge-1.2.3.tar.gz#bridge-\\x31.2.3.tar.gz#' "$TAP_ROOT/Formula/bridge.rb"
@@ -679,22 +815,46 @@ rm "$TAP_ROOT/Formula/bridge.rb.bak"
 expect_bridge_failure helper-shadow 'unsupported or duplicate instance method "kandelo_build_package"'
 
 cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" "$TMP_ROOT/valid-support.rb"
-sed -i.bak 's/script_env: {}/**script_env/' \
+sed -i.bak 's/package: nil, script_env: {}/package: nil, **script_env/' \
   "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
 write_valid_bridge_formula
 expect_bridge_failure support-signature 'kandelo_build_package has a noncanonical signature'
 cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 
+sed -i.bak 's/package: nil, script_env: {}/script_env: {}, package: nil/' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure reversed-support-signature \
+  'kandelo_build_package has a noncanonical signature'
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+
+sed -i.bak 's/package: nil, script_env: {}/package: "bridge", script_env: {}/' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure nonnil-package-default \
+  'kandelo_build_package has a noncanonical signature'
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+
+sed -i.bak 's/package: nil, script_env: {}/package: nil/' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure missing-script-env-support \
+  'kandelo_build_package has a noncanonical signature'
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+
 cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 ruby - "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
 path = ARGV.fetch(0)
 source = File.binread(path)
-needle = "  def kandelo_build_package(script_env: {})\n"
+needle = "  def kandelo_build_package(package: nil, script_env: {})\n"
 replacement = "  def self.extra_runtime_initializer!\n" \
               "    true\n" \
               "  end\n\n" \
-              "  def kandelo_build_package(script_env: {})\n"
+              "  def kandelo_build_package(package: nil, script_env: {})\n"
 abort "missing support instance method" unless source.sub!(needle, replacement)
 File.binwrite(path, source)
 RUBY

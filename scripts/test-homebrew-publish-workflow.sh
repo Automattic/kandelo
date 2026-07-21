@@ -221,6 +221,41 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 EOF
+  mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/cpython"
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/cpython/package.toml" <<'EOF'
+kind = "program"
+name = "cpython"
+version = "1.0"
+kernel_abi = 42
+arches = ["wasm32", "wasm64"]
+depends_on = []
+
+[source]
+url = "https://example.test/hello-1.0.tar.gz"
+sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "packages/registry/cpython/build-cpython.sh"
+
+[[outputs]]
+name = "python"
+wasm = "python.wasm"
+EOF
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/cpython/build.toml" <<'EOF'
+script_path = "packages/registry/cpython/build-cpython.sh"
+repo_url = "https://github.com/Automattic/kandelo"
+commit = ""
+
+[binary]
+index_url = "https://example.test/index.toml"
+EOF
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/cpython/build-cpython.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+EOF
   cat >"$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-patched-launcher.sh" <<'EOF'
 HOMEBREW_PATCHED_BREW_BIN=""
 HOMEBREW_PATCHED_PREFIX=""
@@ -2894,8 +2929,8 @@ module KandeloFormulaSupport
 
   KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
 
-  def kandelo_build_package(script_env: {})
-    script_env
+  def kandelo_build_package(package: nil, script_env: {})
+    [package, script_env]
   end
 end
 EOF
@@ -2926,7 +2961,7 @@ class Hello < Formula
   depends_on "kandelo-dev/tap-core/test-helper" => :test
 
   def install
-    out = kandelo_build_package(script_env: {})
+    out = kandelo_build_package(package: "cpython", script_env: {})
     out
   end
 end
@@ -3205,8 +3240,8 @@ EOF
     .schema == 1 and .arch == "wasm32" and
     .tap == "kandelo-dev/tap-core" and .formula == "hello" and
     (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
-    .tier2_bridge.package == "hello" and
-    .tier2_bridge.script == "build-hello.sh" and
+    .tier2_bridge.package == "cpython" and
+    .tier2_bridge.script == "build-cpython.sh" and
     .tier2_bridge.script_env_keys == [] and
     .tier2_bridge.source_mode == "exact" and
     .tier2_bridge.version == "1.0"
@@ -3220,8 +3255,8 @@ EOF
   local tier2_drift_marker="$TMPDIR/bottle-tier2-drift.marker"
   local tier2_drift_preflight="$TMPDIR/bottle-tier2-drift-preflight.log"
   local tier2_drift_native_capture="$TMPDIR/bottle-tier2-drift-native-prefix.txt"
-  local tier2_registry_script="$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello/build-hello.sh"
-  local tier2_registry_script_backup="$TMPDIR/build-hello.sh.original"
+  local tier2_registry_script="$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/cpython/build-cpython.sh"
+  local tier2_registry_script_backup="$TMPDIR/build-cpython.sh.original"
   local tier2_drift_status
   cp "$tier2_registry_script" "$tier2_registry_script_backup"
   mkdir -p "$tier2_drift_prefix"
