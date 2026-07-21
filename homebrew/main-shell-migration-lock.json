@@ -38,8 +38,8 @@
     { "registry": { "name": "unzip", "version": "6.0" }, "formula": { "name": "unzip", "version": "6.0", "revision": 0, "bottle_rebuild": 0 } },
     { "registry": { "name": "lsof", "version": "0.1.0" }, "formula": { "name": "lsof", "version": "0.1.0", "revision": 0, "bottle_rebuild": 1 } },
     { "registry": { "name": "nano", "version": "8.0" }, "formula": { "name": "nano", "version": "8.0", "revision": 0, "bottle_rebuild": 3 } },
-    { "registry": { "name": "vim", "version": "9.1.0900" }, "formula": { "name": "vim", "version": "9.2.0750", "revision": 0, "bottle_rebuild": 0 } },
-    { "registry": { "name": "nethack", "version": "3.6.7" }, "formula": { "name": "nethack", "version": "3.6.7", "revision": 0, "bottle_rebuild": 0 } },
+    { "registry": { "name": "vim-browser-bundle", "version": "9.1.0900" }, "formula": { "name": "vim", "version": "9.2.0750", "revision": 0, "bottle_rebuild": 0 } },
+    { "registry": { "name": "nethack-browser-bundle", "version": "3.6.7" }, "formula": { "name": "nethack", "version": "3.6.7", "revision": 0, "bottle_rebuild": 0 } },
     { "registry": { "name": "fbdoom", "version": "0.1.0" }, "formula": { "name": "fbdoom", "version": "0.1.0", "revision": 0, "bottle_rebuild": 1 } },
     { "registry": { "name": "modeset", "version": "0.1.0" }, "formula": { "name": "modeset", "version": "0.1.0", "revision": 0, "bottle_rebuild": 1 } }
   ],
@@ -94,7 +94,9 @@
     { "kind": "version", "registry": "diffutils@3.10", "formula": "kandelo-dev/tap-core/diffutils@3.12", "reason": "Reviewed migration to the newer upstream release already bottled by the tap." },
     { "kind": "version", "registry": "gzip@1.13", "formula": "kandelo-dev/tap-core/gzip@1.14", "reason": "Reviewed migration to the newer upstream release already bottled by the tap." },
     { "kind": "version", "registry": "zstd@1.5.6", "formula": "kandelo-dev/tap-core/zstd@1.5.7", "reason": "Reviewed migration to the newer upstream release already bottled by the tap." },
-    { "kind": "version", "registry": "vim@9.1.0900", "formula": "kandelo-dev/tap-core/vim@9.2.0750", "reason": "Reviewed migration to the newer upstream release already bottled by the tap." }
+    { "kind": "formula_identity", "registry": "vim-browser-bundle@9.1.0900", "formula": "kandelo-dev/tap-core/vim@9.2.0750", "reason": "The registry dependency publishes the browser-owned Vim ZIP, while the Homebrew shell installs the corresponding Vim Formula directly." },
+    { "kind": "version", "registry": "vim-browser-bundle@9.1.0900", "formula": "kandelo-dev/tap-core/vim@9.2.0750", "reason": "Reviewed migration to the newer upstream release already bottled by the tap." },
+    { "kind": "formula_identity", "registry": "nethack-browser-bundle@3.6.7", "formula": "kandelo-dev/tap-core/nethack@3.6.7", "reason": "The registry dependency publishes the browser-owned NetHack ZIP, while the Homebrew shell installs the corresponding NetHack Formula directly." }
   ],
   "compatibility": {
     "mirror_link_manifest_bin": {
