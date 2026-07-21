@@ -431,6 +431,34 @@ end
 RUBY
 }
 
+write_bridge_formula_with_env_shape() {
+  local shape="$1"
+  write_valid_bridge_formula
+  ruby - "$TAP_ROOT/Formula/bridge.rb" "$shape" <<'RUBY'
+path, shape = ARGV
+keys = (0...64).map do |index|
+  prefix = format("BRIDGE_%02d_", index)
+  prefix + ("A" * (64 - prefix.bytesize))
+end
+case shape
+when "exact"
+  # 64 keys and 4096 aggregate key bytes: both limits exactly.
+when "count-over"
+  keys << "BRIDGE_64"
+when "bytes-over"
+  keys[-1] += "A"
+else
+  abort "unknown env shape #{shape.inspect}"
+end
+source = File.binread(path)
+replacement = keys.map { |key| "        #{key.inspect} => \"fixture\",\n" }.join
+pattern = /^        "WASM_POSIX_DEP_ZLIB_DIR".*\n/
+abort "could not replace the script_env fixture" unless source.scan(pattern).length == 1
+source.sub!(pattern, replacement)
+File.binwrite(path, source)
+RUBY
+}
+
 expect_bridge_failure() {
   local label="$1" expected="$2"
   if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge \
@@ -468,6 +496,37 @@ jq -e '
 idiomatic_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core required --tier2-bridge-json)"
 jq -e '.tier2_bridge == null and .support_sha256 == null and
   (.formula_sha256 | test("^[0-9a-f]{64}$"))' <<<"$idiomatic_plan" >/dev/null
+
+cat >"$TAP_ROOT/Formula/support-only.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class SupportOnly < Formula
+  include KandeloFormulaSupport
+
+  desc "Idiomatic Formula that shares inert support"
+  homepage "https://example.test/support-only"
+  url "https://example.test/support-only-1.0.tar.gz"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  license "MIT"
+end
+RUBY
+support_only_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only --tier2-bridge-json)"
+jq -e '.tier2_bridge == null and
+  (.support_sha256 | test("^[0-9a-f]{64}$")) and
+  (.formula_sha256 | test("^[0-9a-f]{64}$"))' \
+  <<<"$support_only_plan" >/dev/null
+
+write_bridge_formula_with_env_shape exact
+exact_env_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
+jq -e '(.tier2_bridge.script_env_keys | length) == 64 and
+  ([.tier2_bridge.script_env_keys[] | length] | add) == 4096' \
+  <<<"$exact_env_plan" >/dev/null
+
+write_bridge_formula_with_env_shape count-over
+expect_bridge_failure env-count-over 'script_env exceeds the static key limit'
+
+write_bridge_formula_with_env_shape bytes-over
+expect_bridge_failure env-bytes-over 'script_env exceeds the static key limit'
 
 write_valid_bridge_formula
 sed -i.bak '/  version "1.2.3"/d' "$TAP_ROOT/Formula/bridge.rb"

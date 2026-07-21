@@ -399,8 +399,7 @@ fn validate_script_env_keys(package: &str, keys: &[String]) -> Result<(), String
                 "bridge script_env_keys overrides reserved variable {key:?}"
             ));
         }
-        if !(key.starts_with("WASM_POSIX_DEP_") || key.starts_with(&package_prefix))
-        {
+        if !(key.starts_with("WASM_POSIX_DEP_") || key.starts_with(&package_prefix)) {
             return Err(format!(
                 "bridge script_env key {key:?} is outside the approved namespace"
             ));
@@ -759,6 +758,45 @@ index_url = "https://example.test/index.toml"
     fn validates_exact_registry_identity_and_source() {
         let fixture = Fixture::new();
         let attestation = fixture.validate(TargetArch::Wasm32).unwrap();
+        let document = serde_json::to_value(&attestation).unwrap();
+        assert_eq!(
+            document
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "arch",
+                "formula",
+                "formula_sha256",
+                "full_name",
+                "schema",
+                "support_sha256",
+                "tap",
+                "tier2_bridge",
+            ]
+        );
+        assert_eq!(
+            document["tier2_bridge"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "build_toml_sha256",
+                "package",
+                "package_toml_sha256",
+                "script",
+                "script_env_keys",
+                "script_sha256",
+                "source_mode",
+                "source_sha256",
+                "source_url",
+                "version",
+            ]
+        );
         let bridge = attestation.tier2_bridge.unwrap();
         assert_eq!(bridge.package, "bridge");
         assert_eq!(
@@ -978,6 +1016,54 @@ index_url = "https://example.test/index.toml"
     }
 
     #[test]
+    fn enforces_script_env_key_count_and_aggregate_boundaries() {
+        let exact_keys = (0..64)
+            .map(|index| {
+                let prefix = format!("BRIDGE_{index:02}_");
+                format!("{prefix}{}", "A".repeat(64 - prefix.len()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(exact_keys.len(), MAX_SCRIPT_ENV_KEYS);
+        assert_eq!(
+            exact_keys.iter().map(String::len).sum::<usize>(),
+            MAX_SCRIPT_ENV_KEY_BYTES
+        );
+
+        let fixture = Fixture::new();
+        let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
+        plan["tier2_bridge"]["script_env_keys"] = serde_json::json!(exact_keys);
+        fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(fixture.validate(TargetArch::Wasm32).is_ok());
+
+        let fixture = Fixture::new();
+        let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
+        let count_over = (0..65)
+            .map(|index| format!("BRIDGE_{index:02}"))
+            .collect::<Vec<_>>();
+        plan["tier2_bridge"]["script_env_keys"] = serde_json::json!(count_over);
+        fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(
+            fixture
+                .validate(TargetArch::Wasm32)
+                .unwrap_err()
+                .contains("static key limit")
+        );
+
+        let fixture = Fixture::new();
+        let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
+        let mut bytes_over = exact_keys;
+        bytes_over.last_mut().unwrap().push('A');
+        plan["tier2_bridge"]["script_env_keys"] = serde_json::json!(bytes_over);
+        fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(
+            fixture
+                .validate(TargetArch::Wasm32)
+                .unwrap_err()
+                .contains("static key limit")
+        );
+    }
+
+    #[test]
     fn independently_rejects_a_source_url_without_a_host() {
         let fixture = Fixture::new();
         let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
@@ -1134,6 +1220,18 @@ index_url = "https://example.test/index.toml"
         assert_eq!(text.len(), MAX_MANIFEST_BYTES);
         fs::write(fixture.package.join("package.toml"), text).unwrap();
         assert!(fixture.validate(TargetArch::Wasm32).is_ok());
+    }
+
+    #[test]
+    fn build_script_read_enforces_its_exact_size_boundary() {
+        let fixture = Fixture::new();
+        let script = fixture.package.join("build-bridge.sh");
+        fs::write(&script, vec![b'#'; MAX_BUILD_SCRIPT_BYTES]).unwrap();
+        assert!(fixture.validate(TargetArch::Wasm32).is_ok());
+
+        fs::write(&script, vec![b'#'; MAX_BUILD_SCRIPT_BYTES + 1]).unwrap();
+        let error = fixture.validate(TargetArch::Wasm32).unwrap_err();
+        assert!(error.contains("1 to 1048576 bytes"), "{error}");
     }
 
     #[test]
