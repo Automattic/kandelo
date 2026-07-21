@@ -1944,15 +1944,30 @@ ZIP CRCs are verified before publication. It also rejects a shared lower path
 unless that path is a directory. Both assets receive authenticated and
 anonymous digest-and-size readback.
 
-This publisher change does not register the ZIP in the main shell VFS yet.
-Until the browser runtime gains integrity-checked lazy archive registration,
-the layer descriptor is a durable input for that follow-up rather than a claim
-that Perl, Python, Erlang, or any other selected package is already available
-in the default shell. It also does not publish one VFS image per language.
+The browser host can consume a selected layer through the normal boot
+descriptor and VFS path. A `package-layer` mount targets `/` and carries a
+bounded descriptor URL, exact descriptor byte count, and lowercase SHA-256
+reference. Boot eagerly fetches and validates only those descriptor bytes. It
+then binds the schema-2 descriptor to the exact compressed shell package
+output, ABI, and `/etc/kandelo/homebrew-vfs.json` composition; rejects base or
+pairwise package/path collisions; and serializes the registered stubs into the
+kernel-owned VFS image. The ZIP remains unfetched until a process first opens
+or executes one of its regular files. That fetch is bounded by the declared
+byte count and must match the descriptor's SHA-256 before ZIP parsing or file
+materialization.
+
+An ordinary main-shell descriptor contains no `package-layer` mounts, so it
+does not fetch a language descriptor or archive and does not add a default VFS
+per language. Selection is explicit machine state, not package-specific UI or
+an alternate loader. Malformed paths, oversized descriptors, duplicate layer
+identities, ABI/base mismatches, and conflicting layers fail the boot instead
+of being skipped. The current publisher still emits one combined lazy-layer
+artifact; it does not yet publish one immutable descriptor and archive for
+each language.
 
 `homebrew/runtime-layer-policy.json` is the reviewed planning contract for the
 next consumer step. It names the canonical `shell` package-output receipt as
-the lower image and defines independent `python`, `ruby`, and `erlang` package
+the lower image and defines independent `perl`, `python`, and `erlang` package
 roots. The host policy selector walks each root's verified dependency closure,
 excludes package names already owned by the verified lower shell composition,
 and requires the root itself to remain layer-owned. The lazy-layer builder
@@ -1962,12 +1977,13 @@ package shared by two runtime deltas; such a dependency must move into the
 common base or into an explicit shared-layer design before the layers have
 disjoint package ownership.
 
-This selection policy does not yet publish three descriptors or register any
-archive in a browser session. Those remain consumer and publication follow-ups,
-and a runtime must have finalized bottle sidecars before it can produce a real
-policy-selected layer. The publisher must additionally prove pairwise archive
-path disjointness; distinct package closures alone do not make filesystem
-overlays safe to mix.
+This selection policy does not yet publish three descriptors or add concrete
+language selections to a default or gallery descriptor. Those remain
+publication/catalog follow-ups, and a runtime must have finalized bottle
+sidecars before it can produce a real policy-selected layer. The publisher
+must additionally prove pairwise archive path disjointness; the consumer
+independently checks the selected descriptors at boot because distinct package
+closures alone do not make filesystem overlays safe to mix.
 
 The release publisher never uses `--clobber`. A content-tag state lock
 serializes writers. An absent release starts as a draft; an interrupted exact

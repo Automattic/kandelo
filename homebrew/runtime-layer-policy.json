@@ -8,12 +8,12 @@
       "root_package": "kandelo-dev/tap-core/erlang"
     },
     {
-      "id": "python",
-      "root_package": "kandelo-dev/tap-core/python"
+      "id": "perl",
+      "root_package": "kandelo-dev/tap-core/perl"
     },
     {
-      "id": "ruby",
-      "root_package": "kandelo-dev/tap-core/ruby"
+      "id": "python",
+      "root_package": "kandelo-dev/tap-core/python"
     }
   ]
 }

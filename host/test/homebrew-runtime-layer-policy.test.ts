@@ -48,12 +48,12 @@ function languagePlan(): HomebrewVfsPlan {
     kandeloCommit: "2".repeat(40),
     kandeloAbi: 41,
     releaseTag: "bottles-abi-v41",
-    requestedPackages: ["dash", "python", "ruby", "erlang"],
+    requestedPackages: ["dash", "python", "perl", "erlang"],
     packages: [
       pkg("dash"),
       pkg("zlib"),
       pkg("python", [dependency("zlib")]),
-      pkg("ruby", [dependency("zlib")]),
+      pkg("perl", [dependency("zlib")]),
       pkg("erlang"),
     ],
   };
@@ -81,8 +81,8 @@ describe("Homebrew runtime layer policy", () => {
       base_package: "shell",
       layers: [
         { id: "erlang", root_package: `${TAP_NAME}/erlang` },
+        { id: "perl", root_package: `${TAP_NAME}/perl` },
         { id: "python", root_package: `${TAP_NAME}/python` },
-        { id: "ruby", root_package: `${TAP_NAME}/ruby` },
       ],
     });
   });
@@ -108,10 +108,10 @@ describe("Homebrew runtime layer policy", () => {
         base: ["zlib"],
         layer: ["python"],
       },
-      ruby: {
-        closure: ["zlib", "ruby"],
+      perl: {
+        closure: ["zlib", "perl"],
         base: ["zlib"],
-        layer: ["ruby"],
+        layer: ["perl"],
       },
     });
   });
@@ -149,7 +149,7 @@ describe("Homebrew runtime layer policy", () => {
       },
       checkedInPolicy(),
     )).toThrow(
-      "runtime layers python and ruby share non-base package kandelo-dev/tap-core/zlib",
+      "runtime layers perl and python share non-base package kandelo-dev/tap-core/zlib",
     );
   });
 
@@ -163,7 +163,7 @@ describe("Homebrew runtime layer policy", () => {
       checkedInPolicy(),
       "python",
     )).toThrow(
-      "runtime layers python and ruby share non-base package kandelo-dev/tap-core/zlib",
+      "runtime layers perl and python share non-base package kandelo-dev/tap-core/zlib",
     );
   });
 
@@ -178,13 +178,13 @@ describe("Homebrew runtime layer policy", () => {
 
     const transitiveOnly = languagePlan();
     transitiveOnly.requestedPackages = transitiveOnly.requestedPackages.filter(
-      (name) => name !== "ruby",
+      (name) => name !== "perl",
     );
     expect(() => selectHomebrewRuntimeLayers(
       transitiveOnly,
       SHELL_BASE,
       checkedInPolicy(),
-    )).toThrow("ruby root kandelo-dev/tap-core/ruby was not explicitly requested");
+    )).toThrow("perl root kandelo-dev/tap-core/perl was not explicitly requested");
   });
 
   it("requires dependency-first, complete package plans", () => {
@@ -272,7 +272,7 @@ describe("Homebrew runtime layer policy", () => {
       languagePlan(),
       SHELL_BASE,
       checkedInPolicy(),
-      "perl",
-    )).toThrow("policy does not define perl");
+      "ruby",
+    )).toThrow("policy does not define ruby");
   });
 });

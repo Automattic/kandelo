@@ -470,6 +470,37 @@ content-addressed `homebrew-vfs-sha256-<image-sha256>` release. The descriptor's
 `?vfs=<url>` path. The publisher anonymously reads every release asset back and
 verifies its digest and size before reporting success.
 
+The main shell can also consume explicitly selected Homebrew runtime layers
+through version-1 boot-descriptor mounts whose source is `package-layer`.
+These mounts are root overlays described by an unauthenticated HTTPS URL plus
+an exact descriptor byte count and `sha256:<digest>` reference. The shared
+host consumer verifies the descriptor and its binding to the exact loaded
+shell image, ABI, and Homebrew composition before it adds any paths. Selected
+layers must have disjoint non-base packages and filesystem ownership. Their
+ZIP archives remain lazy inside the serialized kernel-owned VFS and are
+bounded and SHA-256 checked before first-use materialization. Descriptors with
+no package-layer mounts retain the ordinary shell behavior and fetch no
+runtime-layer bytes.
+
+```json
+{
+  "path": "/",
+  "source": "package-layer",
+  "name": "python",
+  "url": "https://example.invalid/immutable-python-layer.json",
+  "ref": "sha256:<64 lowercase hexadecimal characters>",
+  "bytes": 12345
+}
+```
+
+The object shape is closed: package-layer mounts do not accept inline data,
+ephemeral flags, credentials in the URL, or non-root target paths.
+
+No Perl, Python, or Erlang layer URL is built into the browser. Concrete
+entries require immutable published descriptor/archive identities derived from
+their finalized bottle sidecars; missing or mismatched identities fail boot
+instead of falling back to a standalone language VFS.
+
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
 package image in the browser UI and runs its smoke command, such as

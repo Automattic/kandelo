@@ -22,6 +22,10 @@ import {
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
+  registerHomebrewRuntimeLayers,
+  type HomebrewRuntimeLayerReference,
+} from "../../../../../host/src/homebrew-runtime-layer-consumer";
+import {
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
 } from "../../../lib/kernel-owned-boot";
@@ -42,6 +46,9 @@ import {
   type DemoPresentation,
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  validateBootDescriptor,
+} from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import {
   genericDemoPresentation,
   resolveDemoAssets,
@@ -1031,6 +1038,32 @@ function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
   }
 }
 
+function homebrewRuntimeLayerReferences(
+  descriptor: BootDescriptor,
+): HomebrewRuntimeLayerReference[] {
+  return descriptor.mounts
+    .filter((mount) => mount.source === "package-layer")
+    .map((mount, index) => {
+      if (
+        typeof mount.name !== "string" ||
+        typeof mount.url !== "string" ||
+        typeof mount.ref !== "string" ||
+        !mount.ref.startsWith("sha256:") ||
+        typeof mount.bytes !== "number"
+      ) {
+        throw new Error(`package-layer mount ${index} was not validated`);
+      }
+      return {
+        id: mount.name,
+        descriptor: {
+          url: mount.url,
+          sha256: mount.ref.slice("sha256:".length),
+          bytes: mount.bytes,
+        },
+      };
+    });
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -1048,6 +1081,7 @@ async function bootProfile(
   };
 
   assertCurrent();
+  validateBootDescriptor(requestedDescriptor);
   host.clearDmesg();
   host.setWebPreview(null);
   host.setDemoGuide(null);
@@ -1065,6 +1099,7 @@ async function bootProfile(
     packages: requestedDescriptor.packages.length > 0
       ? requestedDescriptor.packages
       : profile.descriptor.packages,
+    mounts: requestedDescriptor.mounts,
     boot: effectiveBoot,
   });
   const genericPresentation = profile.fallbackPresentation ?? genericPresentationForProfile(profile);
@@ -1121,6 +1156,21 @@ async function bootProfile(
   const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
     maxByteLength: profile.maxVfsByteLength,
   });
+  const runtimeLayers = homebrewRuntimeLayerReferences(requestedDescriptor);
+  if (runtimeLayers.length > 0) {
+    tick(`verifying ${runtimeLayers.length} selected runtime layer${
+      runtimeLayers.length === 1 ? "" : "s"
+    }...`);
+    await registerHomebrewRuntimeLayers({
+      fs: buildFs,
+      baseImageBytes: fetchedVfsImageBytes,
+      arch: requestedDescriptor.runtime.arch,
+      kernelAbi: ABI_VERSION,
+      layers: runtimeLayers,
+    });
+    assertCurrent();
+    tick("runtime layer files registered; archives remain lazy until first use");
+  }
   const shellConfig = readImageShellConfig(buildFs);
   if (
     profile.id === "nginx-php" ||
