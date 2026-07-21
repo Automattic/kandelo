@@ -20,7 +20,6 @@ const localOnlyBrowserImports = new Set([
 const registryPackagesWithoutBuildToml = new Set([
   "kernel-test-programs",
   "pcre2-source",
-  "sqlite-cli",
 ]);
 
 function registryPackageDirs(): string[] {
