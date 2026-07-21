@@ -270,6 +270,58 @@ grep -Fx "INTEGRATION PAYLOAD" "$integration_out/artifact.wasm" >/dev/null ||
 [ "$(tree_digest "$integration_source")" = "$integration_before" ] ||
     fail "integrated build mutated its immutable caller source"
 
+# Caller-owned output installation is a copy-only packaging operation. It must
+# not require the repo's Rust/xtask toolchain, which Homebrew intentionally
+# keeps out of the isolated Formula environment after the Wasm build finishes.
+output_only_root="$TMP_ROOT/output-only"
+output_only_wasm="$output_only_root/input/program.wasm"
+output_only_data="$output_only_root/input/runtime.dat"
+output_only_out="$output_only_root/out"
+rustc_probe="$output_only_root/rustc-was-called"
+mkdir -p "$(dirname "$output_only_wasm")" "$output_only_out"
+printf 'wasm package payload\n' >"$output_only_wasm"
+printf 'runtime package payload\n' >"$output_only_data"
+(
+    rustc() {
+        printf 'unexpected rustc probe\n' >"$rustc_probe"
+        return 93
+    }
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+    WASM_POSIX_DEP_OUT_DIR="$output_only_out"
+    WASM_POSIX_DEP_TARGET_ARCH=wasm32
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION
+    export WASM_POSIX_DEP_OUT_DIR WASM_POSIX_DEP_TARGET_ARCH
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary output-only-test "$output_only_wasm"
+    install_local_runtime_file output-only-test "$output_only_data" \
+        "share/runtime.dat"
+)
+[ ! -e "$rustc_probe" ] ||
+    fail "caller-owned output installation invoked rustc"
+cmp "$output_only_wasm" "$output_only_out/program.wasm" >/dev/null ||
+    fail "caller-owned Wasm output bytes changed during installation"
+cmp "$output_only_data" "$output_only_out/share/runtime.dat" >/dev/null ||
+    fail "caller-owned runtime-file bytes changed during installation"
+
+err="$output_only_root/unsafe-runtime-artifact.err"
+if (
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    WASM_POSIX_DEP_OUT_DIR="$output_only_out"
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR WASM_POSIX_DEP_OUT_DIR
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_runtime_file output-only-test "$output_only_data" "../escape.dat"
+) 2>"$err"; then
+    fail "caller-owned runtime installation accepted a parent path"
+fi
+grep -F "artifact must be a portable relative path" "$err" >/dev/null ||
+    fail "unsafe caller-owned runtime artifact rejection was not explained"
+[ ! -e "$output_only_root/escape.dat" ] ||
+    fail "unsafe caller-owned runtime artifact escaped its output root"
+
 # Every exact-shell registry recipe must enter through this tested root
 # contract. Their real package builds remain separate bottle/dry-run evidence.
 for package in bc posix-utils-lite lsof nethack fbdoom modeset; do
