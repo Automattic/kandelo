@@ -418,6 +418,7 @@ class Bridge < Formula
 
   def install
     source_dir = kandelo_stage_verified_formula_source
+    ["fixture"].map(&:to_s)
     out_dir = kandelo_build_package(
       "registry-name", "build-registry-name.sh", stable.url, stable.checksum.hexdigest,
       script_env: {
@@ -623,5 +624,58 @@ if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core indirect \
 fi
 grep -F 'forbidden tap-local source operation "instance_method"' \
   "$TMP_ROOT/indirect.err" >/dev/null
+
+cat >"$TAP_ROOT/Formula/symbol-dispatch.rb" <<'RUBY'
+class SymbolDispatch < Formula
+  def install
+    ("kandelo_" + "build_package").to_sym.to_proc.call(
+      self, "wrong", "wrong.sh", stable.url, stable.checksum.hexdigest
+    )
+  end
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core symbol-dispatch \
+  --tier2-bridge-json >"$TMP_ROOT/symbol-dispatch.out" 2>"$TMP_ROOT/symbol-dispatch.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: emitted a null plan for Symbol proc dispatch" >&2
+  exit 1
+fi
+grep -F 'forbidden tap-local source operation "to_sym"' \
+  "$TMP_ROOT/symbol-dispatch.err" >/dev/null
+
+cat >"$TAP_ROOT/Formula/symbol-block-dispatch.rb" <<'RUBY'
+class SymbolBlockDispatch < Formula
+  def install
+    Enumerator.new do |yielder|
+      yielder.yield(self, "wrong", "wrong.sh", stable.url, stable.checksum.hexdigest)
+    end.each(&:"kandelo_#{"build_package"}")
+  end
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core symbol-block-dispatch \
+  --tier2-bridge-json >"$TMP_ROOT/symbol-block-dispatch.out" \
+  2>"$TMP_ROOT/symbol-block-dispatch.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: emitted a null plan for dynamic Symbol block dispatch" >&2
+  exit 1
+fi
+grep -F 'Formula class block pass must be one canonical static symbol' \
+  "$TMP_ROOT/symbol-block-dispatch.err" >/dev/null
+
+cat >"$TAP_ROOT/Formula/escaped-symbol-dispatch.rb" <<'RUBY'
+class EscapedSymbolDispatch < Formula
+  def install
+    :"kandelo_\x62uild_package".to_proc.call(
+      self, "wrong", "wrong.sh", stable.url, stable.checksum.hexdigest
+    )
+  end
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core escaped-symbol-dispatch \
+  --tier2-bridge-json >"$TMP_ROOT/escaped-symbol-dispatch.out" \
+  2>"$TMP_ROOT/escaped-symbol-dispatch.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: emitted a null plan for escaped Symbol dispatch" >&2
+  exit 1
+fi
+grep -F 'forbidden tap-local source operation "to_proc"' \
+  "$TMP_ROOT/escaped-symbol-dispatch.err" >/dev/null
 
 echo "test-homebrew-formula-runtime-closure.sh: passed"

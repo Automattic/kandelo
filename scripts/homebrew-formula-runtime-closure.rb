@@ -61,7 +61,8 @@ FORBIDDEN_SUPPORT_IDENTIFIERS = (
       "instance_exec", "instance_method", "load", "local_variable_get", "local_variable_set",
       "module_function", "prepend", "private_instance_method", "public_instance_method",
       "refine", "remove_const", "remove_instance_variable", "remove_method", "require",
-      "singleton_class", "tap", "unbind", "undef", "undef_method", "using",
+      "intern", "singleton_class", "tap", "to_proc", "to_sym", "unbind", "undef",
+      "undef_method", "using",
     ]
 ).freeze
 EXCLUDED_TAG_SETS = Set[
@@ -849,6 +850,31 @@ parse_formula = lambda do |full_name|
     abort "Formula class uses forbidden tap-local source operation " \
           "#{token.inspect} at #{path}:#{position.first}"
   end
+  validate_formula_block_passes = nil
+  validate_formula_block_passes = lambda do |node|
+    next unless node.is_a?(Array)
+
+    if node.first == :dyna_symbol
+      abort "Formula class may not construct dynamic symbols: #{path}"
+    end
+    if node.first == :args_add_block && node[2] != false
+      block_pass = node[2]
+      token = block_pass.dig(1, 1) if block_pass.is_a?(Array) &&
+                                      block_pass.first == :symbol_literal &&
+                                      block_pass.dig(1, 0) == :symbol
+      value = token[1] if token.is_a?(Array) && token.first == :@ident
+      position = token[2] if token.is_a?(Array)
+      line = lines.fetch(position[0] - 1, nil) if position.is_a?(Array)
+      source_literal = "&:#{value}"
+      start_column = position[1] - 2 if position.is_a?(Array)
+      canonical = value&.match?(/\A[a-zA-Z_][a-zA-Z0-9_]*[!?]?\z/) &&
+                  !start_column.nil? && start_column >= 0 &&
+                  line&.byteslice(start_column, source_literal.bytesize) == source_literal
+      abort "Formula class block pass must be one canonical static symbol: #{path}" unless canonical
+    end
+    node.each { |child| validate_formula_block_passes.call(child) }
+  end
+  validate_formula_block_passes.call(selected_class)
   top_level = syntax_tree[1]
   abort "Formula source has no canonical top-level body: #{path}" unless top_level.is_a?(Array)
   seen_class = false
@@ -1019,6 +1045,9 @@ parse_formula = lambda do |full_name|
           keys = script_env_keys.call(arguments[4], lines)
           if keys.nil? || keys.uniq.length != keys.length
             abort "#{TIER2_BRIDGE_METHOD} script_env must be one literal hash with unique literal keys: #{path}"
+          end
+          if keys.length > 64 || keys.sum(&:bytesize) > 4096
+            abort "#{TIER2_BRIDGE_METHOD} script_env exceeds the static key limit: #{path}"
           end
           reserved = keys.to_set & TIER2_RESERVED_ENV
           unless reserved.empty?
