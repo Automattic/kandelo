@@ -348,6 +348,10 @@ for package in bc nethack fbdoom; do
         fail "$package build does not stage caller-verified source"
 done
 
+grep -F 'make -j1 CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover' \
+    "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
+    fail "NetHack host generators do not override ambient parallel MAKEFLAGS"
+
 # Invalid guest paths are rejected before NetHack reaches any toolchain or
 # dependency work.
 nethack_work="$TMP_ROOT/nethack-invalid-work"

@@ -431,8 +431,11 @@ if [ ! -f "$SRC_DIR/dat/nhdat" ]; then
     echo "==> Host phase: building util tools..."
     # `$(MAKE)` in top-level Makefile recurses with no CC override; the
     # Linux hints default is gcc, which we override on the command line.
-    # On macOS cc=clang works for these tools.
-    make CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover 2>&1 | tail -20
+    # On macOS cc=clang works for these tools. The yacc rules for dgn_comp
+    # and lev_comp share y.tab.c/y.tab.h scratch names, so override ambient
+    # MAKEFLAGS and serialize this phase even when a package manager builds
+    # Formulae in parallel.
+    make -j1 CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover 2>&1 | tail -20
 
     echo "==> Host phase: generating data files (dat/)..."
     # dat/Makefile's `all` builds $(VARDAT) + spec_levs + quest_levs + dungeon
