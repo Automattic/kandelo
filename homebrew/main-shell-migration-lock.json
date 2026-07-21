@@ -3,7 +3,7 @@
   "tap_repository": "kandelo-dev/homebrew-tap-core",
   "tap_name": "kandelo-dev/tap-core",
   "catalog": {
-    "tap_commit": "dfea689bb93aebcd4583e0a26d7c1e68ed2bd441"
+    "tap_commit": "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
   },
   "consumer": {
     "profile": "main-shell",
@@ -120,16 +120,54 @@
     "aliases": [
       {
         "package": "kandelo-dev/tap-core/dash",
+        "source_kind": "link",
         "source": "bin/dash",
         "targets": ["/usr/bin/sh", "/bin/sh"]
       },
       {
+        "package": "kandelo-dev/tap-core/gawk",
+        "source_kind": "link",
+        "source": "bin/gawk",
+        "targets": ["/usr/bin/awk", "/bin/awk"]
+      },
+      {
+        "package": "kandelo-dev/tap-core/grep",
+        "source_kind": "link",
+        "source": "bin/grep",
+        "targets": ["/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"]
+      },
+      {
+        "package": "kandelo-dev/tap-core/bzip2",
+        "source_kind": "link",
+        "source": "bin/bzip2",
+        "targets": ["/usr/bin/bunzip2", "/bin/bunzip2", "/usr/bin/bzcat", "/bin/bzcat"]
+      },
+      {
+        "package": "kandelo-dev/tap-core/netcat",
+        "source_kind": "link",
+        "source": "bin/nc",
+        "targets": ["/usr/bin/netcat", "/bin/netcat"]
+      },
+      {
+        "package": "kandelo-dev/tap-core/git",
+        "source_kind": "keg",
+        "source": "libexec/git-core/git-remote-http",
+        "targets": [
+          "/usr/bin/git-remote-http",
+          "/usr/bin/git-remote-https",
+          "/usr/bin/git-remote-ftp",
+          "/usr/bin/git-remote-ftps"
+        ]
+      },
+      {
         "package": "kandelo-dev/tap-core/fbdoom",
+        "source_kind": "link",
         "source": "bin/fbdoom",
         "targets": ["/usr/local/bin/fbdoom"]
       },
       {
         "package": "kandelo-dev/tap-core/modeset",
+        "source_kind": "link",
         "source": "bin/modeset",
         "targets": ["/usr/local/bin/modeset"]
       }

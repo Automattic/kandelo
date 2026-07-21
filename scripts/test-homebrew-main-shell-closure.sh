@@ -22,7 +22,7 @@ expect_failure() {
   if output="$("$@" 2>&1)"; then
     fail "command unexpectedly succeeded: $*"
   fi
-  grep -Fq "$expected" <<<"$output" || {
+  grep -Fq -- "$expected" <<<"$output" || {
     printf '%s\n' "$output" >&2
     fail "failure did not contain: $expected"
   }
@@ -87,11 +87,13 @@ for evidence_file in "$BUILDER" "$WORKFLOW"; do
 done
 
 for variable in \
+  KANDELO_HOMEBREW_MAIN_SHELL_TAP_ROOT \
+  KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA \
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
   KANDELO_HOMEBREW_MAIN_SHELL_SHA256
 do
   grep -Fq -- "--keep $variable " "$REPO_ROOT/scripts/dev-shell.sh" ||
-    fail "dev shell must preserve $variable for exact browser acceptance"
+    fail "dev shell must preserve $variable for exact main-shell acceptance"
 done
 
 expect_failure "KANDELO_HOMEBREW_MAIN_SHELL_TAP_SHA requires" \
@@ -122,6 +124,13 @@ printf '%s\n' "untracked" >"$tap/untracked-file"
 expect_failure "exact tap checkout is dirty" \
   "$BUILDER" --tap-root "$tap" --migration-lock "$lock"
 rm "$tap/untracked-file"
+
+tap_worktree="$TMP_ROOT/tap-worktree"
+git -C "$tap" worktree add --detach "$tap_worktree" "$tap_sha" >/dev/null
+[ -f "$tap_worktree/.git" ] ||
+  fail "linked tap fixture does not exercise a .git worktree file"
+expect_failure "--max-bytes must match the locked consumer capacity" \
+  "$BUILDER" --tap-root "$tap_worktree" --migration-lock "$lock" --max-bytes 4096
 
 printf '%s\n' \
   '{"tap_repository":"example/wrong-tap","tap_name":"example/wrong"}' \
@@ -297,6 +306,16 @@ expect_failure "must declare the 512 MiB consumer profile" \
 jq '.compatibility.link_conflict_owners[0].package = "kandelo-dev/tap-core/not-locked"' \
   "$SOURCE_LOCK" >"$lock"
 expect_failure "compatibility.link_conflict_owners[0] is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq 'del(.compatibility.aliases[0].source_kind)' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility.aliases[0] is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.aliases[1].targets[0] = .compatibility.aliases[0].targets[0]' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "compatibility alias target is duplicated" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
 echo "test-homebrew-main-shell-closure: ok"

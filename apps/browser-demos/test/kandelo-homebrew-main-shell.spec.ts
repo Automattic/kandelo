@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 
 const strict = process.env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT === "1";
@@ -49,7 +48,37 @@ test("the current main shell boots the exact public-bottle closure", async ({ pa
   test.setTimeout(420_000);
 
   const legacyArtifactDownloads: string[] = [];
-  const shellImageDigests: Array<Promise<string>> = [];
+  await page.addInitScript(() => {
+    const evidence = {
+      digests: [] as string[],
+      errors: [] as string[],
+    };
+    Object.defineProperty(window, "__kandeloHomebrewMainShellImageEvidence", {
+      configurable: false,
+      enumerable: false,
+      value: evidence,
+      writable: false,
+    });
+
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await nativeFetch(...args);
+      if (/shell[^/]*\.vfs\.zst(?:\?|$)/.test(response.url)) {
+        void response.clone().arrayBuffer()
+          .then((bytes) => crypto.subtle.digest("SHA-256", bytes))
+          .then((digest) => {
+            evidence.digests.push(
+              Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0"))
+                .join(""),
+            );
+          })
+          .catch((error: unknown) => {
+            evidence.errors.push(error instanceof Error ? error.message : String(error));
+          });
+      }
+      return response;
+    };
+  });
   page.on("request", (request) => {
     const url = request.url();
     if (
@@ -62,13 +91,6 @@ test("the current main shell boots the exact public-bottle closure", async ({ pa
       )
     ) {
       legacyArtifactDownloads.push(url);
-    }
-  });
-  page.on("response", (response) => {
-    if (/shell[^/]*\.vfs\.zst(?:\?|$)/.test(response.url())) {
-      shellImageDigests.push(
-        response.body().then((body) => createHash("sha256").update(body).digest("hex")),
-      );
     }
   });
 
@@ -95,16 +117,34 @@ test("the current main shell boots the exact public-bottle closure", async ({ pa
   await runTerminalCommand(
     page,
     "/bin/sh -c 'set -e; " +
-      "for cmd in sh bash dash tput cat awk grep sed bc file m4 make find diff " +
+      "for cmd in sh bash dash tput cat awk gawk grep egrep fgrep sed bc file m4 make find diff " +
       "ed more ex less tar curl nc wget git gzip bzip2 xz zstd zip unzip lsof " +
-      "nano vim nethack fbdoom modeset; do command -v \"$cmd\" >/dev/null; done; " +
+      "bunzip2 bzcat netcat git-remote-http git-remote-https git-remote-ftp " +
+      "git-remote-ftps nano vim nethack fbdoom modeset; " +
+      "do command -v \"$cmd\" >/dev/null; done; " +
       "printf \"HOMEBREW_MAIN_SHELL_OK:%s\\n\" \"$(git --version)\"'",
     "HOMEBREW_MAIN_SHELL_OK:git version 2.47.1",
     240_000,
   );
 
   expect(legacyArtifactDownloads).toEqual([]);
-  const fetchedImageDigests = await Promise.all(shellImageDigests);
-  expect(fetchedImageDigests.length).toBeGreaterThan(0);
-  expect(new Set(fetchedImageDigests)).toEqual(new Set([expectedImageSha256]));
+  await page.waitForFunction(() => {
+    const evidence = (window as typeof window & {
+      __kandeloHomebrewMainShellImageEvidence?: {
+        digests: string[];
+        errors: string[];
+      };
+    }).__kandeloHomebrewMainShellImageEvidence;
+    return Boolean(evidence && (evidence.digests.length > 0 || evidence.errors.length > 0));
+  });
+  const imageEvidence = await page.evaluate(() =>
+    (window as typeof window & {
+      __kandeloHomebrewMainShellImageEvidence: {
+        digests: string[];
+        errors: string[];
+      };
+    }).__kandeloHomebrewMainShellImageEvidence
+  );
+  expect(imageEvidence.errors).toEqual([]);
+  expect(new Set(imageEvidence.digests)).toEqual(new Set([expectedImageSha256]));
 });

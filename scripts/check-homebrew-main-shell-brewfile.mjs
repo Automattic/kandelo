@@ -227,13 +227,17 @@ function validateCompatibilityPolicy(lock) {
     conflictTargets.add(entry.target);
   }
 
+  const aliasTargets = new Set();
   for (const [index, entry] of compatibility.aliases.entries()) {
     if (
       !isRecord(entry) ||
       typeof entry.package !== "string" ||
       !lockedPackages.has(entry.package) ||
+      (entry.source_kind !== "link" && entry.source_kind !== "keg") ||
       typeof entry.source !== "string" ||
-      !/^bin\/[a-z0-9][a-z0-9._+-]*$/.test(entry.source) ||
+      !/^[a-z0-9][a-z0-9._+-]*(?:\/[a-z0-9][a-z0-9._+-]*)*$/.test(entry.source) ||
+      (entry.source_kind === "link" &&
+        !/^bin\/[a-z0-9][a-z0-9._+-]*$/.test(entry.source)) ||
       !Array.isArray(entry.targets) ||
       entry.targets.length === 0 ||
       entry.targets.some((target) =>
@@ -243,6 +247,12 @@ function validateCompatibilityPolicy(lock) {
       new Set(entry.targets).size !== entry.targets.length
     ) {
       throw new Error(`compatibility.aliases[${index}] is invalid`);
+    }
+    for (const target of entry.targets) {
+      if (aliasTargets.has(target)) {
+        throw new Error(`compatibility alias target is duplicated: ${target}`);
+      }
+      aliasTargets.add(target);
     }
   }
 }

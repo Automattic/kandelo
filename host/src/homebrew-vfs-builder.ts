@@ -64,6 +64,7 @@ export interface HomebrewVfsCompatibilityPolicy {
   }>;
   aliases: Array<{
     package: string;
+    source_kind: "link" | "keg";
     source: string;
     targets: string[];
   }>;
@@ -74,7 +75,7 @@ export interface HomebrewVfsCompatibilityLinkReport {
   target: string;
   package: string;
   source: string;
-  ownership: "bottle-link-manifest";
+  ownership: "bottle-link-manifest" | "bottle-keg";
 }
 
 export interface HomebrewVfsLinkConflictReport {
@@ -791,7 +792,12 @@ function applyCompatibilityLinks(
   const packageByFullName = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
   const ownedBinLinks = new Map<
     string,
-    { pkg: HomebrewVfsPackagePlan; source: string; sourcePath: string }
+    {
+      pkg: HomebrewVfsPackagePlan;
+      source: string;
+      sourcePath: string;
+      ownership: "bottle-link-manifest";
+    }
   >();
   for (const pkg of plan.packages) {
     for (const entry of pkg.linkManifest.links) {
@@ -804,6 +810,7 @@ function applyCompatibilityLinks(
         pkg,
         source: entry.target,
         sourcePath: joinGuestPath(pkg.prefix, entry.target),
+        ownership: "bottle-link-manifest",
       });
     }
   }
@@ -836,6 +843,7 @@ function applyCompatibilityLinks(
   for (const alias of policy.aliases) {
     if (
       typeof alias?.package !== "string" ||
+      (alias.source_kind !== "link" && alias.source_kind !== "keg") ||
       typeof alias.source !== "string" ||
       !Array.isArray(alias.targets) ||
       alias.targets.some((target) => typeof target !== "string")
@@ -847,13 +855,25 @@ function applyCompatibilityLinks(
     if (pkg === undefined) {
       continue;
     }
-    const owned = ownedBinLinks.get(`${pkg.fullName}\0${alias.source}`);
-    if (owned === undefined) {
+    const manifestOwned = ownedBinLinks.get(`${pkg.fullName}\0${alias.source}`);
+    if (alias.source_kind === "link" && manifestOwned === undefined) {
       throw new HomebrewVfsBuildError(
         `Homebrew compatibility alias ${alias.package}:${alias.source} ` +
           "is not owned by that bottle's link manifest",
       );
     }
+    if (alias.source_kind === "keg" && manifestOwned !== undefined) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew compatibility alias ${alias.package}:${alias.source} is a linked source; ` +
+          'declare source_kind "link"',
+      );
+    }
+    const owned = manifestOwned ?? {
+      pkg,
+      source: alias.source,
+      sourcePath: resolveManifestSource(pkg, alias.source),
+      ownership: "bottle-keg" as const,
+    };
     if (new Set(alias.targets).size !== alias.targets.length) {
       throw new HomebrewVfsBuildError(
         `Homebrew compatibility alias ${alias.package}:${alias.source} has duplicate targets`,
@@ -870,7 +890,12 @@ function applyCompatibilityLinks(
 
 function createCompatibilityLink(
   fs: MemoryFileSystem,
-  owned: { pkg: HomebrewVfsPackagePlan; source: string; sourcePath: string },
+  owned: {
+    pkg: HomebrewVfsPackagePlan;
+    source: string;
+    sourcePath: string;
+    ownership: "bottle-link-manifest" | "bottle-keg";
+  },
   targetPath: string,
   targetedPaths: Set<string>,
   reports: HomebrewVfsCompatibilityLinkReport[],
@@ -900,7 +925,7 @@ function createCompatibilityLink(
     target: owned.sourcePath,
     package: owned.pkg.fullName,
     source: owned.source,
-    ownership: "bottle-link-manifest",
+    ownership: owned.ownership,
   });
 }
 

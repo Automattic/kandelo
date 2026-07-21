@@ -583,6 +583,7 @@ describe("Homebrew VFS builder", () => {
       link_conflict_owners: [],
       aliases: [{
         package: "kandelo-dev/tap-core/hello",
+        source_kind: "link",
         source: "bin/hello",
         targets: ["/usr/bin/sh", "/bin/sh"],
       }],
@@ -607,6 +608,74 @@ describe("Homebrew VFS builder", () => {
     expect(JSON.parse(
       readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
     ).compatibility_links).toEqual(result.report.compatibility_links);
+  });
+
+  it("creates explicitly reviewed aliases from executable bottle-keg files", async () => {
+    const bytes = bottleTar(standardEntries([{
+      path: "hello/2.12.1/libexec/git-core/git-remote-http",
+      data: "#!/bin/sh\necho remote\n",
+      mode: 0o755,
+    }]));
+    const compatibilityPolicy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [],
+      aliases: [{
+        package: "kandelo-dev/tap-core/hello",
+        source_kind: "keg",
+        source: "libexec/git-core/git-remote-http",
+        targets: ["/usr/bin/git-remote-http", "/usr/bin/git-remote-https"],
+      }],
+    };
+    const result = await buildFixture(bytes, { compatibilityPolicy });
+
+    for (const path of ["/usr/bin/git-remote-http", "/usr/bin/git-remote-https"]) {
+      expect(result.fs.readlink(path)).toBe(
+        `${CELLAR}/hello/2.12.1/libexec/git-core/git-remote-http`,
+      );
+      expect(readVfsFile(result.fs, path)).toContain("echo remote");
+    }
+    expect(result.report.compatibility_links).toEqual([
+      expect.objectContaining({
+        path: "/usr/bin/git-remote-http",
+        source: "libexec/git-core/git-remote-http",
+        ownership: "bottle-keg",
+      }),
+      expect.objectContaining({
+        path: "/usr/bin/git-remote-https",
+        ownership: "bottle-keg",
+      }),
+    ]);
+  });
+
+  it("rejects misdeclared, missing, and non-executable bottle-keg alias sources", async () => {
+    const bytes = bottleTar(standardEntries([{
+      path: "hello/2.12.1/libexec/not-executable",
+      data: "not executable\n",
+      mode: 0o644,
+    }]));
+    const policy = (source: string): HomebrewVfsCompatibilityPolicy => ({
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [],
+      aliases: [{
+        package: "kandelo-dev/tap-core/hello",
+        source_kind: "keg",
+        source,
+        targets: ["/usr/bin/reviewed-alias"],
+      }],
+    });
+
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy("bin/hello"),
+    })).rejects.toThrow('declare source_kind "link"');
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy("libexec/missing"),
+    })).rejects.toThrow("is not an executable regular bottle file");
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy("libexec/not-executable"),
+    })).rejects.toThrow("is not an executable regular bottle file");
+    await expect(buildFixture(bytes, {
+      compatibilityPolicy: policy("../bin/hello"),
+    })).rejects.toThrow("contains an unsafe path segment");
   });
 
   it("selects duplicate prefix and POSIX links only through migration-lock ownership", async () => {
@@ -721,6 +790,7 @@ describe("Homebrew VFS builder", () => {
         link_conflict_owners: [],
         aliases: [{
           package: "kandelo-dev/tap-core/hello",
+          source_kind: "link",
           source: "bin/not-reviewed",
           targets: ["/bin/sh"],
         }],

@@ -82,7 +82,8 @@ if ! [[ "$MAX_BYTES" =~ ^[1-9][0-9]*$ ]] || [ $((MAX_BYTES % 4096)) -ne 0 ]; the
   echo "build-homebrew-main-shell-closure: --max-bytes must be a positive multiple of 4096" >&2
   exit 2
 fi
-if [ ! -f "$TAP_ROOT/Kandelo/metadata.json" ] || [ ! -d "$TAP_ROOT/.git" ]; then
+if [ ! -f "$TAP_ROOT/Kandelo/metadata.json" ] ||
+   [ "$(git -C "$TAP_ROOT" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]; then
   echo "build-homebrew-main-shell-closure: tap root is not a Git checkout with Kandelo metadata" >&2
   exit 2
 fi
@@ -262,10 +263,24 @@ jq -e \
   (["/bin/sh", "/bin/bash", "/bin/dash", "/usr/bin/sh", "/usr/bin/env",
     "/usr/local/bin/fbdoom", "/usr/local/bin/modeset"] -
     [.compatibility_links[].path] | length == 0) and
+  ([$lock[0].compatibility.aliases[] as $alias |
+    $alias.targets[] as $target |
+    [.compatibility_links[] | select(
+      .path == $target and
+      .package == $alias.package and
+      .source == $alias.source and
+      .ownership == (if $alias.source_kind == "link"
+        then "bottle-link-manifest"
+        else "bottle-keg"
+      end)
+    )] | length == 1
+  ] | all) and
   ([.compatibility_links[] |
-    .ownership == "bottle-link-manifest" and
     (.package | startswith("kandelo-dev/tap-core/")) and
-    (.target | startswith("/home/linuxbrew/.linuxbrew/bin/"))
+    ((.ownership == "bottle-link-manifest" and
+      (.target | startswith("/home/linuxbrew/.linuxbrew/bin/"))) or
+     (.ownership == "bottle-keg" and
+      (.target | startswith("/home/linuxbrew/.linuxbrew/Cellar/"))))
   ] | all) and
   (([.link_conflicts[] | {
       target,

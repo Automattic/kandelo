@@ -669,6 +669,7 @@ function migrationLockCompatibilityPolicy(
     if (
       !isRecord(value) ||
       typeof value.package !== "string" ||
+      (value.source_kind !== "link" && value.source_kind !== "keg") ||
       typeof value.source !== "string" ||
       !Array.isArray(value.targets) ||
       !value.targets.every((entry) => typeof entry === "string")
@@ -679,6 +680,7 @@ function migrationLockCompatibilityPolicy(
     }
     return {
       package: value.package,
+      source_kind: value.source_kind,
       source: value.source,
       targets: [...value.targets],
     };
