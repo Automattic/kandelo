@@ -22,7 +22,7 @@ import {
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
-  registerHomebrewRuntimeLayers,
+  composeHomebrewRuntimeLayers,
   type HomebrewRuntimeLayerReference,
 } from "../../../../../host/src/homebrew-runtime-layer-consumer";
 import {
@@ -1153,23 +1153,26 @@ async function bootProfile(
   // out of the live-VFS ownership set so WebKit reclaims it on teardown via
   // Worker.terminate() rather than lazy GC — the root fix for the Safari
   // image-switch OOM.
-  const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
-    maxByteLength: profile.maxVfsByteLength,
-  });
   const runtimeLayers = homebrewRuntimeLayerReferences(requestedDescriptor);
+  let buildFs: MemoryFileSystem;
   if (runtimeLayers.length > 0) {
     tick(`verifying ${runtimeLayers.length} selected runtime layer${
       runtimeLayers.length === 1 ? "" : "s"
     }...`);
-    await registerHomebrewRuntimeLayers({
-      fs: buildFs,
+    const composed = await composeHomebrewRuntimeLayers({
       baseImageBytes: fetchedVfsImageBytes,
+      maxByteLength: profile.maxVfsByteLength,
       arch: requestedDescriptor.runtime.arch,
       kernelAbi: ABI_VERSION,
       layers: runtimeLayers,
     });
+    buildFs = composed.fs;
     assertCurrent();
     tick("runtime layer files registered; archives remain lazy until first use");
+  } else {
+    buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
+      maxByteLength: profile.maxVfsByteLength,
+    });
   }
   const shellConfig = readImageShellConfig(buildFs);
   if (

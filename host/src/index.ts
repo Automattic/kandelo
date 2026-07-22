@@ -81,12 +81,13 @@ export {
 } from "./homebrew-runtime-layer-policy";
 export {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
+  composeHomebrewRuntimeLayers,
   parseHomebrewRuntimeLayerDescriptor,
-  registerHomebrewRuntimeLayers,
 } from "./homebrew-runtime-layer-consumer";
 export type {
+  ComposedHomebrewRuntimeLayers,
+  ComposeHomebrewRuntimeLayersOptions,
   HomebrewRuntimeLayerReference,
-  RegisterHomebrewRuntimeLayersOptions,
   RegisteredHomebrewRuntimeLayer,
 } from "./homebrew-runtime-layer-consumer";
 export type {

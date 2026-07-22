@@ -1964,11 +1964,13 @@ The browser host can consume a selected layer through the normal boot
 descriptor and VFS path. A `package-layer` mount targets `/` and carries a
 bounded descriptor URL, exact descriptor byte count, and lowercase SHA-256
 reference. Boot eagerly fetches and validates only those descriptor bytes. It
-then binds the schema-3 descriptor to the exact compressed shell package
-output, ABI, and `/etc/kandelo/homebrew-vfs.json` composition; rejects base or
-pairwise package/path collisions; and serializes the registered deferred-tree
-metadata into the kernel-owned VFS image. A `first-use` tree remains unfetched
-through registration and `stat`. Its first ordinary open/read or executable
+then restores the exact compressed shell package output into a private
+filesystem, binds the schema-3 descriptor to that base, its ABI, and
+`/etc/kandelo/homebrew-vfs.json` composition, and rejects base or pairwise
+package/path collisions. Only a completely registered selection whose required
+boot-prefetch trees have succeeded is returned to boot, so a failed composition
+cannot publish a partial namespace. A `first-use` tree remains unfetched through
+registration and `stat`. Its first ordinary open/read or executable
 resolution starts one deduplicated preparation through the owning VFS mount.
 The host tries byte-identical transports in descriptor order, checks the same
 declared compressed identity for each attempt, decodes and validates the
@@ -1980,10 +1982,12 @@ retain a group-level activation identity, so serialization cannot silently turn
 boot-prefetch into an unverified no-op merely because no regular stub exists.
 
 The consumer accepts at most eight selected layers. Their descriptor byte counts
-may total at most 16 MiB, their indexes may total at most 100,000 entries, and
-their declared uncompressed payloads may total at most 256 MiB; an individual
-content object is also capped at 256 MiB. Package names, repository identities, paths,
-and symlink targets have independent bounds. Every layer package must own the
+may total at most 16 MiB, their compressed payloads may total at most 256 MiB,
+their indexes may total at most 100,000 entries, and their declared uncompressed
+payloads may total at most 256 MiB; an individual content object is also capped
+at 256 MiB. Boot-prefetch transport uses at most two concurrent workers.
+Package names, repository identities, paths, and symlink targets have
+independent bounds. Every layer package must own the
 indexed directory for its declared keg and the exact indexed symlink for its
 declared `opt` link. Selected layers may share directories only when those
 directories already exist in the lower image: one layer cannot use a directory

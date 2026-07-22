@@ -31,7 +31,7 @@ import {
 import {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
   parseHomebrewRuntimeLayerDescriptor,
-  registerHomebrewRuntimeLayers,
+  composeHomebrewRuntimeLayers,
   type HomebrewRuntimeLayerReference,
 } from "../src/homebrew-runtime-layer-consumer";
 import {
@@ -778,9 +778,8 @@ describe("Homebrew runtime layer consumer", () => {
     const fixture = await runtimeLayerConsumerFixture();
     const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
     let descriptorFetches = 0;
-    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
-    const registered = await registerHomebrewRuntimeLayers({
-      fs,
+    let archiveFetches = 0;
+    const { fs, layers: registered } = await composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -788,6 +787,10 @@ describe("Homebrew runtime layer consumer", () => {
       fetch: async () => {
         descriptorFetches += 1;
         return new Response(bytes);
+      },
+      archiveFetch: async () => {
+        archiveFetches += 1;
+        return new Response(fixture.archive);
       },
     });
 
@@ -804,22 +807,12 @@ describe("Homebrew runtime layer consumer", () => {
       },
     });
 
-    const originalFetch = globalThis.fetch;
-    let archiveFetches = 0;
-    globalThis.fetch = async () => {
-      archiveFetches += 1;
-      return new Response(fixture.archive);
-    };
-    try {
-      await expect(
-        fs.ensureMaterialized(`${fixture.runtimeKeg}/bin/runtime`),
-      ).resolves.toBe(true);
-      expect(readVfsFile(fs, `${fixture.runtimeKeg}/bin/runtime`))
-        .toContain("echo runtime");
-      expect(archiveFetches).toBe(1);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    await expect(
+      fs.ensureMaterialized(`${fixture.runtimeKeg}/bin/runtime`),
+    ).resolves.toBe(true);
+    expect(readVfsFile(fs, `${fixture.runtimeKeg}/bin/runtime`))
+      .toContain("echo runtime");
+    expect(archiveFetches).toBe(1);
   });
 
   it("composes disjoint selected layers while leaving both archives lazy", async () => {
@@ -831,17 +824,15 @@ describe("Homebrew runtime layer consumer", () => {
       [runtime.reference.descriptor.url, runtime.bytes],
       [perl.reference.descriptor.url, perl.bytes],
     ]);
-    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
-
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    const { fs, layers } = await composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
       layers: [runtime.reference, perl.reference],
       fetch: async (url) => new Response(responses.get(url)!),
-    })).resolves.toHaveLength(2);
+    });
 
+    expect(layers).toHaveLength(2);
     expect(fs.exportLazyArchiveEntries()).toHaveLength(2);
     expect(fs.readlink(`${PREFIX}/bin/runtime`)).toBe(
       `${fixture.runtimeKeg}/bin/runtime`,
@@ -912,15 +903,13 @@ describe("Homebrew runtime layer consumer", () => {
   it("enforces layer-count, descriptor-byte, and reference-shape caps before fetch", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const exact = runtimeLayerReference("runtime", fixture.descriptor);
-    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
     let fetches = 0;
     const fetch = async () => {
       fetches += 1;
       return new Response(exact.bytes);
     };
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -938,8 +927,7 @@ describe("Homebrew runtime layer consumer", () => {
       fetch,
     })).rejects.toThrow(/layer count .* exceeds/);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -951,8 +939,7 @@ describe("Homebrew runtime layer consumer", () => {
     })).rejects.toThrow(/reference 0 id is invalid/);
 
     const half = Math.floor(HOMEBREW_RUNTIME_LAYER_LIMITS.maxDescriptorBytes / 2) + 1;
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -970,8 +957,7 @@ describe("Homebrew runtime layer consumer", () => {
       fetch,
     })).rejects.toThrow(/descriptors exceed/);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1004,8 +990,7 @@ describe("Homebrew runtime layer consumer", () => {
     ]);
     const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1014,6 +999,121 @@ describe("Homebrew runtime layer consumer", () => {
     })).rejects.toThrow(/selected Homebrew runtime layers exceed the expansion cap/i);
     expect(() => fs.lstat(fixture.runtimeKeg)).toThrow();
     expect(() => fs.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
+  });
+
+  it("rejects aggregate compressed size before changing the VFS", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const runtimeDescriptor = structuredClone(fixture.descriptor);
+    const perlDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
+    const declaredSize = Math.floor(
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes / 2,
+    ) + 1;
+    for (const descriptor of [runtimeDescriptor, perlDescriptor]) {
+      descriptorTree(descriptor).content.bytes = declaredSize;
+    }
+    const runtime = runtimeLayerReference("runtime", runtimeDescriptor);
+    const perl = runtimeLayerReference("perl", perlDescriptor);
+    const responses = new Map([
+      [runtime.reference.descriptor.url, runtime.bytes],
+      [perl.reference.descriptor.url, perl.bytes],
+    ]);
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference, perl.reference],
+      fetch: async (url) => new Response(responses.get(url)!),
+    })).rejects.toThrow(/selected Homebrew runtime layers exceed the archive-byte cap/i);
+    expect(() => fs.lstat(fixture.runtimeKeg)).toThrow();
+    expect(() => fs.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
+  });
+
+  it("publishes no filesystem when a late second-layer allocation exhausts space", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const perlDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
+    const tree = descriptorTree(perlDescriptor);
+    const bulkRoot = `${perlDescriptor.packages.layer[0].keg.slice(1)}/bulk`;
+    tree.inventory.entries.push({
+      path: bulkRoot,
+      source_path: bulkRoot,
+      type: "directory",
+      ownership: "layer",
+      mode: 0o755,
+      size: 0,
+    });
+    for (let index = 0; index < 20_000; index += 1) {
+      const path = `${bulkRoot}/entry-${index.toString().padStart(5, "0")}`;
+      tree.inventory.entries.push({
+        path,
+        source_path: path,
+        type: "file",
+        ownership: "layer",
+        mode: 0o644,
+        size: 0,
+        inode_group: `bulk:${index}`,
+      });
+    }
+    tree.inventory.entries.sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+    );
+    refreshInventory(perlDescriptor);
+    const perl = runtimeLayerReference("perl", perlDescriptor);
+    const responses = new Map([
+      [runtime.reference.descriptor.url, runtime.bytes],
+      [perl.reference.descriptor.url, perl.bytes],
+    ]);
+    const untouched = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference, perl.reference],
+      fetch: async (url) => new Response(responses.get(url)!),
+    })).rejects.toThrow(/no space|ENOSPC/i);
+    expect(() => untouched.lstat(fixture.runtimeKeg)).toThrow();
+    expect(() => untouched.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
+  });
+
+  it("keeps caller-owned shared state intact when boot-prefetch fails", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const descriptor = structuredClone(fixture.descriptor);
+    descriptorTree(descriptor).activation.mode = "boot-prefetch";
+    const encoded = runtimeLayerReference("runtime", descriptor);
+    const owner = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+    const peer = MemoryFileSystem.fromExisting(owner.sharedBuffer);
+    let releaseDescriptor!: () => void;
+    const descriptorGate = new Promise<void>((resolve) => {
+      releaseDescriptor = resolve;
+    });
+    let markFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      markFetchStarted = resolve;
+    });
+    const composition = composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [encoded.reference],
+      fetch: async () => {
+        markFetchStarted();
+        await descriptorGate;
+        return new Response(encoded.bytes);
+      },
+      archiveFetch: async () => {
+        throw new Error("boot transport offline");
+      },
+    });
+
+    await fetchStarted;
+    writeVfsFile(peer, "/peer-owned", "survives\n", 0o644);
+    releaseDescriptor();
+    await expect(composition).rejects.toThrow("boot transport offline");
+    expect(readVfsFile(owner, "/peer-owned")).toBe("survives\n");
+    expect(() => owner.lstat(fixture.runtimeKeg)).toThrow();
   });
 
   it("rejects reused archive identities and cross-layer directory ownership", async () => {
@@ -1031,8 +1131,7 @@ describe("Homebrew runtime layer consumer", () => {
       [duplicateArchive.reference.descriptor.url, duplicateArchive.bytes],
     ]);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1051,8 +1150,7 @@ describe("Homebrew runtime layer consumer", () => {
       [runtime.reference.descriptor.url, runtime.bytes],
       [nested.reference.descriptor.url, nested.bytes],
     ]);
-    await expect(registerHomebrewRuntimeLayers({
-      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1068,8 +1166,7 @@ describe("Homebrew runtime layer consumer", () => {
     const encoded = runtimeLayerReference("runtime", descriptor);
     const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1082,10 +1179,8 @@ describe("Homebrew runtime layer consumer", () => {
   it("rejects descriptor size and digest mismatches before parsing", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const exact = runtimeLayerReference("runtime", fixture.descriptor);
-    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1096,8 +1191,7 @@ describe("Homebrew runtime layer consumer", () => {
       fetch: async () => new Response(exact.bytes),
     })).rejects.toThrow(/descriptor exceeds expected/);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1116,8 +1210,7 @@ describe("Homebrew runtime layer consumer", () => {
     descriptor.base_vfs.package_source.output.sha256 = "9".repeat(64);
     const encoded = runtimeLayerReference("runtime", descriptor);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1133,8 +1226,7 @@ describe("Homebrew runtime layer consumer", () => {
     const encoded = runtimeLayerReference("runtime", descriptor);
     const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1154,8 +1246,7 @@ describe("Homebrew runtime layer consumer", () => {
     );
     const encoded = runtimeLayerReference("runtime", descriptor);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -1182,8 +1273,7 @@ describe("Homebrew runtime layer consumer", () => {
       [perl.reference.descriptor.url, perl.bytes],
     ]);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,

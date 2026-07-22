@@ -237,6 +237,7 @@ const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
 const MAX_LAZY_ARCHIVE_BYTES = 256 * 1024 * 1024;
+const MAX_BOOT_DEFERRED_TREE_CONCURRENCY = 2;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
 interface PlannedLazyArchiveEntry {
@@ -1893,7 +1894,25 @@ export class MemoryFileSystem implements FileSystemBackend {
     const groups = this.lazyArchiveGroups.filter(
       (group) => !group.materialized && group.activation?.mode === "boot-prefetch",
     );
-    await Promise.all(groups.map((group) => this.prepareLazyTreeGroup(group)));
+    let next = 0;
+    let failure: unknown;
+    const workers = Array.from(
+      { length: Math.min(groups.length, MAX_BOOT_DEFERRED_TREE_CONCURRENCY) },
+      async () => {
+        while (failure === undefined) {
+          const index = next;
+          next += 1;
+          if (index >= groups.length) return;
+          try {
+            await this.prepareLazyTreeGroup(groups[index]);
+          } catch (error) {
+            failure ??= error;
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+    if (failure !== undefined) throw failure;
     return groups.length;
   }
 

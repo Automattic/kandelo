@@ -45,20 +45,33 @@ export interface HomebrewRuntimeLayerReference {
   };
 }
 
-export interface RegisterHomebrewRuntimeLayersOptions {
-  fs: MemoryFileSystem;
-  /** Exact compressed package output used to restore `fs`. */
+export interface ComposeHomebrewRuntimeLayersOptions {
+  /** Exact immutable package output that owns the composition transaction. */
   baseImageBytes: Uint8Array;
+  /** Optional runtime growth ceiling for the newly restored composition FS. */
+  maxByteLength?: number;
   arch: "wasm32" | "wasm64";
   kernelAbi: number;
   layers: readonly HomebrewRuntimeLayerReference[];
+  /** Credential-free descriptor transport. */
   fetch?: (url: string) => Promise<Response>;
+  /** Credential-free deferred-tree transport, including boot-prefetch trees. */
+  archiveFetch?: (url: string) => Promise<Response>;
 }
 
 export interface RegisteredHomebrewRuntimeLayer {
   id: string;
   descriptor: HomebrewLazyLayerDescriptor;
   deferredTrees: LazyTreeGroup[];
+}
+
+export interface ComposedHomebrewRuntimeLayers {
+  fs: MemoryFileSystem;
+  layers: RegisteredHomebrewRuntimeLayer[];
+}
+
+interface RegisterHomebrewRuntimeLayersOptions extends ComposeHomebrewRuntimeLayersOptions {
+  fs: MemoryFileSystem;
 }
 
 interface LoadedLayer {
@@ -77,14 +90,31 @@ interface PlannedLayer extends LoadedLayer {
 }
 
 /**
- * Fetch, verify, preflight, and register independently selected Homebrew
- * runtime layers above one exact shell image. Descriptor bytes are eager and
- * bounded; deferred-tree bytes remain lazy until a registered file is consumed.
+ * Restore one immutable shell image into a private filesystem, then fetch,
+ * verify, preflight, and register independently selected Homebrew runtime
+ * layers. The filesystem is published to the caller only after every selected
+ * layer and boot-prefetch tree succeeds, so allocation, collision, and fetch
+ * failures cannot expose a partial namespace. Descriptor bytes are eager and
+ * bounded; first-use deferred-tree bytes remain lazy.
  */
-export async function registerHomebrewRuntimeLayers(
+export async function composeHomebrewRuntimeLayers(
+  options: ComposeHomebrewRuntimeLayersOptions,
+): Promise<ComposedHomebrewRuntimeLayers> {
+  const fs = options.maxByteLength === undefined
+    ? MemoryFileSystem.fromImagePreservingCapacity(options.baseImageBytes)
+    : MemoryFileSystem.fromImage(options.baseImageBytes, {
+      maxByteLength: options.maxByteLength,
+    });
+  if (options.archiveFetch !== undefined) fs.setLazyFetcher(options.archiveFetch);
+  const layers = options.layers.length === 0
+    ? []
+    : await registerHomebrewRuntimeLayersOnStagedFileSystem({ ...options, fs });
+  return { fs, layers };
+}
+
+async function registerHomebrewRuntimeLayersOnStagedFileSystem(
   options: RegisterHomebrewRuntimeLayersOptions,
 ): Promise<RegisteredHomebrewRuntimeLayer[]> {
-  if (options.layers.length === 0) return [];
   if (options.layers.length > HOMEBREW_RUNTIME_LAYER_LIMITS.maxLayers) {
     throw new Error(
       `Homebrew runtime layer count ${options.layers.length} exceeds ` +
@@ -693,6 +723,7 @@ function preflightLayerPaths(
     type: HomebrewLazyLayerEntry["type"];
     ownership: HomebrewLazyLayerEntry["ownership"];
   }>();
+  let totalArchiveBytes = 0;
   let totalUncompressed = 0;
   let totalEntries = 0;
   const planned: PlannedLayer[] = [];
@@ -701,6 +732,10 @@ function preflightLayerPaths(
     const directories: HomebrewLazyLayerEntry[] = [];
     const trees: PlannedTree[] = [];
     for (const tree of layer.descriptor.deferred_trees) {
+      totalArchiveBytes += tree.content.bytes;
+      if (totalArchiveBytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes) {
+        throw new Error("Selected Homebrew runtime layers exceed the archive-byte cap");
+      }
       totalUncompressed += tree.inventory.expanded_bytes;
       if (totalUncompressed > HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes) {
         throw new Error("Selected Homebrew runtime layers exceed the expansion cap");

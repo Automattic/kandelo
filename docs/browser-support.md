@@ -491,6 +491,10 @@ including across VFS image save/restore. A metadata-only tree remains deferred
 through serialization and is still verified at first-use or boot-prefetch even
 though it has no regular stub to replace. Descriptors with no package-layer
 mounts retain the ordinary shell behavior and fetch no runtime-layer bytes.
+The consumer restores the base image and composes every selected layer in a
+private filesystem, publishing that filesystem to boot only after registration
+and every required boot-prefetch succeeds. Allocation, collision, validation,
+and transport failures therefore cannot expose a partially composed namespace.
 
 The current derived producer uses deterministic ZIP bytes with decoder
 `zip-v1` as a temporary scaffold. The host contract is format-neutral and also
@@ -498,10 +502,11 @@ accepts bounded browser-safe gzip-compressed POSIX/PAX TAR trees, including TAR
 hard links. Direct publication from finalized bottle bytes and transport
 mirrors is a later producer step; ZIP is not the target bottle transport.
 
-Boot accepts at most eight package layers and 16 MiB of descriptor bytes
-in aggregate. The shared consumer additionally caps aggregate entry count and
-uncompressed size, requires each package's declared keg and `opt` link to match
-its indexed paths, and rejects archive reuse or a path that depends on a
+Boot accepts at most eight package layers and 16 MiB of descriptor bytes in
+aggregate. The shared consumer additionally caps aggregate compressed payload
+bytes, expanded bytes, and entry count. Boot-prefetch downloads use at most two
+workers. Each package's declared keg and `opt` link must match its indexed
+paths, and the consumer rejects archive reuse or a path that depends on a
 directory owned by another selected layer.
 
 ```json

@@ -123,6 +123,37 @@ describe("format-neutral deferred trees", () => {
     expect(fs.stat("/first-use/tool").size).toBe(7);
   });
 
+  it("bounds concurrent boot-prefetch buffers", async () => {
+    const fixtures = Array.from({ length: 5 }, (_, index) =>
+      tarTreeFixture("boot-prefetch", `boot-${index}`)
+    );
+    const payloads = new Map(fixtures.map((fixture) => [
+      fixture.content.transports[0],
+      fixture.payload,
+    ]));
+    const fs = createFs();
+    let active = 0;
+    let maximumActive = 0;
+    fs.setLazyFetcher(async (url) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return new Response(payloads.get(url)!);
+    });
+    for (const fixture of fixtures) {
+      fs.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/",
+        fixture.activation,
+      );
+    }
+
+    await expect(fs.prepareBootDeferredTrees()).resolves.toBe(fixtures.length);
+    expect(maximumActive).toBe(2);
+  });
+
   it("preserves and verifies a symlink-only boot-prefetch tree", async () => {
     const fixture = symlinkTreeFixture();
     const source = createFs();
