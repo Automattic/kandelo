@@ -53,6 +53,7 @@ trap cleanup EXIT
 # cleanliness, and the migration-lock commit.
 GIT_OPTIONAL_LOCKS=0 \
 bash "$REPO_ROOT/scripts/build-homebrew-main-shell-closure.sh" \
+    --lazy-shell \
     --tap-root "$HOMEBREW_TAP_ROOT" \
     --expected-tap-sha "$HOMEBREW_TAP_SHA" \
     --work-dir "$WORK_DIR" \

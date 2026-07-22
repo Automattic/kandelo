@@ -145,7 +145,7 @@ grep -Fq 'git -C "$tap_root" fetch --depth=1 origin "$tap_sha"' "$WORKFLOW" ||
   fail "candidate proof must fetch the exact reviewed tap commit"
 grep -Fq 'test "$(git -C "$tap_root" rev-parse HEAD)" = "$tap_sha"' "$WORKFLOW" ||
   fail "candidate proof must verify the exact checked-out tap commit"
-grep -Fq -- '--materialized-candidate \' "$WORKFLOW" ||
+grep -Fq -- '--lazy-shell \' "$WORKFLOW" ||
   fail "candidate proof must explicitly opt into lazy shell composition"
 grep -Fq 'scripts/build-homebrew-main-shell-closure.sh \' "$WORKFLOW" ||
   fail "candidate proof must invoke the strict shell composer"
@@ -270,8 +270,8 @@ grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
 locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
 grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
-grep -Eq '^revision[[:space:]]*=[[:space:]]*16$' "$SHELL_BUILD_TOML" ||
-  fail "candidate infrastructure must leave the canonical shell at revision 16"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*17$' "$SHELL_BUILD_TOML" ||
+  fail "lazy-shell activation must publish canonical shell revision 17"
 for shell_input in \
   homebrew/main-shell-demo.json \
   web-libs/kandelo-session/src/demo-config.ts
@@ -279,16 +279,18 @@ do
   grep -Fq "\"$shell_input\"" "$SHELL_BUILD_TOML" ||
     fail "shell build cache inputs omit $shell_input"
 done
-for candidate_only_input in \
+for materialized_shell_input in \
+  homebrew/main-shell-lazy-artifact-lock.json \
   homebrew/main-shell-materialization-policy.json \
   images/vfs/scripts/build-homebrew-materialized-vfs-image.ts \
   host/src/homebrew-bottle-mirror-plan.ts \
   host/src/homebrew-runtime-layer-consumer.ts \
   host/src/homebrew-vfs-composer.ts \
-  host/src/homebrew-vfs-materialization-policy.ts
+  host/src/homebrew-vfs-materialization-policy.ts \
+  scripts/verify-homebrew-main-shell-artifact-lock.sh
 do
-  grep -Fq "\"$candidate_only_input\"" "$SHELL_BUILD_TOML" &&
-    fail "candidate infrastructure must not activate package input $candidate_only_input"
+  grep -Fq "\"$materialized_shell_input\"" "$SHELL_BUILD_TOML" ||
+    fail "lazy shell build cache inputs omit $materialized_shell_input"
 done
 grep -Fq \
   'VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"' \
@@ -312,8 +314,8 @@ do
 done
 grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_TAP_' "$SHELL_BUILDER" &&
   fail "shell builder must not retain the workflow-only tap injection path"
-grep -Fq -- '--materialized-candidate' "$SHELL_BUILDER" &&
-  fail "candidate infrastructure must not activate lazy composition in the package wrapper"
+[ "$(grep -Fc -- '--lazy-shell' "$SHELL_BUILDER")" -eq 1 ] ||
+  fail "canonical package wrapper must activate lazy composition exactly once"
 grep -Fq 'build-shell-vfs-image.sh' "$SHELL_BUILDER" &&
   fail "shell builder must not retain the legacy registry-composition fallback"
 for isolated_flag in '--work-dir "$WORK_DIR"' '--report "$REPORT"' '--bottle-cache "$BOTTLE_CACHE"'; do
@@ -428,9 +430,10 @@ done
   echo "canonical shell wrapper did not pin SOURCE_DATE_EPOCH=0" >&2
   exit 79
 }
-work="" report="" cache="" out=""
+work="" report="" cache="" out="" lazy_shell=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --lazy-shell) lazy_shell=true; shift ;;
     --work-dir) work="$2"; shift 2 ;;
     --report) report="$2"; shift 2 ;;
     --bottle-cache) cache="$2"; shift 2 ;;
@@ -440,6 +443,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$work" ] && [ -n "$report" ] && [ -n "$cache" ] && [ -n "$out" ]
+[ "$lazy_shell" = true ]
 [ ! -e "$work" ] && [ ! -L "$work" ]
 mkdir "$work"
 mkdir "$cache"
@@ -533,13 +537,13 @@ git -C "$tap" worktree add --detach "$tap_worktree" "$tap_sha" >/dev/null
 wrong_epoch_lock="$TMP_ROOT/main-shell-wrong-epoch-lock.json"
 jq '.source_date_epoch = 1' "$LAZY_ARTIFACT_LOCK" >"$wrong_epoch_lock"
 expect_failure "lock is invalid or uses a different timestamp epoch" \
-  "$BUILDER" --materialized-candidate --tap-root "$tap_worktree" \
+  "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-wrong-lazy-epoch" --migration-lock "$lock" \
   --lazy-artifact-lock "$wrong_epoch_lock"
 extra_field_lock="$TMP_ROOT/main-shell-extra-field-lock.json"
 jq '.unexpected = true' "$LAZY_ARTIFACT_LOCK" >"$extra_field_lock"
 expect_failure "lock is invalid or uses a different timestamp epoch" \
-  "$BUILDER" --materialized-candidate --tap-root "$tap_worktree" \
+  "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
   --lazy-artifact-lock "$extra_field_lock"
 

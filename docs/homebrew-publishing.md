@@ -2104,18 +2104,19 @@ requested root equal to its layer ID; the shared 128-request parser/planner
 bound is not a promise that this boot mount composes a multi-root descriptor.
 Phase 3 builds the multi-root shell through the bottle-collection primitive.
 The bounded collection producer derives independently lazy,
-byte-identical bottle trees for a complete reviewed package closure. Choosing
-the production shell's embedded/deferred partition, publishing every deferred
-bottle mirror, and republishing the production shell remain Phase 3 work.
+byte-identical bottle trees for a complete reviewed package closure. The
+production shell policy embeds `libcxx`, `ncurses`, and Bash, and retains the
+other 35 original bottles as independently deferred trees.
 
-The candidate build keeps that work outside the live package cache graph.
+The lazy build keeps materialization code behind its own entrypoint.
 `build-homebrew-vfs-image.ts` owns the shared eager planning, metadata, and
 serialization path but has no runtime import of the materialization composer.
 Only `build-homebrew-materialized-vfs-image.ts` imports and injects that
 composer, and `build-homebrew-main-shell-closure.sh` selects this entrypoint
-only for an explicit `--materialized-candidate` run. The canonical shell
-wrapper and `build.toml` therefore remain candidate-free until the reviewed
-cutover changes them deliberately.
+only for an explicit `--lazy-shell` run. The canonical shell wrapper selects
+that mode and its `build.toml` declares the complete materialization import
+closure. Other eager-image consumers therefore do not acquire lazy-shell code
+or cache dependencies merely because they share the planner and serializer.
 
 `homebrew/main-shell-lazy-artifact-lock.json` makes the candidate's outer image
 identity reviewable rather than merely reporting whatever one runner produced.
@@ -2138,11 +2139,10 @@ must move into the common base or into an explicit shared-layer design before
 the layers have disjoint package ownership.
 
 This selection policy does not add concrete language selections to a default
-or gallery descriptor. Direct multi-bottle and mirror publication, then the
-reviewed shell cutover, remain separate follow-ups. Bash and its complete
-required closure are intended to be physically embedded in that later shell
-artifact rather than deferred or boot-prefetched; Dash remains a candidate for
-first-use delivery, and a `/bin/sh` change requires its own POSIX audit. The
+or gallery descriptor. Language-layer publication and user selection remain
+separate follow-ups. Bash and its complete required closure are physically
+embedded in the shell artifact rather than deferred or boot-prefetched; Dash
+uses first-use delivery, and a `/bin/sh` change requires its own POSIX audit. The
 publisher must additionally prove pairwise content-path disjointness; the
 consumer independently checks selected descriptors at boot because distinct
 package closures alone do not make filesystem overlays safe to mix.

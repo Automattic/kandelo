@@ -2,12 +2,16 @@ script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
   "packages/registry/shell/build-shell.sh",
   "scripts/build-homebrew-main-shell-closure.sh",
+  "scripts/verify-homebrew-main-shell-artifact-lock.sh",
   "scripts/check-homebrew-main-shell-brewfile.mjs",
   "scripts/homebrew-brewfile-selection.rb",
   "homebrew/main-shell.Brewfile",
   "homebrew/main-shell-default.json",
   "homebrew/main-shell-demo.json",
+  "homebrew/main-shell-lazy-artifact-lock.json",
   "homebrew/main-shell-migration-lock.json",
+  "homebrew/main-shell-materialization-policy.json",
+  "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts",
   "images/vfs/scripts/build-homebrew-vfs-image.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "MANIFEST",
@@ -24,17 +28,22 @@ inputs = [
   "host/package-lock.json",
   "host/src/constants.ts",
   "host/src/generated/abi.ts",
+  "host/src/homebrew-bottle-mirror-plan.ts",
   "host/src/homebrew-lazy-layer.ts",
   "host/src/homebrew-lazy-layer-descriptor.ts",
+  "host/src/homebrew-runtime-layer-consumer.ts",
   "host/src/homebrew-runtime-layer-limits.ts",
   "host/src/homebrew-runtime-layer-policy.ts",
   "host/src/homebrew-vfs-builder.ts",
+  "host/src/homebrew-vfs-composer.ts",
   "host/src/homebrew-vfs-fetch.ts",
+  "host/src/homebrew-vfs-materialization-policy.ts",
   "host/src/homebrew-vfs-planner.ts",
   "host/src/pathconf.ts",
   "host/src/statfs.ts",
   "host/src/types.ts",
   "host/src/vfs/deferred-tree-limits.ts",
+  "host/src/vfs/closed-lazy-assets.ts",
   "host/src/vfs/hardlink-graph.ts",
   "host/src/vfs/image-helpers.ts",
   "host/src/vfs/memory-fs.ts",
@@ -47,7 +56,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 16
+revision    = 17
 
 [[git_inputs]]
 name = "homebrew_tap_core"
