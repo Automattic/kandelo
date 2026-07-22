@@ -2117,6 +2117,13 @@ only for an explicit `--materialized-candidate` run. The canonical shell
 wrapper and `build.toml` therefore remain candidate-free until the reviewed
 cutover changes them deliberately.
 
+`homebrew/main-shell-lazy-artifact-lock.json` makes the candidate's outer image
+identity reviewable rather than merely reporting whatever one runner produced.
+The strict composer pins `SOURCE_DATE_EPOCH` to Unix epoch zero so ambient Nix,
+CI, or developer timestamps cannot change inode metadata, then rejects an image
+whose compressed SHA-256 or byte count differs from that lock. This keeps the
+closed candidate proof and the later canonical package wrapper byte-identical.
+
 `homebrew/runtime-layer-policy.json` is the reviewed planning contract for
 runtime derivation. It names the canonical `shell` package-output receipt as
 the lower image and defines independent `perl`, `python`, and `erlang` package

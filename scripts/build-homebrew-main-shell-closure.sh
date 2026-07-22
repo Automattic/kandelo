@@ -13,9 +13,19 @@ SHELL_CONFIG="$REPO_ROOT/homebrew/main-shell-default.json"
 DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
 MIGRATION_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 MATERIALIZATION_POLICY="$REPO_ROOT/homebrew/main-shell-materialization-policy.json"
+LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
+LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"
 MATERIALIZED_CANDIDATE=false
 MAX_BYTES="$((512 * 1024 * 1024))"
+
+# The shell image is a content-addressed product artifact. Do not let a Nix
+# shell, CI runner, or developer's ambient reproducible-build epoch select
+# different inode timestamps for otherwise identical inputs.
+export SOURCE_DATE_EPOCH=0
+export TZ=UTC
+export LC_ALL=C
+export LANG=C
 
 usage() {
   cat <<'EOF'
@@ -34,6 +44,8 @@ Options:
   --report <report.json>    composition evidence
   --bottle-cache <dir>      verified bottle cache
   --migration-lock <json>   reviewed package/catalog lock
+  --lazy-artifact-lock <json>
+                            exact lazy-image digest and timestamp contract
   --max-bytes <bytes>       VFS capacity (default: 536870912)
   --materialized-candidate  embed Bash's closure and defer the other 35 bottles
   -h, --help                show this help
@@ -68,6 +80,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --migration-lock)
       MIGRATION_LOCK="${2:-}"
+      shift 2
+      ;;
+    --lazy-artifact-lock)
+      LAZY_ARTIFACT_LOCK="${2:-}"
       shift 2
       ;;
     --max-bytes)
@@ -171,6 +187,16 @@ for tool in git jq node ruby sha256sum wc; do
   }
 done
 
+if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+  if [ ! -f "$LAZY_ARTIFACT_CHECKER" ] || [ -L "$LAZY_ARTIFACT_CHECKER" ]; then
+    echo "build-homebrew-main-shell-closure: lazy artifact checker must be a regular non-symlink file" >&2
+    exit 2
+  fi
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$LAZY_ARTIFACT_LOCK" \
+    --expected-source-date-epoch "$SOURCE_DATE_EPOCH"
+fi
+
 jq -e '
   .tap_repository == "kandelo-dev/homebrew-tap-core" and
   .tap_name == "kandelo-dev/tap-core"
@@ -266,6 +292,17 @@ fi
   --demo-config "$DEMO_CONFIG" \
   --out "$OUT" \
   --report "$REPORT"
+
+if [ ! -f "$OUT" ] || [ -L "$OUT" ] || [ ! -f "$REPORT" ] || [ -L "$REPORT" ]; then
+  echo "build-homebrew-main-shell-closure: image builder did not produce regular image and report files" >&2
+  exit 1
+fi
+if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$LAZY_ARTIFACT_LOCK" \
+    --expected-source-date-epoch "$SOURCE_DATE_EPOCH" \
+    --artifact "$OUT"
+fi
 
 jq -e \
   --slurpfile selection "$SELECTION" \
