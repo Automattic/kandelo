@@ -254,7 +254,7 @@ EXPECTED_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$MIGRATION_LOCK")"
 EXPECTED_EMBEDDED_COUNT=0
 EXPECTED_DEFERRED_COUNT=0
 EXPECTED_MIRROR_FILE_COUNT=0
-if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+if [ "$LAZY_SHELL" = true ]; then
   EXPECTED_EMBEDDED_COUNT="$(jq -er '.embedded_package_order | length' \
     "$MATERIALIZATION_POLICY")"
   if [ "$EXPECTED_EMBEDDED_COUNT" -gt "$EXPECTED_CLOSURE_COUNT" ]; then

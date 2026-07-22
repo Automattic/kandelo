@@ -57,7 +57,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 17
+revision    = 18
 
 [[git_inputs]]
 name = "homebrew_tap_core"
