@@ -29,8 +29,12 @@ export const HARD_CAPS = {
   maxDecompressedBytes: 1024 * 1024,
   /** Max mounts per descriptor. */
   maxMounts: 32,
-  /** Max length of any path string in mounts/boot.cwd. */
+  /** Max independently selected package layers. */
+  maxPackageLayers: 8,
+  /** Max UTF-8 byte length of any path string in mounts/boot.cwd. */
   maxPathLen: 1024,
+  /** Max immutable package-layer descriptor size. */
+  maxPackageLayerDescriptorBytes: 16 * 1024 * 1024,
   /** Max bytes for a single inline-overlay's `data` field. */
   maxInlineOverlayBytes: 32 * 1024,
   /** Allowed mount source kinds. */
@@ -40,6 +44,10 @@ export const HARD_CAPS = {
     "encrypted", "device",
   ]),
 } as const;
+
+const PACKAGE_LAYER_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+const PACKAGE_LAYER_REF_RE = /^sha256:[0-9a-f]{64}$/;
+const MAX_PACKAGE_LAYER_URL_CHARS = 8192;
 
 // ── Tier classification ────────────────────────────────────────────────────
 
@@ -119,6 +127,36 @@ export class BootDescriptorError extends Error {
   }
 }
 
+function canonicalAbsolutePath(value: string): boolean {
+  if (
+    value.length === 0 ||
+    !value.startsWith("/") ||
+    value.includes("\\") ||
+    value.includes("\0") ||
+    (value.length > 1 && value.endsWith("/"))
+  ) {
+    return false;
+  }
+  if (value === "/") return true;
+  return !value.slice(1).split("/").some(
+    (component) => component === "" || component === "." || component === "..",
+  );
+}
+
+function unauthenticatedHttpsUrl(value: string): boolean {
+  if (value.length === 0 || value.length > MAX_PACKAGE_LAYER_URL_CHARS) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" &&
+      parsed.hostname.length > 0 &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.hash === "";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Throws if `desc` is missing required fields or violates a hard cap. The
  * structural check is conservative — unknown fields are tolerated (so we
@@ -153,14 +191,34 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
       `mount count ${d.mounts.length} exceeds cap of ${HARD_CAPS.maxMounts}`,
     );
   }
-  for (const m of d.mounts as Array<Record<string, unknown>>) {
+  const packageLayerNames = new Set<string>();
+  const packageLayerRefs = new Set<string>();
+  const packageLayerUrls = new Set<string>();
+  const concreteMountPaths = new Set<string>();
+  let packageLayerCount = 0;
+  let packageLayerDescriptorBytes = 0;
+  let hasRootImage = false;
+  for (const [index, value] of (d.mounts as unknown[]).entries()) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new BootDescriptorError(
+        "E_MOUNT_OBJECT",
+        `mount ${index} must be an object`,
+      );
+    }
+    const m = value as Record<string, unknown>;
     if (typeof m.path !== "string") {
       throw new BootDescriptorError("E_MOUNT_PATH", "mount.path must be a string");
     }
-    if (m.path.length > HARD_CAPS.maxPathLen) {
+    if (new TextEncoder().encode(m.path).byteLength > HARD_CAPS.maxPathLen) {
       throw new BootDescriptorError(
         "E_PATH_TOO_LONG",
-        `mount.path exceeds ${HARD_CAPS.maxPathLen} chars: ${m.path.slice(0, 40)}…`,
+        `mount.path exceeds ${HARD_CAPS.maxPathLen} bytes: ${m.path.slice(0, 40)}…`,
+      );
+    }
+    if (!canonicalAbsolutePath(m.path)) {
+      throw new BootDescriptorError(
+        "E_MOUNT_PATH",
+        `mount.path must be a canonical absolute POSIX path: ${JSON.stringify(m.path)}`,
       );
     }
     if (typeof m.source !== "string" || !HARD_CAPS.allowedMountSources.has(m.source as MountSource)) {
@@ -168,6 +226,89 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
         "E_MOUNT_SOURCE",
         `unknown mount.source: ${String(m.source)}`,
       );
+    }
+    if (m.source !== "package-layer") {
+      if (concreteMountPaths.has(m.path)) {
+        throw new BootDescriptorError(
+          "E_DUPLICATE_MOUNT_PATH",
+          `multiple concrete mounts target ${m.path}`,
+        );
+      }
+      concreteMountPaths.add(m.path);
+    }
+    if (m.source === "image" && m.path === "/") hasRootImage = true;
+    if (m.source === "package-layer") {
+      packageLayerCount += 1;
+      if (packageLayerCount > HARD_CAPS.maxPackageLayers) {
+        throw new BootDescriptorError(
+          "E_TOO_MANY_PACKAGE_LAYERS",
+          `package-layer count exceeds cap of ${HARD_CAPS.maxPackageLayers}`,
+        );
+      }
+      const keys = Object.keys(m).sort();
+      const expected = ["bytes", "name", "path", "ref", "source", "url"];
+      if (JSON.stringify(keys) !== JSON.stringify(expected)) {
+        throw new BootDescriptorError(
+          "E_PACKAGE_LAYER_FIELDS",
+          `package-layer mount ${index} has unexpected or missing fields`,
+        );
+      }
+      if (m.path !== "/") {
+        throw new BootDescriptorError(
+          "E_PACKAGE_LAYER_PATH",
+          "package-layer mounts currently require path /",
+        );
+      }
+      if (typeof m.name !== "string" || !PACKAGE_LAYER_NAME_RE.test(m.name)) {
+        throw new BootDescriptorError(
+          "E_PACKAGE_LAYER_NAME",
+          `package-layer mount ${index} has an invalid name`,
+        );
+      }
+      if (typeof m.ref !== "string" || !PACKAGE_LAYER_REF_RE.test(m.ref)) {
+        throw new BootDescriptorError(
+          "E_PACKAGE_LAYER_REF",
+          `package-layer mount ${index} requires a lowercase sha256: ref`,
+        );
+      }
+      if (typeof m.url !== "string" || !unauthenticatedHttpsUrl(m.url)) {
+        throw new BootDescriptorError(
+          "E_PACKAGE_LAYER_URL",
+          `package-layer mount ${index} requires an unauthenticated HTTPS URL without a fragment`,
+        );
+      }
+      if (
+        !Number.isSafeInteger(m.bytes) ||
+        Number(m.bytes) <= 0 ||
+        Number(m.bytes) > HARD_CAPS.maxPackageLayerDescriptorBytes
+      ) {
+        throw new BootDescriptorError(
+          "E_PACKAGE_LAYER_BYTES",
+          `package-layer mount ${index} bytes must be between 1 and ` +
+            `${HARD_CAPS.maxPackageLayerDescriptorBytes}`,
+        );
+      }
+      packageLayerDescriptorBytes += Number(m.bytes);
+      if (packageLayerDescriptorBytes > HARD_CAPS.maxPackageLayerDescriptorBytes) {
+        throw new BootDescriptorError(
+          "E_PACKAGE_LAYER_TOTAL_BYTES",
+          `selected package-layer descriptors exceed the aggregate cap of ` +
+            `${HARD_CAPS.maxPackageLayerDescriptorBytes} bytes`,
+        );
+      }
+      if (
+        packageLayerNames.has(m.name) ||
+        packageLayerRefs.has(m.ref) ||
+        packageLayerUrls.has(m.url)
+      ) {
+        throw new BootDescriptorError(
+          "E_DUPLICATE_PACKAGE_LAYER",
+          `package-layer mount ${index} duplicates another layer identity`,
+        );
+      }
+      packageLayerNames.add(m.name);
+      packageLayerRefs.add(m.ref);
+      packageLayerUrls.add(m.url);
     }
     if (m.source === "inline-overlay" && typeof m.data === "string") {
       if (m.data.length > HARD_CAPS.maxInlineOverlayBytes) {
@@ -178,6 +319,12 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
       }
     }
   }
+  if (packageLayerCount > 0 && !hasRootImage) {
+    throw new BootDescriptorError(
+      "E_PACKAGE_LAYER_BASE",
+      "package-layer mounts require a root image mount",
+    );
+  }
   if (!d.boot || typeof d.boot !== "object") {
     throw new BootDescriptorError("E_MISSING_FIELD", "boot must be an object");
   }
@@ -187,6 +334,15 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
   }
   if (typeof boot.cwd !== "string") {
     throw new BootDescriptorError("E_BOOT_CWD", "boot.cwd must be a string");
+  }
+  if (
+    new TextEncoder().encode(boot.cwd).byteLength > HARD_CAPS.maxPathLen ||
+    !canonicalAbsolutePath(boot.cwd)
+  ) {
+    throw new BootDescriptorError(
+      "E_BOOT_CWD",
+      "boot.cwd must be a bounded canonical absolute POSIX path",
+    );
   }
   if (!boot.env || typeof boot.env !== "object") {
     throw new BootDescriptorError("E_BOOT_ENV", "boot.env must be an object");

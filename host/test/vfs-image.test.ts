@@ -950,10 +950,6 @@ describe("VFS image save/restore", () => {
         },
       ]);
 
-      const fd = rebased.open("/bin/lazy-tool", O_RDONLY, 0);
-      const buf = new Uint8Array(16);
-      expect(rebased.read(fd, buf, null, buf.length)).toBe(0);
-      rebased.close(fd);
     });
   });
 

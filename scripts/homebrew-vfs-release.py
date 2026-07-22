@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,11 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
+import zipfile
+import zlib
 from typing import Any
+from urllib.parse import urlsplit
 
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -21,6 +26,8 @@ MAX_VFS_BYTES = 2 * 1024 * 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 FORMULA_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+RUNTIME_LAYER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+ASSET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 TAP_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 GUEST_PATH_RE = re.compile(
@@ -35,13 +42,19 @@ REPORT_ASSET = "kandelo-homebrew-vfs-report.json"
 NODE_ASSET = "kandelo-homebrew-node-evidence.json"
 BROWSER_ASSET = "kandelo-homebrew-browser-evidence.json"
 DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json"
-EXPECTED_ASSETS = {
-    IMAGE_ASSET,
-    REPORT_ASSET,
-    NODE_ASSET,
-    BROWSER_ASSET,
-    DESCRIPTOR_ASSET,
-}
+RUNTIME_LAYER_TAG_PREFIX = "homebrew-runtime-layer-sha256-"
+MAX_LAZY_LAYER_ENTRIES = 100_000
+MAX_LAZY_LAYER_PATH_BYTES = 4096
+MAX_LAZY_LAYER_ARCHIVE_BYTES = 256 * 1024 * 1024
+MAX_LAZY_LAYER_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew"
+TAR_BLOCK_BYTES = 512
+TAR_MAX_SAFE_INTEGER = (1 << 53) - 1
+TAR_ZERO_BLOCK = bytes(TAR_BLOCK_BYTES)
+S_IFMT = 0o170000
+S_IFREG = 0o100000
+S_IFDIR = 0o040000
+S_IFLNK = 0o120000
 
 
 class ValidationError(Exception):
@@ -50,6 +63,91 @@ class ValidationError(Exception):
 
 def fail(message: str) -> None:
     raise ValidationError(message)
+
+
+def resolve_lazy_layer_hardlinks(
+    entries: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Resolve the closed hardlink graph once, with path compression."""
+    by_path = {entry["path"]: entry for entry in entries}
+    canonical_groups: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if entry["type"] != "file":
+            continue
+        inode_group = entry["inode_group"]
+        if inode_group in canonical_groups:
+            fail("Homebrew deferred tree has duplicate canonical inode groups")
+        canonical_groups[inode_group] = entry
+
+    visiting: set[str] = set()
+    resolved: dict[str, dict[str, Any]] = {}
+    for start in entries:
+        if start["type"] != "hardlink" or start["path"] in resolved:
+            continue
+        chain: list[dict[str, Any]] = []
+        cursor = start
+        canonical: dict[str, Any] | None = None
+        while cursor["type"] == "hardlink":
+            path = cursor["path"]
+            if path in resolved:
+                canonical = resolved[path]
+                break
+            if path in visiting:
+                fail(f"Homebrew deferred tree hardlink cycle reaches {path}")
+            visiting.add(path)
+            chain.append(cursor)
+            target = by_path.get(cursor["target"])
+            if target is None:
+                fail(
+                    f"Homebrew deferred tree hardlink {path} target "
+                    f"{cursor['target']} is missing"
+                )
+            if (
+                target["type"] not in ("file", "hardlink")
+                or target.get("inode_group") != cursor["inode_group"]
+                or target.get("size") != cursor["size"]
+                or target.get("mode") != cursor["mode"]
+            ):
+                fail(f"Homebrew deferred tree hardlink {path} has an invalid target")
+            cursor = target
+
+        if canonical is None and cursor["type"] == "file":
+            canonical = cursor
+        expected = canonical_groups.get(start["inode_group"])
+        if canonical is None or canonical is not expected:
+            fail(
+                f"Homebrew deferred tree hardlink {start['path']} "
+                "resolves to a different inode group"
+            )
+        for link in reversed(chain):
+            if canonical_groups.get(link["inode_group"]) is not canonical:
+                fail(
+                    f"Homebrew deferred tree hardlink {link['path']} "
+                    "resolves to a different inode group"
+                )
+            visiting.remove(link["path"])
+            resolved[link["path"]] = canonical
+    return canonical_groups
+
+
+def lazy_layer_asset_names(runtime_id: str) -> tuple[str, str]:
+    if not RUNTIME_LAYER_ID_RE.fullmatch(runtime_id):
+        fail("Homebrew lazy layer runtime id is invalid")
+    prefix = f"kandelo-homebrew-{runtime_id}-layer"
+    return f"{prefix}.bin", f"{prefix}.json"
+
+
+def expected_assets(runtime_id: str) -> set[str]:
+    archive, descriptor = lazy_layer_asset_names(runtime_id)
+    return {
+        IMAGE_ASSET,
+        REPORT_ASSET,
+        NODE_ASSET,
+        BROWSER_ASSET,
+        DESCRIPTOR_ASSET,
+        archive,
+        descriptor,
+    }
 
 
 def regular_file(path: Path, label: str, max_bytes: int) -> os.stat_result:
@@ -546,7 +644,1402 @@ def validate_evidence(
         "executable": config["executable"],
         "argv": config["argv"],
         "default_shell": default_shell,
+        "report_packages": report_values,
     }
+
+
+def https_url(value: Any, label: str) -> str:
+    result = string(value, label, maximum=8192)
+    parsed = urlsplit(result)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        fail(f"{label} must be an unauthenticated HTTPS URL without a fragment")
+    return result
+
+
+def safe_relative_path(value: Any, label: str) -> str:
+    result = string(value, label, maximum=4096)
+    if result.startswith("/") or "\\" in result:
+        fail(f"{label} must be a safe relative path")
+    if any(component in ("", ".", "..") for component in result.split("/")):
+        fail(f"{label} must be a safe relative path")
+    return result
+
+
+def validate_lazy_package_record(value: Any, label: str) -> dict[str, Any]:
+    package = record(value, label)
+    required = {
+        "name", "full_name", "tap_repository", "tap_name", "tap_commit",
+        "version", "formula_revision", "bottle_rebuild", "arch",
+        "source_status", "metadata_status", "url", "sha256", "bytes",
+        "cache_key_sha", "link_manifest", "prefix", "keg", "opt_link",
+    }
+    optional = {"built_from"}
+    if not required.issubset(package) or set(package) - required - optional:
+        fail(f"{label} has unexpected or missing fields")
+    name = string(package.get("name"), f"{label} name")
+    if not FORMULA_RE.fullmatch(name):
+        fail(f"{label} name is invalid")
+    full_name = string(package.get("full_name"), f"{label} full name")
+    tap_repository = string(
+        package.get("tap_repository"), f"{label} tap repository"
+    )
+    tap_name = string(package.get("tap_name"), f"{label} tap name")
+    if not REPOSITORY_RE.fullmatch(tap_repository):
+        fail(f"{label} tap repository is invalid")
+    if not TAP_NAME_RE.fullmatch(tap_name):
+        fail(f"{label} tap name is invalid")
+    exact(full_name, f"{tap_name}/{name}", f"{label} full name")
+    tap_commit = string(package.get("tap_commit"), f"{label} tap commit")
+    commit(tap_commit, f"{label} tap commit")
+    exact(package.get("arch"), "wasm32", f"{label} architecture")
+    if package.get("source_status") not in ("success", "fallback"):
+        fail(f"{label} source status is invalid")
+    integer(package.get("formula_revision"), f"{label} Formula revision")
+    integer(package.get("bottle_rebuild"), f"{label} bottle rebuild")
+    integer(package.get("bytes"), f"{label} byte count", minimum=1)
+    sha(package.get("sha256"), f"{label} digest")
+    sha(package.get("cache_key_sha"), f"{label} cache key")
+    https_url(package.get("url"), f"{label} URL")
+    safe_relative_path(package.get("link_manifest"), f"{label} link manifest")
+    string(package.get("version"), f"{label} version")
+    string(package.get("metadata_status"), f"{label} metadata status")
+    prefix = string(package.get("prefix"), f"{label} prefix")
+    exact(prefix, HOMEBREW_PREFIX, f"{label} prefix")
+    keg = string(package.get("keg"), f"{label} keg")
+    keg_root = f"{prefix}/Cellar/{name}/"
+    if (
+        not GUEST_PATH_RE.fullmatch(keg)
+        or not keg.startswith(keg_root)
+        or "/" in keg[len(keg_root):]
+    ):
+        fail(f"{label} keg is outside its package Cellar path")
+    opt_link = record(package.get("opt_link"), f"{label} opt link")
+    if set(opt_link) != {"path", "target"}:
+        fail(f"{label} opt link has unexpected fields")
+    exact(opt_link.get("path"), f"opt/{name}", f"{label} opt link path")
+    exact(
+        opt_link.get("target"),
+        f"../{keg[len(prefix) + 1:]}",
+        f"{label} opt link target",
+    )
+    if "built_from" in package:
+        built_from = record(package["built_from"], f"{label} built_from")
+        if set(built_from) != {
+            "tap_repository", "tap_commit", "kandelo_repository",
+            "kandelo_commit", "formula_sha256",
+        }:
+            fail(f"{label} built_from has unexpected fields")
+        if not REPOSITORY_RE.fullmatch(
+            string(built_from.get("tap_repository"), f"{label} built_from tap repository")
+        ):
+            fail(f"{label} built_from tap repository is invalid")
+        commit(
+            string(built_from.get("tap_commit"), f"{label} built_from tap commit"),
+            f"{label} built_from tap commit",
+        )
+        if not REPOSITORY_RE.fullmatch(
+            string(
+                built_from.get("kandelo_repository"),
+                f"{label} built_from Kandelo repository",
+            )
+        ):
+            fail(f"{label} built_from Kandelo repository is invalid")
+        commit(
+            string(
+                built_from.get("kandelo_commit"),
+                f"{label} built_from Kandelo commit",
+            ),
+            f"{label} built_from Kandelo commit",
+        )
+        sha(built_from.get("formula_sha256"), f"{label} built_from Formula digest")
+    return package
+
+
+def package_report_identity(package: dict[str, Any], label: str) -> dict[str, Any]:
+    keys = (
+        "name", "full_name", "tap_repository", "tap_name", "tap_commit",
+        "version", "arch", "source_status", "metadata_status", "url",
+        "sha256", "bytes", "cache_key_sha", "link_manifest", "prefix",
+        "keg", "opt_link",
+    )
+    missing = set(keys) - set(package)
+    if missing:
+        fail(f"{label} is missing lazy-layer provenance fields: {sorted(missing)}")
+    result = {key: package[key] for key in keys}
+    if "built_from" in package:
+        result["built_from"] = package["built_from"]
+    return result
+
+
+def lazy_package_identity(package: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in package.items()
+        if key not in ("formula_revision", "bottle_rebuild")
+    }
+
+
+def validate_lazy_base_package_source(
+    value: Any,
+    *,
+    expected_abi: int,
+    base_sha: str,
+    base_bytes: int,
+) -> None:
+    source = record(value, "Homebrew lazy layer base package source")
+    if set(source) != {"schema", "kind", "index", "package", "archive", "output"}:
+        fail("Homebrew lazy layer base package source has unexpected fields")
+    exact(source.get("schema"), 1, "Homebrew lazy layer base package source schema")
+    exact(
+        source.get("kind"),
+        "kandelo-package-output",
+        "Homebrew lazy layer base package source kind",
+    )
+
+    index = record(source.get("index"), "Homebrew lazy layer base package index")
+    if set(index) != {"url", "sha256", "bytes", "abi"}:
+        fail("Homebrew lazy layer base package index has unexpected fields")
+    https_url(index.get("url"), "Homebrew lazy layer base package index URL")
+    sha(index.get("sha256"), "Homebrew lazy layer base package index digest")
+    integer(index.get("bytes"), "Homebrew lazy layer base package index size", minimum=1)
+    exact(index.get("abi"), expected_abi, "Homebrew lazy layer base package index ABI")
+
+    package = record(source.get("package"), "Homebrew lazy layer base package")
+    if set(package) != {"name", "version", "revision", "arch", "cache_key_sha"}:
+        fail("Homebrew lazy layer base package has unexpected fields")
+    exact(package.get("name"), "shell", "Homebrew lazy layer base package name")
+    string(package.get("version"), "Homebrew lazy layer base package version")
+    integer(package.get("revision"), "Homebrew lazy layer base package revision", minimum=1)
+    exact(package.get("arch"), "wasm32", "Homebrew lazy layer base package architecture")
+    sha(package.get("cache_key_sha"), "Homebrew lazy layer base package cache key")
+
+    archive = record(source.get("archive"), "Homebrew lazy layer base package archive")
+    if set(archive) != {"format", "url", "sha256", "bytes"}:
+        fail("Homebrew lazy layer base package archive has unexpected fields")
+    exact(
+        archive.get("format"),
+        "kandelo-package-tar-zstd-v2",
+        "Homebrew lazy layer base package archive format",
+    )
+    https_url(archive.get("url"), "Homebrew lazy layer base package archive URL")
+    sha(archive.get("sha256"), "Homebrew lazy layer base package archive digest")
+    integer(
+        archive.get("bytes"),
+        "Homebrew lazy layer base package archive size",
+        minimum=1,
+    )
+
+    output = record(source.get("output"), "Homebrew lazy layer base package output")
+    if set(output) != {"name", "path", "sha256", "bytes"}:
+        fail("Homebrew lazy layer base package output has unexpected fields")
+    exact(output.get("name"), "shell", "Homebrew lazy layer base package output name")
+    exact(
+        output.get("path"),
+        "shell.vfs.zst",
+        "Homebrew lazy layer base package output path",
+    )
+    exact(output.get("sha256"), base_sha, "Homebrew lazy layer base package output digest")
+    exact(output.get("bytes"), base_bytes, "Homebrew lazy layer base package output size")
+
+
+def validate_lazy_layer(
+    result: dict[str, Any],
+    *,
+    archive_path: Path,
+    descriptor_path: Path,
+    tap_repository: str,
+    tap_name: str,
+    tap_commit: str,
+    kandelo_commit: str,
+    runtime_id: str,
+    draft: bool = False,
+) -> None:
+    archive_value = read_bytes(
+        archive_path,
+        "Homebrew deferred-tree payload",
+        MAX_LAZY_LAYER_ARCHIVE_BYTES,
+    )
+    descriptor_value, descriptor_raw = read_json(
+        descriptor_path, "Homebrew lazy layer descriptor"
+    )
+    descriptor = record(descriptor_value, "Homebrew lazy layer descriptor")
+    common_top_level = {
+        "schema", "kind", "arch", "mount_prefix", "tap", "tap_lock",
+        "kandelo", "bottle_release_tag", "selection", "packages",
+        "base_vfs", "acceptance_vfs", "deferred_trees",
+    }
+    expected_top_level = (
+        common_top_level
+        if draft
+        else common_top_level | {
+            "bundle", "release", "acceptance_evidence",
+        }
+    )
+    if set(descriptor) != expected_top_level:
+        fail("Homebrew lazy layer descriptor has unexpected fields")
+    exact(descriptor.get("schema"), 4, "Homebrew lazy layer schema")
+    exact(
+        descriptor.get("kind"),
+        (
+            "kandelo-homebrew-deferred-layer-draft"
+            if draft
+            else "kandelo-homebrew-deferred-layer"
+        ),
+        "Homebrew lazy layer kind",
+    )
+    exact(descriptor.get("arch"), "wasm32", "Homebrew lazy layer architecture")
+    exact(descriptor.get("mount_prefix"), "/", "Homebrew lazy layer mount prefix")
+    exact(
+        descriptor.get("bottle_release_tag"),
+        result["release_tag"],
+        "Homebrew lazy layer bottle release tag",
+    )
+
+    tap = record(descriptor.get("tap"), "Homebrew lazy layer tap")
+    if set(tap) != {"repository", "name", "commit"}:
+        fail("Homebrew lazy layer tap has unexpected fields")
+    exact(tap.get("repository"), tap_repository, "Homebrew lazy layer tap repository")
+    exact(tap.get("name"), tap_name, "Homebrew lazy layer tap name")
+    exact(tap.get("commit"), tap_commit, "Homebrew lazy layer tap commit")
+
+    kandelo = record(descriptor.get("kandelo"), "Homebrew lazy layer Kandelo source")
+    if set(kandelo) != {"repository", "commit", "abi"}:
+        fail("Homebrew lazy layer Kandelo source has unexpected fields")
+    exact(
+        kandelo.get("repository"),
+        "Automattic/kandelo",
+        "Homebrew lazy layer Kandelo repository",
+    )
+    exact(kandelo.get("commit"), kandelo_commit, "Homebrew lazy layer Kandelo commit")
+    exact(kandelo.get("abi"), result["abi"], "Homebrew lazy layer Kandelo ABI")
+
+    tap_lock = array(descriptor.get("tap_lock"), "Homebrew lazy layer tap lock")
+    if not tap_lock:
+        fail("Homebrew lazy layer tap lock must not be empty")
+    taps_by_name: dict[str, dict[str, Any]] = {}
+    repositories: set[str] = set()
+    locked_names: list[str] = []
+    for index, value in enumerate(tap_lock):
+        locked = record(value, f"Homebrew lazy layer tap lock {index}")
+        if set(locked) != {
+            "repository", "name", "commit", "kandelo_repository",
+            "kandelo_commit", "kandelo_abi", "bottle_release_tag",
+        }:
+            fail(f"Homebrew lazy layer tap lock {index} has unexpected fields")
+        repository = string(
+            locked.get("repository"), f"Homebrew lazy layer tap lock {index} repository"
+        )
+        name = string(locked.get("name"), f"Homebrew lazy layer tap lock {index} name")
+        if not REPOSITORY_RE.fullmatch(repository) or not TAP_NAME_RE.fullmatch(name):
+            fail(f"Homebrew lazy layer tap lock {index} has an invalid identity")
+        locked_commit = string(
+            locked.get("commit"), f"Homebrew lazy layer tap lock {index} commit"
+        )
+        commit(locked_commit, f"Homebrew lazy layer tap lock {index} commit")
+        kandelo_repository = string(
+            locked.get("kandelo_repository"),
+            f"Homebrew lazy layer tap lock {index} Kandelo repository",
+        )
+        if not REPOSITORY_RE.fullmatch(kandelo_repository):
+            fail(f"Homebrew lazy layer tap lock {index} Kandelo repository is invalid")
+        commit(
+            string(
+                locked.get("kandelo_commit"),
+                f"Homebrew lazy layer tap lock {index} Kandelo commit",
+            ),
+            f"Homebrew lazy layer tap lock {index} Kandelo commit",
+        )
+        exact(
+            locked.get("kandelo_abi"),
+            result["abi"],
+            f"Homebrew lazy layer tap lock {index} Kandelo ABI",
+        )
+        string(
+            locked.get("bottle_release_tag"),
+            f"Homebrew lazy layer tap lock {index} bottle release tag",
+        )
+        repository_key = repository.lower()
+        if name in taps_by_name or repository_key in repositories:
+            fail("Homebrew lazy layer tap lock has a duplicate identity")
+        taps_by_name[name] = locked
+        repositories.add(repository_key)
+        locked_names.append(name)
+    if locked_names != sorted(locked_names):
+        fail("Homebrew lazy layer tap lock is not in canonical name order")
+    root_lock = taps_by_name.get(tap_name)
+    if root_lock is None:
+        fail("Homebrew lazy layer tap lock omits the root tap")
+    exact(
+        root_lock.get("repository"),
+        tap_repository,
+        "Homebrew lazy layer root tap lock repository",
+    )
+    exact(root_lock.get("commit"), tap_commit, "Homebrew lazy layer root tap lock commit")
+    exact(
+        root_lock.get("kandelo_repository"),
+        "Automattic/kandelo",
+        "Homebrew lazy layer root tap lock Kandelo repository",
+    )
+    exact(
+        root_lock.get("kandelo_commit"),
+        kandelo_commit,
+        "Homebrew lazy layer root tap lock Kandelo commit",
+    )
+    exact(
+        root_lock.get("bottle_release_tag"),
+        result["release_tag"],
+        "Homebrew lazy layer root tap lock release tag",
+    )
+
+    report_packages = [
+        record(value, f"VFS report package {index}")
+        for index, value in enumerate(result["report_packages"])
+    ]
+    report_identities = [
+        package_report_identity(package, f"VFS report package {index}")
+        for index, package in enumerate(report_packages)
+    ]
+    report_order = [
+        string(package.get("full_name"), f"VFS report package {index} full name")
+        for index, package in enumerate(report_packages)
+    ]
+
+    selection = record(descriptor.get("selection"), "Homebrew lazy layer selection")
+    if set(selection) != {
+        "requested_packages", "package_order", "base_package_order",
+        "layer_package_order",
+    }:
+        fail("Homebrew lazy layer selection has unexpected fields")
+    exact(
+        selection.get("requested_packages"),
+        [runtime_id],
+        "Homebrew lazy layer requested packages",
+    )
+    package_order = array(
+        selection.get("package_order"),
+        "Homebrew lazy layer dependency-first package order",
+    )
+    root_full_name = f"{tap_name.lower()}/{runtime_id}"
+    closure = {root_full_name}
+    changed = True
+    while changed:
+        changed = False
+        for raw_edge in result["dependency_edges"]:
+            edge = record(raw_edge, "Homebrew lazy layer dependency edge")
+            source = edge.get("from")
+            target = edge.get("to")
+            if source in closure and target not in closure:
+                closure.add(target)
+                changed = True
+    expected_package_order = [name for name in report_order if name in closure]
+    if root_full_name not in report_order or package_order != expected_package_order:
+        fail("Homebrew lazy layer package order is not the exact runtime closure")
+    base_order = array(
+        selection.get("base_package_order"),
+        "Homebrew lazy layer base package order",
+    )
+    layer_order = array(
+        selection.get("layer_package_order"),
+        "Homebrew lazy layer layer package order",
+    )
+    if not layer_order:
+        fail("Homebrew lazy layer must add at least one package")
+    if len(set(base_order + layer_order)) != len(base_order) + len(layer_order):
+        fail("Homebrew lazy layer package ownership is not disjoint")
+    ownership = set(base_order)
+    ownership.update(layer_order)
+    if ownership != set(package_order):
+        fail("Homebrew lazy layer package ownership does not cover the selected closure")
+    if [name for name in package_order if name in set(base_order)] != base_order:
+        fail("Homebrew lazy layer base package order is not dependency-first")
+    if [name for name in package_order if name in set(layer_order)] != layer_order:
+        fail("Homebrew lazy layer layer package order is not dependency-first")
+
+    packages_value = record(descriptor.get("packages"), "Homebrew lazy layer packages")
+    if set(packages_value) != {"base", "layer"}:
+        fail("Homebrew lazy layer packages have unexpected fields")
+    base_packages = [
+        validate_lazy_package_record(value, f"Homebrew lazy layer base package {index}")
+        for index, value in enumerate(
+            array(packages_value.get("base"), "Homebrew lazy layer base packages")
+        )
+    ]
+    layer_packages = [
+        validate_lazy_package_record(value, f"Homebrew lazy layer package {index}")
+        for index, value in enumerate(
+            array(packages_value.get("layer"), "Homebrew lazy layer layer packages")
+        )
+    ]
+    exact(
+        [package["full_name"] for package in base_packages],
+        base_order,
+        "Homebrew lazy layer base package records",
+    )
+    exact(
+        [package["full_name"] for package in layer_packages],
+        layer_order,
+        "Homebrew lazy layer package records",
+    )
+    descriptor_by_name = {
+        package["full_name"]: package for package in base_packages + layer_packages
+    }
+    if len(descriptor_by_name) != len(package_order):
+        fail("Homebrew lazy layer package records contain duplicate identities")
+    report_by_name = dict(zip(report_order, report_identities, strict=True))
+    for index, full_name in enumerate(package_order):
+        report_identity = report_by_name.get(full_name)
+        if report_identity is None:
+            fail(f"Homebrew lazy layer package {full_name} is absent from acceptance")
+        package = descriptor_by_name.get(full_name)
+        if package is None:
+            fail(f"Homebrew lazy layer package record is missing {full_name}")
+        exact(
+            lazy_package_identity(package),
+            report_identity,
+            f"Homebrew lazy layer package provenance {index}",
+        )
+        locked = taps_by_name.get(package["tap_name"])
+        if locked is None:
+            fail(f"Homebrew lazy layer package {full_name} has no locked tap")
+        exact(
+            locked.get("repository"),
+            package["tap_repository"],
+            f"Homebrew lazy layer package {full_name} tap repository",
+        )
+        built_from = package.get("built_from")
+        if built_from is None:
+            exact(
+                locked.get("commit"),
+                package["tap_commit"],
+                f"Homebrew lazy layer package {full_name} tap snapshot commit",
+            )
+        else:
+            exact(
+                built_from["tap_repository"],
+                package["tap_repository"],
+                f"Homebrew lazy layer package {full_name} bottle tap repository",
+            )
+            exact(
+                built_from["tap_commit"],
+                package["tap_commit"],
+                f"Homebrew lazy layer package {full_name} bottle build commit",
+            )
+
+    base_vfs = record(descriptor.get("base_vfs"), "Homebrew lazy layer base VFS")
+    if set(base_vfs) != {
+        "sha256", "bytes", "kernel_abi", "package_source", "composition",
+    }:
+        fail("Homebrew lazy layer base VFS has unexpected fields")
+    base_sha = sha(base_vfs.get("sha256"), "Homebrew lazy layer base VFS digest")
+    base_bytes = integer(
+        base_vfs.get("bytes"), "Homebrew lazy layer base VFS size", minimum=1
+    )
+    exact(
+        base_vfs.get("kernel_abi"),
+        result["abi"],
+        "Homebrew lazy layer base VFS ABI",
+    )
+    validate_lazy_base_package_source(
+        base_vfs.get("package_source"),
+        expected_abi=result["abi"],
+        base_sha=base_sha,
+        base_bytes=base_bytes,
+    )
+    composition = record(
+        base_vfs.get("composition"), "Homebrew lazy layer base composition"
+    )
+    if set(composition) != {
+        "path", "sha256", "bytes", "requested_packages_sha256",
+        "package_set_sha256", "package_count", "package_order",
+    }:
+        fail("Homebrew lazy layer base composition has unexpected fields")
+    exact(
+        composition.get("path"),
+        "/etc/kandelo/homebrew-vfs.json",
+        "Homebrew lazy layer base composition path",
+    )
+    sha(composition.get("sha256"), "Homebrew lazy layer base composition digest")
+    integer(
+        composition.get("bytes"),
+        "Homebrew lazy layer base composition size",
+        minimum=1,
+    )
+    sha(
+        composition.get("requested_packages_sha256"),
+        "Homebrew lazy layer base requested package digest",
+    )
+    sha(
+        composition.get("package_set_sha256"),
+        "Homebrew lazy layer base package set digest",
+    )
+    composition_order = array(
+        composition.get("package_order"),
+        "Homebrew lazy layer base composition package order",
+    )
+    if (
+        not composition_order
+        or any(not isinstance(value, str) or not value for value in composition_order)
+        or len(set(composition_order)) != len(composition_order)
+    ):
+        fail("Homebrew lazy layer base composition package order is invalid")
+    exact(
+        composition.get("package_count"),
+        len(composition_order),
+        "Homebrew lazy layer base composition package count",
+    )
+    if any(name not in composition_order for name in base_order):
+        fail("Homebrew lazy layer reuses a package absent from the base composition")
+
+    acceptance_tag = f"homebrew-vfs-sha256-{result['image_sha']}"
+    acceptance_root = (
+        f"https://github.com/{tap_repository}/releases/download/{acceptance_tag}"
+    )
+    expected_acceptance_identity = {
+        "asset": IMAGE_ASSET,
+        "sha256": result["image_sha"],
+        "bytes": result["image_bytes"],
+    }
+    release_root: str | None = None
+    bundle_tree_assets: list[dict[str, Any]] | None = None
+    if draft:
+        acceptance_vfs = validate_asset_identity(
+            descriptor.get("acceptance_vfs"),
+            "Homebrew lazy layer acceptance VFS",
+            expected_asset=IMAGE_ASSET,
+            maximum_bytes=MAX_VFS_BYTES,
+        )
+        exact(
+            acceptance_vfs,
+            expected_acceptance_identity,
+            "Homebrew lazy layer acceptance VFS identity",
+        )
+    else:
+        bundle = record(descriptor.get("bundle"), "Homebrew lazy layer bundle")
+        if set(bundle) != {
+            "schema", "kind", "algorithm", "descriptor_encoding", "sha256", "assets"
+        }:
+            fail("Homebrew lazy layer bundle has unexpected fields")
+        exact(bundle.get("schema"), 1, "Homebrew lazy layer bundle schema")
+        exact(
+            bundle.get("kind"),
+            "kandelo-homebrew-runtime-layer-bundle",
+            "Homebrew lazy layer bundle kind",
+        )
+        exact(
+            bundle.get("algorithm"),
+            "sha256-canonical-json-v1",
+            "Homebrew lazy layer bundle algorithm",
+        )
+        exact(
+            bundle.get("descriptor_encoding"),
+            "canonical-json-v1",
+            "Homebrew lazy layer descriptor encoding",
+        )
+        bundle_sha = sha(bundle.get("sha256"), "Homebrew lazy layer bundle digest")
+        assets = record(bundle.get("assets"), "Homebrew lazy layer bundle assets")
+        if set(assets) != {
+            "acceptance_vfs", "acceptance_descriptor", "acceptance_report",
+            "acceptance_node_evidence", "acceptance_browser_evidence",
+            "deferred_trees",
+        }:
+            fail("Homebrew lazy layer bundle assets have unexpected fields")
+        bundle_acceptance = validate_asset_identity(
+            assets.get("acceptance_vfs"),
+            "Homebrew lazy layer bundled acceptance VFS",
+            expected_asset=IMAGE_ASSET,
+            maximum_bytes=MAX_VFS_BYTES,
+        )
+        bundle_evidence = {
+            "descriptor": validate_asset_identity(
+                assets.get("acceptance_descriptor"),
+                "Homebrew lazy layer bundled acceptance descriptor",
+                expected_asset=DESCRIPTOR_ASSET,
+            ),
+            "report": validate_asset_identity(
+                assets.get("acceptance_report"),
+                "Homebrew lazy layer bundled acceptance report",
+                expected_asset=REPORT_ASSET,
+            ),
+            "node": validate_asset_identity(
+                assets.get("acceptance_node_evidence"),
+                "Homebrew lazy layer bundled Node evidence",
+                expected_asset=NODE_ASSET,
+            ),
+            "browser": validate_asset_identity(
+                assets.get("acceptance_browser_evidence"),
+                "Homebrew lazy layer bundled browser evidence",
+                expected_asset=BROWSER_ASSET,
+            ),
+        }
+        bundle_tree_assets = []
+        for index, value in enumerate(
+            array(assets.get("deferred_trees"), "Homebrew lazy layer bundled trees")
+        ):
+            tree_asset = record(value, f"Homebrew lazy layer bundled tree {index}")
+            if set(tree_asset) != {"id", "asset", "sha256", "bytes"}:
+                fail(f"Homebrew lazy layer bundled tree {index} has unexpected fields")
+            tree_id = string(tree_asset.get("id"), f"Homebrew lazy layer bundled tree {index} id")
+            if RUNTIME_LAYER_ID_RE.fullmatch(tree_id) is None:
+                fail(f"Homebrew lazy layer bundled tree {index} id is invalid")
+            identity = validate_asset_identity(
+                {key: tree_asset[key] for key in ("asset", "sha256", "bytes")},
+                f"Homebrew lazy layer bundled tree {index}",
+                maximum_bytes=MAX_LAZY_LAYER_ARCHIVE_BYTES,
+            )
+            bundle_tree_assets.append({"id": tree_id, **identity})
+        if (
+            not bundle_tree_assets
+            or [item["id"] for item in bundle_tree_assets]
+                != sorted(item["id"] for item in bundle_tree_assets)
+            or len({item["id"] for item in bundle_tree_assets})
+                != len(bundle_tree_assets)
+        ):
+            fail("Homebrew lazy layer bundled trees are not canonical")
+
+        release_tag = RUNTIME_LAYER_TAG_PREFIX + bundle_sha
+        release_root = (
+            f"https://github.com/{tap_repository}/releases/download/{release_tag}"
+        )
+        release = record(descriptor.get("release"), "Homebrew lazy layer release")
+        if set(release) != {"repository", "tag"}:
+            fail("Homebrew lazy layer release has unexpected fields")
+        exact(
+            release.get("repository"),
+            tap_repository,
+            "Homebrew lazy layer release repository",
+        )
+        exact(release.get("tag"), release_tag, "Homebrew lazy layer release tag")
+
+        acceptance_vfs = validate_release_asset(
+            descriptor.get("acceptance_vfs"),
+            "Homebrew lazy layer acceptance VFS",
+            expected_asset=IMAGE_ASSET,
+            release_root=acceptance_root,
+            maximum_bytes=MAX_VFS_BYTES,
+        )
+        exact(
+            identity_without_url(acceptance_vfs),
+            expected_acceptance_identity,
+            "Homebrew lazy layer acceptance VFS identity",
+        )
+        exact(
+            identity_without_url(acceptance_vfs),
+            bundle_acceptance,
+            "Homebrew lazy layer bundled acceptance VFS identity",
+        )
+        evidence = record(
+            descriptor.get("acceptance_evidence"),
+            "Homebrew lazy layer acceptance evidence",
+        )
+        if set(evidence) != {"descriptor", "report", "node", "browser"}:
+            fail("Homebrew lazy layer acceptance evidence has unexpected fields")
+        evidence_assets = {
+            "descriptor": DESCRIPTOR_ASSET,
+            "report": REPORT_ASSET,
+            "node": NODE_ASSET,
+            "browser": BROWSER_ASSET,
+        }
+        actual_evidence = {
+            "descriptor": asset_identity(
+                DESCRIPTOR_ASSET,
+                read_bytes(
+                    descriptor_path.parent / DESCRIPTOR_ASSET,
+                    "Homebrew acceptance VFS descriptor",
+                    MAX_JSON_BYTES,
+                ),
+            ),
+            "report": asset_identity(REPORT_ASSET, result["report_bytes"]),
+            "node": asset_identity(NODE_ASSET, result["node_bytes"]),
+            "browser": asset_identity(BROWSER_ASSET, result["browser_bytes"]),
+        }
+        for name, asset_name in evidence_assets.items():
+            item = validate_release_asset(
+                evidence.get(name),
+                f"Homebrew lazy layer acceptance {name}",
+                expected_asset=asset_name,
+                release_root=acceptance_root,
+            )
+            exact(
+                identity_without_url(item),
+                bundle_evidence[name],
+                f"Homebrew lazy layer bundled acceptance {name}",
+            )
+            exact(
+                identity_without_url(item),
+                actual_evidence[name],
+                f"Homebrew lazy layer exact acceptance {name}",
+            )
+
+    trees = array(descriptor.get("deferred_trees"), "Homebrew deferred trees")
+    if len(trees) != 1:
+        fail("The scaffold publisher requires exactly one Homebrew deferred tree")
+    tree = record(trees[0], "Homebrew deferred tree")
+    if set(tree) != {"id", "activation", "content", "transports", "inventory"}:
+        fail("Homebrew deferred tree has unexpected fields")
+    exact(tree.get("id"), runtime_id, "Homebrew deferred tree id")
+
+    activation = record(tree.get("activation"), "Homebrew deferred tree activation")
+    if set(activation) != {"mode", "capabilities", "roots"}:
+        fail("Homebrew deferred tree activation has unexpected fields")
+    if activation.get("mode") not in ("boot-prefetch", "first-use"):
+        fail("Homebrew deferred tree activation mode is invalid")
+    capabilities = array(
+        activation.get("capabilities"), "Homebrew deferred tree capabilities"
+    )
+    roots = array(activation.get("roots"), "Homebrew deferred tree roots")
+    if (
+        not capabilities
+        or capabilities != sorted(capabilities)
+        or len(set(capabilities)) != len(capabilities)
+        or any(not isinstance(value, str) or not value for value in capabilities)
+    ):
+        fail("Homebrew deferred tree capabilities are invalid")
+    if (
+        not roots
+        or roots != sorted(roots)
+        or len(set(roots)) != len(roots)
+        or any(
+            not isinstance(value, str)
+            or not value.startswith("/")
+            or any(part in ("", ".", "..") for part in value[1:].split("/"))
+            for value in roots
+        )
+    ):
+        fail("Homebrew deferred tree roots are invalid")
+
+    content = record(tree.get("content"), "Homebrew deferred tree content")
+    if set(content) != {"media_type", "decoder", "sha256", "bytes"}:
+        fail("Homebrew deferred tree content has unexpected fields")
+    decoder = content.get("decoder")
+    media_type = content.get("media_type")
+    if not (
+        (decoder == "zip-v1" and media_type == "application/zip")
+        or (
+            decoder == "homebrew-bottle-tar-gzip-v1"
+            and media_type == "application/vnd.oci.image.layer.v1.tar+gzip"
+        )
+    ):
+        fail("Homebrew deferred tree decoder/media type is unsupported")
+    exact(
+        content.get("sha256"),
+        digest_bytes(archive_value),
+        "Homebrew deferred tree digest",
+    )
+    exact(content.get("bytes"), len(archive_value), "Homebrew deferred tree size")
+
+    transports = array(tree.get("transports"), "Homebrew deferred tree transports")
+    if not transports or len(transports) > 8:
+        fail("Homebrew deferred tree must have one to eight transports")
+    lazy_layer_asset, _ = lazy_layer_asset_names(runtime_id)
+    transport_urls: list[str] = []
+    release_transport_count = 0
+    for index, value in enumerate(transports):
+        transport = record(value, f"Homebrew deferred tree transport {index}")
+        kind = string(
+            transport.get("kind"),
+            f"Homebrew deferred tree transport {index} kind",
+            maximum=64,
+        )
+        if kind == "bundle-release":
+            expected_keys = {"kind", "asset"} if draft else {"kind", "asset", "url"}
+            if set(transport) != expected_keys:
+                fail(f"Homebrew deferred tree transport {index} has unexpected fields")
+            asset_name = string(
+                transport.get("asset"),
+                f"Homebrew deferred tree transport {index} asset",
+                maximum=255,
+            )
+            if ASSET_RE.fullmatch(asset_name) is None:
+                fail(f"Homebrew deferred tree transport {index} asset is unsafe")
+            exact(asset_name, lazy_layer_asset, "Homebrew deferred tree release asset")
+            release_transport_count += 1
+            if draft:
+                continue
+            assert release_root is not None
+            transport_url = https_url(
+                transport.get("url"),
+                f"Homebrew deferred tree transport {index} URL",
+            )
+            exact(
+                transport_url,
+                f"{release_root}/{lazy_layer_asset}",
+                "Homebrew deferred tree release transport",
+            )
+        elif kind == "external-https":
+            if set(transport) != {"kind", "url"}:
+                fail(f"Homebrew deferred tree transport {index} has unexpected fields")
+            transport_url = https_url(
+                transport.get("url"),
+                f"Homebrew deferred tree transport {index} URL",
+            )
+        else:
+            fail(f"Homebrew deferred tree transport {index} kind is unsupported")
+        transport_urls.append(transport_url)
+    if release_transport_count != 1:
+        fail("Homebrew deferred tree must have exactly one bundle release transport")
+    if len(set(transport_urls)) != len(transport_urls):
+        fail("Homebrew deferred tree transports contain duplicates")
+    if not draft:
+        assert bundle_tree_assets is not None
+        exact(
+            bundle_tree_assets,
+            [{
+                "id": runtime_id,
+                "asset": lazy_layer_asset,
+                "sha256": content.get("sha256"),
+                "bytes": content.get("bytes"),
+            }],
+            "Homebrew deferred tree bundled asset identity",
+        )
+
+    inventory = record(tree.get("inventory"), "Homebrew deferred tree inventory")
+    if set(inventory) != {
+        "entry_count", "source_entry_count", "regular_inode_count",
+        "layer_entry_count", "shared_base_directory_count", "expanded_bytes",
+        "payload_bytes", "entries",
+    }:
+        fail("Homebrew deferred tree inventory has unexpected fields")
+    entries = array(inventory.get("entries"), "Homebrew deferred tree entries")
+    if not entries or len(entries) > MAX_LAZY_LAYER_ENTRIES:
+        fail(
+            f"Homebrew lazy layer entries must contain 1 to "
+            f"{MAX_LAZY_LAYER_ENTRIES} records"
+        )
+    validated_entries: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    expanded_payload_bytes = 0
+    payload_bytes = 0
+    layer_entry_count = 0
+    shared_base_directory_count = 0
+    has_layer_payload = False
+    for index, value in enumerate(entries):
+        entry = record(value, f"Homebrew lazy layer entry {index}")
+        entry_type = entry.get("type")
+        expected_keys = {"path", "source_path", "type", "ownership", "mode", "size"}
+        if entry_type == "symlink":
+            expected_keys.add("target")
+        elif entry_type == "file":
+            expected_keys.add("inode_group")
+        elif entry_type == "hardlink":
+            expected_keys.update(("target", "inode_group"))
+        elif entry_type != "directory":
+            fail(f"Homebrew lazy layer entry {index} has an invalid type")
+        if set(entry) != expected_keys:
+            fail(f"Homebrew lazy layer entry {index} has unexpected fields")
+        ownership_value = entry.get("ownership")
+        if ownership_value not in ("layer", "shared-base-directory"):
+            fail(f"Homebrew lazy layer entry {index} has invalid ownership")
+        if ownership_value == "shared-base-directory" and entry_type != "directory":
+            fail(f"Homebrew lazy layer entry {index} shares a non-directory with its base")
+        path = string(
+            entry.get("path"),
+            f"Homebrew lazy layer entry {index} path",
+            maximum=MAX_LAZY_LAYER_PATH_BYTES,
+        )
+        source_path = string(
+            entry.get("source_path"),
+            f"Homebrew lazy layer entry {index} source path",
+            maximum=MAX_LAZY_LAYER_PATH_BYTES,
+        )
+        components = path.split("/")
+        if path.startswith("/") or "\\" in path or any(
+            component in ("", ".", "..") for component in components
+        ):
+            fail(f"Homebrew lazy layer entry {index} has an unsafe path")
+        if not (
+            path == "home/linuxbrew/.linuxbrew"
+            or path.startswith("home/linuxbrew/.linuxbrew/")
+        ):
+            fail(f"Homebrew lazy layer entry {index} escapes the Homebrew prefix")
+        if path in seen_paths:
+            fail(f"Homebrew lazy layer entry {index} duplicates path {path}")
+        seen_paths.add(path)
+        if source_path.startswith("/") or "\\" in source_path or any(
+            component in ("", ".", "..") for component in source_path.split("/")
+        ):
+            fail(f"Homebrew lazy layer entry {index} has an unsafe source path")
+        mode = integer(entry.get("mode"), f"Homebrew lazy layer entry {index} mode")
+        if mode > 0o7777:
+            fail(f"Homebrew lazy layer entry {index} mode exceeds POSIX permission bits")
+        size = integer(entry.get("size"), f"Homebrew lazy layer entry {index} size")
+        if size > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
+            fail(f"Homebrew lazy layer entry {index} exceeds the size limit")
+        if entry_type != "hardlink":
+            expanded_payload_bytes += size
+        if entry_type == "file":
+            payload_bytes += size
+        if max(expanded_payload_bytes, payload_bytes) > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
+            fail("Homebrew lazy layer exceeds the uncompressed size limit")
+        if entry_type == "directory" and size != 0:
+            fail(f"Homebrew lazy layer directory {path} has nonzero size")
+        if ownership_value == "layer":
+            layer_entry_count += 1
+            has_layer_payload = has_layer_payload or entry_type != "directory"
+        else:
+            shared_base_directory_count += 1
+        if entry_type in ("file", "hardlink"):
+            string(
+                entry.get("inode_group"),
+                f"Homebrew lazy layer entry {index} inode group",
+                maximum=MAX_LAZY_LAYER_PATH_BYTES,
+            )
+        if entry_type == "symlink":
+            target = string(
+                entry.get("target"),
+                f"Homebrew lazy layer entry {index} target",
+                maximum=65_536,
+            )
+            if len(target.encode("utf-8")) != size:
+                fail(f"Homebrew lazy layer symlink {path} size differs from its target")
+            validated_entries.append({**entry, "target": target})
+        elif entry_type == "hardlink":
+            target = string(
+                entry.get("target"),
+                f"Homebrew lazy layer entry {index} hardlink target",
+                maximum=MAX_LAZY_LAYER_PATH_BYTES,
+            )
+            validated_entries.append({**entry, "target": target})
+        else:
+            validated_entries.append(entry)
+    if not has_layer_payload:
+        fail("Homebrew lazy layer has no layer-owned file or symlink")
+    paths = [entry["path"] for entry in validated_entries]
+    if paths != sorted(paths):
+        fail("Homebrew lazy layer entries are not in canonical path order")
+    exact(
+        inventory.get("entry_count"),
+        len(validated_entries),
+        "Homebrew lazy layer archive entry count",
+    )
+    exact(
+        inventory.get("layer_entry_count"),
+        layer_entry_count,
+        "Homebrew lazy layer archive-owned entry count",
+    )
+    exact(
+        inventory.get("shared_base_directory_count"),
+        shared_base_directory_count,
+        "Homebrew lazy layer shared base directory count",
+    )
+    exact(
+        inventory.get("payload_bytes"),
+        payload_bytes,
+        "Homebrew deferred tree payload size",
+    )
+    source_count = len({entry["source_path"] for entry in validated_entries})
+    exact(
+        inventory.get("source_entry_count"),
+        source_count,
+        "Homebrew deferred tree source entry count",
+    )
+    canonical_groups = resolve_lazy_layer_hardlinks(validated_entries)
+    exact(
+        inventory.get("regular_inode_count"),
+        len(canonical_groups),
+        "Homebrew deferred tree regular inode count",
+    )
+    expanded_bytes = integer(
+        inventory.get("expanded_bytes"),
+        "Homebrew deferred tree expansion size",
+    )
+    if expanded_bytes > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
+        fail("Homebrew deferred tree expansion exceeds the size limit")
+    if decoder == "zip-v1":
+        exact(
+            expanded_bytes,
+            expanded_payload_bytes,
+            "Homebrew deferred ZIP expansion size",
+        )
+        validate_lazy_layer_zip(archive_value, validated_entries)
+    else:
+        validate_lazy_layer_tar_gzip(
+            archive_value,
+            validated_entries,
+            expanded_bytes,
+        )
+    if not draft:
+        exact(
+            descriptor["bundle"]["sha256"],
+            runtime_layer_bundle_sha256(descriptor),
+            "Homebrew lazy layer canonical bundle digest",
+        )
+        exact(
+            descriptor_raw,
+            runtime_layer_descriptor_bytes(descriptor),
+            "Homebrew lazy layer canonical descriptor bytes",
+        )
+
+
+def validate_lazy_layer_zip(
+    archive_value: bytes, entries: list[dict[str, Any]]
+) -> None:
+    indexed: list[dict[str, Any]] = []
+    seen_sources: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        source_path = entry["source_path"]
+        prior = seen_sources.get(source_path)
+        if prior is not None:
+            if (
+                entry["type"] != "hardlink"
+                or prior.get("inode_group") != entry.get("inode_group")
+            ):
+                fail(f"Homebrew deferred ZIP duplicates source member {source_path}")
+            continue
+        if entry["type"] == "hardlink":
+            fail("Homebrew deferred ZIP cannot encode a distinct hardlink member")
+        seen_sources[source_path] = entry
+        indexed.append(entry)
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_value), "r") as archive:
+            if archive.comment:
+                fail("Homebrew lazy layer ZIP has a non-empty archive comment")
+            infos = archive.infolist()
+            expected_names = [
+                f"{entry['source_path']}/"
+                if entry["type"] == "directory"
+                else entry["source_path"]
+                for entry in indexed
+            ]
+            actual_names = [info.filename for info in infos]
+            if actual_names != expected_names or len(set(actual_names)) != len(actual_names):
+                fail("Homebrew lazy layer ZIP entries differ from the canonical index")
+            for index, (info, entry) in enumerate(zip(infos, indexed, strict=True)):
+                if info.create_system != 3:
+                    fail(f"Homebrew lazy layer ZIP entry {index} is not Unix-authored")
+                if info.date_time != (1980, 1, 1, 0, 0, 0):
+                    fail(f"Homebrew lazy layer ZIP entry {index} has a non-canonical timestamp")
+                if info.comment or info.extra or (info.flag_bits & 1):
+                    fail(f"Homebrew lazy layer ZIP entry {index} has unsupported metadata")
+                if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    fail(f"Homebrew lazy layer ZIP entry {index} has unsupported compression")
+                expected_type = {
+                    "directory": S_IFDIR,
+                    "file": S_IFREG,
+                    "symlink": S_IFLNK,
+                }[entry["type"]]
+                mode = (info.external_attr >> 16) & 0xffff
+                if (mode & S_IFMT) != expected_type or (mode & 0o7777) != entry["mode"]:
+                    fail(f"Homebrew lazy layer ZIP entry {index} mode differs from its index")
+                exact(
+                    info.file_size,
+                    entry["size"],
+                    f"Homebrew lazy layer ZIP entry {index} size",
+                )
+                if entry["type"] == "symlink":
+                    value = archive.read(info)
+                    try:
+                        target = value.decode("utf-8")
+                    except UnicodeDecodeError:
+                        fail(f"Homebrew lazy layer ZIP symlink {index} is not UTF-8")
+                    exact(
+                        target,
+                        entry["target"],
+                        f"Homebrew lazy layer ZIP symlink {index} target",
+                    )
+                else:
+                    extracted = 0
+                    with archive.open(info, "r") as source:
+                        while chunk := source.read(1024 * 1024):
+                            extracted += len(chunk)
+                    if extracted != entry["size"]:
+                        fail(f"Homebrew lazy layer ZIP entry {index} extracted short")
+    except zipfile.BadZipFile as error:
+        fail(f"Homebrew lazy layer ZIP is invalid: {error}")
+
+
+def decompress_single_lazy_layer_gzip(
+    archive_value: bytes,
+    expanded_bytes: int,
+) -> bytes:
+    if (
+        len(archive_value) < 18
+        or len(archive_value) > MAX_LAZY_LAYER_ARCHIVE_BYTES
+        or archive_value[:3] != b"\x1f\x8b\x08"
+    ):
+        fail("Homebrew deferred TAR+gzip payload has an invalid gzip envelope")
+    if expanded_bytes <= 0 or expanded_bytes > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
+        fail("Homebrew deferred TAR+gzip expansion size is outside its bound")
+
+    declared = int.from_bytes(archive_value[-4:], "little")
+    exact(declared, expanded_bytes, "Homebrew deferred TAR+gzip expansion size")
+    decoder = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    try:
+        tar_value = decoder.decompress(archive_value, expanded_bytes + 1)
+    except zlib.error as error:
+        fail(f"Homebrew deferred TAR+gzip payload is invalid: {error}")
+    if len(tar_value) > expanded_bytes or decoder.unconsumed_tail:
+        fail(
+            "Homebrew deferred TAR+gzip expansion exceeds its declared "
+            f"{expanded_bytes} bytes"
+        )
+    if not decoder.eof:
+        fail("Homebrew deferred TAR+gzip payload is truncated")
+    if decoder.unused_data:
+        fail("Homebrew deferred TAR+gzip payload has additional gzip member or data")
+    exact(len(tar_value), expanded_bytes, "Homebrew deferred TAR byte count")
+    return tar_value
+
+
+def read_closed_tar_string(
+    header: bytes,
+    offset: int,
+    length: int,
+    label: str,
+) -> str:
+    field = header[offset : offset + length]
+    terminator = field.find(b"\0")
+    if terminator >= 0:
+        field = field[:terminator]
+    try:
+        return field.decode("utf-8")
+    except UnicodeDecodeError as error:
+        fail(f"{label} is not UTF-8: {error}")
+
+
+def read_closed_tar_number(
+    header: bytes,
+    offset: int,
+    length: int,
+    label: str,
+) -> int:
+    field = header[offset : offset + length]
+    if field and field[0] & 0x80:
+        fail(f"{label} uses unsupported base-256 encoding")
+    raw = read_closed_tar_string(header, offset, length, label).strip()
+    if not raw:
+        return 0
+    if re.fullmatch(r"[0-7]+", raw) is None:
+        fail(f"{label} is not a valid octal number")
+    value = int(raw, 8)
+    if value > TAR_MAX_SAFE_INTEGER:
+        fail(f"{label} exceeds the runtime integer range")
+    return value
+
+
+def validate_closed_tar_checksum(header: bytes) -> None:
+    recorded = read_closed_tar_number(
+        header,
+        148,
+        8,
+        "Homebrew deferred TAR checksum",
+    )
+    actual = sum(header[:148]) + 8 * 0x20 + sum(header[156:])
+    if recorded != actual:
+        fail("Homebrew deferred TAR checksum mismatch")
+
+
+def parse_closed_pax_size(payload: bytes) -> int | None:
+    result: int | None = None
+    offset = 0
+    while offset < len(payload):
+        separator = payload.find(b" ", offset)
+        if separator <= offset:
+            fail("Homebrew deferred TAR has an invalid PAX record length")
+        length_bytes = payload[offset:separator]
+        if any(byte < ord("0") or byte > ord("9") for byte in length_bytes):
+            fail("Homebrew deferred TAR has an invalid PAX record length")
+        record_length = int(length_bytes)
+        record_end = offset + record_length
+        if (
+            record_length <= separator - offset + 2
+            or record_end > len(payload)
+            or payload[record_end - 1] != ord("\n")
+        ):
+            fail("Homebrew deferred TAR has a truncated PAX record")
+        equals = payload.find(b"=", separator + 1, record_end - 1)
+        if equals <= separator + 1:
+            fail("Homebrew deferred TAR has an invalid PAX record")
+        key_bytes = payload[separator + 1 : equals]
+        if len(key_bytes) > 256:
+            fail("Homebrew deferred TAR PAX record key is too long")
+        try:
+            key = key_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            fail(f"Homebrew deferred TAR PAX record key is not UTF-8: {error}")
+        if key == "size":
+            value_bytes = payload[equals + 1 : record_end - 1]
+            if len(value_bytes) > 32:
+                fail("Homebrew deferred TAR PAX size is too long")
+            try:
+                value = value_bytes.decode("utf-8")
+            except UnicodeDecodeError as error:
+                fail(f"Homebrew deferred TAR PAX size is not UTF-8: {error}")
+            if re.fullmatch(r"0|[1-9][0-9]*", value) is None:
+                fail("Homebrew deferred TAR PAX size is invalid")
+            result = int(value)
+            if result > TAR_MAX_SAFE_INTEGER:
+                fail("Homebrew deferred TAR PAX size exceeds the runtime integer range")
+        offset = record_end
+    return result
+
+
+def advance_closed_tar_payload(tar_value: bytes, offset: int, size: int) -> int:
+    padded_bytes = ((size + TAR_BLOCK_BYTES - 1) // TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES
+    if padded_bytes > len(tar_value) - offset:
+        fail("Homebrew deferred TAR entry or padding is truncated")
+    return offset + padded_bytes
+
+
+def validate_closed_tar_structure(tar_value: bytes) -> None:
+    if len(tar_value) % TAR_BLOCK_BYTES:
+        fail("Homebrew deferred TAR byte count is not block-aligned")
+
+    offset = 0
+    entry_count = 0
+    extension_count = 0
+    local_pax_size: int | None = None
+    local_pax_pending = False
+    global_pax_size: int | None = None
+    terminated = False
+    while offset + TAR_BLOCK_BYTES <= len(tar_value):
+        header = tar_value[offset : offset + TAR_BLOCK_BYTES]
+        offset += TAR_BLOCK_BYTES
+        if header == TAR_ZERO_BLOCK:
+            if tar_value[offset : offset + TAR_BLOCK_BYTES] != TAR_ZERO_BLOCK:
+                fail("Homebrew deferred TAR has only one zero end block")
+            offset += TAR_BLOCK_BYTES
+            if any(tar_value[offset:]):
+                fail("Homebrew deferred TAR has nonzero data after its end marker")
+            terminated = True
+            break
+
+        validate_closed_tar_checksum(header)
+        header_size = read_closed_tar_number(
+            header,
+            124,
+            12,
+            "Homebrew deferred TAR entry size",
+        )
+        read_closed_tar_number(
+            header,
+            100,
+            8,
+            "Homebrew deferred TAR entry mode",
+        )
+        read_closed_tar_string(header, 0, 100, "Homebrew deferred TAR entry path")
+        read_closed_tar_string(header, 345, 155, "Homebrew deferred TAR path prefix")
+        read_closed_tar_string(header, 157, 100, "Homebrew deferred TAR link target")
+        typeflag = read_closed_tar_string(
+            header,
+            156,
+            1,
+            "Homebrew deferred TAR entry type",
+        ) or "0"
+
+        if typeflag in ("x", "g"):
+            extension_count += 1
+            if extension_count > MAX_LAZY_LAYER_ENTRIES + 1:
+                fail("Homebrew deferred TAR has too many extension headers")
+            payload_end = offset + header_size
+            if payload_end > len(tar_value):
+                fail("Homebrew deferred TAR extension header is truncated")
+            pax_size = parse_closed_pax_size(tar_value[offset:payload_end])
+            offset = advance_closed_tar_payload(tar_value, offset, header_size)
+            if typeflag == "x":
+                local_pax_size = pax_size
+                local_pax_pending = True
+            elif pax_size is not None:
+                global_pax_size = pax_size
+            continue
+
+        if typeflag not in ("0", "1", "2", "5"):
+            fail(f"Homebrew deferred TAR has unsupported entry type {typeflag!r}")
+        entry_count += 1
+        if entry_count > MAX_LAZY_LAYER_ENTRIES:
+            fail("Homebrew deferred TAR has too many entries")
+        size = (
+            local_pax_size
+            if local_pax_size is not None
+            else global_pax_size
+            if global_pax_size is not None
+            else header_size
+        )
+        local_pax_size = None
+        local_pax_pending = False
+        if typeflag in ("1", "2", "5") and size != 0:
+            fail("Homebrew deferred TAR link or directory has a nonzero payload")
+        offset = advance_closed_tar_payload(tar_value, offset, size)
+
+    if not terminated:
+        fail("Homebrew deferred TAR is missing its two-block end marker")
+    if local_pax_pending:
+        fail("Homebrew deferred TAR local PAX header has no following entry")
+
+
+def validate_lazy_layer_tar_gzip(
+    archive_value: bytes,
+    entries: list[dict[str, Any]],
+    expanded_bytes: int,
+) -> None:
+    tar_value = decompress_single_lazy_layer_gzip(archive_value, expanded_bytes)
+    validate_closed_tar_structure(tar_value)
+
+    expected_by_source = {entry["source_path"]: entry for entry in entries}
+    expected_by_path = {entry["path"]: entry for entry in entries}
+    if len(expected_by_source) != len(entries):
+        fail("Homebrew deferred TAR inventory duplicates a source member")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(tar_value), mode="r:") as archive:
+            members = archive.getmembers()
+            actual_names = [member.name.removeprefix("./").rstrip("/") for member in members]
+            if actual_names != list(expected_by_source) or len(set(actual_names)) != len(actual_names):
+                fail("Homebrew deferred TAR members differ from the canonical inventory")
+            for index, (member, source_path) in enumerate(
+                zip(members, actual_names, strict=True)
+            ):
+                entry = expected_by_source[source_path]
+                actual_type = (
+                    "directory" if member.isdir()
+                    else "file" if member.isfile()
+                    else "symlink" if member.issym()
+                    else "hardlink" if member.islnk()
+                    else "unsupported"
+                )
+                exact(
+                    actual_type,
+                    entry["type"],
+                    f"Homebrew deferred TAR entry {index} type",
+                )
+                exact(
+                    member.mode & 0o7777,
+                    entry["mode"],
+                    f"Homebrew deferred TAR entry {index} mode",
+                )
+                if actual_type == "file":
+                    exact(
+                        member.size,
+                        entry["size"],
+                        f"Homebrew deferred TAR entry {index} size",
+                    )
+                    extracted = archive.extractfile(member)
+                    if extracted is None or len(extracted.read()) != entry["size"]:
+                        fail(f"Homebrew deferred TAR entry {index} extracted short")
+                elif actual_type == "symlink":
+                    exact(
+                        member.linkname,
+                        entry["target"],
+                        f"Homebrew deferred TAR symlink {index} target",
+                    )
+                elif actual_type == "hardlink":
+                    target = expected_by_path.get(entry["target"])
+                    if target is None:
+                        fail(
+                            f"Homebrew deferred TAR hardlink {index} "
+                            "target is absent from the inventory"
+                        )
+                    exact(
+                        member.linkname.removeprefix("./").rstrip("/"),
+                        target["source_path"],
+                        f"Homebrew deferred TAR hardlink {index} target",
+                    )
+    except tarfile.TarError as error:
+        fail(f"Homebrew deferred TAR is invalid: {error}")
 
 
 def asset_record(repository: str, tag: str, name: str, value: bytes) -> dict[str, Any]:
@@ -556,6 +2049,269 @@ def asset_record(repository: str, tag: str, name: str, value: bytes) -> dict[str
         "sha256": digest_bytes(value),
         "bytes": len(value),
     }
+
+
+def asset_identity(name: str, value: bytes) -> dict[str, Any]:
+    if ASSET_RE.fullmatch(name) is None:
+        fail(f"unsafe runtime-layer asset name {name!r}")
+    return {"asset": name, "sha256": digest_bytes(value), "bytes": len(value)}
+
+
+def validate_asset_identity(
+    value: Any,
+    label: str,
+    *,
+    expected_asset: str | None = None,
+    maximum_bytes: int = MAX_JSON_BYTES,
+) -> dict[str, Any]:
+    identity = record(value, label)
+    if set(identity) != {"asset", "sha256", "bytes"}:
+        fail(f"{label} has unexpected fields")
+    name = string(identity.get("asset"), f"{label} asset", maximum=255)
+    if ASSET_RE.fullmatch(name) is None:
+        fail(f"{label} asset is unsafe")
+    if expected_asset is not None:
+        exact(name, expected_asset, f"{label} asset")
+    size = integer(identity.get("bytes"), f"{label} size", minimum=1)
+    if size > maximum_bytes:
+        fail(f"{label} exceeds {maximum_bytes} bytes")
+    return {
+        "asset": name,
+        "sha256": sha(identity.get("sha256"), f"{label} digest"),
+        "bytes": size,
+    }
+
+
+def validate_release_asset(
+    value: Any,
+    label: str,
+    *,
+    expected_asset: str,
+    release_root: str,
+    maximum_bytes: int = MAX_JSON_BYTES,
+) -> dict[str, Any]:
+    item = record(value, label)
+    if set(item) != {"asset", "url", "sha256", "bytes"}:
+        fail(f"{label} has unexpected fields")
+    identity = validate_asset_identity(
+        {key: item[key] for key in ("asset", "sha256", "bytes")},
+        label,
+        expected_asset=expected_asset,
+        maximum_bytes=maximum_bytes,
+    )
+    url = https_url(item.get("url"), f"{label} URL")
+    exact(url, f"{release_root}/{expected_asset}", f"{label} URL")
+    return {**identity, "url": url}
+
+
+def identity_without_url(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "asset": value["asset"],
+        "sha256": value["sha256"],
+        "bytes": value["bytes"],
+    }
+
+
+def runtime_layer_bundle_identity_document(
+    descriptor: dict[str, Any],
+) -> dict[str, Any]:
+    """Project a closed descriptor to its non-circular immutable identity."""
+    evidence = record(
+        descriptor.get("acceptance_evidence"),
+        "Homebrew runtime layer acceptance evidence",
+    )
+    return {
+        "schema": 1,
+        "kind": "kandelo-homebrew-runtime-layer-bundle-identity",
+        "bundle": {
+            "schema": descriptor["bundle"]["schema"],
+            "kind": descriptor["bundle"]["kind"],
+            "algorithm": descriptor["bundle"]["algorithm"],
+            "descriptor_encoding": descriptor["bundle"]["descriptor_encoding"],
+            "assets": descriptor["bundle"]["assets"],
+        },
+        "layer": {
+            "schema": descriptor["schema"],
+            "kind": descriptor["kind"],
+            "arch": descriptor["arch"],
+            "mount_prefix": descriptor["mount_prefix"],
+            "tap": descriptor["tap"],
+            "tap_lock": descriptor["tap_lock"],
+            "kandelo": descriptor["kandelo"],
+            "bottle_release_tag": descriptor["bottle_release_tag"],
+            "selection": descriptor["selection"],
+            "packages": descriptor["packages"],
+            "base_vfs": descriptor["base_vfs"],
+            "acceptance_vfs": identity_without_url(descriptor["acceptance_vfs"]),
+            "acceptance_evidence": {
+                "descriptor": identity_without_url(evidence["descriptor"]),
+                "report": identity_without_url(evidence["report"]),
+                "node": identity_without_url(evidence["node"]),
+                "browser": identity_without_url(evidence["browser"]),
+            },
+            "deferred_trees": [
+                {
+                    "id": tree["id"],
+                    "activation": tree["activation"],
+                    "content": tree["content"],
+                    "transports": [
+                        runtime_layer_transport_identity(transport)
+                        for transport in tree["transports"]
+                    ],
+                    "inventory": tree["inventory"],
+                }
+                for tree in descriptor["deferred_trees"]
+            ],
+        },
+    }
+
+
+def runtime_layer_transport_identity(transport: dict[str, Any]) -> dict[str, Any]:
+    if transport["kind"] == "bundle-release":
+        return {"kind": "bundle-release", "asset": transport["asset"]}
+    return transport
+
+
+def runtime_layer_bundle_sha256(descriptor: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        runtime_layer_bundle_identity_document(descriptor),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return digest_bytes(canonical)
+
+
+def runtime_layer_descriptor_bytes(descriptor: dict[str, Any]) -> bytes:
+    """Return the normative canonical-json-v1 public descriptor encoding."""
+    return (
+        json.dumps(
+            descriptor,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def close_lazy_layer_descriptor(
+    draft: dict[str, Any],
+    *,
+    tap_repository: str,
+    runtime_id: str,
+    image_value: bytes,
+    payload_value: bytes,
+    vfs_descriptor_value: bytes,
+    report_value: bytes,
+    node_value: bytes,
+    browser_value: bytes,
+) -> dict[str, Any]:
+    if (
+        draft.get("schema") != 4
+        or draft.get("kind") != "kandelo-homebrew-deferred-layer-draft"
+    ):
+        fail("Homebrew lazy layer closer received a non-draft descriptor")
+    closed = json.loads(json.dumps(draft))
+    closed["kind"] = "kandelo-homebrew-deferred-layer"
+    lazy_asset, _ = lazy_layer_asset_names(runtime_id)
+    tree_assets = []
+    for tree in closed["deferred_trees"]:
+        transports = tree["transports"]
+        release_transports = [
+            transport for transport in transports
+            if transport.get("kind") == "bundle-release"
+        ]
+        if len(release_transports) != 1:
+            fail("Homebrew lazy layer draft must have exactly one bundle release asset")
+        tree_assets.append({
+            "id": tree["id"],
+            "asset": release_transports[0]["asset"],
+            "sha256": tree["content"]["sha256"],
+            "bytes": tree["content"]["bytes"],
+        })
+    exact(tree_assets, [{
+        "id": runtime_id,
+        "asset": lazy_asset,
+        "sha256": digest_bytes(payload_value),
+        "bytes": len(payload_value),
+    }], "Homebrew runtime-layer payload identity")
+
+    acceptance_vfs = asset_identity(IMAGE_ASSET, image_value)
+    exact(
+        closed.get("acceptance_vfs"),
+        acceptance_vfs,
+        "Homebrew lazy layer draft acceptance VFS",
+    )
+    identities = {
+        "acceptance_vfs": acceptance_vfs,
+        "acceptance_descriptor": asset_identity(
+            DESCRIPTOR_ASSET, vfs_descriptor_value
+        ),
+        "acceptance_report": asset_identity(REPORT_ASSET, report_value),
+        "acceptance_node_evidence": asset_identity(NODE_ASSET, node_value),
+        "acceptance_browser_evidence": asset_identity(
+            BROWSER_ASSET, browser_value
+        ),
+        "deferred_trees": tree_assets,
+    }
+    closed["bundle"] = {
+        "schema": 1,
+        "kind": "kandelo-homebrew-runtime-layer-bundle",
+        "algorithm": "sha256-canonical-json-v1",
+        "descriptor_encoding": "canonical-json-v1",
+        "sha256": "0" * 64,
+        "assets": identities,
+    }
+    acceptance_tag = f"homebrew-vfs-sha256-{acceptance_vfs['sha256']}"
+    acceptance_root = (
+        f"https://github.com/{tap_repository}/releases/download/{acceptance_tag}"
+    )
+
+    def release_asset(identity: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **identity,
+            "url": f"{acceptance_root}/{identity['asset']}",
+        }
+
+    closed["acceptance_vfs"] = release_asset(acceptance_vfs)
+    closed["acceptance_evidence"] = {
+        "descriptor": release_asset(identities["acceptance_descriptor"]),
+        "report": release_asset(identities["acceptance_report"]),
+        "node": release_asset(identities["acceptance_node_evidence"]),
+        "browser": release_asset(identities["acceptance_browser_evidence"]),
+    }
+    placeholder_tag = RUNTIME_LAYER_TAG_PREFIX + "0" * 64
+    closed["release"] = {
+        "repository": tap_repository,
+        "tag": placeholder_tag,
+    }
+    placeholder_root = (
+        f"https://github.com/{tap_repository}/releases/download/{placeholder_tag}"
+    )
+    for tree in closed["deferred_trees"]:
+        tree["transports"] = [
+            {
+                **transport,
+                "url": f"{placeholder_root}/{transport['asset']}",
+            }
+            if transport["kind"] == "bundle-release"
+            else transport
+            for transport in tree["transports"]
+        ]
+
+    bundle_sha = runtime_layer_bundle_sha256(closed)
+    release_tag = RUNTIME_LAYER_TAG_PREFIX + bundle_sha
+    release_root = (
+        f"https://github.com/{tap_repository}/releases/download/{release_tag}"
+    )
+    closed["bundle"]["sha256"] = bundle_sha
+    closed["release"]["tag"] = release_tag
+    for tree in closed["deferred_trees"]:
+        for transport in tree["transports"]:
+            if transport["kind"] == "bundle-release":
+                transport["url"] = f"{release_root}/{transport['asset']}"
+    return closed
 
 
 def build_descriptor(
@@ -615,17 +2371,21 @@ def descriptor_bytes(value: dict[str, Any]) -> bytes:
     return (json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def validate_bundle_dir(path: Path) -> None:
+def validate_bundle_dir(path: Path, runtime_id: str) -> None:
     if not path.is_dir() or path.is_symlink():
         fail("VFS release handoff must be a real directory")
     names = {entry.name for entry in path.iterdir()}
-    if names != EXPECTED_ASSETS:
-        fail(f"VFS release handoff has unexpected entries: {sorted(names ^ EXPECTED_ASSETS)}")
-    for name in EXPECTED_ASSETS:
+    expected = expected_assets(runtime_id)
+    lazy_layer_asset, _ = lazy_layer_asset_names(runtime_id)
+    if names != expected:
+        fail(f"VFS release handoff has unexpected entries: {sorted(names ^ expected)}")
+    for name in expected:
         regular_file(
             path / name,
             f"VFS release handoff {name}",
-            MAX_VFS_BYTES if name == IMAGE_ASSET else MAX_JSON_BYTES,
+            MAX_VFS_BYTES
+            if name in (IMAGE_ASSET, lazy_layer_asset)
+            else MAX_JSON_BYTES,
         )
 
 
@@ -651,20 +2411,36 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     if output.exists() or output.is_symlink():
         fail("VFS release handoff output must not already exist")
     output.mkdir(mode=0o700, parents=False)
+    lazy_layer_asset, lazy_layer_descriptor_asset = lazy_layer_asset_names(args.formula)
     sources = {
         IMAGE_ASSET: Path(args.image),
         REPORT_ASSET: Path(args.report),
         NODE_ASSET: Path(args.node_evidence),
         BROWSER_ASSET: Path(args.browser_evidence),
+        lazy_layer_asset: Path(args.lazy_layer),
+        lazy_layer_descriptor_asset: Path(args.lazy_layer_descriptor),
     }
     for name, source in sources.items():
         read_bytes(
             source,
             f"release source {name}",
-            MAX_VFS_BYTES if name == IMAGE_ASSET else MAX_JSON_BYTES,
+            MAX_VFS_BYTES
+            if name in (IMAGE_ASSET, lazy_layer_asset)
+            else MAX_JSON_BYTES,
         )
         shutil.copyfile(source, output / name, follow_symlinks=False)
     result = validate_evidence(**common_kwargs(args, output))
+    validate_lazy_layer(
+        result,
+        archive_path=output / lazy_layer_asset,
+        descriptor_path=output / lazy_layer_descriptor_asset,
+        tap_repository=args.tap_repository,
+        tap_name=args.tap_name,
+        tap_commit=args.tap_commit,
+        kandelo_commit=args.kandelo_commit,
+        runtime_id=args.formula,
+        draft=True,
+    )
     image_value = read_bytes(output / IMAGE_ASSET, "VFS release image", MAX_VFS_BYTES)
     descriptor = build_descriptor(
         result,
@@ -675,15 +2451,49 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         kandelo_commit=args.kandelo_commit,
         image_value=image_value,
     )
-    (output / DESCRIPTOR_ASSET).write_bytes(descriptor_bytes(descriptor))
+    vfs_descriptor_value = descriptor_bytes(descriptor)
+    (output / DESCRIPTOR_ASSET).write_bytes(vfs_descriptor_value)
+    draft_value, _ = read_json(
+        output / lazy_layer_descriptor_asset,
+        "Homebrew lazy layer draft descriptor",
+    )
+    closed_layer = close_lazy_layer_descriptor(
+        record(draft_value, "Homebrew lazy layer draft descriptor"),
+        tap_repository=args.tap_repository,
+        runtime_id=args.formula,
+        image_value=image_value,
+        payload_value=read_bytes(
+            output / lazy_layer_asset,
+            "Homebrew deferred-tree payload",
+            MAX_LAZY_LAYER_ARCHIVE_BYTES,
+        ),
+        vfs_descriptor_value=vfs_descriptor_value,
+        report_value=result["report_bytes"],
+        node_value=result["node_bytes"],
+        browser_value=result["browser_bytes"],
+    )
+    (output / lazy_layer_descriptor_asset).write_bytes(
+        runtime_layer_descriptor_bytes(closed_layer)
+    )
     validate(args)
     return descriptor
 
 
 def validate(args: argparse.Namespace) -> dict[str, Any]:
     handoff = Path(args.handoff if hasattr(args, "handoff") else args.out)
-    validate_bundle_dir(handoff)
+    lazy_layer_asset, lazy_layer_descriptor_asset = lazy_layer_asset_names(args.formula)
+    validate_bundle_dir(handoff, args.formula)
     result = validate_evidence(**common_kwargs(args, handoff))
+    validate_lazy_layer(
+        result,
+        archive_path=handoff / lazy_layer_asset,
+        descriptor_path=handoff / lazy_layer_descriptor_asset,
+        tap_repository=args.tap_repository,
+        tap_name=args.tap_name,
+        tap_commit=args.tap_commit,
+        kandelo_commit=args.kandelo_commit,
+        runtime_id=args.formula,
+    )
     image_value = read_bytes(handoff / IMAGE_ASSET, "VFS release image", MAX_VFS_BYTES)
     expected = build_descriptor(
         result,
@@ -738,6 +2548,8 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--report", required=True)
             sub.add_argument("--node-evidence", required=True)
             sub.add_argument("--browser-evidence", required=True)
+            sub.add_argument("--lazy-layer", required=True)
+            sub.add_argument("--lazy-layer-descriptor", required=True)
             sub.add_argument("--out", required=True)
         else:
             sub.add_argument("--handoff", required=True)

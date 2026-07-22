@@ -30,6 +30,12 @@ import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
 } from "../src/vfs-capacity";
+import {
+  decodeBootDescriptor,
+  encodeBootDescriptor,
+  HARD_CAPS,
+  validateBootDescriptor,
+} from "../src/boot-descriptor";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
@@ -39,7 +45,7 @@ import {
  *
  * Things explicitly NOT covered here (see
  * docs/plans/2026-05-14-kandelo-ui-followups.md): boot-descriptor
- * encode/decode round-trip + caps validation, snapshot mode-picker
+ * encode/decode round-trip, snapshot mode-picker
  * boundaries, React hook tests, browser-side PTY/framebuffer/focus.
  */
 
@@ -71,6 +77,153 @@ const INLINE_OVERLAY_DESCRIPTOR: BootDescriptor = {
     { path: "/home/user", source: "inline-overlay", data: "abc123" },
   ],
 };
+
+function packageLayerMount(name = "python") {
+  const digestDigit = name === "python" ? "1" : "2";
+  return {
+    path: "/" as const,
+    source: "package-layer" as const,
+    name,
+    url: `https://example.invalid/${name}.json`,
+    ref: `sha256:${digestDigit.repeat(64)}`,
+    bytes: 1024,
+  };
+}
+
+describe("BootDescriptor: package-layer validation", () => {
+  it("accepts a bounded immutable package-layer above the root image", () => {
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [...DUMMY_DESCRIPTOR.mounts, packageLayerMount()],
+    })).not.toThrow();
+  });
+
+  it("preserves the complete immutable package-layer identity in a URL round trip", async () => {
+    const descriptor: BootDescriptor = {
+      ...DUMMY_DESCRIPTOR,
+      mounts: [...DUMMY_DESCRIPTOR.mounts, packageLayerMount()],
+    };
+    const encoded = await encodeBootDescriptor(descriptor);
+    await expect(decodeBootDescriptor(encoded.fragment)).resolves.toEqual(descriptor);
+  });
+
+  it.each([
+    "relative",
+    "/home/../etc",
+    "/home//user",
+    "/home/user/",
+    "/home\\user",
+    "/home/\0user",
+  ])("rejects malformed mount path %j", (path) => {
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [{ path, source: "scratch" }],
+    })).toThrow(/canonical absolute POSIX path/);
+  });
+
+  it("enforces both total mount and package-layer caps", () => {
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: Array.from(
+        { length: HARD_CAPS.maxMounts + 1 },
+        (_, index) => ({ path: `/m${index}`, source: "scratch" }),
+      ),
+    })).toThrow(/mount count .* exceeds cap/);
+
+    const layers = Array.from(
+      { length: HARD_CAPS.maxPackageLayers + 1 },
+      (_, index) => ({
+        ...packageLayerMount(`layer-${index}`),
+        url: `https://example.invalid/layer-${index}.json`,
+        ref: `sha256:${index.toString(16).padStart(64, "0")}`,
+      }),
+    );
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [DUMMY_DESCRIPTOR.mounts[0], ...layers],
+    })).toThrow(/package-layer count exceeds cap/);
+
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [
+        DUMMY_DESCRIPTOR.mounts[0],
+        {
+          ...packageLayerMount("python"),
+          bytes: Math.floor(HARD_CAPS.maxPackageLayerDescriptorBytes / 2) + 1,
+        },
+        {
+          ...packageLayerMount("perl"),
+          url: "https://example.invalid/perl.json",
+          ref: `sha256:${"2".repeat(64)}`,
+          bytes: Math.floor(HARD_CAPS.maxPackageLayerDescriptorBytes / 2) + 1,
+        },
+      ],
+    })).toThrow(/aggregate cap/);
+  });
+
+  it("requires a bounded hashed HTTPS descriptor and root-only layer path", () => {
+    for (const [patch, error] of [
+      [{ path: "/opt" }, /require path \//],
+      [{ url: "http://example.invalid/python.json" }, /HTTPS URL/],
+      [{ ref: `sha256:${"A".repeat(64)}` }, /lowercase sha256/],
+      [{ bytes: HARD_CAPS.maxPackageLayerDescriptorBytes + 1 }, /bytes must be between/],
+    ] as const) {
+      expect(() => validateBootDescriptor({
+        ...DUMMY_DESCRIPTOR,
+        mounts: [
+          DUMMY_DESCRIPTOR.mounts[0],
+          { ...packageLayerMount(), ...patch },
+        ],
+      })).toThrow(error);
+    }
+  });
+
+  it.each(["name", "ref", "url"] as const)(
+    "rejects duplicate package-layer %s identities",
+    (field) => {
+      const second = {
+        ...packageLayerMount("perl"),
+        url: "https://example.invalid/perl.json",
+        ref: `sha256:${"2".repeat(64)}`,
+        [field]: packageLayerMount()[field],
+      };
+      expect(() => validateBootDescriptor({
+        ...DUMMY_DESCRIPTOR,
+        mounts: [DUMMY_DESCRIPTOR.mounts[0], packageLayerMount(), second],
+      })).toThrow(/duplicates another layer identity/);
+    },
+  );
+
+  it("rejects conflicting concrete mounts while allowing layers above the root image", () => {
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [
+        { path: "/", source: "image" },
+        { path: "/", source: "scratch" },
+      ],
+    })).toThrow(/multiple concrete mounts target/);
+
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [DUMMY_DESCRIPTOR.mounts[0], packageLayerMount()],
+    })).not.toThrow();
+  });
+
+  it("requires the exact closed package-layer mount surface and a root image", () => {
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [
+        DUMMY_DESCRIPTOR.mounts[0],
+        { ...packageLayerMount(), readonly: true },
+      ],
+    })).toThrow(/unexpected or missing fields/);
+
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [packageLayerMount()],
+    })).toThrow(/require a root image mount/);
+  });
+});
 
 function makeFs(files: Record<string, string>): FileSystemLike {
   const encoder = new TextEncoder();

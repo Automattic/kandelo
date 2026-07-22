@@ -73,6 +73,49 @@ export type {
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
 export {
+  HOMEBREW_RUNTIME_LAYER_POLICY_KIND,
+  parseHomebrewRuntimeLayerPolicy,
+  projectHomebrewRuntimeLayerPlan,
+  selectHomebrewRuntimeLayer,
+  selectHomebrewRuntimeLayers,
+} from "./homebrew-runtime-layer-policy";
+export {
+  HOMEBREW_RUNTIME_LAYER_LIMITS,
+  composeHomebrewRuntimeLayers,
+  parseHomebrewRuntimeLayerDescriptor,
+} from "./homebrew-runtime-layer-consumer";
+export type {
+  ComposedHomebrewRuntimeLayers,
+  ComposeHomebrewRuntimeLayersOptions,
+  HomebrewRuntimeLayerReference,
+  RegisteredHomebrewRuntimeLayer,
+} from "./homebrew-runtime-layer-consumer";
+export type {
+  HomebrewDeferredTreeDecoder,
+  HomebrewDeferredTreeDescriptor,
+  HomebrewDeferredTreeDraftDescriptor,
+  HomebrewDeferredTreeDraftTransport,
+  HomebrewDeferredTreeTransport,
+  HomebrewLazyLayerBasePackageSource,
+  HomebrewLazyLayerDescriptor,
+  HomebrewLazyLayerDraftDescriptor,
+  HomebrewLazyLayerEntry,
+  HomebrewLazyLayerPackageRecord,
+  HomebrewRuntimeLayerAssetIdentity,
+} from "./homebrew-lazy-layer-descriptor";
+export {
+  canonicalHomebrewRuntimeLayerBundleIdentityBytes,
+  canonicalHomebrewRuntimeLayerDescriptorBytes,
+  homebrewRuntimeLayerBundleIdentityDocument,
+} from "./homebrew-lazy-layer-descriptor";
+export type {
+  HomebrewRuntimeLayerBaseClosure,
+  HomebrewRuntimeLayerBasePackageSourceIdentity,
+  HomebrewRuntimeLayerPolicy,
+  HomebrewRuntimeLayerPolicyEntry,
+  HomebrewRuntimeLayerSelection,
+} from "./homebrew-runtime-layer-policy";
+export {
   HomebrewVfsBuildError,
   buildHomebrewVfs,
 } from "./homebrew-vfs-builder";

@@ -249,6 +249,8 @@ export interface DescriptorMount {
   source: MountSource;
   ref?: string;                     // content hash for image / package-layer / cas
   name?: string;                    // workspace name for opfs
+  url?: string;                     // immutable package-layer descriptor URL
+  bytes?: number;                   // exact package-layer descriptor byte count
   data?: string;                    // base64url(zstd(cbor(...))) for inline-overlay
   readonly?: boolean;
   ephemeral?: boolean;

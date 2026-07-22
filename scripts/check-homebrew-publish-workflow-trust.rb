@@ -24,9 +24,9 @@ PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "2fb7c3d3f1191fea9bb08518ce9b103f20c1d20b6b44aa749d5416b282779551"
+PUBLISHER_VERIFY_DIGEST = "4299bc3bfe58e5b6efff07e7f9bee98abf96f2d75656d8eb96359c23c07ecbd4"
 PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
-PUBLISHER_VFS_RELEASE_DIGEST = "15a85c563fd9087c98fae8f608ba103935a0eff506afdd176a68461b2608f291"
+PUBLISHER_VFS_RELEASE_DIGEST = "aa93a31f752789c6a7273d0857d0f6b284ff63282f2659a7b8a741872a6a8700"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
@@ -3470,7 +3470,23 @@ def check_publisher(workflow)
     'platform base did not resolve from the Kandelo package registry tree',
     'kernel="${resolved_platform_artifacts[1]}"',
     'verification kernel did not resolve from the exact worktree build',
-    '--runtime node', '--no-fallback',
+    'shell_package_image="$acceptance_root/shell.vfs.zst"',
+    'shell_package_source="$acceptance_root/shell-package-output.json"',
+    'runtime_layer_policy="$PWD/homebrew/runtime-layer-policy.json"',
+    'lazy_layer="$acceptance_root/kandelo-homebrew-${selected_formula}-layer.bin"',
+    'lazy_layer_descriptor="$acceptance_root/kandelo-homebrew-${selected_formula}-layer.json"',
+    'xtask="target/$host/release/xtask"',
+    '"$xtask" materialize-package-output',
+    '--package "$PWD/packages/registry/shell"',
+    '--output-name shell',
+    '--out "$1"', '--receipt "$2"',
+    '--runtime node', '--max-bytes 256MiB', '--no-fallback',
+    '--lazy-layer-out "$lazy_layer"',
+    '--lazy-layer-descriptor "$lazy_layer_descriptor"',
+    '--lazy-layer-base-image "$shell_package_image"',
+    '--lazy-layer-base-package-source "$shell_package_source"',
+    '--runtime-layer-id "$selected_formula"',
+    '--runtime-layer-policy "$runtime_layer_policy"',
     'bash scripts/dev-shell.sh npx tsx',
     'scripts/homebrew-vfs-acceptance-smoke.ts',
     '--base-origin kandelo-package-registry', '--kernel-origin worktree-build',
@@ -3596,6 +3612,10 @@ def check_publisher(workflow)
     '--report "$acceptance_root/homebrew-brewfile-report.json"',
     '--node-evidence "$acceptance_root/node-evidence.json"',
     '--browser-evidence "$acceptance_root/browser-evidence.json"',
+    'runtime_layer="$acceptance_root/kandelo-homebrew-${KANDELO_HOMEBREW_FORMULA}-layer.bin"',
+    'runtime_layer_descriptor="$acceptance_root/kandelo-homebrew-${KANDELO_HOMEBREW_FORMULA}-layer.json"',
+    '--lazy-layer "$runtime_layer"',
+    '--lazy-layer-descriptor "$runtime_layer_descriptor"',
     '--tap-root "$GITHUB_WORKSPACE/tap-postverify"',
     '--tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"',
     '--abi "$KANDELO_HOMEBREW_ABI"',
@@ -3659,16 +3679,26 @@ def check_publisher(workflow)
         ) &&
         vfs_publish.fetch("run").include?('--receipt "$RUNNER_TEMP/homebrew-vfs-release-receipt.json"') &&
         vfs_publish.fetch("run").include?('echo "descriptor-url=$descriptor_url"') &&
+        vfs_publish.fetch("run").include?(
+          'echo "lazy-layer-descriptor-url=$lazy_layer_descriptor_url"'
+        ) &&
         vfs_publish.fetch("run").include?('echo "Browser launch input: \\`?vfs=$image_url\\`"'),
         "publisher VFS write step does not preserve validation, receipt, and launch outputs")
 
   vfs_validator_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-vfs-release.py"))
   [
-    'EXPECTED_ASSETS = {', 'homebrew-vfs-sha256-', 'validate_bundle_dir',
+    'expected_assets(runtime_id)', 'homebrew-vfs-sha256-', 'validate_bundle_dir',
+    'homebrew-runtime-layer-sha256-', 'runtime_layer_bundle_identity_document',
+    'runtime_layer_bundle_sha256', 'runtime_layer_descriptor_bytes',
+    'canonical-json-v1', 'close_lazy_layer_descriptor',
+    'kandelo-homebrew-deferred-layer-draft',
     'exact(actual, expected, "VFS release descriptor")', 'Node evidence image digest',
     'browser image digest', 'selected formula tap commit', 'Node dependency edge',
     'expected Kandelo ABI', 'expected bottle release tag',
     'browser legacy shell downloads', 'query_parameter": "vfs"',
+    '"deferred_trees"', 'homebrew-bottle-tar-gzip-v1',
+    'validate_lazy_layer_zip', 'validate_lazy_layer_tar_gzip',
+    'canonical path order', 'duplicate canonical inode groups',
   ].each do |fragment|
     check(vfs_validator_source.include?(fragment),
           "Homebrew VFS release validator lacks #{fragment}")
@@ -3678,34 +3708,41 @@ def check_publisher(workflow)
   )
   [
     'env -u GH_TOKEN -u GITHUB_TOKEN python3', 'state-lock.sh',
-    'homebrew-vfs-sha256-', 'draft=true', 'assert_asset_names_are_bounded',
+    'homebrew-vfs-sha256-', 'homebrew-runtime-layer-sha256-',
+    'acceptance_tag=', 'runtime_tag=', 'publish_bundle',
+    'draft=true', 'assert_asset_names_are_bounded', 'assert_complete_asset_set',
+    'legacy_acceptance_expected=', 'selected_names=',
     'gh api --paginate --slurp', 'releases?per_page=100',
     'type == "array" and all(.[]; type == "array")',
     '[.[][] | select(.tag_name == $tag)]',
     'github_api_get_json "/repos/${TAP_REPOSITORY}/releases/${release_id}"',
     ".id | select(type == \"number\" and . > 0)",
-    'existing release identity is malformed or mismatched',
+    'existing $label identity is malformed or mismatched',
     'public release is not protected by GitHub immutable releases',
-    'public release is missing immutable asset', 'Accept: application/octet-stream',
+    'public $label release is missing immutable asset', 'Accept: application/octet-stream',
     'retry env -u GH_TOKEN -u GITHUB_TOKEN', 'curl --disable',
     'publish response was ambiguous; reconciling',
-    'anonymous readback failed', '.object.type == "commit"',
+    'anonymous $label digest readback failed', '.object.type == "commit"',
     'visibility: "public-anonymous-readback"',
+    'acceptance_release:', 'release_tag: $runtime_tag',
+    'lazy_layer_asset="kandelo-homebrew-${FORMULA}-layer.bin"',
+    'lazy_layer_descriptor_asset="kandelo-homebrew-${FORMULA}-layer.json"',
+    '.deferred_trees[0].content.sha256',
   ].each do |fragment|
     check(vfs_publisher_source.include?(fragment),
           "Homebrew VFS release publisher lacks #{fragment}")
   end
-  draft_tag_guard = <<~'SHELL'.strip
-    if [ "$(jq -r '.draft' "$release_json")" = false ]; then
-      validate_tag_target
-    fi
-  SHELL
-  guard_index = vfs_publisher_source.index(draft_tag_guard)
-  final_tag_index = vfs_publisher_source.rindex("\nvalidate_tag_target\n")
+  guard_index = vfs_publisher_source.index(
+    %q{if [ "$(jq -r '.draft' "$release_json")" = false ]; then}
+  )
+  guard_call_index = guard_index && vfs_publisher_source.index(
+    "\n    validate_tag_target\n", guard_index
+  )
   public_index = vfs_publisher_source.index("release did not become public")
-  check(!guard_index.nil? && !final_tag_index.nil? && !public_index.nil? &&
-        vfs_publisher_source.scan("\nvalidate_tag_target\n").length == 1 &&
-        guard_index < public_index && final_tag_index > public_index,
+  final_tag_index = vfs_publisher_source.index("\n  validate_tag_target\n", public_index)
+  check(!guard_index.nil? && !guard_call_index.nil? && !final_tag_index.nil? &&
+        !public_index.nil? && guard_index < guard_call_index &&
+        guard_call_index < public_index && final_tag_index > public_index,
         "Homebrew VFS release publisher requires a tag ref while the release is still draft")
   vfs_test_source = File.read(File.join(REPO_ROOT, "scripts/test-homebrew-vfs-release.sh"))
   [
@@ -3719,6 +3756,18 @@ def check_publisher(workflow)
     "transient anonymous release propagation", "ambiguous successful publish",
     "public release without GitHub immutability",
     "Kandelo ABI outside the trusted plan", "bottle release tag outside the trusted plan",
+    "tampered lazy ZIP layer", "lazy ZIP index that differs from its archive",
+    "runtime layer that omitted a selected dependency",
+    "base receipt change reused a runtime-layer identity",
+    "lazy payload change reused a runtime-layer identity",
+    "mutated base receipt under the old bundle tag",
+    "changed payload bytes under the old bundle tag",
+    "unknown runtime bundle field",
+    "noncanonical runtime descriptor bytes",
+    "changed external transport under the old bundle tag",
+    "(.acceptance_assets | length) == 5 and (.assets | length) == 2",
+    "complete byte-identical legacy acceptance release",
+    "partial legacy acceptance release",
   ].each do |fragment|
     check(vfs_test_source.include?(fragment), "Homebrew VFS release tests lack #{fragment}")
   end
@@ -4849,6 +4898,22 @@ def self_test(publisher, maintenance, repository_canary)
         w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
       )
       step["run"] = step.fetch("run").sub("--no-fallback", "")
+    },
+    "lazy layer base package receipt dropped" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        '--lazy-layer-base-package-source "$shell_package_source"', ""
+      )
+    },
+    "canonical shell package materializer bypassed" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        '"$xtask" materialize-package-output', 'cp "$base_image" "$1"'
+      )
     },
     "dependency-bearing VFS resolver escapes the dev shell" => lambda { |w|
       step = mutate_named_step(

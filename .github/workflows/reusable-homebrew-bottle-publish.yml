@@ -2827,6 +2827,9 @@ jobs:
           public_dir="$GITHUB_WORKSPACE/kandelo/apps/browser-demos/public/__kandelo-acceptance"
           image="$acceptance_root/homebrew-brewfile.vfs.zst"
           report="$acceptance_root/homebrew-brewfile-report.json"
+          runtime_layer_policy="$PWD/homebrew/runtime-layer-policy.json"
+          lazy_layer="$acceptance_root/kandelo-homebrew-${selected_formula}-layer.bin"
+          lazy_layer_descriptor="$acceptance_root/kandelo-homebrew-${selected_formula}-layer.json"
           node_evidence="$acceptance_root/node-evidence.json"
           browser_evidence="$acceptance_root/browser-evidence.json"
           playwright_report="$acceptance_root/playwright-report.json"
@@ -2915,6 +2918,28 @@ jobs:
             *) echo "::error::verification kernel did not resolve from the exact worktree build"; exit 2 ;;
           esac
 
+          shell_package_image="$acceptance_root/shell.vfs.zst"
+          shell_package_source="$acceptance_root/shell-package-output.json"
+          bash scripts/dev-shell.sh bash -c '
+              set -euo pipefail
+              host="$(rustc -vV | sed -n "s/^host: //p")"
+              [ -n "$host" ] || {
+                echo "unable to resolve the Rust host target" >&2
+                exit 2
+              }
+              xtask="target/$host/release/xtask"
+              [ -x "$xtask" ] || {
+                echo "exact package materializer is missing: $xtask" >&2
+                exit 2
+              }
+              "$xtask" materialize-package-output \
+                --package "$PWD/packages/registry/shell" \
+                --arch wasm32 \
+                --output-name shell \
+                --out "$1" \
+                --receipt "$2"
+            ' kandelo-shell-package "$shell_package_image" "$shell_package_source"
+
           dependency_tap_args=()
           while IFS=$'\t' read -r dependency_tap dependency_root; do
             [ -n "$dependency_tap" ] && [ -n "$dependency_root" ] || continue
@@ -2933,7 +2958,14 @@ jobs:
             --out "$image"
             --report "$report"
             --bottle-cache "$RUNNER_TEMP/homebrew-bottle-cache"
+            --max-bytes 256MiB
             --no-fallback
+            --lazy-layer-out "$lazy_layer"
+            --lazy-layer-descriptor "$lazy_layer_descriptor"
+            --lazy-layer-base-image "$shell_package_image"
+            --lazy-layer-base-package-source "$shell_package_source"
+            --runtime-layer-id "$selected_formula"
+            --runtime-layer-policy "$runtime_layer_policy"
           )
           vfs_args+=("${dependency_tap_args[@]}")
           if [ -n "$shell_config" ]; then
@@ -3133,11 +3165,15 @@ jobs:
         run: |
           set -euo pipefail
           acceptance_root="$RUNNER_TEMP/homebrew-vfs-acceptance"
+          runtime_layer="$acceptance_root/kandelo-homebrew-${KANDELO_HOMEBREW_FORMULA}-layer.bin"
+          runtime_layer_descriptor="$acceptance_root/kandelo-homebrew-${KANDELO_HOMEBREW_FORMULA}-layer.json"
           python3 kandelo-postverify/scripts/homebrew-vfs-release.py prepare \
             --image "$acceptance_root/homebrew-brewfile.vfs.zst" \
             --report "$acceptance_root/homebrew-brewfile-report.json" \
             --node-evidence "$acceptance_root/node-evidence.json" \
             --browser-evidence "$acceptance_root/browser-evidence.json" \
+            --lazy-layer "$runtime_layer" \
+            --lazy-layer-descriptor "$runtime_layer_descriptor" \
             --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
@@ -3640,9 +3676,11 @@ jobs:
             --receipt "$RUNNER_TEMP/homebrew-vfs-release-receipt.json"
           descriptor_url="$(jq -er '.descriptor_url' "$RUNNER_TEMP/homebrew-vfs-release-receipt.json")"
           image_url="$(jq -er '.image.url' "$RUNNER_TEMP/homebrew-vfs-release-receipt.json")"
+          lazy_layer_descriptor_url="$(jq -er '.lazy_layer.descriptor_url' "$RUNNER_TEMP/homebrew-vfs-release-receipt.json")"
           {
             echo "descriptor-url=$descriptor_url"
             echo "image-url=$image_url"
+            echo "lazy-layer-descriptor-url=$lazy_layer_descriptor_url"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Public Homebrew VFS"
@@ -3650,6 +3688,8 @@ jobs:
             echo "Descriptor: $descriptor_url"
             echo
             echo "Browser launch input: \`?vfs=$image_url\`"
+            echo
+            echo "Lazy ${KANDELO_HOMEBREW_FORMULA} runtime layer descriptor: $lazy_layer_descriptor_url"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload public VFS publication receipt

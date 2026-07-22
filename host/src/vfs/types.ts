@@ -7,6 +7,8 @@ export interface DirEntry {
 }
 
 export interface FileSystemBackend {
+  /** Materialize deferred path backing before synchronous file I/O. */
+  preparePath?(path: string): Promise<boolean>;
   // File handle operations
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;

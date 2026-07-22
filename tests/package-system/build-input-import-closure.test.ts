@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const packages = ["node-vfs", "wordpress", "lamp"] as const;
+const packages = ["lamp", "node-vfs", "shell", "wordpress"] as const;
 const sourceExtensions = new Set([
   ".cjs",
   ".cts",
@@ -29,7 +29,7 @@ const sourceExtensions = new Set([
 ]);
 
 describe("package build input import closure", () => {
-  it("maps host runtime changes to the derived images that execute them", () => {
+  it("maps source changes to every derived-image cache domain that uses them", () => {
     for (const changedPath of [
       "host/src/process.ts",
       "host/src/kernel-worker.ts",
@@ -40,8 +40,17 @@ describe("package build input import closure", () => {
     expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual([
       "lamp",
       "node-vfs",
+      "shell",
       "wordpress",
     ]);
+
+    for (const changedPath of [
+      "host/src/homebrew-runtime-layer-policy.ts",
+      "host/src/homebrew-lazy-layer-descriptor.ts",
+      "host/src/vfs/tar.ts",
+    ]) {
+      expect(packagesAffectedBy(changedPath)).toContain("shell");
+    }
   });
 
   for (const packageName of packages) {
@@ -149,7 +158,10 @@ function relativeImportSpecifiers(source: string): string[] {
   const specifiers = new Set<string>();
   // The image builders run through tsx, which strips type-only imports. Those
   // declarations cannot change the generated image bytes and are therefore
-  // outside this cache-input contract. Mixed imports remain runtime inputs.
+  // outside the executable import closure. Mixed imports remain runtime
+  // inputs. A package may still declare a schema-only module explicitly when
+  // that authored contract belongs in its provenance, as shell does for the
+  // deferred-layer descriptor.
   const runtimeSource = source.replace(
     /\b(?:import|export)\s+type\b[^;]*?\bfrom\s*["'][^"']+["']\s*;?/gs,
     "",

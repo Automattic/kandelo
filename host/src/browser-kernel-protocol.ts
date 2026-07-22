@@ -8,7 +8,10 @@ import type {
   HttpRequest,
   HttpResponse,
 } from "./networking/in-kernel-http";
-import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type {
+  LazyDownloadEvent,
+  SerializedLazyArchiveEntry,
+} from "./vfs/memory-fs";
 import type {
   HostDiagnosticMessage,
 } from "./host-diagnostic";
@@ -247,18 +250,7 @@ export interface AudioDrainMessage {
 export interface RegisterLazyArchivesMessage {
   type: "register_lazy_archives";
   requestId?: number;
-  entries: Array<{
-    url: string;
-    mountPrefix: string;
-    materialized: boolean;
-    entries: Array<{
-      vfsPath: string;
-      ino: number;
-      size: number;
-      isSymlink: boolean;
-      deleted: boolean;
-    }>;
-  }>;
+  entries: SerializedLazyArchiveEntry[];
 }
 
 /** Read kernel-side per-process fork counter. Mirrors the Node host's

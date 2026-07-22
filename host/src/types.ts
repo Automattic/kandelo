@@ -45,6 +45,12 @@ export interface StatfsResult {
 export type PathconfValue = number | null;
 
 export interface PlatformIO {
+  /**
+   * Resolve and materialize deferred backing for a path before a synchronous
+   * open/read consumer enters the filesystem. Implementations without lazy
+   * backing may omit this hook.
+   */
+  preparePath?(path: string): Promise<boolean>;
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
   read(

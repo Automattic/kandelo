@@ -470,6 +470,83 @@ content-addressed `homebrew-vfs-sha256-<image-sha256>` release. The descriptor's
 `?vfs=<url>` path. The publisher anonymously reads every release asset back and
 verifies its digest and size before reporting success.
 
+The main shell can also consume explicitly selected Homebrew runtime layers
+through version-1 boot-descriptor mounts whose source is `package-layer`.
+These mounts are root overlays described by an unauthenticated HTTPS URL plus
+an exact descriptor byte count and `sha256:<digest>` reference. The shared
+host consumer verifies the descriptor and its binding to the exact loaded
+shell image, ABI, and Homebrew composition before it adds any paths. Selected
+layers must have disjoint non-base packages and filesystem ownership. Their
+schema-4 `deferred_trees` carry a complete path, type, mode, link, and regular
+inode inventory plus an immutable content identity, closed decoder/media-type
+pair, and one to eight byte-identical immutable HTTPS transports. Exactly one
+transport is the bundle's browser-readable release asset; additional transports
+may name the canonical public bottle or another immutable mirror. The descriptor has its own
+`homebrew-runtime-layer-sha256-<bundle-sha256>` identity, independent from the
+eager `homebrew-vfs-sha256-<image-sha256>` acceptance release. Its canonical
+bundle hash covers the lower shell package-output receipt and composition,
+package and tap provenance, complete tree inventory and payload identity, and
+the exact VFS/report/Node/Chromium evidence identities. The bundle's
+self-derived release URL and the hash itself are excluded to avoid a circular
+identity; external transport records remain bound. The consumer recomputes the
+canonical hash, requires the closed descriptor's canonical-json-v1 byte
+encoding, and verifies the derived release URL before registering paths.
+Deferred content
+remains lazy inside the serialized kernel-owned VFS. Registration and `stat`
+do not fetch it. The first ordinary open/read or executable resolution prepares
+the tree through its owning VFS mount; transports are tried in descriptor order
+until one passes the same digest and size identity, and all members are bounded, decoded, and
+verified before one identity-guarded batch commit. A failed fetch, digest,
+decode, inventory check, or allocation leaves every regular inode pending and
+retryable. Hard-link inventory members are restored as names of the same inode,
+including across VFS image save/restore. A metadata-only tree remains deferred
+through serialization and is still verified at first-use or boot-prefetch even
+though it has no regular stub to replace. Descriptors with no package-layer
+mounts retain the ordinary shell behavior and fetch no runtime-layer bytes.
+The consumer restores the base image and composes every selected layer in a
+private filesystem, publishing that filesystem to boot only after registration
+and every required boot-prefetch succeeds. Allocation, collision, validation,
+and transport failures therefore cannot expose a partially composed namespace.
+If this private browser-side transaction fails, the consumer reports its
+discarded `SharedArrayBuffer` to the boot lifecycle before rethrowing the
+original error. Failed and superseded boots then run the same bounded WebKit
+reclamation pass used after kernel teardown, so repeated failures do not leave
+untracked staged images on the persistent main thread.
+
+The current derived producer uses deterministic ZIP bytes with decoder
+`zip-v1` as a temporary scaffold. The host contract is format-neutral and also
+accepts bounded browser-safe gzip-compressed POSIX/PAX TAR trees, including TAR
+hard links. Direct publication from finalized bottle bytes and transport
+mirrors is a later producer step; ZIP is not the target bottle transport.
+
+Boot accepts at most eight package layers and 16 MiB of descriptor bytes in
+aggregate. The shared consumer additionally caps aggregate compressed payload
+bytes, expanded bytes, and entry count. Boot-prefetch downloads use at most two
+workers. Each package's declared keg and `opt` link must match its indexed
+paths, and the consumer rejects archive reuse or a path that depends on a
+directory owned by another selected layer.
+
+```json
+{
+  "path": "/",
+  "source": "package-layer",
+  "name": "python",
+  "url": "https://example.invalid/immutable-python-layer.json",
+  "ref": "sha256:<64 lowercase hexadecimal characters>",
+  "bytes": 12345
+}
+```
+
+The object shape is closed: package-layer mounts do not accept inline data,
+ephemeral flags, credentials in the URL, or non-root target paths.
+
+No Perl, Python, or Erlang layer URL is built into the browser. Concrete
+entries require immutable published descriptor/content identities derived from
+their finalized bottle sidecars; missing or mismatched identities fail boot
+instead of falling back to a standalone language VFS. This substrate does not
+change the main-shell composition: the Bash-plus-required-closure embedding and
+any default-shell cutover remain explicit later producer decisions.
+
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
 package image in the browser UI and runs its smoke command, such as

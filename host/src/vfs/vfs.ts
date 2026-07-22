@@ -174,6 +174,11 @@ export class VirtualPlatformIO implements PlatformIO {
 
   // --- File handle operations ---
 
+  async preparePath(path: string): Promise<boolean> {
+    const { backend, relativePath } = this.resolve(path);
+    return backend.preparePath?.(relativePath) ?? false;
+  }
+
   open(path: string, flags: number, mode: number): number {
     const { backend, backendId, relativePath } = this.resolve(path);
     const localHandle = backend.open(relativePath, flags, mode);
@@ -357,5 +362,50 @@ export class VirtualPlatformIO implements PlatformIO {
 
   nanosleep(sec: number, nsec: number): void {
     this.time.nanosleep(sec, nsec);
+  }
+}
+
+export interface PreparedPlatformFile {
+  data: Uint8Array;
+  stat: StatResult;
+}
+
+/**
+ * Read a complete regular file through its owning PlatformIO mount.
+ * Deferred backing is prepared before the synchronous descriptor operations,
+ * so API reads and executable resolution share the same lazy-file semantics.
+ */
+export async function readPreparedPlatformFile(
+  io: PlatformIO,
+  path: string,
+): Promise<PreparedPlatformFile> {
+  await io.preparePath?.(path);
+  const stat = io.stat(path);
+  if (!Number.isSafeInteger(stat.size) || stat.size < 0) {
+    const error = new Error(`EOVERFLOW: invalid file size for ${path}`) as
+      Error & { code: string };
+    error.code = "EOVERFLOW";
+    throw error;
+  }
+  const handle = io.open(path, 0, 0);
+  try {
+    const data = new Uint8Array(stat.size);
+    let offset = 0;
+    while (offset < data.byteLength) {
+      const count = io.read(
+        handle,
+        data.subarray(offset),
+        null,
+        data.byteLength - offset,
+      );
+      if (count <= 0) break;
+      offset += count;
+    }
+    return {
+      data: offset === data.byteLength ? data : data.slice(0, offset),
+      stat,
+    };
+  } finally {
+    io.close(handle);
   }
 }

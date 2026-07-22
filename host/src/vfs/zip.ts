@@ -6,7 +6,7 @@
  * to index file entries from range-request-fetched bytes.
  */
 
-import { inflateSync } from "fflate";
+import { Inflate, inflateSync } from "fflate";
 
 // --- Zip format signatures ---
 
@@ -212,6 +212,92 @@ export function extractZipEntry(data: Uint8Array, entry: ZipEntry): Uint8Array {
       `Unsupported compression method: ${entry.compressionMethod}`,
     );
   }
+}
+
+/**
+ * Extract one ZIP member into an exact caller-declared bound.
+ *
+ * Deferred-tree descriptors are untrusted and must not let a forged central
+ * directory turn a small inventory size into an unbounded DEFLATE allocation.
+ * The streaming inflater rejects output beyond `expectedSize` and also rejects
+ * a short stream. Existing legacy callers retain extractZipEntry().
+ */
+export function extractZipEntryBounded(
+  data: Uint8Array,
+  entry: ZipEntry,
+  expectedSize: number,
+): Uint8Array {
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
+    throw new Error("Invalid bounded ZIP member size");
+  }
+  if (entry.uncompressedSize !== expectedSize) {
+    throw new Error(
+      `ZIP member ${entry.fileName} declares ${entry.uncompressedSize} bytes, ` +
+        `expected ${expectedSize}`,
+    );
+  }
+  const compressedData = zipCompressedData(data, entry);
+  if (entry.compressionMethod === COMPRESSION_STORE) {
+    if (compressedData.byteLength !== expectedSize) {
+      throw new Error(`Stored ZIP member ${entry.fileName} has an invalid size`);
+    }
+    return new Uint8Array(compressedData);
+  }
+  if (entry.compressionMethod !== COMPRESSION_DEFLATE) {
+    throw new Error(`Unsupported compression method: ${entry.compressionMethod}`);
+  }
+
+  const output = new Uint8Array(expectedSize);
+  let total = 0;
+  const inflater = new Inflate((chunk) => {
+    if (chunk.byteLength > expectedSize - total) {
+      throw new Error(
+        `ZIP member ${entry.fileName} expands beyond ${expectedSize} bytes`,
+      );
+    }
+    output.set(chunk, total);
+    total += chunk.byteLength;
+  });
+  inflater.push(compressedData, true);
+  if (total !== expectedSize) {
+    throw new Error(
+      `ZIP member ${entry.fileName} expanded ${total} bytes, expected ${expectedSize}`,
+    );
+  }
+  return output;
+}
+
+function zipCompressedData(data: Uint8Array, entry: ZipEntry): Uint8Array {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const localOffset = entry.localHeaderOffset;
+  if (
+    localOffset < 0 ||
+    localOffset > data.byteLength - LOCAL_HEADER_FIXED_SIZE ||
+    view.getUint32(localOffset, true) !== LOCAL_FILE_HEADER_SIGNATURE
+  ) {
+    throw new Error(
+      `Invalid local file header signature at offset ${localOffset}`,
+    );
+  }
+  const localMethod = view.getUint16(localOffset + 8, true);
+  const localFileNameLength = view.getUint16(localOffset + 26, true);
+  const localExtraLength = view.getUint16(localOffset + 28, true);
+  const nameStart = localOffset + LOCAL_HEADER_FIXED_SIZE;
+  const dataStart = nameStart + localFileNameLength + localExtraLength;
+  const dataEnd = dataStart + entry.compressedSize;
+  if (
+    localMethod !== entry.compressionMethod ||
+    dataStart < nameStart ||
+    dataEnd < dataStart ||
+    dataEnd > data.byteLength ||
+    !bytesEqual(
+      data.subarray(nameStart, nameStart + localFileNameLength),
+      entry.fileNameBytes,
+    )
+  ) {
+    throw new Error(`ZIP member ${entry.fileName} has inconsistent local metadata`);
+  }
+  return data.subarray(dataStart, dataEnd);
 }
 
 /**

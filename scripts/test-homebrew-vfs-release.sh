@@ -46,6 +46,8 @@ git -C "$tap" add .
 git -C "$tap" commit -q -m "acceptance tap"
 tap_commit="$(git -C "$tap" rev-parse HEAD)"
 kandelo_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+bottle_tap_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+bottle_kandelo_commit="9999999999999999999999999999999999999999"
 
 source_root="$TMP_ROOT/source"
 mkdir "$source_root"
@@ -67,6 +69,8 @@ empty_sha="$(printf '' | sha256sum | awk '{print $1}')"
 jq -nS \
   --arg tap_commit "$tap_commit" \
   --arg kandelo_commit "$kandelo_commit" \
+  --arg bottle_tap_commit "$bottle_tap_commit" \
+  --arg bottle_kandelo_commit "$bottle_kandelo_commit" \
   --arg brewfile_sha "$brewfile_sha" \
   --argjson brewfile_bytes "$brewfile_bytes" \
   --arg base_sha "$base_sha" \
@@ -100,6 +104,25 @@ jq -nS \
     base_image: {sha256: $base_sha, bytes: 1024, kernelAbi: 42},
     packages: [
       {
+        name: "dash", full_name: "kandelo-dev/tap-core/dash",
+        tap_repository: "kandelo-dev/homebrew-tap-core", tap_name: "kandelo-dev/tap-core",
+        tap_commit: $bottle_tap_commit, version: "0.5.12", arch: "wasm32",
+        source_status: "success", metadata_status: "success",
+        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + $dash_sha),
+        sha256: $dash_sha, bytes: 150, cache_key_sha: $dash_sha,
+        link_manifest: "Kandelo/links/dash.json",
+        prefix: "/home/linuxbrew/.linuxbrew",
+        keg: "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12",
+        opt_link: {path: "opt/dash", target: "../Cellar/dash/0.5.12"},
+        built_from: {
+          tap_repository: "kandelo-dev/homebrew-tap-core",
+          tap_commit: $bottle_tap_commit,
+          kandelo_repository: "Automattic/kandelo",
+          kandelo_commit: $bottle_kandelo_commit,
+          formula_sha256: $dash_sha
+        }
+      },
+      {
         name: "file-formula", full_name: "kandelo-dev/tap-core/file-formula",
         tap_repository: "kandelo-dev/homebrew-tap-core", tap_name: "kandelo-dev/tap-core",
         tap_commit: $tap_commit, version: "5.46", arch: "wasm32",
@@ -107,17 +130,16 @@ jq -nS \
         url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/file-formula/blobs/sha256:" + $file_sha),
         sha256: $file_sha, bytes: 200, cache_key_sha: $file_sha,
         link_manifest: "Kandelo/links/file-formula.json",
-        prefix: "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46", keg: "5.46"
-      },
-      {
-        name: "dash", full_name: "kandelo-dev/tap-core/dash",
-        tap_repository: "kandelo-dev/homebrew-tap-core", tap_name: "kandelo-dev/tap-core",
-        tap_commit: $tap_commit, version: "0.5.12", arch: "wasm32",
-        source_status: "success", metadata_status: "success",
-        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + $dash_sha),
-        sha256: $dash_sha, bytes: 150, cache_key_sha: $dash_sha,
-        link_manifest: "Kandelo/links/dash.json",
-        prefix: "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12", keg: "0.5.12"
+        prefix: "/home/linuxbrew/.linuxbrew",
+        keg: "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46",
+        opt_link: {path: "opt/file-formula", target: "../Cellar/file-formula/5.46"},
+        built_from: {
+          tap_repository: "kandelo-dev/homebrew-tap-core",
+          tap_commit: $tap_commit,
+          kandelo_repository: "Automattic/kandelo",
+          kandelo_commit: $kandelo_commit,
+          formula_sha256: $file_sha
+        }
       }
     ],
     image: "/untrusted/runner/path.vfs.zst"
@@ -126,6 +148,7 @@ jq -nS \
 
 jq -nS \
   --arg tap_commit "$tap_commit" \
+  --arg bottle_tap_commit "$bottle_tap_commit" \
   --arg image_sha "$image_sha" \
   --argjson image_bytes "$image_bytes" \
   --arg brewfile_sha "$brewfile_sha" \
@@ -150,21 +173,21 @@ jq -nS \
     ],
     browser_plan: {
       compatibility_basis: "pending-exact-image-runtime-test",
-      packages: ["kandelo-dev/tap-core/file-formula", "kandelo-dev/tap-core/dash"]
+      packages: ["kandelo-dev/tap-core/dash", "kandelo-dev/tap-core/file-formula"]
     },
     homebrew_bottles: [
+      {
+        name: "dash", full_name: "kandelo-dev/tap-core/dash",
+        tap_repository: "kandelo-dev/homebrew-tap-core", tap_commit: $bottle_tap_commit,
+        version: "0.5.12", sha256: $dash_sha, bytes: 150, cache_key_sha: $dash_sha,
+        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + $dash_sha),
+        declared_runtime_support: ["node"], declared_browser_compatible: false
+      },
       {
         name: "file-formula", full_name: "kandelo-dev/tap-core/file-formula",
         tap_repository: "kandelo-dev/homebrew-tap-core", tap_commit: $tap_commit,
         version: "5.46", sha256: $file_sha, bytes: 200, cache_key_sha: $file_sha,
         url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/file-formula/blobs/sha256:" + $file_sha),
-        declared_runtime_support: ["node"], declared_browser_compatible: false
-      },
-      {
-        name: "dash", full_name: "kandelo-dev/tap-core/dash",
-        tap_repository: "kandelo-dev/homebrew-tap-core", tap_commit: $tap_commit,
-        version: "0.5.12", sha256: $dash_sha, bytes: 150, cache_key_sha: $dash_sha,
-        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/dash/blobs/sha256:" + $dash_sha),
         declared_runtime_support: ["node"], declared_browser_compatible: false
       }
     ],
@@ -197,6 +220,234 @@ jq -nS --arg image_sha "$image_sha" --arg kernel_sha "$kernel_sha" '
   }
   ' >"$source_root/browser.json"
 
+python3 - "$source_root" "$tap_commit" "$kandelo_commit" "$image_sha" \
+  "$image_bytes" "$file_sha" "$dash_sha" "$bottle_tap_commit" \
+  "$bottle_kandelo_commit" <<'PY'
+import hashlib, json, pathlib, stat, sys, zipfile
+
+root = pathlib.Path(sys.argv[1])
+tap_commit, kandelo_commit, image_sha = sys.argv[2:5]
+image_bytes = int(sys.argv[5])
+file_sha, dash_sha, bottle_tap_commit, bottle_kandelo_commit = sys.argv[6:10]
+archive_path = root / "layer.bin"
+entries = [
+    {
+        "path": "home/linuxbrew/.linuxbrew", "type": "directory",
+        "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar", "type": "directory",
+        "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula",
+        "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46",
+        "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin",
+        "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file",
+        "type": "file", "ownership": "layer", "mode": 0o755,
+        "size": len(b"file-5.46\n"),
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/bin", "type": "directory",
+        "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/bin/file", "type": "symlink",
+        "ownership": "layer", "mode": 0o777,
+        "target": "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file",
+        "size": len(b"/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file"),
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/opt", "type": "directory",
+        "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
+    },
+    {
+        "path": "home/linuxbrew/.linuxbrew/opt/file-formula", "type": "symlink",
+        "ownership": "layer", "mode": 0o777,
+        "target": "../Cellar/file-formula/5.46",
+        "size": len(b"../Cellar/file-formula/5.46"),
+    },
+]
+for entry in entries:
+    entry["source_path"] = entry["path"]
+    if entry["type"] == "file":
+        entry["inode_group"] = entry["path"]
+payloads = {
+    entries[5]["path"]: b"file-5.46\n",
+    entries[7]["path"]: entries[7]["target"].encode(),
+    entries[9]["path"]: entries[9]["target"].encode(),
+}
+with zipfile.ZipFile(archive_path, "w") as archive:
+    for entry in entries:
+        name = entry["path"] + ("/" if entry["type"] == "directory" else "")
+        info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        kind = {"directory": stat.S_IFDIR, "file": stat.S_IFREG,
+                "symlink": stat.S_IFLNK}[entry["type"]]
+        info.external_attr = (kind | entry["mode"]) << 16
+        info.compress_type = (zipfile.ZIP_STORED if entry["type"] != "file"
+                              else zipfile.ZIP_DEFLATED)
+        archive.writestr(info, payloads.get(entry["path"], b""))
+archive_bytes = archive_path.read_bytes()
+
+
+def package_record(name, version, bottle_sha, bottle_bytes):
+    keg = f"/home/linuxbrew/.linuxbrew/Cellar/{name}/{version}"
+    package_tap_commit = bottle_tap_commit if name == "dash" else tap_commit
+    package_kandelo_commit = (
+        bottle_kandelo_commit if name == "dash" else kandelo_commit
+    )
+    return {
+        "name": name, "full_name": f"kandelo-dev/tap-core/{name}",
+        "tap_repository": "kandelo-dev/homebrew-tap-core",
+        "tap_name": "kandelo-dev/tap-core", "tap_commit": package_tap_commit,
+        "version": version, "formula_revision": 0, "bottle_rebuild": 0,
+        "arch": "wasm32", "source_status": "success",
+        "metadata_status": "success",
+        "url": (
+            f"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/{name}"
+            f"/blobs/sha256:{bottle_sha}"
+        ),
+        "sha256": bottle_sha, "bytes": bottle_bytes,
+        "cache_key_sha": bottle_sha,
+        "link_manifest": f"Kandelo/links/{name}.json",
+        "prefix": "/home/linuxbrew/.linuxbrew", "keg": keg,
+        "opt_link": {"path": f"opt/{name}", "target": f"../Cellar/{name}/{version}"},
+        "built_from": {
+            "tap_repository": "kandelo-dev/homebrew-tap-core",
+            "tap_commit": package_tap_commit,
+            "kandelo_repository": "Automattic/kandelo",
+            "kandelo_commit": package_kandelo_commit,
+            "formula_sha256": bottle_sha,
+        },
+    }
+
+
+dash_package = package_record("dash", "0.5.12", dash_sha, 150)
+file_package = package_record("file-formula", "5.46", file_sha, 200)
+base_package_order = [dash_package["full_name"]]
+layer_package_order = [file_package["full_name"]]
+package_order = base_package_order + layer_package_order
+base_source = {
+    "schema": 1, "kind": "kandelo-package-output",
+    "index": {
+        "url": (
+            "https://github.com/Automattic/kandelo/releases/download/"
+            "binaries-abi-v42/index.toml"
+        ),
+        "sha256": "1" * 64, "bytes": 4096, "abi": 42,
+    },
+    "package": {
+        "name": "shell", "version": "0.1.0", "revision": 14,
+        "arch": "wasm32", "cache_key_sha": "2" * 64,
+    },
+    "archive": {
+        "format": "kandelo-package-tar-zstd-v2",
+        "url": (
+            "https://github.com/Automattic/kandelo/releases/download/"
+            "binaries-abi-v42/shell-0.1.0-rev14-abi42-wasm32-22222222.tar.zst"
+        ),
+        "sha256": "3" * 64, "bytes": 2048,
+    },
+    "output": {
+        "name": "shell", "path": "shell.vfs.zst",
+        "sha256": "d" * 64, "bytes": 1024,
+    },
+}
+descriptor = {
+    "schema": 4, "kind": "kandelo-homebrew-deferred-layer-draft", "arch": "wasm32",
+    "mount_prefix": "/",
+    "tap": {
+        "repository": "kandelo-dev/homebrew-tap-core",
+        "name": "kandelo-dev/tap-core", "commit": tap_commit,
+    },
+    "tap_lock": [{
+        "repository": "kandelo-dev/homebrew-tap-core",
+        "name": "kandelo-dev/tap-core", "commit": tap_commit,
+        "kandelo_repository": "Automattic/kandelo",
+        "kandelo_commit": kandelo_commit, "kandelo_abi": 42,
+        "bottle_release_tag": "bottles-abi-v42",
+    }],
+    "kandelo": {
+        "repository": "Automattic/kandelo", "commit": kandelo_commit, "abi": 42,
+    },
+    "bottle_release_tag": "bottles-abi-v42",
+    "selection": {
+        "requested_packages": ["file-formula"],
+        "package_order": package_order,
+        "base_package_order": base_package_order,
+        "layer_package_order": layer_package_order,
+    },
+    "packages": {"base": [dash_package], "layer": [file_package]},
+    "base_vfs": {
+        "sha256": "d" * 64, "bytes": 1024, "kernel_abi": 42,
+        "package_source": base_source,
+        "composition": {
+            "path": "/etc/kandelo/homebrew-vfs.json",
+            "sha256": "4" * 64, "bytes": 16384,
+            "requested_packages_sha256": "5" * 64,
+            "package_set_sha256": "6" * 64,
+            "package_count": 1, "package_order": base_package_order,
+        },
+    },
+    "acceptance_vfs": {
+        "asset": "kandelo-homebrew.vfs.zst",
+        "sha256": image_sha, "bytes": image_bytes,
+    },
+    "deferred_trees": [{
+        "id": "file-formula",
+        "activation": {
+            "mode": "first-use",
+            "capabilities": ["homebrew-runtime:file-formula"],
+            "roots": [
+                "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46"
+            ],
+        },
+        "content": {
+            "media_type": "application/zip", "decoder": "zip-v1",
+            "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+            "bytes": len(archive_bytes),
+        },
+        "transports": [
+            {
+                "kind": "external-https",
+                "url": "https://ghcr.io/v2/kandelo-dev/file-formula/blobs/sha256:exact",
+            },
+            {
+                "kind": "bundle-release",
+                "asset": "kandelo-homebrew-file-formula-layer.bin",
+            },
+        ],
+        "inventory": {
+            "entry_count": len(entries),
+            "source_entry_count": len({entry["source_path"] for entry in entries}),
+            "regular_inode_count": 1,
+            "layer_entry_count": sum(
+                entry["ownership"] == "layer" for entry in entries
+            ),
+            "shared_base_directory_count": sum(
+                entry["ownership"] == "shared-base-directory" for entry in entries
+            ),
+            "expanded_bytes": sum(entry["size"] for entry in entries),
+            "payload_bytes": sum(
+                entry["size"] for entry in entries if entry["type"] == "file"
+            ),
+            "entries": entries,
+        },
+    }],
+}
+(root / "layer.json").write_text(json.dumps(descriptor, sort_keys=True, indent=2) + "\n")
+PY
+
 common_identity_args=(
   --tap-root "$tap"
   --tap-repository kandelo-dev/homebrew-tap-core
@@ -216,9 +467,244 @@ python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
   --report "$source_root/report.json" \
   --node-evidence "$source_root/node.json" \
   --browser-evidence "$source_root/browser.json" \
+  --lazy-layer "$source_root/layer.bin" \
+  --lazy-layer-descriptor "$source_root/layer.json" \
   --out "$handoff" "${common_args[@]}" >/dev/null
 python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$handoff" "${common_args[@]}" >/dev/null
+
+# The eager acceptance image has its own immutable identity. A lazy bundle
+# built above the same accepted bytes must still get a new tag when either its
+# base package-output receipt or deferred payload changes.
+original_acceptance_tag="$(jq -er '.release.tag' "$handoff/kandelo-homebrew-vfs.json")"
+original_runtime_tag="$(jq -er '.release.tag' \
+  "$handoff/kandelo-homebrew-file-formula-layer.json")"
+
+base_changed_source="$TMP_ROOT/base-changed-source"
+cp -a "$source_root" "$base_changed_source"
+jq '.base_vfs.package_source.package.revision += 1' \
+  "$base_changed_source/layer.json" >"$base_changed_source/layer.tmp"
+mv "$base_changed_source/layer.tmp" "$base_changed_source/layer.json"
+base_changed_handoff="$TMP_ROOT/base-changed-handoff"
+python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
+  --image "$base_changed_source/image.vfs.zst" \
+  --report "$base_changed_source/report.json" \
+  --node-evidence "$base_changed_source/node.json" \
+  --browser-evidence "$base_changed_source/browser.json" \
+  --lazy-layer "$base_changed_source/layer.bin" \
+  --lazy-layer-descriptor "$base_changed_source/layer.json" \
+  --out "$base_changed_handoff" "${common_args[@]}" >/dev/null
+base_changed_tag="$(jq -er '.release.tag' \
+  "$base_changed_handoff/kandelo-homebrew-file-formula-layer.json")"
+[ "$(jq -er '.release.tag' "$base_changed_handoff/kandelo-homebrew-vfs.json")" = \
+  "$original_acceptance_tag" ] || fail "base receipt changed the eager VFS identity"
+[ "$base_changed_tag" != "$original_runtime_tag" ] ||
+  fail "base receipt change reused a runtime-layer identity"
+
+payload_changed_source="$TMP_ROOT/payload-changed-source"
+cp -a "$source_root" "$payload_changed_source"
+PYTHONDONTWRITEBYTECODE=1 python3 - \
+  "$payload_changed_source/layer.bin" "$payload_changed_source/layer.json" <<'PY'
+import hashlib
+import json
+import pathlib
+import zipfile
+import sys
+
+archive_path = pathlib.Path(sys.argv[1])
+descriptor_path = pathlib.Path(sys.argv[2])
+replacement = archive_path.with_suffix(".replacement")
+with zipfile.ZipFile(archive_path, "r") as source, zipfile.ZipFile(replacement, "w") as target:
+    for info in source.infolist():
+        value = source.read(info)
+        if info.filename.endswith("/Cellar/file-formula/5.46/bin/file"):
+            value = b"file-5.47\n"
+        target.writestr(info, value)
+replacement.replace(archive_path)
+value = archive_path.read_bytes()
+descriptor = json.loads(descriptor_path.read_text())
+descriptor["deferred_trees"][0]["content"]["sha256"] = hashlib.sha256(value).hexdigest()
+descriptor["deferred_trees"][0]["content"]["bytes"] = len(value)
+descriptor_path.write_text(json.dumps(descriptor, sort_keys=True, indent=2) + "\n")
+PY
+payload_changed_handoff="$TMP_ROOT/payload-changed-handoff"
+python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
+  --image "$payload_changed_source/image.vfs.zst" \
+  --report "$payload_changed_source/report.json" \
+  --node-evidence "$payload_changed_source/node.json" \
+  --browser-evidence "$payload_changed_source/browser.json" \
+  --lazy-layer "$payload_changed_source/layer.bin" \
+  --lazy-layer-descriptor "$payload_changed_source/layer.json" \
+  --out "$payload_changed_handoff" "${common_args[@]}" >/dev/null
+payload_changed_tag="$(jq -er '.release.tag' \
+  "$payload_changed_handoff/kandelo-homebrew-file-formula-layer.json")"
+[ "$(jq -er '.release.tag' "$payload_changed_handoff/kandelo-homebrew-vfs.json")" = \
+  "$original_acceptance_tag" ] || fail "lazy payload changed the eager VFS identity"
+[ "$payload_changed_tag" != "$original_runtime_tag" ] ||
+  fail "lazy payload change reused a runtime-layer identity"
+[ "$payload_changed_tag" != "$base_changed_tag" ] ||
+  fail "different runtime-layer bundles shared an identity"
+PYTHONDONTWRITEBYTECODE=1 python3 - \
+  "$REPO_ROOT/scripts/homebrew-vfs-release.py" <<'PY'
+import gzip
+import io
+import runpy
+import sys
+import tarfile
+
+release = runpy.run_path(sys.argv[1])
+validate = release["validate_lazy_layer_tar_gzip"]
+resolve_hardlinks = release["resolve_lazy_layer_hardlinks"]
+ValidationError = release["ValidationError"]
+
+canonical = {
+    "path": "runtime/tool",
+    "source_path": "runtime/tool",
+    "type": "file",
+    "mode": 0o755,
+    "size": 1,
+    "inode_group": "runtime:tool",
+}
+chain = [canonical]
+target = canonical["path"]
+for index in range(20_000):
+    path = f"runtime/link-{index:05d}"
+    chain.append({
+        "path": path,
+        "source_path": path,
+        "type": "hardlink",
+        "mode": canonical["mode"],
+        "size": canonical["size"],
+        "inode_group": canonical["inode_group"],
+        "target": target,
+    })
+    target = path
+if resolve_hardlinks(chain) != {canonical["inode_group"]: canonical}:
+    raise AssertionError("hardlink chain did not resolve to its canonical file")
+
+
+def expect_graph_rejected(label, graph, message):
+    try:
+        resolve_hardlinks(graph)
+    except ValidationError as error:
+        if message not in str(error):
+            raise AssertionError(
+                f"{label} failed for the wrong reason: {error}"
+            ) from error
+    else:
+        raise AssertionError(f"release validator accepted {label}")
+
+
+def hardlink(path, target, group="runtime:tool"):
+    return {
+        "path": path,
+        "source_path": path,
+        "type": "hardlink",
+        "mode": 0o755,
+        "size": 1,
+        "inode_group": group,
+        "target": target,
+    }
+
+
+expect_graph_rejected(
+    "a hardlink cycle reached through a tail",
+    [
+        canonical,
+        hardlink("runtime/tail", "runtime/cycle-a"),
+        hardlink("runtime/cycle-a", "runtime/cycle-b"),
+        hardlink("runtime/cycle-b", "runtime/cycle-a"),
+    ],
+    "cycle reaches",
+)
+expect_graph_rejected(
+    "a missing hardlink target",
+    [canonical, hardlink("runtime/missing", "runtime/absent")],
+    "is missing",
+)
+other = {**canonical, "path": "runtime/other", "inode_group": "runtime:other"}
+expect_graph_rejected(
+    "a cross-inode hardlink target",
+    [canonical, other, hardlink("runtime/cross", "runtime/other")],
+    "invalid target",
+)
+
+stream = io.BytesIO()
+with tarfile.open(fileobj=stream, mode="w:", format=tarfile.USTAR_FORMAT) as archive:
+    info = tarfile.TarInfo("runtime/tool")
+    info.mode = 0o755
+    info.size = 1
+    archive.addfile(info, io.BytesIO(b"x"))
+tar_value = stream.getvalue()
+entries = [{
+    "path": "runtime/tool",
+    "source_path": "runtime/tool",
+    "type": "file",
+    "mode": 0o755,
+    "size": 1,
+}]
+valid_gzip = gzip.compress(tar_value, mtime=0)
+validate(valid_gzip, entries, len(tar_value))
+
+
+def expect_rejected(label, payload, message):
+    try:
+        validate(payload, entries, len(tar_value))
+    except ValidationError as error:
+        if message not in str(error):
+            raise AssertionError(
+                f"{label} failed for the wrong reason: {error}"
+            ) from error
+    else:
+        raise AssertionError(f"release validator accepted {label}")
+
+
+expect_rejected(
+    "concatenated gzip members",
+    gzip.compress(b"", mtime=0) + valid_gzip,
+    "additional gzip member or data",
+)
+
+terminator = next(
+    offset
+    for offset in range(0, len(tar_value) - 1023, 512)
+    if tar_value[offset : offset + 1024] == bytes(1024)
+)
+post_terminator = bytearray(tar_value)
+post_terminator[terminator + 1024] = 1
+expect_rejected(
+    "nonzero TAR data after the first end marker",
+    gzip.compress(post_terminator, mtime=0),
+    "nonzero data after its end marker",
+)
+
+
+def rewrite_checksum(value):
+    value[148:156] = b"        "
+    checksum = sum(value[:512])
+    value[148:156] = f"{checksum:06o}\0 ".encode("ascii")
+
+
+base256_mode = bytearray(tar_value)
+encoded_mode = bytearray((0o755).to_bytes(8, "big"))
+encoded_mode[0] |= 0x80
+base256_mode[100:108] = encoded_mode
+rewrite_checksum(base256_mode)
+expect_rejected(
+    "base-256 TAR mode",
+    gzip.compress(base256_mode, mtime=0),
+    "base-256",
+)
+
+invalid_octal_size = bytearray(tar_value)
+invalid_octal_size[124:136] = b"00000000008\0"
+rewrite_checksum(invalid_octal_size)
+expect_rejected(
+    "non-octal TAR size",
+    gzip.compress(invalid_octal_size, mtime=0),
+    "valid octal",
+)
+PY
 expect_failure "validator accepted a Kandelo ABI outside the trusted plan" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
     --handoff "$handoff" "${common_identity_args[@]}" \
@@ -234,6 +720,29 @@ jq -e --arg image_sha "$image_sha" '
   .launch.query_parameter == "vfs" and .launch.value == .image.url and
   .default_shell.path == "/home/linuxbrew/.linuxbrew/bin/dash"
 ' "$handoff/kandelo-homebrew-vfs.json" >/dev/null || fail "descriptor contract changed"
+jq -e --arg image_sha "$image_sha" '
+  .release.tag as $runtime_tag |
+  .schema == 4 and .kind == "kandelo-homebrew-deferred-layer" and
+  .acceptance_vfs.sha256 == $image_sha and .mount_prefix == "/" and
+  .bundle.schema == 1 and
+  .bundle.kind == "kandelo-homebrew-runtime-layer-bundle" and
+  .bundle.algorithm == "sha256-canonical-json-v1" and
+  .bundle.descriptor_encoding == "canonical-json-v1" and
+  .release.tag == ("homebrew-runtime-layer-sha256-" + .bundle.sha256) and
+  (.acceptance_vfs.url | contains("/homebrew-vfs-sha256-" + $image_sha + "/")) and
+  .base_vfs.sha256 == .base_vfs.package_source.output.sha256 and
+  .selection.base_package_order == ["kandelo-dev/tap-core/dash"] and
+  .selection.layer_package_order == ["kandelo-dev/tap-core/file-formula"] and
+  .deferred_trees[0].content.decoder == "zip-v1" and
+  ([.deferred_trees[0].transports[] | select(.kind == "external-https")] | length) == 1 and
+  ([.deferred_trees[0].transports[] | select(.kind == "bundle-release")] | length) == 1 and
+  ([.deferred_trees[0].transports[] | select(.kind == "bundle-release")][0] as $release |
+    $release.asset == "kandelo-homebrew-file-formula-layer.bin" and
+    ($release.url | contains("/" + $runtime_tag + "/"))) and
+  .deferred_trees[0].inventory.entry_count == (.deferred_trees[0].inventory.entries | length) and
+  .deferred_trees[0].inventory.layer_entry_count == ([.deferred_trees[0].inventory.entries[] | select(.ownership == "layer")] | length)
+' "$handoff/kandelo-homebrew-file-formula-layer.json" >/dev/null ||
+  fail "lazy layer descriptor contract changed"
 
 negative="$TMP_ROOT/negative"
 cp -a "$handoff" "$negative"
@@ -247,6 +756,114 @@ jq '.image_sha256 = "00000000000000000000000000000000000000000000000000000000000
   "$negative/kandelo-homebrew-browser-evidence.json" >"$negative/browser.tmp"
 mv "$negative/browser.tmp" "$negative/kandelo-homebrew-browser-evidence.json"
 expect_failure "validator accepted browser evidence for different bytes" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+printf 'tamper' >>"$negative/kandelo-homebrew-file-formula-layer.bin"
+expect_failure "validator accepted a tampered lazy ZIP layer" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.deferred_trees[0].inventory.entries[0].size += 1' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" \
+  >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a lazy ZIP index that differs from its archive" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.base_vfs.package_source.output.sha256 = ("0" * 64)' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a base VFS outside its package-output receipt" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.base_vfs.package_source.package.revision += 1' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a mutated base receipt under the old bundle tag" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.bundle.unknown = true' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted an unknown runtime bundle field" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.' "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted noncanonical runtime descriptor bytes" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '(.deferred_trees[0].transports[] | select(.kind == "external-https").url) =
+  "https://example.invalid/other-immutable-bottle.tar.gz"' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a changed external transport under the old bundle tag" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+cp "$payload_changed_source/layer.bin" \
+  "$negative/kandelo-homebrew-file-formula-layer.bin"
+mutated_payload_sha="$(sha256sum \
+  "$negative/kandelo-homebrew-file-formula-layer.bin" | awk '{print $1}')"
+mutated_payload_bytes="$(wc -c \
+  <"$negative/kandelo-homebrew-file-formula-layer.bin" | tr -d '[:space:]')"
+jq --arg sha "$mutated_payload_sha" --argjson bytes "$mutated_payload_bytes" '
+  .deferred_trees[0].content.sha256 = $sha |
+  .deferred_trees[0].content.bytes = $bytes |
+  .bundle.assets.deferred_trees[0].sha256 = $sha |
+  .bundle.assets.deferred_trees[0].bytes = $bytes
+' "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted changed payload bytes under the old bundle tag" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.tap_lock[0].commit = ("b" * 40)' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a layer package outside its exact tap lock" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.packages.layer[0].full_name = "other/runtime/file-formula"' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a package name outside its locked tap identity" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '
+  .selection.package_order = ["kandelo-dev/tap-core/file-formula"] |
+  .selection.base_package_order = [] |
+  .packages.base = []
+' "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a runtime layer that omitted a selected dependency" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.deferred_trees[0].inventory.entries[-1].ownership = "shared-base-directory"' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a shared non-directory collision" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
@@ -282,7 +899,8 @@ with log_path.open("a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\n")
 
 def load():
-    if not state_path.exists(): return None
+    if not state_path.exists():
+        return {"releases": {}, "next_release_id": 73, "next_asset_id": 100}
     return json.loads(state_path.read_text())
 
 def save(value):
@@ -290,40 +908,50 @@ def save(value):
 
 def release_json(value):
     return {
-        "id": 73, "tag_name": value["tag"], "target_commitish": value["target"],
+        "id": value["id"], "tag_name": value["tag"], "target_commitish": value["target"],
         "draft": value["draft"], "prerelease": False,
         "immutable": not value["draft"] and not os.environ.get("FAKE_IMMUTABLE_RELEASES_DISABLED"),
         "assets": [{"id": item["id"], "name": name} for name, item in sorted(value["assets"].items())],
     }
 
+def by_id(state, release_id):
+    return next(
+        (value for value in state["releases"].values() if value["id"] == release_id),
+        None,
+    )
+
 args = sys.argv[1:]
 if args[:2] == ["api", "--include"]:
     endpoint = args[2]
     state = load()
-    if state is None:
-        print("HTTP/1.1 404 Not Found\n")
-        sys.exit(1)
     if "/releases/tags/" in endpoint:
-        if state["draft"]:
+        tag = endpoint.split("/releases/tags/", 1)[1]
+        release = state["releases"].get(tag)
+        if release is None or release["draft"]:
             print("HTTP/1.1 404 Not Found\n")
             sys.exit(1)
         print("HTTP/1.1 200 OK\n")
-        print(json.dumps(release_json(state)))
+        print(json.dumps(release_json(release)))
     elif "/releases/" in endpoint:
+        release = by_id(state, int(endpoint.rsplit("/", 1)[1]))
+        if release is None:
+            print("HTTP/1.1 404 Not Found\n"); sys.exit(1)
         print("HTTP/1.1 200 OK\n")
-        print(json.dumps(release_json(state)))
+        print(json.dumps(release_json(release)))
     elif "/git/ref/tags/" in endpoint:
-        if state["draft"]:
+        tag = endpoint.split("/git/ref/tags/", 1)[1]
+        release = state["releases"].get(tag)
+        if release is None or release["draft"]:
             print("HTTP/1.1 404 Not Found\n")
             sys.exit(1)
         print("HTTP/1.1 200 OK\n")
-        print(json.dumps({"ref": "refs/tags/" + state["tag"], "object": {"type": state.get("tag_type", "commit"), "sha": state.get("tag_sha", state["target"])}}))
+        print(json.dumps({"ref": "refs/tags/" + release["tag"], "object": {"type": release.get("tag_type", "commit"), "sha": release.get("tag_sha", release["target"])}}))
     else:
         print("HTTP/1.1 404 Not Found\n")
         sys.exit(1)
 elif args[:3] == ["api", "--paginate", "--slurp"]:
     state = load()
-    print(json.dumps([[release_json(state)]] if state is not None else [[]]))
+    print(json.dumps([[release_json(value) for value in state["releases"].values()]]))
 elif args[:3] == ["api", "--method", "POST"]:
     fields = {arg.split("=", 1)[0][2:]: arg.split("=", 1)[1] for arg in args if arg.startswith(("-f", "-F")) and "=" in arg}
     # gh receives -f and its value as separate arguments; parse those too.
@@ -331,32 +959,46 @@ elif args[:3] == ["api", "--method", "POST"]:
     for index, arg in enumerate(args):
         if arg in ("-f", "-F"):
             key, value = args[index + 1].split("=", 1); fields[key] = value
-    state = {"tag": fields["tag_name"], "target": fields["target_commitish"], "draft": True, "assets": {}, "next_id": 100}
+    state = load()
+    tag = fields["tag_name"]
+    if tag in state["releases"]:
+        print("duplicate release", file=sys.stderr); sys.exit(1)
+    release = {
+        "id": state["next_release_id"], "tag": tag,
+        "target": fields["target_commitish"], "draft": True, "assets": {},
+    }
+    state["next_release_id"] += 1
+    state["releases"][tag] = release
     save(state)
-    print(json.dumps(release_json(state)))
+    print(json.dumps(release_json(release)))
 elif args[:3] == ["api", "--method", "PATCH"]:
     state = load()
-    if not state["draft"]:
+    release = by_id(state, int(args[3].rsplit("/", 1)[1]))
+    if release is None: sys.exit(1)
+    if not release["draft"]:
         print("published release is immutable", file=sys.stderr); sys.exit(1)
-    state["draft"] = False; save(state)
-    marker = root / "lost-publish-response"
+    release["draft"] = False; save(state)
+    marker = root / ("lost-publish-response-" + str(release["id"]))
     if os.environ.get("FAKE_PATCH_RESPONSE_LOST") and not marker.exists():
         marker.write_text("lost\n"); sys.exit(1)
-    print(json.dumps(release_json(state)))
+    print(json.dumps(release_json(release)))
 elif args[:2] == ["api", "-H"]:
     endpoint = args[3]
     asset_id = int(endpoint.rsplit("/", 1)[1])
     state = load()
-    for item in state["assets"].values():
-        if item["id"] == asset_id:
-            sys.stdout.buffer.write((root / item["file"]).read_bytes()); sys.exit(0)
+    for release in state["releases"].values():
+        for item in release["assets"].values():
+            if item["id"] == asset_id:
+                sys.stdout.buffer.write((root / item["file"]).read_bytes()); sys.exit(0)
     sys.exit(1)
 elif args[:2] == ["release", "upload"]:
     state = load(); source = pathlib.Path(args[-1]); name = source.name
-    destination = "asset-" + str(state["next_id"])
+    tag = args[2]
+    release = state["releases"][tag]
+    destination = "asset-" + str(state["next_asset_id"])
     shutil.copyfile(source, root / destination)
-    state["assets"][name] = {"id": state["next_id"], "file": destination}
-    state["next_id"] += 1; save(state)
+    release["assets"][name] = {"id": state["next_asset_id"], "file": destination}
+    state["next_asset_id"] += 1; save(state)
 else:
     print("unsupported fake gh: " + repr(args), file=sys.stderr); sys.exit(2)
 PY
@@ -368,10 +1010,11 @@ if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
     print("credential reached anonymous curl", file=sys.stderr); sys.exit(2)
 args = sys.argv[1:]
 output = pathlib.Path(args[args.index("--output") + 1])
-name = args[-1].rsplit("/", 1)[1]
+tag_and_name = args[-1].split("/releases/download/", 1)[1]
+tag, name = tag_and_name.split("/", 1)
 root = pathlib.Path(os.environ["FAKE_GITHUB_STATE"])
 state = __import__("json").loads((root / "state.json").read_text())
-item = state["assets"][name]
+item = state["releases"][tag]["assets"][name]
 value = (root / item["file"]).read_bytes()
 fail_once = os.environ.get("FAKE_CURL_FAIL_ONCE")
 marker = root / ("curl-failed-once-" + name)
@@ -414,12 +1057,26 @@ run_publisher() {
       "${publisher_args[@]}" --receipt "$TMP_ROOT/receipt.json"
 }
 
+acceptance_tag="$(jq -er '.release.tag' "$handoff/kandelo-homebrew-vfs.json")"
+runtime_tag="$(jq -er '.release.tag' "$handoff/kandelo-homebrew-file-formula-layer.json")"
+
 run_publisher >/dev/null
-jq -e --arg image_sha "$image_sha" '
-  .schema == 1 and .status == "success" and
+jq -e --arg image_sha "$image_sha" --arg acceptance_tag "$acceptance_tag" \
+  --arg runtime_tag "$runtime_tag" '
+  .schema == 2 and .status == "success" and
   .visibility == "public-anonymous-readback" and
-  .image.sha256 == $image_sha and (.assets | length) == 5
+  .tag == $acceptance_tag and .acceptance_release.tag == $acceptance_tag and
+  .image.sha256 == $image_sha and
+  .lazy_layer.release_tag == $runtime_tag and
+  .lazy_layer.deferred_trees[0].transport.kind == "bundle-release" and
+  .lazy_layer.deferred_trees[0].transport.asset == "kandelo-homebrew-file-formula-layer.bin" and
+  (.acceptance_assets | length) == 5 and (.assets | length) == 2
 ' "$TMP_ROOT/receipt.json" >/dev/null || fail "publisher receipt contract changed"
+jq -e --arg acceptance_tag "$acceptance_tag" --arg runtime_tag "$runtime_tag" '
+  (.releases | keys | sort) == ([$acceptance_tag, $runtime_tag] | sort) and
+  (.releases[$acceptance_tag].assets | length) == 5 and
+  (.releases[$runtime_tag].assets | length) == 2
+' "$fake_state/state.json" >/dev/null || fail "publisher did not split immutable release identities"
 
 FAKE_CURL_FAIL_ONCE=kandelo-homebrew.vfs.zst run_publisher >/dev/null ||
   fail "publisher did not retry transient anonymous release propagation"
@@ -431,21 +1088,58 @@ if jq -s -e 'any(.[]; .[0:2] == ["api", "--method"] or .[0:2] == ["release", "up
   fail "idempotent public retry mutated the release"
 fi
 
+# A complete legacy schema-3 acceptance release may retain both lazy assets,
+# but reconciliation checks all seven exact bytes. A partial legacy name set is
+# never completed or treated as an ordinary five-asset acceptance release.
+cp "$fake_state/state.json" "$fake_state/split-release-state.json"
+cp "$handoff/kandelo-homebrew-file-formula-layer.bin" \
+  "$fake_state/legacy-layer.bin"
+cp "$handoff/kandelo-homebrew-file-formula-layer.json" \
+  "$fake_state/legacy-layer.json"
+jq --arg tag "$acceptance_tag" '
+  .releases[$tag].assets["kandelo-homebrew-file-formula-layer.bin"] =
+    {id: 901, file: "legacy-layer.bin"} |
+  .releases[$tag].assets["kandelo-homebrew-file-formula-layer.json"] =
+    {id: 902, file: "legacy-layer.json"}
+' "$fake_state/state.json" >"$fake_state/state.tmp"
+mv "$fake_state/state.tmp" "$fake_state/state.json"
+run_publisher >/dev/null ||
+  fail "publisher did not reconcile a complete byte-identical legacy acceptance release"
+jq -e --arg tag "$acceptance_tag" \
+  '(.releases[$tag].assets | length) == 7' "$fake_state/state.json" >/dev/null ||
+  fail "publisher changed the exact legacy seven-asset release"
+printf 'tamper\n' >>"$fake_state/legacy-layer.bin"
+expect_failure "publisher accepted mismatched bytes in a complete legacy acceptance release" \
+  run_publisher
+cp "$fake_state/split-release-state.json" "$fake_state/state.json"
+jq --arg tag "$acceptance_tag" '
+  .releases[$tag].assets["kandelo-homebrew-file-formula-layer.bin"] =
+    {id: 901, file: "legacy-layer.bin"}
+' "$fake_state/state.json" >"$fake_state/state.tmp"
+mv "$fake_state/state.tmp" "$fake_state/state.json"
+expect_failure "publisher accepted a partial legacy acceptance release" run_publisher
+cp "$fake_state/split-release-state.json" "$fake_state/state.json"
+
 cp "$fake_state/state.json" "$fake_state/public-state.json"
-jq 'del(.assets["kandelo-homebrew-browser-evidence.json"])' \
+jq --arg tag "$runtime_tag" 'del(.releases[$tag].assets["kandelo-homebrew-file-formula-layer.json"])' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
 expect_failure "publisher filled a missing asset in an existing public release" run_publisher
 cp "$fake_state/public-state.json" "$fake_state/state.json"
 
 # A partial exact draft is recoverable: the publisher fills only the missing
-# asset and publishes after all five authenticated checks succeed.
-jq '.draft = true | del(.assets["kandelo-homebrew-browser-evidence.json"])' \
+# asset and publishes after both authenticated checks succeed.
+jq --arg tag "$runtime_tag" '
+  .releases[$tag].draft = true |
+  del(.releases[$tag].assets["kandelo-homebrew-file-formula-layer.json"])
+' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
 : >"$fake_state/gh.log"
 run_publisher >/dev/null
-jq -e '.draft == false and (.assets | length) == 5' "$fake_state/state.json" >/dev/null ||
+jq -e --arg tag "$runtime_tag" '
+  .releases[$tag].draft == false and (.releases[$tag].assets | length) == 2
+' "$fake_state/state.json" >/dev/null ||
   fail "publisher did not recover an exact partial draft"
 if ! jq -s -e '
   any(.[]; .[0:3] == ["api", "--paginate", "--slurp"]) and
@@ -455,7 +1149,9 @@ if ! jq -s -e '
 fi
 
 # Existing public bytes are immutable and never overwritten.
-asset_file="$(jq -r '.assets["kandelo-homebrew.vfs.zst"].file' "$fake_state/state.json")"
+asset_file="$(jq -r --arg tag "$runtime_tag" \
+  '.releases[$tag].assets["kandelo-homebrew-file-formula-layer.bin"].file' \
+  "$fake_state/state.json")"
 printf 'mismatch\n' >"$fake_state/$asset_file"
 expect_failure "publisher overwrote a mismatched public asset" run_publisher
 rm -f "$fake_state/state.json" "$fake_state"/asset-*
@@ -463,16 +1159,18 @@ run_publisher >/dev/null
 
 # A lost response after GitHub makes the release public is reconciled from the
 # release API. An immutable public release rejects every redundant PATCH.
-rm -f "$fake_state/state.json" "$fake_state"/asset-* "$fake_state/lost-publish-response"
+rm -f "$fake_state/state.json" "$fake_state"/asset-* "$fake_state"/lost-publish-response-*
 FAKE_PATCH_RESPONSE_LOST=1 run_publisher >/dev/null ||
   fail "publisher did not reconcile an ambiguous successful publish"
 
-jq '.assets["unexpected.sh"] = {id: 999, file: "unexpected"}' \
+jq --arg tag "$runtime_tag" \
+  '.releases[$tag].assets["unexpected.sh"] = {id: 999, file: "unexpected"}' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
 printf 'bad\n' >"$fake_state/unexpected"
 expect_failure "publisher accepted an unexpected release asset" run_publisher
-jq 'del(.assets["unexpected.sh"])' "$fake_state/state.json" >"$fake_state/state.tmp"
+jq --arg tag "$runtime_tag" 'del(.releases[$tag].assets["unexpected.sh"])' \
+  "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
 
 if PATH="$fake_bin:$PATH" FAKE_GITHUB_STATE="$fake_state" \
@@ -484,7 +1182,8 @@ if PATH="$fake_bin:$PATH" FAKE_GITHUB_STATE="$fake_state" \
   fail "publisher accepted a failed anonymous digest readback"
 fi
 
-jq '.tag_sha = "9999999999999999999999999999999999999999"' \
+jq --arg tag "$runtime_tag" \
+  '.releases[$tag].tag_sha = "9999999999999999999999999999999999999999"' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
 expect_failure "publisher accepted a release tag at the wrong commit" run_publisher

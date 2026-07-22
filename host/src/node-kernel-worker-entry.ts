@@ -39,6 +39,7 @@ import {
   HostFileSystem,
   MemoryFileSystem,
   resolveForNode,
+  readPreparedPlatformFile,
 } from "./vfs";
 import type { MountConfig } from "./vfs/types";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
@@ -439,82 +440,30 @@ function resolveExecLocal(path: string): ArrayBuffer | null {
   return null;
 }
 
-function readExecFromVfs(path: string): ArrayBuffer | null {
+function isMissingPathError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === -2 || code === "ENOENT";
+}
+
+async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
   const io = vfsExecIO;
   if (!io) return null;
-  let fd: number | null = null;
   try {
-    const st = io.stat(path);
-    if ((st.mode & 0o170000) === 0o040000) return null;
-    fd = io.open(path, 0, 0);
-    const bytes = new Uint8Array(st.size);
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const n = io.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
-      if (n <= 0) break;
-      offset += n;
-    }
-    return bytes.slice(0, offset).buffer;
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) {
-      try { io.close(fd); } catch {}
-    }
+    const { data, stat } = await readPreparedPlatformFile(io, path);
+    if ((stat.mode & 0o170000) === 0o040000) return null;
+    return bufferToArrayBuffer(data);
+  } catch (error) {
+    if (isMissingPathError(error)) return null;
+    throw error;
   }
-}
-
-async function resolveExecFromRootfs(path: string): Promise<ArrayBuffer | null> {
-  if (!rootfsMemfs) return null;
-
-  const lazy = rootfsMemfs.getLazyEntry(path);
-  if (lazy) {
-    return readLazyExecBytes(lazy.url);
-  }
-
-  try {
-    const st = rootfsMemfs.stat(path);
-    if (st.size <= 0) return null;
-    const fd = rootfsMemfs.open(path, 0, 0);
-    try {
-      const bytes = new Uint8Array(st.size);
-      let offset = 0;
-      while (offset < bytes.byteLength) {
-        const n = rootfsMemfs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
-        if (n <= 0) break;
-        offset += n;
-      }
-      return bufferToArrayBuffer(bytes.subarray(0, offset));
-    } finally {
-      rootfsMemfs.close(fd);
-    }
-  } catch {
-    return null;
-  }
-}
-
-async function readLazyExecBytes(url: string): Promise<ArrayBuffer | null> {
-  if (/^https?:\/\//.test(url)) {
-    const resp = await fetch(url);
-    if (!resp.ok) return null;
-    return await resp.arrayBuffer();
-  }
-
-  const path = url.startsWith("file://")
-    ? fileURLToPath(url)
-    : join(findRepoRoot(), url.replace(/^\/+/, ""));
-  if (!existsSync(path)) return null;
-  return bufferToArrayBuffer(readFileSync(path));
 }
 
 async function resolveExec(path: string): Promise<ArrayBuffer | null> {
   const local = resolveExecLocal(path);
   if (local) return local;
 
-  const fromRootfs = await resolveExecFromRootfs(path);
-  if (fromRootfs) return fromRootfs;
-
-  const vfs = readExecFromVfs(path);
+  const vfs = await readExecFromVfs(path);
   if (vfs) return vfs;
 
   // Ask main thread to resolve
@@ -622,6 +571,18 @@ function buildVirtualPlatformIO(
     : null;
   if (rootfsMemfs) {
     ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
+    rootfsMemfs.setLazyFetcher(async (url) => {
+      if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
+      const path = url.startsWith("file://")
+        ? fileURLToPath(url)
+        : join(findRepoRoot(), url.replace(/^\/+/, ""));
+      if (!existsSync(path)) return new Response(null, { status: 404 });
+      const bytes = new Uint8Array(readFileSync(path));
+      return new Response(bytes, {
+        status: 200,
+        headers: { "content-length": String(bytes.byteLength) },
+      });
+    });
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { gunzipSync } from "fflate";
 import type { StatResult } from "./types";
 import type {
   HomebrewLinkEntry,
@@ -12,16 +11,15 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "./vfs/image-helpers";
+import { parseTarGzip, type TarEntry } from "./vfs/tar";
 
 const DEFAULT_IMAGE_BYTES = 128 * 1024 * 1024;
-const TAR_BLOCK_BYTES = 512;
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
 const S_IFDIR = 0x4000;
 const S_IFLNK = 0xa000;
 const O_RDONLY = 0;
 const MODE_BITS = 0o7777;
-const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 const TEXT_ENCODER = new TextEncoder();
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
@@ -207,16 +205,6 @@ export interface HomebrewVfsBuildReport {
 export interface HomebrewVfsBuildResult {
   fs: MemoryFileSystem;
   report: HomebrewVfsBuildReport;
-}
-
-type TarEntryType = "file" | "directory" | "symlink" | "hardlink";
-
-interface TarEntry {
-  path: string;
-  type: TarEntryType;
-  mode: number;
-  data: Uint8Array;
-  linkName?: string;
 }
 
 interface StagePackageResult {
@@ -487,7 +475,7 @@ function verifyBottleBytes(pkg: HomebrewVfsPackagePlan, bytes: Uint8Array): void
 
 function parseBottleTarGz(pkg: HomebrewVfsPackagePlan, bytes: Uint8Array): TarEntry[] {
   try {
-    return parseTarGz(bytes, packageLabel(pkg));
+    return parseTarGzip(bytes, { label: packageLabel(pkg) });
   } catch (err) {
     fail(pkg, err instanceof Error ? err.message : String(err));
   }
@@ -1297,204 +1285,17 @@ function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   }
 }
 
-function parseTarGz(bytes: Uint8Array, label: string): TarEntry[] {
-  let tarBytes: Uint8Array;
-  try {
-    tarBytes = gunzipSync(bytes);
-  } catch (err) {
-    throw new HomebrewVfsBuildError(
-      `${label}: cannot gunzip bottle: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  return parseTar(tarBytes, label);
-}
-
-function parseTar(bytes: Uint8Array, label: string): TarEntry[] {
-  const entries: TarEntry[] = [];
-  let offset = 0;
-  let localPax: Record<string, string> | null = null;
-  let globalPax: Record<string, string> = {};
-
-  while (offset + TAR_BLOCK_BYTES <= bytes.byteLength) {
-    const header = bytes.subarray(offset, offset + TAR_BLOCK_BYTES);
-    offset += TAR_BLOCK_BYTES;
-
-    if (isZeroBlock(header)) {
-      break;
-    }
-
-    validateTarChecksum(header, label);
-    const typeflag = readStringField(header, 156, 1) || "0";
-    const size = readTarNumber(header, 124, 12, `${label}: tar entry size`);
-    const mode = readTarNumber(header, 100, 8, `${label}: tar entry mode`) & MODE_BITS;
-    if (offset + size > bytes.byteLength) {
-      throw new HomebrewVfsBuildError(`${label}: tar entry is truncated`);
-    }
-    const data = bytes.subarray(offset, offset + size);
-    offset += Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
-
-    const rawName = tarPathFromHeader(header, label);
-    const rawLinkName = readStringField(header, 157, 100);
-
-    if (typeflag === "x" || typeflag === "g") {
-      const parsedPax = parsePaxRecords(data, label);
-      if (typeflag === "x") {
-        localPax = parsedPax;
-      } else {
-        globalPax = { ...globalPax, ...parsedPax };
-      }
-      continue;
-    }
-
-    const pax = { ...globalPax, ...(localPax ?? {}) };
-    localPax = null;
-    const path = normalizeTarEntryPath(pax.path ?? rawName, label);
-    const linkName = pax.linkpath ?? rawLinkName;
-
-    switch (typeflag) {
-      case "0":
-      case "\0":
-        entries.push({ path, type: "file", mode: mode || 0o644, data });
-        break;
-      case "5":
-        entries.push({ path, type: "directory", mode: mode || 0o755, data: new Uint8Array() });
-        break;
-      case "2":
-        entries.push({
-          path,
-          type: "symlink",
-          mode: mode || 0o777,
-          data: new Uint8Array(),
-          linkName,
-        });
-        break;
-      case "1":
-        if (size !== 0) {
-          throw new HomebrewVfsBuildError(
-            `${label}: hardlink ${path} has nonzero payload size ${size}`,
-          );
-        }
-        entries.push({
-          path,
-          type: "hardlink",
-          mode: mode || 0o644,
-          data: new Uint8Array(),
-          linkName: normalizeTarEntryPath(linkName, `${label}: hardlink target`),
-        });
-        break;
-      case "3":
-      case "4":
-      case "6":
-        throw new HomebrewVfsBuildError(`${label}: unsupported tar device/fifo entry ${path}`);
-      default:
-        throw new HomebrewVfsBuildError(`${label}: unsupported tar entry type ${JSON.stringify(typeflag)} for ${path}`);
-    }
-  }
-
-  return entries;
-}
-
-function parsePaxRecords(data: Uint8Array, label: string): Record<string, string> {
-  const text = decodeUtf8(data, `${label}: pax header`);
-  const out: Record<string, string> = {};
-  let offset = 0;
-  while (offset < text.length) {
-    const space = text.indexOf(" ", offset);
-    if (space <= offset) {
-      throw new HomebrewVfsBuildError(`${label}: invalid pax record length`);
-    }
-    const recordLength = Number.parseInt(text.slice(offset, space), 10);
-    if (!Number.isSafeInteger(recordLength) || recordLength <= 0) {
-      throw new HomebrewVfsBuildError(`${label}: invalid pax record length`);
-    }
-    const record = text.slice(offset, offset + recordLength);
-    if (record.length !== recordLength || !record.endsWith("\n")) {
-      throw new HomebrewVfsBuildError(`${label}: truncated pax record`);
-    }
-    const equals = record.indexOf("=", space - offset + 1);
-    if (equals < 0) {
-      throw new HomebrewVfsBuildError(`${label}: invalid pax record`);
-    }
-    const key = record.slice(space - offset + 1, equals);
-    const value = record.slice(equals + 1, -1);
-    out[key] = value;
-    offset += recordLength;
-  }
-  return out;
-}
-
-function validateTarChecksum(header: Uint8Array, label: string): void {
-  const recorded = readTarNumber(header, 148, 8, `${label}: tar checksum`);
-  let sum = 0;
-  for (let i = 0; i < header.length; i++) {
-    sum += i >= 148 && i < 156 ? 0x20 : header[i];
-  }
-  if (recorded !== sum) {
-    throw new HomebrewVfsBuildError(`${label}: tar checksum mismatch`);
-  }
-}
-
-function tarPathFromHeader(header: Uint8Array, label: string): string {
-  const name = readStringField(header, 0, 100);
-  const prefix = readStringField(header, 345, 155);
-  return normalizeTarEntryPath(prefix ? `${prefix}/${name}` : name, label);
-}
-
-function normalizeTarEntryPath(path: string, label: string): string {
-  let normalized = path;
-  while (normalized.startsWith("./")) normalized = normalized.slice(2);
-  normalized = normalized.replace(/\/+$/g, "");
-  validateSafeRelativePath(normalized, `${label}: tar path`);
-  return normalized;
-}
-
-function readStringField(bytes: Uint8Array, offset: number, length: number): string {
-  let end = offset;
-  const limit = offset + length;
-  while (end < limit && bytes[end] !== 0) end += 1;
-  if (end === offset) return "";
-  return decodeUtf8(bytes.subarray(offset, end), "tar string field");
-}
-
-function readTarNumber(bytes: Uint8Array, offset: number, length: number, label: string): number {
-  const first = bytes[offset];
-  if ((first & 0x80) !== 0) {
-    throw new HomebrewVfsBuildError(`${label}: base-256 tar numbers are not supported`);
-  }
-  const raw = readStringField(bytes, offset, length).trim();
-  if (raw.length === 0) return 0;
-  if (!/^[0-7]+$/.test(raw)) {
-    throw new HomebrewVfsBuildError(`${label}: invalid octal number`);
-  }
-  const value = Number.parseInt(raw, 8);
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new HomebrewVfsBuildError(`${label}: invalid tar number`);
-  }
-  return value;
-}
-
-function isZeroBlock(block: Uint8Array): boolean {
-  for (const byte of block) {
-    if (byte !== 0) return false;
-  }
-  return true;
-}
-
-function decodeUtf8(bytes: Uint8Array, label: string): string {
-  try {
-    return TEXT_DECODER.decode(bytes);
-  } catch {
-    throw new HomebrewVfsBuildError(`${label} contains non-UTF-8 text`);
-  }
-}
-
 function validateSafeRelativePath(path: string, label: string): void {
   if (path.length === 0 || path.startsWith("/")) {
-    throw new HomebrewVfsBuildError(`${label} ${JSON.stringify(path)} must be a relative path`);
+    throw new HomebrewVfsBuildError(
+      `${label} ${JSON.stringify(path)} must be a relative path`,
+    );
   }
   for (const segment of path.split("/")) {
     if (segment.length === 0 || segment === "." || segment === "..") {
-      throw new HomebrewVfsBuildError(`${label} ${JSON.stringify(path)} contains an unsafe path segment`);
+      throw new HomebrewVfsBuildError(
+        `${label} ${JSON.stringify(path)} contains an unsafe path segment`,
+      );
     }
   }
 }

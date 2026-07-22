@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-runtime-layer-policy",
+  "base_package": "shell",
+  "layers": [
+    {
+      "id": "erlang",
+      "root_package": "kandelo-dev/tap-core/erlang"
+    },
+    {
+      "id": "perl",
+      "root_package": "kandelo-dev/tap-core/perl"
+    },
+    {
+      "id": "python",
+      "root_package": "kandelo-dev/tap-core/python"
+    }
+  ]
+}

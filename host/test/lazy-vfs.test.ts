@@ -30,13 +30,17 @@ describe("Lazy VFS files", () => {
 
   it("fstat returns declared size for unmaterialized lazy file", () => {
     const mfs = createMemfs();
+    const peer = MemoryFileSystem.fromExisting(mfs.sharedBuffer);
     const declaredSize = 54321;
     mfs.registerLazyFile("/bin/test", "http://example.com/test.wasm", declaredSize);
 
-    const fd = mfs.open("/bin/test", O_RDONLY, 0);
+    // A peer without the process-local lazy registry can already hold the
+    // shared inode open. The owner must still report its declared logical
+    // size through that handle without fetching bytes.
+    const fd = peer.open("/bin/test", O_RDONLY, 0);
     const st = mfs.fstat(fd);
     expect(st.size).toBe(declaredSize);
-    mfs.close(fd);
+    peer.close(fd);
   });
 
   it("lstat returns declared size for unmaterialized lazy file", () => {

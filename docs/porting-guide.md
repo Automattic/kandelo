@@ -86,6 +86,16 @@ Any time a ported program needs more than a handful of runtime files that togeth
 
 `MemoryFileSystem.registerLazyArchiveFromEntries(url, zipEntries, mountPrefix)` walks the central directory of a zip, creates inode stubs for every file under `mountPrefix`, and remembers the archive URL. On first access to any stub in the group, the worker fetches the full zip, materializes every entry into memory, and future reads are served from memory. Materialization happens once per VFS instance.
 
+The legacy ZIP API remains supported for existing browser bundles. New
+package-layer infrastructure may instead use `registerLazyTree`, whose closed
+content descriptor separates the immutable bytes and decoder from a complete
+filesystem inventory. It supports deterministic ZIP as a compatibility
+scaffold and bounded gzip-compressed POSIX/PAX TAR, preserves declared hard
+links as one inode, and verifies the whole tree before an atomic regular-file
+commit. Ordinary first open/read and executable resolution use the same
+preparation path; `stat` alone never downloads content. A failed preparation
+does not expose partial or zero-byte success and may be retried.
+
 At runtime the URL stored in the group is bare — a plain filename like `vim.zip`. The browser runtime calls `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)` once, right after `MemoryFileSystem.fromImage`, so the archive resolves against the deployment's base URL instead of the build-time one.
 
 ### Build-side contract

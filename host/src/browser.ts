@@ -37,6 +37,12 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  LazyTreeActivation,
+  LazyTreeContent,
+  LazyTreeDecoder,
+  LazyTreeGroup,
+  LazyTreeRegistrationEntry,
+  SerializedLazyTree,
   VfsImageCapacity,
 } from "./vfs/memory-fs";
 export { DeviceFileSystem } from "./vfs/device-fs";
@@ -67,3 +73,46 @@ export type {
   HomebrewVfsPlanOptions,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+export {
+  HOMEBREW_RUNTIME_LAYER_POLICY_KIND,
+  parseHomebrewRuntimeLayerPolicy,
+  projectHomebrewRuntimeLayerPlan,
+  selectHomebrewRuntimeLayer,
+  selectHomebrewRuntimeLayers,
+} from "./homebrew-runtime-layer-policy";
+export {
+  HOMEBREW_RUNTIME_LAYER_LIMITS,
+  composeHomebrewRuntimeLayers,
+  parseHomebrewRuntimeLayerDescriptor,
+} from "./homebrew-runtime-layer-consumer";
+export type {
+  ComposedHomebrewRuntimeLayers,
+  ComposeHomebrewRuntimeLayersOptions,
+  HomebrewRuntimeLayerReference,
+  RegisteredHomebrewRuntimeLayer,
+} from "./homebrew-runtime-layer-consumer";
+export type {
+  HomebrewDeferredTreeDecoder,
+  HomebrewDeferredTreeDescriptor,
+  HomebrewDeferredTreeDraftDescriptor,
+  HomebrewDeferredTreeDraftTransport,
+  HomebrewDeferredTreeTransport,
+  HomebrewLazyLayerBasePackageSource,
+  HomebrewLazyLayerDescriptor,
+  HomebrewLazyLayerDraftDescriptor,
+  HomebrewLazyLayerEntry,
+  HomebrewLazyLayerPackageRecord,
+  HomebrewRuntimeLayerAssetIdentity,
+} from "./homebrew-lazy-layer-descriptor";
+export {
+  canonicalHomebrewRuntimeLayerBundleIdentityBytes,
+  canonicalHomebrewRuntimeLayerDescriptorBytes,
+  homebrewRuntimeLayerBundleIdentityDocument,
+} from "./homebrew-lazy-layer-descriptor";
+export type {
+  HomebrewRuntimeLayerBaseClosure,
+  HomebrewRuntimeLayerBasePackageSourceIdentity,
+  HomebrewRuntimeLayerPolicy,
+  HomebrewRuntimeLayerPolicyEntry,
+  HomebrewRuntimeLayerSelection,
+} from "./homebrew-runtime-layer-policy";

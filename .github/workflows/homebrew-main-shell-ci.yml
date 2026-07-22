@@ -158,7 +158,7 @@ jobs:
             npx playwright install chromium --with-deps
           )
 
-      - name: Fetch direct browser bundling inputs and build the exact candidate kernel
+      - name: Resolve current direct browser bundling inputs and build the exact candidate kernel
         run: |
           set -euo pipefail
           abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
@@ -170,6 +170,11 @@ jobs:
           # They are browser bundling inputs, not shell VFS inputs: archive-stage
           # builds shell's dependency-free package from public bottles, and the
           # exact archive replaces shell before either runtime proof starts.
+          # Use the normal resolver contract for these supporting packages. A
+          # matching public archive is reused; a PR that changes one of its
+          # declared build inputs source-builds the exact current recipe. Using
+          # --fetch-only here would make such a PR impossible to validate until
+          # after its new support-package archive was already published.
           browser_package_file="$RUNNER_TEMP/browser-binary-packages.txt"
           node scripts/browser-binary-package-roots.mjs \
             --exclude-package shell \
@@ -179,7 +184,7 @@ jobs:
           [ "${#browser_input_packages[@]}" -gt 0 ]
           [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" \
             -eq "${#browser_input_packages[@]}" ]
-          fetch_args=(--fetch-only)
+          fetch_args=()
           for package in "${browser_input_packages[@]}"; do
             fetch_args+=(--package "$package")
           done

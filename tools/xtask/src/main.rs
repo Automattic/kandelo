@@ -15,6 +15,10 @@
 //!   package-dependency-artifacts
 //!                         Print workflow artifact names for selected direct
 //!                         program dependencies of one package matrix entry.
+//!   materialize-package-output
+//!                         Fetch one declared program output from an exact
+//!                         index snapshot and emit its immutable provenance
+//!                         receipt without source-build fallback.
 //!   archive-stage         Produce one package's `.tar.zst` archive into --out.
 //!                         Args: --package <dir> --arch <wasm32|wasm64>
 //!                               --out <dir> --build-timestamp <ISO> --build-host <s>.
@@ -74,6 +78,7 @@ mod index_toml;
 mod index_update;
 mod package_archive_name;
 mod package_matrix;
+mod package_output_receipt;
 mod pkg_manifest;
 mod remote_fetch;
 mod source_extract;
@@ -88,7 +93,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, staging-reuse, archive-stage, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
             );
             return ExitCode::from(2);
         }
@@ -101,6 +106,7 @@ fn main() -> ExitCode {
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
         "sort-package-matrix" => package_matrix::run_sort(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),
+        "materialize-package-output" => package_output_receipt::run(rest),
         "staging-reuse" => staging_reuse::run(rest),
         "archive-stage" => archive_stage_cli::run(rest),
         "build-index" => build_index::run(rest),

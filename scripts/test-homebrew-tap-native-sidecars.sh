@@ -1272,6 +1272,68 @@ grep -F "already contains a Homebrew composition" \
 npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --metadata "$TAP/Kandelo/metadata.json" \
   --tap-root "$TAP" \
+  --package sidecar-dep \
+  --arch wasm32 \
+  --runtime node \
+  --bottle-cache "$BOTTLE_CACHE" \
+  --base-image "$BASE_IMAGE" \
+  --max-bytes "$BASE_REQUESTED_MAX_BYTES" \
+  --write-profile \
+  --no-fallback \
+  --out "$TMPDIR/sidecar-dep-base.vfs.zst" \
+  --report "$TMPDIR/sidecar-dep-base-report.json" >/dev/null
+LAYER_BASE_VFS_SHA256="$(sha256_file "$TMPDIR/sidecar-dep-base.vfs.zst")"
+LAYER_BASE_VFS_BYTES="$(wc -c <"$TMPDIR/sidecar-dep-base.vfs.zst" | tr -d '[:space:]')"
+LAYER_BASE_PACKAGE_SOURCE="$TMPDIR/shell-package-output.json"
+jq -nS \
+  --arg output_sha256 "$LAYER_BASE_VFS_SHA256" \
+  --argjson output_bytes "$LAYER_BASE_VFS_BYTES" \
+  --argjson abi "$ABI_VERSION" \
+  '{
+    schema: 1,
+    kind: "kandelo-package-output",
+    index: {
+      url: "https://packages.example.invalid/abi/index.toml",
+      sha256: ("a" * 64),
+      bytes: 123,
+      abi: $abi
+    },
+    package: {
+      name: "shell",
+      version: "0.1.0",
+      revision: 1,
+      arch: "wasm32",
+      cache_key_sha: ("b" * 64)
+    },
+    archive: {
+      format: "kandelo-package-tar-zstd-v2",
+      url: "https://packages.example.invalid/shell.tar.zst",
+      sha256: ("c" * 64),
+      bytes: 456
+    },
+    output: {
+      name: "shell",
+      path: "shell.vfs.zst",
+      sha256: $output_sha256,
+      bytes: $output_bytes
+    }
+  }' >"$LAYER_BASE_PACKAGE_SOURCE"
+RUNTIME_LAYER_ID="sidecar-tool"
+RUNTIME_LAYER_POLICY="$TMPDIR/runtime-layer-policy.json"
+jq -nS --arg id "$RUNTIME_LAYER_ID" '{
+  schema: 1,
+  kind: "kandelo-homebrew-runtime-layer-policy",
+  base_package: "shell",
+  layers: [{
+    id: $id,
+    root_package: ("kandelo-dev/tap-core/" + $id)
+  }]
+}' >"$RUNTIME_LAYER_POLICY"
+RUNTIME_LAYER_PAYLOAD="$TMPDIR/kandelo-homebrew-${RUNTIME_LAYER_ID}-layer.bin"
+RUNTIME_LAYER_DESCRIPTOR="$TMPDIR/kandelo-homebrew-${RUNTIME_LAYER_ID}-layer.json"
+npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  --metadata "$TAP/Kandelo/metadata.json" \
+  --tap-root "$TAP" \
   --brewfile "$BREWFILE" \
   --arch wasm32 \
   --runtime node \
@@ -1282,8 +1344,123 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --shell-config "$SHELL_CONFIG" \
   --demo-config "$DEMO_CONFIG" \
   --no-fallback \
+  --lazy-layer-out "$RUNTIME_LAYER_PAYLOAD" \
+  --lazy-layer-descriptor "$RUNTIME_LAYER_DESCRIPTOR" \
+  --lazy-layer-base-image "$TMPDIR/sidecar-dep-base.vfs.zst" \
+  --lazy-layer-base-package-source "$LAYER_BASE_PACKAGE_SOURCE" \
+  --runtime-layer-id "$RUNTIME_LAYER_ID" \
+  --runtime-layer-policy "$RUNTIME_LAYER_POLICY" \
   --out "$TMPDIR/sidecar-tool.vfs.zst" \
   --report "$TMPDIR/sidecar-tool-report.json" >/dev/null
+
+LAYER_ACCEPTANCE_VFS_SHA256="$(sha256_file "$TMPDIR/sidecar-tool.vfs.zst")"
+jq -e '
+  . as $descriptor |
+  .schema == 4 and .kind == "kandelo-homebrew-deferred-layer-draft" and
+  .mount_prefix == "/" and
+  .selection.requested_packages == ["sidecar-tool"] and
+  .selection.package_order == [
+    "kandelo-dev/tap-core/sidecar-dep",
+    "kandelo-dev/tap-core/sidecar-tool"
+  ] and
+  .selection.base_package_order == ["kandelo-dev/tap-core/sidecar-dep"] and
+  .selection.layer_package_order == ["kandelo-dev/tap-core/sidecar-tool"] and
+  [.packages.base[].name] == ["sidecar-dep"] and
+  [.packages.layer[].name] == ["sidecar-tool"] and
+  .base_vfs.sha256 == $base_vfs_sha and
+  .base_vfs.package_source.output == {
+    "name":"shell",
+    "path":"shell.vfs.zst",
+    "sha256":$base_vfs_sha,
+    "bytes":$base_vfs_bytes
+  } and
+  .acceptance_vfs.sha256 == $acceptance_vfs_sha and
+  (.deferred_trees | length) == 1 and
+  (.deferred_trees[0] as $tree |
+  $tree.id == "sidecar-tool" and
+  $tree.activation == {
+    "mode":"first-use",
+    "capabilities":["homebrew-runtime:sidecar-tool"],
+    "roots":["/home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3"]
+  } and
+  $tree.content.media_type == "application/zip" and
+  $tree.content.decoder == "zip-v1" and
+  ($tree.content.sha256 | test("^[0-9a-f]{64}$")) and
+  ($tree.content.bytes | type == "number" and . > 0) and
+  $tree.transports == [{
+    "kind":"bundle-release",
+    "asset":"kandelo-homebrew-sidecar-tool-layer.bin"
+  }] and
+  $tree.inventory.entry_count == ($tree.inventory.entries | length) and
+  $tree.inventory.source_entry_count ==
+    ([$tree.inventory.entries[].source_path] | unique | length) and
+  $tree.inventory.regular_inode_count ==
+    ([$tree.inventory.entries[] | select(.type == "file" or .type == "hardlink") | .inode_group] | unique | length) and
+  $tree.inventory.layer_entry_count ==
+    ([$tree.inventory.entries[] | select(.ownership == "layer")] | length) and
+  $tree.inventory.shared_base_directory_count ==
+    ([$tree.inventory.entries[] | select(.ownership == "shared-base-directory")] | length) and
+  $tree.inventory.expanded_bytes ==
+    ([$tree.inventory.entries[] | select(.type != "hardlink") | .size] | add) and
+  $tree.inventory.payload_bytes ==
+    ([$tree.inventory.entries[] | select(.type == "file") | .size] | add) and
+  ([$tree.inventory.entries[].path] == ([$tree.inventory.entries[].path] | sort)))
+' --arg base_vfs_sha "$LAYER_BASE_VFS_SHA256" \
+  --argjson base_vfs_bytes "$LAYER_BASE_VFS_BYTES" \
+  --arg acceptance_vfs_sha "$LAYER_ACCEPTANCE_VFS_SHA256" \
+  "$RUNTIME_LAYER_DESCRIPTOR" >/dev/null
+python3 - "$RUNTIME_LAYER_PAYLOAD" \
+  "$RUNTIME_LAYER_DESCRIPTOR" <<'PY'
+import hashlib, json, pathlib, stat, sys, zipfile
+
+archive_path, descriptor_path = map(pathlib.Path, sys.argv[1:])
+descriptor = json.loads(descriptor_path.read_text())
+tree = descriptor["deferred_trees"][0]
+entries = tree["inventory"]["entries"]
+payload = archive_path.read_bytes()
+assert len(payload) == tree["content"]["bytes"]
+assert hashlib.sha256(payload).hexdigest() == tree["content"]["sha256"]
+with zipfile.ZipFile(archive_path) as archive:
+    infos = archive.infolist()
+    expected = [
+        entry["source_path"] + ("/" if entry["type"] == "directory" else "")
+        for entry in entries
+        if entry["type"] != "hardlink"
+    ]
+    actual_names = [info.filename for info in infos]
+    assert actual_names == expected
+    assert archive.comment == b""
+    kinds = {
+        "directory": stat.S_IFDIR,
+        "file": stat.S_IFREG,
+        "symlink": stat.S_IFLNK,
+    }
+    source_entries = {
+        entry["source_path"]: entry
+        for entry in entries
+        if entry["type"] != "hardlink"
+    }
+    for info in infos:
+        entry = source_entries[info.filename.removesuffix("/")]
+        mode = info.external_attr >> 16
+        assert info.create_system == 3
+        assert info.date_time == (1980, 1, 1, 0, 0, 0)
+        assert info.comment == b"" and info.extra == b""
+        assert stat.S_IFMT(mode) == kinds[entry["type"]]
+        assert (mode & 0o7777) == entry["mode"]
+        assert len(archive.read(info)) == entry["size"]
+    executable = archive.getinfo(
+        "home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
+    )
+    assert ((executable.external_attr >> 16) & 0o7777) == 0o755
+    linked = archive.getinfo("home/linuxbrew/.linuxbrew/bin/sidecar-tool")
+    assert stat.S_ISLNK(linked.external_attr >> 16)
+    assert archive.read(linked).decode() == (
+        "/home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
+    )
+    assert not any(name.startswith("etc/") for name in actual_names)
+    assert not any("/Cellar/sidecar-dep/" in name for name in actual_names)
+PY
 
 jq -e --slurpfile metadata "$TAP/Kandelo/metadata.json" '
   [.packages[].name] == ["sidecar-dep", "sidecar-tool"] and

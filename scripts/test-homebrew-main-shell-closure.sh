@@ -159,6 +159,13 @@ grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
   fail "browser bundling input fetch must pass exact positive package selections"
 grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
   fail "binary fetch must materialize only direct browser bundling inputs"
+browser_fetch_block="$(sed -n \
+  '/- name: Resolve current direct browser bundling inputs/,/- name: Build the canonical shell package archive/p' \
+  "$WORKFLOW")"
+grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" ||
+  fail "browser support inputs must use the normal current-recipe resolver path"
+grep -Fq 'fetch_args=(--fetch-only)' <<<"$browser_fetch_block" &&
+  fail "browser support inputs must source-build when the current recipe is newer than the public archive"
 grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
   fail "main-shell proof must not use a negative package skip list"
 grep -Fq 'node scripts/browser-binary-package-roots.mjs \' "$WORKFLOW" ||
