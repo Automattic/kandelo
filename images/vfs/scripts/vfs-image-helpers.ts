@@ -105,6 +105,13 @@ export interface SaveImageOptions {
   skipWasmArtifactCheck?: boolean;
   /** Normalize all serialized inode times for reproducible product images. */
   normalizeTimestampsMs?: number;
+  /** Runtime allocation reserve that must remain after build-time population. */
+  headroom?: VfsImageHeadroom;
+}
+
+export interface VfsImageHeadroom {
+  minimumFreeBytes: number;
+  minimumFreeInodes: number;
 }
 
 const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
@@ -135,6 +142,49 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
     return buf;
   } finally {
     fs.close(fd);
+  }
+}
+
+/**
+ * Reject a product image during its build when normal runtime writes would
+ * immediately run out of data blocks or inode slots. SharedFS accounts for
+ * those resources independently, so both reserves are part of the contract.
+ */
+export function assertVfsImageHeadroom(
+  fs: MemoryFileSystem,
+  headroom: VfsImageHeadroom,
+  label: string,
+): void {
+  for (const [name, value] of [
+    ["minimumFreeBytes", headroom.minimumFreeBytes],
+    ["minimumFreeInodes", headroom.minimumFreeInodes],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`${label} ${name} must be a non-negative safe integer`);
+    }
+  }
+
+  const stats = fs.statfs("/");
+  const freeBytes = stats.bfree * stats.frsize;
+  if (!Number.isSafeInteger(freeBytes) || freeBytes < 0) {
+    throw new Error(`${label} reports an invalid free-byte count`);
+  }
+  if (!Number.isSafeInteger(stats.ffree) || stats.ffree < 0) {
+    throw new Error(`${label} reports an invalid free-inode count`);
+  }
+  const failures: string[] = [];
+  if (freeBytes < headroom.minimumFreeBytes) {
+    failures.push(
+      `${freeBytes} free bytes remain; ${headroom.minimumFreeBytes} are required`,
+    );
+  }
+  if (stats.ffree < headroom.minimumFreeInodes) {
+    failures.push(
+      `${stats.ffree} free inodes remain; ${headroom.minimumFreeInodes} are required`,
+    );
+  }
+  if (failures.length > 0) {
+    throw new Error(`${label} lacks runtime VFS headroom: ${failures.join("; ")}`);
   }
 }
 
@@ -216,6 +266,9 @@ export async function saveImage(
   }
 
   console.log("Saving VFS image...");
+  if (options.headroom) {
+    assertVfsImageHeadroom(fs, options.headroom, outFile);
+  }
   const kernelAbi = options.kernelAbi ?? ABI_VERSION;
   if (!options.skipWasmArtifactCheck) {
     assertNoStaleWasmArtifacts(fs, kernelAbi);

@@ -20,7 +20,6 @@ import {
   writeVfsBinary,
   ensureDirRecursive,
   walkAndWrite,
-  saveImage,
 } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract, ensureExtract } from "./source-extract-helper";
@@ -34,7 +33,10 @@ import {
   smtpCaptureService,
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
-import { loadShellBaseFileSystem } from "./shell-vfs-build";
+import {
+  loadShellBaseFileSystem,
+  saveShellDerivedVfsImage,
+} from "./shell-vfs-build";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
@@ -424,7 +426,7 @@ async function main() {
   });
 
   // Save image
-  await saveImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, OUT_FILE);
   console.log(`${wpCount} WordPress files total`);
 }
 

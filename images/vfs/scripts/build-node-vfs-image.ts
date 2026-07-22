@@ -22,10 +22,13 @@ import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
   walkAndWrite,
-  saveImage,
   symlink,
 } from "./vfs-image-helpers";
-import { loadShellBaseFileSystem, resolveVfsArtifact } from "./shell-vfs-build";
+import {
+  loadShellBaseFileSystem,
+  resolveVfsArtifact,
+  saveShellDerivedVfsImage,
+} from "./shell-vfs-build";
 import {
   NODE_LAZY_BINARY_SPEC,
   shellLazyPlaceholderUrl,
@@ -100,7 +103,7 @@ async function main() {
     },
   });
 
-  await saveImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, OUT_FILE);
 }
 
 function populateNodeLazyBinary(fs: MemoryFileSystem): void {

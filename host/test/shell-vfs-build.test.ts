@@ -1,4 +1,6 @@
 import { zstdCompressSync } from "node:zlib";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/shell-vfs-build";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
@@ -87,6 +89,31 @@ function expectContentsPreserved(fs: MemoryFileSystem): void {
 }
 
 describe("shell VFS base composition", () => {
+  it("routes every shell-derived product builder through the headroom gate", () => {
+    const scriptsDir = join(import.meta.dirname, "../../images/vfs/scripts");
+    const builders = readdirSync(scriptsDir)
+      .filter((name) => name.startsWith("build-") && name.endsWith("-vfs-image.ts"))
+      .filter((name) =>
+        readFileSync(join(scriptsDir, name), "utf8").includes(
+          "loadShellBaseFileSystem(",
+        )
+      )
+      .sort();
+
+    expect(builders).toEqual([
+      "build-lamp-vfs-image.ts",
+      "build-nginx-php-vfs-image.ts",
+      "build-nginx-vfs-image.ts",
+      "build-node-vfs-image.ts",
+      "build-wp-vfs-image.ts",
+    ]);
+    for (const builder of builders) {
+      const source = readFileSync(join(scriptsDir, builder), "utf8");
+      expect(source, builder).toContain("saveShellDerivedVfsImage(");
+      expect(source, builder).not.toMatch(/\bsaveImage\(/);
+    }
+  });
+
   it("rebases a serialized source larger than the downstream capacity", async () => {
     const image = await sourceImage(16 * MiB, 32 * MiB);
     const compressed = new Uint8Array(zstdCompressSync(image));
