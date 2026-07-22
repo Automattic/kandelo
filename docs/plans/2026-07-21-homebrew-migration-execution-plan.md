@@ -175,12 +175,12 @@ complete here only when its exact accepted artifact has been verified.
 |---|---|---|
 | Public publisher foundation | Complete | Repository-rooted public GHCR creation, anonymous readback, immutable trust, retry/recovery, coordinated finalization, and immutable VFS releases are implemented. PR #1048 landed the clean-input coordinated-finalizer fix at `1618563d87dd2207077ce228040cc9b2c773eb5e`. The production path uses `GITHUB_TOKEN`. |
 | Canonical tap migration | Complete for the production repository | PR #973 retargeted publication to `Kandelo-dev/homebrew-tap-core`; the old Automattic tap is archived. |
-| Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 60 sidecar package records and 67 successful architecture-specific bottle records at this snapshot. This covers the complete 38-Formula main-shell closure and several language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
-| Bottle-composed main shell | Revision-17 lazy activation is under final review | PR #1025 builds and publishes the current main shell from the exact public 38-Formula closure and proves the exact eager image in Node.js and Chromium. PR #1052 landed the reviewed Bash-closure/35-deferred-bottle policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. PR #1060 is the active activation candidate: it keeps the exact embedded Bash closure, retains 35 independently deferred bottles, binds the immutable 36-asset public mirror to tap commit `74359eeeaf01908c78fbb4ed398b41ae361ee90d`, and exercises anonymous public transport in Node.js and Chromium. Its first merge gate exposed a general directory-record loss bug, so the same candidate now carries the separately tested POSIX `getdents64` repair. Production remains on the eager revision until #1060's refreshed exact-head and synthesized-merge gates pass and the PR lands. |
-| Language bottles | Public publication complete; lazy-shell acceptance pending | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. It also published and anonymously read back the immutable browser-proven Python VFS release `homebrew-vfs-sha256-db98a17118afeb91d7c8d939fecc8c482ba765cbbe63b242ccf2834de2b48119`. Perl is published. Python, Perl, Erlang, and Ruby still need inclusion in the final lazy-shell language acceptance matrix. |
+| Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 60 sidecar package records and 67 successful architecture-specific bottle records at this snapshot. This covers the expanded 42-Formula main-shell candidate, including its four language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
+| Bottle-composed main shell | Phase 3 complete; Phase 4 has an immutable public candidate | PR #1060 landed at `e108a8c4a3259dcf8b646599355590542707adf7` and activated shell revision 17 with the reviewed three-bottle Bash closure and 35 independently deferred bottles. Its exact post-merge Node.js and Chromium shell checks are green, and the production index now selects the lazy image. The Phase 4 candidate extends the same policy to 36 roots and 42 Formulae while retaining only the same three embedded bottles. |
+| Language bottles | Public publication complete; immutable revision-18 candidate and public Node acceptance green | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. Perl is published. The exact 5,885,691-byte revision-18 shell candidate and its 39 deferred bottles are now bound to immutable release `homebrew-shell-bottles-sha256-b51c071bc0f5eabf230f10d26f8e6c397999323dfbf18cb6da11cec822f8c21b`. Anonymous public Node acceptance starts Python, Perl, Erlang, and Ruby lazily in isolated first-use steps. Chromium reached the same runtime behavior but exposed that the UI's 512-event progress ring can evict earlier completed bottle summaries; the bounded per-asset authoritative ledger must land before browser acceptance is complete. |
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
-| Deferred bottle trees | Generic producer and Phase 3 public proof complete; Phase 4 relocation is local | PR #1051 landed the generic first-use substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`. PR #1054 landed the exact original-bottle producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: one independently lazy tree per Formula, complete source and guest inventories, exact compressed transport identity, hardlinks, and independent TypeScript/Python validation. PR #1055 composes the exact 38-Formula namespace, and PR #1060's exact head proves its immutable public mirror and canonical revision-17 cutover. PR #1056 is the next aggregate-budget correction. The Phase 4 worktree adds receipt-owned relocation before exposing language runtimes, because exact bottle bytes are transport truth while a correct pour may replace only the placeholders named by that bottle's `INSTALL_RECEIPT.json`. |
-| Guest upstream `brew` | Partial experiment | A bootstrap image can run upstream Homebrew and its Ruby support. General `brew tap`/`brew install` from public first-party and third-party bottles is not yet a supported shell capability. |
+| Deferred bottle trees | Generic producer and Phase 3 public proof complete; Phase 4 mirror public and relocation locally validated | PR #1051 landed the generic first-use substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`. PR #1054 landed the exact original-bottle producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: one independently lazy tree per Formula, complete source and guest inventories, exact compressed transport identity, hardlinks, and independent TypeScript/Python validation. PR #1055 composes the exact 38-Formula namespace, and PR #1060's exact head proves its immutable public mirror and canonical revision-17 cutover. PR #1056 is the next aggregate-budget correction. The Phase 4 worktree adds receipt-owned relocation before exposing language runtimes, because exact bottle bytes are transport truth while a correct pour may replace only the placeholders named by that bottle's `INSTALL_RECEIPT.json`; its complete 39-bottle browser mirror is public and immutable. |
+| Guest upstream `brew` | Stock tap and bottle-pour proof complete in the opt-in image; product lifecycle incomplete | Draft PR #1059 pins upstream Homebrew, gives its unprivileged guest state the conventional writable layout, and passes exact Node.js/Chromium startup, config, operational doctor, first-party tap, and independent third-party tap discovery. An unmodified stock Bzip2 install pours and runs the public bottle once Homebrew can resolve the exact 19-Formula metadata closure for publisher-only native dependencies. Full `homebrew/core` is infeasible in the guest (about 1.3 GiB, including a 1.22 GiB Git pack); the product fix is a separately reviewed allowlist of custom Homebrew `Requirement` classes, not a partial core tap or unsupported dependency bypass. Main-shell activation, install/reinstall/uninstall, durable reboot state, and cross-tap M4 installation remain. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |
 | Bottle-declared, mix-and-match VFS packages | Future retained scope | The current composer produces precomposed images. VFS Formulae/bottles and user-selectable composition remain a later product iteration. |
 
@@ -260,8 +260,8 @@ Acceptance:
 - Producer-backed exact original-bottle bytes materialize on first ordinary
   read and execution in Node.js. Chromium proves the same decoder, inventory,
   first-use, fetch-count, and rollback behavior through a synthetic
-  browser-readable direct-TAR route. Live public-release mirror retrieval
-  remains a Phase 3 cutover item.
+  browser-readable direct-TAR route. The completed Phase 3 cutover additionally
+  proves live anonymous retrieval from the immutable public-release mirror.
 - Registration and `stat` alone do not fetch first-use trees.
 
 Checkpoint: the generic deferred-tree substrate landed through PR #1051 at
@@ -281,11 +281,10 @@ synthesized-merge suites passed. Core-tap PR #84 rotated publish, dry-run, and
 maintenance callers to that immutable Kandelo commit and landed at
 `e7cfe3140e692965cd7abf10e8029633c5d20c02`.
 
-Checkpoint: Phase 2 is complete. PR #1055 is the Phase 3 composer and closed
-transport proof. PR #1060 is the active revision-17 activation candidate; it
-adds the immutable public mirror, anonymous public-transport acceptance, and
-canonical package cutover. Those capabilities remain unlanded until #1060's
-refreshed exact-head and synthesized-merge gates pass.
+Checkpoint: Phase 2 is complete. PR #1055 supplied the Phase 3 composer and
+closed-transport proof. PR #1060 landed the immutable public mirror, anonymous
+public-transport acceptance, and canonical revision-17 package cutover at
+`e108a8c4a3259dcf8b646599355590542707adf7`.
 
 ### Phase 3: Restore full main-shell laziness
 
@@ -324,11 +323,10 @@ packages. PR #1055 applies the partition after computing ownership across all
 exactly 35 pending, preserves the full-plan consumer-owned profile and runtime
 state, and generates the measured production-shell candidate. Its exact closed
 host/VFS binding passes without `page.route` or service-worker interception.
-After publication, Chromium must still read the real anonymous public URLs
-through the normal browser worker/VFS fetch path. This checkpoint does not
-remove or defer that acceptance item.
+The completed publication gate additionally makes Chromium read the real
+anonymous public URLs through the normal browser worker/VFS fetch path.
 
-Pre-publication candidate checkpoint (2026-07-22):
+Pre-publication evidence checkpoint (2026-07-22):
 
 - The composer owns the complete 38-Formula namespace exactly once, embeds the
   three-Formula Bash closure (`libcxx`, `ncurses`, and `bash`), and leaves all
@@ -360,23 +358,21 @@ Pre-publication candidate checkpoint (2026-07-22):
   GitHub bottle request escapes closed mode. First prompt fetches zero bottles;
   the three representative first uses fetch 156,581, 6,815,615, and 1,982,626
   bytes respectively (8,954,822 bytes total).
-- This evidence deliberately does not activate the canonical shell package.
-  The producer has landed and tap trust now pins its immutable merge commit.
-  The package remains at its previous revision until the candidate code lands,
-  the exact mirror is publicly published and anonymously read back, and the
-  same Node.js/Chromium proof passes against public transport. A final small
-  cutover then changes the canonical package revision and wrapper activation
-  without a broken URL window.
+- This evidence deliberately preceded activation of the canonical shell
+  package. The subsequent activation gate published and anonymously read back
+  the exact mirror, repeated the Node.js/Chromium proof against public
+  transport, and changed the canonical package revision without a broken URL
+  window.
 
-Activation checkpoint (2026-07-22): PR #1060 now carries that final cutover as
-revision 17. The exact 36-asset mirror is public and bound to tap commit
-`74359eeeaf01908c78fbb4ed398b41ae361ee90d`; the public-transport Node.js and
-Chromium proof is part of the PR gate. Its first synthesized-merge run found a
-general `getdents64` boundary bug that could consume a directory record before
-the caller had room for it. The candidate now includes the general kernel and
-host repair with fork, spawn, `SCM_RIGHTS`, procfs, devfs, root-mountpoint,
-Node.js, and Chromium coverage. This paragraph records active work, not landed
-support; the production status changes only after #1060 merges.
+Activation checkpoint (2026-07-22): PR #1060 landed the final cutover as
+revision 17 at `e108a8c4a3259dcf8b646599355590542707adf7`. The exact 36-asset
+mirror is public and bound to tap commit
+`74359eeeaf01908c78fbb4ed398b41ae361ee90d`; exact post-merge Node.js and
+Chromium public-transport checks are green, and the production index selects
+the lazy image. The synthesized-merge gate also found and fixed a general
+`getdents64` boundary bug that could consume a directory record before the
+caller had room for it. The landed repair has fork, spawn, `SCM_RIGHTS`,
+procfs, devfs, root-mountpoint, Node.js, and Chromium coverage.
 
 Acceptance:
 
@@ -408,8 +404,8 @@ Acceptance:
 - Runtime paths, dynamic libraries, modules, and data resolve from the normal
   installed Homebrew prefix.
 
-Implementation checkpoint (2026-07-22; local, stacked, and not yet a supported
-release):
+Implementation checkpoint (2026-07-22; stacked and not yet a supported
+canonical release):
 
 - The reviewed shell selection now contains 36 direct roots and 42 Formulae.
   `libcxx`, `ncurses`, and Bash remain the only three physically embedded
@@ -423,20 +419,31 @@ release):
   digest and byte count continue to identify the unmodified `.tar.gz` bottle.
 - Against exact tap commit
   `e7cfe3140e692965cd7abf10e8029633c5d20c02`, the materialized local candidate
-  is 5,870,743 compressed bytes with SHA-256
-  `d9663eacfa69a922e1fe11edd1d4c58b7764ef4a1dc5f3c72538ccaf52fabd7a`.
-  Exact Node.js and Chromium runs each boot one fresh embedded Bash shell
-  offline, then start Python, Perl, Erlang, and Ruby in isolated first-use
-  steps. Across the language matrix, seven distinct bottles totaling
-  49,704,666 bytes are fetched; each step fetches no unrelated language and
-  the full run leaves the remaining optional bottle trees pending.
+  is 5,885,691 compressed bytes with SHA-256
+  `7a08d342b4e1d00976623d18da74a2d1a923f4eafe88c93253e2947ec0a49cce`.
+  Its exact 39 deferred bottles plus mirror plan were anonymously recovered
+  from canonical GHCR packages and published as the 40-asset immutable release
+  `homebrew-shell-bottles-sha256-b51c071bc0f5eabf230f10d26f8e6c397999323dfbf18cb6da11cec822f8c21b`.
+  Exact public Node.js acceptance boots a fresh embedded Bash shell offline,
+  then starts Python, Perl, Erlang, and Ruby in isolated first-use steps.
+  Across the language matrix, seven distinct bottles totaling 49,704,666 bytes
+  are fetched; each step fetches no unrelated language and the full run leaves
+  the remaining optional bottle trees pending.
+- Exact public Chromium reached the same shell and language runtime behavior,
+  then revealed that the browser Inspector reconstructs its audit table from a
+  512-event raw progress ring. Large bottle streams can evict every event for
+  an earlier completed bottle even though the materialized filesystem remains
+  correct. Browser acceptance remains incomplete until a separately bounded
+  per-asset authoritative summary ledger, reset semantics, UI consumption, and
+  full API tests replace that lossy evidence path; increasing the arbitrary
+  raw-event count or weakening the assertion is not the intended fix.
 - This proof uses the exact locally built kernel from PR #1058 because the
   current released kernel can lose a directory entry at a full `getdents64`
   buffer boundary. It therefore does not authorize a shell release ahead of
-  the ordered Phase 3 public mirror and package cutover, PR #1056's aggregate
-  budget landing, and PR #1058's kernel landing and release. After those
-  prerequisites, the same candidate still needs anonymous public-mirror Node
-  and Chromium evidence before canonical activation.
+  the ordered Phase 3 package cutover, PR #1056's aggregate-budget landing, PR
+  #1058's kernel landing and release, and the authoritative browser ledger.
+  The anonymous public Node evidence is complete; Chromium must be rerun after
+  those exact prerequisites before canonical revision-18 activation.
 
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 
@@ -461,6 +468,36 @@ release):
    links, Homebrew receipts, and provenance with the direct composer. Record an
    evidence-backed keep, replace, or retire decision; the existence of the
    current direct composer is not that evidence by itself.
+
+Implementation checkpoint (2026-07-22; draft PR #1059 and not yet a supported
+main-shell capability):
+
+- Stock upstream Homebrew at exact commit
+  `4ead8619231cb15cbe15e8e8188081e347d6f7cd` runs as the unprivileged
+  `linuxbrew` user through its conventional writable repository, Cellar, tap,
+  cache, configuration, lock, and temporary-state paths. Exact Node.js and
+  Chromium runs use the same 805,315,495-byte bootstrap image with SHA-256
+  `46033f3579781ac0891a9792d4bc32e47bac37cc80a4f47112eb6824412ebc49`.
+- Stock `brew config`, the bottles-only operational doctor checks, public
+  first-party tap discovery, and independent canary-tap discovery pass without
+  an implicit core clone. Full doctor retains the truthful warning that the
+  image does not contain a source-build developer toolchain.
+- Homebrew resolves Formula metadata before pruning build-only Formula
+  dependencies from a bottle install. With the exact recursive 19-Formula
+  Linux metadata closure present (85,664 uncompressed bytes; 38,910 ZIP bytes),
+  unmodified `brew install --no-ask --force-bottle
+  kandelo-dev/tap-core/bzip2` downloads, pours, links, and executes the public
+  bottle. Its receipt records `poured_from_bottle: true` and zero runtime
+  dependencies. The partial metadata tree is diagnostic evidence, not a
+  product artifact.
+- A real `homebrew/core` checkout is not viable: it measures about 1.3 GiB,
+  including a 1.22 GiB Git pack with 3,612,638 objects, and a bounded guest
+  clone remained incomplete after eight minutes while reaching about 20 GiB
+  host RSS. The general next change represents publisher-only native tools as
+  statically allowlisted custom Homebrew `Requirement` classes, binds every
+  class to an exact native Formula and protected executable, and preserves the
+  existing sealed build/test plan and provenance. Unsupported dependency-skip
+  flags, a synthetic core API, and a curated partial core tap remain rejected.
 
 Acceptance:
 
