@@ -734,7 +734,7 @@ canonical_native_requirement = lambda do |statement, lines|
                   superclass_token[1] == "Requirement" &&
                   body.is_a?(Array) && body.first == :bodystmt &&
                   body.drop(2).all?(&:nil?) && body[1].is_a?(Array) &&
-                  body[1].length == 2
+                  body[1].length == 4
 
   class_name = class_token[1]
   identity = NATIVE_REQUIREMENTS[class_name]
@@ -743,6 +743,8 @@ canonical_native_requirement = lambda do |statement, lines|
   line_number = class_token.dig(2, 0)
   expected_lines = [
     "  class #{class_name} < Requirement\n",
+    %(    KANDELO_NATIVE_FORMULA = "#{identity.fetch("formula")}"\n),
+    %(    KANDELO_NATIVE_SENTINEL = "#{identity.fetch("executable")}"\n),
     "    fatal true\n",
     %(    satisfy(build_env: false) { which("#{identity.fetch("executable")}") }\n),
     "  end\n",
@@ -750,7 +752,13 @@ canonical_native_requirement = lambda do |statement, lines|
   next nil unless line_number.is_a?(Integer) &&
                   lines.slice(line_number - 1, expected_lines.length) == expected_lines
 
-  fatal_statement, satisfy_statement = body[1]
+  formula_statement, sentinel_statement, fatal_statement, satisfy_statement = body[1]
+  canonical_metadata_assignment = lambda do |assignment, constant_name, value|
+    left = assignment[1] if assignment.is_a?(Array) && assignment.first == :assign
+    constant = left[1] if left.is_a?(Array) && left.first == :var_field
+    constant.is_a?(Array) && constant.first == :@const && constant[1] == constant_name &&
+      literal_string.call(assignment[2], value)
+  end
   fatal_arguments = canonical_command_arguments.call(fatal_statement, "fatal")
   fatal_value = fatal_arguments&.first
   satisfy_call = satisfy_statement[1] if satisfy_statement.is_a?(Array) &&
@@ -789,7 +797,17 @@ canonical_native_requirement = lambda do |statement, lines|
                                                    which_argument_list[1].is_a?(Array) &&
                                                    which_argument_list[1].length == 1 &&
                                                    which_argument_list[2] == false
-  next nil unless fatal_arguments&.length == 1 && fatal_value&.first == :var_ref &&
+  next nil unless canonical_metadata_assignment.call(
+                    formula_statement,
+                    "KANDELO_NATIVE_FORMULA",
+                    identity.fetch("formula"),
+                  ) &&
+                  canonical_metadata_assignment.call(
+                    sentinel_statement,
+                    "KANDELO_NATIVE_SENTINEL",
+                    identity.fetch("executable"),
+                  ) &&
+                  fatal_arguments&.length == 1 && fatal_value&.first == :var_ref &&
                   fatal_value.dig(1, 0) == :@kw && fatal_value.dig(1, 1) == "true" &&
                   satisfy_assoc.is_a?(Array) && satisfy_assoc.first == :assoc_new &&
                   satisfy_assoc.dig(1, 0) == :@label &&
@@ -1737,6 +1755,7 @@ elsif host_dependencies_only
   build = Set.new
   build_and_test = Set.new
   runtime_and_test = Set.new
+  native_requirements = []
   prefix = "#{tap_name}/"
   formula_dependency_declarations.fetch(target_full_name).each do |declaration|
     dependency = declaration.fetch("name")
@@ -1772,6 +1791,17 @@ elsif host_dependencies_only
     build.add(dependency) if tags.include?(:build)
     build_and_test.add(dependency)
     runtime_and_test.add(dependency) unless tags == Set[:build]
+    requirement_class = declaration.fetch("requirement_class")
+    unless requirement_class.nil?
+      short_class = requirement_class.delete_prefix("KandeloFormulaSupport::")
+      identity = NATIVE_REQUIREMENTS.fetch(short_class)
+      native_requirements << {
+        "class" => requirement_class,
+        "formula" => identity.fetch("formula"),
+        "sentinel" => identity.fetch("executable"),
+        "tags" => tags.to_a.map(&:to_s).sort,
+      }
+    end
     if build_and_test.length > MAX_DEPENDENCIES
       abort "host Formula dependency plan exceeds #{MAX_DEPENDENCIES} entries"
     end
@@ -1788,13 +1818,14 @@ elsif host_dependencies_only
     }
   end
   puts JSON.generate({
-    "schema" => 3,
+    "schema" => 4,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => "#{tap_name}/#{target}",
     "target_taps" => immutable_target_taps,
     "build" => build.sort,
     "build_and_test" => build_and_test.sort,
+    "native_requirements" => native_requirements.sort_by { |entry| entry.fetch("class") },
     "runtime_and_test" => runtime_and_test.sort,
   })
 elsif direct_only

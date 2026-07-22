@@ -80,16 +80,22 @@ support="$tap/Kandelo/formula_support/kandelo_formula_support.rb"
 # scripts/homebrew-formula-runtime-closure.rb before publisher execution.
 module KandeloFormulaSupport
   class BinaryenRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "binaryen"
+    KANDELO_NATIVE_SENTINEL = "wasm-opt"
     fatal true
     satisfy(build_env: false) { which("wasm-opt") }
   end
 
   class PkgconfRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "pkgconf"
+    KANDELO_NATIVE_SENTINEL = "pkg-config"
     fatal true
     satisfy(build_env: false) { which("pkg-config") }
   end
 
   class WabtRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "wabt"
+    KANDELO_NATIVE_SENTINEL = "wasm-validate"
     fatal true
     satisfy(build_env: false) { which("wasm-validate") }
   end
