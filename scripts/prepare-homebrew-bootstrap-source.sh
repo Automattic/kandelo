@@ -316,6 +316,22 @@ if [ "$PATCHED_TREE" = "$UPSTREAM_TREE" ]; then
     exit 1
 fi
 
+PORTABLE_RUBY_VERSION_PATH="Library/Homebrew/vendor/portable-ruby-version"
+PORTABLE_RUBY_VERSION="$(
+    git_store show "$PATCHED_TREE:$PORTABLE_RUBY_VERSION_PATH"
+)"
+if ! [[ "$PORTABLE_RUBY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(_[0-9]+)?$ ]]; then
+    echo "prepare-homebrew-bootstrap-source: pinned Homebrew has an unsafe portable Ruby version: $PORTABLE_RUBY_VERSION" >&2
+    exit 1
+fi
+PORTABLE_RUBY_VERSION_BYTES="$(
+    git_store cat-file -s "$PATCHED_TREE:$PORTABLE_RUBY_VERSION_PATH"
+)"
+if [ "$PORTABLE_RUBY_VERSION_BYTES" -ne "$((${#PORTABLE_RUBY_VERSION} + 1))" ]; then
+    echo "prepare-homebrew-bootstrap-source: portable Ruby version file must contain one version and a newline" >&2
+    exit 1
+fi
+
 UPSTREAM_COMMIT_TIME="$(git_store show -s --format=%ct "$REVISION")"
 if ! [[ "$UPSTREAM_COMMIT_TIME" =~ ^[1-9][0-9]*$ ]]; then
     echo "prepare-homebrew-bootstrap-source: upstream commit has an invalid timestamp" >&2
@@ -335,13 +351,31 @@ BOTTLE_TAG="${ARCH}_kandelo"
 cat >"$ENV_TMP" <<EOF
 HOMEBREW_NO_ANALYTICS=1
 HOMEBREW_NO_AUTO_UPDATE=1
+# Kandelo Formulae live in explicit Git taps. Homebrew's official core API has
+# no wasm32_kandelo package index, so use Homebrew's documented tap-checkout
+# path instead of requesting an invented core-platform identity.
+HOMEBREW_NO_INSTALL_FROM_API=1
+# This is the state Homebrew itself sets when it automatically falls back from
+# its package API. It prevents unrelated commands for explicit custom taps from
+# cloning homebrew/core, while an explicit core request still fails truthfully
+# until the user taps core.
+HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1
+# Homebrew filters caller SSL variables before running its own Git and curl
+# subprocesses. Select its supported managed-CA path, which the bootstrap
+# layout aliases to the image-owned system trust bundle.
+HOMEBREW_FORCE_BREWED_CA_CERTIFICATES=1
+# The bootstrap supplies a reviewed Git binary directly. Naming its absolute
+# path lets Homebrew's own Git shim take the non-search path before its fallback
+# process substitution, preserving Git remote-helper protocol stdin.
+HOMEBREW_GIT_PATH=/usr/bin/git
 HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1
 HOMEBREW_KANDELO_BOTTLE_TAG=$BOTTLE_TAG
 EOF
 
 node --input-type=module - \
     "$PROVENANCE_TMP" "$REPOSITORY" "$REVISION" "$ACTUAL_PATCH_SHA256" \
-    "$PATCHED_TREE" "$PATCHED_TREE_SHA256" "$ARCHIVE_SHA256" "$ARCH" "$BOTTLE_TAG" <<'NODE'
+    "$PATCHED_TREE" "$PATCHED_TREE_SHA256" "$ARCHIVE_SHA256" "$ARCH" "$BOTTLE_TAG" \
+    "$PORTABLE_RUBY_VERSION" <<'NODE'
 import { writeFileSync } from "node:fs";
 
 const [
@@ -354,10 +388,11 @@ const [
   archiveSha256,
   arch,
   bottleTag,
+  portableRubyVersion,
 ] = process.argv.slice(2);
 
 const provenance = {
-  schema: 1,
+  schema: 2,
   homebrew_repository: repository,
   homebrew_revision: revision,
   homebrew_patch_sha256: patchSha256,
@@ -366,6 +401,7 @@ const provenance = {
   homebrew_archive_sha256: archiveSha256,
   homebrew_bottle_arch: arch,
   homebrew_bottle_tag: bottleTag,
+  homebrew_portable_ruby_version: portableRubyVersion,
 };
 writeFileSync(output, `${JSON.stringify(provenance, null, 2)}\n`);
 NODE

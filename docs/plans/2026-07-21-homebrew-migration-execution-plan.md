@@ -192,7 +192,7 @@ complete here only when its exact accepted artifact has been verified.
 | Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 60 sidecar package records and 67 successful architecture-specific bottle records at this snapshot. This covers the expanded 42-Formula main-shell candidate, including its four language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
 | Bottle-composed main shell | Phase 3 complete; Phase 4 has an immutable public candidate | PR #1060 landed at `e108a8c4a3259dcf8b646599355590542707adf7` and activated shell revision 17 with the reviewed three-bottle Bash closure and 35 independently deferred bottles. PR #1056 landed the aggregate deferred-tree budget at `1d3521473361524fcdf4febb23d33f20d7c7d515`; its exact post-merge Node.js and Chromium shell checks are green, and the production index selects the lazy image. The Phase 4 candidate extends the same policy to 36 roots and 42 Formulae while retaining only the same three embedded bottles. |
 | Language bottles | Public publication complete; immutable revision-18 candidate and exact Node.js/Chromium language acceptance green | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. Perl is published. The exact 5,885,691-byte revision-18 shell candidate and its 39 deferred bottles are bound to immutable release `homebrew-shell-bottles-sha256-b51c071bc0f5eabf230f10d26f8e6c397999323dfbf18cb6da11cec822f8c21b`. Anonymous public Node.js and Chromium acceptance start Python, Perl, Erlang, and Ruby lazily in isolated first-use steps. PR #1062 landed the bounded per-asset browser evidence ledger at `dc5bb1210f1359be17d1d4078a7d56ec14903e4a`; the remaining activation gate is the shared product-VFS headroom fix and its final exact regression run. |
-| Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
+| Third-party tap model | Live publisher proof and guest tap/metadata proof complete; guest cross-tap install remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. In the exact opt-in guest bootstrap, stock `brew tap` clones the public canary and Formula loading selects M4 plus its fully qualified first-party Dash dependency without creating `homebrew/core`. Conventional cross-tap `brew install` inside the guest remains Phase 5 work. |
 | Deferred bottle trees | Generic producer and Phase 3 public proof complete; Phase 4 mirror public and relocation locally validated | PR #1051 landed the generic first-use substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`. PR #1054 landed the exact original-bottle producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: one independently lazy tree per Formula, complete source and guest inventories, exact compressed transport identity, hardlinks, and independent TypeScript/Python validation. PR #1055 composes the exact 38-Formula namespace, PR #1060's exact head proves its immutable public mirror and canonical revision-17 cutover, and PR #1056 landed the aggregate-budget correction. The Phase 4 worktree adds receipt-owned relocation before exposing language runtimes, because exact bottle bytes are transport truth while a correct pour may replace only the placeholders named by that bottle's `INSTALL_RECEIPT.json`; its complete 39-bottle browser mirror is public and immutable. |
 | Browser deployment and exact bottle delivery | Complete for the bounded current contract | PR #1064 landed bounded, single-writer Pages publication. PR #1070 landed exact browser bottle-download delivery. Production verification reached GitHub Pages commit `418bd04` through successful Pages run `29994147876`; the app, guide, API, and service worker returned HTTP 200. This evidence closes the observed deployment failure, but does not remove later Phase 4/5 product activation work. |
 | Atomic package-generation foundation | Ready for PR and landing on the exact fixture-ownership baseline | The packaging/build worktree makes Rust-generated program policy, scalar mirrors, and multi-member mirror directories publish as validated atomic generations. It aligns Rust, TypeScript, shell, Vite, external registries, and the standalone npm package on one complete highest-priority registry projection, with self-contained lower-root fallbacks. Fixture-ownership PR #802 landed as `427185cff21ed213de8b8b6573b4f1a3757aa80d`; this active foundation is rebased on that exact commit, its `program-packages.json` was regenerated there, and a repository source audit now rejects obsolete flat package paths while preserving inventory-owned and direct-source test fixtures. Independent High/Medium review found no remaining blocker. Exact-baseline validation is green across all 507 xtask tests, all 105 package-system tests, host typechecking, Chromium/Firefox/WebKit Vite boundaries, package-root and sealed/local-generation contracts, resolver-bundle freshness, Pages/CI/merge-workflow contracts, and the 17-case Homebrew shell closure. This foundation does not by itself activate the Phase 4 shell candidate, guest `brew`, registry retirement, or bottle-declared VFS packages. |
@@ -790,8 +790,15 @@ Current checkpoint evidence:
 
 - `scripts/homebrew-bootstrap-layout.ts` is the authority for the guest
   identity, five conventional entrypoints, writable state, protected files,
-  and exact eager startup-tool closure. Output-level eager selection keeps only
+  Homebrew-compatible portable Ruby and CA aliases, Git transport helpers, and
+  exact eager startup-tool closure. Output-level eager selection keeps only
   `/usr/bin/locale` from the 37-command `posix-utils-lite` bundle resident.
+- Upstream Homebrew is pinned to
+  `4ead8619231cb15cbe15e8e8188081e347d6f7cd`, the smallest reviewed revision
+  with the public patch-type DSL required by the first-party tap. Source
+  provenance binds its `4.0.5_1` portable Ruby version. The guest applies only
+  the five-file platform patch; the isolated-publisher patch remains owned by
+  its separate publisher baseline and tests.
 - Bash revision 4 enables upstream programmable completion. The package suite
   covers `compgen`/`complete`, builtin enumeration, disable/re-enable, and
   restoration after a function shadows a builtin; all 16 Bash tests pass on
@@ -799,9 +806,38 @@ Current checkpoint evidence:
 - The exact bootstrap validates every eager `src=` and deferred `lazy_url=`
   Wasm input against ABI 41. The shared unprivileged guest contract passes on
   Node.js and Chromium, and Chromium observes zero deferred program requests.
-- This evidence does not activate the canonical shell, prove a bottle pour, or
-  retire the remaining `config`/`doctor`/tap/install/upgrade/uninstall and
-  historical `saveImage()` work above.
+- Live `brew config` selects the expected unprivileged prefix and reviewed
+  Ruby, Git, curl, and no-API paths without creating `homebrew/core`. An
+  explicit core Formula request fails truthfully, the first-party tap clones
+  and loads cleanly, and its exact Bzip2 bottle digest is selected. The public
+  canary tap also clones and loads cleanly, selecting the exact M4 bottle and
+  its fully qualified first-party Dash dependency.
+- Full `brew doctor` exits nonzero only for the truthful absence of source-build
+  developer tools. Its directory, temporary-directory, Git, and core-tap
+  operational checks pass as the bottles-only contract.
+- Anonymous bottle download and pour work under the diagnostic
+  `--ignore-dependencies` path, proving the GHCR and bottle mechanics. That flag
+  is an unsupported Homebrew developer option and is not acceptance evidence.
+  Stock install currently fails earlier because Homebrew resolves native
+  build-only core Formulae before it prunes them for the bottle. API mode is
+  not a fallback: it requires the nonexistent
+  `internal/packages.dunno_generic.jws.json` Kandelo index.
+- An exact 19-Formula Linux metadata-closure diagnostic proves the intended
+  stock behavior without a bypass: force-bottle Bzip2 installs and runs, and
+  its receipt reports a bottle pour with zero runtime dependencies. The
+  closure is 85,664 bytes before compression and 38,910 ZIP bytes. It is
+  diagnostic evidence only, not permission to ship a synthetic or partial
+  core tap.
+- A real current core checkout is about 1.3 GiB across 8,802 files. Its
+  1.22 GiB, 3,612,638-object Git pack cannot fit in the 768 MiB bootstrap VFS;
+  a bounded guest clone remained incomplete after eight minutes and reached
+  about 20 GiB host RSS. Full core is therefore not the guest metadata
+  solution. The next general contract should model the tap's publisher-only
+  native tools as statically allowlisted Homebrew Requirements while retaining
+  the existing sealed-tool and provenance guarantees.
+- This evidence does not activate the canonical shell, prove a supported
+  bottle lifecycle, provide durable reboot persistence, or retire the
+  remaining third-party guest and historical `saveImage()` work above.
 
 Acceptance:
 

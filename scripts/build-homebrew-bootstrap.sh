@@ -14,7 +14,7 @@ SKIP_PACKAGE_RESOLVE=0
 # bootstrap image is reproducible while Kandelo package artifacts follow the
 # ABI declared by the checked-out Kandelo tree.
 BREW_REPOSITORY="${HOMEBREW_BOOTSTRAP_BREW_REPOSITORY:-https://github.com/Homebrew/brew.git}"
-BREW_REVISION="${HOMEBREW_BOOTSTRAP_BREW_REVISION:-21aba0bc7080a75753f01c06d2358ca27706bfeb}"
+BREW_REVISION="${HOMEBREW_BOOTSTRAP_BREW_REVISION:-4ead8619231cb15cbe15e8e8188081e347d6f7cd}"
 BREW_PATCH="$REPO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 BREW_PATCH_SHA256="9c52238d811616c210cd1ecdd23b0192a3e0333219a70b34d8ea6d77dbcfbf74"
 BOOTSTRAP_ARCH="wasm32"
@@ -139,6 +139,19 @@ BREW_SOURCE_PROVENANCE="$BUILD_DIR/homebrew-source.json"
     --archive "$BREW_ARCHIVE" \
     --env "$BREW_ENV" \
     --provenance "$BREW_SOURCE_PROVENANCE"
+
+PORTABLE_RUBY_VERSION="$(node --input-type=module - "$BREW_SOURCE_PROVENANCE" <<'NODE'
+import { readFileSync } from "node:fs";
+const source = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const version = source.homebrew_portable_ruby_version;
+if (source.schema !== 2 ||
+    typeof version !== "string" ||
+    !/^[0-9]+\.[0-9]+\.[0-9]+(?:_[0-9]+)?$/.test(version)) {
+  throw new Error("Homebrew source provenance has no safe portable Ruby version");
+}
+process.stdout.write(version);
+NODE
+)"
 
 XTASK=(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- build-deps --arch wasm32)
 
@@ -272,7 +285,8 @@ node scripts/homebrew-bootstrap-layout.ts \
     --bzip2 "binaries/programs/wasm32/$BZIP2_REL" \
     --brew-archive "target/homebrew-bootstrap/homebrew-brew.zip" \
     --brew-env "target/homebrew-bootstrap/brew.env" \
-    --image-metadata "target/homebrew-bootstrap/homebrew-image.json"
+    --image-metadata "target/homebrew-bootstrap/homebrew-image.json" \
+    --portable-ruby-version "$PORTABLE_RUBY_VERSION"
 
 node scripts/write-homebrew-bootstrap-metadata.mjs \
     --source "$BREW_SOURCE_PROVENANCE" \

@@ -36,6 +36,7 @@ function fixtureInput() {
     brewEnvironment: "target/homebrew-bootstrap/brew.env",
     imageMetadata: "target/homebrew-bootstrap/homebrew-image.json",
     layoutMetadata: "target/homebrew-bootstrap/homebrew-bootstrap-layout.json",
+    portableRubyVersion: "4.0.5_1",
   };
 }
 
@@ -82,6 +83,25 @@ describe("Homebrew bootstrap guest layout", () => {
       state: "mutable-working-repository",
       initialSourceProvenance: "/etc/kandelo/homebrew-image.json",
     });
+    expect(HOMEBREW_BOOTSTRAP_LAYOUT.portableRuby).toEqual({
+      root: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby`,
+      current: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby/current`,
+      versionFile:
+        `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby-version`,
+      initialRuntimeRoot: "/usr",
+      initialVersionProvenance: "/etc/kandelo/homebrew-image.json",
+      state: "homebrew-managed-runtime-alias",
+    });
+    expect(HOMEBREW_BOOTSTRAP_LAYOUT.certificateAuthority).toEqual({
+      systemBundle: "/etc/ssl/certs/ca-certificates.crt",
+      homebrewBundle: `${HOMEBREW_BOOTSTRAP_PREFIX}/etc/ca-certificates/cert.pem`,
+      state: "homebrew-managed-system-bundle-alias",
+    });
+    expect(HOMEBREW_BOOTSTRAP_LAYOUT.git).toEqual({
+      execPath: "/usr/libexec/git-core",
+      httpHelper: "/usr/libexec/git-core/git-remote-http",
+      httpsHelper: "/usr/libexec/git-core/git-remote-https",
+    });
 
     const writable = new Map(
       HOMEBREW_BOOTSTRAP_LAYOUT.writableDirectories.map((entry) => [entry.path, entry]),
@@ -90,6 +110,8 @@ describe("Homebrew bootstrap guest layout", () => {
       HOMEBREW_BOOTSTRAP_PREFIX,
       `${HOMEBREW_BOOTSTRAP_PREFIX}/Cellar`,
       `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Taps`,
+      `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby`,
+      `${HOMEBREW_BOOTSTRAP_PREFIX}/etc/ca-certificates`,
       `${HOMEBREW_BOOTSTRAP_PREFIX}/var/homebrew/locks`,
       "/home/linuxbrew/.cache/Homebrew",
       "/home/linuxbrew/.config/homebrew",
@@ -135,6 +157,26 @@ describe("Homebrew bootstrap guest layout", () => {
     expect(manifest).toContain(
       "/usr/bin/ruby f 0755 0 0 src=binaries/programs/wasm32/ruby.wasm",
     );
+    expect(manifest).toContain(
+      `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby/4.0.5_1 ` +
+        "l 0777 1000 1000 target=/usr",
+    );
+    expect(manifest).toContain(
+      `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby/current ` +
+        "l 0777 1000 1000 target=4.0.5_1",
+    );
+    expect(manifest).toContain(
+      `${HOMEBREW_BOOTSTRAP_PREFIX}/etc/ca-certificates/cert.pem ` +
+        "l 0777 1000 1000 target=/etc/ssl/certs/ca-certificates.crt",
+    );
+    expect(manifest).toContain(
+      "/usr/libexec/git-core/git-remote-http l 0777 0 0 " +
+        "target=/usr/bin/git-remote-http",
+    );
+    expect(manifest).toContain(
+      "/usr/libexec/git-core/git-remote-https l 0777 0 0 " +
+        "target=/usr/bin/git-remote-http",
+    );
     expect(manifest).not.toContain("/usr/bin/bash ");
     expect(manifest).not.toContain("/usr/bin/env ");
     expect(manifest).toContain(
@@ -156,6 +198,12 @@ describe("Homebrew bootstrap guest layout", () => {
     input.artifacts.ruby = "../outside/ruby.wasm";
     expect(() => renderHomebrewBootstrapManifest(input)).toThrow(
       /canonical relative manifest source/,
+    );
+
+    const unsafeVersionInput = fixtureInput();
+    unsafeVersionInput.portableRubyVersion = "../../usr";
+    expect(() => renderHomebrewBootstrapManifest(unsafeVersionInput)).toThrow(
+      /invalid Homebrew portable Ruby version/,
     );
   });
 });

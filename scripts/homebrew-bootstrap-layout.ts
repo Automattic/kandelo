@@ -35,7 +35,7 @@ export interface HomebrewBootstrapEntrypoint {
 }
 
 export interface HomebrewBootstrapLayout {
-  schema: 1;
+  schema: 2;
   guest: {
     uid: number;
     gid: number;
@@ -48,6 +48,24 @@ export interface HomebrewBootstrapLayout {
     path: string;
     state: "mutable-working-repository";
     initialSourceProvenance: string;
+  };
+  portableRuby: {
+    root: string;
+    current: string;
+    versionFile: string;
+    initialRuntimeRoot: "/usr";
+    initialVersionProvenance: string;
+    state: "homebrew-managed-runtime-alias";
+  };
+  certificateAuthority: {
+    systemBundle: "/etc/ssl/certs/ca-certificates.crt";
+    homebrewBundle: string;
+    state: "homebrew-managed-system-bundle-alias";
+  };
+  git: {
+    execPath: "/usr/libexec/git-core";
+    httpHelper: string;
+    httpsHelper: string;
   };
   entrypoints: HomebrewBootstrapEntrypoint[];
   writableDirectories: HomebrewBootstrapDirectory[];
@@ -66,7 +84,7 @@ export interface HomebrewBootstrapLayout {
  * source; they do not pretend the post-boot working repository is immutable.
  */
 export const HOMEBREW_BOOTSTRAP_LAYOUT: HomebrewBootstrapLayout = {
-  schema: 1,
+  schema: 2,
   guest: {
     uid: HOMEBREW_BOOTSTRAP_UID,
     gid: HOMEBREW_BOOTSTRAP_GID,
@@ -79,6 +97,24 @@ export const HOMEBREW_BOOTSTRAP_LAYOUT: HomebrewBootstrapLayout = {
     path: HOMEBREW_BOOTSTRAP_PREFIX,
     state: "mutable-working-repository",
     initialSourceProvenance: "/etc/kandelo/homebrew-image.json",
+  },
+  portableRuby: {
+    root: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby`,
+    current: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby/current`,
+    versionFile: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby-version`,
+    initialRuntimeRoot: "/usr",
+    initialVersionProvenance: "/etc/kandelo/homebrew-image.json",
+    state: "homebrew-managed-runtime-alias",
+  },
+  certificateAuthority: {
+    systemBundle: "/etc/ssl/certs/ca-certificates.crt",
+    homebrewBundle: `${HOMEBREW_BOOTSTRAP_PREFIX}/etc/ca-certificates/cert.pem`,
+    state: "homebrew-managed-system-bundle-alias",
+  },
+  git: {
+    execPath: "/usr/libexec/git-core",
+    httpHelper: "/usr/libexec/git-core/git-remote-http",
+    httpsHelper: "/usr/libexec/git-core/git-remote-https",
   },
   entrypoints: [
     {
@@ -109,11 +145,31 @@ export const HOMEBREW_BOOTSTRAP_LAYOUT: HomebrewBootstrapLayout = {
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/Caskroom`, mode: "0755", purpose: "install-state" },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/Cellar`, mode: "0755", purpose: "install-state" },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/etc`, mode: "0755", purpose: "install-state" },
+    {
+      path: `${HOMEBREW_BOOTSTRAP_PREFIX}/etc/ca-certificates`,
+      mode: "0755",
+      purpose: "configuration",
+    },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/etc/homebrew`, mode: "0755", purpose: "configuration" },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/Frameworks`, mode: "0755", purpose: "install-state" },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/include`, mode: "0755", purpose: "install-state" },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/lib`, mode: "0755", purpose: "install-state" },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library`, mode: "0755", purpose: "repository" },
+    {
+      path: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew`,
+      mode: "0755",
+      purpose: "repository",
+    },
+    {
+      path: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor`,
+      mode: "0755",
+      purpose: "repository",
+    },
+    {
+      path: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Homebrew/vendor/portable-ruby`,
+      mode: "0755",
+      purpose: "repository",
+    },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Taps`, mode: "0755", purpose: "repository" },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/opt`, mode: "0755", purpose: "install-state" },
     { path: `${HOMEBREW_BOOTSTRAP_PREFIX}/sbin`, mode: "0755", purpose: "install-state" },
@@ -171,6 +227,7 @@ export interface HomebrewBootstrapManifestInput {
   brewEnvironment: string;
   imageMetadata: string;
   layoutMetadata: string;
+  portableRubyVersion: string;
 }
 
 function assertGuestPath(path: string, label: string): void {
@@ -198,7 +255,7 @@ function assertSourceToken(source: string, label: string): void {
 export function validateHomebrewBootstrapLayout(
   layout: HomebrewBootstrapLayout = HOMEBREW_BOOTSTRAP_LAYOUT,
 ): void {
-  if (layout.schema !== 1) throw new Error(`unsupported bootstrap layout schema: ${layout.schema}`);
+  if (layout.schema !== 2) throw new Error(`unsupported bootstrap layout schema: ${layout.schema}`);
   if (layout.guest.uid <= 0 || layout.guest.gid <= 0) {
     throw new Error("the Homebrew guest must be an unprivileged user");
   }
@@ -207,6 +264,34 @@ export function validateHomebrewBootstrapLayout(
   }
   if (layout.repository.state !== "mutable-working-repository") {
     throw new Error("the stock Homebrew repository must remain an explicit mutable working repository");
+  }
+  const expectedPortableRubyRoot = `${layout.prefix}/Library/Homebrew/vendor/portable-ruby`;
+  if (
+    layout.portableRuby.root !== expectedPortableRubyRoot ||
+    layout.portableRuby.current !== `${expectedPortableRubyRoot}/current` ||
+    layout.portableRuby.versionFile !==
+      `${layout.prefix}/Library/Homebrew/vendor/portable-ruby-version` ||
+    layout.portableRuby.initialRuntimeRoot !== "/usr" ||
+    layout.portableRuby.initialVersionProvenance !==
+      layout.repository.initialSourceProvenance ||
+    layout.portableRuby.state !== "homebrew-managed-runtime-alias"
+  ) {
+    throw new Error("bootstrap layout does not describe Homebrew's portable Ruby runtime contract");
+  }
+  if (
+    layout.certificateAuthority.systemBundle !== "/etc/ssl/certs/ca-certificates.crt" ||
+    layout.certificateAuthority.homebrewBundle !==
+      `${layout.prefix}/etc/ca-certificates/cert.pem` ||
+    layout.certificateAuthority.state !== "homebrew-managed-system-bundle-alias"
+  ) {
+    throw new Error("bootstrap layout does not describe Homebrew's certificate authority contract");
+  }
+  if (
+    layout.git.execPath !== "/usr/libexec/git-core" ||
+    layout.git.httpHelper !== `${layout.git.execPath}/git-remote-http` ||
+    layout.git.httpsHelper !== `${layout.git.execPath}/git-remote-https`
+  ) {
+    throw new Error("bootstrap layout does not install Git transports at Git's compiled exec path");
   }
   if (
     JSON.stringify(layout.eagerRootfsPackages) !==
@@ -238,7 +323,11 @@ export function validateHomebrewBootstrapLayout(
   }
   if (!paths.has(layout.prefix) || !paths.has(`${layout.prefix}/Cellar`) ||
       !paths.has(`${layout.prefix}/Library/Taps`) ||
-      !paths.has(`${layout.prefix}/var/homebrew/locks`)) {
+      !paths.has(`${layout.prefix}/var/homebrew/locks`) ||
+      !paths.has(`${layout.prefix}/Library/Homebrew`) ||
+      !paths.has(`${layout.prefix}/Library/Homebrew/vendor`) ||
+      !paths.has(`${layout.prefix}/etc/ca-certificates`) ||
+      !paths.has(layout.portableRuby.root)) {
     throw new Error("bootstrap layout omits required stock Homebrew writable state");
   }
 
@@ -288,6 +377,9 @@ export function homebrewBootstrapRootfsEagerArguments(): string[] {
 
 export function renderHomebrewBootstrapManifest(input: HomebrewBootstrapManifestInput): string {
   validateHomebrewBootstrapLayout();
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:_[0-9]+)?$/.test(input.portableRubyVersion)) {
+    throw new Error(`invalid Homebrew portable Ruby version: ${input.portableRubyVersion}`);
+  }
   for (const [key, source] of Object.entries(input.artifacts)) {
     assertSourceToken(source, `artifact ${key}`);
   }
@@ -318,6 +410,18 @@ export function renderHomebrewBootstrapManifest(input: HomebrewBootstrapManifest
     `/etc/kandelo/homebrew-image.json f 0444 0 0 src=${input.imageMetadata}`,
     `/etc/kandelo/homebrew-bootstrap-layout.json f 0444 0 0 src=${input.layoutMetadata}`,
     "",
+    `${HOMEBREW_BOOTSTRAP_LAYOUT.portableRuby.root}/${input.portableRubyVersion} ` +
+      `l 0777 ${HOMEBREW_BOOTSTRAP_UID} ${HOMEBREW_BOOTSTRAP_GID} ` +
+      `target=${HOMEBREW_BOOTSTRAP_LAYOUT.portableRuby.initialRuntimeRoot}`,
+    `${HOMEBREW_BOOTSTRAP_LAYOUT.portableRuby.current} ` +
+      `l 0777 ${HOMEBREW_BOOTSTRAP_UID} ${HOMEBREW_BOOTSTRAP_GID} ` +
+      `target=${input.portableRubyVersion}`,
+    `${HOMEBREW_BOOTSTRAP_LAYOUT.certificateAuthority.homebrewBundle} ` +
+      `l 0777 ${HOMEBREW_BOOTSTRAP_UID} ${HOMEBREW_BOOTSTRAP_GID} ` +
+      `target=${HOMEBREW_BOOTSTRAP_LAYOUT.certificateAuthority.systemBundle}`,
+    "/usr/libexec d 0755 0 0",
+    `${HOMEBREW_BOOTSTRAP_LAYOUT.git.execPath} d 0755 0 0`,
+    "",
   );
 
   for (const program of EAGER_PROGRAMS) {
@@ -328,6 +432,10 @@ export function renderHomebrewBootstrapManifest(input: HomebrewBootstrapManifest
   }
   lines.push(
     "/usr/bin/git-remote-https l 0777 0 0 target=/usr/bin/git-remote-http",
+    `${HOMEBREW_BOOTSTRAP_LAYOUT.git.httpHelper} ` +
+      "l 0777 0 0 target=/usr/bin/git-remote-http",
+    `${HOMEBREW_BOOTSTRAP_LAYOUT.git.httpsHelper} ` +
+      "l 0777 0 0 target=/usr/bin/git-remote-http",
     `/usr/bin/brew l 0777 0 0 target=${HOMEBREW_BOOTSTRAP_PREFIX}/bin/brew`,
     "",
     `archive url=${input.brewArchive} base=${HOMEBREW_BOOTSTRAP_PREFIX} ` +
@@ -347,7 +455,7 @@ function usage(): never {
       "--ruby <path> --ruby-runtime <path> --git <path> --git-remote-http <path> " +
       "--curl <path> --tar <path> --gzip <path> --xz <path> --zstd <path> " +
       "--bzip2 <path> --brew-archive <path> --brew-env <path> " +
-      "--image-metadata <path>\n",
+      "--image-metadata <path> --portable-ruby-version <version>\n",
   );
   process.exit(2);
 }
@@ -357,7 +465,7 @@ function parseCli(argv: string[]): { out: string; layoutOut: string; input: Home
   const allowed = new Set([
     "out", "layout-out", "ruby", "ruby-runtime", "git", "git-remote-http",
     "curl", "tar", "gzip", "xz", "zstd", "bzip2", "brew-archive", "brew-env",
-    "image-metadata",
+    "image-metadata", "portable-ruby-version",
   ]);
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -390,6 +498,7 @@ function parseCli(argv: string[]): { out: string; layoutOut: string; input: Home
       brewEnvironment: required("brew-env"),
       imageMetadata: required("image-metadata"),
       layoutMetadata: layoutOut,
+      portableRubyVersion: required("portable-ruby-version"),
     },
   };
 }
