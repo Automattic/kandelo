@@ -2,9 +2,16 @@ import { BrowserKernel } from "@host/browser-kernel-host";
 import { ABI_VERSION } from "@host/generated/abi";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import {
+  finalizeKernelOwnedImage,
   settleWebKitReclaim,
   trackTransientImageBuffer,
 } from "../../lib/kernel-owned-boot";
+import {
+  composeBootDescriptorVfs,
+} from "../../lib/init/homebrew-package-layers";
+import type {
+  BootDescriptor,
+} from "../../../../web-libs/kandelo-session/src/kernel-host";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -42,6 +49,28 @@ interface LazyVfsAcceptanceResult {
   stderr: string;
 }
 
+interface PackageLayerBootRequest {
+  baseVfsUrl: string;
+  descriptor: BootDescriptor;
+}
+
+interface PackageLayerBootResult {
+  layerIds: string[];
+}
+
+interface PackageLayerExecRequest {
+  executable: string;
+  argv: string[];
+  env?: string[];
+  timeoutMs: number;
+}
+
+interface PackageLayerExecResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
 declare global {
   interface Window {
     __homebrewVfsTestReady: boolean;
@@ -51,8 +80,23 @@ declare global {
     __runLazyVfsAcceptance: (
       request: LazyVfsAcceptanceRequest,
     ) => Promise<LazyVfsAcceptanceResult>;
+    __bootPackageLayerAcceptance: (
+      request: PackageLayerBootRequest,
+    ) => Promise<PackageLayerBootResult>;
+    __readPackageLayerAcceptance: (path: string) => Promise<string>;
+    __execPackageLayerAcceptance: (
+      request: PackageLayerExecRequest,
+    ) => Promise<PackageLayerExecResult>;
+    __destroyPackageLayerAcceptance: () => Promise<void>;
   }
 }
+
+interface PackageLayerMachine {
+  kernel: BrowserKernel;
+  output: { stdout: string; stderr: string };
+}
+
+let packageLayerMachine: PackageLayerMachine | null = null;
 
 function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   const stat = fs.stat(path);
@@ -227,6 +271,99 @@ async function init(): Promise<void> {
       if (timer) clearTimeout(timer);
       await kernel.destroy().catch(() => {});
       await settleWebKitReclaim();
+    }
+  };
+
+  window.__destroyPackageLayerAcceptance = async () => {
+    const machine = packageLayerMachine;
+    packageLayerMachine = null;
+    if (machine) await machine.kernel.destroy().catch(() => {});
+    await settleWebKitReclaim();
+  };
+
+  window.__bootPackageLayerAcceptance = async (request) => {
+    await window.__destroyPackageLayerAcceptance();
+    const baseImageBytes = new Uint8Array(
+      await fetchBytes(request.baseVfsUrl, "package-layer base VFS image"),
+    );
+    MemoryFileSystem.assertImageKernelAbi(
+      baseImageBytes,
+      ABI_VERSION,
+      "package-layer base VFS image",
+    );
+    const composed = await composeBootDescriptorVfs({
+      descriptor: request.descriptor,
+      baseImageBytes,
+      kernelAbi: ABI_VERSION,
+    });
+    const output = { stdout: "", stderr: "" };
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onStdout: (bytes) => {
+        output.stdout = appendOutput(output.stdout, bytes, "stdout");
+      },
+      onStderr: (bytes) => {
+        output.stderr = appendOutput(output.stderr, bytes, "stderr");
+      },
+    });
+    try {
+      await kernel.initFromImage({
+        kernelWasm: kernelBytes,
+        vfsImage: await finalizeKernelOwnedImage(composed.fs),
+      });
+    } catch (error) {
+      await kernel.destroy().catch(() => {});
+      await settleWebKitReclaim();
+      throw error;
+    }
+    packageLayerMachine = { kernel, output };
+    return { layerIds: composed.layers.map((layer) => layer.id) };
+  };
+
+  window.__readPackageLayerAcceptance = async (path) => {
+    const machine = packageLayerMachine;
+    if (!machine) throw new Error("package-layer acceptance machine is not booted");
+    const bytes = await machine.kernel.readFileFromVfs(path);
+    if (bytes === null) throw new Error(`missing package-layer VFS file ${path}`);
+    return new TextDecoder().decode(bytes);
+  };
+
+  window.__execPackageLayerAcceptance = async (request) => {
+    const machine = packageLayerMachine;
+    if (!machine) throw new Error("package-layer acceptance machine is not booted");
+    if (!Array.isArray(request.argv) || request.argv.length === 0) {
+      throw new Error("argv must contain at least one entry");
+    }
+    if (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1_000) {
+      throw new Error("timeoutMs must be an integer of at least 1000");
+    }
+    machine.output.stdout = "";
+    machine.output.stderr = "";
+    const spawned = await machine.kernel.spawnFromVfs(
+      request.executable,
+      request.argv,
+      { cwd: "/", env: request.env ?? [] },
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const exitCode = await Promise.race([
+        spawned.exit,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(
+              `package-layer exec timed out after ${request.timeoutMs}ms`,
+            )),
+            request.timeoutMs,
+          );
+        }),
+      ]);
+      return {
+        exitCode,
+        stdout: machine.output.stdout,
+        stderr: machine.output.stderr,
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   };
 
