@@ -214,7 +214,7 @@ to a different directory than the original OFD.
 | `opendir()` | Partial | Host-delegated via DirStream table. Entry-at-a-time iteration. Stores resolved path for rewinddir. |
 | `readdir()` | Full | Returns WasmDirent (d_ino, d_type, d_namlen) + name buffer. Synthesizes "." and ".." entries before host entries. Tracks position for telldir/seekdir. |
 | `closedir()` | Full | Frees DirStream slot, delegates to host. |
-| `rewinddir()` | Full | Closes and reopens directory via stored path. Resets position to 0. |
+| `rewinddir()` | Full | Reopens the directory via its stored path and resets the position to zero. The replacement is opened before the live iterator is retired, so a failed reopen leaves the previous stream and position intact. |
 | `telldir()` | Full | Returns current position counter from DirStream. |
 | `seekdir()` | Full | Rewinds and skips entries to reach target position. |
 | `mkdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. umask applied to mode. |
