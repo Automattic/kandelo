@@ -179,6 +179,73 @@ describe.skipIf(!hasBash)("bash shell", () => {
     expect(result.stdout.trim()).toBe("y");
   });
 
+  it("exposes programmable-completion builtins and enumerates builtins", async () => {
+    const result = await runCentralizedProgram({
+      programPath: bashBinary,
+      argv: [
+        "bash",
+        "-c",
+        [
+          "type compgen >/dev/null",
+          "type complete >/dev/null",
+          "saw_compgen=; saw_unset=",
+          'for cmd in $(compgen -A builtin); do case "$cmd" in compgen) saw_compgen=y ;; unset) saw_unset=y ;; esac; done',
+          'test "$saw_compgen" = y',
+          'test "$saw_unset" = y',
+          "echo y",
+        ].join(" && "),
+      ],
+      env: bashEnv,
+      timeout: 20_000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("y");
+  });
+
+  it("can disable and re-enable a builtin", async () => {
+    const result = await runCentralizedProgram({
+      programPath: bashBinary,
+      argv: [
+        "bash",
+        "-c",
+        [
+          'test "$(type -t printf)" = builtin',
+          "enable -n printf",
+          'test "$(type -t printf)" != builtin',
+          "enable printf",
+          'test "$(type -t printf)" = builtin',
+          "echo y",
+        ].join(" && "),
+      ],
+      env: bashEnv,
+      timeout: 20_000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("y");
+  });
+
+  it("can restore builtins after functions shadow their names", async () => {
+    const result = await runCentralizedProgram({
+      programPath: bashBinary,
+      argv: [
+        "bash",
+        "-c",
+        [
+          "printf() { echo shadowed; }",
+          'test "$(type -t printf)" = function',
+          "builtin enable compgen unset",
+          'for cmd in $(builtin compgen -A builtin); do builtin unset -f "$cmd"; builtin enable "$cmd"; done',
+          'test "$(type -t printf)" = builtin',
+          "printf '%s\\n' y",
+        ].join(" && "),
+      ],
+      env: bashEnv,
+      timeout: 20_000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("y");
+  });
+
   it("exits with the correct status", async () => {
     const result = await runCentralizedProgram({
       programPath: bashBinary,

@@ -1,13 +1,15 @@
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
 function usage() {
   console.error(
-    "usage: node scripts/write-homebrew-bootstrap-metadata.mjs --source <json> --abi <N> --out <json>",
+    "usage: node scripts/write-homebrew-bootstrap-metadata.mjs " +
+      "--source <json> --layout <json> --abi <N> --out <json>",
   );
 }
 
 const options = new Map();
-const allowed = new Set(["source", "abi", "out"]);
+const allowed = new Set(["source", "layout", "abi", "out"]);
 for (let index = 2; index < process.argv.length; index += 2) {
   const flag = process.argv[index];
   const value = process.argv[index + 1];
@@ -20,9 +22,10 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 
 const sourcePath = options.get("source");
+const layoutPath = options.get("layout");
 const abiText = options.get("abi");
 const outputPath = options.get("out");
-if (!sourcePath || !abiText || !outputPath) {
+if (!sourcePath || !layoutPath || !abiText || !outputPath) {
   usage();
   process.exit(2);
 }
@@ -33,6 +36,8 @@ if (!Number.isSafeInteger(abi) || abi < 1) {
 }
 
 const source = JSON.parse(readFileSync(sourcePath, "utf8"));
+const layoutBytes = readFileSync(layoutPath);
+const layout = JSON.parse(layoutBytes.toString("utf8"));
 const expectedKeys = [
   "homebrew_archive_sha256",
   "homebrew_bottle_arch",
@@ -40,6 +45,7 @@ const expectedKeys = [
   "homebrew_patch_sha256",
   "homebrew_patched_tree_git_oid",
   "homebrew_patched_tree_sha256",
+  "homebrew_portable_ruby_version",
   "homebrew_repository",
   "homebrew_revision",
   "schema",
@@ -57,7 +63,7 @@ for (const field of [
 ]) {
   if (!sha256.test(source[field])) throw new Error(`${field} is not a SHA-256 digest`);
 }
-if (source.schema !== 1) throw new Error(`unsupported source provenance schema: ${source.schema}`);
+if (source.schema !== 2) throw new Error(`unsupported source provenance schema: ${source.schema}`);
 if (typeof source.homebrew_repository !== "string" || source.homebrew_repository.length === 0) {
   throw new Error("homebrew_repository is empty");
 }
@@ -74,16 +80,134 @@ const expectedTag = `${source.homebrew_bottle_arch}_kandelo`;
 if (source.homebrew_bottle_tag !== expectedTag) {
   throw new Error(`Homebrew bottle tag must be ${expectedTag}`);
 }
+if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:_[0-9]+)?$/.test(source.homebrew_portable_ruby_version)) {
+  throw new Error("homebrew_portable_ruby_version is not a safe Homebrew package version");
+}
+
+const expectedLayoutKeys = [
+  "certificateAuthority",
+  "eagerRootfsPackages",
+  "eagerRootfsOutputs",
+  "entrypoints",
+  "guest",
+  "git",
+  "prefix",
+  "portableRuby",
+  "protectedFiles",
+  "repository",
+  "schema",
+  "writableDirectories",
+].sort();
+const actualLayoutKeys = Object.keys(layout).sort();
+if (JSON.stringify(actualLayoutKeys) !== JSON.stringify(expectedLayoutKeys)) {
+  throw new Error(`unexpected Homebrew guest-layout fields: ${actualLayoutKeys.join(", ")}`);
+}
+if (layout.schema !== 2) throw new Error(`unsupported Homebrew guest-layout schema: ${layout.schema}`);
+if (layout.prefix !== "/home/linuxbrew/.linuxbrew") throw new Error("unexpected Homebrew guest prefix");
+if (
+  layout.guest?.uid !== 1000 || layout.guest?.gid !== 1000 ||
+  layout.guest?.home !== "/home/linuxbrew"
+) {
+  throw new Error("unexpected Homebrew guest identity");
+}
+if (
+  layout.repository?.path !== layout.prefix ||
+  layout.repository?.state !== "mutable-working-repository" ||
+  layout.repository?.initialSourceProvenance !== "/etc/kandelo/homebrew-image.json"
+) {
+  throw new Error("Homebrew working-repository state is not explicit");
+}
+const portableRubyRoot = `${layout.prefix}/Library/Homebrew/vendor/portable-ruby`;
+if (
+  layout.portableRuby?.root !== portableRubyRoot ||
+  layout.portableRuby?.current !== `${portableRubyRoot}/current` ||
+  layout.portableRuby?.versionFile !==
+    `${layout.prefix}/Library/Homebrew/vendor/portable-ruby-version` ||
+  layout.portableRuby?.initialRuntimeRoot !== "/usr" ||
+  layout.portableRuby?.initialVersionProvenance !==
+    layout.repository.initialSourceProvenance ||
+  layout.portableRuby?.state !== "homebrew-managed-runtime-alias"
+) {
+  throw new Error("Homebrew portable Ruby runtime contract is not explicit");
+}
+if (
+  layout.certificateAuthority?.systemBundle !== "/etc/ssl/certs/ca-certificates.crt" ||
+  layout.certificateAuthority?.homebrewBundle !==
+    `${layout.prefix}/etc/ca-certificates/cert.pem` ||
+  layout.certificateAuthority?.state !== "homebrew-managed-system-bundle-alias"
+) {
+  throw new Error("Homebrew certificate authority contract is not explicit");
+}
+if (
+  layout.git?.execPath !== "/usr/libexec/git-core" ||
+  layout.git?.httpHelper !== "/usr/libexec/git-core/git-remote-http" ||
+  layout.git?.httpsHelper !== "/usr/libexec/git-core/git-remote-https"
+) {
+  throw new Error("Homebrew Git transport layout does not match Git's compiled exec path");
+}
+if (!Array.isArray(layout.entrypoints) || !Array.isArray(layout.writableDirectories)) {
+  throw new Error("Homebrew guest layout omits entrypoints or writable directories");
+}
+if (!Array.isArray(layout.eagerRootfsPackages) ||
+    JSON.stringify(layout.eagerRootfsPackages) !==
+      JSON.stringify(["dash", "bash", "coreutils", "gawk", "grep", "sed", "findutils"])) {
+  throw new Error("Homebrew guest layout omits the eager rootfs tool closure");
+}
+if (!Array.isArray(layout.eagerRootfsOutputs) ||
+    JSON.stringify(layout.eagerRootfsOutputs) !==
+      JSON.stringify([{ package: "posix-utils-lite", path: "/usr/bin/locale" }])) {
+  throw new Error("Homebrew guest layout omits the eager rootfs output closure");
+}
+const entrypointPaths = layout.entrypoints.map((entry) => entry?.path);
+for (const name of ["brew", "ruby", "gem", "bundle", "bundler"]) {
+  if (!entrypointPaths.includes(`/usr/bin/${name}`)) {
+    throw new Error(`Homebrew guest layout omits /usr/bin/${name}`);
+  }
+}
+if (!layout.writableDirectories.some((entry) => entry?.path === `${layout.prefix}/Cellar`) ||
+    !layout.writableDirectories.some((entry) => entry?.path === `${layout.prefix}/Library/Taps`) ||
+    !layout.writableDirectories.some((entry) => entry?.path === `${layout.prefix}/var/homebrew/locks`) ||
+    !layout.writableDirectories.some((entry) => entry?.path === portableRubyRoot)) {
+  throw new Error("Homebrew guest layout omits required writable state");
+}
+if (!Array.isArray(layout.protectedFiles) ||
+    !layout.protectedFiles.some((entry) =>
+      entry?.path === "/etc/kandelo/homebrew-image.json" &&
+      entry?.owner === "root" && entry?.mode === "0444")) {
+  throw new Error("Homebrew source provenance is not protected from the guest");
+}
+
+const layoutSha256 = createHash("sha256").update(layoutBytes).digest("hex");
 
 const metadata = {
   ...source,
-  schema: 1,
+  schema: 2,
   created_by: "scripts/build-homebrew-bootstrap.sh",
   prefix: "/home/linuxbrew/.linuxbrew",
   kandelo_abi: abi,
+  guest_layout: {
+    path: "/etc/kandelo/homebrew-bootstrap-layout.json",
+    sha256: layoutSha256,
+    guest_uid: layout.guest.uid,
+    guest_gid: layout.guest.gid,
+    guest_home: layout.guest.home,
+    repository_state: layout.repository.state,
+    portable_ruby_root: layout.portableRuby.root,
+    portable_ruby_current: layout.portableRuby.current,
+    portable_ruby_initial_runtime_root: layout.portableRuby.initialRuntimeRoot,
+    certificate_authority_system_bundle: layout.certificateAuthority.systemBundle,
+    certificate_authority_homebrew_bundle: layout.certificateAuthority.homebrewBundle,
+    git_exec_path: layout.git.execPath,
+    eager_rootfs_packages: layout.eagerRootfsPackages,
+    eager_rootfs_outputs: layout.eagerRootfsOutputs,
+    entrypoints: entrypointPaths,
+    writable_directory_count: layout.writableDirectories.length,
+  },
   notes: [
     "The pinned upstream Homebrew tree carries the provenance-bound Kandelo platform patch.",
+    "The immutable image metadata binds the initial source; the live checkout is a stock, guest-writable Homebrew working repository.",
     "The selected bottle tag is loaded by Homebrew itself from /etc/homebrew/brew.env.",
+    "Homebrew's versioned portable-Ruby path initially aliases the provenance-bound Kandelo Ruby runtime under /usr.",
     "Kandelo programs match the current ABI and package output contracts.",
   ],
 };

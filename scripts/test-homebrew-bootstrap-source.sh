@@ -6,7 +6,7 @@ PREPARE="$ROOT/scripts/prepare-homebrew-bootstrap-source.sh"
 PATCH_FILE="$ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 PATCH_SHA256="9c52238d811616c210cd1ecdd23b0192a3e0333219a70b34d8ea6d77dbcfbf74"
 BREW_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_BREW_REPOSITORY:-https://github.com/Homebrew/brew.git}"
-BREW_REVISION="21aba0bc7080a75753f01c06d2358ca27706bfeb"
+BREW_REVISION="4ead8619231cb15cbe15e8e8188081e347d6f7cd"
 TAP_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_TAP_REPOSITORY:-https://github.com/kandelo-dev/homebrew-tap-core.git}"
 TAP_REVISION="e447c36f78ef5ab1c060087a9965bed00d4bfc13"
 TAP_NAME="kandelo-dev/tap-core"
@@ -114,6 +114,7 @@ ARCHIVE64="$RUN_ROOT/wasm64/homebrew-brew.zip"
 PROVENANCE32="$RUN_ROOT/wasm32/homebrew-source.json"
 PROVENANCE64="$RUN_ROOT/wasm64/homebrew-source.json"
 IMAGE_METADATA="$RUN_ROOT/homebrew-image.json"
+LAYOUT_METADATA="$RUN_ROOT/homebrew-bootstrap-layout.json"
 
 if ! cmp -s "$ARCHIVE32" "$ARCHIVE64"; then
     echo "test-homebrew-bootstrap-source: patched archive is not reproducible across preparations" >&2
@@ -145,12 +146,19 @@ function assertEqual(expected, actual, label) {
 }
 
 assertEqual(revision, wasm32.homebrew_revision, "upstream revision");
+assertEqual(2, wasm32.schema, "source provenance schema");
 assertEqual(patchSha, wasm32.homebrew_patch_sha256, "patch sha256");
 assertEqual(archiveSha, wasm32.homebrew_archive_sha256, "archive sha256");
 assertEqual("wasm32", wasm32.homebrew_bottle_arch, "wasm32 provenance arch");
 assertEqual("wasm32_kandelo", wasm32.homebrew_bottle_tag, "wasm32 provenance tag");
 assertEqual("wasm64", wasm64.homebrew_bottle_arch, "wasm64 provenance arch");
 assertEqual("wasm64_kandelo", wasm64.homebrew_bottle_tag, "wasm64 provenance tag");
+assertEqual("4.0.5_1", wasm32.homebrew_portable_ruby_version, "portable Ruby version");
+assertEqual(
+  wasm32.homebrew_portable_ruby_version,
+  wasm64.homebrew_portable_ruby_version,
+  "portable Ruby version across architectures",
+);
 assertEqual(wasm32.homebrew_patched_tree_git_oid, wasm64.homebrew_patched_tree_git_oid, "patched tree oid");
 assertEqual(wasm32.homebrew_patched_tree_sha256, wasm64.homebrew_patched_tree_sha256, "patched tree sha256");
 assertEqual(wasm32.homebrew_archive_sha256, wasm64.homebrew_archive_sha256, "reproducible archive sha256");
@@ -159,8 +167,62 @@ if (!/^[0-9a-f]{64}$/.test(wasm32.homebrew_patched_tree_sha256)) {
 }
 NODE
 
+node --input-type=module - "$LAYOUT_METADATA" <<'NODE'
+import { writeFileSync } from "node:fs";
+const path = process.argv[2];
+const prefix = "/home/linuxbrew/.linuxbrew";
+writeFileSync(path, `${JSON.stringify({
+  schema: 2,
+  guest: { uid: 1000, gid: 1000, home: "/home/linuxbrew" },
+  prefix,
+  eagerRootfsPackages: ["dash", "bash", "coreutils", "gawk", "grep", "sed", "findutils"],
+  eagerRootfsOutputs: [{ package: "posix-utils-lite", path: "/usr/bin/locale" }],
+  repository: {
+    path: prefix,
+    state: "mutable-working-repository",
+    initialSourceProvenance: "/etc/kandelo/homebrew-image.json",
+  },
+  portableRuby: {
+    root: `${prefix}/Library/Homebrew/vendor/portable-ruby`,
+    current: `${prefix}/Library/Homebrew/vendor/portable-ruby/current`,
+    versionFile: `${prefix}/Library/Homebrew/vendor/portable-ruby-version`,
+    initialRuntimeRoot: "/usr",
+    initialVersionProvenance: "/etc/kandelo/homebrew-image.json",
+    state: "homebrew-managed-runtime-alias",
+  },
+  certificateAuthority: {
+    systemBundle: "/etc/ssl/certs/ca-certificates.crt",
+    homebrewBundle: `${prefix}/etc/ca-certificates/cert.pem`,
+    state: "homebrew-managed-system-bundle-alias",
+  },
+  git: {
+    execPath: "/usr/libexec/git-core",
+    httpHelper: "/usr/libexec/git-core/git-remote-http",
+    httpsHelper: "/usr/libexec/git-core/git-remote-https",
+  },
+  entrypoints: ["brew", "ruby", "gem", "bundle", "bundler"].map((name) => ({
+    path: `/usr/bin/${name}`,
+  })),
+  writableDirectories: [
+    "Cellar",
+    "Library/Taps",
+    "Library/Homebrew/vendor/portable-ruby",
+    "etc/ca-certificates",
+    "var/homebrew/locks",
+  ].map((suffix) => ({
+    path: `${prefix}/${suffix}`,
+  })),
+  protectedFiles: [{
+    path: "/etc/kandelo/homebrew-image.json",
+    owner: "root",
+    mode: "0444",
+  }],
+}, null, 2)}\n`);
+NODE
+
 node "$ROOT/scripts/write-homebrew-bootstrap-metadata.mjs" \
     --source "$PROVENANCE32" \
+    --layout "$LAYOUT_METADATA" \
     --abi 39 \
     --out "$IMAGE_METADATA"
 node --input-type=module - "$IMAGE_METADATA" "$PATCH_SHA256" "$BREW_REVISION" <<'NODE'
@@ -168,29 +230,75 @@ import { readFileSync } from "node:fs";
 const [metadataPath, patchSha, revision] = process.argv.slice(2);
 const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
 if (metadata.created_by !== "scripts/build-homebrew-bootstrap.sh") throw new Error("wrong metadata producer");
+if (metadata.schema !== 2) throw new Error("wrong metadata schema");
 if (metadata.kandelo_abi !== 39) throw new Error("wrong metadata ABI");
 if (metadata.homebrew_revision !== revision) throw new Error("wrong metadata upstream revision");
 if (metadata.homebrew_patch_sha256 !== patchSha) throw new Error("wrong metadata patch digest");
 if (metadata.homebrew_bottle_tag !== "wasm32_kandelo") throw new Error("wrong metadata bottle tag");
+if (metadata.homebrew_portable_ruby_version !== "4.0.5_1") {
+  throw new Error("wrong portable Ruby version");
+}
 if (!/^[0-9a-f]{64}$/.test(metadata.homebrew_patched_tree_sha256)) {
   throw new Error("metadata is missing the patched tree digest");
 }
 if (!/^[0-9a-f]{64}$/.test(metadata.homebrew_archive_sha256)) {
   throw new Error("metadata is missing the archive digest");
 }
+if (metadata.guest_layout?.path !== "/etc/kandelo/homebrew-bootstrap-layout.json") {
+  throw new Error("metadata is missing the guest-layout path");
+}
+if (!/^[0-9a-f]{64}$/.test(metadata.guest_layout?.sha256)) {
+  throw new Error("metadata is missing the guest-layout digest");
+}
+if (metadata.guest_layout?.repository_state !== "mutable-working-repository") {
+  throw new Error("metadata does not describe the live working repository truthfully");
+}
+if (metadata.guest_layout?.portable_ruby_current !==
+    "/home/linuxbrew/.linuxbrew/Library/Homebrew/vendor/portable-ruby/current" ||
+    metadata.guest_layout?.portable_ruby_initial_runtime_root !== "/usr") {
+  throw new Error("metadata does not bind the initial portable Ruby runtime alias");
+}
+if (metadata.guest_layout?.certificate_authority_system_bundle !==
+    "/etc/ssl/certs/ca-certificates.crt" ||
+    metadata.guest_layout?.certificate_authority_homebrew_bundle !==
+    "/home/linuxbrew/.linuxbrew/etc/ca-certificates/cert.pem" ||
+    metadata.guest_layout?.git_exec_path !== "/usr/libexec/git-core") {
+  throw new Error("metadata does not bind the Homebrew network tool layout");
+}
+if (JSON.stringify(metadata.guest_layout?.eager_rootfs_outputs) !==
+    JSON.stringify([{ package: "posix-utils-lite", path: "/usr/bin/locale" }])) {
+  throw new Error("metadata does not bind the eager rootfs output closure");
+}
 NODE
 
 grep -Fxq 'HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo' "$RUN_ROOT/wasm32/brew.env"
 grep -Fxq 'HOMEBREW_KANDELO_BOTTLE_TAG=wasm64_kandelo' "$RUN_ROOT/wasm64/brew.env"
 grep -Fxq 'HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1' "$RUN_ROOT/wasm32/brew.env"
-grep -Fq '/usr/bin/brew l 0777 0 0 target=/home/linuxbrew/.linuxbrew/bin/brew' \
-    "$ROOT/scripts/build-homebrew-bootstrap.sh"
+grep -Fxq 'HOMEBREW_NO_INSTALL_FROM_API=1' "$RUN_ROOT/wasm32/brew.env"
+grep -Fxq 'HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1' "$RUN_ROOT/wasm32/brew.env"
+grep -Fxq 'HOMEBREW_FORCE_BREWED_CA_CERTIFICATES=1' "$RUN_ROOT/wasm32/brew.env"
+grep -Fxq 'HOMEBREW_GIT_PATH=/usr/bin/git' "$RUN_ROOT/wasm32/brew.env"
+grep -Fq 'scripts/homebrew-bootstrap-layout.ts' "$ROOT/scripts/build-homebrew-bootstrap.sh"
+grep -Fq -- '--print-rootfs-eager-arguments' "$ROOT/scripts/build-homebrew-bootstrap.sh"
+grep -Fq -- '^(lazy_url|src)=binaries\/.*\.wasm$' "$ROOT/scripts/build-homebrew-bootstrap.sh"
+grep -Fq -- '--layout "$BOOTSTRAP_LAYOUT"' "$ROOT/scripts/build-homebrew-bootstrap.sh"
 
 EXTRACT_ROOT="$RUN_ROOT/prefix"
 mkdir -p "$EXTRACT_ROOT"
 unzip -q "$ARCHIVE32" -d "$EXTRACT_ROOT"
+if [ "$(cat "$EXTRACT_ROOT/Library/Homebrew/vendor/portable-ruby-version")" != "4.0.5_1" ]; then
+    echo "test-homebrew-bootstrap-source: archived portable Ruby version does not match provenance" >&2
+    exit 1
+fi
 grep -Fq 'WASM_32BIT_ARCHS  = [:wasm32].freeze' "$EXTRACT_ROOT/Library/Homebrew/hardware.rb"
 grep -Fq 'HOMEBREW_KANDELO_BOTTLE_TAG' "$EXTRACT_ROOT/Library/Homebrew/utils/bottles.rb"
+# The first-party tap uses Homebrew's public patch metadata DSL. Keep the
+# bootstrap pin at or after the smallest upstream revision that implements it.
+grep -Fq 'def type(val = nil)' "$EXTRACT_ROOT/Library/Homebrew/resource.rb"
+# The automatic no-API state must remain behavior, not just a named variable:
+# explicit custom taps stay usable without silently cloning homebrew/core.
+grep -Fq 'return if Homebrew::EnvConfig.automatically_set_no_install_from_api?' \
+    "$EXTRACT_ROOT/Library/Homebrew/tap/abstract_core_tap.rb"
 
 SYSTEM_ENV_ROOT="$RUN_ROOT/system/etc/homebrew"
 mkdir -p "$SYSTEM_ENV_ROOT" "$EXTRACT_ROOT/etc/homebrew" \
