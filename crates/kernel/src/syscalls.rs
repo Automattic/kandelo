@@ -6344,8 +6344,17 @@ pub fn sys_rewinddir(
     let path = stream.path.clone();
     let old_handle = stream.host_handle;
 
-    host.host_closedir(old_handle)?;
+    // Construct the replacement before retiring the current iterator.  A
+    // transient reopen failure must not leave the live DirStream pointing at
+    // a handle that we already closed.
     let new_handle = host.host_opendir(&path)?;
+
+    if let Err(err) = host.host_closedir(old_handle) {
+        // The old iterator remains authoritative when its close fails.  Do
+        // not leak the replacement that never became visible to the stream.
+        let _ = host.host_closedir(new_handle);
+        return Err(err);
+    }
 
     let stream = proc
         .dir_streams
@@ -15400,6 +15409,7 @@ mod tests {
         dir_entry_count: usize, // total number of mock entries
         dir_entry_names: Option<Vec<Vec<u8>>>,
         dir_opendir_error: Option<Errno>,
+        dir_closedir_error_once: Option<Errno>,
         dir_readdir_error: Option<(usize, Errno)>,
         sigsuspend_signal: u32,
         sigsuspend_error: bool,
@@ -15466,6 +15476,7 @@ mod tests {
                 dir_entry_count: 1,
                 dir_entry_names: None,
                 dir_opendir_error: None,
+                dir_closedir_error_once: None,
                 dir_readdir_error: None,
                 sigsuspend_signal: 0,
                 sigsuspend_error: false,
@@ -15940,6 +15951,9 @@ mod tests {
         }
 
         fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
+            if let Some(err) = self.dir_closedir_error_once.take() {
+                return Err(err);
+            }
             self.dir_entry_indices.remove(&handle);
             self.closed_dir_handles.push(handle);
             Ok(())
@@ -18915,6 +18929,69 @@ mod tests {
         assert_eq!(&name_buf[..1], b".");
 
         sys_closedir(&mut proc, &mut host, dh).unwrap();
+    }
+
+    #[test]
+    fn rewinddir_reopen_failure_preserves_the_live_iterator() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let dh = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+        let original = proc.dir_streams[dh as usize].as_mut().unwrap();
+        original.position = 7;
+        original.synth_dot_state = 2;
+        assert_eq!(original.host_handle, 200);
+
+        host.dir_opendir_error = Some(Errno::EACCES);
+        assert_eq!(
+            sys_rewinddir(&mut proc, &mut host, dh),
+            Err(Errno::EACCES),
+        );
+
+        let preserved = proc.dir_streams[dh as usize].as_ref().unwrap();
+        assert_eq!(preserved.host_handle, 200);
+        assert_eq!(preserved.position, 7);
+        assert_eq!(preserved.synth_dot_state, 2);
+        assert!(host.closed_dir_handles.is_empty());
+
+        host.dir_opendir_error = None;
+        sys_rewinddir(&mut proc, &mut host, dh).unwrap();
+        let rewound = proc.dir_streams[dh as usize].as_ref().unwrap();
+        assert_eq!(rewound.host_handle, 201);
+        assert_eq!(rewound.position, 0);
+        assert_eq!(rewound.synth_dot_state, 0);
+        assert_eq!(host.closed_dir_handles, [200]);
+
+        sys_closedir(&mut proc, &mut host, dh).unwrap();
+        assert_eq!(host.closed_dir_handles, [200, 201]);
+    }
+
+    #[test]
+    fn rewinddir_close_failure_discards_the_replacement() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let dh = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+        let original = proc.dir_streams[dh as usize].as_mut().unwrap();
+        original.position = 7;
+        original.synth_dot_state = 2;
+
+        host.dir_closedir_error_once = Some(Errno::EIO);
+        assert_eq!(sys_rewinddir(&mut proc, &mut host, dh), Err(Errno::EIO));
+
+        let preserved = proc.dir_streams[dh as usize].as_ref().unwrap();
+        assert_eq!(preserved.host_handle, 200);
+        assert_eq!(preserved.position, 7);
+        assert_eq!(preserved.synth_dot_state, 2);
+        assert_eq!(host.closed_dir_handles, [201]);
+
+        sys_rewinddir(&mut proc, &mut host, dh).unwrap();
+        let rewound = proc.dir_streams[dh as usize].as_ref().unwrap();
+        assert_eq!(rewound.host_handle, 202);
+        assert_eq!(rewound.position, 0);
+        assert_eq!(rewound.synth_dot_state, 0);
+        assert_eq!(host.closed_dir_handles, [201, 200]);
+
+        sys_closedir(&mut proc, &mut host, dh).unwrap();
+        assert_eq!(host.closed_dir_handles, [201, 200, 202]);
     }
 
     #[test]
