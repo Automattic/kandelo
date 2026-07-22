@@ -8,11 +8,17 @@ import { zipSync, type Zippable } from "fflate";
 
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import type {
-  HomebrewDeferredTreeDescriptor,
-  HomebrewLazyLayerDescriptor,
+  HomebrewDeferredTreeDraftDescriptor,
+  HomebrewLazyLayerDraftDescriptor,
   HomebrewLazyLayerEntry,
   HomebrewLazyLayerPackageRecord,
 } from "../../../host/src/homebrew-lazy-layer-descriptor";
+import {
+  closeHomebrewLazyLayerDescriptor,
+  encodeHomebrewLazyLayerDescriptor,
+  homebrewRuntimeLayerDescriptorAsset,
+  homebrewRuntimeLayerPayloadAsset,
+} from "../../../host/src/homebrew-lazy-layer";
 import {
   ensureDirRecursive,
   writeVfsFile,
@@ -56,9 +62,6 @@ const TAP_NAME = "kandelo-dev/tap-core";
 const TAP_COMMIT = "1".repeat(40);
 const KANDELO_COMMIT = "2".repeat(40);
 const ACCEPTANCE_SHA = "e".repeat(64);
-const RELEASE_TAG = `homebrew-vfs-sha256-${ACCEPTANCE_SHA}`;
-const RELEASE_ROOT =
-  `https://github.com/${RELEASE_REPOSITORY}/releases/download/${RELEASE_TAG}`;
 const ZIP_EPOCH = new Date(1980, 0, 1, 0, 0, 0);
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
@@ -141,7 +144,7 @@ function zipTree(
   transportUrl: string,
   entries: HomebrewLazyLayerEntry[],
   files: ReadonlyMap<string, Uint8Array>,
-): { archive: Uint8Array; tree: HomebrewDeferredTreeDescriptor } {
+): { archive: Uint8Array; tree: HomebrewDeferredTreeDraftDescriptor } {
   const input: Zippable = {};
   for (const entry of entries) {
     const archivePath = entry.type === "directory"
@@ -186,7 +189,13 @@ function zipTree(
         sha256: sha256(archive),
         bytes: archive.byteLength,
       },
-      transports: [{ url: transportUrl }],
+      transports: [
+        { kind: "external-https", url: transportUrl },
+        {
+          kind: "bundle-release",
+          asset: homebrewRuntimeLayerPayloadAsset(id),
+        },
+      ],
       inventory: {
         entry_count: entries.length,
         source_entry_count: new Set(entries.map((entry) => entry.source_path)).size,
@@ -206,7 +215,7 @@ function zipTree(
 async function createFixture(): Promise<PackageLayerFixture> {
   const urls = {
     base: "https://fixtures.kandelo.invalid/package-layer-base.vfs",
-    descriptor: "https://fixtures.kandelo.invalid/lazyfixture-layer.json",
+    descriptor: "",
     data: "https://fixtures.kandelo.invalid/lazyfixture-data.zip",
     exec: "https://fixtures.kandelo.invalid/lazyfixture-exec.zip",
   };
@@ -316,9 +325,9 @@ async function createFixture(): Promise<PackageLayerFixture> {
   );
 
   const baseSha = sha256(baseImage);
-  const descriptor: HomebrewLazyLayerDescriptor = {
-    schema: 3,
-    kind: "kandelo-homebrew-deferred-layer",
+  const draft: HomebrewLazyLayerDraftDescriptor = {
+    schema: 4,
+    kind: "kandelo-homebrew-deferred-layer-draft",
     arch: "wasm32",
     mount_prefix: "/",
     tap: {
@@ -392,19 +401,39 @@ async function createFixture(): Promise<PackageLayerFixture> {
         package_order: basePackages.map((pkg) => pkg.full_name),
       },
     },
-    release: {
-      repository: RELEASE_REPOSITORY,
-      tag: RELEASE_TAG,
-    },
     acceptance_vfs: {
       asset: "kandelo-homebrew.vfs.zst",
-      url: `${RELEASE_ROOT}/kandelo-homebrew.vfs.zst`,
       sha256: ACCEPTANCE_SHA,
       bytes: 1,
     },
     deferred_trees: [dataTree.tree, execTree.tree],
   };
-  const descriptorBytes = utf8(`${JSON.stringify(descriptor, null, 2)}\n`);
+  const descriptor = closeHomebrewLazyLayerDescriptor(draft, {
+    descriptor: {
+      asset: "kandelo-homebrew-vfs.json",
+      sha256: "8".repeat(64),
+      bytes: 1,
+    },
+    report: {
+      asset: "kandelo-homebrew-vfs-report.json",
+      sha256: "9".repeat(64),
+      bytes: 1,
+    },
+    node: {
+      asset: "kandelo-homebrew-node-evidence.json",
+      sha256: "a".repeat(64),
+      bytes: 1,
+    },
+    browser: {
+      asset: "kandelo-homebrew-browser-evidence.json",
+      sha256: "b".repeat(64),
+      bytes: 1,
+    },
+  });
+  urls.descriptor =
+    `https://github.com/${RELEASE_REPOSITORY}/releases/download/` +
+    `${descriptor.release.tag}/${homebrewRuntimeLayerDescriptorAsset(PACKAGE)}`;
+  const descriptorBytes = encodeHomebrewLazyLayerDescriptor(descriptor);
   const bootDescriptor: BootDescriptor = {
     version: 1,
     id: "package-layer-acceptance",
