@@ -407,6 +407,21 @@ else
 module KandeloFormulaSupport
   KANDELO_FORMULA_SUPPORT_API_VERSION = 1
 
+  class BinaryenRequirement < Requirement
+    fatal true
+    satisfy(build_env: false) { which("wasm-opt") }
+  end
+
+  class PkgconfRequirement < Requirement
+    fatal true
+    satisfy(build_env: false) { which("pkg-config") }
+  end
+
+  class WabtRequirement < Requirement
+    fatal true
+    satisfy(build_env: false) { which("wasm-validate") }
+  end
+
   def self.kandelo_load_tier2_runtime!
     support_path = Pathname(__FILE__).realpath
     support_path.freeze
@@ -420,6 +435,108 @@ module KandeloFormulaSupport
 end
 end
 RUBY
+
+cat >"$TAP_ROOT/Formula/native-requirements.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class NativeRequirements < Formula
+  depends_on KandeloFormulaSupport::BinaryenRequirement => :build
+  depends_on KandeloFormulaSupport::PkgconfRequirement => [:build, :test]
+  depends_on KandeloFormulaSupport::WabtRequirement => [:build, :test]
+end
+RUBY
+native_plan="$(KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core native-requirements \
+    --host-dependencies-json)"
+jq -e '
+  .schema == 3 and
+  .build == ["binaryen", "pkgconf", "wabt"] and
+  .build_and_test == ["binaryen", "pkgconf", "wabt"] and
+  .runtime_and_test == ["pkgconf", "wabt"]
+' <<<"$native_plan" >/dev/null
+
+cat >"$TAP_ROOT/Formula/unknown-requirement.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class UnknownRequirement < Formula
+  depends_on KandeloFormulaSupport::CurlRequirement => :build
+end
+RUBY
+if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core unknown-requirement \
+    --host-dependencies-json >"$TMP_ROOT/unknown-requirement.out" \
+    2>"$TMP_ROOT/unknown-requirement.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted an unknown native Requirement" >&2
+  exit 1
+fi
+grep -F 'depends_on uses unknown native Requirement CurlRequirement' \
+  "$TMP_ROOT/unknown-requirement.err" >/dev/null
+
+cat >"$TAP_ROOT/Formula/dynamic-requirement.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class DynamicRequirement < Formula
+  depends_on KandeloFormulaSupport.const_get("BinaryenRequirement") => :build
+end
+RUBY
+if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core dynamic-requirement \
+    --host-dependencies-json >"$TMP_ROOT/dynamic-requirement.out" \
+    2>"$TMP_ROOT/dynamic-requirement.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted a dynamic native Requirement" >&2
+  exit 1
+fi
+grep -F 'Formula uses forbidden dependency metaprogramming "const_get"' \
+  "$TMP_ROOT/dynamic-requirement.err" >/dev/null
+
+cat >"$TAP_ROOT/Formula/test-only-requirement.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class TestOnlyRequirement < Formula
+  depends_on KandeloFormulaSupport::PkgconfRequirement => :test
+end
+RUBY
+if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core test-only-requirement \
+    --host-dependencies-json >"$TMP_ROOT/test-only-requirement.out" \
+    2>"$TMP_ROOT/test-only-requirement.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted a test-only native Requirement" >&2
+  exit 1
+fi
+grep -F 'native Requirement must include :build and may also include :test' \
+  "$TMP_ROOT/test-only-requirement.err" >/dev/null
+
+cat >"$TAP_ROOT/Formula/unloaded-requirement.rb" <<'RUBY'
+class UnloadedRequirement < Formula
+  depends_on KandeloFormulaSupport::BinaryenRequirement => :build
+end
+RUBY
+if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core unloaded-requirement \
+    --host-dependencies-json >"$TMP_ROOT/unloaded-requirement.out" \
+    2>"$TMP_ROOT/unloaded-requirement.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted an unloaded native Requirement" >&2
+  exit 1
+fi
+grep -F 'native Requirement requires the canonical tap-local Formula support require' \
+  "$TMP_ROOT/unloaded-requirement.err" >/dev/null
+
+cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" \
+  "$TMP_ROOT/canonical-native-requirements.rb"
+sed -i.bak 's/which("wasm-opt")/which("forged-wasm-opt")/' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core native-requirements \
+    --host-dependencies-json >"$TMP_ROOT/forged-requirement.out" \
+    2>"$TMP_ROOT/forged-requirement.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted a forged native Requirement" >&2
+  exit 1
+fi
+grep -F 'Kandelo Formula support contains an unsupported native Requirement class' \
+  "$TMP_ROOT/forged-requirement.err" >/dev/null
+mv "$TMP_ROOT/canonical-native-requirements.rb" \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 
 write_valid_bridge_formula() {
   cat >"$TAP_ROOT/Formula/bridge.rb" <<'RUBY'
@@ -540,7 +657,7 @@ jq -e '
   }
 ' <<<"$bridge_plan" >/dev/null
 [ "$(jq -r '.support_runtime_sha256' <<<"$bridge_plan")" = \
-  "f4268a4e34b7fc2fc3ec46466e656eb6b917bd451d77cbfffdafe2a08e8924a4" ]
+  "d370abe1ccfaea226b9f8d08f1bc515f16d97d007b99b5cc69164fc5916f8c3f" ]
 [ "$bridge_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)" ]
 rm "$TAP_ROOT/Kandelo/formula_support/a-runtime.txt" \
   "$TAP_ROOT/Kandelo/formula_support/z-runtime.txt"
