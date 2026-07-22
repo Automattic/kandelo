@@ -83,7 +83,7 @@ export async function createHomebrewBottleMirrorPublishManifest(options: {
     target_commitish: report.catalog.checkout_commit,
     title: PUBLISH_TITLE,
     body:
-      "Immutable mirror of the 35 deferred Homebrew bottles used by the " +
+      "Immutable mirror of the deferred Homebrew bottles used by the " +
       `Kandelo shell. Collection SHA-256: ${plan.collection_sha256}.`,
     assets: declaredAssets,
     preferred_asset_names: expectedNames,
@@ -237,7 +237,7 @@ function parseArgs(args: string[]) {
   ) {
     throw new Error(
       "usage: npx tsx scripts/create-homebrew-bottle-mirror-publish-manifest.ts " +
-        "--bundle <36-file-directory> --recovery-report <report.json> " +
+        "--bundle <bottle-mirror-directory> --recovery-report <report.json> " +
         "--out <new-publish-manifest.json>",
     );
   }

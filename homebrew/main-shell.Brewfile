@@ -41,3 +41,10 @@ brew "kandelo-dev/tap-core/vim"
 brew "kandelo-dev/tap-core/nethack"
 brew "kandelo-dev/tap-core/fbdoom"
 brew "kandelo-dev/tap-core/modeset"
+
+# Language runtimes remain independent first-use bottle trees. Bash and its
+# small boot closure are still the only packages embedded in the shell image.
+brew "kandelo-dev/tap-core/python"
+brew "kandelo-dev/tap-core/perl"
+brew "kandelo-dev/tap-core/erlang"
+brew "kandelo-dev/tap-core/ruby"

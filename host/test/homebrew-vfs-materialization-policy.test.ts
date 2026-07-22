@@ -83,14 +83,16 @@ describe("Homebrew VFS materialization policy", () => {
     });
   });
 
-  it("leaves the exact 35-Formula migration-lock complement deferred", () => {
+  it("leaves every non-embedded Formula in the migration lock deferred", () => {
     const lock = JSON.parse(readFileSync(MIGRATION_LOCK_PATH, "utf8")) as {
       formula_closure: string[];
     };
     const embedded = new Set(checkedInPolicy().embedded_package_order);
     const deferred = lock.formula_closure.filter((name) => !embedded.has(name));
-    expect(lock.formula_closure).toHaveLength(38);
-    expect(deferred).toHaveLength(35);
+    expect(lock.formula_closure).toHaveLength(42);
+    expect(deferred).toHaveLength(
+      lock.formula_closure.length - embedded.size,
+    );
     expect(deferred).toContain(`${TAP_NAME}/dash`);
     expect(new Set([...embedded, ...deferred])).toEqual(new Set(lock.formula_closure));
   });

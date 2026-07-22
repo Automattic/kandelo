@@ -3,7 +3,7 @@
   "tap_repository": "kandelo-dev/homebrew-tap-core",
   "tap_name": "kandelo-dev/tap-core",
   "catalog": {
-    "tap_commit": "74359eeeaf01908c78fbb4ed398b41ae361ee90d"
+    "tap_commit": "e7cfe3140e692965cd7abf10e8029633c5d20c02"
   },
   "consumer": {
     "profile": "main-shell",
@@ -41,7 +41,11 @@
     { "registry": { "name": "vim-browser-bundle", "version": "9.1.0900" }, "formula": { "name": "vim", "version": "9.2.0750", "revision": 0, "bottle_rebuild": 0 } },
     { "registry": { "name": "nethack-browser-bundle", "version": "3.6.7" }, "formula": { "name": "nethack", "version": "3.6.7", "revision": 0, "bottle_rebuild": 0 } },
     { "registry": { "name": "fbdoom", "version": "0.1.0" }, "formula": { "name": "fbdoom", "version": "0.1.0", "revision": 0, "bottle_rebuild": 1 } },
-    { "registry": { "name": "modeset", "version": "0.1.0" }, "formula": { "name": "modeset", "version": "0.1.0", "revision": 0, "bottle_rebuild": 1 } }
+    { "registry": { "name": "modeset", "version": "0.1.0" }, "formula": { "name": "modeset", "version": "0.1.0", "revision": 0, "bottle_rebuild": 1 } },
+    { "registry": { "name": "cpython", "version": "3.13.3" }, "formula": { "name": "python", "version": "3.13.3", "revision": 1, "bottle_rebuild": 0 } },
+    { "registry": { "name": "perl", "version": "5.40.3" }, "formula": { "name": "perl", "version": "5.40.3", "revision": 0, "bottle_rebuild": 0 } },
+    { "registry": { "name": "erlang", "version": "28.2" }, "formula": { "name": "erlang", "version": "28.2", "revision": 1, "bottle_rebuild": 0 } },
+    { "registry": { "name": "ruby", "version": "4.0.5" }, "formula": { "name": "ruby", "version": "4.0.5", "revision": 1, "bottle_rebuild": 0 } }
   ],
   "formula_closure": [
     "kandelo-dev/tap-core/dash",
@@ -76,6 +80,10 @@
     "kandelo-dev/tap-core/nethack",
     "kandelo-dev/tap-core/fbdoom",
     "kandelo-dev/tap-core/modeset",
+    "kandelo-dev/tap-core/python",
+    "kandelo-dev/tap-core/perl",
+    "kandelo-dev/tap-core/erlang",
+    "kandelo-dev/tap-core/ruby",
     "kandelo-dev/tap-core/libcxx",
     "kandelo-dev/tap-core/zlib",
     "kandelo-dev/tap-core/libmagic",
@@ -96,7 +104,8 @@
     { "kind": "version", "registry": "zstd@1.5.6", "formula": "kandelo-dev/tap-core/zstd@1.5.7", "reason": "Reviewed migration to the newer upstream release already bottled by the tap." },
     { "kind": "formula_identity", "registry": "vim-browser-bundle@9.1.0900", "formula": "kandelo-dev/tap-core/vim@9.2.0750", "reason": "The registry dependency publishes the browser-owned Vim ZIP, while the Homebrew shell installs the corresponding Vim Formula directly." },
     { "kind": "version", "registry": "vim-browser-bundle@9.1.0900", "formula": "kandelo-dev/tap-core/vim@9.2.0750", "reason": "Reviewed migration to the newer upstream release already bottled by the tap." },
-    { "kind": "formula_identity", "registry": "nethack-browser-bundle@3.6.7", "formula": "kandelo-dev/tap-core/nethack@3.6.7", "reason": "The registry dependency publishes the browser-owned NetHack ZIP, while the Homebrew shell installs the corresponding NetHack Formula directly." }
+    { "kind": "formula_identity", "registry": "nethack-browser-bundle@3.6.7", "formula": "kandelo-dev/tap-core/nethack@3.6.7", "reason": "The registry dependency publishes the browser-owned NetHack ZIP, while the Homebrew shell installs the corresponding NetHack Formula directly." },
+    { "kind": "formula_identity", "registry": "cpython@3.13.3", "formula": "kandelo-dev/tap-core/python@3.13.3", "reason": "The package registry uses the upstream project name cpython, while the tap exposes the conventional python Formula and command aliases." }
   ],
   "compatibility": {
     "mirror_link_manifest_bin": {

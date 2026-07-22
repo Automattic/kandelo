@@ -27,6 +27,7 @@ import {
   assertVfsImageFitsProfile,
   declaredVfsMaxByteLength,
 } from "../web-libs/kandelo-session/src/vfs-capacity";
+import { MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS } from "./homebrew-language-runtime-contract";
 
 const {
   imagePath,
@@ -35,11 +36,14 @@ const {
   transportMode,
   bottleMirrorPlanPath,
 } = parseArgs(process.argv.slice(2));
-const EXPECTED_FETCHED_PACKAGES = [
+const BASE_EXPECTED_FETCHED_PACKAGES = [
   "kandelo-dev/tap-core/dash",
   "kandelo-dev/tap-core/git",
   "kandelo-dev/tap-core/nethack",
 ] as const;
+const LANGUAGE_PACKAGE_NAMES = new Set(
+  MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.map(({ packageName }) => packageName),
+);
 const imageBytes = new Uint8Array(readFileSync(imagePath));
 const metadata = MemoryFileSystem.readImageMetadata(imageBytes);
 const capacity = MemoryFileSystem.readImageCapacity(imageBytes);
@@ -81,11 +85,6 @@ assertMainShellImageContract({
 const pendingTrees = fs.exportLazyArchiveEntries().filter(
   (tree) => tree.content !== undefined,
 );
-if (pendingTrees.length !== 35) {
-  throw new Error(
-    `main-shell image has ${pendingTrees.length} pending bottle trees, expected 35`,
-  );
-}
 if (fs.isPathDeferred(shellConfig.path)) {
   throw new Error(`image-owned default shell remains deferred: ${shellConfig.path}`);
 }
@@ -97,6 +96,12 @@ const mirrorPlan = decodeBottleMirrorPlan(
   embeddedMirrorPlanBytes,
   HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
 );
+if (pendingTrees.length !== mirrorPlan.assets.length) {
+  throw new Error(
+    `main-shell image has ${pendingTrees.length} pending bottle trees, while its ` +
+      `mirror plan declares ${mirrorPlan.assets.length}`,
+  );
+}
 assertPendingTreeMirrorBinding(pendingTrees, mirrorPlan);
 const closedLazyAssets = transportMode === "closed"
   ? loadBottleMirrorBindings(
@@ -191,6 +196,10 @@ printf "homebrew-profile-aliases-ok\\n"
 test "$(git config --get user.name)" = User
 printf "homebrew-profile-git-config-ok\\n"
 printf "homebrew-profile-state-ok\\n"'
+for cmd in python python3 python3.13 perl erl ruby gem bundle bundler; do
+  command -v "$cmd" >/dev/null
+done
+printf 'homebrew-language-command-surface-ok\\n'
 printf 'device-null-check' >/dev/null
 printf 'homebrew-dev-null-ok\\n'
 printf '' >>/home/.nethack/record
@@ -210,6 +219,7 @@ printf 'homebrew-nethack-state-ok\\n'
   for (const marker of [
     "homebrew-bash-path-ok",
     "homebrew-profile-state-ok",
+    "homebrew-language-command-surface-ok",
     "homebrew-dev-null-ok",
     "homebrew-nethack-state-ok",
   ]) {
@@ -219,15 +229,56 @@ printf 'homebrew-nethack-state-ok\\n'
       );
     }
   }
+  assertFetchedPackageSet(
+    lazyDownloads,
+    pendingTrees,
+    mirrorPlan,
+    BASE_EXPECTED_FETCHED_PACKAGES,
+    "base shell compatibility surface",
+  );
+
+  for (const invocation of MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS) {
+    const eventStart = lazyDownloads.length;
+    const stdoutStart = stdout.length;
+    const stderrStart = stderr.length;
+    await spawnWithTimeout(
+      host,
+      shellBytes,
+      invocation.argv,
+      invocation.label,
+      () => ({ stdout: stdout.slice(stdoutStart), stderr: stderr.slice(stderrStart) }),
+    );
+    const runtimeStdout = stdout.slice(stdoutStart);
+    const runtimeStderr = stderr.slice(stderrStart);
+    if (runtimeStdout !== invocation.expectedStdout || runtimeStderr !== "") {
+      throw new Error(
+        `${invocation.label} returned unexpected output; ` +
+          `stdout=${JSON.stringify(runtimeStdout)} stderr=${JSON.stringify(runtimeStderr)}`,
+      );
+    }
+    assertLanguageBottleIsolation(
+      invocation.packageName,
+      invocation.dependencyPackages,
+      lazyDownloads.slice(eventStart),
+      pendingTrees,
+      mirrorPlan,
+      guestManifest,
+      invocation.label,
+    );
+  }
   const transportEvidence = assertBottleTransportEvents(
     lazyDownloads,
     pendingTrees,
     mirrorPlan,
+    guestManifest,
   );
+  const counts = mainShellCounts(migrationLock);
   console.log(
-    "Homebrew main-shell Node smoke: exact 32-root/38-Formula archive, image-owned " +
+    `Homebrew main-shell Node smoke: exact ${counts.roots}-root/` +
+      `${counts.formulae}-Formula archive, image-owned ` +
       "offline Bash, retained /bin/sh, metadata/runtime state, /dev/null, and " +
-      `whole-bottle first-use transport passed (${transportEvidence.bottles} bottles, ` +
+      "isolated Python/Perl/Erlang/Ruby first use passed " +
+      `(${transportEvidence.bottles} bottles, ` +
       `${transportEvidence.bytes} bytes).`,
   );
 } finally {
@@ -393,39 +444,162 @@ function assertBottleTransportEvents(
   events: readonly LazyDownloadEvent[],
   pendingTrees: readonly SerializedLazyArchiveEntry[],
   plan: HomebrewBottleMirrorPlan,
+  guestManifest: unknown,
 ): { bottles: number; bytes: number } {
   const evidence = assertCompleteBottleTransport(
     events,
     pendingTrees,
     "Homebrew main-shell command surface",
   );
-  const packageByUrl = new Map(plan.assets.map((asset) => [asset.url, asset.package]));
-  const fetchedPackages = evidence.urls.map((url) => {
-    const packageName = packageByUrl.get(url);
-    if (packageName === undefined) {
-      throw new Error(`completed bottle URL is absent from the mirror plan: ${url}`);
-    }
-    return packageName;
-  }).sort();
-  const expectedPackages = [...EXPECTED_FETCHED_PACKAGES].sort();
-  if (JSON.stringify(fetchedPackages) !== JSON.stringify(expectedPackages)) {
+  const fetchedPackages = packagesForUrls(evidence.urls, plan);
+  const requiredPackages = [
+    ...BASE_EXPECTED_FETCHED_PACKAGES,
+    ...MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.map(({ packageName }) => packageName),
+  ];
+  const missing = requiredPackages.filter((name) => !fetchedPackages.includes(name));
+  if (missing.length !== 0) {
     throw new Error(
-      `main-shell smoke fetched ${JSON.stringify(fetchedPackages)}, expected exactly ` +
-        JSON.stringify(expectedPackages),
+      `main-shell smoke did not fetch required bottles ${JSON.stringify(missing)}; ` +
+        `fetched ${JSON.stringify(fetchedPackages)}`,
+    );
+  }
+  const allowedPackages = new Set<string>(BASE_EXPECTED_FETCHED_PACKAGES);
+  for (const { packageName, dependencyPackages } of MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS) {
+    for (const dependency of reviewedPackageClosure(
+      guestManifest,
+      packageName,
+      dependencyPackages,
+    )) {
+      allowedPackages.add(dependency);
+    }
+  }
+  const unexpected = fetchedPackages.filter((name) => !allowedPackages.has(name));
+  if (unexpected.length !== 0) {
+    throw new Error(
+      `main-shell smoke fetched bottles outside its reviewed runtime closures: ` +
+        JSON.stringify(unexpected),
     );
   }
   const fetchedUrls = new Set(evidence.urls);
   const remaining = plan.assets.filter((asset) => !fetchedUrls.has(asset.url));
-  if (remaining.length !== 32) {
-    throw new Error(
-      `main-shell smoke left ${remaining.length} bottle trees pending, expected 32`,
-    );
+  if (remaining.length === 0) {
+    throw new Error("main-shell smoke unexpectedly materialized every deferred bottle");
   }
   const initiallyPendingUrls = new Set(pendingTrees.map((tree) => tree.content!.transports[0]!));
   if (remaining.some((asset) => !initiallyPendingUrls.has(asset.url))) {
     throw new Error("main-shell smoke remaining bottle set differs from the initial pending set");
   }
   return { bottles: evidence.bottles, bytes: evidence.bytes };
+}
+
+function assertFetchedPackageSet(
+  events: readonly LazyDownloadEvent[],
+  pendingTrees: readonly SerializedLazyArchiveEntry[],
+  plan: HomebrewBottleMirrorPlan,
+  expectedPackages: readonly string[],
+  label: string,
+): void {
+  const evidence = assertCompleteBottleTransport(events, pendingTrees, label);
+  const actual = packagesForUrls(evidence.urls, plan);
+  const expected = [...expectedPackages].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      `${label} fetched ${JSON.stringify(actual)}, expected exactly ` +
+        JSON.stringify(expected),
+    );
+  }
+}
+
+function assertLanguageBottleIsolation(
+  packageName: string,
+  declaredDependencies: readonly string[],
+  events: readonly LazyDownloadEvent[],
+  pendingTrees: readonly SerializedLazyArchiveEntry[],
+  plan: HomebrewBottleMirrorPlan,
+  guestManifest: unknown,
+  label: string,
+): void {
+  const evidence = assertCompleteBottleTransport(events, pendingTrees, `${label} first use`);
+  const fetchedPackages = packagesForUrls(evidence.urls, plan);
+  if (!fetchedPackages.includes(packageName)) {
+    throw new Error(
+      `${label} did not fetch its own bottle ${packageName}; ` +
+        `fetched ${JSON.stringify(fetchedPackages)}`,
+    );
+  }
+  const allowed = reviewedPackageClosure(
+    guestManifest,
+    packageName,
+    declaredDependencies,
+  );
+  const outsideClosure = fetchedPackages.filter((name) => !allowed.has(name));
+  if (outsideClosure.length !== 0) {
+    throw new Error(
+      `${label} fetched bottles outside its dependency closure: ` +
+        JSON.stringify(outsideClosure),
+    );
+  }
+  const otherLanguages = fetchedPackages.filter(
+    (name) => name !== packageName && LANGUAGE_PACKAGE_NAMES.has(name),
+  );
+  if (otherLanguages.length !== 0) {
+    throw new Error(
+      `${label} fetched unrelated language bottles: ${JSON.stringify(otherLanguages)}`,
+    );
+  }
+}
+
+function packagesForUrls(
+  urls: readonly string[],
+  plan: HomebrewBottleMirrorPlan,
+): string[] {
+  const packageByUrl = new Map(plan.assets.map((asset) => [asset.url, asset.package]));
+  return urls.map((url) => {
+    const packageName = packageByUrl.get(url);
+    if (packageName === undefined) {
+      throw new Error(`completed bottle URL is absent from the mirror plan: ${url}`);
+    }
+    return packageName;
+  }).sort();
+}
+
+function reviewedPackageClosure(
+  guestManifest: unknown,
+  rootPackage: string,
+  declaredDependencies: readonly string[],
+): Set<string> {
+  const guest = asRecord(guestManifest, "guest Homebrew manifest");
+  if (!Array.isArray(guest.packages)) {
+    throw new Error("guest Homebrew manifest packages are missing");
+  }
+  const packageNames = new Set<string>();
+  for (const [index, value] of guest.packages.entries()) {
+    const pkg = asRecord(value, `guest Homebrew package ${index}`);
+    if (typeof pkg.full_name !== "string") {
+      throw new Error(`guest Homebrew package ${index} has no full identity`);
+    }
+    if (packageNames.has(pkg.full_name)) {
+      throw new Error(`guest Homebrew manifest duplicates ${pkg.full_name}`);
+    }
+    packageNames.add(pkg.full_name);
+  }
+  const reviewed = new Set([rootPackage, ...declaredDependencies]);
+  for (const packageName of reviewed) {
+    if (!packageNames.has(packageName)) {
+      throw new Error(
+        `guest Homebrew manifest omits reviewed runtime package ${packageName}`,
+      );
+    }
+  }
+  return reviewed;
+}
+
+function mainShellCounts(migrationLock: unknown): { roots: number; formulae: number } {
+  const lock = asRecord(migrationLock, "migration lock");
+  if (!Array.isArray(lock.packages) || !Array.isArray(lock.formula_closure)) {
+    throw new Error("migration lock package counts are unavailable");
+  }
+  return { roots: lock.packages.length, formulae: lock.formula_closure.length };
 }
 
 function assertCompleteBottleTransport(

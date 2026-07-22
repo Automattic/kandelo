@@ -37,6 +37,10 @@ import {
   canonicalHomebrewRuntimeLayerDescriptorBytes,
   compareHomebrewCanonicalText,
 } from "./homebrew-lazy-layer-descriptor";
+import {
+  parseHomebrewInstallReceiptRelocation,
+  relocateHomebrewBottleFile,
+} from "./homebrew-bottle-relocation";
 export type {
   HomebrewDeferredTreeDescriptor,
   HomebrewDeferredTreeDraftDescriptor,
@@ -228,6 +232,7 @@ export async function buildHomebrewOriginalBottleCollection(
       },
     });
     const sourceEntries = createSourceInventory(parsed);
+    const relocation = prepareOriginalBottleRelocation(pkg, parsed);
     aggregateArchiveBytes += bytes.byteLength;
     aggregateExpandedBytes += gzipExpandedBytes(bytes);
     aggregateSourceEntries += sourceEntries.length;
@@ -240,7 +245,13 @@ export async function buildHomebrewOriginalBottleCollection(
     }, "Homebrew original bottle collection");
     // The expanded TAR is released after each iteration; only compact source
     // truth and the exact compressed object survive to collection closure.
-    bottles.push({ pkg, bytes, sourceEntries });
+    bottles.push({
+      pkg,
+      bytes,
+      sourceEntries,
+      relocationSourcePaths: relocation.sourcePaths,
+      relocatedBytesByCanonicalSource: relocation.bytesByCanonicalSource,
+    });
   }
 
   const bottleBytes = new Map(
@@ -505,6 +516,8 @@ interface PreparedOriginalBottle {
   pkg: HomebrewVfsPackagePlan;
   bytes: Uint8Array;
   sourceEntries: HomebrewDeferredTreeSourceEntry[];
+  relocationSourcePaths: Set<string>;
+  relocatedBytesByCanonicalSource: Map<string, Uint8Array>;
 }
 
 interface OriginalBottleTree {
@@ -516,6 +529,7 @@ interface GuestAssignment {
   bottle: PreparedOriginalBottle;
   materialization:
     | "archive"
+    | "archive-homebrew-relocate"
     | "archive-copy"
     | "archive-copy-mode"
     | "descriptor";
@@ -595,7 +609,9 @@ function createOriginalBottleTrees(
       }
       assignments.set(path, {
         bottle,
-        materialization: "archive",
+        materialization: bottle.relocationSourcePaths.has(source.path)
+          ? "archive-homebrew-relocate"
+          : "archive",
         sourcePath: source.path,
         source,
       });
@@ -822,6 +838,12 @@ function createDirectGuestEntry(
     ) {
       throw new Error(`Homebrew archive copy /${path} changes its source mode`);
     }
+    const relocated = assignment.bottle.relocatedBytesByCanonicalSource.get(
+      assignment.source.path,
+    );
+    if (final.size !== (relocated?.byteLength ?? assignment.source.size)) {
+      throw new Error(`Homebrew archive copy /${path} changes its source bytes`);
+    }
     return {
       ...final,
       ownership,
@@ -837,9 +859,11 @@ function createDirectGuestEntry(
   // the signed source roles authoritative here, after verifying that the
   // poured paths still have the expected size, mode, and shared inode group.
   if (source.type === "file") {
+    const expectedSize = assignment.bottle.relocatedBytesByCanonicalSource
+      .get(source.path)?.byteLength ?? source.size;
     if (
       (final.type !== "file" && final.type !== "hardlink") ||
-      final.size !== source.size ||
+      final.size !== expectedSize ||
       final.mode !== source.mode ||
       final.inode_group === undefined
     ) {
@@ -848,7 +872,7 @@ function createDirectGuestEntry(
     return {
       path,
       source_path: source.path,
-      materialization: "archive",
+      materialization: assignment.materialization,
       type: "file",
       ownership,
       mode: final.mode,
@@ -858,14 +882,18 @@ function createDirectGuestEntry(
   }
   if (source.type === "hardlink") {
     const canonicalSource = canonicalSourceByPath.get(source.path);
+    const expectedSize = canonicalSource === undefined
+      ? undefined
+      : assignment.bottle.relocatedBytesByCanonicalSource
+        .get(canonicalSource.path)?.byteLength ?? canonicalSource.size;
     const target = guestPathBySource.get(source.target!);
     const targetFinal = target === undefined ? undefined : finalByPath.get(target);
     if (
       canonicalSource === undefined || target === undefined || targetFinal === undefined ||
       (final.type !== "file" && final.type !== "hardlink") ||
       (targetFinal.type !== "file" && targetFinal.type !== "hardlink") ||
-      final.size !== canonicalSource.size || final.mode !== canonicalSource.mode ||
-      targetFinal.size !== canonicalSource.size ||
+      final.size !== expectedSize || final.mode !== canonicalSource.mode ||
+      targetFinal.size !== expectedSize ||
       targetFinal.mode !== canonicalSource.mode ||
       final.inode_group === undefined ||
       final.inode_group !== targetFinal.inode_group
@@ -875,16 +903,19 @@ function createDirectGuestEntry(
     return {
       path,
       source_path: source.path,
-      materialization: "archive",
+      materialization: assignment.materialization,
       type: "hardlink",
       ownership,
       mode: final.mode,
-      size: canonicalSource.size,
+      size: expectedSize,
       target,
       inode_group: compactInodeGroup(treeId, "source", canonicalSource.path),
     };
   }
   if (source.type === "symlink") {
+    if (assignment.materialization === "archive-homebrew-relocate") {
+      throw new Error(`Homebrew changed file /${path} is a symlink`);
+    }
     if (
       final.type !== "symlink" || final.target !== source.target ||
       final.mode !== source.mode
@@ -899,6 +930,9 @@ function createDirectGuestEntry(
       mode: final.mode,
     };
   }
+  if (assignment.materialization === "archive-homebrew-relocate") {
+    throw new Error(`Homebrew changed file /${path} is a directory`);
+  }
   if (final.type !== "directory" || final.mode !== source.mode) {
     throw new Error(`Homebrew poured directory /${path} differs from source ${source.path}`);
   }
@@ -909,6 +943,112 @@ function createDirectGuestEntry(
     materialization: "archive",
     mode: final.mode,
   };
+}
+
+function prepareOriginalBottleRelocation(
+  pkg: HomebrewVfsPackagePlan,
+  entries: readonly TarEntry[],
+): {
+  sourcePaths: Set<string>;
+  bytesByCanonicalSource: Map<string, Uint8Array>;
+} {
+  const installReceipts = pkg.linkManifest.receipts.filter(
+    (receipt) => receipt === "INSTALL_RECEIPT.json" ||
+      receipt.endsWith("/INSTALL_RECEIPT.json"),
+  );
+  if (installReceipts.length === 0) {
+    return { sourcePaths: new Set(), bytesByCanonicalSource: new Map() };
+  }
+  if (installReceipts.length > 1) {
+    throw new Error(
+      `Homebrew deferred bottle ${pkg.fullName} declares ` +
+        `${installReceipts.length} INSTALL_RECEIPT.json files, expected one`,
+    );
+  }
+  const sourceByPath = new Map(entries.map((entry) => [entry.path, entry]));
+  const sourceByGuestPath = new Map<string, TarEntry>();
+  for (const entry of entries) {
+    const guestPath = mapHomebrewBottleEntryToGuestPath(pkg, entry.path);
+    if (guestPath !== null) sourceByGuestPath.set(guestPath, entry);
+  }
+  const receiptGuestPath = homebrewManifestSourcePath(pkg, installReceipts[0]!);
+  const receiptSource = sourceByGuestPath.get(receiptGuestPath);
+  if (receiptSource === undefined) {
+    throw new Error(
+      `Homebrew deferred bottle ${pkg.fullName} has no source for ${receiptGuestPath}`,
+    );
+  }
+  const receiptFile = resolveTarRegularSource(receiptSource, sourceByPath, pkg);
+  let receipt: ReturnType<typeof parseHomebrewInstallReceiptRelocation>;
+  try {
+    receipt = parseHomebrewInstallReceiptRelocation(receiptFile.data);
+  } catch (error) {
+    throw new Error(
+      `Homebrew deferred bottle ${pkg.fullName}: ${errorMessage(error)}`,
+    );
+  }
+  const sourcePaths = new Set<string>();
+  const bytesByCanonicalSource = new Map<string, Uint8Array>();
+  for (const relativePath of receipt.changedFiles) {
+    const guestPath = `${pkg.keg}/${relativePath}`;
+    const source = sourceByGuestPath.get(guestPath);
+    if (source === undefined ||
+      (source.type !== "file" && source.type !== "hardlink")) {
+      throw new Error(
+        `Homebrew deferred bottle ${pkg.fullName} changed file is missing or ` +
+          `not regular: ${guestPath}`,
+      );
+    }
+    sourcePaths.add(source.path);
+    const canonical = resolveTarRegularSource(source, sourceByPath, pkg);
+    try {
+      const relocated = relocateHomebrewBottleFile(canonical.data, receipt, guestPath);
+      const prior = bytesByCanonicalSource.get(canonical.path);
+      if (prior !== undefined && !bytesEqual(prior, relocated)) {
+        throw new Error("hard-link aliases produce different relocated bytes");
+      }
+      bytesByCanonicalSource.set(canonical.path, relocated);
+    } catch (error) {
+      throw new Error(
+        `Homebrew deferred bottle ${pkg.fullName}: ${errorMessage(error)}`,
+      );
+    }
+  }
+  return { sourcePaths, bytesByCanonicalSource };
+}
+
+function resolveTarRegularSource(
+  start: TarEntry,
+  entries: ReadonlyMap<string, TarEntry>,
+  pkg: HomebrewVfsPackagePlan,
+): Extract<TarEntry, { type: "file" }> {
+  const seen = new Set<string>();
+  let current = start;
+  while (current.type === "hardlink") {
+    if (seen.has(current.path)) {
+      throw new Error(`Homebrew deferred bottle ${pkg.fullName} has a hard-link cycle`);
+    }
+    seen.add(current.path);
+    const target = entries.get(current.linkName);
+    if (target === undefined || (target.type !== "file" && target.type !== "hardlink")) {
+      throw new Error(
+        `Homebrew deferred bottle ${pkg.fullName} hard link ${current.path} ` +
+          "has no regular source",
+      );
+    }
+    current = target;
+  }
+  if (current.type !== "file") {
+    throw new Error(
+      `Homebrew deferred bottle ${pkg.fullName} source ${start.path} is not regular`,
+    );
+  }
+  return current;
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength &&
+    left.every((byte, index) => byte === right[index]);
 }
 
 function createSourceInventory(entries: TarEntry[]): HomebrewDeferredTreeSourceEntry[] {

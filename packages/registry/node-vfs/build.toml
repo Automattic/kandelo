@@ -14,6 +14,7 @@ inputs = [
   "host/src/binary-resolver.ts",
   "host/src/constants.ts",
   "host/src/generated/abi.ts",
+  "host/src/homebrew-bottle-relocation.ts",
   "host/src/pathconf.ts",
   "host/src/statfs.ts",
   "host/src/types.ts",

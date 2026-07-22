@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { LANGUAGE_RUNTIME_INVOCATIONS } from "../../scripts/homebrew-language-runtime-contract";
+import {
+  LANGUAGE_RUNTIME_INVOCATIONS,
+  MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS,
+} from "../../scripts/homebrew-language-runtime-contract";
 import {
   parseCompositionExpectation,
   validateComposition,
@@ -944,6 +947,49 @@ describe("Homebrew language runtime smoke result validation", () => {
         "BINDIR",
         "EMU",
         "PROGNAME",
+      ]) {
+        expect(serialized).not.toContain(override);
+      }
+    }
+  });
+
+  it("defines one normal-path acceptance case for every lazy main-shell language", () => {
+    expect(MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.map(({ packageName }) => packageName))
+      .toEqual([
+        "kandelo-dev/tap-core/python",
+        "kandelo-dev/tap-core/perl",
+        "kandelo-dev/tap-core/erlang",
+        "kandelo-dev/tap-core/ruby",
+      ]);
+    expect(new Set(
+      MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.map(({ expectedStdout }) => expectedStdout),
+    ).size).toBe(MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.length);
+    expect(MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.map(({ dependencyPackages }) =>
+      dependencyPackages
+    )).toEqual([
+      ["kandelo-dev/tap-core/zlib"],
+      [],
+      [],
+      ["kandelo-dev/tap-core/zlib"],
+    ]);
+    for (const invocation of MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS) {
+      expect(invocation.executable).toBe("/bin/sh");
+      expect(invocation.argv.slice(0, 4)).toEqual([
+        "/bin/sh",
+        "-c",
+        'exec "$@"',
+        "sh",
+      ]);
+      expect(invocation.terminalCommand).toContain("/bin/sh -c");
+      const serialized = JSON.stringify(invocation);
+      for (const override of [
+        "PYTHONHOME",
+        "PERL5LIB",
+        "RUBYLIB=",
+        "ROOTDIR=",
+        "BINDIR=",
+        "EMU=",
+        "PROGNAME=",
       ]) {
         expect(serialized).not.toContain(override);
       }
