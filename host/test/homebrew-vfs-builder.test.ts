@@ -1453,6 +1453,31 @@ describe("Homebrew runtime layer consumer", () => {
       .toBe(0o640);
   });
 
+  it("accepts upstream null changed_files as an empty relocation set", async () => {
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeReceipt: JSON.stringify({ changed_files: null }) + "\n",
+    });
+    expect(descriptorTree(fixture.descriptor).inventory.entries.filter((entry) =>
+      entry.materialization === "archive-homebrew-relocate"
+    )).toEqual([]);
+
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => new Response(fixture.runtimeBytes),
+    });
+    await expect(
+      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/bin/runtime`),
+    ).resolves.toBe(true);
+    expect(JSON.parse(
+      readVfsFile(composed.fs, `${fixture.runtimeKeg}/INSTALL_RECEIPT.json`),
+    )).toEqual({ changed_files: null });
+  });
+
   it("relocates a lazy receipt-declared hardlink once for every inode alias", async () => {
     const fixture = await runtimeLayerConsumerFixture({
       runtimeReceipt: JSON.stringify({
@@ -4044,6 +4069,25 @@ describe("Homebrew VFS builder", () => {
     );
   });
 
+  it("uses the legacy runtime dependency name when full_name is not a string", async () => {
+    const receipt = JSON.stringify({
+      changed_files: ["lib/java.conf"],
+      runtime_dependencies: [{ full_name: null, name: "openjdk@21" }],
+    }) + "\n";
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      { path: "hello/2.12.1/INSTALL_RECEIPT.json", data: receipt },
+      { path: "hello/2.12.1/lib/java.conf", data: "java=@@HOMEBREW_JAVA@@\n" },
+    ]);
+
+    const result = await buildFixture(bytes);
+    expect(readVfsFile(result.fs, `${KEG}/lib/java.conf`)).toBe(
+      `java=${PREFIX}/opt/openjdk@21/libexec\n`,
+    );
+  });
+
   it("relocates receipt-declared hardlinks through their shared inode", async () => {
     const receipt = JSON.stringify({
       changed_files: ["lib/runtime.conf", "lib/runtime-alias.conf"],
@@ -4080,7 +4124,11 @@ describe("Homebrew VFS builder", () => {
   });
 
   it.each([
-    ["a non-array", { changed_files: "lib/runtime.conf" }, "changed_files must be an array"],
+    [
+      "a non-array",
+      { changed_files: "lib/runtime.conf" },
+      "changed_files must be an array or null",
+    ],
     ["a non-string entry", { changed_files: [17] }, "changed_files[0] is not a string"],
     ["an unsafe path", { changed_files: ["../runtime.conf"] }, "unsafe path segment"],
     [
@@ -4117,6 +4165,26 @@ describe("Homebrew VFS builder", () => {
       {
         path: "hello/2.12.1/INSTALL_RECEIPT.json",
         data: JSON.stringify({ changed_files: ["lib/java.conf"] }) + "\n",
+      },
+      { path: "hello/2.12.1/lib/java.conf", data: "@@HOMEBREW_JAVA@@\n" },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow(
+      "without exactly one OpenJDK runtime dependency",
+    );
+  });
+
+  it("rejects a newline-suffixed OpenJDK dependency name", async () => {
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      {
+        path: "hello/2.12.1/INSTALL_RECEIPT.json",
+        data: JSON.stringify({
+          changed_files: ["lib/java.conf"],
+          runtime_dependencies: [{ full_name: "openjdk@21\n" }],
+        }) + "\n",
       },
       { path: "hello/2.12.1/lib/java.conf", data: "@@HOMEBREW_JAVA@@\n" },
     ]);

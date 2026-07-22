@@ -25,7 +25,7 @@ import {
   writeVfsBinary,
   symlink,
 } from "../../../host/src/vfs/image-helpers";
-import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
+import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage, walkAndWrite } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
@@ -48,7 +48,7 @@ const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/my
   ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
   : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
-const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
+const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 
 const OUT_FILE = process.env.MARIADB_TEST_VFS_OUT
   ?? join(REPO_ROOT, "apps/browser-demos/public/mariadb-test.vfs.zst");
@@ -235,11 +235,7 @@ async function main() {
     symlink(fs, "/bin/dash", "/usr/bin/dash");
     symlink(fs, "/bin/dash", "/usr/bin/sh");
   }
-  if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
-    writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
-  } else {
-    console.warn("  Warning: coreutils.wasm not found — bootstrap wrapper will fail at sleep");
-  }
+  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
     symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
