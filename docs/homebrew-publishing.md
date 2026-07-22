@@ -5,6 +5,10 @@ pipeline shared by the first-party tap and conventional third-party taps. The
 implementation lives in the main `Automattic/kandelo` repository; the
 first-party live tap repository is `kandelo-dev/homebrew-tap-core`.
 
+Migration status, preserved scope, and the remaining execution order are
+tracked in the
+[Homebrew Migration Living Execution Plan](plans/2026-07-21-homebrew-migration-execution-plan.md).
+
 This is not a general user-facing Homebrew install guide yet. Do not document
 `brew tap` or guest `brew install` commands until guest Homebrew install has
 been validated through Kandelo. The supported implemented path today is:
