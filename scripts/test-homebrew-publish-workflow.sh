@@ -7003,6 +7003,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
+bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-closure.sh"
 assert_formula_composition_is_static_and_lossless
