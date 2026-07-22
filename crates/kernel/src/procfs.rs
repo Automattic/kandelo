@@ -847,9 +847,19 @@ pub fn write_dirent64(
     name: &[u8],
 ) -> usize {
     let name_len = name.len();
-    let reclen_raw = 19 + name_len + 1;
-    let reclen = (reclen_raw + 7) & !7; // 8-byte aligned
-    if pos + reclen > buf.len() {
+    let Some(reclen_raw) = 19usize
+        .checked_add(name_len)
+        .and_then(|length| length.checked_add(1))
+    else {
+        return 0;
+    };
+    let Some(reclen) = reclen_raw.checked_add(7).map(|length| length & !7) else {
+        return 0;
+    };
+    let Some(end) = pos.checked_add(reclen) else {
+        return 0;
+    };
+    if reclen > u16::MAX as usize || end > buf.len() {
         return 0;
     }
     buf[pos..pos + 8].copy_from_slice(&d_ino.to_le_bytes());
@@ -881,50 +891,78 @@ pub fn procfs_getdents64(
     pids: &[u32],
 ) -> Result<(usize, i64, bool), Errno> {
     let entries = dir_entries(proc, ofd_path, pids)?;
+    let ino = procfs_ino(0, 0);
+    write_virtual_dirents64(buf, offset, ino, ino, &entries)
+}
 
-    // offset is 0-based entry index (after . and ..)
-    // The first two entries are . and ..
-    let start = offset as usize;
+/// Generate procfs directory entries from another process without erasing
+/// the distinction between a vanished process and a directory encoding error.
+pub(crate) fn procfs_getdents64_for_pid(
+    table: &crate::process_table::ProcessTable,
+    pid: u32,
+    ofd_path: &[u8],
+    buf: &mut [u8],
+    offset: i64,
+) -> Result<(usize, i64, bool), Errno> {
+    let proc = table.get(pid).ok_or(Errno::ENOENT)?;
+    let pids = table.procfs_pids();
+    procfs_getdents64(proc, ofd_path, buf, offset, &pids)
+}
+
+/// Encode one page of a kernel-generated directory.
+///
+/// The offset is a directory cookie: zero is before `.`, one is before `..`,
+/// and two is before the first directory-specific entry. A record advances the
+/// cookie only after the complete record is copied. This keeps procfs and
+/// devfs aligned on short-buffer, retry, and large-cookie behavior.
+pub(crate) fn write_virtual_dirents64(
+    buf: &mut [u8],
+    offset: i64,
+    dot_ino: u64,
+    dotdot_ino: u64,
+    entries: &[(Vec<u8>, u8, u64)],
+) -> Result<(usize, i64, bool), Errno> {
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let entry_count = i64::try_from(entries.len()).map_err(|_| Errno::EOVERFLOW)?;
+    let end_cookie = entry_count.checked_add(2).ok_or(Errno::EOVERFLOW)?;
+
+    // A caller may seek past the end with any nonnegative i64 cookie. Keep the
+    // exact cookie instead of narrowing through usize (which wraps on wasm32).
+    if offset >= end_cookie {
+        return Ok((0, offset, true));
+    }
 
     let mut pos = 0usize;
-    let mut current = start;
-
-    // Emit . and .. if we haven't passed them
-    if current == 0 {
-        let ino = procfs_ino(0, 0);
-        let written = write_dirent64(buf, pos, ino, 1, DT_DIR, b".");
-        if written == 0 {
-            if pos == 0 {
-                return Err(Errno::EINVAL);
+    let mut cookie = offset;
+    while cookie < end_cookie {
+        let (ino, d_type, name) = match cookie {
+            0 => (dot_ino, DT_DIR, b".".as_slice()),
+            1 => (dotdot_ino, DT_DIR, b"..".as_slice()),
+            _ => {
+                // cookie is bounded by end_cookie, so this conversion cannot
+                // truncate even when the kernel is compiled for wasm32.
+                let index = usize::try_from(cookie - 2).map_err(|_| Errno::EOVERFLOW)?;
+                let (name, d_type, ino) = &entries[index];
+                (*ino, *d_type, name.as_slice())
             }
-            return Ok((pos, current as i64, false));
-        }
-        pos += written;
-        current = 1;
-    }
-    if current == 1 {
-        let ino = procfs_ino(0, 0);
-        let written = write_dirent64(buf, pos, ino, 2, DT_DIR, b"..");
+        };
+        let next_cookie = cookie.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        let written = write_dirent64(buf, pos, ino, next_cookie, d_type, name);
         if written == 0 {
-            return Ok((pos, current as i64, false));
+            return if pos == 0 {
+                Err(Errno::EINVAL)
+            } else {
+                Ok((pos, cookie, false))
+            };
         }
         pos += written;
-        current = 2;
+        cookie = next_cookie;
     }
 
-    // Emit directory-specific entries
-    let entry_start = current - 2; // index into entries[]
-    for (i, (name, d_type, ino)) in entries.iter().enumerate().skip(entry_start) {
-        let d_off = (i + 3) as i64; // 1=., 2=.., 3+=entries
-        let written = write_dirent64(buf, pos, *ino, d_off, *d_type, name);
-        if written == 0 {
-            return Ok((pos, (i + 2) as i64, false));
-        }
-        pos += written;
-        current = i + 3;
-    }
-
-    Ok((pos, current as i64, true))
+    Ok((pos, cookie, true))
 }
 
 /// Build the list of directory entries for a procfs directory path.
@@ -1044,6 +1082,46 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
 mod tests {
     use super::*;
     use crate::process::Process;
+
+    fn dirent_len(name: &[u8]) -> usize {
+        (19 + name.len() + 1 + 7) & !7
+    }
+
+    fn decode_dirents(buf: &[u8]) -> Vec<(Vec<u8>, i64)> {
+        let mut entries = Vec::new();
+        let mut pos = 0usize;
+        while pos < buf.len() {
+            assert!(buf.len() - pos >= 19, "truncated dirent header at {pos}");
+            let d_off = i64::from_le_bytes(buf[pos + 8..pos + 16].try_into().unwrap());
+            let reclen = u16::from_le_bytes(buf[pos + 16..pos + 18].try_into().unwrap()) as usize;
+            assert!(reclen >= 20, "invalid dirent record length {reclen}");
+            assert!(pos + reclen <= buf.len(), "dirent extends past result");
+            let name_start = pos + 19;
+            let name_end = buf[name_start..pos + reclen]
+                .iter()
+                .position(|byte| *byte == 0)
+                .map(|end| name_start + end)
+                .expect("dirent name is not NUL-terminated");
+            entries.push((buf[name_start..name_end].to_vec(), d_off));
+            pos += reclen;
+        }
+        entries
+    }
+
+    #[test]
+    fn foreign_procfs_directory_preserves_specific_errors() {
+        let mut table = crate::process_table::ProcessTable::new();
+        table.create_process(42).unwrap();
+
+        assert_eq!(
+            procfs_getdents64_for_pid(&table, 42, b"/proc/42/fd", &mut [], 0),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            procfs_getdents64_for_pid(&table, 43, b"/proc/43/fd", &mut [], 0),
+            Err(Errno::ENOENT),
+        );
+    }
 
     #[test]
     fn test_match_procfs_root() {
@@ -1287,6 +1365,147 @@ mod tests {
         // Check name
         assert_eq!(&buf[19..23], b"test");
         assert_eq!(buf[23], 0); // NUL terminator
+    }
+
+    #[test]
+    fn procfs_getdents64_retries_one_byte_short_synthetic_entry_at_exact_cookie() {
+        let proc = Process::new(1);
+        let dot_len = dirent_len(b".");
+        let mut too_short = vec![0u8; dot_len - 1];
+
+        assert_eq!(
+            procfs_getdents64(&proc, b"/proc", &mut too_short, 0, &[1]),
+            Err(Errno::EINVAL)
+        );
+
+        let mut exact = vec![0u8; dot_len];
+        let (bytes, cookie, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut exact, 0, &[1]).unwrap();
+        assert_eq!(bytes, dot_len);
+        assert_eq!(cookie, 1);
+        assert!(!exhausted);
+        assert_eq!(decode_dirents(&exact[..bytes]), vec![(b".".to_vec(), 1)]);
+
+        // The same rule applies after a prior record has advanced the cookie:
+        // a fresh call that cannot fit `..` must not report a zero-byte success.
+        let dotdot_len = dirent_len(b"..");
+        let mut too_short = vec![0u8; dotdot_len - 1];
+        assert_eq!(
+            procfs_getdents64(&proc, b"/proc", &mut too_short, cookie, &[1]),
+            Err(Errno::EINVAL)
+        );
+
+        let mut exact = vec![0u8; dotdot_len];
+        let (bytes, cookie, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut exact, cookie, &[1]).unwrap();
+        assert_eq!(bytes, dotdot_len);
+        assert_eq!(cookie, 2);
+        assert!(!exhausted);
+        assert_eq!(decode_dirents(&exact[..bytes]), vec![(b"..".to_vec(), 2)]);
+    }
+
+    #[test]
+    fn procfs_getdents64_retries_one_byte_short_real_entry_at_exact_cookie() {
+        let proc = Process::new(1);
+        let mounts_len = dirent_len(b"mounts");
+        let mut too_short = vec![0u8; mounts_len - 1];
+
+        assert_eq!(
+            procfs_getdents64(&proc, b"/proc", &mut too_short, 2, &[1]),
+            Err(Errno::EINVAL)
+        );
+
+        let mut exact = vec![0u8; mounts_len];
+        let (bytes, cookie, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut exact, 2, &[1]).unwrap();
+        assert_eq!(bytes, mounts_len);
+        assert_eq!(cookie, 3);
+        assert!(!exhausted);
+        assert_eq!(
+            decode_dirents(&exact[..bytes]),
+            vec![(b"mounts".to_vec(), 3)]
+        );
+    }
+
+    #[test]
+    fn procfs_getdents64_returns_a_short_prefix_and_resumes_without_loss() {
+        let proc = Process::new(1);
+        let pids = [1];
+        let mut full_buf = [0u8; 4096];
+        let (full_bytes, end_cookie, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut full_buf, 0, &pids).unwrap();
+        assert!(exhausted);
+        let expected = decode_dirents(&full_buf[..full_bytes]);
+
+        // Fit `.`, `..`, and `mounts`, then leave the buffer one byte short
+        // of `self`. The three complete records must be returned immediately.
+        let prefix_len = dirent_len(b".") + dirent_len(b"..") + dirent_len(b"mounts");
+        let mut prefix_buf = vec![0u8; prefix_len + dirent_len(b"self") - 1];
+        let (prefix_bytes, resume_cookie, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut prefix_buf, 0, &pids).unwrap();
+        assert_eq!(prefix_bytes, prefix_len);
+        assert_eq!(resume_cookie, 3);
+        assert!(!exhausted);
+
+        let mut suffix_buf = [0u8; 4096];
+        let (suffix_bytes, resumed_end, exhausted) = procfs_getdents64(
+            &proc,
+            b"/proc",
+            &mut suffix_buf,
+            resume_cookie,
+            &pids,
+        )
+        .unwrap();
+        assert!(exhausted);
+        assert_eq!(resumed_end, end_cookie);
+
+        let mut resumed = decode_dirents(&prefix_buf[..prefix_bytes]);
+        resumed.extend(decode_dirents(&suffix_buf[..suffix_bytes]));
+        assert_eq!(resumed, expected);
+        assert_eq!(
+            resumed.iter().map(|(_, d_off)| *d_off).collect::<Vec<_>>(),
+            (1..=end_cookie).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn procfs_getdents64_exact_last_entry_and_eof_preserve_cookies() {
+        let proc = Process::new(1);
+        let pids = [1];
+        let entries = dir_entries(&proc, b"/proc", &pids).unwrap();
+        let end_cookie = i64::try_from(entries.len()).unwrap() + 2;
+        let last_name = entries.last().unwrap().0.clone();
+        let mut exact = vec![0u8; dirent_len(&last_name)];
+
+        let (bytes, cookie, exhausted) = procfs_getdents64(
+            &proc,
+            b"/proc",
+            &mut exact,
+            end_cookie - 1,
+            &pids,
+        )
+        .unwrap();
+        assert_eq!(bytes, exact.len());
+        assert_eq!(cookie, end_cookie);
+        assert!(exhausted);
+        assert_eq!(
+            decode_dirents(&exact[..bytes]),
+            vec![(last_name, end_cookie)]
+        );
+
+        let mut empty = [];
+        assert_eq!(
+            procfs_getdents64(&proc, b"/proc", &mut empty, end_cookie, &pids),
+            Ok((0, end_cookie, true))
+        );
+        assert_eq!(
+            procfs_getdents64(&proc, b"/proc", &mut empty, i64::MAX, &pids),
+            Ok((0, i64::MAX, true))
+        );
+        assert_eq!(
+            procfs_getdents64(&proc, b"/proc", &mut empty, -1, &pids),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]

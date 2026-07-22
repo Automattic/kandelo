@@ -1056,6 +1056,17 @@ impl ProcessTable {
         child.ofd_table = inherit.ofd_table;
         child.sockets = inherit.sockets;
 
+        // A host directory iterator is process-local mutable state, not part
+        // of the positive backing-handle ownership that fork/spawn refcount.
+        // Cloning it here would give parent and child one host handle with
+        // independent pending-record/cookie metadata, and either process
+        // could close the iterator out from under the other. Preserve the
+        // snapshot cookie instead; the child lazily reopens and replays to it
+        // on its first getdents64 call.
+        for (_, ofd) in child.ofd_table.iter_mut() {
+            ofd.reset_directory_iterator_for_reopen();
+        }
+
         // Signal state inheritance:
         //   * Blocked mask: inherited from parent unless SETSIGMASK overrides.
         //   * Handlers: parent's custom handlers reset to SIG_DFL (POSIX exec
@@ -1713,6 +1724,158 @@ mod tests {
         assert_eq!(table.get(100).unwrap().state, ProcessState::Stopped);
         assert_eq!(table.get(child_pid).unwrap().ppid, 100);
         assert_eq!(table.get(child_pid).unwrap().state, ProcessState::Running);
+    }
+
+    #[test]
+    fn spawn_reopens_inherited_directory_without_owning_the_parent_iterator() {
+        use crate::fd::OpenFileDescRef;
+        use crate::ofd::PendingDirEntry;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::flags::O_RDONLY;
+
+        const PARENT: u32 = 945_001;
+        const BACKING_HANDLE: i64 = 9_450_010;
+        const ITERATOR_HANDLE: i64 = 9_450_011;
+
+        let mut table = ProcessTable::new();
+        table.create_process(PARENT).unwrap();
+        let inherited_fd = {
+            let parent = table.get_mut(PARENT).unwrap();
+            let ofd_idx = parent.ofd_table.create(
+                FileType::Directory,
+                O_RDONLY,
+                BACKING_HANDLE,
+                b"/inherited-directory".to_vec(),
+            );
+            let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
+            ofd.offset = 4;
+            ofd.dir_host_handle = ITERATOR_HANDLE;
+            ofd.dir_synth_state = 2;
+            ofd.dir_entry_offset = 4;
+            ofd.dir_pending_entry = Some(PendingDirEntry {
+                ino: 77,
+                d_type: 8,
+                name: b"pending".to_vec(),
+            });
+            parent
+                .fd_table
+                .alloc(OpenFileDescRef(ofd_idx), 0)
+                .unwrap()
+        };
+
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child(
+                PARENT,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        let child_entry = table.get(child_pid).unwrap().fd_table.get(inherited_fd).unwrap();
+        let child_ofd = table
+            .get(child_pid)
+            .unwrap()
+            .ofd_table
+            .get(child_entry.ofd_ref.0)
+            .unwrap();
+        assert_eq!(child_ofd.offset, 4);
+        assert_eq!(child_ofd.dir_entry_offset, 4);
+        assert_eq!(child_ofd.dir_synth_state, 2);
+        assert_eq!(child_ofd.dir_host_handle, -1);
+        assert!(child_ofd.dir_pending_entry.is_none());
+
+        let parent_entry = table.get(PARENT).unwrap().fd_table.get(inherited_fd).unwrap();
+        let parent_ofd = table
+            .get(PARENT)
+            .unwrap()
+            .ofd_table
+            .get(parent_entry.ofd_ref.0)
+            .unwrap();
+        assert_eq!(parent_ofd.dir_host_handle, ITERATOR_HANDLE);
+        assert_eq!(parent_ofd.dir_pending_entry.as_ref().unwrap().name, b"pending");
+
+        // Crash/rollback-style child cleanup must not close the iterator that
+        // remains owned by the parent. Parent cleanup releases it exactly once.
+        let child_cleanup = table.remove_process(child_pid).unwrap();
+        assert!(!child_cleanup.host_dir_closes.contains(&ITERATOR_HANDLE));
+        let parent_cleanup = table.remove_process(PARENT).unwrap();
+        assert_eq!(
+            parent_cleanup
+                .host_dir_closes
+                .iter()
+                .filter(|&&handle| handle == ITERATOR_HANDLE)
+                .count(),
+            1,
+        );
+    }
+
+    #[test]
+    fn fork_reopens_inherited_directory_without_owning_the_parent_iterator() {
+        use crate::fd::OpenFileDescRef;
+        use crate::ofd::PendingDirEntry;
+        use wasm_posix_shared::flags::O_RDONLY;
+
+        const PARENT: u32 = 945_101;
+        const CHILD: u32 = 945_102;
+        const BACKING_HANDLE: i64 = 9_451_010;
+        const ITERATOR_HANDLE: i64 = 9_451_011;
+
+        let mut table = ProcessTable::new();
+        table.create_process(PARENT).unwrap();
+        let inherited_fd = {
+            let parent = table.get_mut(PARENT).unwrap();
+            let ofd_idx = parent.ofd_table.create(
+                FileType::Directory,
+                O_RDONLY,
+                BACKING_HANDLE,
+                b"/forked-directory".to_vec(),
+            );
+            let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
+            ofd.offset = 3;
+            ofd.dir_host_handle = ITERATOR_HANDLE;
+            ofd.dir_synth_state = 2;
+            ofd.dir_entry_offset = 3;
+            ofd.dir_pending_entry = Some(PendingDirEntry {
+                ino: 88,
+                d_type: 8,
+                name: b"next".to_vec(),
+            });
+            parent
+                .fd_table
+                .alloc(OpenFileDescRef(ofd_idx), 0)
+                .unwrap()
+        };
+
+        table.fork_process(PARENT, CHILD).unwrap();
+
+        let child_entry = table.get(CHILD).unwrap().fd_table.get(inherited_fd).unwrap();
+        let child_ofd = table
+            .get(CHILD)
+            .unwrap()
+            .ofd_table
+            .get(child_entry.ofd_ref.0)
+            .unwrap();
+        assert_eq!(child_ofd.offset, 3);
+        assert_eq!(child_ofd.dir_entry_offset, 3);
+        assert_eq!(child_ofd.dir_host_handle, -1);
+        assert!(child_ofd.dir_pending_entry.is_none());
+
+        let child_cleanup = table.remove_process(CHILD).unwrap();
+        assert!(!child_cleanup.host_dir_closes.contains(&ITERATOR_HANDLE));
+        let parent_cleanup = table.remove_process(PARENT).unwrap();
+        assert_eq!(
+            parent_cleanup
+                .host_dir_closes
+                .iter()
+                .filter(|&&handle| handle == ITERATOR_HANDLE)
+                .count(),
+            1,
+        );
     }
 
     #[test]

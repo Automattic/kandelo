@@ -3,6 +3,10 @@
 import { joinSafeI64, splitSafeI64 } from "./i64";
 import type { StatResult } from "../types";
 import { writeOpfsStatResult } from "./opfs-stat";
+import {
+  marshalNextOpfsDirectoryEntry,
+  type OpfsDirectoryIterator,
+} from "./opfs-directory-iterator";
 
 /**
  * OPFS Proxy Worker — dedicated Web Worker that executes async OPFS
@@ -78,10 +82,6 @@ const S_IFDIR = 0o040000;
 const SEEK_SET = 0;
 const SEEK_CUR = 1;
 const SEEK_END = 2;
-
-// DirEntry type constants
-const DT_REG = 8;
-const DT_DIR = 4;
 
 const OPFS_SUPER_MAGIC = 0x4f504653; // "OPFS"
 const STATFS_BLOCK_SIZE = 4096;
@@ -219,11 +219,6 @@ interface OpfsFileEntry {
   appendMode: boolean;
 }
 
-interface DirIterator {
-  entries: { name: string; kind: "file" | "directory" }[];
-  index: number;
-}
-
 let channel: WorkerChannel;
 let opfsRoot: FileSystemDirectoryHandle;
 let orphanDirectory: FileSystemDirectoryHandle;
@@ -233,7 +228,7 @@ let nextInode = 1n;
 let nextOrphan = 1;
 const orphanSessionId = crypto.randomUUID();
 const fileHandles = new Map<number, OpfsFileEntry>();
-const dirHandles = new Map<number, DirIterator>();
+const dirHandles = new Map<number, OpfsDirectoryIterator>();
 const identitiesByPath = new Map<string, OpfsInodeIdentity>();
 
 class OpfsBoundaryError extends Error {
@@ -1266,21 +1261,22 @@ async function handleReaddir(): Promise<void> {
     return;
   }
 
-  if (iter.index >= iter.entries.length) {
-    // End of directory
-    channel.result = 1;
+  try {
+    const wroteEntry = marshalNextOpfsDirectoryEntry(
+      iter,
+      channel.dataBuffer,
+      (nameLength) => {
+        channel.result = 0;
+        channel.result2 = nameLength;
+      },
+    );
+    if (!wroteEntry) channel.result = 1; // end of directory
     channel.notifyComplete();
-    return;
+  } catch (error) {
+    channel.notifyError(
+      error instanceof RangeError ? EOVERFLOW : mapError(error),
+    );
   }
-
-  const entry = iter.entries[iter.index++];
-  const nameBytes = new TextEncoder().encode(entry.name);
-  const data = channel.dataBuffer;
-  data.set(nameBytes);
-  data[nameBytes.length] = entry.kind === "directory" ? DT_DIR : DT_REG;
-  channel.result = 0;
-  channel.result2 = nameBytes.length;
-  channel.notifyComplete();
 }
 
 async function handleClosedir(): Promise<void> {

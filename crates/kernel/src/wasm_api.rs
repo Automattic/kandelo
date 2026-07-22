@@ -1110,11 +1110,9 @@ pub(crate) fn procfs_getdents64_for_pid(
     ofd_path: &[u8],
     buf: &mut [u8],
     offset: i64,
-) -> Option<(usize, i64, bool)> {
+) -> Result<(usize, i64, bool), Errno> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let proc = table.get(pid)?;
-    let pids = table.procfs_pids();
-    crate::procfs::procfs_getdents64(proc, ofd_path, buf, offset, &pids).ok()
+    crate::procfs::procfs_getdents64_for_pid(table, pid, ofd_path, buf, offset)
 }
 
 // ---------------------------------------------------------------------------

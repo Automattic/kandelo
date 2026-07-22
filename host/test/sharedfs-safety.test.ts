@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { Worker } from "node:worker_threads";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  FD_ENTRY_SIZE,
+  FD_TABLE_OFFSET,
+} from "../src/vfs/sharedfs-vendor";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -96,6 +100,53 @@ describe("SharedFS sparse-file safety", () => {
 });
 
 describe("SharedFS namespace and image safety", () => {
+  it("does not advance a directory cursor when constructing an entry fails", () => {
+    const fs = create();
+    const fd = fs.open("/retry-entry", O_CREAT | O_WRONLY, 0o644);
+    fs.close(fd);
+    const retryIno = fs.stat("/retry-entry").ino;
+    const dd = fs.opendir("/");
+    const shared = (
+      fs as unknown as {
+        fs: {
+          buildStat: (ino: number) => unknown;
+        };
+      }
+    ).fs;
+    const originalBuildStat = shared.buildStat.bind(shared);
+
+    try {
+      expect(fs.readdir(dd)?.name).toBe(".");
+      expect(fs.readdir(dd)?.name).toBe("..");
+      const offsetAddress = FD_TABLE_OFFSET + dd * FD_ENTRY_SIZE + 8;
+      const view = new DataView(fs.sharedBuffer);
+      const offsetBeforeFailure = view.getBigUint64(offsetAddress, true);
+      let failuresRemaining = 2;
+      const buildStat = vi
+        .spyOn(shared, "buildStat")
+        .mockImplementation((ino: number) => {
+          if (ino === retryIno && failuresRemaining-- > 0) {
+            throw new Error("injected stat construction failure");
+          }
+          return originalBuildStat(ino);
+        });
+
+      expect(() => fs.readdir(dd)).toThrow("injected stat construction failure");
+      expect(view.getBigUint64(offsetAddress, true)).toBe(offsetBeforeFailure);
+      expect(() => fs.readdir(dd)).toThrow("injected stat construction failure");
+      expect(view.getBigUint64(offsetAddress, true)).toBe(offsetBeforeFailure);
+
+      buildStat.mockRestore();
+      expect(fs.readdir(dd)?.name).toBe("retry-entry");
+      expect(view.getBigUint64(offsetAddress, true)).toBeGreaterThan(
+        offsetBeforeFailure,
+      );
+    } finally {
+      vi.restoreAllMocks();
+      fs.closedir(dd);
+    }
+  });
+
   it("hard-links a symlink inode without following its target", () => {
     const fs = create();
     const target = fs.open("/target", O_CREAT | O_WRONLY, 0o644);

@@ -53,6 +53,11 @@ pub trait HostIO {
     }
     fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno>;
     fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
+    /// Read and consume the next directory entry.
+    ///
+    /// An error must leave the iterator at the same entry. The kernel may
+    /// return a short successful getdents64 result after earlier records were
+    /// copied, then retry this host operation on the next syscall.
     fn host_readdir(
         &mut self,
         handle: i64,

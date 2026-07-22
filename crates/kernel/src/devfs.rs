@@ -107,45 +107,7 @@ pub fn devfs_getdents64(
 ) -> Result<(usize, i64, bool), Errno> {
     let entry = match_devfs_dir(path).ok_or(Errno::ENOENT)?;
     let entries = dir_entries(proc, &entry);
-
-    let start = offset as usize;
-    let mut pos = 0usize;
-    let mut current = start;
-
-    // Emit . and ..
-    if current == 0 {
-        let written = crate::procfs::write_dirent64(buf, pos, devfs_ino(path), 1, DT_DIR, b".");
-        if written == 0 {
-            if pos == 0 {
-                return Err(Errno::EINVAL);
-            }
-            return Ok((pos, current as i64, false));
-        }
-        pos += written;
-        current = 1;
-    }
-    if current == 1 {
-        let written = crate::procfs::write_dirent64(buf, pos, 1, 2, DT_DIR, b"..");
-        if written == 0 {
-            return Ok((pos, current as i64, false));
-        }
-        pos += written;
-        current = 2;
-    }
-
-    // Emit directory-specific entries
-    let entry_start = current - 2;
-    for (i, (name, d_type, ino)) in entries.iter().enumerate().skip(entry_start) {
-        let d_off = (i + 3) as i64;
-        let written = crate::procfs::write_dirent64(buf, pos, *ino, d_off, *d_type, name);
-        if written == 0 {
-            return Ok((pos, (i + 2) as i64, false));
-        }
-        pos += written;
-        current = i + 3;
-    }
-
-    Ok((pos, current as i64, true))
+    crate::procfs::write_virtual_dirents64(buf, offset, devfs_ino(path), 1, &entries)
 }
 
 /// Build directory entries for a devfs directory.
@@ -235,6 +197,31 @@ fn devfs_ino(path: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dirent_len(name: &[u8]) -> usize {
+        (19 + name.len() + 1 + 7) & !7
+    }
+
+    fn decode_dirents(buf: &[u8]) -> Vec<(Vec<u8>, i64)> {
+        let mut entries = Vec::new();
+        let mut pos = 0usize;
+        while pos < buf.len() {
+            assert!(buf.len() - pos >= 19, "truncated dirent header at {pos}");
+            let d_off = i64::from_le_bytes(buf[pos + 8..pos + 16].try_into().unwrap());
+            let reclen = u16::from_le_bytes(buf[pos + 16..pos + 18].try_into().unwrap()) as usize;
+            assert!(reclen >= 20, "invalid dirent record length {reclen}");
+            assert!(pos + reclen <= buf.len(), "dirent extends past result");
+            let name_start = pos + 19;
+            let name_end = buf[name_start..pos + reclen]
+                .iter()
+                .position(|byte| *byte == 0)
+                .map(|end| name_start + end)
+                .expect("dirent name is not NUL-terminated");
+            entries.push((buf[name_start..name_end].to_vec(), d_off));
+            pos += reclen;
+        }
+        entries
+    }
 
     #[test]
     fn test_match_devfs_dir() {
@@ -359,5 +346,132 @@ mod tests {
         // /dev/input itself stats as a directory.
         let st = match_devfs_stat(b"/dev/input", 0, 0).unwrap();
         assert_eq!(st.st_mode & 0o170000, S_IFDIR);
+    }
+
+    #[test]
+    fn devfs_getdents64_retries_one_byte_short_synthetic_entry_at_exact_cookie() {
+        let proc = crate::process::Process::new(1);
+        let dot_len = dirent_len(b".");
+        let mut too_short = vec![0u8; dot_len - 1];
+
+        assert_eq!(
+            devfs_getdents64(&proc, b"/dev", &mut too_short, 0),
+            Err(Errno::EINVAL)
+        );
+
+        let mut exact = vec![0u8; dot_len];
+        let (bytes, cookie, exhausted) =
+            devfs_getdents64(&proc, b"/dev", &mut exact, 0).unwrap();
+        assert_eq!(bytes, dot_len);
+        assert_eq!(cookie, 1);
+        assert!(!exhausted);
+        assert_eq!(decode_dirents(&exact[..bytes]), vec![(b".".to_vec(), 1)]);
+
+        // A too-small call that starts at `..` is also an error, and a retry
+        // from the unchanged cookie returns that exact record.
+        let dotdot_len = dirent_len(b"..");
+        let mut too_short = vec![0u8; dotdot_len - 1];
+        assert_eq!(
+            devfs_getdents64(&proc, b"/dev", &mut too_short, cookie),
+            Err(Errno::EINVAL)
+        );
+
+        let mut exact = vec![0u8; dotdot_len];
+        let (bytes, cookie, exhausted) =
+            devfs_getdents64(&proc, b"/dev", &mut exact, cookie).unwrap();
+        assert_eq!(bytes, dotdot_len);
+        assert_eq!(cookie, 2);
+        assert!(!exhausted);
+        assert_eq!(decode_dirents(&exact[..bytes]), vec![(b"..".to_vec(), 2)]);
+    }
+
+    #[test]
+    fn devfs_getdents64_retries_one_byte_short_real_entry_at_exact_cookie() {
+        let proc = crate::process::Process::new(1);
+        let null_len = dirent_len(b"null");
+        let mut too_short = vec![0u8; null_len - 1];
+
+        assert_eq!(
+            devfs_getdents64(&proc, b"/dev", &mut too_short, 2),
+            Err(Errno::EINVAL)
+        );
+
+        let mut exact = vec![0u8; null_len];
+        let (bytes, cookie, exhausted) =
+            devfs_getdents64(&proc, b"/dev", &mut exact, 2).unwrap();
+        assert_eq!(bytes, null_len);
+        assert_eq!(cookie, 3);
+        assert!(!exhausted);
+        assert_eq!(
+            decode_dirents(&exact[..bytes]),
+            vec![(b"null".to_vec(), 3)]
+        );
+    }
+
+    #[test]
+    fn devfs_getdents64_returns_a_short_prefix_and_resumes_without_loss() {
+        let proc = crate::process::Process::new(1);
+        let mut full_buf = [0u8; 4096];
+        let (full_bytes, end_cookie, exhausted) =
+            devfs_getdents64(&proc, b"/dev", &mut full_buf, 0).unwrap();
+        assert!(exhausted);
+        let expected = decode_dirents(&full_buf[..full_bytes]);
+
+        // Fit `.`, `..`, and `null`, then leave the buffer one byte short of
+        // `zero`. Complete records are a valid short read and must be kept.
+        let prefix_len = dirent_len(b".") + dirent_len(b"..") + dirent_len(b"null");
+        let mut prefix_buf = vec![0u8; prefix_len + dirent_len(b"zero") - 1];
+        let (prefix_bytes, resume_cookie, exhausted) =
+            devfs_getdents64(&proc, b"/dev", &mut prefix_buf, 0).unwrap();
+        assert_eq!(prefix_bytes, prefix_len);
+        assert_eq!(resume_cookie, 3);
+        assert!(!exhausted);
+
+        let mut suffix_buf = [0u8; 4096];
+        let (suffix_bytes, resumed_end, exhausted) =
+            devfs_getdents64(&proc, b"/dev", &mut suffix_buf, resume_cookie).unwrap();
+        assert!(exhausted);
+        assert_eq!(resumed_end, end_cookie);
+
+        let mut resumed = decode_dirents(&prefix_buf[..prefix_bytes]);
+        resumed.extend(decode_dirents(&suffix_buf[..suffix_bytes]));
+        assert_eq!(resumed, expected);
+        assert_eq!(
+            resumed.iter().map(|(_, d_off)| *d_off).collect::<Vec<_>>(),
+            (1..=end_cookie).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn devfs_getdents64_exact_last_entry_and_eof_preserve_cookies() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let end_cookie = i64::try_from(entries.len()).unwrap() + 2;
+        let last_name = entries.last().unwrap().0.clone();
+        let mut exact = vec![0u8; dirent_len(&last_name)];
+
+        let (bytes, cookie, exhausted) =
+            devfs_getdents64(&proc, b"/dev", &mut exact, end_cookie - 1).unwrap();
+        assert_eq!(bytes, exact.len());
+        assert_eq!(cookie, end_cookie);
+        assert!(exhausted);
+        assert_eq!(
+            decode_dirents(&exact[..bytes]),
+            vec![(last_name, end_cookie)]
+        );
+
+        let mut empty = [];
+        assert_eq!(
+            devfs_getdents64(&proc, b"/dev", &mut empty, end_cookie),
+            Ok((0, end_cookie, true))
+        );
+        assert_eq!(
+            devfs_getdents64(&proc, b"/dev", &mut empty, i64::MAX),
+            Ok((0, i64::MAX, true))
+        );
+        assert_eq!(
+            devfs_getdents64(&proc, b"/dev", &mut empty, -1),
+            Err(Errno::EINVAL)
+        );
     }
 }
