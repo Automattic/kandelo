@@ -176,7 +176,7 @@ complete here only when its exact accepted artifact has been verified.
 | Public publisher foundation | Complete | Repository-rooted public GHCR creation, anonymous readback, immutable trust, retry/recovery, coordinated finalization, and immutable VFS releases are implemented. PR #1048 landed the clean-input coordinated-finalizer fix at `1618563d87dd2207077ce228040cc9b2c773eb5e`. The production path uses `GITHUB_TOKEN`. |
 | Canonical tap migration | Complete for the production repository | PR #973 retargeted publication to `Kandelo-dev/homebrew-tap-core`; the old Automattic tap is archived. |
 | Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 60 sidecar package records and 67 successful architecture-specific bottle records at this snapshot. This covers the complete 38-Formula main-shell closure and several language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
-| Bottle-composed main shell | Production remains eager; lazy candidate is closed-validated | PR #1025 builds and publishes the current main shell from the exact public 38-Formula closure and proves the exact eager image in Node.js and Chromium. PR #1052 landed the reviewed Bash-closure/35-deferred-bottle policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. The current candidate composes that partition reproducibly, boots Bash offline, and passes exact closed-transport Node.js and Chromium acceptance. The immutable public mirror, anonymous public acceptance, and canonical package cutover remain pending, so production still uses the eager image. |
+| Bottle-composed main shell | Revision-17 lazy activation is under final review | PR #1025 builds and publishes the current main shell from the exact public 38-Formula closure and proves the exact eager image in Node.js and Chromium. PR #1052 landed the reviewed Bash-closure/35-deferred-bottle policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. PR #1060 is the active activation candidate: it keeps the exact embedded Bash closure, retains 35 independently deferred bottles, binds the immutable 36-asset public mirror to tap commit `74359eeeaf01908c78fbb4ed398b41ae361ee90d`, and exercises anonymous public transport in Node.js and Chromium. Its first merge gate exposed a general directory-record loss bug, so the same candidate now carries the separately tested POSIX `getdents64` repair. Production remains on the eager revision until #1060's refreshed exact-head and synthesized-merge gates pass and the PR lands. |
 | Language bottles | Public publication complete; lazy-shell acceptance pending | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. It also published and anonymously read back the immutable browser-proven Python VFS release `homebrew-vfs-sha256-db98a17118afeb91d7c8d939fecc8c482ba765cbbe63b242ccf2834de2b48119`. Perl is published. Python, Perl, Erlang, and Ruby still need inclusion in the final lazy-shell language acceptance matrix. |
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
 | Deferred bottle trees | Producer landed; Phase 3 candidate closed-validated | PR #1051 landed the generic substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`: exact transport identity, bounded tar+gzip and legacy ZIP decoding, hardlink preservation, atomic batch import and materialization, shared first-open/exec behavior, independent immutable runtime-layer identity, and boot-descriptor composition. PR #1052 landed the reviewed 3-embedded/35-deferred main-shell policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. PR #1053 landed deterministic checked-in software-gallery browser fixtures at `77358bf5a6081c0561cd73c2bd7db3d15ac6730d`. PR #1054 landed the direct producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: every selected Formula retains its byte-identical original bottle as an independently lazy tree with complete source and guest inventories, package/keg/activation bindings, mode-copy validation, and multi-asset release closure. Core-tap PR #84 then pinned all active publisher callers to that exact Kandelo commit at tap commit `e7cfe3140e692965cd7abf10e8029633c5d20c02`. PR #1055 now composes the exact 38-Formula namespace, embeds `libcxx`, `ncurses`, and `bash`, leaves 35 trees pending, creates the exact mirror manifest, and passes closed-transport Node.js and Chromium acceptance. The immutable public mirror, anonymous public-transport acceptance, and canonical package cutover remain pending. |
@@ -282,8 +282,10 @@ maintenance callers to that immutable Kandelo commit and landed at
 `e7cfe3140e692965cd7abf10e8029633c5d20c02`.
 
 Checkpoint: Phase 2 is complete. PR #1055 is the Phase 3 composer and closed
-transport proof. Public mirror publication, anonymous public-transport
-acceptance, and the canonical shell-package cutover remain Phase 3 work.
+transport proof. PR #1060 is the active revision-17 activation candidate; it
+adds the immutable public mirror, anonymous public-transport acceptance, and
+canonical package cutover. Those capabilities remain unlanded until #1060's
+refreshed exact-head and synthesized-merge gates pass.
 
 ### Phase 3: Restore full main-shell laziness
 
@@ -365,6 +367,16 @@ Pre-publication candidate checkpoint (2026-07-22):
   same Node.js/Chromium proof passes against public transport. A final small
   cutover then changes the canonical package revision and wrapper activation
   without a broken URL window.
+
+Activation checkpoint (2026-07-22): PR #1060 now carries that final cutover as
+revision 17. The exact 36-asset mirror is public and bound to tap commit
+`74359eeeaf01908c78fbb4ed398b41ae361ee90d`; the public-transport Node.js and
+Chromium proof is part of the PR gate. Its first synthesized-merge run found a
+general `getdents64` boundary bug that could consume a directory record before
+the caller had room for it. The candidate now includes the general kernel and
+host repair with fork, spawn, `SCM_RIGHTS`, procfs, devfs, root-mountpoint,
+Node.js, and Chromium coverage. This paragraph records active work, not landed
+support; the production status changes only after #1060 merges.
 
 Acceptance:
 
