@@ -24,12 +24,37 @@ async function waitForTerminalContent(
   expected: string | RegExp,
   timeout = 180_000,
 ) {
-  const assertion = expect.poll(() => terminalText(page), { timeout });
-  if (typeof expected === "string") {
-    await assertion.toContain(expected);
-  } else {
-    await assertion.toMatch(expected);
+  const deadline = Date.now() + timeout;
+  let text = "";
+  while (Date.now() < deadline) {
+    text = await terminalText(page);
+    const matched = typeof expected === "string"
+      ? text.includes(expected)
+      : expected.test(text);
+    if (matched) return;
+    if (/bash: \/bin\/sh: I\/O error/.test(text)) {
+      throw new Error(
+        `shell command hit lazy VFS I/O failure: ${await lazyDownloadDiagnostics(page)}`,
+      );
+    }
+    await page.waitForTimeout(100);
   }
+  throw new Error(
+    `timed out waiting for ${String(expected)} in terminal output: ${text}`,
+  );
+}
+
+async function lazyDownloadDiagnostics(page: Page): Promise<string> {
+  await page.getByRole("button", { name: "Internals" }).click();
+  await page.getByRole("tab", { name: "Lazy Load" }).click();
+  const rows = await page.locator(".kdownload-table tbody tr").evaluateAll((elements) =>
+    elements.map((element) => ({
+      status: element.getAttribute("data-download-status"),
+      source: element.getAttribute("data-source"),
+      text: element.textContent?.replace(/\s+/g, " ").trim(),
+    }))
+  );
+  return JSON.stringify(rows);
 }
 
 async function runTerminalCommand(
@@ -73,6 +98,8 @@ test("the exact public-bottle shell preserves shell, NetHack, and modeset behavi
   test.setTimeout(420_000);
 
   const legacyArtifactDownloads: string[] = [];
+  const closedPayloadResponses: Array<{ url: string; status: number }> = [];
+  const publicBottleRequests: string[] = [];
   await page.addInitScript(() => {
     const evidence = {
       digests: [] as string[],
@@ -104,6 +131,15 @@ test("the exact public-bottle shell preserves shell, NetHack, and modeset behavi
       return response;
     };
   });
+  page.context().on("request", (request) => {
+    const url = request.url();
+    if (
+      /\/releases\/download\/homebrew-shell-bottles-sha256-[0-9a-f]{64}\//
+        .test(new URL(url).pathname) && url.endsWith("-layer.bin")
+    ) {
+      publicBottleRequests.push(url);
+    }
+  });
   page.on("request", (request) => {
     const url = request.url();
     if (
@@ -116,6 +152,16 @@ test("the exact public-bottle shell preserves shell, NetHack, and modeset behavi
       )
     ) {
       legacyArtifactDownloads.push(url);
+    }
+  });
+  page.on("response", (response) => {
+    if (!closedMirrorRoot) return;
+    const url = new URL(response.url());
+    if (
+      url.pathname.startsWith(`${closedMirrorRoot}/`) &&
+      url.pathname.endsWith("-layer.bin")
+    ) {
+      closedPayloadResponses.push({ url: response.url(), status: response.status() });
     }
   });
 
@@ -154,6 +200,10 @@ test("the exact public-bottle shell preserves shell, NetHack, and modeset behavi
 
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 180_000 });
   await waitForTerminalContent(page, /kandelo\$\s*$/, 240_000);
+  if (transportMode === "closed") {
+    expect(closedPayloadResponses).toHaveLength(35);
+    expect(closedPayloadResponses.every(({ status }) => status === 200)).toBe(true);
+  }
   await expect(page.getByRole("heading", { name: "Shell demo" })).toBeVisible({
     timeout: 60_000,
   });
@@ -178,14 +228,18 @@ test("the exact public-bottle shell preserves shell, NetHack, and modeset behavi
   await runTerminalCommand(
     page,
     "/bin/bash -c 'set -e; " +
-      "touch /home/.nethack/record; " +
-      "nethack -s all >/tmp/homebrew-nethack.out 2>&1; " +
-      "if grep -q \"Cannot open record file\" /tmp/homebrew-nethack.out; then " +
-      "cat /tmp/homebrew-nethack.out >&2; exit 1; fi; " +
+      ": > /home/.nethack/record; " +
+      "if ! nethack_output=$(nethack -s all 2>&1); then " +
+      "printf \"%s\\n\" \"$nethack_output\" >&2; exit 1; fi; " +
+      "case \"$nethack_output\" in *\"Cannot open record file\"*) " +
+      "printf \"%s\\n\" \"$nethack_output\" >&2; exit 1;; esac; " +
       "printf \"HOMEBREW_NETHACK_STATE_OK\\n\"'",
     "HOMEBREW_NETHACK_STATE_OK",
     180_000,
   );
+  if (transportMode === "closed") {
+    expect(publicBottleRequests).toEqual([]);
+  }
 
   const mirrorPlan = await page.evaluate(async (url) => {
     const response = await fetch(
@@ -203,9 +257,16 @@ test("the exact public-bottle shell preserves shell, NetHack, and modeset behavi
   const expectedAssets = mirrorPlan.assets.filter((asset) =>
     expectedPackages.includes(asset.package)
   );
+  expect(mirrorPlan.assets).toHaveLength(35);
   expect(expectedAssets.map((asset) => asset.package).sort()).toEqual(
     [...expectedPackages].sort(),
   );
+  expect(mirrorPlan.assets.length - expectedAssets.length).toBe(32);
+  if (transportMode === "public") {
+    expect([...publicBottleRequests].sort()).toEqual(
+      expectedAssets.map((asset) => asset.url).sort(),
+    );
+  }
 
   await page.getByRole("button", { name: "Internals" }).click();
   await page.getByRole("tab", { name: "Lazy Load" }).click();
