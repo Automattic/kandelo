@@ -1533,9 +1533,13 @@ def parse_homebrew_install_receipt(value: bytes) -> dict[str, Any]:
         fail(f"INSTALL_RECEIPT.json is not valid UTF-8 JSON: {error}")
     if not isinstance(receipt, dict):
         fail("INSTALL_RECEIPT.json must contain an object")
-    changed = receipt.get("changed_files", [])
-    if not isinstance(changed, list):
-        fail("INSTALL_RECEIPT.json changed_files must be an array when present")
+    changed = receipt.get("changed_files")
+    if changed is None:
+        changed = []
+    elif not isinstance(changed, list):
+        fail(
+            "INSTALL_RECEIPT.json changed_files must be an array or null when present"
+        )
     if len(changed) > MAX_BOTTLE_CHANGED_FILES:
         fail(
             f"INSTALL_RECEIPT.json declares {len(changed)} changed files, "
@@ -1564,11 +1568,13 @@ def homebrew_java_home(runtime_dependencies: Any) -> bytes | None:
     for dependency in runtime_dependencies:
         if not isinstance(dependency, dict):
             continue
-        candidate = dependency.get("full_name", dependency.get("name"))
+        candidate = dependency.get("full_name")
+        if not isinstance(candidate, str):
+            candidate = dependency.get("name")
         if not isinstance(candidate, str):
             continue
         name = candidate.rsplit("/", 1)[-1]
-        if re.fullmatch(r"openjdk(?:@[^/]+)?", name):
+        if re.fullmatch(r"openjdk(?:@\d+(?:\.\d+)*)?", name):
             names.add(name)
     if len(names) != 1:
         return None

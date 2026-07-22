@@ -17,6 +17,7 @@ const HOMEBREW_REPLACEMENTS = [
   ["@@HOMEBREW_PERL@@", `${HOMEBREW_PREFIX}/opt/perl/bin/perl`],
 ] as const;
 const HOMEBREW_JAVA_PLACEHOLDER = "@@HOMEBREW_JAVA@@";
+const HOMEBREW_OPENJDK_NAME_RE = /^openjdk(?:@\d+(?:\.\d+)*)?/;
 const TEXT_ENCODER = new TextEncoder();
 const PLACEHOLDER_BYTES = [
   ...HOMEBREW_REPLACEMENTS.map(([placeholder]) => placeholder),
@@ -48,10 +49,15 @@ export function parseHomebrewInstallReceiptRelocation(
   }
   const receipt = parsed as Record<string, unknown>;
   const changedValue = receipt.changed_files;
-  if (changedValue !== undefined && !Array.isArray(changedValue)) {
-    throw new Error("INSTALL_RECEIPT.json changed_files must be an array when present");
+  if (
+    changedValue !== undefined && changedValue !== null &&
+    !Array.isArray(changedValue)
+  ) {
+    throw new Error(
+      "INSTALL_RECEIPT.json changed_files must be an array or null when present",
+    );
   }
-  const values = (changedValue ?? []) as unknown[];
+  const values = Array.isArray(changedValue) ? changedValue : [];
   if (values.length > MAX_BOTTLE_CHANGED_FILES) {
     throw new Error(
       `INSTALL_RECEIPT.json declares ${values.length} changed files, ` +
@@ -123,7 +129,10 @@ function homebrewJavaHome(value: unknown): string | undefined {
       : typeof record.name === "string"
         ? record.name.split("/").at(-1)
         : undefined;
-    if (candidate !== undefined && /^openjdk(?:@[^/]+)?$/.test(candidate)) {
+    const match = candidate === undefined
+      ? null
+      : HOMEBREW_OPENJDK_NAME_RE.exec(candidate);
+    if (candidate !== undefined && match?.[0] === candidate) {
       names.push(candidate);
     }
   }

@@ -1538,8 +1538,10 @@ After decoding and complete source-inventory validation, the runtime requires
 its relocation markers to equal the exact receipt list, relocates the shared
 regular inode once, preserves every hardlink alias, and only then atomically
 commits the group. A missing changed file, unsafe or duplicate receipt path,
-unknown retained placeholder, unresolved Java dependency, marker mismatch, or
-final-size mismatch leaves the whole group pending and retryable.
+retained supported placeholder, unresolved Java dependency, marker mismatch,
+or final-size mismatch leaves the whole group pending and retryable. Upstream
+receipts may represent an empty `changed_files` list as either `null` or `[]`;
+both mean that no archive member is relocated.
 
 The image builder emits an inert schema-5 draft because exact Node and Chromium
 evidence does not exist until the eager image has run. The credential-free

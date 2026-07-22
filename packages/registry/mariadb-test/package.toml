@@ -10,12 +10,19 @@ kernel_abi = 7
 #     on demand.
 #   - calls `resolveBinary("programs/dash.wasm")` (strict — throws if missing)
 #     to bake `/bin/dash` + `/bin/sh` symlink
+#   - calls `resolveBinary("programs/coreutils.wasm")` (strict — throws if
+#     missing) so the reviewed utility set cannot depend on ambient binaries
 #   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()` (strict —
 #     throws if neither tryResolveBinary nor the source-tree path resolves)
 #     to bake the init system that boots the test runner.
 # Without these declarations a clean source-build (e.g., during manual
 # force-rebuild) fails. Folds each prereq's cache_key into ours.
-depends_on = ["mariadb@10.5.28", "dash@0.5.12", "dinit@0.19.4"]
+depends_on = [
+  "mariadb@10.5.28",
+  "dash@0.5.12",
+  "dinit@0.19.4",
+  "coreutils@9.6",
+]
 
 # Pre-built VFS image for the MariaDB test runner: mariadbd binary,
 # mysql-test test files (curated 185 tests), system-table SQL,
