@@ -162,6 +162,13 @@ Kandelo packages are first-class Homebrew packages:
 - Python, Perl, Erlang, and Ruby are intended to be usable lazily from the main
   shell. Do not create a default VFS image per language runtime. Retain the
   dedicated Node.js demo as the current exception.
+- The canonical shell exposes the normal `/usr/bin/brew` entrypoint but keeps
+  Homebrew's own runtime/source tree as one integrity-bound first-use group.
+  A derived demo may pre-materialize that exact group, but it must consume the
+  same descriptor and digest instead of owning a second bootstrap recipe.
+  Record separately whether such a derivative embeds only Homebrew's tree or
+  its complete runtime dependency closure; those are different size and
+  offline-use promises.
 - A later documentation slice adds a normal `man` command and retains the man
   pages that each Formula would ordinarily install. Package-owned pages stay in
   the owning bottle and follow that bottle's existing first-use materialization
@@ -471,9 +478,13 @@ canonical release):
 3. Close ordinary platform blockers in Ruby, process/pipe behavior, networking,
    TLS, GHCR bearer authentication, filesystem links/permissions, or subprocess
    execution at their owning layer.
-4. Make the upstream `brew` command available from the main shell. Its own
-   embedded-versus-deferred policy may be selected from measured startup and
-   size evidence; invoking it must not depend on host-side Formula emulation.
+4. Make the upstream `brew` command available from the main shell. The
+   canonical/base shell registers Homebrew's tree as a package-level lazy
+   reference behind the ordinary `/usr/bin/brew` entrypoint, with no bootstrap
+   download during boot. The first invocation materializes and verifies that
+   coherent tree; repeat invocations do not fetch it again. A derived demo may
+   pre-materialize the same exact tree through a generic composer policy.
+   Invoking `brew` must not depend on host-side Formula emulation.
 5. Prove a first-party core bottle install and a cross-tap M4 install, including
    dependency resolution, linking, execution, upgrade/uninstall state, and loud
    failures for ABI or digest mismatch.
@@ -483,6 +494,11 @@ canonical release):
    links, Homebrew receipts, and provenance with the direct composer. Record an
    evidence-backed keep, replace, or retire decision; the existence of the
    current direct composer is not that evidence by itself.
+7. After the existing in-guest Clang/LLVM proof is audited and integrated,
+   exercise Homebrew's normal source-build path inside Kandelo. Source builds
+   must use the guest SDK/toolchain and ordinary Formula contract rather than a
+   host-built artifact substitution; bottle-only support is an intermediate
+   milestone, not the final package-manager boundary.
 
 Implementation checkpoint (2026-07-22; draft PR #1059 and not yet a supported
 main-shell capability):
@@ -499,6 +515,14 @@ main-shell capability):
   the script later exits zero. Draft PR #1059 contains the general Bash build
   and builtin-test correction; built-in `brew` remains unclaimed until that
   bottle, the tap lock, and the exact Node.js/Chromium proof advance together.
+- An exact working revision-19 comparison measured the embedded design before
+  selecting the lazy policy: revision 18 is 5,885,691 compressed bytes;
+  corrected Bash alone produces 5,904,540 bytes; and embedding Homebrew's tree
+  produces 8,770,196 bytes. The bootstrap therefore accounts for about
+  2,865,656 compressed bytes in that comparison, plus 3,549 paths and about
+  26.8 MB of allocated VFS blocks. The final lazy image still needs integrity,
+  inventory, and trigger metadata, so its exact savings must be measured from
+  the built lazy artifact rather than inferred by subtracting these images.
 - Stock `brew config`, the bottles-only operational doctor checks, public
   first-party tap discovery, and independent canary-tap discovery pass without
   an implicit core clone. Full doctor retains the truthful warning that the
@@ -527,6 +551,13 @@ Acceptance:
   Chromium.
 - User documentation can finally publish truthful `brew tap` and
   `brew install` instructions.
+- The canonical shell boots without fetching Homebrew's tree, first
+  `/usr/bin/brew` use fetches exactly the declared bootstrap group(s), and a
+  derived pre-materialized variant proves identical guest behavior and source
+  identity without a second recipe.
+- With the guest Clang/LLVM capability integrated, at least one representative
+  Formula builds from source entirely inside Kandelo and records truthful build
+  provenance; unsupported toolchain features fail as real platform boundaries.
 - The historical build-time `brew`-pour/`saveImage()` proof has exact run
   evidence and an explicit disposition against the direct composer.
 
