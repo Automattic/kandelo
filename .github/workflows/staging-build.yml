@@ -142,6 +142,12 @@ jobs:
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
 
+      - name: Install JavaScript dependencies for Homebrew preflight
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          '
+
       - name: Validate Homebrew publisher trust contract
         run: bash scripts/dev-shell.sh bash scripts/test-homebrew-publish-workflow.sh
 
