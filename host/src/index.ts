@@ -116,6 +116,17 @@ export type {
   HomebrewRuntimeLayerSelection,
 } from "./homebrew-runtime-layer-policy";
 export {
+  HOMEBREW_VFS_MATERIALIZATION_POLICY_KIND,
+  assertHomebrewVfsDeferredPackageCollection,
+  parseHomebrewVfsMaterializationPolicy,
+  projectEmbeddedHomebrewVfsPlan,
+  selectHomebrewVfsMaterialization,
+} from "./homebrew-vfs-materialization-policy";
+export type {
+  HomebrewVfsMaterializationPolicy,
+  HomebrewVfsMaterializationSelection,
+} from "./homebrew-vfs-materialization-policy";
+export {
   HomebrewVfsBuildError,
   buildHomebrewVfs,
 } from "./homebrew-vfs-builder";
