@@ -25,6 +25,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildHomebrewVfs,
+  type HomebrewVfsBuildOptions,
+  type HomebrewVfsBuildResult,
   type HomebrewVfsCompatibilityPolicy,
   type HomebrewVfsRuntimeStateDeclaration,
 } from "../../../host/src/homebrew-vfs-builder";
@@ -42,6 +44,7 @@ import {
   type HomebrewBottleArch,
   type HomebrewRuntime,
   type HomebrewVfsPackagePlan,
+  type HomebrewVfsPlan,
 } from "../../../host/src/homebrew-vfs-planner";
 import {
   MemoryFileSystem,
@@ -64,6 +67,7 @@ import {
 import {
   ensureDirRecursive,
   saveImage,
+  sourceDateEpochMilliseconds,
   writeVfsBinary,
 } from "./vfs-image-helpers";
 
@@ -93,7 +97,35 @@ interface CliOptions {
   lazyLayerBasePackageSource?: string;
   runtimeLayerId?: string;
   runtimeLayerPolicy?: string;
+  materializationPolicy?: string;
+  bottleMirrorRepository?: string;
+  bottleMirrorOut?: string;
 }
+
+/**
+ * Candidate-only composition is injected by a separate entrypoint. Keeping
+ * this boundary structural lets the canonical eager builder remain free of
+ * candidate composer imports while both paths reuse the same CLI, planning,
+ * image metadata, and serialization implementation.
+ */
+export interface HomebrewVfsImageMaterializationOptions
+  extends HomebrewVfsBuildOptions {
+  fs: MemoryFileSystem;
+  collectionFs: MemoryFileSystem;
+  policy: unknown;
+  mirrorRepository: string;
+}
+
+export interface HomebrewVfsImageMaterializedBuild {
+  result: HomebrewVfsBuildResult;
+  assert(fs: MemoryFileSystem): void;
+  writeBottleMirrorBundle(outputDirectory: string): unknown;
+}
+
+export type HomebrewVfsImageMaterializer = (
+  plan: HomebrewVfsPlan,
+  options: HomebrewVfsImageMaterializationOptions,
+) => Promise<HomebrewVfsImageMaterializedBuild>;
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
 const SHARED_FS_BLOCK_BYTES = 4096;
@@ -153,8 +185,11 @@ interface LoadedMigrationLock {
   bytes: number;
 }
 
-async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+export async function runHomebrewVfsImageBuilder(
+  args: string[],
+  materialize?: HomebrewVfsImageMaterializer,
+): Promise<void> {
+  const options = parseArgs(args);
   const metadata = readJsonFile(options.metadata);
   const primaryTapName = metadataTapName(metadata, options.metadata);
   const shellConfig = options.shellConfig
@@ -226,31 +261,66 @@ async function main(): Promise<void> {
     loadedBottleBytes.set(pkg.fullName, bytes);
     return bytes;
   };
-  const result = await buildHomebrewVfs(plan, {
+  const selectionSource = brewfileSelection ? {
+    kind: "brewfile" as const,
+    parser: brewfileSelection.kind,
+    sha256: brewfileSelection.sha256,
+    bytes: brewfileSelection.bytes,
+    requestedPackages: brewfileSelection.packages,
+  } : undefined;
+  const catalogCheckout = options.catalogCommit === undefined ? undefined : {
+    tapRepository: plan.tapRepository,
+    tapName: plan.tapName,
+    checkoutCommit: options.catalogCommit,
+  };
+  const migrationLockBinding = migrationLock === undefined ? undefined : {
+    sha256: migrationLock.sha256,
+    bytes: migrationLock.bytes,
+  };
+  let materializedBuild: HomebrewVfsImageMaterializedBuild | undefined;
+  const commonBuildOptions = {
     fs,
     writeProfile: options.writeProfile,
     createdBy: "images/vfs/scripts/build-homebrew-vfs-image.ts",
-    selectionSource: brewfileSelection ? {
-      kind: "brewfile",
-      parser: brewfileSelection.kind,
-      sha256: brewfileSelection.sha256,
-      bytes: brewfileSelection.bytes,
-      requestedPackages: brewfileSelection.packages,
-    } : undefined,
-    catalogCheckout: options.catalogCommit === undefined ? undefined : {
-      tapRepository: plan.tapRepository,
-      tapName: plan.tapName,
-      checkoutCommit: options.catalogCommit,
-    },
+    selectionSource,
+    catalogCheckout,
     compatibilityPolicy,
-    migrationLock: migrationLock === undefined ? undefined : {
-      sha256: migrationLock.sha256,
-      bytes: migrationLock.bytes,
-    },
+    migrationLock: migrationLockBinding,
     loadBottleBytes: loadPlannedBottle,
-  });
+  };
+  let result: HomebrewVfsBuildResult;
+  if (options.materializationPolicy === undefined) {
+    result = await buildHomebrewVfs(plan, commonBuildOptions);
+  } else {
+    if (materialize === undefined) {
+      throw new Error(
+        "materialized composition requires the candidate-owned image builder entrypoint",
+      );
+    }
+    materializedBuild = await materialize(plan, {
+      ...commonBuildOptions,
+      fs,
+      collectionFs: createFs(
+        undefined,
+        maxByteLength,
+        plan.kandeloAbi,
+      ).fs,
+      policy: readJsonFile(options.materializationPolicy),
+      mirrorRepository: options.bottleMirrorRepository!,
+    });
+    result = materializedBuild.result;
+    materializedBuild.assert(fs);
+  }
   if (shellConfig) {
     assertShellExecutable(fs, shellConfig.config.path);
+    if (
+      materializedBuild !== undefined &&
+      fs.isPathDeferred(shellConfig.config.path)
+    ) {
+      throw new Error(
+        `default shell must be embedded rather than deferred: ${shellConfig.config.path}`,
+      );
+    }
     if (vfsPathExists(fs, KANDELO_SHELL_CONFIG_PATH)) {
       throw new Error(
         `refusing to overwrite existing default shell config: ${KANDELO_SHELL_CONFIG_PATH}`,
@@ -271,6 +341,9 @@ async function main(): Promise<void> {
   }
 
   const imageBytes = await saveImage(fs, options.out, {
+    normalizeTimestampsMs: sourceDateEpochMilliseconds(
+      process.env.SOURCE_DATE_EPOCH,
+    ),
     metadata: {
       version: 1,
       kernelAbi: plan.kandeloAbi,
@@ -320,6 +393,9 @@ async function main(): Promise<void> {
             ? { brewfile: result.report.selection.brewfile }
             : {}),
         },
+        ...(result.report.materialization === undefined ? {} : {
+          materialization: result.report.materialization,
+        }),
         ...(shellConfig ? {
           defaultShell: {
             path: shellConfig.config.path,
@@ -361,7 +437,24 @@ async function main(): Promise<void> {
   if (imageCapacity.maxByteLength !== maxByteLength) {
     throw new Error(
       `saved VFS capacity ${imageCapacity.maxByteLength} does not match ` +
-        `the declared consumer contract ${maxByteLength}`,
+      `the declared consumer contract ${maxByteLength}`,
+    );
+  }
+  let bottleMirrorOutput: unknown;
+  if (materializedBuild !== undefined) {
+    const restored = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
+    materializedBuild.assert(restored);
+    if (shellConfig !== undefined) {
+      assertShellExecutable(restored, shellConfig.config.path);
+      if (restored.isPathDeferred(shellConfig.config.path)) {
+        throw new Error(
+          `saved default shell must be embedded rather than deferred: ` +
+            shellConfig.config.path,
+        );
+      }
+    }
+    bottleMirrorOutput = materializedBuild.writeBottleMirrorBundle(
+      options.bottleMirrorOut!,
     );
   }
 
@@ -434,7 +527,11 @@ async function main(): Promise<void> {
       byte_length: imageCapacity.byteLength,
       max_byte_length: imageCapacity.maxByteLength,
     },
-    image: options.out,
+    ...(bottleMirrorOutput === undefined ? {} : {
+      bottle_mirror: bottleMirrorOutput,
+    }),
+    // Report a reproducible artifact identity, not a runner/worktree path.
+    image: basename(options.out),
   };
   mkdirSync(dirname(options.report), { recursive: true });
   writeFileSync(options.report, `${JSON.stringify(report, null, 2)}\n`);
@@ -582,6 +679,24 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.runtimeLayerPolicy = requireValue(args, ++i, arg);
         break;
+      case "--materialization-policy":
+        if (options.materializationPolicy !== undefined) {
+          usage("--materialization-policy may be provided only once");
+        }
+        options.materializationPolicy = requireValue(args, ++i, arg);
+        break;
+      case "--bottle-mirror-repository":
+        if (options.bottleMirrorRepository !== undefined) {
+          usage("--bottle-mirror-repository may be provided only once");
+        }
+        options.bottleMirrorRepository = requireValue(args, ++i, arg);
+        break;
+      case "--bottle-mirror-out":
+        if (options.bottleMirrorOut !== undefined) {
+          usage("--bottle-mirror-out may be provided only once");
+        }
+        options.bottleMirrorOut = requireValue(args, ++i, arg);
+        break;
       case "--help":
       case "-h":
         usage(undefined, 0);
@@ -617,6 +732,29 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.demoConfig && !existsSync(options.demoConfig)) {
     usage(`demo config does not exist: ${options.demoConfig}`);
+  }
+  const materializationOptionCount = [
+    options.materializationPolicy,
+    options.bottleMirrorRepository,
+    options.bottleMirrorOut,
+  ].filter((value) => value !== undefined).length;
+  if (materializationOptionCount !== 0 && materializationOptionCount !== 3) {
+    usage(
+      "--materialization-policy, --bottle-mirror-repository, and " +
+        "--bottle-mirror-out must be provided together",
+    );
+  }
+  if (
+    options.materializationPolicy !== undefined &&
+    !existsSync(options.materializationPolicy)
+  ) {
+    usage(`materialization policy does not exist: ${options.materializationPolicy}`);
+  }
+  if (options.bottleMirrorOut !== undefined && existsSync(options.bottleMirrorOut)) {
+    usage(`bottle mirror output must not already exist: ${options.bottleMirrorOut}`);
+  }
+  if (options.materializationPolicy !== undefined && options.lazyLayerOut !== undefined) {
+    usage("materialized shell composition cannot also emit a runtime layer");
   }
   if (Boolean(options.lazyLayerOut) !== Boolean(options.lazyLayerDescriptor)) {
     usage("--lazy-layer-out and --lazy-layer-descriptor must be provided together");
@@ -1220,6 +1358,9 @@ function usage(message?: string, code = 2): never {
   [--shell-config <shell.json>] [--demo-config <demo.json>] \\
   [--catalog-commit <full-sha>] \\
   [--migration-lock <lock.json>] \\
+  [--materialization-policy <policy.json> \\
+   --bottle-mirror-repository <owner/repository> \\
+   --bottle-mirror-out <new-directory>] \\
   [--lazy-layer-out <layer.bin> \\
    --lazy-layer-descriptor <layer.json> \\
    --lazy-layer-base-image <main-shell.vfs[.zst]> \\
@@ -1229,7 +1370,12 @@ function usage(message?: string, code = 2): never {
   process.exit(code);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+) {
+  runHomebrewVfsImageBuilder(process.argv.slice(2)).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

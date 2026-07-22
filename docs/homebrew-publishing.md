@@ -2108,6 +2108,15 @@ byte-identical bottle trees for a complete reviewed package closure. Choosing
 the production shell's embedded/deferred partition, publishing every deferred
 bottle mirror, and republishing the production shell remain Phase 3 work.
 
+The candidate build keeps that work outside the live package cache graph.
+`build-homebrew-vfs-image.ts` owns the shared eager planning, metadata, and
+serialization path but has no runtime import of the materialization composer.
+Only `build-homebrew-materialized-vfs-image.ts` imports and injects that
+composer, and `build-homebrew-main-shell-closure.sh` selects this entrypoint
+only for an explicit `--materialized-candidate` run. The canonical shell
+wrapper and `build.toml` therefore remain candidate-free until the reviewed
+cutover changes them deliberately.
+
 `homebrew/runtime-layer-policy.json` is the reviewed planning contract for
 runtime derivation. It names the canonical `shell` package-output receipt as
 the lower image and defines independent `perl`, `python`, and `erlang` package

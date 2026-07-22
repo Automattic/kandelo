@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { saveImage } from "../../images/vfs/scripts/vfs-image-helpers";
+import {
+  saveImage,
+  sourceDateEpochMilliseconds,
+} from "../../images/vfs/scripts/vfs-image-helpers";
 import {
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
@@ -89,6 +92,25 @@ function stripStandaloneLazyIdentity(image: Uint8Array): Uint8Array {
 }
 
 describe("VFS image save/restore", () => {
+  describe("SOURCE_DATE_EPOCH", () => {
+    it.each([
+      [undefined, 0],
+      ["0", 0],
+      ["946684800", 946_684_800_000],
+    ])("maps %s to a reproducible millisecond timestamp", (value, expected) => {
+      expect(sourceDateEpochMilliseconds(value)).toBe(expected);
+    });
+
+    it.each(["-1", "1.5", "01", "NaN", "9007199254741"])(
+      "rejects invalid value %s",
+      (value) => {
+        expect(() => sourceDateEpochMilliseconds(value)).toThrow(
+          /SOURCE_DATE_EPOCH/,
+        );
+      },
+    );
+  });
+
   describe("snapshot timestamp policy", () => {
     it("normalizes only the detached image while runtime timestamps remain real", async () => {
       const runtimeNow = 1_700_000_123_456;

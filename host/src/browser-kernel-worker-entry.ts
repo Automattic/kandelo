@@ -29,6 +29,7 @@ import {
   VirtualPlatformIO,
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
+import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import {
@@ -595,6 +596,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   if (msg.lazyUrlBase) {
     memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
     memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
+  }
+  if (msg.closedLazyAssets !== undefined) {
+    memfs.setLazyFetcher(createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets));
   }
   const mounts: MountConfig[] = [
     { mountPoint: "/dev/shm", backend: shmfs },

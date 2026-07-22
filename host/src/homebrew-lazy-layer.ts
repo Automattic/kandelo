@@ -5,8 +5,11 @@ import {
   homebrewCanonicalOptLink,
   homebrewManifestSourcePath,
   mapHomebrewBottleEntryToGuestPath,
+  type HomebrewVfsCatalogCheckout,
   type HomebrewVfsCompatibilityPolicy,
   type HomebrewVfsBuildReport,
+  type HomebrewVfsMigrationLockBinding,
+  type HomebrewVfsSelectionSource,
 } from "./homebrew-vfs-builder";
 import type {
   HomebrewFederatedVfsPlan,
@@ -52,33 +55,14 @@ import { MemoryFileSystem } from "./vfs/memory-fs";
 import { parseTarGzip, type TarEntry } from "./vfs/tar";
 import {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
+  homebrewRuntimeLayerDescriptorAsset,
+  homebrewRuntimeLayerPayloadAsset,
   isHomebrewRuntimeLayerId,
 } from "./homebrew-runtime-layer-limits";
-
-function assertRuntimeLayerAssetName(name: string, id: string): string {
-  if (
-    !isHomebrewRuntimeLayerId(id) ||
-    new TextEncoder().encode(name).byteLength >
-      HOMEBREW_RUNTIME_LAYER_LIMITS.maxReleaseAssetNameBytes
-  ) {
-    throw new Error(`Homebrew runtime layer id ${id} exceeds the release asset budget`);
-  }
-  return name;
-}
-
-export function homebrewRuntimeLayerPayloadAsset(id: string): string {
-  if (!isHomebrewRuntimeLayerId(id)) {
-    throw new Error(`invalid Homebrew runtime layer id ${id}`);
-  }
-  return assertRuntimeLayerAssetName(`kandelo-homebrew-${id}-layer.bin`, id);
-}
-
-export function homebrewRuntimeLayerDescriptorAsset(id: string): string {
-  if (!isHomebrewRuntimeLayerId(id)) {
-    throw new Error(`invalid Homebrew runtime layer id ${id}`);
-  }
-  return assertRuntimeLayerAssetName(`kandelo-homebrew-${id}-layer.json`, id);
-}
+export {
+  homebrewRuntimeLayerDescriptorAsset,
+  homebrewRuntimeLayerPayloadAsset,
+} from "./homebrew-runtime-layer-limits";
 
 const HOMEBREW_VFS_ASSET = "kandelo-homebrew.vfs.zst";
 const HOMEBREW_VFS_DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json";
@@ -168,6 +152,10 @@ export interface BuildHomebrewOriginalBottleCollectionOptions {
     pkg: HomebrewVfsPackagePlan,
   ) => Uint8Array | Promise<Uint8Array>;
   compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
+  selectionSource?: HomebrewVfsSelectionSource;
+  catalogCheckout?: HomebrewVfsCatalogCheckout;
+  migrationLock?: HomebrewVfsMigrationLockBinding;
+  createdBy?: string;
   /** Optional compatibility IDs; ordinary collection trees derive package IDs. */
   treeIdOverrides?: ReadonlyMap<string, string>;
 }
@@ -258,7 +246,10 @@ export async function buildHomebrewOriginalBottleCollection(
       return bytes;
     },
     writeProfile: false,
-    createdBy: "host/src/homebrew-lazy-layer.ts",
+    createdBy: options.createdBy ?? "host/src/homebrew-lazy-layer.ts",
+    selectionSource: options.selectionSource,
+    catalogCheckout: options.catalogCheckout,
+    migrationLock: options.migrationLock,
     compatibilityPolicy: options.compatibilityPolicy,
     consumerState: "defer",
   });
@@ -609,7 +600,7 @@ function createOriginalBottleTrees(
 
   for (const bottle of bottles) {
     const treeId = treeIdByPackage.get(bottle.pkg.fullName)!;
-    const regularSourceByInode = new Map<number, string>();
+    const regularSourceByInode = new Map<number | bigint, string>();
     for (const source of bottle.sourceEntries) {
       if (source.type !== "file") continue;
       const guest = guestPathBySource.get(bottle.pkg.fullName)!.get(source.path);
@@ -1757,7 +1748,7 @@ function collectPath(
   fs: MemoryFileSystem,
   vfsPath: string,
   entries: HomebrewLazyLayerEntry[],
-  regularInodes: Map<number, HomebrewLazyLayerEntry>,
+  regularInodes: Map<number | bigint, HomebrewLazyLayerEntry>,
 ): void {
   const stat = fs.lstat(vfsPath);
   const path = withoutLeadingSlash(vfsPath);

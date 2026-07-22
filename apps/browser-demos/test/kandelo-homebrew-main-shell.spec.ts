@@ -2,6 +2,18 @@ import { expect, test, type Page } from "@playwright/test";
 
 const strict = process.env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT === "1";
 const expectedImageSha256 = process.env.KANDELO_HOMEBREW_MAIN_SHELL_SHA256;
+const closedMirrorRoot =
+  process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT;
+const transportMode = process.env.KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE;
+const mirrorPlanUrl = process.env.KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL;
+
+interface MirrorAsset {
+  package: string;
+  asset: string;
+  sha256: string;
+  bytes: number;
+  url: string;
+}
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
@@ -44,6 +56,19 @@ test("the exact public-bottle shell preserves shell, NetHack, and modeset behavi
     throw new Error(
       "KANDELO_HOMEBREW_MAIN_SHELL_SHA256 must be the exact lowercase image digest",
     );
+  }
+  if (transportMode !== "closed" && transportMode !== "public") {
+    throw new Error(
+      "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE must be closed or public",
+    );
+  }
+  if (
+    !mirrorPlanUrl ||
+    (transportMode === "closed" &&
+      (!closedMirrorRoot || !closedMirrorRoot.startsWith("/"))) ||
+    (transportMode === "public" && closedMirrorRoot !== undefined)
+  ) {
+    throw new Error("main-shell transport mode has inconsistent mirror configuration");
   }
   test.setTimeout(420_000);
 
@@ -161,6 +186,44 @@ test("the exact public-bottle shell preserves shell, NetHack, and modeset behavi
     "HOMEBREW_NETHACK_STATE_OK",
     180_000,
   );
+
+  const mirrorPlan = await page.evaluate(async (url) => {
+    const response = await fetch(
+      url,
+      { cache: "no-store", credentials: "omit", redirect: "error" },
+    );
+    if (!response.ok) throw new Error(`mirror plan fetch failed: HTTP ${response.status}`);
+    return response.json() as Promise<{ assets: MirrorAsset[] }>;
+  }, mirrorPlanUrl);
+  const expectedPackages = [
+    "kandelo-dev/tap-core/dash",
+    "kandelo-dev/tap-core/git",
+    "kandelo-dev/tap-core/nethack",
+  ];
+  const expectedAssets = mirrorPlan.assets.filter((asset) =>
+    expectedPackages.includes(asset.package)
+  );
+  expect(expectedAssets.map((asset) => asset.package).sort()).toEqual(
+    [...expectedPackages].sort(),
+  );
+
+  await page.getByRole("button", { name: "Internals" }).click();
+  await page.getByRole("tab", { name: "Lazy Load" }).click();
+  const downloadRows = page.locator(".kdownload-table tbody tr");
+  await expect(downloadRows).toHaveCount(3);
+  for (const asset of expectedAssets) {
+    const row = downloadRows.filter({
+      has: page.locator(".kdownload-asset-name", { hasText: asset.asset }),
+    });
+    await expect(row).toHaveCount(1);
+    await expect(row).toHaveAttribute("data-download-kind", "tree");
+    await expect(row).toHaveAttribute("data-download-status", "complete");
+    await expect(row).toHaveAttribute("data-loaded-bytes", String(asset.bytes));
+    await expect(row).toHaveAttribute("data-total-bytes", String(asset.bytes));
+    await expect(row).toHaveAttribute("data-source", asset.url);
+    const eventCount = Number(await row.getAttribute("data-download-events"));
+    expect(eventCount).toBeGreaterThanOrEqual(3);
+  }
 
   await page.goto("/?demo=modeset", { waitUntil: "domcontentloaded" });
   const modesetControls = page

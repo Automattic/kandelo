@@ -107,6 +107,25 @@ export interface SaveImageOptions {
   normalizeTimestampsMs?: number;
 }
 
+const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
+  Number.MAX_SAFE_INTEGER / 1000,
+);
+
+/** Resolve reproducible build time from SOURCE_DATE_EPOCH, defaulting to epoch. */
+export function sourceDateEpochMilliseconds(
+  value: string | undefined,
+): number {
+  if (value === undefined) return 0;
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`SOURCE_DATE_EPOCH must be a non-negative whole second: ${value}`);
+  }
+  const seconds = Number(value);
+  if (!Number.isSafeInteger(seconds) || seconds > MAX_SOURCE_DATE_EPOCH_SECONDS) {
+    throw new Error(`SOURCE_DATE_EPOCH exceeds the supported timestamp range: ${value}`);
+  }
+  return seconds * 1000;
+}
+
 function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);

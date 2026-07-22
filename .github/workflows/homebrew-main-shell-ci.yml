@@ -1,4 +1,4 @@
-name: Homebrew main-shell closure
+name: Homebrew main-shell candidate
 
 on:
   pull_request:
@@ -18,6 +18,7 @@ on:
       - "host/package.json"
       - "host/src/binary-resolver.ts"
       - "host/src/generated/abi.ts"
+      - "host/src/homebrew-bottle-mirror-*.ts"
       - "host/src/homebrew-vfs-*.ts"
       - "host/src/node-kernel-host.ts"
       - "host/src/vfs/**"
@@ -25,6 +26,7 @@ on:
       - "host/test/optional-demo-vfs.test.ts"
       - "host/test/vfs-image.test.ts"
       - "images/rootfs/**"
+      - "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
       - "images/vfs/scripts/build-shell-vfs-image.ts"
       - "images/vfs/scripts/main-shell-demo-config.ts"
@@ -37,6 +39,7 @@ on:
       - "scripts/build-homebrew-main-shell-closure.sh"
       - "scripts/browser-binary-package-roots.mjs"
       - "scripts/check-homebrew-main-shell-brewfile.mjs"
+      - "scripts/create-homebrew-bottle-mirror-publish-manifest.ts"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
       - "scripts/homebrew-brewfile-selection.rb"
@@ -45,8 +48,10 @@ on:
       - "scripts/homebrew-vfs-acceptance-smoke.ts"
       - "scripts/install-local-binary.sh"
       - "scripts/resolve-binary.sh"
+      - "scripts/recover-homebrew-bottle-mirror.ts"
       - "scripts/test-homebrew-main-shell-closure.sh"
       - "tests/package-system/browser-binary-dependencies.test.ts"
+      - "tests/package-system/homebrew-bottle-mirror-recovery.test.ts"
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
       - "web-libs/kandelo-session/src/shell-config.ts"
@@ -71,6 +76,7 @@ on:
       - "host/package.json"
       - "host/src/binary-resolver.ts"
       - "host/src/generated/abi.ts"
+      - "host/src/homebrew-bottle-mirror-*.ts"
       - "host/src/homebrew-vfs-*.ts"
       - "host/src/node-kernel-host.ts"
       - "host/src/vfs/**"
@@ -78,6 +84,7 @@ on:
       - "host/test/optional-demo-vfs.test.ts"
       - "host/test/vfs-image.test.ts"
       - "images/rootfs/**"
+      - "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
       - "images/vfs/scripts/build-shell-vfs-image.ts"
       - "images/vfs/scripts/main-shell-demo-config.ts"
@@ -90,6 +97,7 @@ on:
       - "scripts/build-homebrew-main-shell-closure.sh"
       - "scripts/browser-binary-package-roots.mjs"
       - "scripts/check-homebrew-main-shell-brewfile.mjs"
+      - "scripts/create-homebrew-bottle-mirror-publish-manifest.ts"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
       - "scripts/homebrew-brewfile-selection.rb"
@@ -98,8 +106,10 @@ on:
       - "scripts/homebrew-vfs-acceptance-smoke.ts"
       - "scripts/install-local-binary.sh"
       - "scripts/resolve-binary.sh"
+      - "scripts/recover-homebrew-bottle-mirror.ts"
       - "scripts/test-homebrew-main-shell-closure.sh"
       - "tests/package-system/browser-binary-dependencies.test.ts"
+      - "tests/package-system/homebrew-bottle-mirror-recovery.test.ts"
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
       - "web-libs/kandelo-session/src/shell-config.ts"
@@ -117,7 +127,7 @@ permissions:
 
 jobs:
   exact-public-bottle-closure:
-    name: exact public-bottle closure (Node + Chromium)
+    name: exact materialized candidate (Node + Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -197,81 +207,117 @@ jobs:
               local-binaries/kernel.wasm
           '
 
-      - name: Build the canonical shell package archive from public bottles
-        id: archive
+      - name: Build an opt-in shell candidate from public bottles
+        id: candidate
         run: |
           set -euo pipefail
-          stage_dir="$RUNNER_TEMP/staged-shell"
-          rm -rf "$stage_dir"
-          # The single-quoted program is expanded by the inner dev-shell Bash.
-          # shellcheck disable=SC2016
+          tap_sha=$(jq -er '.catalog.tap_commit' \
+            homebrew/main-shell-migration-lock.json)
+          [[ "$tap_sha" =~ ^[0-9a-f]{40}$ ]]
+          tap_root="$RUNNER_TEMP/homebrew-tap-core"
+          candidate_root="$RUNNER_TEMP/homebrew-main-shell-candidate"
+          test ! -e "$tap_root"
+          test ! -e "$candidate_root"
+          git init "$tap_root"
+          git -C "$tap_root" remote add origin \
+            https://github.com/Kandelo-dev/homebrew-tap-core.git
+          git -C "$tap_root" fetch --depth=1 origin "$tap_sha"
+          git -C "$tap_root" checkout --detach FETCH_HEAD
+          test "$(git -C "$tap_root" rev-parse HEAD)" = "$tap_sha"
+          test -z "$(git -C "$tap_root" status --porcelain=v1 --untracked-files=all)"
           env -u GH_TOKEN -u GITHUB_TOKEN \
             -u HOMEBREW_GITHUB_API_TOKEN \
             -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
             -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-            bash scripts/dev-shell.sh bash -c '
-              set -euo pipefail
-              HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-              cache_key=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                compute-cache-key-sha \
-                  --package packages/registry/shell \
-                  --arch wasm32)
-              [[ "$cache_key" =~ ^[0-9a-f]{64}$ ]]
-              cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                archive-stage \
-                  --package packages/registry/shell \
-                  --arch wasm32 \
-                  --out "$RUNNER_TEMP/staged-shell" \
-                  --build-timestamp "$(git log -1 --format=%aI HEAD)" \
-                  --build-host "$GITHUB_REPOSITORY@$GITHUB_SHA" \
-                  --binaries-dir "$(pwd)/binaries" \
-                  --force-source-build \
-                  --expected-cache-key-sha "$cache_key"
-            '
-          mapfile -t archives < <(find "$stage_dir" -maxdepth 1 -type f -name '*.tar.zst' -print)
-          [ "${#archives[@]}" -eq 1 ]
-          echo "path=${archives[0]}" >> "$GITHUB_OUTPUT"
+            bash scripts/dev-shell.sh bash \
+              scripts/build-homebrew-main-shell-closure.sh \
+                --materialized-candidate \
+                --tap-root "$tap_root" \
+                --expected-tap-sha "$tap_sha" \
+                --work-dir "$candidate_root"
+          test -f "$candidate_root/main-shell.vfs.zst"
+          test -f "$candidate_root/main-shell-report.json"
+          test "$(find "$candidate_root/bottle-mirror" -maxdepth 1 -type f | wc -l)" \
+            -eq 36
+          echo "image=$candidate_root/main-shell.vfs.zst" >> "$GITHUB_OUTPUT"
+          echo "report=$candidate_root/main-shell-report.json" >> "$GITHUB_OUTPUT"
+          echo "tap_sha=$tap_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Extract and install the archive's exact shell bytes
+      - name: Install the candidate's exact shell bytes
         id: image
         env:
-          ARCHIVE_PATH: ${{ steps.archive.outputs.path }}
+          CANDIDATE_PATH: ${{ steps.candidate.outputs.image }}
         run: |
           set -euo pipefail
-          archive_root="$RUNNER_TEMP/shell-archive"
-          rm -rf "$archive_root"
-          mkdir -p "$archive_root"
-          mapfile -t archive_entries < <(tar --zstd -tf "$ARCHIVE_PATH")
-          [ "$(printf '%s\n' "${archive_entries[@]}" | grep -Fxc 'artifacts/shell.vfs.zst')" -eq 1 ]
-          [ "$(printf '%s\n' "${archive_entries[@]}" | grep -Fxc 'manifest.toml')" -eq 1 ]
-          tar --zstd -xf "$ARCHIVE_PATH" -C "$archive_root" \
-            manifest.toml artifacts/shell.vfs.zst
-          archived="$archive_root/artifacts/shell.vfs.zst"
           installed=local-binaries/programs/wasm32/shell.vfs.zst
           browser_copy=apps/browser-demos/public/shell.vfs.zst
-          test -f "$archived"
+          test -f "$CANDIDATE_PATH"
           mkdir -p "$(dirname "$installed")" "$(dirname "$browser_copy")"
-          cp "$archived" "$installed"
-          cp "$archived" "$browser_copy"
-          cmp "$archived" "$installed"
-          cmp "$archived" "$browser_copy"
+          cp "$CANDIDATE_PATH" "$installed"
+          cp "$CANDIDATE_PATH" "$browser_copy"
+          cmp "$CANDIDATE_PATH" "$installed"
+          cmp "$CANDIDATE_PATH" "$browser_copy"
           resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
           test "$(realpath "$resolved")" = "$(realpath "$installed")"
-          image_sha=$(sha256sum "$archived" | awk '{print $1}')
+          image_sha=$(sha256sum "$CANDIDATE_PATH" | awk '{print $1}')
           [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$image_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Recover the exact closed bottle mirror from anonymous source packages
+        id: mirror
+        run: |
+          set -euo pipefail
+          mirror_dir="$RUNNER_TEMP/homebrew-main-shell-bottles"
+          mirror_report="$RUNNER_TEMP/homebrew-main-shell-bottle-recovery.json"
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            bash scripts/dev-shell.sh npx tsx \
+              scripts/recover-homebrew-bottle-mirror.ts \
+              --image "${{ steps.candidate.outputs.image }}" \
+              --out "$mirror_dir" \
+              --report "$mirror_report"
+          test "$(find "$mirror_dir" -maxdepth 1 -type f | wc -l)" -eq 36
+          test -f "$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json"
+          jq -e '
+            .schema == 1 and
+            .kind == "kandelo-homebrew-bottle-mirror-recovery" and
+            (.assets | length) == 35
+          ' "$mirror_report" >/dev/null
+          browser_mirror=apps/browser-demos/public/homebrew-main-shell-bottles
+          test ! -e "$browser_mirror"
+          cp -R "$mirror_dir" "$browser_mirror"
+          publish_manifest="$RUNNER_TEMP/homebrew-main-shell-bottle-publish.json"
+          bash scripts/dev-shell.sh npx tsx \
+            scripts/create-homebrew-bottle-mirror-publish-manifest.ts \
+              --bundle "$mirror_dir" \
+              --recovery-report "$mirror_report" \
+              --out "$publish_manifest"
+          jq -e --arg target "${{ steps.candidate.outputs.tap_sha }}" '
+            .schema == 1 and .target_commitish == $target and
+            (.assets | length) == 36 and
+            (.preferred_asset_names | length) == 36 and
+            .accepted_existing_asset_sets == []
+          ' "$publish_manifest" >/dev/null
+          echo "plan=$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json" >> "$GITHUB_OUTPUT"
       - name: Boot the exact installed bytes in Node
         run: |
           bash scripts/dev-shell.sh npx tsx \
             scripts/homebrew-main-shell-node-smoke.ts \
-            --image "$RUNNER_TEMP/shell-archive/artifacts/shell.vfs.zst" \
+            --image "${{ steps.candidate.outputs.image }}" \
             --migration-lock homebrew/main-shell-migration-lock.json \
-            --demo-config homebrew/main-shell-demo.json
+            --demo-config homebrew/main-shell-demo.json \
+            --transport-mode closed \
+            --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"
 
       - name: Boot the current main-shell path in Chromium
         env:
           KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
           KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: closed
+          KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: /homebrew-main-shell-bottles/kandelo-homebrew-bottle-mirror-plan.json
+          VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT: /homebrew-main-shell-bottles
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
@@ -281,6 +327,9 @@ jobs:
               PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \
               KANDELO_HOMEBREW_MAIN_SHELL_STRICT="$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
               KANDELO_HOMEBREW_MAIN_SHELL_SHA256="$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
+              KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE="$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" \
+              KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL="$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL" \
+              VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT="$VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT" \
               npx playwright test test/kandelo-homebrew-main-shell.spec.ts \
               --project=chromium --reporter=json
           )
@@ -295,8 +344,11 @@ jobs:
         with:
           name: homebrew-main-shell-closure
           path: |
-            ${{ runner.temp }}/staged-shell/*.tar.zst
-            ${{ runner.temp }}/shell-archive/artifacts/shell.vfs.zst
+            ${{ steps.candidate.outputs.image }}
+            ${{ steps.candidate.outputs.report }}
+            ${{ runner.temp }}/homebrew-main-shell-bottles
+            ${{ runner.temp }}/homebrew-main-shell-bottle-recovery.json
+            ${{ runner.temp }}/homebrew-main-shell-bottle-publish.json
             ${{ runner.temp }}/homebrew-main-shell-playwright.json
           retention-days: 7
           if-no-files-found: warn

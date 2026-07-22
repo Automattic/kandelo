@@ -386,8 +386,8 @@ describe("LiveKernelHost: lazy download events", () => {
     host.subscribeLazyDownloads((event) => seen.push(event));
 
     const event: LazyDownloadEvent = {
-      id: "file:7",
-      kind: "file",
+      id: "tree:7",
+      kind: "tree",
       status: "progress",
       url: "/assets/node.wasm",
       path: "/usr/bin/node",

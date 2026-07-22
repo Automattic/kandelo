@@ -15,6 +15,7 @@ import type {
   GalleryItem,
   LazyDownloadEvent,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -489,7 +490,7 @@ const LazyDownloadToast: React.FC<{
   const pct = download.totalBytes && download.totalBytes > 0
     ? Math.min(100, Math.max(0, (download.loadedBytes / download.totalBytes) * 100))
     : null;
-  const label = downloadLabel(download);
+  const label = lazyDownloadAssetLabel(download);
   const progressLabel = downloadProgressLabel(download, pct);
   const title = `${downloadStatusVerb(download)} ${label}`;
   const detail = `${humanBytes(download.loadedBytes)}${
@@ -537,14 +538,6 @@ function downloadStatusVerb(event: LazyDownloadEvent): string {
     case "error": return "Failed";
     default: return "Downloading";
   }
-}
-
-function downloadLabel(event: LazyDownloadEvent): string {
-  const raw = event.kind === "archive"
-    ? event.url
-    : event.path ?? event.mountPrefix ?? event.url;
-  const clean = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
-  return clean.split("/").pop() || event.kind;
 }
 
 function downloadProgressLabel(event: LazyDownloadEvent, pct: number | null): string {

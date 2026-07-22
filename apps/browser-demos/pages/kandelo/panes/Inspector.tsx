@@ -10,6 +10,7 @@ import type {
   DmesgLine, ProcessEvent, ProcessInfo, MountInfo, KernelStateKV,
   MemMapEntry, SyscallEvent, VfsDirent, LazyDownloadEvent,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
 
 export const INSPECTOR_TABS = [
   { id: "syslog", label: "Syslog" },
@@ -817,7 +818,15 @@ const LazyLoadTab: React.FC = () => {
               const pct = downloadPct(asset);
               const sourceLabel = compactUrl(asset.source);
               return (
-                <tr key={asset.id}>
+                <tr
+                  key={asset.id}
+                  data-download-kind={asset.kind}
+                  data-download-status={asset.status}
+                  data-download-events={asset.eventCount}
+                  data-loaded-bytes={asset.loadedBytes}
+                  data-total-bytes={asset.totalBytes ?? ""}
+                  data-source={asset.source}
+                >
                   <td>
                     <span className="kdownload-asset-name">{asset.label}</span>
                     <span className="kdownload-kind">{asset.kind}</span>
@@ -852,7 +861,7 @@ function summarizeLazyDownloadLog(events: LazyDownloadEvent[]): LazyDownloadAsse
     byId.set(event.id, {
       id: event.id,
       kind: event.kind,
-      label: downloadLabel(event),
+      label: lazyDownloadAssetLabel(event),
       status: event.status,
       target: downloadTarget(event),
       source: event.url,
@@ -866,14 +875,6 @@ function summarizeLazyDownloadLog(events: LazyDownloadEvent[]): LazyDownloadAsse
   }
 
   return Array.from(byId.values()).sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-function downloadLabel(event: LazyDownloadEvent): string {
-  const raw = event.kind === "archive"
-    ? event.url
-    : event.path ?? event.mountPrefix ?? event.url;
-  const clean = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
-  return clean.split("/").pop() || event.kind;
 }
 
 function downloadTarget(event: LazyDownloadEvent): string {

@@ -12,6 +12,9 @@ BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SHELL_CONFIG="$REPO_ROOT/homebrew/main-shell-default.json"
 DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
 MIGRATION_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
+MATERIALIZATION_POLICY="$REPO_ROOT/homebrew/main-shell-materialization-policy.json"
+BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"
+MATERIALIZED_CANDIDATE=false
 MAX_BYTES="$((512 * 1024 * 1024))"
 
 usage() {
@@ -32,6 +35,7 @@ Options:
   --bottle-cache <dir>      verified bottle cache
   --migration-lock <json>   reviewed package/catalog lock
   --max-bytes <bytes>       VFS capacity (default: 536870912)
+  --materialized-candidate  embed Bash's closure and defer the other 35 bottles
   -h, --help                show this help
 EOF
 }
@@ -69,6 +73,10 @@ while [ "$#" -gt 0 ]; do
     --max-bytes)
       MAX_BYTES="${2:-}"
       shift 2
+      ;;
+    --materialized-candidate)
+      MATERIALIZED_CANDIDATE=true
+      shift
       ;;
     -h|--help)
       usage
@@ -109,6 +117,11 @@ if [ ! -f "$BREWFILE" ] || [ -L "$BREWFILE" ]; then
 fi
 if [ ! -f "$MIGRATION_LOCK" ] || [ -L "$MIGRATION_LOCK" ]; then
   echo "build-homebrew-main-shell-closure: migration lock must be a regular non-symlink file" >&2
+  exit 2
+fi
+if [ "$MATERIALIZED_CANDIDATE" = true ] &&
+   { [ ! -f "$MATERIALIZATION_POLICY" ] || [ -L "$MATERIALIZATION_POLICY" ]; }; then
+  echo "build-homebrew-main-shell-closure: materialization policy must be a regular non-symlink file" >&2
   exit 2
 fi
 if [ ! -f "$DEMO_CONFIG" ] || [ -L "$DEMO_CONFIG" ]; then
@@ -199,6 +212,7 @@ fi
 
 PLATFORM_BASE="$WORK_DIR/platform-only.vfs"
 SELECTION="$WORK_DIR/main-shell-selection.json"
+BOTTLE_MIRROR_OUT="$WORK_DIR/bottle-mirror"
 mkdir -p "$WORK_DIR" "$BOTTLE_CACHE" "$(dirname "$OUT")" "$(dirname "$REPORT")"
 
 ruby "$REPO_ROOT/scripts/homebrew-brewfile-selection.rb" "$BREWFILE" >"$SELECTION"
@@ -220,8 +234,21 @@ node "$REPO_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
   --kernel-abi "$ABI_VERSION" \
   -o "$PLATFORM_BASE"
 
+MATERIALIZATION_ARGS=()
+MATERIALIZATION_JSON=null
+VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
+if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+  VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
+  MATERIALIZATION_ARGS=(
+    --materialization-policy "$MATERIALIZATION_POLICY"
+    --bottle-mirror-repository "$BOTTLE_MIRROR_REPOSITORY"
+    --bottle-mirror-out "$BOTTLE_MIRROR_OUT"
+  )
+  MATERIALIZATION_JSON="$(jq -c . "$MATERIALIZATION_POLICY")"
+fi
+
 "$REPO_ROOT/node_modules/.bin/tsx" \
-  "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  "$VFS_IMAGE_BUILDER" \
   --metadata "$TAP_ROOT/Kandelo/metadata.json" \
   --tap-root "$TAP_ROOT" \
   --brewfile "$BREWFILE" \
@@ -233,6 +260,7 @@ node "$REPO_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
   --no-fallback \
   --catalog-commit "$EXPECTED_TAP_SHA" \
   --migration-lock "$MIGRATION_LOCK" \
+  "${MATERIALIZATION_ARGS[@]}" \
   --write-profile \
   --shell-config "$SHELL_CONFIG" \
   --demo-config "$DEMO_CONFIG" \
@@ -243,13 +271,17 @@ jq -e \
   --slurpfile selection "$SELECTION" \
   --slurpfile tap "$TAP_ROOT/Kandelo/metadata.json" \
   --slurpfile lock "$MIGRATION_LOCK" \
+  --argjson materialization "$MATERIALIZATION_JSON" \
+  --argjson materialized_candidate "$MATERIALIZED_CANDIDATE" \
   --argjson abi "$ABI_VERSION" \
   --arg catalog "$EXPECTED_TAP_SHA" \
   --arg lock_sha "$LOCK_SHA" \
+  --arg mirror_repository "$BOTTLE_MIRROR_REPOSITORY" \
   --argjson lock_bytes "$LOCK_BYTES" \
   --arg demo_config_sha "$DEMO_CONFIG_SHA" \
   --argjson demo_config_bytes "$DEMO_CONFIG_BYTES" \
   --argjson max_bytes "$MAX_BYTES" '
+  (.bottle_mirror.tag) as $mirror_tag |
   .schema == 1 and
   .selection.kind == "brewfile" and
   .selection.requested_packages == $selection[0].packages and
@@ -271,6 +303,40 @@ jq -e \
   (.catalog.checkout_commit == $lock[0].catalog.tap_commit) and
   (.migration_lock.sha256 == $lock_sha) and
   (.migration_lock.bytes == $lock_bytes) and
+  (if $materialized_candidate then
+    (.materialization.policy == "kandelo-homebrew-vfs-materialization-policy") and
+    (.materialization.embedded_package_order ==
+      $materialization.embedded_package_order) and
+    (.materialization.embedded_tree_count == 3) and
+    (.materialization.deferred_tree_count == 35) and
+    ((.materialization.embedded_package_order +
+      .materialization.deferred_package_order | sort) ==
+      ($lock[0].formula_closure | sort)) and
+    ((.materialization.deferred_package_order | sort) ==
+      ($lock[0].formula_closure -
+        $materialization.embedded_package_order | sort)) and
+    (.materialization.bottle_mirror.repository == $mirror_repository) and
+    (.materialization.bottle_mirror.asset_count == 35) and
+    (.bottle_mirror.repository == $mirror_repository) and
+    (.bottle_mirror.tag == .materialization.bottle_mirror.tag) and
+    (.bottle_mirror.collection_sha256 ==
+      .materialization.bottle_mirror.collection_sha256) and
+    (.bottle_mirror.plan.asset ==
+      "kandelo-homebrew-bottle-mirror-plan.json") and
+    (.bottle_mirror.assets | length == 35) and
+    (([.bottle_mirror.assets[].package] | sort) ==
+      (.materialization.deferred_package_order | sort)) and
+    ([.bottle_mirror.assets[] |
+      (.id | startswith("bottle-")) and
+      (.asset | test("^kandelo-homebrew-bottle-.*-layer\\.bin$")) and
+      (.sha256 | test("^[0-9a-f]{64}$")) and
+      (.bytes > 0) and
+      (.url == ("https://github.com/" + $mirror_repository +
+        "/releases/download/" + $mirror_tag + "/" + .asset))
+    ] | all)
+  else
+    (.materialization == null) and (.bottle_mirror == null)
+  end) and
   (.demo_config == {
     path: "/etc/kandelo/demo.json",
     sha256: $demo_config_sha,
@@ -363,5 +429,35 @@ jq -e \
   (.base_image.metadata.homebrew == null)
 ' "$REPORT" >/dev/null
 
+if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+  while IFS=$'\t' read -r asset expected_sha expected_bytes; do
+    path="$BOTTLE_MIRROR_OUT/$asset"
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+      echo "build-homebrew-main-shell-closure: mirror asset is not a regular file: $path" >&2
+      exit 1
+    fi
+    actual_sha="$(sha256sum "$path")"
+    actual_sha="${actual_sha%% *}"
+    actual_bytes="$(wc -c <"$path" | tr -d '[:space:]')"
+    if [ "$actual_sha" != "$expected_sha" ] || [ "$actual_bytes" != "$expected_bytes" ]; then
+      echo "build-homebrew-main-shell-closure: mirror asset identity changed: $path" >&2
+      exit 1
+    fi
+  done < <(jq -r '
+    ([.bottle_mirror.plan] + .bottle_mirror.assets)[] |
+    [.asset, .sha256, (.bytes | tostring)] | @tsv
+  ' "$REPORT")
+
+  MIRROR_ENTRY_COUNT="$(find "$BOTTLE_MIRROR_OUT" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')"
+  MIRROR_FILE_COUNT="$(find "$BOTTLE_MIRROR_OUT" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+  if [ "$MIRROR_ENTRY_COUNT" != 36 ] || [ "$MIRROR_FILE_COUNT" != 36 ]; then
+    echo "build-homebrew-main-shell-closure: mirror output must contain exactly 35 bottles and one plan" >&2
+    exit 1
+  fi
+fi
+
 echo "Homebrew main-shell closure image: $OUT"
 echo "Homebrew main-shell closure report: $REPORT"
+if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+  echo "Homebrew main-shell bottle mirror: $BOTTLE_MIRROR_OUT"
+fi

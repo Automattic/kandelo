@@ -50,6 +50,22 @@ export interface HomebrewVfsBuildOptions {
   consumerState?: "apply" | "defer";
 }
 
+/**
+ * Consumer-owned namespace and writable state applied only after every eager
+ * package and deferred package tree has registered its declared paths.
+ */
+export interface HomebrewVfsConsumerStateOptions {
+  fs: MemoryFileSystem;
+  compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
+  writeProfile?: boolean;
+}
+
+export interface HomebrewVfsConsumerStateResult {
+  compatibilityLinks?: HomebrewVfsCompatibilityLinkReport[];
+  linkConflicts: HomebrewVfsLinkConflictReport[];
+  runtimeState: HomebrewVfsRuntimeStateReport[];
+}
+
 export interface HomebrewVfsMigrationLockBinding {
   sha256: string;
   bytes: number;
@@ -191,6 +207,22 @@ export interface HomebrewVfsBuildReport {
   compatibility_links?: HomebrewVfsCompatibilityLinkReport[];
   link_conflicts?: HomebrewVfsLinkConflictReport[];
   runtime_state?: HomebrewVfsRuntimeStateReport[];
+  materialization?: {
+    policy: "kandelo-homebrew-vfs-materialization-policy";
+    embedded_package_order: string[];
+    deferred_package_order: string[];
+    embedded_tree_count: number;
+    deferred_tree_count: number;
+    bottle_mirror: {
+      repository: string;
+      tag: string;
+      collection_sha256: string;
+      asset_count: number;
+      manifest_path: string;
+      manifest_sha256: string;
+      manifest_bytes: number;
+    };
+  };
   migration_lock?: HomebrewVfsMigrationLockBinding;
   metadata: {
     tap_repository: string;
@@ -225,6 +257,29 @@ interface PendingHardlink {
 interface HomebrewVfsLinkResolution {
   selectedPackageByPath: Map<string, string>;
   reports: HomebrewVfsLinkConflictReport[];
+}
+
+/**
+ * Apply the full consumer-owned shell surface above an already assembled
+ * Homebrew namespace. Deferred regular files may still be unresolved: their
+ * registered inode metadata is sufficient to validate executable aliases
+ * without fetching bottle contents.
+ */
+export function applyHomebrewVfsConsumerState(
+  plan: HomebrewVfsPlan,
+  options: HomebrewVfsConsumerStateOptions,
+): HomebrewVfsConsumerStateResult {
+  const linkResolution = resolveLinkConflicts(plan, options.compatibilityPolicy);
+  const runtimeStateDeclarations = prepareRuntimeState(
+    plan,
+    options.compatibilityPolicy?.runtime_state,
+  );
+  return applyHomebrewVfsConsumerStateWithResolution(
+    plan,
+    options,
+    linkResolution,
+    runtimeStateDeclarations,
+  );
 }
 
 export async function buildHomebrewVfs(
@@ -294,9 +349,12 @@ export async function buildHomebrewVfs(
   applyCanonicalOptLinks(fs, plan.packages);
   const { compatibilityLinks, runtimeState } = consumerState === "apply"
     ? applyHomebrewVfsConsumerStateWithResolution(
-      fs,
       plan,
-      options,
+      {
+        fs,
+        compatibilityPolicy: options.compatibilityPolicy,
+        writeProfile: options.writeProfile,
+      },
       linkResolution,
       runtimeStateDeclarations,
     )
@@ -326,24 +384,78 @@ export async function buildHomebrewVfs(
     packages: packageReports,
   };
 
+  writeHomebrewVfsComposition(
+    fs,
+    plan,
+    report,
+    options.createdBy ?? "host/src/homebrew-vfs-builder.ts",
+  );
+
+  return { fs, report };
+}
+
+function applyHomebrewVfsConsumerStateWithResolution(
+  plan: HomebrewVfsPlan,
+  options: HomebrewVfsConsumerStateOptions,
+  linkResolution: HomebrewVfsLinkResolution,
+  runtimeStateDeclarations: readonly HomebrewVfsRuntimeStateDeclaration[],
+): HomebrewVfsConsumerStateResult {
+  const compatibilityLinks = options.compatibilityPolicy === undefined
+    ? undefined
+    : applyCompatibilityLinks(
+      options.fs,
+      plan,
+      options.compatibilityPolicy,
+      linkResolution,
+    );
+  if (options.writeProfile) writeProfileFragment(options.fs, plan);
+  return {
+    ...(compatibilityLinks === undefined ? {} : { compatibilityLinks }),
+    linkConflicts: [...linkResolution.reports],
+    runtimeState: applyRuntimeState(options.fs, runtimeStateDeclarations),
+  };
+}
+
+/** Write the authoritative guest composition after all package paths exist. */
+export function writeHomebrewVfsComposition(
+  fs: MemoryFileSystem,
+  plan: HomebrewVfsPlan,
+  report: HomebrewVfsBuildReport,
+  createdBy = "host/src/homebrew-vfs-builder.ts",
+): void {
+  ensureDirRecursive(fs, "/etc/kandelo");
+  const compositionPath = "/etc/kandelo/homebrew-vfs.json";
+  if (tryLstat(fs, compositionPath) !== null) {
+    throw new HomebrewVfsBuildError(
+      `refusing to replace existing Homebrew VFS composition: ${compositionPath}`,
+    );
+  }
+  const packageByName = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
   writeVfsFile(
     fs,
-    "/etc/kandelo/homebrew-vfs.json",
+    compositionPath,
     JSON.stringify({
       schema: 1,
-      created_by: options.createdBy ?? "host/src/homebrew-vfs-builder.ts",
-      selection,
-      ...(catalog === undefined ? {} : { catalog }),
-      ...(compatibilityLinks === undefined ? {} : {
-        compatibility_links: compatibilityLinks,
+      created_by: createdBy,
+      selection: report.selection,
+      ...(report.catalog === undefined ? {} : { catalog: report.catalog }),
+      ...(report.compatibility_links === undefined ? {} : {
+        compatibility_links: report.compatibility_links,
       }),
-      ...(linkResolution.reports.length === 0 ? {} : {
-        link_conflicts: linkResolution.reports,
+      ...(report.link_conflicts === undefined ? {} : {
+        link_conflicts: report.link_conflicts,
       }),
-      ...(runtimeState.length === 0 ? {} : { runtime_state: runtimeState }),
-      ...(migrationLock === undefined ? {} : { migration_lock: migrationLock }),
+      ...(report.runtime_state === undefined ? {} : {
+        runtime_state: report.runtime_state,
+      }),
+      ...(report.materialization === undefined ? {} : {
+        materialization: report.materialization,
+      }),
+      ...(report.migration_lock === undefined ? {} : {
+        migration_lock: report.migration_lock,
+      }),
       metadata: report.metadata,
-      packages: packageReports.map((pkg) => ({
+      packages: report.packages.map((pkg) => ({
         name: pkg.name,
         full_name: pkg.full_name,
         tap_repository: pkg.tap_repository,
@@ -362,33 +474,11 @@ export async function buildHomebrewVfs(
         keg: pkg.keg,
         opt_link: pkg.opt_link,
         ...(pkg.built_from === undefined ? {} : { built_from: pkg.built_from }),
-        env: plan.packages.find((planned) => planned.fullName === pkg.full_name)?.linkManifest.env ?? {},
+        env: packageByName.get(pkg.full_name)?.linkManifest.env ?? {},
       })),
     }, null, 2) + "\n",
     0o644,
   );
-
-  return { fs, report };
-}
-
-function applyHomebrewVfsConsumerStateWithResolution(
-  fs: MemoryFileSystem,
-  plan: HomebrewVfsPlan,
-  options: HomebrewVfsBuildOptions,
-  linkResolution: HomebrewVfsLinkResolution,
-  runtimeStateDeclarations: readonly HomebrewVfsRuntimeStateDeclaration[],
-): {
-  compatibilityLinks: HomebrewVfsCompatibilityLinkReport[] | undefined;
-  runtimeState: HomebrewVfsRuntimeStateReport[];
-} {
-  const compatibilityLinks = options.compatibilityPolicy === undefined
-    ? undefined
-    : applyCompatibilityLinks(fs, plan, options.compatibilityPolicy, linkResolution);
-  if (options.writeProfile) writeProfileFragment(fs, plan);
-  return {
-    compatibilityLinks,
-    runtimeState: applyRuntimeState(fs, runtimeStateDeclarations),
-  };
 }
 
 function createCatalogReport(

@@ -12,6 +12,8 @@
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { HostDiagnosticMessage } from "./host-diagnostic";
+import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -39,6 +41,8 @@ export interface InitMessage {
    * (custom-io / legacy path).
    */
   rootfsImage?: ArrayBuffer;
+  /** Exhaustive exact-byte lazy transport for this rootfs; no network fallback. */
+  rootfsLazyAssets?: ClosedLazyAsset[];
   extraMounts?: Array<{
     mountPoint: string;
     hostPath: string;
@@ -250,6 +254,12 @@ export interface ResolveExecRequestMessage {
   path: string;
 }
 
+/** Lazy VFS transport progress forwarded by the worker-owned root filesystem. */
+export interface LazyDownloadMessage {
+  type: "lazy_download";
+  event: LazyDownloadEvent;
+}
+
 /**
  * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
  * browser-side ProcEventMessage. Exit events come via the existing
@@ -269,4 +279,5 @@ export type KernelToMainMessage =
   | HostDiagnosticMessage
   | PtyOutputMessage
   | ResolveExecRequestMessage
-  | ProcEventMessage;
+  | ProcEventMessage
+  | LazyDownloadMessage;

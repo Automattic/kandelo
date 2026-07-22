@@ -163,6 +163,100 @@ describe("format-neutral deferred trees", () => {
     expect(afterTarget.nlink).toBe(2);
   });
 
+  it("binds direct materialization authority to one registered tree and filesystem", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const owner = createFs();
+    const foreign = createFs();
+    const fetcher = vi.fn(async () => new Response(fixture.payload));
+    owner.setLazyFetcher(fetcher);
+    const directContent = { ...fixture.content, transports: [] };
+    expect(() => foreign.registerLazyTree(
+      directContent,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    )).toThrow(/Lazy tree transports/);
+    const handle = owner.registerLazyTreeWithMaterializationHandle(
+      directContent,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+    await expect(owner.saveImage()).rejects.toThrow(
+      /must be materialized before serialization/,
+    );
+
+    await expect(
+      foreign.materializeRegisteredDeferredTree(handle, fixture.payload),
+    ).rejects.toThrow(
+      /not issued by this filesystem/,
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+    const wrongBytes = new Uint8Array(fixture.payload);
+    wrongBytes[0] ^= 0xff;
+    await expect(
+      owner.materializeRegisteredDeferredTree(handle, wrongBytes),
+    ).rejects.toThrow(/SHA-256/);
+    const direct = owner.materializeRegisteredDeferredTree(handle, fixture.payload);
+    const concurrentGuest = owner.preparePath("/runtime/tool");
+    await expect(Promise.all([direct, concurrentGuest])).resolves.toEqual([true, true]);
+    await expect(
+      owner.materializeRegisteredDeferredTree(handle, fixture.payload),
+    ).resolves.toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(owner.exportLazyArchiveEntries()).toEqual([]);
+    expect(
+      MemoryFileSystem.fromImage(await owner.saveImage()).exportLazyArchiveEntries(),
+    ).toEqual([]);
+    expect(readText(owner, "/runtime/tool")).toBe("payload");
+  });
+
+  it("reports every deferred backing through direct and symlink paths without fetching", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const source = createFs();
+    source.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+    const legacyBytes = encoder.encode("legacy!");
+    source.registerLazyFile(
+      "/legacy-tool",
+      "https://example.invalid/legacy-tool",
+      legacyBytes.byteLength,
+      0o755,
+    );
+    source.symlink("/runtime/tool", "/tree-link");
+    source.symlink("/legacy-tool", "/legacy-link");
+    source.mkdir("/concrete", 0o755);
+
+    const restored = MemoryFileSystem.fromImage(await source.saveImage());
+    const fetcher = vi.fn(async (url: string) => new Response(
+      url.endsWith("/legacy-tool") ? legacyBytes : fixture.payload,
+    ));
+    restored.setLazyFetcher(fetcher);
+    for (const path of [
+      "/runtime/tool",
+      "/tree-link",
+      "/legacy-tool",
+      "/legacy-link",
+    ]) {
+      expect(restored.isPathDeferred(path), path).toBe(true);
+    }
+    expect(restored.isPathDeferred("/concrete")).toBe(false);
+    expect(restored.isPathDeferred("/missing")).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await expect(restored.preparePath("/tree-link")).resolves.toBe(true);
+    expect(restored.isPathDeferred("/runtime/tool")).toBe(false);
+    expect(restored.isPathDeferred("/tree-link")).toBe(false);
+    await expect(restored.preparePath("/legacy-link")).resolves.toBe(true);
+    expect(restored.isPathDeferred("/legacy-tool")).toBe(false);
+    expect(restored.isPathDeferred("/legacy-link")).toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("tries byte-identical tree transports in declared order", async () => {
     const fixture = tarTreeFixture("first-use");
     const fs = createFs();

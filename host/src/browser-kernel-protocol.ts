@@ -15,6 +15,7 @@ import type {
 import type {
   HostDiagnosticMessage,
 } from "./host-diagnostic";
+import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -34,6 +35,8 @@ export interface InitMessage {
   vfsImage: Uint8Array;
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
+  /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
+  closedLazyAssets?: ClosedLazyAsset[];
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;
