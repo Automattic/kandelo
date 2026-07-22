@@ -1126,12 +1126,18 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    the exact base tap before checking out with push credentials.
    The publisher then acquires the tap state lock once for the entire planned
    set, refreshes `main`, verifies that the planned tap commit is still an
-   ancestor, and composes every handoff into one detached candidate. For every
-   entry it rechecks the Formula's bottle-excluded source digest and any
+   ancestor, and creates two detached worktrees at that exact refreshed commit:
+   one clean, immutable source snapshot and one mutable transaction candidate.
+   For every entry it first proves that the source snapshot is still at the
+   exact refreshed commit with no tracked, untracked, or ignored changes. It
+   rechecks the Formula's bottle-excluded source digest and any
    required publisher-input closure under `Kandelo/formula_support` against a
    detached checkout of that exact planned commit. It also rederives and
    revalidates the complete dependency Formula and bottle closure against the
-   refreshed tap while the lock is held. For each dependency, a detached
+   clean refreshed source snapshot while the lock is held. Formulae and
+   sidecars generated for an earlier package in the same batch exist only in
+   the separate transaction candidate, so they cannot be mistaken for dirty
+   source input by a later package. For each dependency, a detached
    checkout of the exact planned tap binds the recorded raw Formula digest;
    refreshed Formula bytes may differ only by the structurally canonical
    bottle block, and the selected architecture's bottle metadata must remain

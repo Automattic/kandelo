@@ -2655,6 +2655,7 @@ assert_atomic_publication_batch_closes_formula_metadata_wave() {
   local planned_formula="$TMPDIR/batch-planned-tool.rb"
   local err="$TMPDIR/batch-publication.err"
   local host planned tool_sha tool_formula_sha before_head before_status
+  local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=""
 
   PUBLISH_HANDOFF_FORMULA=tool make_publish_handoff "$seed_handoff" "$seed_tap"
   mkdir -p "$tap_root/Formula"
@@ -2715,6 +2716,7 @@ assert_atomic_publication_batch_closes_formula_metadata_wave() {
   rebind_publish_handoff_tap_commit "$tool_handoff" "$planned"
   make_dry_upload_receipt "$hello_handoff/build" "$hello_handoff/receipt.json" already-present
   make_dry_upload_receipt "$tool_handoff/build" "$tool_handoff/receipt.json" already-present
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap_root")"
 
   if PUBLISH_HANDOFF_TAP_COMMIT="$planned" \
     validate_publish_handoff "$hello_handoff" "$tap_root" >/dev/null 2>"$err"; then
@@ -2750,6 +2752,7 @@ assert_atomic_publication_batch_closes_formula_metadata_wave() {
     >"$bad_handoff/composition/sidecars-input.updated.json"
   mv "$bad_handoff/composition/sidecars-input.updated.json" \
     "$bad_handoff/composition/sidecars-input.json"
+  export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --kandelo-root "$REPO_ROOT" \
     --tap-root "$tap_root" \
@@ -2780,6 +2783,26 @@ assert_atomic_publication_batch_closes_formula_metadata_wave() {
   [ "$(git -C "$tap_root" rev-parse HEAD)" = "$before_head" ] &&
     [ "$(git -C "$tap_root" status --short)" = "$before_status" ] ||
     fail "globally invalid single-package candidate changed the tap checkout"
+
+  printf 'untrusted finalizer input\n' >"$tap_root/Formula/untracked.rb"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication hello wasm32 "$hello_handoff" \
+    --publication tool wasm32 "$tool_handoff" \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run --no-lock >/dev/null 2>"$err"; then
+    fail "atomic batch publisher accepted untracked source dirt"
+  fi
+  grep -F "tap checkout must be clean before publication" "$err" >/dev/null ||
+    fail "atomic batch publisher did not explain untracked source dirt"
+  rm "$tap_root/Formula/untracked.rb"
+  [ "$(git -C "$tap_root" rev-parse HEAD)" = "$before_head" ] &&
+    [ "$(git -C "$tap_root" status --short)" = "$before_status" ] ||
+    fail "rejected untracked source dirt changed the tap checkout"
 
   bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --kandelo-root "$REPO_ROOT" \

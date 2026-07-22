@@ -34,6 +34,8 @@ NO_LOCK=0
 PUBLISH_BRANCH=""
 COMPOSE_PARENT=""
 COMPOSE_ROOT=""
+SOURCE_TAP_ROOT=""
+SOURCE_TAP_COMMIT=""
 PLANNED_TAP_ROOT=""
 COMPOSED_FORMULAE=()
 
@@ -362,11 +364,41 @@ assert_static_tap_tree() {
   fi
 }
 
+assert_clean_tap_snapshot() {
+  local root="$1" label="$2" expected_commit="$3"
+  local resolved_root top_level status head
+  if [ ! -d "$root" ] || [ -L "$root" ]; then
+    echo "homebrew-publish-sidecars.sh: $label must be a real directory" >&2
+    exit 1
+  fi
+  resolved_root="$(cd "$root" && pwd -P)"
+  top_level="$(git -C "$resolved_root" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$top_level" ] || [ "$(cd "$top_level" && pwd -P)" != "$resolved_root" ]; then
+    echo "homebrew-publish-sidecars.sh: $label must be an exact Git worktree root" >&2
+    exit 1
+  fi
+  status="$(git -C "$resolved_root" status --short --untracked-files=all --ignored)"
+  if [ -n "$status" ]; then
+    echo "homebrew-publish-sidecars.sh: $label has working-tree changes" >&2
+    exit 1
+  fi
+  head="$(git -C "$resolved_root" rev-parse HEAD)"
+  if [ "$head" != "$expected_commit" ]; then
+    echo "homebrew-publish-sidecars.sh: $label HEAD differs from refreshed tap main" >&2
+    exit 1
+  fi
+}
+
 initialize_composition() {
   COMPOSE_PARENT="$(mktemp -d)"
   COMPOSE_ROOT="$COMPOSE_PARENT/tap"
-  git -C "$TAP_ROOT" worktree add --detach "$COMPOSE_ROOT" HEAD >/dev/null
+  SOURCE_TAP_ROOT="$COMPOSE_PARENT/source-tap"
+  SOURCE_TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
+  git -C "$TAP_ROOT" worktree add --detach "$COMPOSE_ROOT" "$SOURCE_TAP_COMMIT" >/dev/null
+  git -C "$TAP_ROOT" worktree add --detach "$SOURCE_TAP_ROOT" "$SOURCE_TAP_COMMIT" >/dev/null
   assert_static_tap_tree "$COMPOSE_ROOT" "refreshed composition tap"
+  assert_static_tap_tree "$SOURCE_TAP_ROOT" "refreshed source tap"
+  assert_clean_tap_snapshot "$SOURCE_TAP_ROOT" "refreshed source tap" "$SOURCE_TAP_COMMIT"
 }
 
 compose_publication_handoff() {
@@ -450,6 +482,10 @@ compose_publication_handoff() {
   }
 
   assert_static_tap_tree "$COMPOSE_ROOT" "refreshed composition tap"
+  # Earlier entries intentionally dirty the candidate with generated output.
+  # Keep all source and dependency validation on the separate exact snapshot;
+  # never make provenance accept a dirty working tree to accommodate batching.
+  assert_clean_tap_snapshot "$SOURCE_TAP_ROOT" "refreshed source tap" "$SOURCE_TAP_COMMIT"
   if ! git -C "$COMPOSE_ROOT" cat-file -e "${input_tap_commit}^{commit}" 2>/dev/null ||
      ! git -C "$COMPOSE_ROOT" merge-base --is-ancestor "$input_tap_commit" HEAD; then
     echo "homebrew-publish-sidecars.sh: planned tap commit is not an ancestor of refreshed tap main" >&2
@@ -465,7 +501,7 @@ compose_publication_handoff() {
   }
 
   bash "$KANDELO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
-    --tap-root "$COMPOSE_ROOT" \
+    --tap-root "$SOURCE_TAP_ROOT" \
     --tap-repository "$TAP_REPOSITORY" \
     --tap-name "$TAP_NAME" \
     --formula "$FORMULA" \
@@ -483,7 +519,7 @@ compose_publication_handoff() {
     --tap-name "$TAP_NAME" \
     --tap-commit "$input_tap_commit" \
     --bottle-root-url "$bottle_root" \
-    --tap-root "$COMPOSE_ROOT" \
+    --tap-root "$SOURCE_TAP_ROOT" \
     --planned-tap-root "$PLANNED_TAP_ROOT"
 
   planned_formula="$COMPOSE_PARENT/planned-formula.rb"
@@ -763,6 +799,9 @@ cleanup() {
   fi
   if [ -n "$COMPOSE_ROOT" ] && [ -d "$COMPOSE_ROOT" ]; then
     git -C "$TAP_ROOT" worktree remove --force "$COMPOSE_ROOT" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$SOURCE_TAP_ROOT" ] && [ -d "$SOURCE_TAP_ROOT" ]; then
+    git -C "$TAP_ROOT" worktree remove --force "$SOURCE_TAP_ROOT" >/dev/null 2>&1 || true
   fi
   if [ -n "$COMPOSE_PARENT" ]; then
     rm -rf "$COMPOSE_PARENT"
