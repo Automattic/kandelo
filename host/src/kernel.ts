@@ -215,6 +215,7 @@ interface WasmPosixKernelTestAuthority {
     bytes: Uint8Array,
   ): void;
   hostFstat(handle: bigint, statPointer: KernelPointer): number;
+  hostOpendir(pathPointer: KernelPointer, pathLength: number): bigint;
   hostReaddir(
     handle: bigint,
     direntPointer: KernelPointer,
@@ -1058,6 +1059,11 @@ export class WasmPosixKernel {
           return -14; // EFAULT
         }
       },
+    );
+    defineMethod(
+      "hostOpendir",
+      (pathPointer: KernelPointer, pathLength: number) =>
+        this.#hostOpendir(pathPointer, pathLength),
     );
     defineMethod(
       "hostReaddir",
