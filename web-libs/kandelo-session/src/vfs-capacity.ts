@@ -1,10 +1,17 @@
 export const DEFAULT_VFS_PROFILE_MAX_BYTES = 256 * 1024 * 1024;
 export const MAIN_SHELL_VFS_PROFILE_MAX_BYTES = 512 * 1024 * 1024;
-// Product images layered on the canonical shell must admit the shell's full
-// capacity before adding their own files. Larger products (for example LAMP)
-// may declare a higher, explicit profile ceiling.
+// A product image must have room to copy the canonical shell's complete inode
+// inventory and then add its own files. SharedFS sizes its inode table from the
+// declared byte ceiling, so reusing the shell's exact ceiling can exhaust
+// inodes even while statfs still reports hundreds of MiB of free data blocks.
 export const SHELL_DERIVED_VFS_PROFILE_MAX_BYTES =
-  MAIN_SHELL_VFS_PROFILE_MAX_BYTES;
+  768 * 1024 * 1024;
+// Product images need space for ordinary runtime state after their immutable
+// build contents have been written. Build-time save helpers enforce both
+// dimensions because free blocks cannot compensate for an exhausted inode
+// table (and vice versa).
+export const SHELL_DERIVED_VFS_MIN_FREE_BYTES = 64 * 1024 * 1024;
+export const SHELL_DERIVED_VFS_MIN_FREE_INODES = 8 * 1024;
 export const CUSTOM_VFS_PROFILE_MAX_BYTES = 512 * 1024 * 1024;
 
 export interface KandeloVfsImageCapacity {

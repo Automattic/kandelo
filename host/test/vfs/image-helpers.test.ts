@@ -1,10 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryFileSystem } from "../../src/vfs/memory-fs";
-import { writeVfsBinary, writeVfsFile } from "../../src/vfs/image-helpers";
 import {
+  ensureDir,
+  ensureDirRecursive,
+  symlink,
+  writeVfsBinary,
+  writeVfsFile,
+} from "../../src/vfs/image-helpers";
+import {
+  ensureDir as ensureBrowserDir,
+  ensureDirRecursive as ensureBrowserDirRecursive,
   writeVfsBinary as writeBrowserVfsBinary,
   writeVfsFile as writeBrowserVfsFile,
 } from "../../../apps/browser-demos/lib/init/vfs-utils";
+import { EEXIST, ENOSPC } from "../../src/vfs/sharedfs-vendor";
 
 const O_RDONLY = 0;
 
@@ -27,6 +36,39 @@ describe("VFS image write helpers", () => {
   it("backs browser-demo writers with the shared strict helpers", () => {
     expect(writeBrowserVfsBinary).toBe(writeVfsBinary);
     expect(writeBrowserVfsFile).toBe(writeVfsFile);
+    expect(ensureBrowserDir).toBe(ensureDir);
+    expect(ensureBrowserDirRecursive).toBe(ensureDirRecursive);
+  });
+
+  it("ignores only EEXIST while creating directories and symlinks", () => {
+    const existing = Object.assign(new Error("exists"), { code: EEXIST });
+    const full = Object.assign(new Error("full"), { code: ENOSPC });
+    const mkdir = vi.fn()
+      .mockImplementationOnce(() => { throw existing; })
+      .mockImplementationOnce(() => { throw full; });
+    const createSymlink = vi.fn()
+      .mockImplementationOnce(() => { throw existing; })
+      .mockImplementationOnce(() => { throw full; });
+    const fs = {
+      mkdir,
+      symlink: createSymlink,
+    } as unknown as MemoryFileSystem;
+
+    expect(() => ensureDir(fs, "/already-there")).not.toThrow();
+    expect(() => ensureDir(fs, "/no-space")).toThrow(full);
+    expect(() => symlink(fs, "/target", "/already-there")).not.toThrow();
+    expect(() => symlink(fs, "/target", "/no-space")).toThrow(full);
+  });
+
+  it("stops recursive creation at the first non-EEXIST failure", () => {
+    const full = Object.assign(new Error("full"), { code: ENOSPC });
+    const mkdir = vi.fn((path: string) => {
+      if (path === "/one/two") throw full;
+    });
+    const fs = { mkdir } as unknown as MemoryFileSystem;
+
+    expect(() => ensureDirRecursive(fs, "/one/two/three")).toThrow(full);
+    expect(mkdir.mock.calls.map(([path]) => path)).toEqual(["/one", "/one/two"]);
   });
 
   it("stages every byte of a binary file", () => {

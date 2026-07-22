@@ -7,6 +7,7 @@
  * see scripts-side helpers.
  */
 import type { MemoryFileSystem } from "./memory-fs";
+import { EEXIST } from "./sharedfs-vendor";
 
 const O_WRONLY_CREAT_TRUNC = 0o1101;
 
@@ -51,22 +52,43 @@ export function writeVfsBinary(
   }
 }
 
-/** mkdir, swallowing EEXIST. */
-export function ensureDir(fs: MemoryFileSystem, path: string): void {
-  try { fs.mkdir(path, 0o755); } catch { /* exists */ }
+function hasVfsErrorCode(error: unknown, code: number): boolean {
+  return typeof error === "object" && error !== null &&
+    "code" in error && (error as { code: unknown }).code === code;
+}
+
+/** mkdir, swallowing only EEXIST. */
+export function ensureDir(
+  fs: MemoryFileSystem,
+  path: string,
+  mode = 0o755,
+): void {
+  try {
+    fs.mkdir(path, mode);
+  } catch (error) {
+    if (!hasVfsErrorCode(error, EEXIST)) throw error;
+  }
 }
 
 /** mkdir -p — creates every missing component along the path. */
-export function ensureDirRecursive(fs: MemoryFileSystem, path: string): void {
+export function ensureDirRecursive(
+  fs: MemoryFileSystem,
+  path: string,
+  mode = 0o755,
+): void {
   const parts = path.split("/").filter(Boolean);
   let current = "";
   for (const part of parts) {
     current += "/" + part;
-    ensureDir(fs, current);
+    ensureDir(fs, current, mode);
   }
 }
 
-/** symlink, swallowing EEXIST. */
+/** symlink, swallowing only EEXIST. */
 export function symlink(fs: MemoryFileSystem, target: string, path: string): void {
-  try { fs.symlink(target, path); } catch { /* exists */ }
+  try {
+    fs.symlink(target, path);
+  } catch (error) {
+    if (!hasVfsErrorCode(error, EEXIST)) throw error;
+  }
 }

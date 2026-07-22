@@ -368,7 +368,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     // MariaDB's Aria recovery can grow beyond the 4096-page cap used by
     // lighter PHP presets.
     memoryPages: 16384,
-    maxVfsByteLength: 768 * 1024 * 1024,
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,

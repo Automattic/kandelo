@@ -299,6 +299,16 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
 1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download. If the image should grow or report a larger `df` capacity at runtime, build it with `MemoryFileSystem.create(sab, permittedMaxBytes)` so the filesystem metadata is sized for that capacity.
 2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable; it does not raise the filesystem maximum beyond the image's superblock limit.
 
+The canonical Homebrew shell has a 512 MiB filesystem ceiling. Products that
+copy that shell and add their own application tree use a separate 768 MiB
+profile: SharedFS derives its fixed inode-table size from the declared byte
+ceiling, so merely having free data blocks does not guarantee that another
+file can be created. `saveShellDerivedVfsImage()` rejects a product build
+unless at least 64 MiB of data blocks and 8,192 inode slots remain after its
+immutable contents are written. This makes runtime allocation space a checked
+artifact contract instead of allowing an image to build successfully and then
+fail with `ENOSPC` during normal browser initialization.
+
 ```typescript
 // Typical demo pattern
 const [kernelBuf, vfsImageBuf] = await Promise.all([

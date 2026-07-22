@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
+  assertVfsImageHeadroom,
   saveImage,
   sourceDateEpochMilliseconds,
 } from "../../images/vfs/scripts/vfs-image-helpers";
@@ -92,6 +93,47 @@ function stripStandaloneLazyIdentity(image: Uint8Array): Uint8Array {
 }
 
 describe("VFS image save/restore", () => {
+  describe("product image runtime headroom", () => {
+    it("checks free blocks and free inodes as independent resources", () => {
+      const mfs = createMemfs();
+      const stats = mfs.statfs("/");
+      const freeBytes = stats.bfree * stats.frsize;
+
+      expect(() => assertVfsImageHeadroom(mfs, {
+        minimumFreeBytes: freeBytes,
+        minimumFreeInodes: stats.ffree,
+      }, "test image")).not.toThrow();
+      expect(() => assertVfsImageHeadroom(mfs, {
+        minimumFreeBytes: freeBytes + 1,
+        minimumFreeInodes: stats.ffree,
+      }, "test image")).toThrow(
+        /test image lacks runtime VFS headroom: .* free bytes remain/,
+      );
+      expect(() => assertVfsImageHeadroom(mfs, {
+        minimumFreeBytes: freeBytes,
+        minimumFreeInodes: stats.ffree + 1,
+      }, "test image")).toThrow(
+        /test image lacks runtime VFS headroom: .* free inodes remain/,
+      );
+    });
+
+    it("enforces the declared reserve before writing a product image", async () => {
+      const mfs = createMemfs();
+      const stats = mfs.statfs("/");
+      const dir = mkdtempSync(join(tmpdir(), "vfs-headroom-"));
+      try {
+        await expect(saveImage(mfs, join(dir, "full.vfs.zst"), {
+          headroom: {
+            minimumFreeBytes: stats.bfree * stats.frsize + 1,
+            minimumFreeInodes: stats.ffree + 1,
+          },
+        })).rejects.toThrow(/lacks runtime VFS headroom.*free bytes.*free inodes/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("SOURCE_DATE_EPOCH", () => {
     it.each([
       [undefined, 0],
