@@ -19,13 +19,24 @@ This plan reconciles, rather than silently replaces, the earlier Homebrew work:
 
 - the 2026-07-05 handoff and forward execution plan at Git commit
   `495250692766badd641ac623a26ba9417ee5059d`;
+- the 2026-07-01 built-in-versus-custom publishing research and the
+  2026-07-05 bottle-publishing checkpoint, also preserved at Git commit
+  `495250692766badd641ac623a26ba9417ee5059d`;
+- the 2026-06-30 registry-replacement contract at Git commit
+  `1663df07620e535de57e8381694f56766109e14c`, whose reviewed document is
+  Git blob `4e46613107051176cc41592f437bcf83a8a69fa2`;
 - the 2026-06-28 all-package inventory whose last reviewed Git blob is
   `ed0dbe477554be8d7bb3fbe4f90e95450b5de85c`;
 - `2026-06-25-homebrew-ci-github-packages-bottle-publishing-design.md`;
 - `2026-06-27-homebrew-tap-layout-metadata-schema-design.md`;
 - `2026-06-28-homebrew-vfs-builder-pour-link-design.md`;
-- the 2026-07-05 Homebrew-idiomatic tap-layout draft; and
-- product decisions made while landing PRs #973 through #1045.
+- the 2026-07-05 Homebrew-idiomatic tap-layout draft, now tracked at
+  `docs/plans/2026-07-05-homebrew-tap-layout-idiomatic-spec.md` with exact Git
+  blob `415a0ab2ea1cec996c8df2bad8c0d2675046a7f7`; this preservation commit makes
+  the source durable, because an untracked workspace copy is not a durable
+  source plan; and
+- product decisions made while landing PRs #973 through #1049. PR #1049
+  landed at `466a685d9366d3b712c4fe998307e00157bd5d15`.
 
 The historical plans contain point-in-time repository names, ABI versions,
 package counts, and implementation guesses. This plan updates those facts but
@@ -80,6 +91,21 @@ Kandelo packages are first-class Homebrew packages:
 - Formula tests and focused runtime smokes gate bottle publication. Complete
   upstream suites are tracked as pass, fail, partial, skipped, incomplete, or
   unavailable without making every upstream suite a default publication gate.
+- Package status is keyed by package, version, Formula revision, bottle
+  rebuild, architecture, ABI, and host where the host is applicable. Every
+  non-success record carries a category, concrete reason, exact attempt or run,
+  first useful error or durable artifact pointer, last-green state, owner
+  class, and next action.
+- Complete upstream-test evidence names the exact harness and command, start
+  and end timestamps, pass/fail/skip/timeout/unsupported/incomplete counts,
+  complete failure and skip lists, known-failure references, and digest- and
+  size-bound artifacts. Missing parser categories are themselves recorded as
+  incomplete evidence rather than flattened into success.
+- Last-green selection is explicit in status, composition, and image
+  provenance. A fallback must pass the same architecture, ABI, digest, byte
+  count, cache identity, and complete-inventory checks as a current success;
+  failure of those checks is visible and never silently selects another
+  artifact.
 - A Formula's `test do` exercises its result through Kandelo rather than a
   native-host substitute.
 - Failed or deferred packages remain discoverable with their real reason; they
@@ -143,12 +169,12 @@ complete here only when its exact accepted artifact has been verified.
 
 | Workstream | State | Evidence and remaining boundary |
 |---|---|---|
-| Public publisher foundation | Complete | Repository-rooted public GHCR creation, anonymous readback, immutable trust, retry/recovery, coordinated finalization, and immutable VFS releases are implemented. The production path uses `GITHUB_TOKEN`. |
+| Public publisher foundation | Complete | Repository-rooted public GHCR creation, anonymous readback, immutable trust, retry/recovery, coordinated finalization, and immutable VFS releases are implemented. PR #1048 landed the clean-input coordinated-finalizer fix at `1618563d87dd2207077ce228040cc9b2c773eb5e`. The production path uses `GITHUB_TOKEN`. |
 | Canonical tap migration | Complete for the production repository | PR #973 retargeted publication to `Kandelo-dev/homebrew-tap-core`; the old Automattic tap is archived. |
 | Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 58 successful sidecar package records at this snapshot. This covers the complete 38-Formula main-shell closure and several language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
 | Bottle-composed main shell | Complete, currently eager | PR #1025 builds and publishes the current main shell from the exact public 38-Formula closure and proves the exact image in Node.js and Chromium. All poured content is currently serialized into the VFS, so laziness still needs restoration. |
-| Language bottles | In progress | Ruby is public and runtime-verified. Python and Erlang have built, uploaded, indexed, and passed credential-free verification. Their coordinated finalizer then rejected its own first staged package as dirty while processing the second; the atomic batch boundary needs a general fix and retry. Perl is published but still needs inclusion in the final lazy-shell language acceptance matrix. |
-| Third-party tap model | In progress | The independent M4 canary has already proved public package creation and VFS acceptance. The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. The live M4 publication and cross-host acceptance proof against those landed commits remains. |
+| Language bottles | In progress | Ruby is public and runtime-verified. Python and Erlang have built, uploaded, indexed, and passed credential-free verification. Their coordinated finalizer then rejected its own first staged package as dirty while processing the second; PR #1048 landed the general clean-input fix, and a fresh coordinated retry against the final trusted publisher pins remains. Perl is published but still needs inclusion in the final lazy-shell language acceptance matrix. |
+| Third-party tap model | In progress | The independent M4 canary has already proved same-tap public package creation and VFS acceptance. The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Fresh coordinated Python/Erlang run `29886510272` and independent M4 run `29886510154` are the active live proofs at this snapshot. The same-tap publisher foundation is complete, while their results and full generic cross-host federation acceptance remain pending. |
 | Deferred bottle trees | In progress | The design pivot is underway: exact original bottle bytes, decoder-neutral descriptors, safe tar+gzip decoding, hardlink preservation, atomic materialization, shared first-open/exec behavior, and Node/browser tests. No production lazy-shell claim exists yet. |
 | Guest upstream `brew` | Partial experiment | A bootstrap image can run upstream Homebrew and its Ruby support. General `brew tap`/`brew install` from public first-party and third-party bottles is not yet a supported shell capability. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |
@@ -162,9 +188,10 @@ do preserve the single-writer finalization and exact-commit trust contracts.
 
 ### Phase 1: Close the active publication and federation work
 
-1. Fix the coordinated-finalizer boundary that let one package's generated
-   sidecars dirty the provenance source for the next package, then finish the
-   Python and Erlang publication run.
+1. Completed by PR #1048: fix the coordinated-finalizer boundary that let one
+   package's generated sidecars dirty the provenance source for the next
+   package. Finish the Python and Erlang publication run against the final
+   trusted publisher pins.
 2. Verify final tap commits, Formula bottle blocks, sidecars, public package
    visibility, immutable tags, and anonymous exact-byte reads.
 3. Completed: PR #1046 passed its exact-head and synthesized-merge gates and
@@ -175,6 +202,11 @@ do preserve the single-writer finalization and exact-commit trust contracts.
 5. Repeat the M4 third-party proof: dependency resolution, public anonymous
    bottle fetch, tap finalization, Node.js VFS acceptance, Chromium VFS
    acceptance, and immutable release readback.
+
+Checkpoint: PRs #1048 and #1049 are landed, and both tap callers pin #1049's
+immutable merge commit. Fresh coordinated Python/Erlang and M4 runs are active
+at the snapshot above. Generic live federation remains incomplete until those
+runs and their exact public, immutable, cross-host acceptance evidence pass.
 
 Acceptance:
 
@@ -293,6 +325,12 @@ Acceptance:
 5. Prove a first-party core bottle install and a cross-tap M4 install, including
    dependency resolution, linking, execution, upgrade/uninstall state, and loud
    failures for ABI or digest mismatch.
+6. Preserve and run the historical build-time pour proof before deciding its
+   disposition: boot Kandelo, have stock upstream `brew` install the exact
+   reviewed shell closure, call `saveImage()`, and compare package ownership,
+   links, Homebrew receipts, and provenance with the direct composer. Record an
+   evidence-backed keep, replace, or retire decision; the existence of the
+   current direct composer is not that evidence by itself.
 
 Acceptance:
 
@@ -301,6 +339,8 @@ Acceptance:
   Chromium.
 - User documentation can finally publish truthful `brew tap` and
   `brew install` instructions.
+- The historical build-time `brew`-pour/`saveImage()` proof has exact run
+  evidence and an explicit disposition against the direct composer.
 
 ### Phase 6: Finish package migration and retire duplicate recipes
 
@@ -328,14 +368,37 @@ Formula files.
    fallback, Node/browser smoke, docs, and recovery operations cover the same
    role. Platform artifacts that do not belong in Homebrew move to a named
    platform-owned release contract instead of disappearing.
+6. Enumerate every historical and current declared `(Formula, architecture)`
+   target. Each declared wasm32 or wasm64 pair needs current success evidence
+   or an explicit `failed`, `deferred`, `unavailable`, `blocked`, `excluded`,
+   or intentionally removed disposition. Any architecture narrowing is an
+   explicit reviewed disposition, never an inferred consequence of a missing
+   bottle.
+7. Make package reconciliation durable for `success`, `failed`, `pending`,
+   `building`, `deferred`, `unavailable`, `blocked`, and `excluded` states.
+   Generate both operator and community reports, and add negative tests that
+   reject missing categories, reasons, attempts, first errors or artifacts,
+   fallback completeness, owners, or next actions.
+8. Maintain one deviations register for `HOMEBREW_KANDELO_ROOT` and the SDK
+   bridge, the target/tag patch, every Tier-2 build script, the tap
+   trust/audit boundary, and fork instrumentation. Every row names why the
+   deviation exists, its platform or external boundary, its owner, and its
+   exit criterion. The `kandelo-sdk` ownership decision must settle the SDK
+   bridge rather than leaving it as ambient worktree state.
 
 Acceptance:
 
 - A generated report accounts for every original registry directory and every
   live tap Formula with one authoritative owner and disposition.
+- That report accounts for every declared Formula architecture and records
+  explicit evidence or disposition for each historical and current wasm32 or
+  wasm64 target.
 - No accepted package has two drifting recipe sources.
 - Removing the registry bridge does not remove tests, patches, demos,
   provenance, source distribution, or failure visibility.
+- Negative schema and report tests prove that non-success packages,
+  last-green failures, incomplete upstream-test evidence, and architecture
+  narrowing cannot disappear from operator or community views.
 
 ### Phase 7: Bottle-compose service, application, and selectable VFS layers
 
@@ -355,6 +418,12 @@ land first.
 5. Embed boot-critical supervisors and their closures in service images; leave
    optional application/data groups deferred where first-use semantics are
    truthful.
+6. Produce a durable, generic software-gallery/index record for every eligible
+   Formula and VFS entry. Eligibility requires exact wasm32 publication
+   success, an immutable image identity, explicit `browser_compatible`
+   evidence, and a real Chromium boot of that image. Per-run diagnostics are
+   inputs to this durable index, not the endpoint; launch failures remain
+   visible instead of removing the entry or presenting a synthetic success.
 
 Acceptance:
 
@@ -363,6 +432,9 @@ Acceptance:
   before mutation with a real ownership conflict.
 - Node.js and Chromium boot and exercise the resulting service/application
   image through the same image and runtime contracts.
+- Eligible Formula and VFS entries survive as durable gallery/index records
+  bound to exact wasm32, immutable-image, compatibility, and real Chromium
+  evidence, including visible launch failures.
 
 ### Phase 8: Operations, documentation, and final cleanup
 
@@ -383,6 +455,30 @@ Acceptance:
 6. Run the exact final Node.js, Chromium, POSIX/libc/Sortix where relevant,
    package publication, anonymous readback, guest install, third-party tap, and
    deployed-browser acceptance matrix. Report anything not run.
+7. Add dated amendment headers to the preserved 2026-07-01 publishing research
+   and the relevant 2026-07-05 publishing checkpoint and handoff. Point those
+   headers to this living plan and its disposition log while preserving the
+   historical text. Clearly mark superseded conclusions about upload tooling,
+   ABI-in-tag naming, guest-`brew` support, the pour/composer path, and lazy
+   archive format; do not rewrite the old documents as if they predicted the
+   current design.
+8. Decide whether artifact attestations are required for first-party and
+   third-party bottles. If required, make them additive to commit, digest,
+   byte-count, and anonymous-readback evidence; if not required, record the
+   explicit decision, rationale, owner, and reconsideration boundary.
+9. Keep the generic software gallery/index durable outside individual CI run
+   diagnostics, and verify that eligibility and launch-failure evidence remain
+   queryable after a newer failed attempt.
+
+Acceptance:
+
+- The historical amendment headers preserve the old text while routing current
+  decisions to this plan.
+- The artifact-attestation requirement or explicit non-requirement is recorded
+  for both first-party and third-party publication.
+- Durable status and gallery records retain non-success attempts, exact
+  artifact and browser evidence, last-green selection, and visible launch
+  failures after CI artifacts expire.
 
 ## Inventory Preservation Ledger
 
@@ -435,6 +531,7 @@ goal from an earlier section.
 | Boot-prefetch Bash | Superseded by the explicit decision to embed Bash and its complete runtime closure in the shell VFS. |
 | One default VFS per language | Rejected, except for the retained Node.js demo. Languages belong in the main shell as lazy bottle groups. |
 | Bottle dependencies and one bottle per VFS | Retained as Phase 7 rather than required for the first lazy-shell cutover. |
+| Treat the direct composer as sufficient retirement evidence for the historical build-time `brew` pour plus `saveImage()` proof | Unresolved. Phase 5 must run the exact reviewed closure through stock upstream `brew`, save the image, compare ownership, links, receipts, and provenance, and then record an evidence-backed disposition. The current direct composer does not silently retire this proof. |
 
 ## Completion Definition
 
@@ -448,11 +545,20 @@ The migration is complete only when all of the following are true:
 - upstream `brew` inside Kandelo installs first-party and third-party bottles;
 - every historical registry and support role has a durable owner and no
   accepted package has duplicate authoritative recipes;
+- every historical and current declared `(Formula, architecture)` pair has
+  exact success evidence or an explicit failed, deferred, unavailable,
+  blocked, excluded, or intentionally removed disposition, including every
+  declared wasm32 and wasm64 target;
 - VFS packages can declare bottle dependencies and participate in reviewed
   mix-and-match composition;
 - service/application images use that model without demo-specific runtime
   shortcuts;
 - documentation, status, upstream-test outcomes, rollback, source/license
-  obligations, and deployed-browser evidence match the implementation; and
+  obligations, and deployed-browser evidence match the implementation;
+- operator, community, and software-gallery indexes durably expose non-success
+  package attempts, last-green choices, complete upstream-test evidence, and
+  real browser launch outcomes;
+- every retained Homebrew deviation has a named boundary, owner, and exit
+  criterion, including a settled owner for the SDK bridge; and
 - all remaining limitations are named platform or external boundaries, not
   implied success.
