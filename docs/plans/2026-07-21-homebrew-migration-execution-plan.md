@@ -177,9 +177,9 @@ complete here only when its exact accepted artifact has been verified.
 | Canonical tap migration | Complete for the production repository | PR #973 retargeted publication to `Kandelo-dev/homebrew-tap-core`; the old Automattic tap is archived. |
 | Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 58 successful sidecar package records at this snapshot. This covers the complete 38-Formula main-shell closure and several language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
 | Bottle-composed main shell | Complete, currently eager | PR #1025 builds and publishes the current main shell from the exact public 38-Formula closure and proves the exact image in Node.js and Chromium. All poured content is currently serialized into the VFS, so laziness still needs restoration. |
-| Language bottles | In progress | Ruby is public and runtime-verified. Python and Erlang have built, uploaded, indexed, and passed credential-free verification. Their coordinated finalizer then rejected its own first staged package as dirty while processing the second; PR #1048 landed the general clean-input fix, and a fresh coordinated retry against the final trusted publisher pins remains. Perl is published but still needs inclusion in the final lazy-shell language acceptance matrix. |
-| Third-party tap model | In progress | The independent M4 canary has already proved same-tap public package creation and VFS acceptance. The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Fresh coordinated Python/Erlang run `29886510272` and independent M4 run `29886510154` are the active live proofs at this snapshot. The same-tap publisher foundation is complete, while their results and full generic cross-host federation acceptance remain pending. |
-| Deferred bottle trees | In progress | The design pivot is underway: exact original bottle bytes, decoder-neutral descriptors, safe tar+gzip decoding, hardlink preservation, atomic materialization, shared first-open/exec behavior, and Node/browser tests. No production lazy-shell claim exists yet. |
+| Language bottles | In progress | Ruby is public and runtime-verified. Fresh coordinated run `29886510272` built, publicly uploaded, and indexed Python and Erlang through the final trusted publisher pins. Erlang's complete credential-free verification is green; Python's anonymous force-pour is green and its remaining sidecar/image verification is still running at this checkpoint. Coordinated finalization therefore still waits for Python. Perl is published but still needs inclusion in the final lazy-shell language acceptance matrix. |
+| Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
+| Deferred bottle trees | Substrate validation in progress | The integration branch now contains exact original-bottle transport identity, decoder-neutral descriptors, bounded tar+gzip and legacy ZIP decoding, hardlink preservation, atomic batch import and materialization, shared first-open/exec behavior, independent immutable runtime-layer identity, and boot-descriptor composition. Its focused host suite, exact Chromium first-use proof, release reconciliation, publisher-trust check, ABI check, cache-closure check, and wasm32/wasm64 native-sidecar test are green. It is not landed and no production lazy-shell claim exists yet. |
 | Guest upstream `brew` | Partial experiment | A bootstrap image can run upstream Homebrew and its Ruby support. General `brew tap`/`brew install` from public first-party and third-party bottles is not yet a supported shell capability. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |
 | Bottle-declared, mix-and-match VFS packages | Future retained scope | The current composer produces precomposed images. VFS Formulae/bottles and user-selectable composition remain a later product iteration. |
@@ -208,9 +208,10 @@ do preserve the single-writer finalization and exact-commit trust contracts.
    acceptance, and immutable release readback.
 
 Checkpoint: PRs #1048 and #1049 are landed, and both tap callers pin #1049's
-immutable merge commit. Fresh coordinated Python/Erlang and M4 runs are active
-at the snapshot above. Generic live federation remains incomplete until those
-runs and their exact public, immutable, cross-host acceptance evidence pass.
+immutable merge commit. The independent M4 proof is completely green through
+its immutable release. Erlang's fresh retry is green; Python has passed build,
+public upload, indexing, and anonymous pour, while its remaining verification
+and the coordinated finalizer are still active at the snapshot above.
 
 Acceptance:
 
@@ -254,6 +255,11 @@ Acceptance:
   execution in Node.js and Chromium, with exact fetch-count and rollback
   assertions.
 - Registration and `stat` alone do not fetch first-use trees.
+
+Checkpoint: the implementation and focused validation above are complete on
+the deferred-tree integration branch. Landing that substrate and then
+republishing the shell under its corrected cache identity remain the boundary
+between Phase 2 and the Phase 3 cutover.
 
 ### Phase 3: Restore full main-shell laziness
 
