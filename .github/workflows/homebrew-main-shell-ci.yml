@@ -223,7 +223,7 @@ jobs:
             -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
             bash scripts/dev-shell.sh bash \
               scripts/build-homebrew-main-shell-closure.sh \
-                --materialized-candidate \
+                --lazy-shell \
                 --tap-root "$tap_root" \
                 --expected-tap-sha "$tap_sha" \
                 --work-dir "$candidate_root"

@@ -16,7 +16,7 @@ MATERIALIZATION_POLICY="$REPO_ROOT/homebrew/main-shell-materialization-policy.js
 LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
 LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"
-MATERIALIZED_CANDIDATE=false
+LAZY_SHELL=false
 MAX_BYTES="$((512 * 1024 * 1024))"
 
 # The shell image is a content-addressed product artifact. Do not let a Nix
@@ -47,7 +47,7 @@ Options:
   --lazy-artifact-lock <json>
                             exact lazy-image digest and timestamp contract
   --max-bytes <bytes>       VFS capacity (default: 536870912)
-  --materialized-candidate  embed Bash's closure and defer the other 35 bottles
+  --lazy-shell             embed Bash's closure and defer the other 35 bottles
   -h, --help                show this help
 EOF
 }
@@ -90,8 +90,8 @@ while [ "$#" -gt 0 ]; do
       MAX_BYTES="${2:-}"
       shift 2
       ;;
-    --materialized-candidate)
-      MATERIALIZED_CANDIDATE=true
+    --lazy-shell)
+      LAZY_SHELL=true
       shift
       ;;
     -h|--help)
@@ -135,7 +135,7 @@ if [ ! -f "$MIGRATION_LOCK" ] || [ -L "$MIGRATION_LOCK" ]; then
   echo "build-homebrew-main-shell-closure: migration lock must be a regular non-symlink file" >&2
   exit 2
 fi
-if [ "$MATERIALIZED_CANDIDATE" = true ] &&
+if [ "$LAZY_SHELL" = true ] &&
    { [ ! -f "$MATERIALIZATION_POLICY" ] || [ -L "$MATERIALIZATION_POLICY" ]; }; then
   echo "build-homebrew-main-shell-closure: materialization policy must be a regular non-symlink file" >&2
   exit 2
@@ -187,7 +187,7 @@ for tool in git jq node ruby sha256sum wc; do
   }
 done
 
-if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+if [ "$LAZY_SHELL" = true ]; then
   if [ ! -f "$LAZY_ARTIFACT_CHECKER" ] || [ -L "$LAZY_ARTIFACT_CHECKER" ]; then
     echo "build-homebrew-main-shell-closure: lazy artifact checker must be a regular non-symlink file" >&2
     exit 2
@@ -263,7 +263,7 @@ node "$REPO_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
 MATERIALIZATION_ARGS=()
 MATERIALIZATION_JSON=null
 VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
-if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+if [ "$LAZY_SHELL" = true ]; then
   VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
   MATERIALIZATION_ARGS=(
     --materialization-policy "$MATERIALIZATION_POLICY"
@@ -297,7 +297,7 @@ if [ ! -f "$OUT" ] || [ -L "$OUT" ] || [ ! -f "$REPORT" ] || [ -L "$REPORT" ]; t
   echo "build-homebrew-main-shell-closure: image builder did not produce regular image and report files" >&2
   exit 1
 fi
-if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+if [ "$LAZY_SHELL" = true ]; then
   bash "$LAZY_ARTIFACT_CHECKER" \
     --lock "$LAZY_ARTIFACT_LOCK" \
     --expected-source-date-epoch "$SOURCE_DATE_EPOCH" \
@@ -309,7 +309,7 @@ jq -e \
   --slurpfile tap "$TAP_ROOT/Kandelo/metadata.json" \
   --slurpfile lock "$MIGRATION_LOCK" \
   --argjson materialization "$MATERIALIZATION_JSON" \
-  --argjson materialized_candidate "$MATERIALIZED_CANDIDATE" \
+  --argjson lazy_shell "$LAZY_SHELL" \
   --argjson abi "$ABI_VERSION" \
   --arg catalog "$EXPECTED_TAP_SHA" \
   --arg lock_sha "$LOCK_SHA" \
@@ -340,7 +340,7 @@ jq -e \
   (.catalog.checkout_commit == $lock[0].catalog.tap_commit) and
   (.migration_lock.sha256 == $lock_sha) and
   (.migration_lock.bytes == $lock_bytes) and
-  (if $materialized_candidate then
+  (if $lazy_shell then
     (.materialization.policy == "kandelo-homebrew-vfs-materialization-policy") and
     (.materialization.embedded_package_order ==
       $materialization.embedded_package_order) and
@@ -466,7 +466,7 @@ jq -e \
   (.base_image.metadata.homebrew == null)
 ' "$REPORT" >/dev/null
 
-if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+if [ "$LAZY_SHELL" = true ]; then
   while IFS=$'\t' read -r asset expected_sha expected_bytes; do
     path="$BOTTLE_MIRROR_OUT/$asset"
     if [ ! -f "$path" ] || [ -L "$path" ]; then
@@ -495,6 +495,6 @@ fi
 
 echo "Homebrew main-shell closure image: $OUT"
 echo "Homebrew main-shell closure report: $REPORT"
-if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+if [ "$LAZY_SHELL" = true ]; then
   echo "Homebrew main-shell bottle mirror: $BOTTLE_MIRROR_OUT"
 fi
