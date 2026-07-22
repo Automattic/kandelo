@@ -533,6 +533,7 @@ async function lazyLayerFixture(options: {
   mutateBaseSource?: (source: HomebrewLazyLayerBasePackageSource) => void;
   runtimeLayer?: { id: string; policy: unknown };
   includeLayerDependency?: boolean;
+  hardlinkCanonicalAfterAlias?: boolean;
   overlappingDirectoryModes?: readonly [dependency: number, runtime: number];
   compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
 } = {}) {
@@ -580,6 +581,19 @@ async function lazyLayerFixture(options: {
       data: "#!/bin/sh\necho runtime\n",
       mode: 0o755,
     },
+    ...(options.hardlinkCanonicalAfterAlias ? [
+      {
+        path: `runtime/${runtimeVersion}/lib/z-canonical.a`,
+        data: "hardlinked runtime archive\n",
+        mode: 0o644,
+      },
+      {
+        path: `runtime/${runtimeVersion}/lib/a-alias.a`,
+        type: "hardlink" as const,
+        linkName: `runtime/${runtimeVersion}/lib/z-canonical.a`,
+        mode: 0o644,
+      },
+    ] : []),
     {
       path: `runtime/${runtimeVersion}/.brew/runtime.rb`,
       data: "class Runtime < Formula\nend\n",
@@ -3018,6 +3032,42 @@ describe("Homebrew VFS builder", () => {
       (tree) => tree.inventory.entries.map((entry) => entry.path),
     );
     expect(new Set(allPaths).size).toBe(allPaths.length);
+  });
+
+  it("keeps signed TAR hardlink roles when lexical VFS order encounters the alias first", async () => {
+    const fixture = await lazyLayerFixture({ hardlinkCanonicalAfterAlias: true });
+    const result = await fixture.build();
+    const tree = descriptorTree(result.descriptor);
+    const sourceCanonical = tree.inventory.source!.entries.find(
+      (entry) => entry.path.endsWith("/lib/z-canonical.a"),
+    );
+    const sourceAlias = tree.inventory.source!.entries.find(
+      (entry) => entry.path.endsWith("/lib/a-alias.a"),
+    );
+    expect(sourceCanonical).toMatchObject({ type: "file", mode: 0o644 });
+    expect(sourceAlias).toMatchObject({
+      type: "hardlink",
+      target: sourceCanonical!.path,
+    });
+
+    const canonical = tree.inventory.entries.find(
+      (entry) => entry.path.endsWith("/lib/z-canonical.a"),
+    );
+    const alias = tree.inventory.entries.find(
+      (entry) => entry.path.endsWith("/lib/a-alias.a"),
+    );
+    expect(canonical).toMatchObject({
+      type: "file",
+      materialization: "archive",
+      mode: 0o644,
+    });
+    expect(alias).toMatchObject({
+      type: "hardlink",
+      materialization: "archive",
+      target: canonical!.path,
+      inode_group: canonical!.inode_group,
+      mode: 0o644,
+    });
   });
 
   it("merges equal explicit directory modes and rejects cross-bottle mode drift", async () => {
