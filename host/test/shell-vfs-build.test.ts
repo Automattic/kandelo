@@ -1,10 +1,17 @@
 import { zstdCompressSync } from "node:zlib";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/shell-vfs-build";
+import {
+  loadShellBaseFileSystemFromImage,
+  saveShellDerivedVfsImage,
+} from "../../images/vfs/scripts/shell-vfs-build";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import type { ZipEntry } from "../src/vfs/zip";
+import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../web-libs/kandelo-session/src/vfs-capacity";
 
 const MiB = 1024 * 1024;
 const O_RDONLY = 0x0000;
@@ -150,5 +157,53 @@ describe("shell VFS base composition", () => {
     expect(restored.sharedBuffer.byteLength).toBe(4 * MiB);
     expect(restored.sharedBuffer.maxByteLength).toBe(8 * MiB);
     expectContentsPreserved(restored);
+  });
+
+  it("rejects an image that drifts from the standard product capacity", () => {
+    const largerProfile = 1024 * MiB;
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * MiB, { maxByteLength: largerProfile }),
+      largerProfile,
+    );
+
+    expect(() =>
+      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
+    ).toThrow(
+      new RegExp(
+        `${largerProfile}-byte VFS capacity.*` +
+          `${SHELL_DERIVED_VFS_PROFILE_MAX_BYTES} bytes are required`,
+      ),
+    );
+  });
+
+  const capacityProfiles: Array<[string, number, number | undefined]> = [
+    ["the standard profile", SHELL_DERIVED_VFS_PROFILE_MAX_BYTES, undefined],
+    ["an explicit larger product profile", 1024 * MiB, 1024 * MiB],
+  ];
+
+  it.each(capacityProfiles)("saves %s only under its exact declared capacity", async (
+    _label,
+    profileMaxBytes,
+    expectedMaxByteLength,
+  ) => {
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * MiB, { maxByteLength: profileMaxBytes }),
+      profileMaxBytes,
+    );
+    writeFile(fs, "/product.txt", "complete product");
+    const dir = mkdtempSync(join(tmpdir(), "shell-derived-capacity-"));
+    try {
+      const image = await saveShellDerivedVfsImage(
+        fs,
+        join(dir, "product.vfs.zst"),
+        expectedMaxByteLength === undefined ? {} : { expectedMaxByteLength },
+      );
+
+      expect(MemoryFileSystem.readImageCapacity(image).maxByteLength).toBe(
+        profileMaxBytes,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
