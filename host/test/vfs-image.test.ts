@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
+  assertVfsImageCapacity,
   assertVfsImageHeadroom,
   saveImage,
   sourceDateEpochMilliseconds,
@@ -94,6 +95,38 @@ function stripStandaloneLazyIdentity(image: Uint8Array): Uint8Array {
 
 describe("VFS image save/restore", () => {
   describe("product image runtime headroom", () => {
+    it("validates the product capacity contract and reports drift", () => {
+      const mfs = createMemfs();
+      const stats = mfs.statfs("/");
+      const maxByteLength = stats.blocks * stats.bsize;
+
+      expect(() =>
+        assertVfsImageCapacity(mfs, maxByteLength, "test image")
+      ).not.toThrow();
+      expect(() =>
+        assertVfsImageCapacity(mfs, maxByteLength + stats.bsize, "test image")
+      ).toThrow(/test image has a .* VFS capacity; .* required/);
+    });
+
+    it.each([-1, 0, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+      "rejects invalid product capacity %s",
+      (maxByteLength) => {
+        expect(() =>
+          assertVfsImageCapacity(createMemfs(), maxByteLength, "test image")
+        ).toThrow(/expectedMaxByteLength must be a positive safe integer/);
+      },
+    );
+
+    it("rejects an invalid capacity reported by the filesystem", () => {
+      const fs = {
+        statfs: () => ({ blocks: Number.MAX_SAFE_INTEGER, bsize: 2 }),
+      } as unknown as MemoryFileSystem;
+
+      expect(() => assertVfsImageCapacity(fs, 1, "test image")).toThrow(
+        /test image reports an invalid VFS capacity/,
+      );
+    });
+
     it("checks free blocks and free inodes as independent resources", () => {
       const mfs = createMemfs();
       const stats = mfs.statfs("/");
