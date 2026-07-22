@@ -191,7 +191,7 @@ complete here only when its exact accepted artifact has been verified.
 | Canonical tap migration | Complete for the production repository | PR #973 retargeted publication to `Kandelo-dev/homebrew-tap-core`; the old Automattic tap is archived. |
 | Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 60 sidecar package records and 67 successful architecture-specific bottle records at this snapshot. This covers the expanded 42-Formula main-shell candidate, including its four language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
 | Bottle-composed main shell | Phase 3 complete; Phase 4 has an immutable public candidate | PR #1060 landed at `e108a8c4a3259dcf8b646599355590542707adf7` and activated shell revision 17 with the reviewed three-bottle Bash closure and 35 independently deferred bottles. PR #1056 landed the aggregate deferred-tree budget at `1d3521473361524fcdf4febb23d33f20d7c7d515`; its exact post-merge Node.js and Chromium shell checks are green, and the production index selects the lazy image. The Phase 4 candidate extends the same policy to 36 roots and 42 Formulae while retaining only the same three embedded bottles. |
-| Language bottles | Public publication complete; immutable revision-18 candidate and public Node acceptance green | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. Perl is published. The exact 5,885,691-byte revision-18 shell candidate and its 39 deferred bottles are now bound to immutable release `homebrew-shell-bottles-sha256-b51c071bc0f5eabf230f10d26f8e6c397999323dfbf18cb6da11cec822f8c21b`. Anonymous public Node acceptance starts Python, Perl, Erlang, and Ruby lazily in isolated first-use steps. Chromium reached the same runtime behavior but exposed that the UI's 512-event progress ring can evict earlier completed bottle summaries; the bounded per-asset authoritative ledger must land before browser acceptance is complete. |
+| Language bottles | Public publication complete; immutable revision-18 candidate and exact Node.js/Chromium language acceptance green | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. Perl is published. The exact 5,885,691-byte revision-18 shell candidate and its 39 deferred bottles are bound to immutable release `homebrew-shell-bottles-sha256-b51c071bc0f5eabf230f10d26f8e6c397999323dfbf18cb6da11cec822f8c21b`. Anonymous public Node.js and Chromium acceptance start Python, Perl, Erlang, and Ruby lazily in isolated first-use steps. PR #1062 landed the bounded per-asset browser evidence ledger at `dc5bb1210f1359be17d1d4078a7d56ec14903e4a`; the remaining activation gate is the shared product-VFS headroom fix and its final exact regression run. |
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
 | Deferred bottle trees | Generic producer and Phase 3 public proof complete; Phase 4 mirror public and relocation locally validated | PR #1051 landed the generic first-use substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`. PR #1054 landed the exact original-bottle producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: one independently lazy tree per Formula, complete source and guest inventories, exact compressed transport identity, hardlinks, and independent TypeScript/Python validation. PR #1055 composes the exact 38-Formula namespace, PR #1060's exact head proves its immutable public mirror and canonical revision-17 cutover, and PR #1056 landed the aggregate-budget correction. The Phase 4 worktree adds receipt-owned relocation before exposing language runtimes, because exact bottle bytes are transport truth while a correct pour may replace only the placeholders named by that bottle's `INSTALL_RECEIPT.json`; its complete 39-bottle browser mirror is public and immutable. |
 | Guest upstream `brew` | Stock tap and bottle-pour proof complete in the opt-in image; product lifecycle incomplete | Draft PR #1059 pins upstream Homebrew, gives its unprivileged guest state the conventional writable layout, and passes exact Node.js/Chromium startup, config, operational doctor, first-party tap, and independent third-party tap discovery. An unmodified stock Bzip2 install pours and runs the public bottle once Homebrew can resolve the exact 19-Formula metadata closure for publisher-only native dependencies. Full `homebrew/core` is infeasible in the guest (about 1.3 GiB, including a 1.22 GiB Git pack); the product fix is a separately reviewed allowlist of custom Homebrew `Requirement` classes, not a partial core tap or unsupported dependency bypass. Main-shell activation, install/reinstall/uninstall, durable reboot state, and cross-tap M4 installation remain. |
@@ -444,13 +444,14 @@ canonical release):
   are fetched; each step fetches no unrelated language and the full run leaves
   the remaining optional bottle trees pending.
 - Exact public Chromium reached the same shell and language runtime behavior,
-  then revealed that the browser Inspector reconstructs its audit table from a
-  512-event raw progress ring. Large bottle streams can evict every event for
-  an earlier completed bottle even though the materialized filesystem remains
-  correct. Browser acceptance remains incomplete until a separately bounded
-  per-asset authoritative summary ledger, reset semantics, UI consumption, and
-  full API tests replace that lossy evidence path; increasing the arbitrary
-  raw-event count or weakening the assertion is not the intended fix.
+  then revealed that the browser Inspector reconstructed its audit table from
+  a 512-event raw progress ring. Large bottle streams could evict every event
+  for an earlier completed bottle even though the materialized filesystem
+  remained correct. PR #1062 landed the separately bounded per-asset
+  authoritative summary ledger, lifecycle reset semantics, UI consumption,
+  and full API tests at
+  `dc5bb1210f1359be17d1d4078a7d56ec14903e4a`; the raw ring remains bounded for
+  recent diagnostics without being treated as durable completion evidence.
 - The exact revision-18 shell test is green in Node.js and Chromium, while the
   broader browser suite exposed a separate shared-image capacity defect in a
   shell-derived WordPress image. The image retained about 250 MiB of free data
@@ -462,10 +463,11 @@ canonical release):
 - The initial proof used the exact locally built directory fix from draft PR
   #1058. PR #1060 superseded that draft, landed the general `getdents64` fix,
   activated canonical revision 17, and completed the Phase 3 package cutover.
-  There is no remaining kernel prerequisite for revision 18. Canonical
-  PR #1056 has now landed. Canonical activation waits for the authoritative
-  browser ledger in PR #1062, the shared product-VFS headroom fix, and an exact
-  Chromium rerun against those landed prerequisites.
+  There is no remaining kernel prerequisite for revision 18. Canonical PR
+  #1056 and the browser ledger in PR #1062 have now landed. The stacked exact
+  shell/language test is green in Node.js and Chromium. Canonical activation
+  now waits only for the shared product-VFS headroom fix, its derived-product
+  regression, and the final exact restack against landed prerequisites.
 
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 
