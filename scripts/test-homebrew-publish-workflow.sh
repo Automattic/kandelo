@@ -416,7 +416,20 @@ homebrew_patched_launcher_seed_bundler_groups() {
 }
 
 homebrew_patched_launcher_isolate() {
+  local expected_primary_tap_root actual_primary_tap_root
   [ "$#" -ge 6 ] || return 2
+  if [ -n "${FAKE_EXPECT_PRIMARY_TAP_ROOT:-}" ]; then
+    expected_primary_tap_root="$(cd "$FAKE_EXPECT_PRIMARY_TAP_ROOT" && pwd -P)"
+    [ -n "${HOMEBREW_KANDELO_PRIMARY_TAP_ROOT:-}" ] || {
+      echo "fake launcher: primary tap authority is missing at isolation" >&2
+      return 3
+    }
+    actual_primary_tap_root="$(cd "$HOMEBREW_KANDELO_PRIMARY_TAP_ROOT" && pwd -P)"
+    [ "$actual_primary_tap_root" = "$expected_primary_tap_root" ] || {
+      echo "fake launcher: isolation received the wrong primary tap authority" >&2
+      return 3
+    }
+  fi
   if [ -n "${FAKE_SYSROOT_BUILD_ROOT_CAPTURE:-}" ]; then
     printf '%s\n' "$6" >"$FAKE_SYSROOT_BUILD_ROOT_CAPTURE"
   fi
@@ -4466,6 +4479,7 @@ EOF
       FAKE_BREW_PREFIX="$brew_prefix" \
       FAKE_BREW_REPOSITORY="$brew_repo" \
       FAKE_TAP_ROOT="$tapped_tap" \
+      FAKE_EXPECT_PRIMARY_TAP_ROOT="$tapped_tap" \
       FAKE_RECONSTRUCTED_TAP="$tap" \
       FAKE_EXPECTED_HOST_GIT="$host_git_bin" \
       FAKE_TARGET_OPT_PREFIX="$target_opt_prefix" \
@@ -4484,6 +4498,7 @@ EOF
       HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
       KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
       HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
+      HOMEBREW_KANDELO_PRIMARY_TAP_ROOT=caller-poison \
       HOMEBREW_GIT_PATH=caller-poison \
       GITHUB_ACTIONS= \
       bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \

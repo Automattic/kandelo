@@ -271,6 +271,7 @@ export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
 chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
 unset HOMEBREW_RELOCATE_BUILD_PREFIX
+unset HOMEBREW_KANDELO_PRIMARY_TAP_ROOT
 homebrew_patched_launcher_prepare \
   "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_ISOLATION_PATCH_FILE"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
@@ -474,6 +475,7 @@ cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
   echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
   exit 1
 }
+export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"
 homebrew_prune_formula_support_tests_from_tapped_clone "$TAPPED_TAP_ROOT"
 
 if [ -n "$BUILD_USER" ]; then

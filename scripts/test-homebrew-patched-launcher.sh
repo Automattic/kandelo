@@ -1188,7 +1188,6 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_kandelo="$isolated_source_parent/kandelo"
   isolated_tap="$isolated_source_parent/tap"
   isolated_dependency_tap="$isolated_source_parent/dependency-tap"
-  isolated_primary_tap="$isolated_prefix/Library/Taps/kandelo-dev/homebrew-tap-core"
   isolated_output="$isolated_source_parent/output"
   isolated_sysroot_private_parent="$ISOLATION_ROOT/private-sysroot-owner"
   isolated_sysroot_owner="$isolated_sysroot_private_parent/sysroot-build"
@@ -1205,7 +1204,6 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
     "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_dependency_tap" "$isolated_output" "$isolated_native_base" \
-    "$isolated_primary_tap" \
     "$external_cellar" "$external_opt" \
     "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib"
   chmod 0711 "$isolated_native_base"
@@ -1220,7 +1218,6 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   printf 'reviewed dependency tap\n' >"$isolated_dependency_tap/tap-marker"
-  printf 'selected primary tap\n' >"$isolated_primary_tap/primary-tap-marker"
   printf 'reviewed sysroot\n' >"$isolated_sysroot/lib/libc.a"
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
@@ -1269,7 +1266,6 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   export KANDELO_HOMEBREW_GETENT_BIN=/usr/bin/getent
   export KANDELO_HOMEBREW_PGREP_BIN=/usr/bin/pgrep
   export KANDELO_HOMEBREW_PKILL_BIN=/usr/bin/pkill
-  export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$isolated_primary_tap"
   HOMEBREW_KANDELO_GNU_TAR="$(command -v tar)"
   export HOMEBREW_KANDELO_GNU_TAR
   [[ "$HOMEBREW_KANDELO_GNU_TAR" =~ ^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$ ]] ||
@@ -1285,6 +1281,12 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$publisher_patch_file"
   homebrew_patched_launcher_seed_bundler_groups bottle formula_test
   isolated_overlay="$HOMEBREW_PATCHED_OVERLAY"
+  isolated_primary_tap="$isolated_overlay/Library/Taps/kandelo-dev/homebrew-tap-core"
+  mkdir -p "$isolated_primary_tap"
+  printf 'selected primary tap\n' >"$isolated_primary_tap/primary-tap-marker"
+  export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$isolated_primary_tap"
+  [ ! -e "$isolated_prefix/Library/Taps" ] ||
+    fail "isolation fixture unexpectedly put repository-owned taps under the prefix"
   ln -s marker.txt "$isolated_overlay/internal-source-link"
   HOMEBREW_PATCHED_SUDO_BIN=/usr/bin/sudo
   homebrew_patched_launcher_assert_overlay_symlinks_contained
@@ -1328,6 +1330,44 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "Formula isolation accepted an invalid target architecture"
   fi
   export KANDELO_HOMEBREW_ARCH=wasm32
+
+  assert_primary_tap_rejected() {
+    local candidate="$1" expected_error="$2" label="$3"
+    local error_file="$ISOLATION_ROOT/rejected-primary-tap.err"
+    local saved_primary_tap="$HOMEBREW_KANDELO_PRIMARY_TAP_ROOT"
+    export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$candidate"
+    if homebrew_patched_launcher_isolate \
+        "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+        "$isolated_output" "$isolated_sysroot_owner" > /dev/null 2>"$error_file"; then
+      fail "Formula isolation accepted $label"
+    fi
+    grep -F "$expected_error" "$error_file" >/dev/null ||
+      fail "Formula isolation did not explain rejected $label"
+    export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$saved_primary_tap"
+  }
+
+  prefix_primary_tap="$isolated_prefix/Library/Taps/kandelo-dev/homebrew-tap-core"
+  mkdir -p "$prefix_primary_tap"
+  printf 'prefix lookalike\n' >"$prefix_primary_tap/primary-tap-marker"
+  assert_primary_tap_rejected \
+    "$prefix_primary_tap" \
+    "selected primary tap root is not one canonical tapped checkout" \
+    "a prefix-owned primary tap lookalike"
+  rm -r "$isolated_prefix/Library"
+
+  assert_primary_tap_rejected \
+    "$isolated_tap" \
+    "selected primary tap root is not one canonical tapped checkout" \
+    "a primary tap outside the active repository tap store"
+
+  primary_tap_link="$isolated_overlay/Library/Taps/kandelo-dev/homebrew-link"
+  ln -s homebrew-tap-core "$primary_tap_link"
+  assert_primary_tap_rejected \
+    "$primary_tap_link" \
+    "selected primary tap root must be a real directory" \
+    "a symlinked primary tap"
+  rm "$primary_tap_link"
+
   ln -s "$isolated_sysroot_owner" "$isolated_sysroot_owner-link"
   if homebrew_patched_launcher_isolate \
       "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \

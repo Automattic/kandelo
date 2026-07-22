@@ -1919,6 +1919,15 @@ def check_publisher(workflow)
   selected_formula_compare_index = bottle_verifier.index(
     'cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"'
   )
+  verifier_primary_unset_index = bottle_verifier.index(
+    'unset HOMEBREW_KANDELO_PRIMARY_TAP_ROOT'
+  )
+  verifier_launcher_prepare_index = bottle_verifier.index(
+    'homebrew_patched_launcher_prepare \\'
+  )
+  verifier_primary_authority_index = bottle_verifier.index(
+    'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"'
+  )
   primary_test_prune_index = bottle_verifier.rindex(
     'homebrew_prune_formula_support_tests_from_tapped_clone "$TAPPED_TAP_ROOT"'
   )
@@ -1967,13 +1976,17 @@ def check_publisher(workflow)
       !bottle_verifier.include?(' -ef "$TAP_ROOT/Formula/$FORMULA.rb"') &&
       reconstructed_source_index && tap_clone_index && clean_clone_index &&
       materialize_formula_index && selected_formula_index &&
-      selected_formula_compare_index && primary_test_prune_index &&
+      selected_formula_compare_index && verifier_primary_unset_index &&
+      verifier_launcher_prepare_index && verifier_primary_authority_index &&
+      primary_test_prune_index &&
+      verifier_primary_unset_index < verifier_launcher_prepare_index &&
       reconstructed_source_index < tap_clone_index &&
       tap_clone_index < clean_clone_index &&
       clean_clone_index < materialize_formula_index &&
       materialize_formula_index < selected_formula_index &&
       selected_formula_index < selected_formula_compare_index &&
-      selected_formula_compare_index < primary_test_prune_index &&
+      selected_formula_compare_index < verifier_primary_authority_index &&
+      verifier_primary_authority_index < primary_test_prune_index &&
       verifier_isolate_after_prune_index && verifier_deps_after_prune_index &&
       primary_test_prune_index < verifier_isolate_after_prune_index &&
       primary_test_prune_index < verifier_deps_after_prune_index,
@@ -2191,6 +2204,8 @@ def check_publisher(workflow)
     'sysroot must be a real directory containing a regular libc archive',
     'expected_sysroot=%q',
     'selected primary tap root must be a real directory',
+    'taps_root="$HOMEBREW_PATCHED_OVERLAY/Library/Taps"',
+    'active Homebrew repository tap storage must be a real directory',
     'selected primary tap root is not one canonical tapped checkout',
     '[ "$primary_tap_root" != "$HOMEBREW_KANDELO_PRIMARY_TAP_ROOT" ]',
     'expected_primary_tap=%q',
@@ -2495,6 +2510,17 @@ def check_publisher(workflow)
   check(launcher_test.include?("assert-protected-gnu-tar") &&
         launcher_test.include?('[ ! -w "$2" ] && [ ! -w "${2%/*}" ]'),
         "launcher regression does not exercise GNU tar as the dedicated Formula identity")
+  check(launcher_test.include?(
+          "isolation fixture unexpectedly put repository-owned taps under the prefix"
+        ) && launcher_test.include?(
+          "assert_primary_tap_rejected"
+        ) && launcher_test.include?(
+          "a prefix-owned primary tap lookalike"
+        ) && launcher_test.include?(
+          "a primary tap outside the active repository tap store"
+        ) && launcher_test.include?(
+          "a symlinked primary tap"
+        ), "launcher regression does not exercise the active repository tap boundary")
   native_validation_index = launcher.index('native_inputs=("$native_prefix"')
   native_overlap_index = launcher.index(
     "Homebrew state roots must not contain one another"
