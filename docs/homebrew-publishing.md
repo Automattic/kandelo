@@ -283,6 +283,13 @@ Homebrew source or downloading executable code during Formula evaluation.
 The bootstrap and guest Homebrew apply only the platform patch above, so their
 repository and trust behaviors are unchanged.
 
+The publisher overlay is bound to the publisher's separately pinned Homebrew
+baseline. It is not a second guest patch: applying `0002` after the guest's
+`0001` at the guest bootstrap revision is neither required nor a supported
+composition. The current guest baseline deliberately exercises only `0001`;
+publisher-overlay tests continue to own `0002` and its isolated-build
+semantics.
+
 The transient-service containment above is the current official publisher's
 Linux security backend, not a Kandelo bottle target requirement. Local
 credentialless builds continue to use the ordinary POSIX path when no CI build
@@ -1284,21 +1291,37 @@ the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 `scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. Source
 preparation verifies the reviewed patch SHA-256, refuses an upstream revision
-where the patch does not apply, limits the patch to its four declared Homebrew
+where the patch does not apply, limits the patch to its five declared Homebrew
 files, and archives the patched Git tree with a fixed timestamp and UTC
 timezone.
 
+The current guest pin is upstream Homebrew commit
+`4ead8619231cb15cbe15e8e8188081e347d6f7cd`, the smallest reviewed revision
+that includes the public `Resource::Patch#type` DSL used by the first-party
+tap. The source contract records the portable Ruby version from that exact
+tree (`4.0.5_1`) rather than copying a version constant into the image builder.
+
 `/etc/kandelo/homebrew-image.json` records the exact upstream Homebrew commit,
 patch SHA-256, patched-tree Git object and normalized-tree SHA-256, patched ZIP
-SHA-256, and selected bottle architecture and tag. `/etc/homebrew/brew.env`
-selects `wasm32_kandelo` for the current wasm32 bootstrap and sets
-`HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1`, so prefix and user configuration cannot
-select a bottle for a different guest architecture. Homebrew's own `bin/brew`
-reads that supported system environment file; `/usr/bin/brew` stays a direct
-symlink to `/home/linuxbrew/.linuxbrew/bin/brew`, with no Kandelo launcher or
-install fallback. The patch recognizes that exact alias/repository pair so
-Homebrew does not derive the forbidden `/usr` prefix from `$0`. The same source
-preparer emits `wasm64_kandelo` when a future bootstrap builder selects wasm64.
+SHA-256, portable Ruby version, and selected bottle architecture and tag.
+`/etc/homebrew/brew.env` selects `wasm32_kandelo` for the current wasm32
+bootstrap and sets `HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1`, so prefix and user
+configuration cannot select a bottle for a different guest architecture. It
+also selects Homebrew's supported Git and managed-CA paths and disables the
+official package API. The official internal API has no Kandelo package index;
+API mode asks for `internal/packages.dunno_generic.jws.json` and fails with a
+404 before an ordinary command can run. Explicit Git taps are therefore the
+truthful metadata source for Kandelo Formulae.
+
+The environment also records Homebrew's automatic no-API fallback state. That
+state prevents an unrelated custom-tap command from silently cloning
+`homebrew/core`; an explicit request for a core Formula instead fails with
+Homebrew's normal instruction to tap core. Homebrew's own `bin/brew` reads this
+supported system environment file; `/usr/bin/brew` stays a direct symlink to
+`/home/linuxbrew/.linuxbrew/bin/brew`, with no Kandelo launcher or install
+fallback. The patch recognizes that exact alias/repository pair so Homebrew
+does not derive the forbidden `/usr` prefix from `$0`. The same source preparer
+emits `wasm64_kandelo` when a future bootstrap builder selects wasm64.
 
 The default 768 MiB VFS capacity leaves writable space for real guest Homebrew
 operations; use `--sab-size` and `--max-size` when a specific integration test
@@ -1324,6 +1347,14 @@ uses during startup. Other rootfs tools retain their normal deferred policy.
 The output-level closure is declared generically rather than making the whole
 multi-command `posix-utils-lite` bundle eager.
 
+Homebrew's versioned portable-Ruby paths remain conventional. The bootstrap
+initially aliases `vendor/portable-ruby/4.0.5_1` and `current` to the image-owned
+`/usr` Ruby tree, while leaving the vendor directory writable for later stock
+Homebrew management. Its managed CA path similarly aliases the image-owned
+system certificate bundle, and Git's standard `git-remote-http` and
+`git-remote-https` helper paths resolve to the reviewed guest Git transport.
+The layout and root-owned metadata bind all three initial relationships.
+
 Both the pinned Homebrew `git archive` ZIP and Ruby's runtime ZIP use
 `fmode_policy=preserve-executable`. `mkrootfs` imports only their Unix `0111`
 bits; ownership, directory modes, non-executable file modes, and all other
@@ -1344,9 +1375,10 @@ configuration. It executes archived Homebrew through a real symlink and proves
 that the guest alias retains the canonical prefix. It also exercises both tag
 parser round-trips and loads a pinned real tap formula to verify that Homebrew
 selects its exact `wasm32_kandelo` bottle digest. It proves that changed upstream
-patch context fails closed. Formula selection is not evidence that the GHCR
-manifest exists or that a bottle downloaded, poured, or ran; those remain
-trusted publisher and guest integration claims.
+patch context fails closed. It also binds the automatic no-API variable to the
+upstream core-tap guard that gives it meaning. Formula selection is not
+evidence that the GHCR manifest exists or that a bottle downloaded, poured, or
+ran; those remain trusted publisher and guest integration claims.
 
 After building the bootstrap image, verify that Homebrew's canonical archived
 `bin/brew` reads the system environment file rather than relying on a launcher
@@ -1382,6 +1414,69 @@ source-provenance digest binding. The Chromium peer is
 `apps/browser-demos/test/homebrew-bootstrap-vfs.spec.ts`; it runs the same
 script from `/usr/bin/bash` in the exact image and also rejects any deferred
 program download during the bootstrap proof.
+
+The current live-network checkpoint goes further without overstating install
+support. Stock `brew config` selects `/usr/bin/ruby` as Homebrew Ruby, the
+reviewed Git and curl paths, the canonical Linuxbrew prefix, and the no-API
+mode without creating `homebrew/core`. Stock `brew tap` clones the public
+`kandelo-dev/tap-core` repository, and `brew info --json=v2` selects the exact
+public `bzip2` `1.0.8_2` Kandelo bottle digest. Anonymous OCI download and pour
+also work when dependency processing is explicitly bypassed, but
+`--ignore-dependencies` is an unsupported Homebrew developer option and is not
+the guest contract.
+
+The public third-party path reaches the same checkpoint. Stock `brew tap`
+clones `brandonpayton/kandelo-canary` at
+`a299f1bf894627ff2c2ccf5cdbb9837c9d820a97`, and stock Formula loading selects
+M4 `1.4.21` rebuild 3, its exact public bottle digest, and the fully qualified
+`kandelo-dev/tap-core/dash` runtime dependency. Neither tap operation creates
+`homebrew/core`. The remaining third-party gap is installation, not tap or
+Formula discovery.
+
+Full stock `brew doctor` currently exits nonzero with one truthful warning:
+the bottles-only guest does not contain developer tools for source builds. The
+operational checks for writable/existing directories, temporary-directory
+semantics, Git presence and version, and core-tap integrity all pass and print
+`Your system is ready to brew.` Treat the named operational suite as the green
+bottles-only contract while retaining the full-doctor warning as a documented
+source-build boundary.
+
+A normal `brew install --force-bottle kandelo-dev/tap-core/bzip2` currently
+stops before pouring because the source Formula declares native build-only
+`binaryen` and `wabt` dependencies. Homebrew intends to prune those for a
+bottle, but its requirement expansion resolves each dependency Formula first;
+with no core API or core checkout, `binaryen` is unavailable. Do not hide this
+with a launcher flag, synthetic core metadata, or a fake platform identity.
+
+A bounded diagnostic proves that upstream Homebrew does prune these tools once
+their complete Formula metadata resolves. A diagnostic image containing the
+exact 19-Formula Linux metadata closure for `binaryen`, `wabt`, and their
+recursive dependencies used 85,664 uncompressed bytes (38,910 ZIP bytes).
+Without an API, dependency-bypass flag, or installer patch, stock
+`brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2` then selected
+and poured Bzip2 `1.0.8_2`; its round-trip passed, and the installed receipt
+recorded `poured_from_bottle: true` with zero runtime dependencies. This is
+mechanism evidence, not a supported partial-`homebrew/core` distribution.
+
+Shipping the real core checkout is not a viable alternative. A current clone
+measured about 1.3 GiB across 8,802 files, including a 1.22 GiB Git pack with
+3,612,638 objects; the pack alone exceeds the bootstrap's 768 MiB VFS. A native
+clone took about 95 seconds. A bounded guest clone still had not completed
+after eight minutes and drove its Node host to about 20 GiB RSS. Even a
+history-free current-core snapshot made pinned Homebrew scan thousands of
+version-skewed Formulae, exceeded 9 GiB host RSS, and did not complete.
+
+The remaining work is a supported recipe contract that represents
+publisher-only native tools without placing them in the guest Formula graph.
+The leading design is a tightly allowlisted set of custom Homebrew
+`Requirement` classes, which Homebrew documents for external tools. It must
+retain the publisher's static plan, sealed tool proxies, source identity, and
+provenance checks, reject arbitrary dynamic Requirements, and cover both build
+and test environments before rollout. Supported install, receipt, execution,
+reinstall, uninstall, and cross-tap lifecycle evidence must then run on Node.js
+and Chromium. Full reboot persistence is also not yet a supported claim: the
+current worker-owned mutable root has no whole-image export or durable
+Homebrew-state mount.
 
 ABI 41 raised every fork continuation reserve from 16 KiB to 60 KiB. The
 earlier ABI 39 dispatcher and `/usr/bin/brew` alias-launcher measurements needed
