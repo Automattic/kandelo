@@ -3824,6 +3824,19 @@ def check_publisher(workflow)
           "publisher failure report lacks bounded exact finalizer detail: #{fragment}")
   end
   [
+    'SOURCE_TAP_ROOT="$COMPOSE_PARENT/source-tap"',
+    'SOURCE_TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"',
+    'git -C "$TAP_ROOT" worktree add --detach "$SOURCE_TAP_ROOT" "$SOURCE_TAP_COMMIT"',
+    'assert_clean_tap_snapshot "$SOURCE_TAP_ROOT" "refreshed source tap" "$SOURCE_TAP_COMMIT"',
+    '--tap-root "$SOURCE_TAP_ROOT"',
+    'git -C "$TAP_ROOT" worktree remove --force "$SOURCE_TAP_ROOT"',
+  ].each do |fragment|
+    check(finalizer_source.include?(fragment),
+          "publisher finalizer lacks clean source-snapshot isolation: #{fragment}")
+  end
+  check(finalizer_source.scan('--tap-root "$SOURCE_TAP_ROOT"').length == 2,
+        "publisher finalizer does not bind both source validators to one clean snapshot")
+  [
     'PLANNED_TAP_ROOT="$COMPOSE_PARENT/planned-tap-$planned_index"',
     'git -C "$TAP_ROOT" worktree add --detach "$PLANNED_TAP_ROOT" "$input_tap_commit"',
     'assert_static_tap_tree "$PLANNED_TAP_ROOT" "planned composition tap"',
@@ -3890,6 +3903,11 @@ def check_publisher(workflow)
     'Formula differs from the planned tap outside canonical bottle metadata',
     'bash "$REPO_ROOT/scripts/test-install-local-binary-sealed.sh"',
     'assert_atomic_publication_batch_closes_formula_metadata_wave',
+    'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap_root")"',
+    'export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE',
+    'atomic batch publisher accepted untracked source dirt',
+    'atomic batch publisher did not explain untracked source dirt',
+    'rejected untracked source dirt changed the tap checkout',
     'single-package publication bypassed the peer Formula/metadata mismatch',
     'failed atomic batch changed the tap checkout',
     'atomic batch metadata did not contain both exact bottle handoffs',
