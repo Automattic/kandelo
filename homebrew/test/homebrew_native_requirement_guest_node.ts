@@ -8,7 +8,11 @@ import {
 } from "../../scripts/homebrew-bootstrap-guest-contract";
 
 const PINNED_HOMEBREW_REVISION = "4ead8619231cb15cbe15e8e8188081e347d6f7cd";
-const PROVEN_TAP_REVISION = "e7cfe3140e692965cd7abf10e8029633c5d20c02";
+const PROVEN_TAP_REVISION = "674813c5c79c97fae8fb971d97b3fee92ad0057c";
+const PROVEN_FORMULA_SHA256 =
+  "18518f0be194451bd69d8895737a6440efa8381634d419718f6bbe577841cefc";
+const PROVEN_SUPPORT_SHA256 =
+  "a1b2668e1e4f78c2224c1a747f7092f966fce71463e88757da4e69e67f47f215";
 const SUCCESS_MARKER = "KANDELO_NATIVE_REQUIREMENT_GUEST_OK";
 
 interface Options {
@@ -68,47 +72,23 @@ core="$brew_repository/Library/Taps/homebrew/homebrew-core"
 
 /usr/bin/brew tap kandelo-dev/tap-core
 tap="$(/usr/bin/brew --repository kandelo-dev/tap-core)"
+/usr/bin/git -C "$tap" fetch --no-tags origin ${PROVEN_TAP_REVISION}
 /usr/bin/git -C "$tap" checkout --detach ${PROVEN_TAP_REVISION}
 [ "$(/usr/bin/git -C "$tap" rev-parse HEAD)" = "${PROVEN_TAP_REVISION}" ] ||
   fail "tap did not select the proven revision"
 [ ! -e "$core" ] || fail "tapping the custom tap created homebrew/core"
 
 support="$tap/Kandelo/formula_support/kandelo_formula_support.rb"
-/usr/bin/cat >>"$support" <<'RUBY'
-
-# Proof-only tap fixture. The production shape is statically validated by
-# scripts/homebrew-formula-runtime-closure.rb before publisher execution.
-module KandeloFormulaSupport
-  class BinaryenRequirement < Requirement
-    KANDELO_NATIVE_FORMULA = "binaryen"
-    KANDELO_NATIVE_SENTINEL = "wasm-opt"
-    fatal true
-    satisfy(build_env: false) { which("wasm-opt") }
-  end
-
-  class PkgconfRequirement < Requirement
-    KANDELO_NATIVE_FORMULA = "pkgconf"
-    KANDELO_NATIVE_SENTINEL = "pkg-config"
-    fatal true
-    satisfy(build_env: false) { which("pkg-config") }
-  end
-
-  class WabtRequirement < Requirement
-    KANDELO_NATIVE_FORMULA = "wabt"
-    KANDELO_NATIVE_SENTINEL = "wasm-validate"
-    fatal true
-    satisfy(build_env: false) { which("wasm-validate") }
-  end
-end
-RUBY
-
 formula="$tap/Formula/bzip2.rb"
-/usr/bin/sed -i 's/  depends_on "binaryen" => :build/  depends_on KandeloFormulaSupport::BinaryenRequirement => :build/' "$formula"
-/usr/bin/sed -i 's/  depends_on "wabt" => :build/  depends_on KandeloFormulaSupport::WabtRequirement => :build/' "$formula"
-/usr/bin/sed -i 's/  depends_on "pkgconf" => :test/  depends_on KandeloFormulaSupport::PkgconfRequirement => [:build, :test]/' "$formula"
+[ "$(/usr/bin/sha256sum "$support" | /usr/bin/cut -d " " -f 1)" = "${PROVEN_SUPPORT_SHA256}" ] ||
+  fail "tap support bytes differ from the proven revision"
+[ "$(/usr/bin/sha256sum "$formula" | /usr/bin/cut -d " " -f 1)" = "${PROVEN_FORMULA_SHA256}" ] ||
+  fail "Bzip2 Formula bytes differ from the proven revision"
 /usr/bin/grep -F 'depends_on KandeloFormulaSupport::BinaryenRequirement => :build' "$formula" >/dev/null
 /usr/bin/grep -F 'depends_on KandeloFormulaSupport::PkgconfRequirement => [:build, :test]' "$formula" >/dev/null
 /usr/bin/grep -F 'depends_on KandeloFormulaSupport::WabtRequirement => :build' "$formula" >/dev/null
+[ -z "$(/usr/bin/git -C "$tap" status --porcelain --untracked-files=all)" ] ||
+  fail "proven tap checkout was dirty before install"
 
 # No dependency bypass, synthetic core tree, API metadata, or patched installer
 # participates in this transaction.
@@ -117,6 +97,12 @@ formula="$tap/Formula/bzip2.rb"
 [ ! -e "$core" ] || fail "force-bottle install created homebrew/core"
 installer_after="$(/usr/bin/sha256sum "$installer" | /usr/bin/cut -d " " -f 1)"
 [ "$installer_after" = "$installer_before" ] || fail "stock FormulaInstaller changed"
+[ "$(/usr/bin/sha256sum "$support" | /usr/bin/cut -d " " -f 1)" = "${PROVEN_SUPPORT_SHA256}" ] ||
+  fail "tap support bytes changed during install"
+[ "$(/usr/bin/sha256sum "$formula" | /usr/bin/cut -d " " -f 1)" = "${PROVEN_FORMULA_SHA256}" ] ||
+  fail "Bzip2 Formula bytes changed during install"
+[ -z "$(/usr/bin/git -C "$tap" status --porcelain --untracked-files=all)" ] ||
+  fail "proven tap checkout changed during install"
 
 prefix="$(/usr/bin/brew --prefix kandelo-dev/tap-core/bzip2)"
 receipt="$prefix/INSTALL_RECEIPT.json"

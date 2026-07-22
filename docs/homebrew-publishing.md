@@ -1526,15 +1526,18 @@ Requirement as a runtime Requirement while installing a bottle, so accepting
 that spelling would make the guest demand a publisher-only executable.
 
 The Node.js proof starts from the exact bootstrap image, verifies Homebrew
-`4ead8619231cb15cbe15e8e8188081e347d6f7cd`, selects tap commit
-`e7cfe3140e692965cd7abf10e8029633c5d20c02`, and invokes unmodified
+`4ead8619231cb15cbe15e8e8188081e347d6f7cd`, selects the immutable core-tap
+candidate `674813c5c79c97fae8fb971d97b3fee92ad0057c`, verifies the exact Bzip2
+Formula and shared support hashes from that candidate without editing either
+file, and invokes unmodified
 `brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2`. It neither
 creates `homebrew/core` nor uses API metadata, a synthetic core tree, an
 installer patch, or a dependency-bypass flag. The public bottle pours, its
 receipt reports `poured_from_bottle: true` with no runtime dependencies, and
-the installed executable completes a compression round trip. This is still
-prototype evidence, not the supported guest-install contract: the tap must
-adopt the canonical classes for the full native-tool allowlist, and Node.js and
+the installed executable completes a compression round trip. Prepare-merge
+runs this proof against the candidate kernel and bootstrap VFS whenever package
+staging is required. This is still pre-rollout evidence, not the supported
+guest-install contract: the core-tap candidate must land, and Node.js and
 Chromium must cover install, reinstall, uninstall, and third-party lifecycle
 before user-facing install instructions are published.
 
