@@ -5,10 +5,10 @@
 // error; the pane catches those and renders a host-endpoint placeholder.
 
 import * as React from "react";
-import { useKernelHost, useDmesg, useLazyDownloadLog } from "../kernel-host/react";
+import { useKernelHost, useDmesg, useLazyDownloadSummaries } from "../kernel-host/react";
 import type {
   DmesgLine, ProcessEvent, ProcessInfo, MountInfo, KernelStateKV,
-  MemMapEntry, SyscallEvent, VfsDirent, LazyDownloadEvent,
+  MemMapEntry, SyscallEvent, VfsDirent, LazyDownloadEvent, LazyDownloadSummary,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
 
@@ -793,8 +793,11 @@ interface LazyDownloadAssetLogEntry {
 }
 
 const LazyLoadTab: React.FC = () => {
-  const events = useLazyDownloadLog();
-  const assets = React.useMemo(() => summarizeLazyDownloadLog(events), [events]);
+  const summaries = useLazyDownloadSummaries();
+  const assets = React.useMemo(
+    () => describeLazyDownloadSummaries(summaries),
+    [summaries],
+  );
 
   return (
     <div className="kdownload-log">
@@ -852,29 +855,23 @@ const LazyLoadTab: React.FC = () => {
   );
 };
 
-function summarizeLazyDownloadLog(events: LazyDownloadEvent[]): LazyDownloadAssetLogEntry[] {
-  const byId = new Map<string, LazyDownloadAssetLogEntry>();
-  for (const event of events) {
-    const existing = byId.get(event.id);
-    const loadedBytes = Math.max(existing?.loadedBytes ?? 0, event.loadedBytes);
-    const totalBytes = event.totalBytes ?? existing?.totalBytes;
-    byId.set(event.id, {
-      id: event.id,
-      kind: event.kind,
-      label: lazyDownloadAssetLabel(event),
-      status: event.status,
-      target: downloadTarget(event),
-      source: event.url,
-      loadedBytes,
-      totalBytes,
-      startedAt: existing?.startedAt ?? event.t,
-      updatedAt: event.t,
-      eventCount: (existing?.eventCount ?? 0) + 1,
-      error: event.error ?? existing?.error,
-    });
-  }
-
-  return Array.from(byId.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+function describeLazyDownloadSummaries(
+  summaries: LazyDownloadSummary[],
+): LazyDownloadAssetLogEntry[] {
+  return summaries.map((summary) => ({
+    id: summary.id,
+    kind: summary.kind,
+    label: lazyDownloadAssetLabel(summary),
+    status: summary.status,
+    target: downloadTarget(summary),
+    source: summary.url,
+    loadedBytes: summary.loadedBytes,
+    totalBytes: summary.totalBytes,
+    startedAt: summary.startedAt,
+    updatedAt: summary.t,
+    eventCount: summary.eventCount,
+    error: summary.error,
+  })).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 function downloadTarget(event: LazyDownloadEvent): string {
