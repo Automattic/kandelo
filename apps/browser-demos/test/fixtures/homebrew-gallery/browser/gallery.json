@@ -1,0 +1,12 @@
+{
+  "source_id": "kandelo-homebrew",
+  "index_url": "index.toml",
+  "entries": [
+    {
+      "id": "sample-vfs",
+      "title": "Sample Homebrew VFS",
+      "description": "A sample package poured from a Homebrew bottle.",
+      "packages": [{ "name": "sample-homebrew-sample-vfs", "version": "2.12.3" }]
+    }
+  ]
+}
