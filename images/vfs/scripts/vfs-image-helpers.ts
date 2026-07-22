@@ -34,11 +34,15 @@ export interface WalkOptions {
   exclude?: (relPath: string) => boolean;
   preserveMode?: boolean;
   preserveSymlinks?: boolean;
-  failOnError?: boolean;
 }
 
 /**
  * Walk a host directory and write all files into the VFS under mountPrefix.
+ * Any host-read or VFS-write failure aborts the build. Product images must not
+ * silently omit an entry; callers that intentionally exclude content must do
+ * so through `exclude`.
+ *
+ * Symlinks are intentionally omitted unless `preserveSymlinks` is true.
  * Returns the number of files written.
  */
 export function walkAndWrite(
@@ -56,32 +60,29 @@ export function walkAndWrite(
       const rel = relative(rootDir, full);
       const mountPath = mountPrefix + "/" + rel;
 
-      try {
-        const lstat = lstatSync(full);
-        if (opts?.exclude?.(rel)) continue;
-        if (lstat.isSymbolicLink()) {
-          if (opts?.preserveSymlinks) {
-            ensureDirRecursive(fs, mountPath.slice(0, mountPath.lastIndexOf("/")) || "/");
-            fs.symlink(readlinkSync(full), mountPath);
-            count++;
-          }
-        } else if (lstat.isDirectory()) {
-          ensureDirRecursive(fs, mountPath);
-          if (opts?.preserveMode) fs.chmod(mountPath, lstat.mode & 0o7777);
-          walk(full);
-        } else if (lstat.isFile()) {
-          const data = readFileSync(full);
-          writeVfsBinary(
-            fs,
-            mountPath,
-            new Uint8Array(data),
-            opts?.preserveMode ? lstat.mode & 0o7777 : 0o644,
-          );
+      const lstat = lstatSync(full);
+      if (opts?.exclude?.(rel)) continue;
+      if (lstat.isSymbolicLink()) {
+        if (opts?.preserveSymlinks) {
+          ensureDirRecursive(fs, mountPath.slice(0, mountPath.lastIndexOf("/")) || "/");
+          fs.symlink(readlinkSync(full), mountPath);
           count++;
         }
-      } catch (err) {
-        if (opts?.failOnError) throw err;
-        // Skip unreadable files
+      } else if (lstat.isDirectory()) {
+        ensureDirRecursive(fs, mountPath);
+        if (opts?.preserveMode) fs.chmod(mountPath, lstat.mode & 0o7777);
+        walk(full);
+      } else if (lstat.isFile()) {
+        const data = readFileSync(full);
+        writeVfsBinary(
+          fs,
+          mountPath,
+          new Uint8Array(data),
+          opts?.preserveMode ? lstat.mode & 0o7777 : 0o644,
+        );
+        count++;
+      } else {
+        throw new Error(`Unsupported VFS image source entry: ${full}`);
       }
     }
   }
@@ -185,6 +186,30 @@ export function assertVfsImageHeadroom(
   }
   if (failures.length > 0) {
     throw new Error(`${label} lacks runtime VFS headroom: ${failures.join("; ")}`);
+  }
+}
+
+/** Require a filesystem's effective growth ceiling to match its product profile. */
+export function assertVfsImageCapacity(
+  fs: MemoryFileSystem,
+  expectedMaxByteLength: number,
+  label: string,
+): void {
+  if (!Number.isSafeInteger(expectedMaxByteLength) || expectedMaxByteLength <= 0) {
+    throw new Error(
+      `${label} expectedMaxByteLength must be a positive safe integer`,
+    );
+  }
+  const stats = fs.statfs("/");
+  const actualMaxByteLength = stats.blocks * stats.bsize;
+  if (!Number.isSafeInteger(actualMaxByteLength) || actualMaxByteLength <= 0) {
+    throw new Error(`${label} reports an invalid VFS capacity`);
+  }
+  if (actualMaxByteLength !== expectedMaxByteLength) {
+    throw new Error(
+      `${label} has a ${actualMaxByteLength}-byte VFS capacity; ` +
+        `${expectedMaxByteLength} bytes are required by its product profile`,
+    );
   }
 }
 
