@@ -61,7 +61,10 @@ import {
   type HomebrewVfsPlan,
 } from "../src/homebrew-vfs-planner";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { VFS_DEFERRED_TREE_LIMITS } from "../src/vfs/deferred-tree-limits";
+import {
+  VFS_DEFERRED_TREE_COLLECTION_LIMITS,
+  VFS_DEFERRED_TREE_LIMITS,
+} from "../src/vfs/deferred-tree-limits";
 import { ensureDirRecursive, writeVfsFile } from "../src/vfs/image-helpers";
 
 const PREFIX = "/home/linuxbrew/.linuxbrew";
@@ -2136,15 +2139,16 @@ describe("Homebrew runtime layer consumer", () => {
     expect(fetches).toBe(0);
   });
 
-  it("rejects aggregate uncompressed size before changing the VFS", async () => {
+  it("accepts exact per-tree and aggregate byte boundaries", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const runtimeDescriptor = structuredClone(fixture.descriptor);
     const perlDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
-    const declaredSize = Math.floor(
-      HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes / 2,
-    ) + 1;
     for (const descriptor of [runtimeDescriptor, perlDescriptor]) {
-      descriptorTree(descriptor).inventory.expanded_bytes = declaredSize;
+      const tree = descriptorTree(descriptor);
+      tree.content.bytes = HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes;
+      tree.inventory.expanded_bytes =
+        HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes;
+      descriptor.packages.layer[0].bytes = tree.content.bytes;
       recloseRuntimeLayerDescriptor(descriptor);
     }
     const runtime = runtimeLayerReference("runtime", runtimeDescriptor);
@@ -2153,17 +2157,61 @@ describe("Homebrew runtime layer consumer", () => {
       [runtime.reference.descriptor.url, runtime.bytes],
       [perl.reference.descriptor.url, perl.bytes],
     ]);
+
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference, perl.reference],
+      fetch: async (url) => new Response(responses.get(url)!),
+    });
+    expect(composed.fs.pendingDeferredTreeUsage()).toMatchObject({
+      archiveBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionArchiveBytes,
+      expandedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionExpandedBytes,
+    });
+    const restored = MemoryFileSystem.fromImage(await composed.fs.saveImage());
+    expect(restored.pendingDeferredTreeUsage()).toEqual(
+      composed.fs.pendingDeferredTreeUsage(),
+    );
+  });
+
+  it("rejects aggregate uncompressed size before changing the VFS", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const descriptors = [
+      structuredClone(fixture.descriptor),
+      runtimeLayerVariant(fixture.descriptor, "perl"),
+      runtimeLayerVariant(fixture.descriptor, "ruby"),
+    ];
+    const declaredSize = Math.floor(
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionExpandedBytes /
+        descriptors.length,
+    ) + 1;
+    for (const descriptor of descriptors) {
+      descriptorTree(descriptor).inventory.expanded_bytes = declaredSize;
+      recloseRuntimeLayerDescriptor(descriptor);
+    }
+    const references = ["runtime", "perl", "ruby"].map((name, index) =>
+      runtimeLayerReference(name, descriptors[index]!)
+    );
+    const responses = new Map(
+      references.map((reference) => [
+        reference.reference.descriptor.url,
+        reference.bytes,
+      ]),
+    );
     const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
     await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
-      layers: [runtime.reference, perl.reference],
+      layers: references.map((reference) => reference.reference),
       fetch: async (url) => new Response(responses.get(url)!),
     })).rejects.toThrow(/expansion cap/i);
     expect(() => fs.lstat(fixture.runtimeKeg)).toThrow();
-    expect(() => fs.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
+    for (const descriptor of descriptors.slice(1)) {
+      expect(() => fs.lstat(descriptor.packages.layer[0].keg)).toThrow();
+    }
   });
 
   it("caps packages across layers and counts pending base trees before registration", async () => {
@@ -2334,33 +2382,42 @@ describe("Homebrew runtime layer consumer", () => {
 
   it("rejects aggregate compressed size before changing the VFS", async () => {
     const fixture = await runtimeLayerConsumerFixture();
-    const runtimeDescriptor = structuredClone(fixture.descriptor);
-    const perlDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
+    const descriptors = [
+      structuredClone(fixture.descriptor),
+      runtimeLayerVariant(fixture.descriptor, "perl"),
+      runtimeLayerVariant(fixture.descriptor, "ruby"),
+    ];
     const declaredSize = Math.floor(
-      HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes / 2,
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionArchiveBytes /
+        descriptors.length,
     ) + 1;
-    for (const descriptor of [runtimeDescriptor, perlDescriptor]) {
+    for (const descriptor of descriptors) {
       descriptorTree(descriptor).content.bytes = declaredSize;
       descriptor.packages.layer[0].bytes = declaredSize;
       recloseRuntimeLayerDescriptor(descriptor);
     }
-    const runtime = runtimeLayerReference("runtime", runtimeDescriptor);
-    const perl = runtimeLayerReference("perl", perlDescriptor);
-    const responses = new Map([
-      [runtime.reference.descriptor.url, runtime.bytes],
-      [perl.reference.descriptor.url, perl.bytes],
-    ]);
+    const references = ["runtime", "perl", "ruby"].map((name, index) =>
+      runtimeLayerReference(name, descriptors[index]!)
+    );
+    const responses = new Map(
+      references.map((reference) => [
+        reference.reference.descriptor.url,
+        reference.bytes,
+      ]),
+    );
     const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
     await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
-      layers: [runtime.reference, perl.reference],
+      layers: references.map((reference) => reference.reference),
       fetch: async (url) => new Response(responses.get(url)!),
     })).rejects.toThrow(/archive-byte cap/i);
     expect(() => fs.lstat(fixture.runtimeKeg)).toThrow();
-    expect(() => fs.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
+    for (const descriptor of descriptors.slice(1)) {
+      expect(() => fs.lstat(descriptor.packages.layer[0].keg)).toThrow();
+    }
   });
 
   it("publishes no filesystem when a late second-layer allocation exhausts space", async () => {
@@ -2655,7 +2712,7 @@ describe("Homebrew VFS planner public bounds", () => {
 
   it("derives deferred-tree wire limits from the generic reload contract", () => {
     expect(HOMEBREW_RUNTIME_LAYER_LIMITS.maxTrees).toBe(
-      VFS_DEFERRED_TREE_LIMITS.maxGroups,
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups,
     );
     expect(HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries).toBe(
       VFS_DEFERRED_TREE_LIMITS.maxEntries,
@@ -2664,7 +2721,19 @@ describe("Homebrew VFS planner public bounds", () => {
       VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes,
     );
     expect(HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes).toBe(
-      VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes,
+      VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes,
+    );
+    expect(HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionArchiveBytes).toBe(
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxArchiveBytes,
+    );
+    expect(HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionExpandedBytes).toBe(
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxExpandedBytes,
+    );
+    expect(HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionPayloadBytes).toBe(
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxPayloadBytes,
+    );
+    expect(HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionEntries).toBe(
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxEntries,
     );
     expect(HOMEBREW_RUNTIME_LAYER_LIMITS.maxTransportsPerTree).toBe(
       VFS_DEFERRED_TREE_LIMITS.maxTransportsPerTree,

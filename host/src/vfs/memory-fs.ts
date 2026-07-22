@@ -15,6 +15,8 @@ import {
 import type { ZipEntry } from "./zip";
 import { resolveHardlinkGraph } from "./hardlink-graph";
 import {
+  assertVfsDeferredTreeCollectionUsage,
+  VFS_DEFERRED_TREE_COLLECTION_LIMITS,
   VFS_DEFERRED_TREE_LIMITS,
   type VfsDeferredTreeUsage,
 } from "./deferred-tree-limits";
@@ -281,9 +283,11 @@ const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
 const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
 const MAX_LAZY_ARCHIVE_BYTES = VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes;
+const MAX_LAZY_EXPANDED_BYTES = VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes;
+const MAX_LAZY_PAYLOAD_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPayloadBytes;
 const MAX_BOOT_DEFERRED_TREE_CONCURRENCY = 2;
 const MAX_LAZY_TREE_ENTRIES = VFS_DEFERRED_TREE_LIMITS.maxEntries;
-const MAX_LAZY_TREE_GROUPS = VFS_DEFERRED_TREE_LIMITS.maxGroups;
+const MAX_LAZY_TREE_GROUPS = VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups;
 const MAX_LAZY_TREE_PATH_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPathBytes;
 const MAX_LAZY_TREE_SYMLINK_TARGET_BYTES =
   VFS_DEFERRED_TREE_LIMITS.maxSymlinkTargetBytes;
@@ -745,7 +749,7 @@ function validateLazyTreeContent(
     record.expandedBytes,
     "Lazy tree expanded byte count",
     0,
-    MAX_LAZY_ARCHIVE_BYTES,
+    MAX_LAZY_EXPANDED_BYTES,
   );
   const sourceEntryCount = requireLazyTreeInteger(
     record.sourceEntryCount,
@@ -795,29 +799,10 @@ function summarizeSerializedDeferredTreeCollection(
 }
 
 function validateDeferredTreeUsage(usage: VfsDeferredTreeUsage): void {
-  for (const [name, value] of Object.entries(usage)) {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new Error(`Deferred tree ${name} usage is invalid`);
-    }
-  }
-  if (usage.groups > VFS_DEFERRED_TREE_LIMITS.maxGroups) {
-    throw new Error(
-      `Serialized lazy archive groups exceed the ` +
-        `${VFS_DEFERRED_TREE_LIMITS.maxGroups}-group cap`,
-    );
-  }
-  if (usage.archiveBytes > VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes) {
-    throw new Error("Serialized lazy tree collection exceeds the archive-byte cap");
-  }
-  if (usage.expandedBytes > VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes) {
-    throw new Error("Serialized lazy tree collection exceeds the expansion cap");
-  }
-  if (usage.payloadBytes > VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes) {
-    throw new Error("Serialized lazy tree collection exceeds the payload-byte cap");
-  }
-  if (usage.entries > VFS_DEFERRED_TREE_LIMITS.maxEntries) {
-    throw new Error("Serialized lazy tree collection exceeds the entry-count cap");
-  }
+  assertVfsDeferredTreeCollectionUsage(
+    usage,
+    "Serialized lazy tree collection",
+  );
 }
 
 function validateSerializedDeferredTreeCollection(
@@ -877,7 +862,7 @@ function validateLazyTreeSourceInventory(
       entry.size,
       `Lazy tree source entry ${sourcePath} size`,
       0,
-      MAX_LAZY_ARCHIVE_BYTES,
+      MAX_LAZY_PAYLOAD_BYTES,
     );
     let target: string | undefined;
     if (type === "directory" || type === "symlink" || type === "hardlink") {
@@ -1127,7 +1112,7 @@ function validateLazyTreeDefinition(
       record.size,
       `Lazy tree entry ${vfsPath} size`,
       0,
-      MAX_LAZY_ARCHIVE_BYTES,
+      MAX_LAZY_PAYLOAD_BYTES,
     );
     let target: string | undefined;
     let inodeGroup: string | undefined;
@@ -1160,7 +1145,7 @@ function validateLazyTreeDefinition(
     }
     if (type !== "hardlink") {
       decodedPayloadBytes += size;
-      if (decodedPayloadBytes > MAX_LAZY_ARCHIVE_BYTES) {
+      if (decodedPayloadBytes > MAX_LAZY_PAYLOAD_BYTES) {
         throw new Error("Lazy tree inventory exceeds the expansion limit");
       }
     }
@@ -1428,7 +1413,7 @@ function validateSerializedLegacyArchive(
       entry.size,
       `Serialized legacy lazy archive entry ${vfsPath} size`,
       0,
-      MAX_LAZY_ARCHIVE_BYTES,
+      MAX_LAZY_PAYLOAD_BYTES,
     );
     if (
       entry.isSymlink !== false || entry.deleted !== false ||
@@ -3110,10 +3095,10 @@ export class MemoryFileSystem implements FileSystemBackend {
         )
       )
     ).length;
-    if (pendingGroups >= VFS_DEFERRED_TREE_LIMITS.maxGroups) {
+    if (pendingGroups >= VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups) {
       throw new Error(
         `Cannot register another lazy archive group: ` +
-          `${VFS_DEFERRED_TREE_LIMITS.maxGroups} pending groups already exist`,
+          `${VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups} pending groups already exist`,
       );
     }
   }

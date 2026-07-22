@@ -2,7 +2,11 @@ export { readPreparedPlatformFile, VirtualPlatformIO } from "./vfs";
 export type { PreparedPlatformFile } from "./vfs";
 export { HostFileSystem } from "./host-fs";
 export { MemoryFileSystem } from "./memory-fs";
-export { VFS_DEFERRED_TREE_LIMITS } from "./deferred-tree-limits";
+export {
+  assertVfsDeferredTreeCollectionUsage,
+  VFS_DEFERRED_TREE_COLLECTION_LIMITS,
+  VFS_DEFERRED_TREE_LIMITS,
+} from "./deferred-tree-limits";
 export type { VfsDeferredTreeUsage } from "./deferred-tree-limits";
 export {
   createClosedLazyAssetFetcher,

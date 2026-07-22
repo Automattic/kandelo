@@ -515,9 +515,12 @@ base image's already-pending deferred groups and the newly selected bottle
 trees share one 512-group serialization budget. Pending generic deferred trees
 whose resource claims are serialized also share the aggregate compressed-byte,
 expanded-byte, payload-byte, and source-plus-guest-entry budgets with newly
-selected bottles. Legacy ZIP groups such as the current Vim and NetHack groups
-carry no aggregate byte/entry claims in their old metadata, so they consume the
-shared group budget only.
+selected bottles. Each byte budget is 512 MiB for the complete pending
+collection while each independently fetched tree remains bounded to 256 MiB;
+the collection and each tree are also limited to 100,000 inventory entries.
+Legacy ZIP groups such as the current Vim and NetHack groups carry no aggregate
+byte/entry claims in their old metadata, so they consume the shared group
+budget only.
 The consumer restores the base image and composes every selected layer in a
 private filesystem, publishing that filesystem to boot only after registration
 and every required boot-prefetch succeeds. Allocation, collision, validation,

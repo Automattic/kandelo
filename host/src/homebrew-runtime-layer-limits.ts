@@ -1,4 +1,7 @@
-import { VFS_DEFERRED_TREE_LIMITS } from "./vfs/deferred-tree-limits";
+import {
+  VFS_DEFERRED_TREE_COLLECTION_LIMITS,
+  VFS_DEFERRED_TREE_LIMITS,
+} from "./vfs/deferred-tree-limits";
 
 const MAX_RELEASE_ASSET_NAME_BYTES = 255;
 
@@ -7,12 +10,19 @@ export const HOMEBREW_RUNTIME_LAYER_LIMITS = {
   maxLayers: 8,
   maxDescriptorBytes: 16 * 1024 * 1024,
   maxArchiveBytes: VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes,
-  maxUncompressedBytes: VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes,
+  maxUncompressedBytes: VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes,
   maxEntries: VFS_DEFERRED_TREE_LIMITS.maxEntries,
+  maxCollectionArchiveBytes:
+    VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxArchiveBytes,
+  maxCollectionExpandedBytes:
+    VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxExpandedBytes,
+  maxCollectionPayloadBytes:
+    VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxPayloadBytes,
+  maxCollectionEntries: VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxEntries,
   maxPathBytes: VFS_DEFERRED_TREE_LIMITS.maxPathBytes,
   maxSymlinkTargetBytes: VFS_DEFERRED_TREE_LIMITS.maxSymlinkTargetBytes,
-  maxTrees: VFS_DEFERRED_TREE_LIMITS.maxGroups,
-  maxPackages: VFS_DEFERRED_TREE_LIMITS.maxGroups,
+  maxTrees: VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups,
+  maxPackages: VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups,
   maxTapLocks: 32,
   maxPackageNameBytes: 255,
   maxRepositoryBytes: 512,
