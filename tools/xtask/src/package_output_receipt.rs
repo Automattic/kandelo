@@ -15,9 +15,9 @@ use sha2::{Digest, Sha256};
 
 use crate::build_deps::{Registry, compute_cache_key_sha_for_package, resolve_relative_url};
 use crate::index_toml::{EntryStatus, IndexToml};
-use crate::pkg_manifest::{
-    BuildToml, DepsManifest, ManifestKind, TargetArch, write_cache_provenance,
-};
+use crate::pkg_manifest::{BuildToml, DepsManifest, ManifestKind, TargetArch};
+#[cfg(test)]
+use crate::pkg_manifest::write_cache_provenance;
 use crate::remote_fetch;
 use crate::util::hex;
 
