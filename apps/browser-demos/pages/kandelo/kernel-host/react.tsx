@@ -9,8 +9,9 @@
 import * as React from "react";
 import type {
   KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState, DemoPresentation,
-  SurfaceAvailability, GalleryItem, GalleryTab, LazyDownloadEvent,
+  SurfaceAvailability, GalleryItem, GalleryTab, LazyDownloadEvent, LazyDownloadSummary,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import { activeLazyDownloadSummaries } from "../../../../../web-libs/kandelo-session/src/lazy-download";
 import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
@@ -59,35 +60,29 @@ export function useLazyDownloads(): LazyDownloadEvent[] {
     const sortEvents = (events: Iterable<LazyDownloadEvent>) =>
       Array.from(events).sort((a, b) => b.t - a.t);
 
-    const active = new Map<string, LazyDownloadEvent>();
-    for (const event of host.lazyDownloadHistory()) {
-      if (event.status === "complete" || event.status === "error") {
-        active.delete(event.id);
-      } else {
-        active.set(event.id, event);
-      }
-    }
-    setItems(sortEvents(active.values()));
+    setItems(activeLazyDownloadSummaries(host.lazyDownloadSummaries()));
 
     const applyEvent = (event: LazyDownloadEvent) => {
-      const existingTimer = timers.get(event.id);
+      const latest = host.lazyDownloadSummaries().find(({ id }) => id === event.id)
+        ?? event;
+      const existingTimer = timers.get(latest.id);
       if (existingTimer) {
         clearTimeout(existingTimer);
-        timers.delete(event.id);
+        timers.delete(latest.id);
       }
 
       setItems((prev) => {
         const next = new Map(prev.map((item) => [item.id, item]));
-        next.set(event.id, event);
+        next.set(latest.id, latest);
         return sortEvents(next.values());
       });
 
-      if (event.status === "complete" || event.status === "error") {
+      if (latest.status === "complete" || latest.status === "error") {
         const timer = setTimeout(() => {
-          timers.delete(event.id);
-          setItems((prev) => prev.filter((item) => item.id !== event.id));
-        }, event.status === "error" ? LAZY_DOWNLOAD_ERROR_VISIBLE_MS : LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS);
-        timers.set(event.id, timer);
+          timers.delete(latest.id);
+          setItems((prev) => prev.filter((item) => item.id !== latest.id));
+        }, latest.status === "error" ? LAZY_DOWNLOAD_ERROR_VISIBLE_MS : LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS);
+        timers.set(latest.id, timer);
       }
     };
 
@@ -102,17 +97,18 @@ export function useLazyDownloads(): LazyDownloadEvent[] {
   return items;
 }
 
-export function useLazyDownloadLog(): LazyDownloadEvent[] {
+export function useLazyDownloadSummaries(): LazyDownloadSummary[] {
   const host = useKernelHost();
-  const status = useStatus();
-  const [items, setItems] = React.useState<LazyDownloadEvent[]>(() => host.lazyDownloadHistory());
+  const [items, setItems] = React.useState<LazyDownloadSummary[]>(() =>
+    host.lazyDownloadSummaries()
+  );
 
   React.useEffect(() => {
-    setItems(host.lazyDownloadHistory());
-    return host.subscribeLazyDownloads((event) => {
-      setItems((prev) => [...prev, event].slice(-512));
+    setItems(host.lazyDownloadSummaries());
+    return host.subscribeLazyDownloadSummaries(() => {
+      setItems(host.lazyDownloadSummaries());
     });
-  }, [host, status]);
+  }, [host]);
 
   return items;
 }
