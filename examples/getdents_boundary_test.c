@@ -15,13 +15,15 @@
 
 #define ENTRY_COUNT 192
 #define EXPECTED_REAL_ENTRIES (ENTRY_COUNT - 1)
+#define LINUX_DIRENT64_HEADER_SIZE 19
+#define VIRTUAL_NAME_CAPACITY 64
 
-struct linux_dirent64_local {
+struct decoded_dirent64 {
     uint64_t d_ino;
     int64_t d_off;
     uint16_t d_reclen;
     uint8_t d_type;
-    char d_name[];
+    const char *d_name;
 };
 
 struct enumeration {
@@ -32,6 +34,14 @@ struct enumeration {
     size_t real_count;
     char order[ENTRY_COUNT][32];
 };
+
+struct name_sequence {
+    size_t count;
+    size_t capacity;
+    char (*names)[VIRTUAL_NAME_CAPACITY];
+};
+
+static ssize_t getdents64_call(int fd, void *buffer, size_t length);
 
 static void fail(const char *message)
 {
@@ -103,6 +113,37 @@ static void verify_enumeration(const struct enumeration *result)
     }
 }
 
+static size_t decode_dirent64(
+    const unsigned char *buffer,
+    size_t length,
+    size_t position,
+    struct decoded_dirent64 *entry)
+{
+    if (length - position < LINUX_DIRENT64_HEADER_SIZE)
+        fail("truncated linux_dirent64 header");
+
+    /*
+     * A getdents64 record is byte-packed. The caller's buffer is not required
+     * to satisfy this local struct's alignment, so decode every multibyte
+     * field with memcpy instead of casting the buffer to a struct pointer.
+     */
+    memcpy(&entry->d_ino, buffer + position, sizeof(entry->d_ino));
+    memcpy(&entry->d_off, buffer + position + 8, sizeof(entry->d_off));
+    memcpy(&entry->d_reclen, buffer + position + 16, sizeof(entry->d_reclen));
+    entry->d_type = buffer[position + 18];
+
+    size_t record_length = entry->d_reclen;
+    if (record_length < 24 || record_length % 8 != 0 ||
+        record_length > length - position)
+        fail("invalid linux_dirent64 record length");
+    size_t name_capacity = record_length - LINUX_DIRENT64_HEADER_SIZE;
+    entry->d_name = (const char *)(buffer + position + LINUX_DIRENT64_HEADER_SIZE);
+    if (memchr(entry->d_name, '\0', name_capacity) == NULL)
+        fail("unterminated linux_dirent64 name");
+
+    return position + record_length;
+}
+
 static size_t consume_dirents(
     const unsigned char *buffer,
     size_t length,
@@ -112,26 +153,140 @@ static size_t consume_dirents(
     size_t position = 0;
     size_t records = 0;
     while (position < length) {
-        if (length - position < 19)
-            fail("truncated linux_dirent64 header");
-        const struct linux_dirent64_local *entry =
-            (const struct linux_dirent64_local *)(buffer + position);
-        size_t record_length = entry->d_reclen;
-        if (record_length < 24 || record_length % 8 != 0 ||
-            record_length > length - position)
-            fail("invalid linux_dirent64 record length");
-        size_t name_capacity = record_length - 19;
-        if (memchr(entry->d_name, '\0', name_capacity) == NULL)
-            fail("unterminated linux_dirent64 name");
-        record_name(result, entry->d_name);
+        struct decoded_dirent64 entry;
+        position = decode_dirent64(buffer, length, position, &entry);
+        record_name(result, entry.d_name);
         if (last_cookie != NULL)
-            *last_cookie = entry->d_off;
-        position += record_length;
+            *last_cookie = entry.d_off;
         records++;
     }
     if (position != length)
         fail("linux_dirent64 records do not cover returned bytes");
     return records;
+}
+
+static size_t consume_names(
+    const unsigned char *buffer,
+    size_t length,
+    struct name_sequence *result)
+{
+    size_t position = 0;
+    size_t records = 0;
+    while (position < length) {
+        struct decoded_dirent64 entry;
+        position = decode_dirent64(buffer, length, position, &entry);
+        if (strlen(entry.d_name) >= VIRTUAL_NAME_CAPACITY)
+            fail("virtual directory entry name overflow");
+        if (result->count == result->capacity) {
+            size_t new_capacity = result->capacity == 0 ? 16 : result->capacity * 2;
+            if (new_capacity < result->capacity ||
+                new_capacity > SIZE_MAX / sizeof(*result->names))
+                fail("virtual directory entry storage overflow");
+            void *resized = realloc(
+                result->names, new_capacity * sizeof(*result->names));
+            if (resized == NULL)
+                fail("virtual directory entry allocation failed");
+            result->names = resized;
+            result->capacity = new_capacity;
+        }
+        strcpy(result->names[result->count], entry.d_name);
+        result->count++;
+        records++;
+    }
+    if (position != length)
+        fail("virtual linux_dirent64 records do not cover returned bytes");
+    return records;
+}
+
+static bool sequence_contains(const struct name_sequence *sequence, const char *name)
+{
+    for (size_t index = 0; index < sequence->count; index++) {
+        if (strcmp(sequence->names[index], name) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void enumerate_virtual_directory(
+    int fd,
+    const char *label,
+    struct name_sequence *result)
+{
+    unsigned char too_small[23];
+    errno = 0;
+    if (getdents64_call(fd, too_small, sizeof(too_small)) != -1 ||
+        errno != EINVAL)
+        fail("virtual directory accepted a buffer smaller than one record");
+
+    /*
+     * Both /dev and /proc begin with records that fit exactly in 24 bytes,
+     * followed by a longer name. Returning zero for that longer record would
+     * falsely report EOF; EINVAL must keep it available for a larger retry.
+     */
+    unsigned char exact_minimum[24];
+    for (;;) {
+        errno = 0;
+        ssize_t length =
+            getdents64_call(fd, exact_minimum, sizeof(exact_minimum));
+        if (length < 0) {
+            if (errno != EINVAL)
+                fail(label);
+            break;
+        }
+        if (length == 0)
+            fail("virtual directory reported EOF before an oversized record");
+        if (length != (ssize_t)sizeof(exact_minimum) ||
+            consume_names(exact_minimum, (size_t)length, result) != 1)
+            fail("minimum virtual-directory buffer returned an invalid record");
+    }
+
+    unsigned char one_record[32];
+    for (;;) {
+        ssize_t length = getdents64_call(fd, one_record, sizeof(one_record));
+        if (length < 0)
+            fail(label);
+        if (length == 0)
+            break;
+        if (consume_names(one_record, (size_t)length, result) != 1)
+            fail("small virtual-directory buffer returned multiple records");
+    }
+    if (result->count < 2 || strcmp(result->names[0], ".") != 0 ||
+        strcmp(result->names[1], "..") != 0)
+        fail("virtual directory did not begin with dot entries");
+    if (getdents64_call(fd, one_record, sizeof(one_record)) != 0)
+        fail("virtual directory EOF was not stable");
+}
+
+static void verify_virtual_directory(
+    const char *path,
+    const char *required_name,
+    const char *second_required_name)
+{
+    int fd = open(path, O_RDONLY | O_DIRECTORY);
+    if (fd < 0)
+        fail("virtual directory open failed");
+
+    struct name_sequence first = {0};
+    enumerate_virtual_directory(fd, "virtual getdents64 failed", &first);
+    if (!sequence_contains(&first, required_name) ||
+        !sequence_contains(&first, second_required_name))
+        fail("virtual directory is missing an expected entry");
+
+    if (lseek(fd, 0, SEEK_SET) != 0)
+        fail("virtual directory rewind failed");
+    struct name_sequence rewound = {0};
+    enumerate_virtual_directory(fd, "rewound virtual getdents64 failed", &rewound);
+    if (rewound.count != first.count)
+        fail("virtual directory count changed after rewind");
+    for (size_t index = 0; index < first.count; index++) {
+        if (strcmp(first.names[index], rewound.names[index]) != 0)
+            fail("virtual directory order changed after rewind");
+    }
+
+    if (close(fd) != 0)
+        fail("virtual directory close failed");
+    free(first.names);
+    free(rewound.names);
 }
 
 static ssize_t getdents64_call(int fd, void *buffer, size_t length)
@@ -265,6 +420,26 @@ int main(void)
     }
 
     if (lseek(fd, 0, SEEK_SET) != 0)
+        fail("dot-cookie directory rewind failed");
+    struct enumeration dot_prefix = {0};
+    unsigned char dot_record[24];
+    int64_t dot_cookie = -1;
+    length = getdents64_call(fd, dot_record, sizeof(dot_record));
+    if (length != (ssize_t)sizeof(dot_record) ||
+        consume_dirents(dot_record, (size_t)length, &dot_prefix, &dot_cookie) != 1 ||
+        !dot_prefix.dot || dot_prefix.dotdot || dot_prefix.real_count != 0 ||
+        dot_cookie != 1)
+        fail("dot entry did not expose its next-record cookie");
+    if (lseek(fd, dot_cookie, SEEK_SET) != dot_cookie)
+        fail("seek to dot entry cookie failed");
+    struct enumeration after_dot = {0};
+    length = getdents64_call(fd, dot_record, sizeof(dot_record));
+    if (length != (ssize_t)sizeof(dot_record) ||
+        consume_dirents(dot_record, (size_t)length, &after_dot, NULL) != 1 ||
+        after_dot.dot || !after_dot.dotdot || after_dot.real_count != 0)
+        fail("dot entry cookie did not resume at dot-dot");
+
+    if (lseek(fd, 0, SEEK_SET) != 0)
         fail("second directory rewind failed");
     struct enumeration cookie_prefix = {0};
     unsigned char three_entries[80];
@@ -317,6 +492,9 @@ int main(void)
         fail("seekdir did not resume after the saved entry");
     if (closedir(stream) != 0)
         fail("closedir failed");
+
+    verify_virtual_directory("/dev", "null", "pts");
+    verify_virtual_directory("/proc", "mounts", "self");
 
     for (int index = 0; index < ENTRY_COUNT; index++) {
         if (index == 37 || index == 38)

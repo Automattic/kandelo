@@ -311,6 +311,36 @@ pub(crate) struct PendingDirEntry {
 }
 
 impl OpenFileDesc {
+    /// Drop process-local directory-iterator state while preserving the
+    /// guest-visible position at which a newly inherited or transferred
+    /// descriptor must resume.
+    ///
+    /// Host directory handles cannot be shared between independently copied
+    /// per-process OFD tables: each copy also carries mutable pending-record
+    /// and cookie metadata, and either process may close the handle.  Fork,
+    /// non-forking spawn, retained legacy exec, and SCM_RIGHTS therefore call
+    /// this at the process boundary.  `sys_getdents64` lazily reconstructs a
+    /// host iterator from `dir_entry_offset`; kernel-generated directories
+    /// retain their stable sentinel instead.
+    pub(crate) fn reset_directory_iterator_for_reopen(&mut self) {
+        if self.file_type != FileType::Directory {
+            return;
+        }
+
+        debug_assert!(self.offset >= 0, "directory cookies cannot be negative");
+        let cookie = self.offset.max(0);
+        self.dir_host_handle = if self.host_handle == crate::procfs::PROCFS_DIR_HANDLE
+            || self.host_handle == crate::devfs::DEVFS_DIR_HANDLE
+        {
+            self.host_handle
+        } else {
+            -1
+        };
+        self.dir_synth_state = cookie.min(2) as u8;
+        self.dir_entry_offset = cookie;
+        self.dir_pending_entry = None;
+    }
+
     /// Whether this OFD is a pathname capability rather than an I/O handle.
     /// Operations that act directly on an fd must reject path-only OFDs unless
     /// their contract explicitly accepts O_PATH/O_SEARCH descriptors.
@@ -423,7 +453,7 @@ impl OfdTable {
         path: Vec<u8>,
     ) -> usize {
         observe_ofd_id(ofd_id);
-        self.insert(OpenFileDesc {
+        let mut ofd = OpenFileDesc {
             ofd_id,
             file_id,
             file_type,
@@ -438,7 +468,9 @@ impl OfdTable {
             dir_entry_offset: 0,
             dir_pending_entry: None,
             dri_state: None,
-        })
+        };
+        ofd.reset_directory_iterator_for_reopen();
+        self.insert(ofd)
     }
 
     fn insert(&mut self, ofd: OpenFileDesc) -> usize {
@@ -696,6 +728,83 @@ mod tests {
         let rebuilt = OfdTable::from_raw(raw);
         assert_eq!(rebuilt.get(0).unwrap().host_handle, 10);
         assert_eq!(rebuilt.get(1).unwrap().host_handle, 30);
+    }
+
+    #[test]
+    fn transferred_directories_preserve_cookie_without_aliasing_an_iterator() {
+        let mut source = OfdTable::new();
+        let source_idx = source.create(
+            FileType::Directory,
+            O_RDONLY,
+            41,
+            b"/transferred".to_vec(),
+        );
+        let source_ofd = source.get_mut(source_idx).unwrap();
+        source_ofd.offset = 7;
+        source_ofd.dir_host_handle = 99;
+        source_ofd.dir_synth_state = 2;
+        source_ofd.dir_entry_offset = 7;
+        source_ofd.dir_pending_entry = Some(PendingDirEntry {
+            ino: 123,
+            d_type: 8,
+            name: b"pending".to_vec(),
+        });
+        let source_snapshot = source_ofd.clone();
+
+        let mut receiver = OfdTable::new();
+        let received_idx = receiver.create_transferred(
+            source_snapshot.ofd_id,
+            source_snapshot.file_id,
+            source_snapshot.file_type,
+            source_snapshot.status_flags,
+            source_snapshot.host_handle,
+            source_snapshot.offset,
+            source_snapshot.path.clone(),
+        );
+        let received = receiver.get(received_idx).unwrap();
+        assert_eq!(received.ofd_id, source_snapshot.ofd_id);
+        assert_eq!(received.offset, 7);
+        assert_eq!(received.dir_entry_offset, 7);
+        assert_eq!(received.dir_synth_state, 2);
+        assert_eq!(received.dir_host_handle, -1);
+        assert!(received.dir_pending_entry.is_none());
+
+        // Reconstructing the recipient must not mutate or take ownership of
+        // the sender's live iterator or staged record.
+        let source = source.get(source_idx).unwrap();
+        assert_eq!(source.dir_host_handle, 99);
+        assert_eq!(source.dir_pending_entry.as_ref().unwrap().name, b"pending");
+    }
+
+    #[test]
+    fn transferred_kernel_directories_keep_their_sentinel_and_cookie() {
+        for sentinel in [
+            crate::devfs::DEVFS_DIR_HANDLE,
+            crate::procfs::PROCFS_DIR_HANDLE,
+        ] {
+            let mut source = OfdTable::new();
+            let source_idx = source.create(
+                FileType::Directory,
+                O_RDONLY,
+                sentinel,
+                b"/virtual".to_vec(),
+            );
+            let ofd_id = source.get(source_idx).unwrap().ofd_id;
+            let mut table = OfdTable::new();
+            let idx = table.create_transferred(
+                ofd_id,
+                None,
+                FileType::Directory,
+                O_RDONLY,
+                sentinel,
+                5,
+                b"/virtual".to_vec(),
+            );
+            let ofd = table.get(idx).unwrap();
+            assert_eq!(ofd.dir_host_handle, sentinel);
+            assert_eq!(ofd.dir_entry_offset, 5);
+            assert_eq!(ofd.dir_synth_state, 2);
+        }
     }
 
     #[test]

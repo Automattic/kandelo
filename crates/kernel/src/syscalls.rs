@@ -3893,6 +3893,18 @@ pub fn sys_write(
     }
 }
 
+/// Kernel-owned mountpoints synthesized after the host root is exhausted.
+///
+/// The root image need not contain placeholder directories for mounted
+/// filesystems. If it does, the kernel-owned entry shadows the placeholder so
+/// callers still observe one stable record per mountpoint. Keep this list
+/// shared by normal enumeration, rollover resumption, and cookie seeking.
+const ROOT_VIRTUAL_DIRENTS: &[&[u8]] = &[b"dev", b"proc"];
+
+fn is_root_virtual_dirent(path: &[u8], name: &[u8]) -> bool {
+    path == b"/" && ROOT_VIRTUAL_DIRENTS.contains(&name)
+}
+
 /// Seek to a position in a file, returning the new offset.
 pub fn sys_lseek(
     proc: &mut Process,
@@ -3922,58 +3934,102 @@ pub fn sys_lseek(
         return Err(Errno::ESPIPE);
     }
 
-    // Directory: lseek(fd, offset, SEEK_SET) supports rewind and seekdir.
-    // musl's seekdir calls lseek(fd, telldir_cookie, SEEK_SET) to restore
-    // directory position. The cookie is the d_off value from getdents64.
+    // Directory cookies count guest-visible records: 0 is before `.`, 1 is
+    // before `..`, 2 is before the first real entry, and N is after N records.
+    // musl's seekdir calls lseek(fd, telldir_cookie, SEEK_SET). Reconstruct a
+    // new host iterator completely before replacing the live cursor so a
+    // failed seek cannot destroy the caller's previous position.
     if ofd.file_type == FileType::Directory {
-        if whence == SEEK_SET {
-            if offset < 0 {
-                return Err(Errno::EINVAL);
-            }
-            // Close the existing dir handle if open
-            if ofd.dir_host_handle >= 0 {
-                let _ = host.host_closedir(ofd.dir_host_handle);
-            }
-            ofd.dir_host_handle = -1; // will be reopened by next getdents64
-            ofd.dir_synth_state = 0;
-            ofd.dir_entry_offset = 0;
+        if whence == SEEK_CUR && offset == 0 {
+            return Ok(ofd.dir_entry_offset);
+        }
+        if whence != SEEK_SET || offset < 0 {
+            return Err(Errno::EINVAL);
+        }
+
+        let path = ofd.path.clone();
+        let backing_handle = ofd.host_handle;
+        let old_dir_handle = ofd.dir_host_handle;
+
+        // Kernel-generated directories keep their sentinel handle and use the
+        // same integer cookie directly as their entry-list position.
+        if backing_handle == crate::procfs::PROCFS_DIR_HANDLE
+            || backing_handle == crate::devfs::DEVFS_DIR_HANDLE
+        {
+            let sentinel = backing_handle;
+            let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+            ofd.dir_host_handle = sentinel;
+            ofd.dir_synth_state = offset.min(2) as u8;
+            ofd.dir_entry_offset = offset;
             ofd.dir_pending_entry = None;
             ofd.offset = offset;
-
-            if offset > 0 {
-                // Reopen directory and skip `offset` entries to reach the target position
-                let path = ofd.path.clone();
-                let h = host.host_opendir(&path)?;
-                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
-                ofd.dir_host_handle = h;
-                ofd.dir_synth_state = 2; // skip synthetic . and ..
-
-                // Skip entries until we reach the target offset
-                // (d_off cookies are 1-based: . = 1, .. = 2, first host entry = 3, ...)
-                let host_entries_to_skip = (offset - 2).max(0);
-                let mut name_buf = [0u8; 256];
-                let mut skipped = 0i64;
-                while skipped < host_entries_to_skip {
-                    match host.host_readdir(h, &mut name_buf)? {
-                        Some((_, _, name_len)) => {
-                            // Skip host "." and ".." (already counted in synthetic)
-                            if (name_len == 1 && name_buf[0] == b'.')
-                                || (name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.')
-                            {
-                                continue;
-                            }
-                            skipped += 1;
-                        }
-                        None => break,
-                    }
-                }
-                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
-                ofd.dir_entry_offset = offset;
+            if old_dir_handle >= 0 && old_dir_handle != sentinel {
+                let _ = host.host_closedir(old_dir_handle);
             }
             return Ok(offset);
         }
-        // Other whence values on directories: just return current offset
-        return Ok(ofd.offset);
+
+        let (new_dir_handle, new_synth_state) = if offset <= 2 {
+            (-1, offset as u8)
+        } else {
+            let candidate = host.host_opendir(&path)?;
+            let target_host_entries = offset - 2;
+            let mut skipped = 0i64;
+            let mut exhausted = false;
+            let mut name_buf = [0u8; 256];
+            while skipped < target_host_entries {
+                match host.host_readdir(candidate, &mut name_buf) {
+                    Ok(Some((_, _, name_len))) => {
+                        if name_len > name_buf.len() {
+                            let _ = host.host_closedir(candidate);
+                            return Err(Errno::EIO);
+                        }
+                        let name = &name_buf[..name_len];
+                        if name == b"."
+                            || name == b".."
+                            || is_root_virtual_dirent(&path, name)
+                        {
+                            continue;
+                        }
+                        skipped += 1;
+                    }
+                    Ok(None) => {
+                        exhausted = true;
+                        break;
+                    }
+                    Err(err) => {
+                        let _ = host.host_closedir(candidate);
+                        return Err(err);
+                    }
+                }
+            }
+
+            if exhausted {
+                let virtual_entries_to_skip = target_host_entries - skipped;
+                let result = if path == b"/"
+                    && virtual_entries_to_skip < ROOT_VIRTUAL_DIRENTS.len() as i64
+                {
+                    (-3, 2 + virtual_entries_to_skip as u8)
+                } else {
+                    (-2, 2)
+                };
+                let _ = host.host_closedir(candidate);
+                result
+            } else {
+                (candidate, 2)
+            }
+        };
+
+        let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+        ofd.dir_host_handle = new_dir_handle;
+        ofd.dir_synth_state = new_synth_state;
+        ofd.dir_entry_offset = offset;
+        ofd.dir_pending_entry = None;
+        ofd.offset = offset;
+        if old_dir_handle >= 0 && old_dir_handle != new_dir_handle {
+            let _ = host.host_closedir(old_dir_handle);
+        }
+        return Ok(offset);
     }
 
     // Virtual char devices: seek is a no-op for null/zero/etc. /dev/fb0
@@ -3999,22 +4055,6 @@ pub fn sys_lseek(
             }
             return Ok(0);
         }
-    }
-
-    // Procfs/devfs directory: lseek resets position
-    if ofd.host_handle == crate::procfs::PROCFS_DIR_HANDLE
-        || ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE
-    {
-        if whence == SEEK_SET {
-            if offset < 0 {
-                return Err(Errno::EINVAL);
-            }
-            ofd.dir_synth_state = 0;
-            ofd.dir_entry_offset = 0;
-            ofd.offset = offset;
-            return Ok(offset);
-        }
-        return Ok(ofd.offset);
     }
 
     // Procfs file buffers: compute offset against snapshot length
@@ -6398,6 +6438,17 @@ pub fn sys_getdents64(
     }
 
     let path = ofd.path.clone();
+    let reopen_cookie = (ofd.dir_host_handle == -1 && ofd.dir_entry_offset > 2)
+        .then_some(ofd.dir_entry_offset);
+
+    // Process boundaries cannot carry a live host iterator safely. Fork,
+    // non-forking spawn, retained legacy exec, and SCM_RIGHTS preserve the
+    // guest-visible cookie and leave the child/recipient handle unopened.
+    // Reconstruct through the same atomic cookie-seek path used by seekdir so
+    // filtering, root mountpoint injection, and error rollback stay identical.
+    if let Some(cookie) = reopen_cookie {
+        sys_lseek(proc, host, fd, cookie, SEEK_SET)?;
+    }
 
     // Lazily open the directory for iteration
     let dir_handle = {
@@ -6421,6 +6472,7 @@ pub fn sys_getdents64(
             crate::devfs::devfs_getdents64(proc, &path, buf, entry_offset)?;
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_entry_offset = new_offset;
+            ofd.offset = new_offset;
             if exhausted {
                 ofd.dir_host_handle = -2;
             }
@@ -6455,23 +6507,21 @@ pub fn sys_getdents64(
         if let Some(entry) = crate::procfs::match_procfs(&path, proc.pid) {
             if let Some(target_pid) = crate::procfs::entry_pid(&entry) {
                 if target_pid != proc.pid {
-                    if let Some((bytes, new_offset, exhausted)) =
+                    let (bytes, new_offset, exhausted) =
                         crate::wasm_api::procfs_getdents64_for_pid(
                             target_pid,
                             &path,
                             buf,
                             entry_offset,
-                        )
-                    {
-                        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-                            ofd.dir_entry_offset = new_offset;
-                            if exhausted {
-                                ofd.dir_host_handle = -2;
-                            }
+                        )?;
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dir_entry_offset = new_offset;
+                        ofd.offset = new_offset;
+                        if exhausted {
+                            ofd.dir_host_handle = -2;
                         }
-                        return Ok(bytes);
                     }
-                    return Err(Errno::ENOENT);
+                    return Ok(bytes);
                 }
             }
         }
@@ -6480,6 +6530,7 @@ pub fn sys_getdents64(
             crate::procfs::procfs_getdents64(proc, &path, buf, entry_offset, &pids)?;
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_entry_offset = new_offset;
+            ofd.offset = new_offset;
             if exhausted {
                 ofd.dir_host_handle = -2; // mark exhausted
             }
@@ -6500,7 +6551,6 @@ pub fn sys_getdents64(
             .get(ofd_idx)
             .ok_or(Errno::EBADF)?
             .dir_entry_offset;
-        let virtuals: &[&[u8]] = &[b"dev", b"proc"];
         let virt_base = proc
             .ofd_table
             .get(ofd_idx)
@@ -6511,15 +6561,17 @@ pub fn sys_getdents64(
         } else {
             0
         };
-        for (i, name) in virtuals.iter().enumerate() {
+        for (i, name) in ROOT_VIRTUAL_DIRENTS.iter().enumerate() {
             if i < virt_start {
                 continue;
             }
             entry_offset += 1;
-            let written = write_dirent64(buf, pos, 2, entry_offset, 4 /* DT_DIR */, name);
+            let written =
+                crate::procfs::write_dirent64(buf, pos, 2, entry_offset, 4 /* DT_DIR */, name);
             if written == 0 {
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                     ofd.dir_entry_offset = entry_offset - 1;
+                    ofd.offset = entry_offset - 1;
                     ofd.dir_synth_state = 2 + i as u8;
                 }
                 if pos == 0 {
@@ -6531,6 +6583,7 @@ pub fn sys_getdents64(
         }
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_entry_offset = entry_offset;
+            ofd.offset = entry_offset;
             ofd.dir_host_handle = -2;
         }
         return Ok(pos);
@@ -6561,34 +6614,6 @@ pub fn sys_getdents64(
         .ok_or(Errno::EBADF)?
         .dir_entry_offset;
 
-    // Helper: write a single linux_dirent64 entry to buf at position pos.
-    // Returns the number of bytes written, or 0 if it doesn't fit.
-    fn write_dirent64(
-        buf: &mut [u8],
-        pos: usize,
-        d_ino: u64,
-        d_off: i64,
-        d_type: u8,
-        name: &[u8],
-    ) -> usize {
-        let name_len = name.len();
-        let reclen_raw = 19 + name_len + 1;
-        let reclen = (reclen_raw + 7) & !7;
-        if pos + reclen > buf.len() {
-            return 0;
-        }
-        buf[pos..pos + 8].copy_from_slice(&d_ino.to_le_bytes());
-        buf[pos + 8..pos + 16].copy_from_slice(&d_off.to_le_bytes());
-        buf[pos + 16..pos + 18].copy_from_slice(&(reclen as u16).to_le_bytes());
-        buf[pos + 18] = d_type;
-        buf[pos + 19..pos + 19 + name_len].copy_from_slice(name);
-        buf[pos + 19 + name_len] = 0;
-        for i in pos + 19 + name_len + 1..pos + reclen {
-            buf[i] = 0;
-        }
-        reclen
-    }
-
     // Synthesize "." and ".." entries
     let synth_state = proc
         .ofd_table
@@ -6604,10 +6629,18 @@ pub fn sys_getdents64(
         let mut next_synth_state = synth_state;
         for name in synth_entries {
             entry_offset += 1;
-            let written = write_dirent64(buf, pos, 1, entry_offset, 4 /* DT_DIR */, name);
+            let written = crate::procfs::write_dirent64(
+                buf,
+                pos,
+                1,
+                entry_offset,
+                4, /* DT_DIR */
+                name,
+            );
             if written == 0 {
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                     ofd.dir_entry_offset = entry_offset - 1; // didn't emit this one
+                    ofd.offset = entry_offset - 1;
                     ofd.dir_synth_state = next_synth_state;
                 }
                 if pos == 0 {
@@ -6633,21 +6666,44 @@ pub fn sys_getdents64(
         let next_entry = if let Some(entry) = pending {
             Some((entry.ino, entry.d_type, Cow::Owned(entry.name), true))
         } else {
-            host.host_readdir(dir_handle, &mut name_buf)?.map(
-                |(d_ino, host_d_type, name_len)| {
-                    (
+            match host.host_readdir(dir_handle, &mut name_buf) {
+                Ok(Some((d_ino, host_d_type, name_len))) => {
+                    if name_len > name_buf.len() {
+                        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                            ofd.dir_entry_offset = entry_offset;
+                            ofd.offset = entry_offset;
+                        }
+                        if pos == 0 {
+                            return Err(Errno::EIO);
+                        }
+                        return Ok(pos);
+                    }
+                    Some((
                         d_ino,
                         host_d_type as u8,
                         Cow::Borrowed(&name_buf[..name_len]),
                         false,
-                    )
-                },
-            )
+                    ))
+                }
+                Ok(None) => None,
+                Err(err) => {
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dir_entry_offset = entry_offset;
+                        ofd.offset = entry_offset;
+                    }
+                    if pos == 0 {
+                        return Err(err);
+                    }
+                    return Ok(pos);
+                }
+            }
         };
         match next_entry {
             Some((d_ino, host_d_type, name, d_type_is_final)) => {
                 // Skip host "." and ".." entries (we already synthesized them)
-                if name.as_ref() == b"." || name.as_ref() == b".."
+                if name.as_ref() == b"."
+                    || name.as_ref() == b".."
+                    || is_root_virtual_dirent(&path, name.as_ref())
                 {
                     continue;
                 }
@@ -6664,7 +6720,7 @@ pub fn sys_getdents64(
                     host_d_type
                 };
                 entry_offset += 1;
-                let written = write_dirent64(
+                let written = crate::procfs::write_dirent64(
                     buf,
                     pos,
                     d_ino,
@@ -6680,6 +6736,7 @@ pub fn sys_getdents64(
                             name: name.into_owned(),
                         });
                         ofd.dir_entry_offset = entry_offset - 1;
+                        ofd.offset = entry_offset - 1;
                     }
                     if pos == 0 {
                         return Err(Errno::EINVAL);
@@ -6695,7 +6752,6 @@ pub fn sys_getdents64(
 
                 // Inject synthetic entries for virtual filesystems when listing "/"
                 if path == b"/" {
-                    let virtuals: &[&[u8]] = &[b"proc"];
                     // synth_state tracks how many virtual entries we've emitted (2 = done with . and ..)
                     let virt_base = proc
                         .ofd_table
@@ -6707,17 +6763,24 @@ pub fn sys_getdents64(
                     } else {
                         0
                     };
-                    for (i, name) in virtuals.iter().enumerate() {
+                    for (i, name) in ROOT_VIRTUAL_DIRENTS.iter().enumerate() {
                         if i < virt_start {
                             continue;
                         }
                         entry_offset += 1;
-                        let written =
-                            write_dirent64(buf, pos, 2, entry_offset, 4 /* DT_DIR */, name);
+                        let written = crate::procfs::write_dirent64(
+                            buf,
+                            pos,
+                            2,
+                            entry_offset,
+                            4, /* DT_DIR */
+                            name,
+                        );
                         if written == 0 {
                             // Save progress — we'll resume from here on next call
                             if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                                 ofd.dir_entry_offset = entry_offset - 1;
+                                ofd.offset = entry_offset - 1;
                                 ofd.dir_host_handle = -3; // signal: host exhausted, virtuals pending
                                 ofd.dir_synth_state = 2 + i as u8;
                             }
@@ -6742,6 +6805,7 @@ pub fn sys_getdents64(
     // Persist the entry offset for subsequent calls
     if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
         ofd.dir_entry_offset = entry_offset;
+        ofd.offset = entry_offset;
     }
 
     Ok(pos)
@@ -15329,9 +15393,14 @@ mod tests {
     /// Mock host I/O for testing.
     struct MockHostIO {
         next_handle: i64,
+        next_dir_handle: i64,
         dir_entry_returned: bool,
         dir_entry_index: usize, // current position in mock directory
+        dir_entry_indices: std::collections::HashMap<i64, usize>,
         dir_entry_count: usize, // total number of mock entries
+        dir_entry_names: Option<Vec<Vec<u8>>>,
+        dir_opendir_error: Option<Errno>,
+        dir_readdir_error: Option<(usize, Errno)>,
         sigsuspend_signal: u32,
         sigsuspend_error: bool,
         clock_time: (i64, i64),
@@ -15390,9 +15459,14 @@ mod tests {
         fn new() -> Self {
             MockHostIO {
                 next_handle: 100,
+                next_dir_handle: 200,
                 dir_entry_returned: false,
                 dir_entry_index: 0,
+                dir_entry_indices: std::collections::HashMap::new(),
                 dir_entry_count: 1,
+                dir_entry_names: None,
+                dir_opendir_error: None,
+                dir_readdir_error: None,
                 sigsuspend_signal: 0,
                 sigsuspend_error: false,
                 clock_time: (1234567890, 123456789),
@@ -15813,28 +15887,50 @@ mod tests {
         }
 
         fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> {
+            if let Some(err) = self.dir_opendir_error {
+                return Err(err);
+            }
+            let handle = self.next_dir_handle;
+            self.next_dir_handle += 1;
             self.dir_entry_returned = false;
             self.dir_entry_index = 0;
-            Ok(200)
+            self.dir_entry_indices.insert(handle, 0);
+            Ok(handle)
         }
 
         fn host_readdir(
             &mut self,
-            _handle: i64,
+            handle: i64,
             name_buf: &mut [u8],
         ) -> Result<Option<(u64, u32, usize)>, Errno> {
-            if self.dir_entry_index < self.dir_entry_count {
-                let idx = self.dir_entry_index;
-                self.dir_entry_index += 1;
+            let idx = self
+                .dir_entry_indices
+                .get(&handle)
+                .copied()
+                .unwrap_or(self.dir_entry_index);
+            if let Some((error_index, err)) = self.dir_readdir_error {
+                if idx == error_index {
+                    return Err(err);
+                }
+            }
+            if idx < self.dir_entry_count {
+                self.dir_entry_index = idx + 1;
+                self.dir_entry_indices.insert(handle, idx + 1);
                 self.dir_entry_returned = true;
                 // Generate distinct entries based on index
-                let names: [&[u8]; 5] =
+                let default_names: [&[u8]; 5] =
                     [b"test.txt", b"foo.txt", b"bar.txt", b"baz.txt", b"qux.txt"];
-                let name = if idx < names.len() {
-                    names[idx]
-                } else {
-                    b"test.txt"
-                };
+                let name = self
+                    .dir_entry_names
+                    .as_ref()
+                    .and_then(|names| names.get(idx))
+                    .map(Vec::as_slice)
+                    .unwrap_or_else(|| {
+                        default_names
+                            .get(idx)
+                            .copied()
+                            .unwrap_or(b"test.txt")
+                    });
                 let n = name_buf.len().min(name.len());
                 name_buf[..n].copy_from_slice(&name[..n]);
                 Ok(Some(((42 + idx as u64), 8, n))) // d_ino varies, d_type=DT_REG=8
@@ -15844,6 +15940,7 @@ mod tests {
         }
 
         fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
+            self.dir_entry_indices.remove(&handle);
             self.closed_dir_handles.push(handle);
             Ok(())
         }
@@ -17592,6 +17689,401 @@ mod tests {
             Some(0),
         );
         sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn getdents64_cookies_name_the_next_guest_visible_record() {
+        let mut proc = Process::new(81_074);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 3;
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+
+        let mut all = [0u8; 512];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut all).unwrap();
+        let entries = parse_linux_dirents64(&all, len);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.1, entry.2.as_slice()))
+                .collect::<Vec<_>>(),
+            [
+                (1, b".".as_slice()),
+                (2, b"..".as_slice()),
+                (3, b"test.txt".as_slice()),
+                (4, b"foo.txt".as_slice()),
+                (5, b"bar.txt".as_slice()),
+            ],
+        );
+
+        // Each returned d_off identifies the next guest-visible record. In
+        // particular, the cookie after `.` resumes at `..`, not at the first
+        // host entry.
+        for (cookie, expected) in [
+            (0, Some(b".".as_slice())),
+            (1, Some(b"..".as_slice())),
+            (2, Some(b"test.txt".as_slice())),
+            (3, Some(b"foo.txt".as_slice())),
+            (4, Some(b"bar.txt".as_slice())),
+            (5, None),
+        ] {
+            assert_eq!(
+                sys_lseek(&mut proc, &mut host, fd, cookie, SEEK_SET),
+                Ok(cookie),
+            );
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR), Ok(cookie),);
+            let mut one = [0u8; 32];
+            let len = sys_getdents64(&mut proc, &mut host, fd, &mut one).unwrap();
+            match expected {
+                Some(name) => {
+                    let records = parse_linux_dirents64(&one, len);
+                    assert_eq!(records.len(), 1);
+                    assert_eq!(records[0].2, name);
+                }
+                None => assert_eq!(len, 0),
+            }
+        }
+
+        assert_eq!(sys_lseek(&mut proc, &mut host, fd, 3, SEEK_SET), Ok(3));
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let before = {
+            let ofd = proc.ofd_table.get(ofd_idx).unwrap();
+            (
+                ofd.dir_host_handle,
+                ofd.dir_synth_state,
+                ofd.dir_entry_offset,
+                ofd.offset,
+                ofd.dir_pending_entry.clone(),
+            )
+        };
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fd, 1, SEEK_CUR),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fd, 0, SEEK_END),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fd, -1, SEEK_SET),
+            Err(Errno::EINVAL),
+        );
+        let ofd = proc.ofd_table.get(ofd_idx).unwrap();
+        assert_eq!(
+            (
+                ofd.dir_host_handle,
+                ofd.dir_synth_state,
+                ofd.dir_entry_offset,
+                ofd.offset,
+                ofd.dir_pending_entry.clone(),
+            ),
+            before,
+        );
+    }
+
+    #[test]
+    fn directory_cookie_seek_failures_preserve_the_live_cursor_atomically() {
+        let mut proc = Process::new(81_075);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 4;
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+
+        // This exact prefix exposes three records and retains `foo.txt` as a
+        // stable pending record after the host iterator already consumed it.
+        let mut prefix = [0u8; 80];
+        assert_eq!(
+            sys_getdents64(&mut proc, &mut host, fd, &mut prefix),
+            Ok(prefix.len()),
+        );
+        let snapshot = {
+            let ofd = proc.ofd_table.get(ofd_idx).unwrap();
+            assert_eq!(ofd.dir_pending_entry.as_ref().unwrap().name, b"foo.txt");
+            (
+                ofd.dir_host_handle,
+                ofd.dir_synth_state,
+                ofd.dir_entry_offset,
+                ofd.offset,
+                ofd.dir_pending_entry.clone(),
+            )
+        };
+        assert_eq!(snapshot.0, 200);
+
+        host.dir_opendir_error = Some(Errno::EACCES);
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fd, 4, SEEK_SET),
+            Err(Errno::EACCES),
+        );
+        host.dir_opendir_error = None;
+        let after_open_error = proc.ofd_table.get(ofd_idx).unwrap();
+        assert_eq!(
+            (
+                after_open_error.dir_host_handle,
+                after_open_error.dir_synth_state,
+                after_open_error.dir_entry_offset,
+                after_open_error.offset,
+                after_open_error.dir_pending_entry.clone(),
+            ),
+            snapshot,
+        );
+        assert!(host.closed_dir_handles.is_empty());
+
+        // Replaying a fresh candidate can also fail. Only that candidate is
+        // closed; the original cursor and its pending bytes remain live.
+        host.dir_readdir_error = Some((1, Errno::EIO));
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fd, 4, SEEK_SET),
+            Err(Errno::EIO),
+        );
+        host.dir_readdir_error = None;
+        let after_replay_error = proc.ofd_table.get(ofd_idx).unwrap();
+        assert_eq!(
+            (
+                after_replay_error.dir_host_handle,
+                after_replay_error.dir_synth_state,
+                after_replay_error.dir_entry_offset,
+                after_replay_error.offset,
+                after_replay_error.dir_pending_entry.clone(),
+            ),
+            snapshot,
+        );
+        assert_eq!(host.closed_dir_handles, [201]);
+
+        let mut next_two = [0u8; 64];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut next_two).unwrap();
+        assert_eq!(
+            parse_linux_dirents64(&next_two, len)
+                .into_iter()
+                .map(|entry| entry.2)
+                .collect::<Vec<_>>(),
+            [b"foo.txt".to_vec(), b"bar.txt".to_vec()],
+        );
+    }
+
+    #[test]
+    fn host_readdir_errors_return_short_success_without_losing_records() {
+        // An error after the synthetic prefix returns that complete prefix.
+        // With no complete record in a later call, the same error is exposed.
+        let mut proc = Process::new(81_076);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 3;
+        host.dir_readdir_error = Some((0, Errno::EIO));
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let mut buf = [0u8; 512];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(
+            parse_linux_dirents64(&buf, len)
+                .into_iter()
+                .map(|entry| entry.2)
+                .collect::<Vec<_>>(),
+            [b".".to_vec(), b"..".to_vec()],
+        );
+        assert_eq!(
+            sys_getdents64(&mut proc, &mut host, fd, &mut buf),
+            Err(Errno::EIO),
+        );
+        host.dir_readdir_error = None;
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(parse_linux_dirents64(&buf, len)[0].2, b"test.txt");
+
+        // An error after an ordinary host record likewise returns the record
+        // and retries the still-unconsumed failing entry on the next call.
+        let mut proc = Process::new(81_077);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 3;
+        host.dir_readdir_error = Some((1, Errno::EIO));
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(
+            parse_linux_dirents64(&buf, len)
+                .into_iter()
+                .map(|entry| entry.2)
+                .collect::<Vec<_>>(),
+            [b".".to_vec(), b"..".to_vec(), b"test.txt".to_vec()],
+        );
+        host.dir_readdir_error = None;
+        let mut one = [0u8; 32];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut one).unwrap();
+        assert_eq!(parse_linux_dirents64(&one, len)[0].2, b"foo.txt");
+
+        // The same rule applies when the first record came from the retained
+        // pending slot rather than a fresh host_readdir call.
+        let mut proc = Process::new(81_078);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 4;
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let mut prefix = [0u8; 80];
+        assert_eq!(
+            sys_getdents64(&mut proc, &mut host, fd, &mut prefix),
+            Ok(prefix.len()),
+        );
+        host.dir_readdir_error = Some((2, Errno::EIO));
+        let mut pending_then_error = [0u8; 64];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut pending_then_error).unwrap();
+        let records = parse_linux_dirents64(&pending_then_error, len);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].2, b"foo.txt");
+        assert_eq!(records[0].1, 4);
+        host.dir_readdir_error = None;
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut one).unwrap();
+        assert_eq!(parse_linux_dirents64(&one, len)[0].2, b"bar.txt");
+    }
+
+    #[test]
+    fn root_virtual_entries_are_identical_across_buffer_boundaries_and_seeks() {
+        fn collect_root(host_names: &[&[u8]], buffer_len: usize) -> Vec<(i64, Vec<u8>)> {
+            let mut proc = Process::new(81_079);
+            let mut host = MockHostIO::new();
+            host.dir_entry_count = host_names.len();
+            host.dir_entry_names = Some(host_names.iter().map(|name| name.to_vec()).collect());
+            let fd = sys_open(&mut proc, &mut host, b"/", O_RDONLY | O_DIRECTORY, 0).unwrap();
+            let mut result = Vec::new();
+            loop {
+                let mut buf = vec![0u8; buffer_len];
+                let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+                if len == 0 {
+                    break;
+                }
+                result.extend(
+                    parse_linux_dirents64(&buf, len)
+                        .into_iter()
+                        .map(|entry| (entry.1, entry.2)),
+                );
+            }
+            result
+        }
+
+        fn assert_root_seeks(host_names: &[&[u8]], expected_names: &[&[u8]]) {
+            let mut proc = Process::new(81_080);
+            let mut host = MockHostIO::new();
+            host.dir_entry_count = host_names.len();
+            host.dir_entry_names = Some(host_names.iter().map(|name| name.to_vec()).collect());
+            let fd = sys_open(&mut proc, &mut host, b"/", O_RDONLY | O_DIRECTORY, 0).unwrap();
+            let mut one = [0u8; 32];
+
+            for cookie in 0..=expected_names.len() as i64 {
+                assert_eq!(sys_lseek(&mut proc, &mut host, fd, cookie, SEEK_SET), Ok(cookie));
+                let len = sys_getdents64(&mut proc, &mut host, fd, &mut one).unwrap();
+                if let Some(expected_name) = expected_names.get(cookie as usize) {
+                    let records = parse_linux_dirents64(&one, len);
+                    assert_eq!(records.len(), 1);
+                    assert_eq!(records[0].1, cookie + 1);
+                    assert_eq!(records[0].2, *expected_name);
+                } else {
+                    assert_eq!(len, 0);
+                }
+            }
+        }
+
+        let expected = [
+            (1, b".".to_vec()),
+            (2, b"..".to_vec()),
+            (3, b"dev".to_vec()),
+            (4, b"proc".to_vec()),
+        ];
+        for host_names in [
+            Vec::<&[u8]>::new(),
+            vec![b"dev".as_slice()],
+            vec![b"proc".as_slice()],
+            vec![b"dev".as_slice(), b"proc".as_slice()],
+        ] {
+            assert_eq!(collect_root(&host_names, 24), expected);
+            assert_eq!(collect_root(&host_names, 512), expected);
+            assert_root_seeks(
+                &host_names,
+                &[b".".as_slice(), b"..".as_slice(), b"dev".as_slice(), b"proc".as_slice()],
+            );
+        }
+
+        let expected_with_host_entry = [
+            (1, b".".to_vec()),
+            (2, b"..".to_vec()),
+            (3, b"ordinary".to_vec()),
+            (4, b"dev".to_vec()),
+            (5, b"proc".to_vec()),
+        ];
+        assert_eq!(
+            collect_root(&[b"dev", b"ordinary", b"proc"], 32),
+            expected_with_host_entry,
+        );
+        assert_eq!(
+            collect_root(&[b"dev", b"ordinary", b"proc"], 512),
+            expected_with_host_entry,
+        );
+        assert_root_seeks(
+            &[b"dev", b"ordinary", b"proc"],
+            &[b".", b"..", b"ordinary", b"dev", b"proc"],
+        );
+    }
+
+    #[test]
+    fn virtual_directory_syscalls_preserve_small_buffer_and_seek_contracts() {
+        for (pid, path, sentinel) in [
+            (81_081, b"/dev".as_slice(), crate::devfs::DEVFS_DIR_HANDLE),
+            (
+                81_082,
+                b"/proc".as_slice(),
+                crate::procfs::PROCFS_DIR_HANDLE,
+            ),
+        ] {
+            let mut proc = Process::new(pid);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, path, O_RDONLY | O_DIRECTORY, 0).unwrap();
+            let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+
+            assert_eq!(
+                sys_getdents64(&mut proc, &mut host, fd, &mut [0u8; 23]),
+                Err(Errno::EINVAL),
+            );
+            assert_eq!(
+                (
+                    proc.ofd_table.get(ofd_idx).unwrap().dir_entry_offset,
+                    proc.ofd_table.get(ofd_idx).unwrap().offset,
+                ),
+                (0, 0),
+            );
+
+            let mut small_entries = Vec::new();
+            loop {
+                let mut buf = [0u8; 32];
+                let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+                if len == 0 {
+                    break;
+                }
+                small_entries.extend(parse_linux_dirents64(&buf, len));
+            }
+            assert!(small_entries.len() > 2);
+            assert_eq!(small_entries[0].2, b".");
+            assert_eq!(small_entries[1].2, b"..");
+            assert!(
+                small_entries
+                    .windows(2)
+                    .all(|pair| pair[0].1.checked_add(1) == Some(pair[1].1))
+            );
+
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET), Ok(0));
+            assert_eq!(
+                proc.ofd_table.get(ofd_idx).unwrap().dir_host_handle,
+                sentinel,
+            );
+            let mut full = [0u8; 4096];
+            let len = sys_getdents64(&mut proc, &mut host, fd, &mut full).unwrap();
+            assert_eq!(parse_linux_dirents64(&full, len), small_entries);
+
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 1, SEEK_SET), Ok(1));
+            let mut one = [0u8; 32];
+            let len = sys_getdents64(&mut proc, &mut host, fd, &mut one).unwrap();
+            assert_eq!(parse_linux_dirents64(&one, len)[0].2, b"..");
+
+            assert_eq!(
+                sys_lseek(&mut proc, &mut host, fd, i64::MAX, SEEK_SET),
+                Ok(i64::MAX),
+            );
+            assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut one), Ok(0));
+            assert_eq!(
+                sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR),
+                Ok(i64::MAX),
+            );
+        }
     }
 
     #[test]
@@ -20314,6 +20806,215 @@ mod tests {
             host,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn scm_rights_directory_reopens_at_the_snapshot_cookie() {
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut sender = Process::new(70_901);
+        let mut receiver = Process::new(70_902);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 3;
+
+        let sender_fd = sys_open(
+            &mut sender,
+            &mut host,
+            b"/tmp",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+        let mut prefix = [0u8; 80];
+        assert_eq!(
+            sys_getdents64(&mut sender, &mut host, sender_fd, &mut prefix),
+            Ok(prefix.len()),
+        );
+        assert_eq!(
+            parse_linux_dirents64(&prefix, prefix.len())
+                .into_iter()
+                .map(|entry| entry.2)
+                .collect::<Vec<_>>(),
+            [b".".to_vec(), b"..".to_vec(), b"test.txt".to_vec()],
+        );
+        let sender_ofd_idx = sender.fd_table.get(sender_fd).unwrap().ofd_ref.0;
+        let sender_ofd = sender.ofd_table.get(sender_ofd_idx).unwrap();
+        assert_eq!(sender_ofd.dir_host_handle, 200);
+        assert_eq!(sender_ofd.dir_entry_offset, 3);
+        assert_eq!(sender_ofd.offset, 3);
+        assert_eq!(sender_ofd.dir_pending_entry.as_ref().unwrap().name, b"foo.txt");
+
+        let queued = retain_fd_for_scm_rights(&sender, sender_fd);
+        let received = install_scm_rights_fds(&mut receiver, vec![queued]);
+        assert_eq!(received.len(), 1);
+        let received_fd = received[0];
+        let received_ofd_idx = receiver.fd_table.get(received_fd).unwrap().ofd_ref.0;
+        let received_ofd = receiver.ofd_table.get(received_ofd_idx).unwrap();
+        assert_eq!(received_ofd.dir_host_handle, -1);
+        assert_eq!(received_ofd.dir_entry_offset, 3);
+        assert_eq!(received_ofd.offset, 3);
+        assert!(received_ofd.dir_pending_entry.is_none());
+
+        // A failed lazy reopen preserves the unopened snapshot state so the
+        // recipient can retry the same cookie later.
+        host.dir_opendir_error = Some(Errno::EACCES);
+        let mut one = [0u8; 32];
+        assert_eq!(
+            sys_getdents64(&mut receiver, &mut host, received_fd, &mut one),
+            Err(Errno::EACCES),
+        );
+        host.dir_opendir_error = None;
+        let received_ofd = receiver.ofd_table.get(received_ofd_idx).unwrap();
+        assert_eq!(
+            (received_ofd.dir_host_handle, received_ofd.dir_entry_offset),
+            (-1, 3),
+        );
+
+        let len = sys_getdents64(&mut receiver, &mut host, received_fd, &mut one).unwrap();
+        assert_eq!(parse_linux_dirents64(&one, len)[0].2, b"foo.txt");
+        assert_eq!(
+            receiver
+                .ofd_table
+                .get(received_ofd_idx)
+                .unwrap()
+                .dir_host_handle,
+            201,
+        );
+
+        // The recipient's reopen/replay did not consume or replace the
+        // sender's live iterator and pending snapshot.
+        let sender_ofd = sender.ofd_table.get(sender_ofd_idx).unwrap();
+        assert_eq!(sender_ofd.dir_host_handle, 200);
+        assert_eq!(sender_ofd.dir_entry_offset, 3);
+        assert_eq!(sender_ofd.dir_pending_entry.as_ref().unwrap().name, b"foo.txt");
+
+        sys_close(&mut receiver, &mut host, received_fd).unwrap();
+        sys_close(&mut sender, &mut host, sender_fd).unwrap();
+        assert_eq!(host.closed_dir_handles, [201, 200]);
+        assert_eq!(
+            host.closed_handles
+                .iter()
+                .filter(|&&handle| handle == 100)
+                .count(),
+            1,
+        );
+    }
+
+    #[test]
+    fn fork_and_spawn_directories_reopen_at_the_snapshot_cookie() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        const PARENT: u32 = 70_903;
+        const FORK_CHILD: u32 = 70_904;
+
+        let mut table = ProcessTable::new();
+        table.create_process(PARENT).unwrap();
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 3;
+        let parent_fd = sys_open(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            b"/tmp",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+        let parent_ofd_idx = table
+            .get(PARENT)
+            .unwrap()
+            .fd_table
+            .get(parent_fd)
+            .unwrap()
+            .ofd_ref
+            .0;
+        let mut prefix = [0u8; 80];
+        assert_eq!(
+            sys_getdents64(
+                table.get_mut(PARENT).unwrap(),
+                &mut host,
+                parent_fd,
+                &mut prefix,
+            ),
+            Ok(prefix.len()),
+        );
+        assert_eq!(
+            table
+                .get(PARENT)
+                .unwrap()
+                .ofd_table
+                .get(parent_ofd_idx)
+                .unwrap()
+                .dir_host_handle,
+            200,
+        );
+
+        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        let spawn_child = table
+            .spawn_child(
+                PARENT,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        for pid in [FORK_CHILD, spawn_child] {
+            let child_entry = table.get(pid).unwrap().fd_table.get(parent_fd).unwrap();
+            let child_ofd = table
+                .get(pid)
+                .unwrap()
+                .ofd_table
+                .get(child_entry.ofd_ref.0)
+                .unwrap();
+            assert_eq!(child_ofd.dir_host_handle, -1);
+            assert_eq!(child_ofd.dir_entry_offset, 3);
+            assert_eq!(child_ofd.offset, 3);
+            assert!(child_ofd.dir_pending_entry.is_none());
+
+            let mut one = [0u8; 32];
+            let len = sys_getdents64(
+                table.get_mut(pid).unwrap(),
+                &mut host,
+                parent_fd,
+                &mut one,
+            )
+            .unwrap();
+            assert_eq!(parse_linux_dirents64(&one, len)[0].2, b"foo.txt");
+        }
+
+        // Both child iterators resumed independently, while the parent kept
+        // its live pending record at the same snapshot cookie.
+        let parent_ofd = table
+            .get(PARENT)
+            .unwrap()
+            .ofd_table
+            .get(parent_ofd_idx)
+            .unwrap();
+        assert_eq!(parent_ofd.dir_host_handle, 200);
+        assert_eq!(parent_ofd.dir_entry_offset, 3);
+        assert_eq!(parent_ofd.dir_pending_entry.as_ref().unwrap().name, b"foo.txt");
+
+        for pid in [FORK_CHILD, spawn_child, PARENT] {
+            sys_close(table.get_mut(pid).unwrap(), &mut host, parent_fd).unwrap();
+        }
+        assert_eq!(host.closed_dir_handles, [201, 202, 200]);
+        assert_eq!(
+            host.closed_handles
+                .iter()
+                .filter(|&&handle| handle == 100)
+                .count(),
+            1,
+        );
+        table.remove_process(FORK_CHILD).unwrap();
+        table.remove_process(spawn_child).unwrap();
+        table.remove_process(PARENT).unwrap();
     }
 
     #[test]

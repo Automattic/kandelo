@@ -269,6 +269,16 @@ export class WasmPosixKernel {
   private forkSab: SharedArrayBuffer | null = null;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
+   * A backend directory iterator may already have advanced before the host
+   * bridge discovers that it cannot marshal the returned entry into Wasm
+   * memory. Keep that entry here until every output write succeeds so the
+   * guest can retry without losing it.
+   */
+  private pendingDirectoryEntries = new Map<
+    number,
+    { name: string; type: number; ino: number }
+  >();
+  /**
    * Extra host-handle ownership held by regular-file MAP_SHARED backings.
    * The Rust kernel emits host_close only after the last guest descriptor is
    * gone; a mapping retain defers that physical close until its backing is
@@ -1807,7 +1817,11 @@ export class WasmPosixKernel {
   private hostOpendir(pathPtr: number, pathLen: number): bigint {
     try {
       const path = this.readPathFromMemory(pathPtr, pathLen);
-      return BigInt(this.io.opendir(path));
+      const handle = this.io.opendir(path);
+      // Backends may reuse numeric handles after close. Never let an entry
+      // staged for an older iterator leak into the new one.
+      this.pendingDirectoryEntries.delete(handle);
+      return BigInt(handle);
     } catch (e) {
       return BigInt(negErrno(e));
     }
@@ -1827,8 +1841,13 @@ export class WasmPosixKernel {
   ): number {
     try {
       const h = Number(dirHandle);
-      const dirEntry = this.io.readdir(h);
-      if (dirEntry === null) return 0; // end of directory
+      let dirEntry = this.pendingDirectoryEntries.get(h);
+      if (dirEntry === undefined) {
+        const next = this.io.readdir(h);
+        if (next === null) return 0; // end of directory
+        this.pendingDirectoryEntries.set(h, next);
+        dirEntry = next;
+      }
 
       const dv = this.getMemoryDataView();
       const mem = this.getMemoryBuffer();
@@ -1844,6 +1863,7 @@ export class WasmPosixKernel {
       // Write name
       mem.set(encoded.subarray(0, n), namePtr);
 
+      this.pendingDirectoryEntries.delete(h);
       return 1;
     } catch (e) {
       return negErrno(e);
@@ -1854,12 +1874,14 @@ export class WasmPosixKernel {
    * host_closedir(dir_handle: i64) -> i32
    */
   private hostClosedir(dirHandle: bigint): number {
+    const h = Number(dirHandle);
     try {
-      const h = Number(dirHandle);
       this.io.closedir(h);
       return 0;
     } catch {
       return -1;
+    } finally {
+      this.pendingDirectoryEntries.delete(h);
     }
   }
 

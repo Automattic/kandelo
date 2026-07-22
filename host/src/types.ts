@@ -109,6 +109,10 @@ export interface PlatformIO {
 
   // Directory iteration
   opendir(path: string): number;
+  /**
+   * Return and consume the next entry. If this throws, the iterator must stay
+   * on that entry so the caller can retry without a directory-position gap.
+   */
   readdir(
     handle: number,
   ): { name: string; type: number; ino: number } | null;

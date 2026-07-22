@@ -1154,6 +1154,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         let status_flags = r.read_u32()?;
         let host_handle = r.read_i64()?;
         let offset = r.read_i64()?;
+        if file_type == FileType::Directory && offset < 0 {
+            return Err(Errno::EINVAL);
+        }
         let ref_count = r.read_u32()?;
         let path_len = r.read_u32()? as usize;
         let path = r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec();
@@ -1161,7 +1164,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             ofd_entries.push(None);
         }
         let dri_state = read_dri_state(&mut r)?;
-        ofd_entries[index] = Some(OpenFileDesc {
+        let mut ofd = OpenFileDesc {
             ofd_id,
             file_id,
             file_type,
@@ -1174,11 +1177,11 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
-            // The retained fork wire format does not carry host-directory
-            // cursor state; see the documented global-OFD limitation.
             dir_pending_entry: None,
             dri_state,
-        });
+        };
+        ofd.reset_directory_iterator_for_reopen();
+        ofd_entries[index] = Some(ofd);
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
 
@@ -1814,6 +1817,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         let status_flags = r.read_u32()?;
         let host_handle = r.read_i64()?;
         let offset = r.read_i64()?;
+        if file_type == FileType::Directory && offset < 0 {
+            return Err(Errno::EINVAL);
+        }
         let ref_count = r.read_u32()?;
         let path_len = r.read_u32()? as usize;
         let path = r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec();
@@ -1821,7 +1827,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ofd_entries.push(None);
         }
         let dri_state = read_dri_state(&mut r)?;
-        ofd_entries[index] = Some(OpenFileDesc {
+        let mut ofd = OpenFileDesc {
             ofd_id,
             file_id,
             file_type,
@@ -1834,11 +1840,11 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
-            // Canonical in-place exec preserves this state. Only the retained
-            // legacy exec wire format restarts host-directory iteration.
             dir_pending_entry: None,
             dri_state,
-        });
+        };
+        ofd.reset_directory_iterator_for_reopen();
+        ofd_entries[index] = Some(ofd);
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
 
@@ -2044,6 +2050,48 @@ mod tests {
         assert!(child.fd_table.get(1).is_ok());
         assert!(child.fd_table.get(2).is_ok());
         assert!(child.fd_table.get(3).is_err());
+    }
+
+    #[test]
+    fn fork_roundtrip_reopens_directory_at_the_serialized_cookie() {
+        let mut parent = Process::new(1);
+        let ofd_idx = parent.ofd_table.create(
+            FileType::Directory,
+            wasm_posix_shared::flags::O_RDONLY,
+            700,
+            b"/dir".to_vec(),
+        );
+        parent
+            .fd_table
+            .alloc(OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        {
+            let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
+            ofd.offset = 4;
+            ofd.dir_host_handle = 701;
+            ofd.dir_synth_state = 2;
+            ofd.dir_entry_offset = 4;
+            ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry {
+                ino: 55,
+                d_type: 8,
+                name: b"pending".to_vec(),
+            });
+        }
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&parent, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 2).unwrap();
+
+        let inherited = child.ofd_table.get(ofd_idx).unwrap();
+        assert_eq!(inherited.offset, 4);
+        assert_eq!(inherited.dir_entry_offset, 4);
+        assert_eq!(inherited.dir_synth_state, 2);
+        assert_eq!(inherited.dir_host_handle, -1);
+        assert!(inherited.dir_pending_entry.is_none());
+
+        let parent_ofd = parent.ofd_table.get(ofd_idx).unwrap();
+        assert_eq!(parent_ofd.dir_host_handle, 701);
+        assert_eq!(parent_ofd.dir_pending_entry.as_ref().unwrap().name, b"pending");
     }
 
     #[test]

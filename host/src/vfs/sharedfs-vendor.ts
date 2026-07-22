@@ -3384,25 +3384,34 @@ export class SharedFS {
       )
         throw new SFSError(EIO);
 
-      // Advance offset — update both the SAB (persistent) and the local
-      // snapshot so the while loop progresses past deleted entries (entIno=0).
-      entry.offset = pos + recLen;
+      const nextOffset = pos + recLen;
       const base = FD_TABLE_OFFSET + dd * FD_ENTRY_SIZE;
-      this.w64(base + FD_OFFSET, pos + recLen);
 
-      if (entIno !== 0) {
-        if (entIno >= this.r32(SB_TOTAL_INODES)) throw new SFSError(EIO);
-        const ibStart = this.r32(SB_INODE_BITMAP_START) * BLOCK_SIZE;
-        const word = this.r32(ibStart + (entIno >> 5) * 4);
-        if ((word & (1 << (entIno & 31))) === 0) throw new SFSError(EIO);
-        const nameStr = safeDecode(
-          this.u8.subarray(
-            abs + DIRENT_HEADER_SIZE,
-            abs + DIRENT_HEADER_SIZE + entNameLen,
-          ),
-        );
-        return { name: nameStr, stat: this.buildStat(entIno) };
+      if (entIno === 0) {
+        // A structurally valid deleted slot has no entry to return, but its
+        // cursor still has to advance so the loop can reach the next slot.
+        this.w64(base + FD_OFFSET, nextOffset);
+        entry.offset = nextOffset;
+        continue;
       }
+
+      // Validate and construct the complete live result before committing
+      // the shared cursor. Any failure must leave this record retryable.
+      if (entIno >= this.r32(SB_TOTAL_INODES)) throw new SFSError(EIO);
+      const ibStart = this.r32(SB_INODE_BITMAP_START) * BLOCK_SIZE;
+      const word = this.r32(ibStart + (entIno >> 5) * 4);
+      if ((word & (1 << (entIno & 31))) === 0) throw new SFSError(EIO);
+      const nameStr = safeDecode(
+        this.u8.subarray(
+          abs + DIRENT_HEADER_SIZE,
+          abs + DIRENT_HEADER_SIZE + entNameLen,
+        ),
+      );
+      const stat = this.buildStat(entIno);
+
+      this.w64(base + FD_OFFSET, nextOffset);
+      entry.offset = nextOffset;
+      return { name: nameStr, stat };
     }
 
     return null;

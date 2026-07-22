@@ -42,6 +42,7 @@ export interface FileSystemBackend {
 
   // Directory iteration
   opendir(path: string): number;
+  /** A thrown error must leave the next directory entry unconsumed. */
   readdir(handle: number): DirEntry | null;
   closedir(handle: number): void;
 }
