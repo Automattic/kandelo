@@ -204,6 +204,48 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
     }
   });
 
+  it("clears executable regular-file set-ID bits through path and fd chown", () => {
+    const c = makeCase();
+    const pathNative = c.nativePath("set-id-path");
+    const fdNative = c.nativePath("set-id-fd");
+    writeFileSync(pathNative, "path");
+    writeFileSync(fdNative, "fd");
+    chmodSync(pathNative, 0o600);
+    chmodSync(fdNative, 0o600);
+    const pathBefore = statSync(pathNative);
+    const fdBefore = statSync(fdNative);
+
+    c.backend.chmod(c.vfsPath("set-id-path"), 0o6755);
+    c.backend.chown(c.vfsPath("set-id-path"), 1234, 5678);
+    expect(c.backend.stat(c.vfsPath("set-id-path")).mode & MODE_MASK).toBe(0o755);
+
+    const fd = c.backend.open(c.vfsPath("set-id-fd"), O_RDWR, 0);
+    try {
+      c.backend.fchmod(fd, 0o6755);
+      c.backend.fchown(fd, 1234, 5678);
+      expect(c.backend.fstat(fd).mode & MODE_MASK).toBe(0o755);
+    } finally {
+      c.backend.close(fd);
+    }
+
+    expectNativeMetadataUnchanged(pathNative, pathBefore);
+    expectNativeMetadataUnchanged(fdNative, fdBefore);
+  });
+
+  it("retains set-ID bits on non-executable regular files and directories", () => {
+    const c = makeCase();
+    const fileNative = c.nativePath("set-id-data");
+    writeFileSync(fileNative, "data");
+    c.backend.chmod(c.vfsPath("set-id-data"), 0o6600);
+    c.backend.chown(c.vfsPath("set-id-data"), 1234, 5678);
+    expect(c.backend.stat(c.vfsPath("set-id-data")).mode & MODE_MASK).toBe(0o6600);
+
+    c.backend.mkdir(c.vfsPath("set-id-dir"), 0o770);
+    c.backend.chmod(c.vfsPath("set-id-dir"), 0o6770);
+    c.backend.chown(c.vfsPath("set-id-dir"), 1234, 5678);
+    expect(c.backend.stat(c.vfsPath("set-id-dir")).mode & MODE_MASK).toBe(0o6770);
+  });
+
   it("relays open(O_CREAT) mode to native creation and records it virtually", () => {
     const c = makeCase();
     const fd = withUmask(0, () =>

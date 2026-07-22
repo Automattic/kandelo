@@ -120,6 +120,79 @@ describe("SharedFS uid/gid", () => {
     expect(st.gid).toBe(600);
   });
 
+  it("chown-family operations clear set-ID bits only on executable regular files", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const create = (path: string, mode: number): number =>
+      fs.open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+
+    let fd = create("/path", 0o6755);
+    fs.close(fd);
+    fs.chown("/path", 1000, 1000);
+    expect(fs.stat("/path").mode & 0o7777).toBe(0o755);
+
+    fd = create("/fd", 0o6755);
+    fs.fchown(fd, 1000, 1000);
+    expect(fs.fstat(fd).mode & 0o7777).toBe(0o755);
+    fs.close(fd);
+
+    fd = create("/same-ids", 0o644);
+    fs.close(fd);
+    fs.chown("/same-ids", 1000, 2000);
+    fs.chmod("/same-ids", 0o6755);
+    fs.chown("/same-ids", 1000, 2000);
+    expect(fs.stat("/same-ids").mode & 0o7777).toBe(0o755);
+
+    fd = create("/uid-only", 0o644);
+    fs.close(fd);
+    fs.chown("/uid-only", 1000, 2000);
+    fs.chmod("/uid-only", 0o6755);
+    fs.chown("/uid-only", 3000, 0xffffffff);
+    expect(fs.stat("/uid-only")).toMatchObject({ uid: 3000, gid: 2000 });
+    expect(fs.stat("/uid-only").mode & 0o7777).toBe(0o755);
+
+    fd = create("/gid-only", 0o644);
+    fs.close(fd);
+    fs.chown("/gid-only", 1000, 2000);
+    fs.chmod("/gid-only", 0o6755);
+    fs.chown("/gid-only", 0xffffffff, 3000);
+    expect(fs.stat("/gid-only")).toMatchObject({ uid: 1000, gid: 3000 });
+    expect(fs.stat("/gid-only").mode & 0o7777).toBe(0o755);
+
+    fd = create("/group-executable", 0o6610);
+    fs.close(fd);
+    fs.chown("/group-executable", 1000, 1000);
+    expect(fs.stat("/group-executable").mode & 0o7777).toBe(0o610);
+
+    fd = create("/non-executable", 0o6600);
+    fs.close(fd);
+    fs.chown("/non-executable", 1000, 1000);
+    expect(fs.stat("/non-executable").mode & 0o7777).toBe(0o6600);
+
+    fs.mkdir("/directory", 0o6770);
+    fs.chown("/directory", 1000, 1000);
+    expect(fs.stat("/directory").mode & 0o7777).toBe(0o6770);
+
+    fs.chmod("/path", 0o6755);
+    fs.symlink("/path", "/link");
+    fs.lchown("/link", 2000, 2000);
+    expect(fs.lstat("/link")).toMatchObject({ uid: 2000, gid: 2000 });
+    expect(fs.stat("/path").mode & 0o7777).toBe(0o6755);
+  });
+
+  it("preserves IDs selected with the unchanged sentinels", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const fd = fs.open("/sentinels", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    fs.close(fd);
+
+    fs.chown("/sentinels", 1000, 2000);
+    fs.chown("/sentinels", 0xffffffff, 3000);
+    expect(fs.stat("/sentinels")).toMatchObject({ uid: 1000, gid: 3000 });
+    fs.chown("/sentinels", 4000, 0xffffffff);
+    expect(fs.stat("/sentinels")).toMatchObject({ uid: 4000, gid: 3000 });
+  });
+
   it("chown round-trips back to zero and leaves other inode fields intact", () => {
     const sab = new SharedArrayBuffer(1024 * 1024);
     const fs = MemoryFileSystem.create(sab);

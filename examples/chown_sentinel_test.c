@@ -42,6 +42,25 @@ static int expect_path_ids(const char *path, int follow, uid_t uid, gid_t gid,
     return 0;
 }
 
+static int expect_path_mode_ids(const char *path, mode_t mode, uid_t uid,
+    gid_t gid, const char *step)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        perror(step);
+        return -1;
+    }
+    if ((st.st_mode & 07777) != mode || st.st_uid != uid || st.st_gid != gid) {
+        fprintf(stderr,
+            "%s: got mode=%04o uid=%u gid=%u, expected mode=%04o uid=%u gid=%u\n",
+            step, (unsigned)(st.st_mode & 07777), (unsigned)st.st_uid,
+            (unsigned)st.st_gid, (unsigned)mode, (unsigned)uid,
+            (unsigned)gid);
+        return -1;
+    }
+    return 0;
+}
+
 int main(void)
 {
     const char *path = "/tmp/chown-sentinel";
@@ -174,6 +193,64 @@ int main(void)
         return 15;
     if (seteuid(0) != 0)
         return 16;
+
+    /* Exercise _POSIX_CHOWN_RESTRICTED with Kandelo's current credential
+     * model: the first call uses effective uid/gid 1000; the distinct real
+     * gid then exercises the single synthesized supplementary group exposed
+     * by getgroups(). */
+    const char *restricted = "/tmp/chown-restricted";
+    int restricted_fd = open(restricted, O_CREAT | O_RDWR | O_TRUNC, 0644);
+    if (restricted_fd < 0 || fchown(restricted_fd, 1000, 4000) != 0 ||
+        fchmod(restricted_fd, 06755) != 0)
+        return 34;
+    if (setgid(2000) != 0 || setegid(1000) != 0 || seteuid(1000) != 0)
+        return 35;
+
+    if (chown(restricted, (uid_t)-1, 1000) != 0 ||
+        expect_path_mode_ids(restricted, 0755, 1000, 1000,
+            "effective-group chown") != 0)
+        return 36;
+    if (fchmod(restricted_fd, 06755) != 0 ||
+        fchown(restricted_fd, 1000, 2000) != 0 ||
+        expect_path_mode_ids(restricted, 0755, 1000, 2000,
+            "supplementary-group fchown") != 0)
+        return 37;
+    if (fchmod(restricted_fd, 06755) != 0 ||
+        fchown(restricted_fd, 1000, 2000) != 0 ||
+        expect_path_mode_ids(restricted, 0755, 1000, 2000,
+            "same-ID group-member fchown") != 0)
+        return 45;
+
+    errno = 0;
+    if (chown(restricted, (uid_t)-1, 5000) != -1 || errno != EPERM)
+        return 38;
+    errno = 0;
+    if (chown(restricted, 1001, (gid_t)-1) != -1 || errno != EPERM)
+        return 39;
+    if (expect_path_mode_ids(restricted, 0755, 1000, 2000,
+            "rejected chown is atomic") != 0)
+        return 40;
+
+    /* POSIX permits preserving a foreign group with the unchanged sentinel,
+     * but not by explicitly naming a group outside the caller's group set.
+     * A successful sentinel call still clears set-ID bits on an executable
+     * regular file. */
+    if (seteuid(0) != 0 || fchown(restricted_fd, 1000, 5000) != 0 ||
+        fchmod(restricted_fd, 06755) != 0 || seteuid(1000) != 0)
+        return 41;
+    errno = 0;
+    if (fchown(restricted_fd, (uid_t)-1, 5000) != -1 || errno != EPERM ||
+        expect_path_mode_ids(restricted, 06755, 1000, 5000,
+            "rejected foreign same-group fchown") != 0)
+        return 42;
+    if (fchown(restricted_fd, (uid_t)-1, (gid_t)-1) != 0 ||
+        expect_path_mode_ids(restricted, 0755, 1000, 5000,
+            "unchanged-ID fchown") != 0)
+        return 43;
+
+    if (seteuid(0) != 0 || setgid(0) != 0)
+        return 44;
+    close(restricted_fd);
 
     close(fd);
     puts("CHOWN_SENTINEL_PASS");
