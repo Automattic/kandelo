@@ -381,5 +381,6 @@ jobs:
             ${{ runner.temp }}/homebrew-main-shell-bottle-recovery.json
             ${{ runner.temp }}/homebrew-main-shell-bottle-publish.json
             ${{ runner.temp }}/homebrew-main-shell-playwright.json
+            apps/browser-demos/test-results
           retention-days: 7
           if-no-files-found: warn

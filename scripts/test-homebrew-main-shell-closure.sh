@@ -183,6 +183,8 @@ grep -Fq '${{ steps.candidate.outputs.image }}' "$WORKFLOW" ||
   fail "main-shell evidence must retain the exact candidate image"
 grep -Fq '${{ steps.candidate.outputs.report }}' "$WORKFLOW" ||
   fail "main-shell evidence must retain the candidate composition report"
+grep -Fq 'apps/browser-demos/test-results' "$WORKFLOW" ||
+  fail "main-shell evidence must retain browser failure traces"
 grep -Fq 'bash ../../scripts/dev-shell.sh env "${playwright_env[@]}" \' "$WORKFLOW" ||
   fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
 grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$report"' "$WORKFLOW" ||
