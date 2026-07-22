@@ -1039,6 +1039,24 @@ import { MemoryFileSystem } from '$REPO_ROOT/host/src/vfs/memory-fs.ts';
   const fs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync('$BASE_IMAGE')));
   const metadata = fs.getImageMetadata();
   if (!metadata) throw new Error('expected base metadata');
+  // Give the retained marker an inode that a fresh, compact copy cannot
+  // reproduce accidentally. This makes the later rebase assertion depend on
+  // filesystem identity rather than millisecond clock resolution.
+  const marker = '/etc/base-image-marker';
+  const padding = Array.from(
+    { length: 8 },
+    (_, index) => '/etc/.base-inode-padding-' + index,
+  );
+  fs.unlink(marker);
+  for (const path of padding) {
+    const fd = fs.open(path, 0o1101, 0o600);
+    fs.close(fd);
+  }
+  const markerBytes = new TextEncoder().encode('base-image-marker\n');
+  const markerFd = fs.open(marker, 0o1101, 0o644);
+  fs.write(markerFd, markerBytes, null, markerBytes.byteLength);
+  fs.close(markerFd);
+  for (const path of padding) fs.unlink(path);
   const image = await fs.saveImage({
     metadata: {
       ...metadata,
@@ -2056,20 +2074,13 @@ const rebased = MemoryFileSystem.fromImagePreservingCapacity(
   new Uint8Array(readFileSync('$TMPDIR/sidecar-tool.vfs.zst')),
 );
 const marker = '/etc/base-image-marker';
-const baseCtimeMs = base.stat(marker).ctimeMs;
-const composedCtimeMs = composed.stat(marker).ctimeMs;
-const rebasedCtimeMs = rebased.stat(marker).ctimeMs;
-if (
-  !Number.isFinite(baseCtimeMs) ||
-  !Number.isFinite(composedCtimeMs) ||
-  !Number.isFinite(rebasedCtimeMs)
-) {
-  throw new Error('base marker ctime is unavailable');
-}
-if (baseCtimeMs !== composedCtimeMs) {
+const baseIno = base.stat(marker).ino;
+const composedIno = composed.stat(marker).ino;
+const rebasedIno = rebased.stat(marker).ino;
+if (baseIno !== composedIno) {
   throw new Error('default composition rebuilt an unchanged base inode');
 }
-if (baseCtimeMs === rebasedCtimeMs) {
+if (baseIno === rebasedIno) {
   throw new Error('explicit rebase did not exercise fresh-inode copying');
 }
 " >/dev/null
