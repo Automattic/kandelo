@@ -27,6 +27,7 @@ describe("format-neutral deferred trees", () => {
     fs.registerLazyTree(fixture.content, fixture.inventory);
 
     const serialized = fs.exportLazyArchiveEntries()[0];
+    expect(serialized?.kind).toBe("kandelo-deferred-tree-v1");
     expect(serialized?.mountPrefix).toBe("/");
     expect(serialized?.entries.every((entry) => entry.vfsPath.startsWith("/")))
       .toBe(true);
@@ -423,6 +424,13 @@ describe("format-neutral deferred trees", () => {
     const serialized = source.exportLazyArchiveEntries();
     const cases: Array<{ mutate: (value: any) => unknown; error: RegExp }> = [
       {
+        mutate: (value) => {
+          delete value.kind;
+          return value;
+        },
+        error: /missing its kind discriminator/,
+      },
+      {
         mutate: (value) => ({ ...value, unexpected: true }),
         error: /Serialized lazy tree has unexpected or missing fields/,
       },
@@ -471,6 +479,48 @@ describe("format-neutral deferred trees", () => {
     ).toThrow(/must contain 0 to 512 items/);
   });
 
+  it("does not let ZIP deferred-tree metadata downgrade to the legacy schema", () => {
+    const fixture = tarTreeFixture("first-use");
+    const inventory = structuredClone(fixture.inventory);
+    const file = inventory.find((entry) => entry.type === "file")!;
+    const hardlink = inventory.find((entry) => entry.type === "hardlink")!;
+    hardlink.sourcePath = file.sourcePath;
+    const source = createFs();
+    source.registerLazyTree({
+      ...fixture.content,
+      decoder: "zip-v1",
+      mediaType: "application/zip",
+      expandedBytes: 7,
+      sourceEntryCount: 2,
+      transports: ["https://example.invalid/runtime.zip"],
+    }, inventory, "/", fixture.activation);
+    const downgraded = structuredClone(source.exportLazyArchiveEntries()[0]) as any;
+    delete downgraded.kind;
+    delete downgraded.content;
+    delete downgraded.inventory;
+    delete downgraded.activation;
+
+    const peer = MemoryFileSystem.fromExisting(source.sharedBuffer);
+    expect(() => peer.importLazyArchiveEntries([downgraded]))
+      .toThrow(/missing its kind discriminator/);
+    expect(peer.exportLazyArchiveEntries()).toEqual([]);
+  });
+
+  it("commits no groups when a later imported inode identity is invalid", () => {
+    const source = createFs();
+    const first = tarTreeFixture("first-use", "first");
+    const second = tarTreeFixture("first-use", "second");
+    source.registerLazyTree(first.content, first.inventory, "/", first.activation);
+    source.registerLazyTree(second.content, second.inventory, "/", second.activation);
+    const serialized = structuredClone(source.exportLazyArchiveEntries());
+    serialized[1].entries[0].ino += 1_000;
+
+    const peer = MemoryFileSystem.fromExisting(source.sharedBuffer);
+    expect(() => peer.importLazyArchiveEntries(serialized))
+      .toThrow(/stub .* has a different inode/);
+    expect(peer.exportLazyArchiveEntries()).toEqual([]);
+  });
+
   it("applies the same generic-tree validator during restore and rebase", async () => {
     const fixture = tarTreeFixture("first-use");
     const source = createFs();
@@ -482,6 +532,15 @@ describe("format-neutral deferred trees", () => {
     expect(() =>
       MemoryFileSystem.fromImage(replaceLazyArchiveMetadata(image, [unknown]))
     ).toThrow(/activation has unexpected or missing fields/);
+
+    const downgraded = structuredClone(serialized[0]) as any;
+    delete downgraded.kind;
+    delete downgraded.content;
+    delete downgraded.inventory;
+    delete downgraded.activation;
+    expect(() =>
+      MemoryFileSystem.fromImage(replaceLazyArchiveMetadata(image, [downgraded]))
+    ).toThrow(/missing its kind discriminator/);
 
     const truncated = image.slice();
     const archiveOffset = lazyArchiveMetadataOffset(truncated);

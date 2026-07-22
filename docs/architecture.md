@@ -690,6 +690,15 @@ live registration, cross-worker import, image restore, and filesystem rebase.
 Content, activation, mount prefix, inventory, and pending inode metadata reject
 unknown fields, unsafe or oversized strings, count/size disagreement, and
 missing, cyclic, or cross-inode hard-link targets before a group is installed.
+Serialized groups carry an explicit `kandelo-deferred-tree-v1` or
+`kandelo-legacy-zip-v1` kind, and newly saved images declare that every group is
+typed. A deferred tree therefore cannot enter the less expressive legacy ZIP
+path by dropping its inventory or activation fields. Untyped legacy ZIP groups
+remain a restore-only migration path for historical images that predate the
+typed-image flag; restoration normalizes them to the explicit legacy kind.
+Cross-worker imports stage and identity-check the complete batch before
+publishing any group, so rejection of a later group cannot leave earlier lazy
+metadata active.
 Hard-link chains are resolved once with cycle state and path compression, so
 validation is linear in the inventory size. VFS lazy-file and lazy-archive JSON
 sections are each capped at 16 MiB and checked for truncation before JSON

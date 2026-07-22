@@ -83,6 +83,33 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function asUntaggedLegacyArchiveImage(image: Uint8Array): Uint8Array {
+  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+  const sabLength = view.getUint32(12, true);
+  const lazyOffset = 16 + sabLength;
+  const lazyLength = view.getUint32(lazyOffset, true);
+  const archiveOffset = lazyOffset + 4 + lazyLength;
+  const archiveLength = view.getUint32(archiveOffset, true);
+  const archiveEnd = archiveOffset + 4 + archiveLength;
+  const groups = JSON.parse(new TextDecoder().decode(
+    image.subarray(archiveOffset + 4, archiveEnd),
+  )) as Array<Record<string, any>>;
+  for (const group of groups) {
+    delete group.kind;
+  }
+  const archiveJson = new TextEncoder().encode(JSON.stringify(groups));
+  const legacy = new Uint8Array(
+    archiveOffset + 4 + archiveJson.byteLength + image.byteLength - archiveEnd,
+  );
+  legacy.set(image.subarray(0, archiveOffset), 0);
+  const legacyView = new DataView(legacy.buffer);
+  legacyView.setUint32(8, view.getUint32(8, true) & ~(1 << 3), true);
+  legacyView.setUint32(archiveOffset, archiveJson.byteLength, true);
+  legacy.set(archiveJson, archiveOffset + 4);
+  legacy.set(image.subarray(archiveEnd), archiveOffset + 4 + archiveJson.byteLength);
+  return legacy;
+}
+
 function readText(mfs: MemoryFileSystem, path: string): string {
   const fd = mfs.open(path, O_RDONLY, 0);
   const buffer = new Uint8Array(64);
@@ -1053,6 +1080,7 @@ describe("Lazy archive export/import", () => {
     // Export from instance 1
     const serialized = mfs1.exportLazyArchiveEntries();
     expect(serialized).toHaveLength(1);
+    expect(serialized[0].kind).toBe("kandelo-legacy-zip-v1");
     expect(serialized[0].url).toBe("http://example.com/vim.zip");
     expect(serialized[0].mountPrefix).toBe("/");
     expect(serialized[0].materialized).toBe(false);
@@ -1083,17 +1111,30 @@ describe("Lazy archive export/import", () => {
       integrity,
     );
 
-    expect(mfs.exportLazyArchiveEntries()[0].integrity).toEqual(integrity);
-    const restored = MemoryFileSystem.fromImage(await mfs.saveImage());
+    expect(mfs.exportLazyArchiveEntries()[0]).toMatchObject({
+      kind: "kandelo-legacy-zip-v1",
+      integrity,
+    });
+    const image = await mfs.saveImage();
+    const restored = MemoryFileSystem.fromImage(image);
     expect(restored.exportLazyArchiveEntries()[0].integrity).toEqual(integrity);
+    const restoredLegacy = MemoryFileSystem.fromImage(
+      asUntaggedLegacyArchiveImage(image),
+    );
+    expect(restoredLegacy.exportLazyArchiveEntries()[0]).toMatchObject({
+      kind: "kandelo-legacy-zip-v1",
+      integrity,
+    });
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: new Headers({ "content-length": String(zipBytes.byteLength) }),
       body: null,
       arrayBuffer: () => Promise.resolve(zipBytes.buffer),
     } as unknown as Response);
-    await expect(restored.ensureMaterialized("/opt/bin/hello")).resolves.toBe(true);
-    expect(readText(restored, "/opt/bin/hello")).toBe("#!/bin/sh\necho hello");
+    await expect(restoredLegacy.ensureMaterialized("/opt/bin/hello"))
+      .resolves.toBe(true);
+    expect(readText(restoredLegacy, "/opt/bin/hello"))
+      .toBe("#!/bin/sh\necho hello");
   });
 
   it("retains the original archive member name when importing legacy metadata", async () => {

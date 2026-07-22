@@ -146,6 +146,8 @@ export interface LazyArchiveGroup {
 
 /** JSON-serializable form of LazyArchiveGroup for cross-worker transfer. */
 export interface SerializedLazyArchiveEntry {
+  /** Closed wire identity; legacy snapshots without it are migration-only. */
+  kind: "kandelo-legacy-zip-v1" | "kandelo-deferred-tree-v1";
   content?: LazyTreeContent;
   inventory?: LazyTreeRegistrationEntry[];
   activation?: LazyTreeActivation;
@@ -227,6 +229,7 @@ const VFS_IMAGE_VERSION = 1;
 const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
 const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
 const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
+const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
 const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
@@ -249,6 +252,8 @@ const MAX_LAZY_TREE_STRING_BYTES = 8192;
 const MAX_LAZY_TREE_CAPABILITIES = 32;
 const MAX_LAZY_TREE_ACTIVATION_ROOTS = 64;
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const SERIALIZED_LEGACY_ARCHIVE_KIND = "kandelo-legacy-zip-v1";
+const SERIALIZED_DEFERRED_TREE_KIND = "kandelo-deferred-tree-v1";
 
 interface PlannedLazyArchiveEntry {
   entry: ZipEntry;
@@ -983,22 +988,6 @@ function validateLazyTreeDefinition(
   return { content, entries, mountPrefix, activation, canonicalByGroup };
 }
 
-function isGenericLazyTreeMetadata(value: unknown): boolean {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (record.inventory !== undefined || record.activation !== undefined) return true;
-  if (
-    typeof record.content === "object" && record.content !== null &&
-    !Array.isArray(record.content)
-  ) {
-    return (record.content as Record<string, unknown>).decoder ===
-      "homebrew-bottle-tar-gzip-v1";
-  }
-  return false;
-}
-
 function lazyTreeInventoryIdentityKey(value: {
   sourcePath?: string;
   type?: string;
@@ -1013,10 +1002,191 @@ function lazyTreeInventoryIdentityKey(value: {
   ]);
 }
 
+function validateSerializedLegacyArchive(
+  value: unknown,
+  allowUntaggedSnapshot: boolean,
+): SerializedLazyArchiveEntry {
+  const record = boundedLazyTreeRecord(value, [
+    "kind",
+    "content",
+    "url",
+    "mountPrefix",
+    "integrity",
+    "materialized",
+    "entries",
+  ], [
+    "url",
+    "mountPrefix",
+    "materialized",
+    "entries",
+  ], "Serialized legacy lazy archive");
+  if (record.kind === undefined) {
+    if (!allowUntaggedSnapshot) {
+      throw new Error("Serialized lazy archive is missing its kind discriminator");
+    }
+  } else if (record.kind !== SERIALIZED_LEGACY_ARCHIVE_KIND) {
+    throw new Error("Serialized legacy lazy archive has an unsupported kind");
+  }
+  const url = requireLazyTreeString(
+    record.url,
+    "Serialized legacy lazy archive URL",
+    MAX_LAZY_TREE_STRING_BYTES,
+  );
+  const mountPrefix = normalizeLazyArchiveMountPrefix(record.mountPrefix);
+  const integrity = validateLazyArchiveIntegrity(record.integrity);
+  if (record.content !== undefined) {
+    if (!allowUntaggedSnapshot || record.kind !== undefined) {
+      throw new Error("Typed legacy lazy archives cannot carry generic content");
+    }
+    const legacyContent = validateLazyTreeContent(record.content);
+    if (
+      legacyContent.decoder !== "zip-v1" ||
+      legacyContent.transports.length !== 1 ||
+      legacyContent.transports[0] !== url ||
+      !integrity || legacyContent.sha256 !== integrity.sha256 ||
+      legacyContent.bytes !== integrity.bytes
+    ) {
+      throw new Error("Untagged legacy ZIP content identity is inconsistent");
+    }
+  }
+  if (record.materialized !== false) {
+    throw new Error("Serialized legacy lazy archive must describe pending content");
+  }
+
+  const paths = new Set<string>();
+  const entries = requireLazyTreeArray(
+    record.entries,
+    "Serialized legacy lazy archive entries",
+    1,
+    MAX_LAZY_TREE_ENTRIES,
+  ).map((value, index): SerializedLazyArchiveEntry["entries"][number] => {
+    const entry = boundedLazyTreeRecord(value, [
+      "vfsPath",
+      "ino",
+      "generation",
+      "dataSequence",
+      "size",
+      "isSymlink",
+      "deleted",
+      "materialized",
+      "archivePath",
+      "sourcePath",
+      "type",
+      "inodeGroup",
+      "target",
+    ], [
+      "vfsPath",
+      "ino",
+      "size",
+      "isSymlink",
+      "deleted",
+    ], `Serialized legacy lazy archive entry ${index}`);
+    const vfsPath = requireCanonicalTreePath(
+      entry.vfsPath,
+      true,
+      `Serialized legacy lazy archive entry ${index} VFS path`,
+    );
+    if (paths.has(vfsPath)) {
+      throw new Error(`Serialized legacy lazy archive duplicates path ${vfsPath}`);
+    }
+    paths.add(vfsPath);
+    const ino = requireLazyTreeInteger(
+      entry.ino,
+      `Serialized legacy lazy archive entry ${vfsPath} inode`,
+      1,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const generation = entry.generation === undefined
+      ? undefined
+      : requireLazyTreeInteger(
+        entry.generation,
+        `Serialized legacy lazy archive entry ${vfsPath} generation`,
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+    const dataSequence = entry.dataSequence === undefined
+      ? undefined
+      : requireLazyTreeInteger(
+        entry.dataSequence,
+        `Serialized legacy lazy archive entry ${vfsPath} data sequence`,
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+    const size = requireLazyTreeInteger(
+      entry.size,
+      `Serialized legacy lazy archive entry ${vfsPath} size`,
+      0,
+      MAX_LAZY_ARCHIVE_BYTES,
+    );
+    if (
+      entry.isSymlink !== false || entry.deleted !== false ||
+      (entry.materialized !== undefined && entry.materialized !== false)
+    ) {
+      throw new Error(
+        `Serialized legacy lazy archive entry ${vfsPath} is not pending`,
+      );
+    }
+    if (entry.type !== undefined && entry.type !== "file") {
+      throw new Error(
+        `Serialized legacy lazy archive entry ${vfsPath} has an invalid type`,
+      );
+    }
+    const archivePath = entry.archivePath === undefined
+      ? undefined
+      : requireCanonicalTreePath(
+        entry.archivePath,
+        false,
+        `Serialized legacy lazy archive entry ${vfsPath} archive path`,
+      );
+    const sourcePath = entry.sourcePath === undefined
+      ? undefined
+      : requireCanonicalTreePath(
+        entry.sourcePath,
+        false,
+        `Serialized legacy lazy archive entry ${vfsPath} source path`,
+      );
+    const inodeGroup = entry.inodeGroup === undefined
+      ? undefined
+      : requireLazyTreeString(
+        entry.inodeGroup,
+        `Serialized legacy lazy archive entry ${vfsPath} inode group`,
+        MAX_LAZY_TREE_PATH_BYTES,
+      );
+    if (entry.target !== undefined) {
+      throw new Error(
+        `Serialized legacy lazy archive entry ${vfsPath} has a link target`,
+      );
+    }
+    return {
+      vfsPath,
+      ino,
+      ...(generation === undefined ? {} : { generation }),
+      ...(dataSequence === undefined ? {} : { dataSequence }),
+      size,
+      isSymlink: false,
+      deleted: false,
+      materialized: false,
+      ...(archivePath === undefined ? {} : { archivePath }),
+      ...(sourcePath === undefined ? {} : { sourcePath }),
+      type: "file",
+      ...(inodeGroup === undefined ? {} : { inodeGroup }),
+    };
+  });
+  return {
+    kind: SERIALIZED_LEGACY_ARCHIVE_KIND,
+    url,
+    mountPrefix,
+    ...(integrity === undefined ? {} : { integrity }),
+    materialized: false,
+    entries,
+  };
+}
+
 function validateSerializedGenericTree(
   value: unknown,
 ): SerializedLazyArchiveEntry {
   const record = exactLazyTreeRecord(value, [
+    "kind",
     "content",
     "inventory",
     "activation",
@@ -1026,6 +1196,9 @@ function validateSerializedGenericTree(
     "materialized",
     "entries",
   ], "Serialized lazy tree");
+  if (record.kind !== SERIALIZED_DEFERRED_TREE_KIND) {
+    throw new Error("Serialized lazy tree has an unsupported kind");
+  }
   const definition = validateLazyTreeDefinition(
     record.content,
     record.inventory,
@@ -1185,6 +1358,7 @@ function validateSerializedGenericTree(
     };
   });
   return {
+    kind: SERIALIZED_DEFERRED_TREE_KIND,
     content: definition.content,
     inventory: definition.entries,
     activation: definition.activation,
@@ -2218,12 +2392,13 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   /** Import lazy archive groups from another instance. Assumes stubs already exist. */
   importLazyArchiveEntries(serialized: SerializedLazyArchiveEntry[]): void {
-    this.importLazyArchiveEntriesInternal(serialized, false);
+    this.importLazyArchiveEntriesInternal(serialized, false, true);
   }
 
   private importLazyArchiveEntriesInternal(
     serializedValue: unknown,
     trustedLegacySnapshot: boolean,
+    requireDiscriminator: boolean,
   ): void {
     const serialized = requireLazyTreeArray(
       serializedValue,
@@ -2231,14 +2406,28 @@ export class MemoryFileSystem implements FileSystemBackend {
       0,
       MAX_LAZY_TREE_GROUPS,
     ).map((value, index) => {
-      if (isGenericLazyTreeMetadata(value)) {
-        return validateSerializedGenericTree(value);
-      }
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new Error(`Serialized lazy archive group ${index} must be an object`);
       }
-      return value as SerializedLazyArchiveEntry;
+      const kind = (value as Record<string, unknown>).kind;
+      if (kind === SERIALIZED_DEFERRED_TREE_KIND) {
+        return validateSerializedGenericTree(value);
+      }
+      if (kind === SERIALIZED_LEGACY_ARCHIVE_KIND) {
+        return validateSerializedLegacyArchive(value, false);
+      }
+      if (kind !== undefined) {
+        throw new Error(`Serialized lazy archive group ${index} has an unsupported kind`);
+      }
+      if (requireDiscriminator) {
+        throw new Error(
+          `Serialized lazy archive group ${index} is missing its kind discriminator`,
+        );
+      }
+      return validateSerializedLegacyArchive(value, true);
     });
+    const plannedGroups: LazyArchiveGroup[] = [];
+    const plannedInodes = new Map<string, LazyArchiveGroup>();
     for (const s of serialized) {
       const entries = new Map<string, LazyArchiveFileEntry>();
       const normalizedPrefix = s.mountPrefix.replace(/\/+$/, "");
@@ -2385,7 +2574,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           : undefined,
         entries,
       };
-      this.lazyArchiveGroups.push(group);
+      plannedGroups.push(group);
       if (!group.materialized) {
         for (const [, entry] of entries) {
           if (
@@ -2393,13 +2582,26 @@ export class MemoryFileSystem implements FileSystemBackend {
             !entry.materialized &&
             entry.generation !== undefined
           ) {
-            this.lazyArchiveInodes.set(
-              MemoryFileSystem.inodeKey(entry.ino, entry.generation),
-              group,
-            );
+            const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+            const planned = plannedInodes.get(key);
+            if (planned !== undefined && planned !== group) {
+              throw new Error(
+                `Serialized lazy archive groups share pending inode ${key}`,
+              );
+            }
+            if (this.lazyArchiveInodes.has(key)) {
+              throw new Error(
+                `Serialized lazy archive group collides with pending inode ${key}`,
+              );
+            }
+            plannedInodes.set(key, group);
           }
         }
       }
+    }
+    this.lazyArchiveGroups.push(...plannedGroups);
+    for (const [key, group] of plannedInodes) {
+      this.lazyArchiveInodes.set(key, group);
     }
   }
 
@@ -2444,16 +2646,28 @@ export class MemoryFileSystem implements FileSystemBackend {
         entries.length === 0 &&
         !(group.content && group.inventory && !group.materialized)
       ) continue;
-      serialized.push({
-        content: group.content,
-        inventory: group.inventory,
-        activation: group.activation,
-        url: group.url,
-        mountPrefix: group.mountPrefix,
-        integrity: group.integrity,
-        materialized: false,
-        entries,
-      });
+      const genericTree = group.content !== undefined &&
+        group.inventory !== undefined && group.activation !== undefined;
+      serialized.push(genericTree
+        ? {
+          kind: SERIALIZED_DEFERRED_TREE_KIND,
+          content: group.content,
+          inventory: group.inventory,
+          activation: group.activation,
+          url: group.url,
+          mountPrefix: group.mountPrefix,
+          integrity: group.integrity,
+          materialized: false,
+          entries,
+        }
+        : {
+          kind: SERIALIZED_LEGACY_ARCHIVE_KIND,
+          url: group.url,
+          mountPrefix: group.mountPrefix,
+          integrity: group.integrity,
+          materialized: false,
+          entries,
+        });
     }
     return serialized;
   }
@@ -3080,6 +3294,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       8,
       (hasLazy ? VFS_IMAGE_FLAG_HAS_LAZY : 0) |
         (hasArchives ? VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES : 0) |
+        (hasArchives ? VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES : 0) |
         (hasMetadata ? VFS_IMAGE_FLAG_HAS_METADATA : 0),
       true,
     );
@@ -3222,6 +3437,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (!(flags & VFS_IMAGE_FLAG_HAS_LAZY) && sections.lazyLen !== 0) {
       throw new Error("VFS image has lazy metadata without its format flag");
     }
+    if (
+      (flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES) &&
+      !(flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES)
+    ) {
+      throw new Error(
+        "VFS image has typed lazy-archive metadata without its archive flag",
+      );
+    }
 
     // Restore SharedArrayBuffer (optionally growable). Some TypeScript lib
     // versions still expose only the 1-arg constructor even on runtimes that
@@ -3281,7 +3504,11 @@ export class MemoryFileSystem implements FileSystemBackend {
           archiveBytes,
           "VFS image lazy archive metadata",
         );
-        mfs.importLazyArchiveEntriesInternal(entries, true);
+        mfs.importLazyArchiveEntriesInternal(
+          entries,
+          true,
+          Boolean(flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES),
+        );
       }
     }
 
