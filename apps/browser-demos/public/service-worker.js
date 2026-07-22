@@ -477,10 +477,10 @@ if (typeof window !== "undefined") {
     return tag + html;
   }
 
-  // --- CORS proxy URL (injected at build time, main proxy in dev) ---
+  // --- CORS proxy URL (injected by Vite for development and builds) ---
   var CORS_PROXY_URL = "__CORS_PROXY_URL__";
-  // In dev mode the placeholder is not replaced — use the main proxy so dev
-  // and production exercise the same CORS proxy backend.
+  // Keep the checked-in worker usable when served without the Vite transform.
+  // Normal local development receives the same-origin Vite relay instead.
   if (CORS_PROXY_URL.indexOf("__") === 0) {
     CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
   }

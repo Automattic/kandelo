@@ -1,4 +1,5 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { resolveBrowserCorsProxyUrl } from "../../../lib/cors-proxy-config";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
 import {
@@ -43,6 +44,12 @@ import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const BROWSER_CORS_PROXY_URL = resolveBrowserCorsProxyUrl({
+  baseUrl: import.meta.env.BASE_URL,
+  configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
+  isDev: import.meta.env.DEV,
+  locationHref: window.location.href,
+});
 const COI_RELOAD_SESSION_KEY = "kandelo:sm-node-coi-reload-attempted";
 // WebKit is sensitive to large shared Wasm memory maxima. Match the generic
 // Node profile's 256 MiB cap instead of reserving the 1 GiB BrowserKernel
@@ -351,6 +358,7 @@ async function boot(
 
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      corsProxyUrl: BROWSER_CORS_PROXY_URL,
       maxWorkers: 4,
       maxMemoryPages: SPIDERMONKEY_NODE_MEMORY_PAGES,
       onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),

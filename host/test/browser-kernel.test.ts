@@ -105,6 +105,20 @@ describe("BrowserKernel", () => {
     expect(MockWorker.instances).toHaveLength(0);
   });
 
+  it("rejects unsafe proxy configuration before starting a worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    for (const corsProxyUrl of [
+      "/relative-proxy?url=",
+      "javascript:alert(1)",
+      "http://proxy.example/?",
+      "https://user:secret@proxy.example/?",
+      "https://proxy.example/?#fragment",
+    ]) {
+      expect(() => new BrowserKernel({ corsProxyUrl })).toThrow(/corsProxyUrl/);
+    }
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
   it("boot() spawns a worker, sends init, and resolves on `ready`", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({

@@ -10,10 +10,16 @@ import {
 } from "vite";
 import react from "@vitejs/plugin-react";
 import { tryResolveBinary } from "../../host/src/binary-resolver";
+import { normalizeCorsProxyUrl } from "../../host/src/networking/cors-proxy";
+import {
+  DEFAULT_CORS_PROXY_URL,
+  devCorsProxyFetchUrlForBase,
+  devCorsProxyPathForBase,
+} from "./lib/cors-proxy-config";
+import { relayDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
-const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
 const preferredLocalPort = 5401;
 
 const crossOriginIsolationHeaders = {
@@ -23,7 +29,7 @@ const crossOriginIsolationHeaders = {
 };
 
 function configuredCorsProxyUrl(): string | undefined {
-  return process.env.VITE_CORS_PROXY_URL?.trim() || undefined;
+  return normalizeCorsProxyUrl(process.env.VITE_CORS_PROXY_URL);
 }
 
 function buildCorsProxyUrl(): string {
@@ -33,15 +39,6 @@ function buildCorsProxyUrl(): string {
 function serviceWorkerPathForBase(base: string): string {
   const normalized = base.startsWith("/") ? base : `/${base}`;
   return `${normalized.endsWith("/") ? normalized : `${normalized}/`}service-worker.js`;
-}
-
-function devCorsProxyPathForBase(base: string): string {
-  const normalized = base.startsWith("/") ? base : `/${base}`;
-  return `${normalized.endsWith("/") ? normalized : `${normalized}/`}__kandelo_cors_proxy`;
-}
-
-function devCorsProxyFetchUrlForBase(base: string): string {
-  return `${devCorsProxyPathForBase(base)}?url=`;
 }
 
 function injectCorsProxyUrlPlaceholder(
@@ -394,56 +391,13 @@ function devCorsProxyMiddleware(): Plugin {
         next();
         return;
       }
-      if (req.method !== "GET") {
-        res.statusCode = 405;
-        res.end("Method Not Allowed");
-        return;
-      }
-
       const target = requestUrl.searchParams.get("url");
       if (!target) {
         res.statusCode = 400;
         res.end("Missing url");
         return;
       }
-
-      let targetUrl: URL;
-      try {
-        targetUrl = new URL(target);
-      } catch {
-        res.statusCode = 400;
-        res.end("Invalid url");
-        return;
-      }
-      if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
-        res.statusCode = 400;
-        res.end("Unsupported url");
-        return;
-      }
-
-      try {
-        const upstream = await fetch(targetUrl.href, { redirect: "follow" });
-        const bytes = Buffer.from(await upstream.arrayBuffer());
-        res.statusCode = upstream.status;
-        res.statusMessage = upstream.statusText;
-        for (const name of [
-          "accept-ranges",
-          "cache-control",
-          "content-type",
-          "etag",
-          "expires",
-          "last-modified",
-        ]) {
-          const value = upstream.headers.get(name);
-          if (value) res.setHeader(name, value);
-        }
-        res.setHeader("Content-Length", String(bytes.byteLength));
-        res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-        res.end(bytes);
-      } catch (err) {
-        res.statusCode = 502;
-        res.end(err instanceof Error ? err.message : String(err));
-      }
+      await relayDevCorsProxyRequest(req, res, target);
     });
   }
 

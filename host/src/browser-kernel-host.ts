@@ -20,6 +20,7 @@ import type {
   VfsFileSnapshot,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+import { normalizeCorsProxyUrl } from "./networking/cors-proxy";
 
 export type { HttpRequest, HttpResponse };
 import kernelWasmUrl from "@kernel-wasm?url";
@@ -79,9 +80,11 @@ export interface BrowserKernelOptions {
   syscallLogPtrWidth?: 4 | 8;
   /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
   dnsAliases?: Record<string, string>;
-  /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl. Browser pages that
-   *  are not controlled by Kandelo's service worker can use this to route
-   *  guest outbound HTTP(S) through a same-origin proxy. */
+  /** Absolute HTTPS CORS-proxy prefix for guest outbound HTTP(S), or an HTTP
+   *  loopback relay for local development. The host validates this deployment
+   *  setting, preserves the guest's GET/POST body and ordinary headers, and
+   *  never imports browser cookies or credentials. Empty or omitted values
+   *  leave proxying disabled. */
   corsProxyUrl?: string;
 }
 
@@ -159,6 +162,7 @@ export class BrowserKernel {
         "SSL_CERT_DIR=/etc/ssl/certs",
       ],
       ...options,
+      corsProxyUrl: normalizeCorsProxyUrl(options.corsProxyUrl),
     };
 
     // The kernel worker owns the VFS. The main thread allocates only the

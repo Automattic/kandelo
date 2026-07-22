@@ -19,6 +19,10 @@ import {
   parseNumericIpv4Hostname,
   validateSyntheticDnsHostname,
 } from "./hostname";
+import {
+  normalizeCorsProxyUrl,
+  prepareBrowserHttpFetch,
+} from "./cors-proxy";
 import { TLS_1_2_Connection } from "../../../packages/registry/openssl/src/tls/1_2/connection";
 import {
   generateCertificate,
@@ -112,7 +116,10 @@ function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
     }
   }
   const bodyStart = headerEnd + 4;
-  const body = bodyStart < buf.length ? buf.subarray(bodyStart) : null;
+  const contentLength = parseContentLength(headerStr);
+  const body = contentLength > 0
+    ? buf.subarray(bodyStart, bodyStart + contentLength)
+    : null;
   return { method, path, headers, body };
 }
 
@@ -144,16 +151,6 @@ function formatHttpResponse(
   result.set(headerBytes);
   result.set(bodyBytes, headerBytes.length);
   return result;
-}
-
-function corsProxyFetchUrl(corsProxyUrl: string, targetUrl: string): string {
-  if (targetUrl.startsWith(corsProxyUrl)) {
-    return targetUrl;
-  }
-  const proxiedTarget = corsProxyUrl.endsWith("?")
-    ? targetUrl
-    : encodeURIComponent(targetUrl);
-  return `${corsProxyUrl}${proxiedTarget}`;
 }
 
 // ------------------------------------------------------------------ backend
@@ -203,7 +200,7 @@ export class TlsNetworkBackend implements NetworkIO {
   private initialized = false;
 
   constructor(options?: TlsNetworkBackendOptions) {
-    this.corsProxyUrl = options?.corsProxyUrl?.trim() ?? "";
+    this.corsProxyUrl = normalizeCorsProxyUrl(options?.corsProxyUrl) ?? "";
     this.dnsAliases = options?.dnsAliases ?? { "proxy.local": "https://registry.npmjs.org" };
     this.createTlsConnection = options?.createTlsConnection ?? (() => new TLS_1_2_Connection());
   }
@@ -480,28 +477,17 @@ export class TlsNetworkBackend implements NetworkIO {
     // Wasm process can't reach cross-origin URLs directly from the browser;
     // when corsProxyUrl is configured, every fetch goes through it.
     const upstreamUrl = `https://${host}${path}`;
-    const url = this.corsProxyUrl
-      ? corsProxyFetchUrl(this.corsProxyUrl, upstreamUrl)
-      : upstreamUrl;
-
-    const fetchHeaders = new Headers();
-    for (const [key, value] of headers) {
-      const lower = key.toLowerCase();
-      if (lower !== "host" && lower !== "connection") {
-        fetchHeaders.set(key, value);
-      }
-    }
-
-    const fetchBody: Uint8Array<ArrayBuffer> | undefined =
-      body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
+    const request = prepareBrowserHttpFetch({
+      targetUrl: upstreamUrl,
+      method,
+      headers,
+      body,
+      corsProxyUrl: this.corsProxyUrl || undefined,
+    });
 
     (async () => {
       try {
-        const response = await fetch(url, {
-          method,
-          headers: fetchHeaders,
-          body: method !== "GET" && method !== "HEAD" ? fetchBody : undefined,
-        });
+        const response = await fetch(request.url, request.init);
 
         const responseBytes = formatHttpResponse(
           response.status,
@@ -516,7 +502,7 @@ export class TlsNetworkBackend implements NetworkIO {
         await conn.serverDownstreamWriter.close();
       } catch (err) {
         // Send a 502 Bad Gateway response through TLS
-        const errorBody = `Error fetching ${url}: ${err}`;
+        const errorBody = `Error fetching ${request.url}: ${err}`;
         const errorResponse = formatHttpResponse(
           502,
           "Bad Gateway",
@@ -567,29 +553,18 @@ export class TlsNetworkBackend implements NetworkIO {
     const upstreamUrl = aliasUpstream !== undefined
       ? `${aliasUpstream}${path}`
       : `${scheme}://${host}${path}`;
-    const url = this.corsProxyUrl
-      ? corsProxyFetchUrl(this.corsProxyUrl, upstreamUrl)
-      : upstreamUrl;
     const isNpmRegistry = aliasUpstream === "https://registry.npmjs.org";
-
-    const fetchHeaders = new Headers();
-    for (const [key, value] of headers) {
-      const lower = key.toLowerCase();
-      if (lower !== "host" && lower !== "connection") {
-        fetchHeaders.set(key, value);
-      }
-    }
-
-    const fetchBody: Uint8Array<ArrayBuffer> | undefined =
-      body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
+    const request = prepareBrowserHttpFetch({
+      targetUrl: upstreamUrl,
+      method,
+      headers,
+      body,
+      corsProxyUrl: this.corsProxyUrl || undefined,
+    });
 
     const doFetch = async () => {
       try {
-        const response = await fetch(url, {
-          method,
-          headers: fetchHeaders,
-          body: fetchBody,
-        });
+        const response = await fetch(request.url, request.init);
 
         let bodyBuf = await response.arrayBuffer();
         // Packument JSON's tarball URLs point back at registry.npmjs.org;
