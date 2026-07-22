@@ -85,6 +85,7 @@ for required_path in \
   "scripts/create-homebrew-bottle-mirror-publish-manifest.ts" \
   "scripts/fetch-binaries.sh" \
   "scripts/homebrew-brewfile-selection.rb" \
+  "scripts/homebrew-language-runtime-contract.ts" \
   "scripts/homebrew-main-shell-image-contract*.ts" \
   "scripts/install-local-binary.sh" \
   "scripts/install-overlay-headers.sh" \
