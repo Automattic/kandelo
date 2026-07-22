@@ -430,6 +430,7 @@ async function lazyLayerFixture(options: {
   mutateBase?: (fs: MemoryFileSystem) => void;
   mutatePlan?: (plan: HomebrewVfsPlan) => void;
   mutateBaseSource?: (source: HomebrewLazyLayerBasePackageSource) => void;
+  runtimeLayer?: { id: string; policy: unknown };
 } = {}) {
   const baseBytes = bottleTar(standardEntries());
   const baseManifest = linkManifest(baseBytes);
@@ -559,6 +560,10 @@ async function lazyLayerFixture(options: {
     },
   };
   options.mutateBaseSource?.(baseSource);
+  const runtimeRootPackage = (plan as HomebrewVfsPlan & {
+    requestedFullNames?: string[];
+  }).requestedFullNames?.find((name) => name.endsWith("/runtime")) ??
+    `${plan.tapName}/runtime`;
   const build = () => buildHomebrewLazyLayer(plan, {
     fs: MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024)),
     baseVfs: {
@@ -572,6 +577,18 @@ async function lazyLayerFixture(options: {
     acceptanceVfs: {
       sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       bytes: 23456,
+    },
+    runtimeLayer: options.runtimeLayer ?? {
+      id: "runtime",
+      policy: {
+        schema: 1,
+        kind: "kandelo-homebrew-runtime-layer-policy",
+        base_package: "shell",
+        layers: [{
+          id: "runtime",
+          root_package: runtimeRootPackage,
+        }],
+      },
     },
     loadBottleBytes: (pkg) => pkg.name === "hello" ? baseBytes : runtimeBytes,
   });
@@ -607,9 +624,37 @@ async function runtimeLayerConsumerFixture() {
   return {
     ...fixture,
     descriptor: result.descriptor,
-    archive: result.archive,
+    archive: result.payload,
     baseImageBytes,
   };
+}
+
+function descriptorTree(descriptor: HomebrewLazyLayerDescriptor) {
+  return descriptor.deferred_trees[0];
+}
+
+function descriptorEntries(descriptor: HomebrewLazyLayerDescriptor) {
+  return descriptorTree(descriptor).inventory.entries;
+}
+
+function refreshInventory(descriptor: HomebrewLazyLayerDescriptor): void {
+  const inventory = descriptorTree(descriptor).inventory;
+  const entries = inventory.entries;
+  inventory.entry_count = entries.length;
+  inventory.source_entry_count = new Set(entries.map((entry) => entry.source_path)).size;
+  inventory.regular_inode_count = new Set(
+    entries.flatMap((entry) => entry.inode_group ? [entry.inode_group] : []),
+  ).size;
+  inventory.layer_entry_count = entries.filter(
+    (entry) => entry.ownership === "layer",
+  ).length;
+  inventory.shared_base_directory_count = entries.filter(
+    (entry) => entry.ownership === "shared-base-directory",
+  ).length;
+  inventory.expanded_bytes = entries.filter((entry) => entry.type !== "hardlink")
+    .reduce((total, entry) => total + entry.size, 0);
+  inventory.payload_bytes = entries.filter((entry) => entry.type === "file")
+    .reduce((total, entry) => total + entry.size, 0);
 }
 
 function runtimeLayerReference(
@@ -657,26 +702,30 @@ function runtimeLayerVariant(
     (name) => name === oldFullName ? pkg.full_name : name,
   );
   descriptor.selection.layer_package_order = [pkg.full_name];
-  for (const entry of descriptor.entries) {
+  const tree = descriptorTree(descriptor);
+  tree.id = id;
+  tree.activation.capabilities = [`homebrew-runtime:${id}`];
+  tree.activation.roots = tree.activation.roots.map(replaceName);
+  for (const entry of tree.inventory.entries) {
     entry.path = replaceName(entry.path);
+    entry.source_path = replaceName(entry.source_path);
+    if (entry.inode_group !== undefined) {
+      entry.inode_group = replaceName(entry.inode_group);
+    }
     if (entry.target !== undefined) {
       entry.target = replaceName(entry.target);
-      entry.size = utf8(entry.target).byteLength;
+      if (entry.type === "symlink") entry.size = utf8(entry.target).byteLength;
     }
   }
-  descriptor.entries.sort((left, right) =>
+  tree.inventory.entries.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0
   );
-  descriptor.archive.asset = `kandelo-homebrew-${id}-layer.zip`;
-  descriptor.archive.url = descriptor.archive.url.replace(
+  tree.transports[0].url = tree.transports[0].url.replace(
     /[^/]+$/,
-    descriptor.archive.asset,
+    `kandelo-homebrew-${id}-layer.bin`,
   );
-  descriptor.archive.sha256 = sha256(utf8(`${id}-archive`));
-  descriptor.archive.uncompressed_bytes = descriptor.entries.reduce(
-    (total, entry) => total + entry.size,
-    0,
-  );
+  tree.content.sha256 = sha256(utf8(`${id}-tree`));
+  refreshInventory(descriptor);
   return descriptor;
 }
 
@@ -748,9 +797,9 @@ describe("Homebrew runtime layer consumer", () => {
       `${fixture.runtimeKeg}/bin/runtime`,
     );
     expect(fs.exportLazyArchiveEntries()[0]).toMatchObject({
-      url: fixture.descriptor.archive.url,
+      url: descriptorTree(fixture.descriptor).transports[0].url,
       integrity: {
-        sha256: fixture.descriptor.archive.sha256,
+        sha256: descriptorTree(fixture.descriptor).content.sha256,
         bytes: fixture.archive.byteLength,
       },
     });
@@ -812,22 +861,23 @@ describe("Homebrew runtime layer consumer", () => {
     const missing = structuredClone(fixture.descriptor) as Partial<
       HomebrewLazyLayerDescriptor
     >;
-    delete missing.archive;
+    delete missing.deferred_trees;
     expect(() => parseHomebrewRuntimeLayerDescriptor(missing)).toThrow(
       /descriptor has unexpected or missing fields/,
     );
 
     const longPath = structuredClone(fixture.descriptor);
-    longPath.entries.find((entry) => entry.type === "file")!.path =
+    descriptorEntries(longPath).find((entry) => entry.type === "file")!.path =
       `${PREFIX.slice(1)}/${"x".repeat(HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes)}`;
     expect(() => parseHomebrewRuntimeLayerDescriptor(longPath)).toThrow(
       /path exceeds 4096 bytes/,
     );
 
     const largeArchive = structuredClone(fixture.descriptor);
-    largeArchive.archive.bytes = HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes + 1;
+    descriptorTree(largeArchive).content.bytes =
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes + 1;
     expect(() => parseHomebrewRuntimeLayerDescriptor(largeArchive)).toThrow(
-      /archive bytes must be an integer/,
+      /deferred tree .* bytes must be an integer/,
     );
   });
 
@@ -843,13 +893,10 @@ describe("Homebrew runtime layer consumer", () => {
 
     const wrongOpt = structuredClone(fixture.descriptor);
     const optPath = `${PREFIX.slice(1)}/${wrongOpt.packages.layer[0].opt_link.path}`;
-    const optEntry = wrongOpt.entries.find((entry) => entry.path === optPath)!;
+    const optEntry = descriptorEntries(wrongOpt).find((entry) => entry.path === optPath)!;
     optEntry.target = "../Cellar/runtime/wrong";
     optEntry.size = utf8(optEntry.target).byteLength;
-    wrongOpt.archive.uncompressed_bytes = wrongOpt.entries.reduce(
-      (total, entry) => total + entry.size,
-      0,
-    );
+    refreshInventory(wrongOpt);
     expect(() => parseHomebrewRuntimeLayerDescriptor(wrongOpt)).toThrow(
       /has no matching opt link entry/,
     );
@@ -945,12 +992,9 @@ describe("Homebrew runtime layer consumer", () => {
       HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes / 2,
     ) + 1;
     for (const descriptor of [runtimeDescriptor, perlDescriptor]) {
-      const file = descriptor.entries.find((entry) => entry.type === "file")!;
+      const file = descriptorEntries(descriptor).find((entry) => entry.type === "file")!;
       file.size = declaredSize;
-      descriptor.archive.uncompressed_bytes = descriptor.entries.reduce(
-        (total, entry) => total + entry.size,
-        0,
-      );
+      refreshInventory(descriptor);
     }
     const runtime = runtimeLayerReference("runtime", runtimeDescriptor);
     const perl = runtimeLayerReference("perl", perlDescriptor);
@@ -967,7 +1011,7 @@ describe("Homebrew runtime layer consumer", () => {
       kernelAbi: ABI_VERSION,
       layers: [runtime.reference, perl.reference],
       fetch: async (url) => new Response(responses.get(url)!),
-    })).rejects.toThrow(/selected Homebrew runtime layers exceed the uncompressed size cap/i);
+    })).rejects.toThrow(/selected Homebrew runtime layers exceed the expansion cap/i);
     expect(() => fs.lstat(fixture.runtimeKeg)).toThrow();
     expect(() => fs.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
   });
@@ -976,9 +1020,11 @@ describe("Homebrew runtime layer consumer", () => {
     const fixture = await runtimeLayerConsumerFixture();
     const runtime = runtimeLayerReference("runtime", fixture.descriptor);
     const duplicateArchiveDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
-    duplicateArchiveDescriptor.archive.asset = fixture.descriptor.archive.asset;
-    duplicateArchiveDescriptor.archive.url = fixture.descriptor.archive.url;
-    duplicateArchiveDescriptor.archive.sha256 = fixture.descriptor.archive.sha256;
+    descriptorTree(duplicateArchiveDescriptor).transports = structuredClone(
+      descriptorTree(fixture.descriptor).transports,
+    );
+    descriptorTree(duplicateArchiveDescriptor).content.sha256 =
+      descriptorTree(fixture.descriptor).content.sha256;
     const duplicateArchive = runtimeLayerReference("perl", duplicateArchiveDescriptor);
     let responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],
@@ -992,12 +1038,12 @@ describe("Homebrew runtime layer consumer", () => {
       kernelAbi: ABI_VERSION,
       layers: [runtime.reference, duplicateArchive.reference],
       fetch: async (url) => new Response(responses.get(url)!),
-    })).rejects.toThrow(/reuses another layer archive/);
+    })).rejects.toThrow(/reuses another deferred tree/);
 
     const nestedDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
-    nestedDescriptor.entries.find((entry) => entry.type === "file")!.path =
+    descriptorEntries(nestedDescriptor).find((entry) => entry.type === "file")!.path =
       `${fixture.runtimeKeg.slice(1)}/foreign-perl`;
-    nestedDescriptor.entries.sort((left, right) =>
+    descriptorEntries(nestedDescriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
     const nested = runtimeLayerReference("perl", nestedDescriptor);
@@ -1083,7 +1129,7 @@ describe("Homebrew runtime layer consumer", () => {
   it("rejects unsafe descriptor paths before changing the VFS", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const descriptor = structuredClone(fixture.descriptor);
-    descriptor.entries[0].path = "../escape";
+    descriptorEntries(descriptor)[0].path = "../escape";
     const encoded = runtimeLayerReference("runtime", descriptor);
     const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
@@ -1101,9 +1147,9 @@ describe("Homebrew runtime layer consumer", () => {
   it("rejects a layer path that collides with the exact base filesystem", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const descriptor = structuredClone(fixture.descriptor);
-    const file = descriptor.entries.find((entry) => entry.type === "file")!;
+    const file = descriptorEntries(descriptor).find((entry) => entry.type === "file")!;
     file.path = `${KEG.slice(1)}/bin/hello`;
-    descriptor.entries.sort((left, right) =>
+    descriptorEntries(descriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
     const encoded = runtimeLayerReference("runtime", descriptor);
@@ -1122,12 +1168,12 @@ describe("Homebrew runtime layer consumer", () => {
     const fixture = await runtimeLayerConsumerFixture();
     const runtime = runtimeLayerReference("runtime", fixture.descriptor);
     const perlDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
-    const runtimeFile = fixture.descriptor.entries.find(
+    const runtimeFile = descriptorEntries(fixture.descriptor).find(
       (entry) => entry.type === "file",
     )!;
-    const perlFile = perlDescriptor.entries.find((entry) => entry.type === "file")!;
+    const perlFile = descriptorEntries(perlDescriptor).find((entry) => entry.type === "file")!;
     perlFile.path = runtimeFile.path;
-    perlDescriptor.entries.sort((left, right) =>
+    descriptorEntries(perlDescriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
     const perl = runtimeLayerReference("perl", perlDescriptor);
@@ -1148,11 +1194,11 @@ describe("Homebrew runtime layer consumer", () => {
 });
 
 describe("Homebrew VFS builder", () => {
-  it("builds a deterministic lazy ZIP containing only base-exclusive package output", async () => {
+  it("builds a deterministic deferred tree containing only base-exclusive package output", async () => {
     const fixture = await lazyLayerFixture();
     const first = await fixture.build();
     const second = await fixture.build();
-    expect(Array.from(first.archive)).toEqual(Array.from(second.archive));
+    expect(Array.from(first.payload)).toEqual(Array.from(second.payload));
     expect(first.descriptor).toEqual(second.descriptor);
     expect(first.descriptor.selection).toEqual({
       requested_packages: ["runtime"],
@@ -1163,7 +1209,7 @@ describe("Homebrew VFS builder", () => {
       base_package_order: ["kandelo-dev/tap-core/hello"],
       layer_package_order: ["kandelo-dev/tap-core/runtime"],
     });
-    expect(first.descriptor.schema).toBe(2);
+    expect(first.descriptor.schema).toBe(3);
     expect(first.descriptor.base_vfs).toMatchObject({
       sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       bytes: 12345,
@@ -1197,9 +1243,15 @@ describe("Homebrew VFS builder", () => {
       sha256: sha256(fixture.runtimeBytes),
     })]);
 
-    const entries = parseZipCentralDirectory(first.archive);
+    const tree = descriptorTree(first.descriptor);
+    const inventoryEntries = tree.inventory.entries;
+    expect(tree).toMatchObject({
+      activation: { mode: "first-use" },
+      content: { decoder: "zip-v1", media_type: "application/zip" },
+    });
+    const entries = parseZipCentralDirectory(first.payload);
     expect(entries.map((entry) => entry.fileName)).toEqual(
-      first.descriptor.entries.map((entry) =>
+      inventoryEntries.filter((entry) => entry.type !== "hardlink").map((entry) =>
         entry.type === "directory" ? `${entry.path}/` : entry.path
       ),
     );
@@ -1207,21 +1259,62 @@ describe("Homebrew VFS builder", () => {
       (entry) => entry.fileName === "home/linuxbrew/.linuxbrew/Cellar/runtime/3.0/bin/runtime",
     );
     expect(executable?.mode & 0o7777).toBe(0o755);
-    expect(new TextDecoder().decode(extractZipEntry(first.archive, executable!)))
+    expect(new TextDecoder().decode(extractZipEntry(first.payload, executable!)))
       .toContain("echo runtime");
     const linked = entries.find(
       (entry) => entry.fileName === "home/linuxbrew/.linuxbrew/bin/runtime",
     );
     expect(linked?.isSymlink).toBe(true);
-    expect(new TextDecoder().decode(extractZipEntry(first.archive, linked!)))
+    expect(new TextDecoder().decode(extractZipEntry(first.payload, linked!)))
       .toBe(`${fixture.runtimeKeg}/bin/runtime`);
     expect(entries.some((entry) => entry.fileName.startsWith("etc/"))).toBe(false);
     expect(entries.some((entry) => entry.fileName.includes("/hello/"))).toBe(false);
-    expect(first.descriptor.entries).toContainEqual(expect.objectContaining({
+    expect(inventoryEntries).toContainEqual(expect.objectContaining({
       path: "home/linuxbrew/.linuxbrew/bin",
       type: "directory",
       ownership: "shared-base-directory",
     }));
+  });
+
+  it("projects a reviewed runtime policy to exactly one descriptor root", async () => {
+    const fixture = await lazyLayerFixture({
+      mutatePlan(plan) {
+        const unrelated = structuredClone(plan.packages[1]);
+        unrelated.name = "unrelated";
+        unrelated.fullName = "kandelo-dev/tap-core/unrelated";
+        plan.requestedPackages = ["runtime", "unrelated"];
+        plan.packages.push(unrelated);
+      },
+      runtimeLayer: {
+        id: "runtime",
+        policy: {
+          schema: 1,
+          kind: "kandelo-homebrew-runtime-layer-policy",
+          base_package: "shell",
+          layers: [{
+            id: "runtime",
+            root_package: "kandelo-dev/tap-core/runtime",
+          }],
+        },
+      },
+    });
+
+    const result = await fixture.build();
+    expect(result.descriptor.selection).toEqual({
+      requested_packages: ["runtime"],
+      package_order: [
+        "kandelo-dev/tap-core/hello",
+        "kandelo-dev/tap-core/runtime",
+      ],
+      base_package_order: ["kandelo-dev/tap-core/hello"],
+      layer_package_order: ["kandelo-dev/tap-core/runtime"],
+    });
+    expect(descriptorTree(result.descriptor).transports[0].url).toMatch(
+      /\/kandelo-homebrew-runtime-layer\.bin$/,
+    );
+    expect(descriptorEntries(result.descriptor).some((entry) =>
+      entry.path.includes("unrelated")
+    )).toBe(false);
   });
 
   it("rejects a base dependency with a different selected bottle identity", async () => {

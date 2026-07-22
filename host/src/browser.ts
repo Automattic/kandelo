@@ -37,6 +37,12 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  LazyTreeActivation,
+  LazyTreeContent,
+  LazyTreeDecoder,
+  LazyTreeGroup,
+  LazyTreeRegistrationEntry,
+  SerializedLazyTree,
   VfsImageCapacity,
 } from "./vfs/memory-fs";
 export { DeviceFileSystem } from "./vfs/device-fs";
@@ -70,6 +76,7 @@ export type {
 export {
   HOMEBREW_RUNTIME_LAYER_POLICY_KIND,
   parseHomebrewRuntimeLayerPolicy,
+  projectHomebrewRuntimeLayerPlan,
   selectHomebrewRuntimeLayer,
   selectHomebrewRuntimeLayers,
 } from "./homebrew-runtime-layer-policy";
@@ -84,6 +91,8 @@ export type {
   RegisteredHomebrewRuntimeLayer,
 } from "./homebrew-runtime-layer-consumer";
 export type {
+  HomebrewDeferredTreeDecoder,
+  HomebrewDeferredTreeDescriptor,
   HomebrewLazyLayerBasePackageSource,
   HomebrewLazyLayerDescriptor,
   HomebrewLazyLayerEntry,

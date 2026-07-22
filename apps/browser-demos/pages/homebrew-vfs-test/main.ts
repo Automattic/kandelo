@@ -24,12 +24,33 @@ interface HomebrewVfsAcceptanceResult {
   kernelSha256: string;
 }
 
+interface LazyVfsAcceptanceRequest {
+  vfsUrl: string;
+  readPath: string;
+  executable?: string;
+  argv?: string[];
+  env?: string[];
+  retryReadAfterFailure?: boolean;
+  timeoutMs: number;
+}
+
+interface LazyVfsAcceptanceResult {
+  readText: string;
+  firstReadError?: string;
+  exitCode?: number;
+  stdout: string;
+  stderr: string;
+}
+
 declare global {
   interface Window {
     __homebrewVfsTestReady: boolean;
     __runHomebrewVfsAcceptance: (
       request: HomebrewVfsAcceptanceRequest,
     ) => Promise<HomebrewVfsAcceptanceResult>;
+    __runLazyVfsAcceptance: (
+      request: LazyVfsAcceptanceRequest,
+    ) => Promise<LazyVfsAcceptanceResult>;
   }
 }
 
@@ -130,6 +151,78 @@ async function init(): Promise<void> {
         }),
       ]);
       return { exitCode, stdout, stderr, imageSha256, kernelSha256 };
+    } finally {
+      if (timer) clearTimeout(timer);
+      await kernel.destroy().catch(() => {});
+      await settleWebKitReclaim();
+    }
+  };
+
+  window.__runLazyVfsAcceptance = async (request) => {
+    if (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1_000) {
+      throw new Error("timeoutMs must be an integer of at least 1000");
+    }
+    const imageBytes = await fetchBytes(request.vfsUrl, "lazy VFS image");
+    MemoryFileSystem.assertImageKernelAbi(
+      new Uint8Array(imageBytes),
+      ABI_VERSION,
+      "lazy VFS image",
+    );
+    let stdout = "";
+    let stderr = "";
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onStdout: (bytes) => { stdout = appendOutput(stdout, bytes, "stdout"); },
+      onStderr: (bytes) => { stderr = appendOutput(stderr, bytes, "stderr"); },
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await kernel.initFromImage({
+        kernelWasm: kernelBytes,
+        vfsImage: new Uint8Array(imageBytes),
+      });
+      let firstReadError: string | undefined;
+      let read: Uint8Array | null = null;
+      try {
+        read = await kernel.readFileFromVfs(request.readPath);
+      } catch (error) {
+        firstReadError = error instanceof Error ? error.message : String(error);
+        if (!request.retryReadAfterFailure) throw error;
+      }
+      if (read === null && request.retryReadAfterFailure) {
+        read = await kernel.readFileFromVfs(request.readPath);
+      }
+      if (read === null) throw new Error(`missing VFS file ${request.readPath}`);
+
+      let exitCode: number | undefined;
+      if (request.executable) {
+        const spawned = await kernel.spawnFromVfs(
+          request.executable,
+          request.argv ?? [request.executable],
+          {
+            cwd: "/",
+            env: request.env ?? [],
+          },
+        );
+        exitCode = await Promise.race([
+          spawned.exit,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(
+                `lazy VFS acceptance timed out after ${request.timeoutMs}ms`,
+              )),
+              request.timeoutMs,
+            );
+          }),
+        ]);
+      }
+      return {
+        readText: new TextDecoder().decode(read),
+        ...(firstReadError === undefined ? {} : { firstReadError }),
+        ...(exitCode === undefined ? {} : { exitCode }),
+        stdout,
+        stderr,
+      };
     } finally {
       if (timer) clearTimeout(timer);
       await kernel.destroy().catch(() => {});

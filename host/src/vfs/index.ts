@@ -1,4 +1,5 @@
-export { VirtualPlatformIO } from "./vfs";
+export { readPreparedPlatformFile, VirtualPlatformIO } from "./vfs";
+export type { PreparedPlatformFile } from "./vfs";
 export { HostFileSystem } from "./host-fs";
 export { MemoryFileSystem } from "./memory-fs";
 export type {
@@ -7,11 +8,31 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  LazyTreeActivation,
+  LazyTreeContent,
+  LazyTreeDecoder,
+  LazyTreeGroup,
+  LazyTreeRegistrationEntry,
+  SerializedLazyTree,
   VfsImageCapacity,
   VfsImageMetadata,
   VfsImageOptions,
 } from "./memory-fs";
 export { loadVfsImage } from "./load-image";
+export {
+  DEFAULT_TAR_GZIP_LIMITS,
+  TarParseError,
+  parseTarGzip,
+} from "./tar";
+export type {
+  ParseTarGzipOptions,
+  TarDirectoryEntry,
+  TarEntry,
+  TarFileEntry,
+  TarGzipLimits,
+  TarHardlinkEntry,
+  TarSymlinkEntry,
+} from "./tar";
 export { DeviceFileSystem } from "./device-fs";
 export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";

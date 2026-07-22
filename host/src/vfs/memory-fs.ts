@@ -4,6 +4,9 @@ import { filesystemPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
+  O_CREAT,
+  O_EXCL,
+  O_TRUNC,
   SharedFS,
   type NamespaceEntryIdentity,
   type SharedFsIdentityState,
@@ -25,7 +28,7 @@ export interface LazyFileEntry {
   size: number;
 }
 
-export type LazyDownloadKind = "file" | "archive";
+export type LazyDownloadKind = "file" | "tree" | "archive";
 export type LazyDownloadStatus = "started" | "progress" | "complete" | "error";
 
 export interface LazyDownloadEvent {
@@ -43,6 +46,21 @@ export interface LazyDownloadEvent {
 
 export type LazyDownloadListener = (event: LazyDownloadEvent) => void;
 
+type LazyFetch = (url: string) => Promise<Response>;
+
+interface LazyPreparation {
+  status: "pending" | "fulfilled" | "rejected";
+  promise: Promise<boolean>;
+  error?: unknown;
+}
+
+interface LazyBacking {
+  token: object;
+  path: string;
+  /** Metadata-only trees have no pending inode, so prepare the group itself. */
+  directGroup?: LazyArchiveGroup;
+}
+
 /** Per-file metadata for a file inside a lazy archive. */
 export interface LazyArchiveFileEntry {
   ino: number;
@@ -57,6 +75,10 @@ export interface LazyArchiveFileEntry {
   materialized?: boolean;
   /** Original path inside the archive (stable across VFS rename/hard-link). */
   archivePath?: string;
+  sourcePath?: string;
+  type?: "file" | "symlink" | "hardlink";
+  inodeGroup?: string;
+  target?: string;
 }
 
 /** Optional immutable identity for a remotely fetched lazy archive. */
@@ -65,20 +87,67 @@ export interface LazyArchiveIntegrity {
   bytes: number;
 }
 
+/** Closed decoder set for an immutable deferred filesystem tree. */
+export type LazyTreeDecoder = "zip-v1" | "homebrew-bottle-tar-gzip-v1";
+
+export interface LazyTreeContent {
+  decoder: LazyTreeDecoder;
+  mediaType:
+    | "application/zip"
+    | "application/vnd.oci.image.layer.v1.tar+gzip";
+  sha256: string;
+  bytes: number;
+  /** Exact decoder expansion bound declared by the trusted inventory. */
+  expandedBytes: number;
+  sourceEntryCount: number;
+  /** Byte-identical transport mirrors, tried in declared order. */
+  transports: string[];
+}
+
+export interface LazyTreeRegistrationEntry {
+  /** Absolute, canonical VFS path. */
+  vfsPath: string;
+  /** Canonical member path interpreted by the selected decoder. */
+  sourcePath: string;
+  type: "directory" | "file" | "symlink" | "hardlink";
+  mode: number;
+  /** Logical guest size; hard links repeat their canonical file's size. */
+  size: number;
+  /** Symlink text, or an absolute VFS target for a hard link. */
+  target?: string;
+  /** Required on files and hardlinks; equal values share one inode. */
+  inodeGroup?: string;
+}
+
+export interface LazyTreeActivation {
+  mode: "boot-prefetch" | "first-use";
+  capabilities: string[];
+  roots: string[];
+}
+
 /**
  * A group of files whose content comes from a single zip archive.
  * Accessing any member materializes the entire archive in one fetch.
  */
 export interface LazyArchiveGroup {
+  /** Format-neutral immutable content and transport identity. */
+  content?: LazyTreeContent;
+  /** @deprecated compatibility field for legacy serialized ZIP groups. */
   url: string;
   mountPrefix: string;
   integrity?: LazyArchiveIntegrity;
   materialized: boolean;
+  /** Complete trusted source-to-namespace inventory for generic trees. */
+  inventory?: LazyTreeRegistrationEntry[];
+  activation?: LazyTreeActivation;
   entries: Map<string, LazyArchiveFileEntry>; // keyed by VFS absolute path
 }
 
 /** JSON-serializable form of LazyArchiveGroup for cross-worker transfer. */
 export interface SerializedLazyArchiveEntry {
+  content?: LazyTreeContent;
+  inventory?: LazyTreeRegistrationEntry[];
+  activation?: LazyTreeActivation;
   url: string;
   mountPrefix: string;
   integrity?: LazyArchiveIntegrity;
@@ -93,8 +162,16 @@ export interface SerializedLazyArchiveEntry {
     deleted: boolean;
     materialized?: boolean;
     archivePath?: string;
+    sourcePath?: string;
+    type?: "file" | "symlink" | "hardlink";
+    inodeGroup?: string;
+    target?: string;
   }>;
 }
+
+/** Format-neutral names for the runtime and serialized deferred-tree contract. */
+export type LazyTreeGroup = LazyArchiveGroup;
+export type SerializedLazyTree = SerializedLazyArchiveEntry;
 
 /** Options for saving a VFS image. */
 export interface VfsImageOptions {
@@ -454,6 +531,70 @@ function validateLazyArchiveIntegrity(
   return { sha256: record.sha256, bytes: Number(record.bytes) };
 }
 
+function validateLazyTreeContent(value: LazyTreeContent): LazyTreeContent {
+  const expectedMediaType = value.decoder === "zip-v1"
+    ? "application/zip"
+    : value.decoder === "homebrew-bottle-tar-gzip-v1"
+      ? "application/vnd.oci.image.layer.v1.tar+gzip"
+      : null;
+  if (expectedMediaType === null || value.mediaType !== expectedMediaType) {
+    throw new Error("Lazy tree decoder and media type are inconsistent");
+  }
+  const integrity = validateLazyArchiveIntegrity({
+    sha256: value.sha256,
+    bytes: value.bytes,
+  });
+  if (!integrity) throw new Error("Lazy tree integrity is required");
+  if (
+    !Array.isArray(value.transports) ||
+    value.transports.length === 0 ||
+    value.transports.length > 8 ||
+    new Set(value.transports).size !== value.transports.length ||
+    value.transports.some((url) => typeof url !== "string" || url.length === 0)
+  ) {
+    throw new Error("Lazy tree transports are invalid");
+  }
+  if (
+    !Number.isSafeInteger(value.expandedBytes) || value.expandedBytes < 0 ||
+    value.expandedBytes > MAX_LAZY_ARCHIVE_BYTES ||
+    !Number.isSafeInteger(value.sourceEntryCount) || value.sourceEntryCount <= 0 ||
+    value.sourceEntryCount > 100_000
+  ) {
+    throw new Error("Lazy tree expansion limits are invalid");
+  }
+  return {
+    decoder: value.decoder,
+    mediaType: value.mediaType,
+    sha256: integrity.sha256,
+    bytes: integrity.bytes,
+    expandedBytes: value.expandedBytes,
+    sourceEntryCount: value.sourceEntryCount,
+    transports: [...value.transports],
+  };
+}
+
+function requireCanonicalTreePath(
+  path: string,
+  absolute: boolean,
+  label: string,
+  allowAbsoluteRoot = false,
+): void {
+  if (
+    typeof path !== "string" ||
+    path.length === 0 ||
+    path.includes("\0") ||
+    path.includes("\\") ||
+    path.startsWith("/") !== absolute
+  ) {
+    throw new Error(`${label} is not a canonical ${absolute ? "absolute" : "relative"} path`);
+  }
+  if (allowAbsoluteRoot && absolute && path === "/") return;
+  const segments = path.slice(absolute ? 1 : 0).split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new Error(`${label} has an unsafe path segment`);
+  }
+}
+
 async function assertLazyIntegrity(
   data: Uint8Array,
   kind: LazyDownloadKind,
@@ -504,6 +645,9 @@ export class MemoryFileSystem implements FileSystemBackend {
   /** Fast lookup keyed by inode slot + generation. */
   private lazyArchiveInodes = new Map<string, LazyArchiveGroup>();
   private lazyDownloadListeners = new Set<LazyDownloadListener>();
+  /** One in-flight fetch/commit per lazy file or archive group. */
+  private lazyPreparations = new Map<object, LazyPreparation>();
+  private lazyFetch: LazyFetch = (url) => globalThis.fetch(url);
 
   private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
     this.fs = fs;
@@ -550,6 +694,10 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     this.lazyArchiveInodes.clear();
     for (const group of this.lazyArchiveGroups) {
+      const unverifiedGenericTree =
+        group.content !== undefined &&
+        group.inventory !== undefined &&
+        !group.materialized;
       const pendingByIdentity = new Map<string, LazyArchiveFileEntry>();
       for (const entry of group.entries.values()) {
         if (
@@ -582,7 +730,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         }
       }
       group.entries = reconciled;
-      group.materialized = reconciled.size === 0;
+      group.materialized = reconciled.size === 0 && !unverifiedGenericTree;
     }
   }
 
@@ -613,6 +761,117 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.lazyArchiveInodes.delete(key);
     for (const entry of entries) entry.materialized = true;
     return undefined;
+  }
+
+  private lazyBackingForStat(st: SfsStatResult): LazyBacking | null {
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    // Preparation deliberately observes the registered identity even when a
+    // peer advanced its data sequence. The identity-guarded commit will then
+    // reconcile and preserve the peer's bytes, while callers still learn that
+    // the deferred backing was conclusively resolved.
+    const file = this.lazyFiles.get(key);
+    if (file) return { token: file, path: file.path };
+    const archive = this.lazyArchiveInodes.get(key);
+    if (!archive) return null;
+    const path = Array.from(archive.entries.entries()).find(([, entry]) =>
+      entry.ino === st.ino &&
+      entry.generation === st.generation &&
+      !entry.deleted &&
+      !entry.materialized
+    )?.[0];
+    return path === undefined ? null : { token: archive, path };
+  }
+
+  private lazyBackingForPath(path: string): LazyBacking | null {
+    // A directory/symlink-only tree has no empty regular inode to carry its
+    // deferred identity. Preserve first-use semantics through the declared
+    // activation roots instead of silently treating the tree as concrete.
+    const metadataOnlyGroup = this.lazyArchiveGroups.find((group) =>
+      !group.materialized &&
+      group.content !== undefined &&
+      group.inventory !== undefined &&
+      group.activation !== undefined &&
+      Array.from(group.entries.values()).every(
+        (entry) => entry.deleted || entry.materialized || entry.isSymlink,
+      ) &&
+      group.activation.roots.some((root) =>
+        root === "/" || path === root || path.startsWith(`${root}/`)
+      )
+    );
+    if (metadataOnlyGroup) {
+      return {
+        token: metadataOnlyGroup,
+        path,
+        directGroup: metadataOnlyGroup,
+      };
+    }
+    try {
+      const st = this.fs.stat(path);
+      const backing = this.lazyBackingForStat(st);
+      return backing ? { token: backing.token, path } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private startLazyPreparation(backing: LazyBacking): LazyPreparation {
+    const { path, token } = backing;
+    const preparation = {
+      status: "pending",
+      promise: Promise.resolve(false),
+    } as LazyPreparation;
+    const materialization = backing.directGroup
+      ? this.ensureArchiveMaterialized(backing.directGroup).then(() => true)
+      : this.materializePath(path);
+    preparation.promise = materialization.then(
+      (materialized) => {
+        preparation.status = "fulfilled";
+        if (this.lazyPreparations.get(token) === preparation) {
+          this.lazyPreparations.delete(token);
+        }
+        return materialized;
+      },
+      (error) => {
+        preparation.status = "rejected";
+        preparation.error = error;
+        throw error;
+      },
+    );
+    // A synchronous guest open starts the work and returns internal EAGAIN;
+    // retain the rejection for its retry without creating an unhandled
+    // promise rejection in the worker.
+    void preparation.promise.catch(() => {});
+    this.lazyPreparations.set(token, preparation);
+    return preparation;
+  }
+
+  private guardSynchronousLazyAccess(path: string): void {
+    const backing = this.lazyBackingForPath(path);
+    if (!backing) return;
+    let preparation = this.lazyPreparations.get(backing.token);
+    if (preparation?.status === "fulfilled") {
+      this.lazyPreparations.delete(backing.token);
+      const remaining = this.lazyBackingForPath(path);
+      if (!remaining) return;
+      preparation = this.lazyPreparations.get(remaining.token) ??
+        this.startLazyPreparation(remaining);
+    } else if (preparation?.status === "rejected") {
+      this.lazyPreparations.delete(backing.token);
+      const detail = preparation.error instanceof Error
+        ? preparation.error.message
+        : String(preparation.error);
+      const error = new Error(`EIO: lazy backing for ${path} failed: ${detail}`) as
+        Error & { code: string; cause?: unknown };
+      error.code = "EIO";
+      error.cause = preparation.error;
+      throw error;
+    } else if (!preparation) {
+      preparation = this.startLazyPreparation(backing);
+    }
+    const error = new Error(`EAGAIN: lazy backing for ${path} is being prepared`) as
+      Error & { code: string };
+    error.code = "EAGAIN";
+    throw error;
   }
 
   /** A successful guest data mutation makes any deferred backing obsolete. */
@@ -669,6 +928,21 @@ export class MemoryFileSystem implements FileSystemBackend {
         );
       }
       group.entries = rewritten;
+      if (group.inventory) {
+        group.inventory = group.inventory.map((entry) => ({
+          ...entry,
+          vfsPath: rewrite(entry.vfsPath),
+          ...(entry.type === "hardlink" && entry.target !== undefined
+            ? { target: rewrite(entry.target) }
+            : {}),
+        }));
+      }
+      if (group.activation) {
+        group.activation = {
+          ...group.activation,
+          roots: group.activation.roots.map(rewrite),
+        };
+      }
     }
   }
 
@@ -795,6 +1069,11 @@ export class MemoryFileSystem implements FileSystemBackend {
     return () => this.lazyDownloadListeners.delete(listener);
   }
 
+  /** Install the host-specific transport used for lazy file and archive URLs. */
+  setLazyFetcher(fetcher: LazyFetch): void {
+    this.lazyFetch = fetcher;
+  }
+
   private emitLazyDownload(event: Omit<LazyDownloadEvent, "t">): void {
     if (this.lazyDownloadListeners.size === 0) return;
     const stamped: LazyDownloadEvent = { ...event, t: monotonicNow() };
@@ -834,7 +1113,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     });
 
     try {
-      const resp = await fetch(details.url);
+      const resp = await this.lazyFetch(details.url);
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}`);
       }
@@ -1076,6 +1355,235 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
+   * Register a format-neutral immutable filesystem tree. The complete
+   * inventory is validated before namespace mutation. One stub is created per
+   * inode group and hard-link names are attached to that same SharedFS inode.
+   */
+  registerLazyTree(
+    contentValue: LazyTreeContent,
+    entriesValue: readonly LazyTreeRegistrationEntry[],
+    mountPrefix = "/",
+    activationValue: LazyTreeActivation = {
+      mode: "first-use",
+      capabilities: ["deferred-tree"],
+      roots: [mountPrefix || "/"],
+    },
+  ): LazyTreeGroup {
+    const content = validateLazyTreeContent(contentValue);
+    normalizeLazyArchiveMountPrefix(mountPrefix);
+    if (entriesValue.length === 0) {
+      throw new Error("Lazy tree inventory must not be empty");
+    }
+
+    const entries = entriesValue.map((entry) => ({ ...entry }));
+    const activation: LazyTreeActivation = {
+      mode: activationValue.mode,
+      capabilities: [...activationValue.capabilities],
+      roots: [...activationValue.roots],
+    };
+    if (
+      (activation.mode !== "boot-prefetch" && activation.mode !== "first-use") ||
+      activation.capabilities.length === 0 || activation.roots.length === 0 ||
+      new Set(activation.capabilities).size !== activation.capabilities.length ||
+      new Set(activation.roots).size !== activation.roots.length
+    ) {
+      throw new Error("Lazy tree activation policy is invalid");
+    }
+    for (const root of activation.roots) {
+      requireCanonicalTreePath(root, true, "Lazy tree activation root", true);
+    }
+    const byPath = new Map<string, LazyTreeRegistrationEntry>();
+    const canonicalByGroup = new Map<string, LazyTreeRegistrationEntry>();
+    for (const entry of entries) {
+      requireCanonicalTreePath(entry.vfsPath, true, "Lazy tree VFS path");
+      requireCanonicalTreePath(entry.sourcePath, false, "Lazy tree source path");
+      if (byPath.has(entry.vfsPath)) {
+        throw new Error(`Lazy tree duplicates VFS path ${entry.vfsPath}`);
+      }
+      if (!Number.isSafeInteger(entry.mode) || entry.mode < 0 || entry.mode > 0o7777) {
+        throw new Error(`Lazy tree entry ${entry.vfsPath} has an invalid mode`);
+      }
+      if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
+        throw new Error(`Lazy tree entry ${entry.vfsPath} has an invalid size`);
+      }
+      if (entry.type === "directory") {
+        if (entry.size !== 0 || entry.target !== undefined || entry.inodeGroup !== undefined) {
+          throw new Error(`Lazy tree directory ${entry.vfsPath} has invalid metadata`);
+        }
+      } else if (entry.type === "symlink") {
+        if (
+          typeof entry.target !== "string" || entry.target.length === 0 ||
+          entry.inodeGroup !== undefined ||
+          new TextEncoder().encode(entry.target).byteLength !== entry.size
+        ) {
+          throw new Error(`Lazy tree symlink ${entry.vfsPath} has invalid metadata`);
+        }
+      } else {
+        if (typeof entry.inodeGroup !== "string" || entry.inodeGroup.length === 0) {
+          throw new Error(`Lazy tree regular entry ${entry.vfsPath} has no inode group`);
+        }
+        if (entry.type === "file") {
+          if (entry.target !== undefined || canonicalByGroup.has(entry.inodeGroup)) {
+            throw new Error(`Lazy tree inode group ${entry.inodeGroup} has multiple files`);
+          }
+          canonicalByGroup.set(entry.inodeGroup, entry);
+        } else if (typeof entry.target !== "string") {
+          throw new Error(`Lazy tree hardlink ${entry.vfsPath} has no target`);
+        }
+      }
+      byPath.set(entry.vfsPath, entry);
+    }
+
+    for (const entry of entries) {
+      if (entry.type !== "hardlink") continue;
+      requireCanonicalTreePath(entry.target!, true, "Lazy tree hardlink target");
+      let target = byPath.get(entry.target!);
+      const seen = new Set<string>([entry.vfsPath]);
+      while (target?.type === "hardlink") {
+        if (seen.has(target.vfsPath)) {
+          throw new Error(`Lazy tree hardlink cycle reaches ${target.vfsPath}`);
+        }
+        seen.add(target.vfsPath);
+        target = target.target === undefined ? undefined : byPath.get(target.target);
+      }
+      const canonical = canonicalByGroup.get(entry.inodeGroup!);
+      if (
+        target?.type !== "file" || canonical !== target ||
+        target.inodeGroup !== entry.inodeGroup || target.size !== entry.size ||
+        target.mode !== entry.mode
+      ) {
+        throw new Error(`Lazy tree hardlink ${entry.vfsPath} has an invalid target`);
+      }
+    }
+    for (const entry of entries) {
+      if (
+        (entry.type === "file" || entry.type === "hardlink") &&
+        !canonicalByGroup.has(entry.inodeGroup!)
+      ) {
+        throw new Error(`Lazy tree inode group ${entry.inodeGroup} has no canonical file`);
+      }
+    }
+
+    const group: LazyTreeGroup = {
+      content,
+      url: content.transports[0],
+      mountPrefix,
+      integrity: { sha256: content.sha256, bytes: content.bytes },
+      materialized: false,
+      inventory: entries.map((entry) => ({ ...entry })),
+      activation,
+      entries: new Map(),
+    };
+    const ensureParents = (path: string): void => {
+      const parts = path.split("/").filter(Boolean);
+      let current = "";
+      for (let index = 0; index < parts.length - 1; index++) {
+        current += `/${parts[index]}`;
+        try {
+          this.fs.mkdir(current, 0o755);
+        } catch {
+          const existing = this.fs.lstat(current);
+          if ((existing.mode & S_IFMT) !== S_IFDIR) {
+            throw new Error(`Lazy tree ancestor ${current} is not a directory`);
+          }
+        }
+      }
+    };
+
+    for (const entry of [...entries].sort((left, right) =>
+      left.vfsPath.split("/").length - right.vfsPath.split("/").length
+    )) {
+      if (entry.type !== "directory") continue;
+      ensureParents(entry.vfsPath);
+      try {
+        this.fs.mkdir(entry.vfsPath, entry.mode);
+        this.fs.chmod(entry.vfsPath, entry.mode);
+      } catch {
+        const existing = this.fs.lstat(entry.vfsPath);
+        if ((existing.mode & S_IFMT) !== S_IFDIR) {
+          throw new Error(`Lazy tree directory collides at ${entry.vfsPath}`);
+        }
+      }
+    }
+
+    for (const entry of entries) {
+      if (entry.type !== "symlink") continue;
+      ensureParents(entry.vfsPath);
+      this.fs.symlink(entry.target!, entry.vfsPath);
+      const st = this.fs.lstat(entry.vfsPath);
+      group.entries.set(entry.vfsPath, {
+        ino: st.ino,
+        generation: st.generation,
+        dataSequence: st.dataSequence,
+        size: entry.size,
+        isSymlink: true,
+        deleted: false,
+        materialized: true,
+        archivePath: entry.sourcePath,
+        sourcePath: entry.sourcePath,
+        type: "symlink",
+        target: entry.target,
+      });
+    }
+
+    const stateByGroup = new Map<string, SfsStatResult>();
+    for (const entry of entries) {
+      if (entry.type !== "file") continue;
+      ensureParents(entry.vfsPath);
+      const st = this.fs.createLazyStub(entry.vfsPath, entry.mode);
+      this.invalidateLazyData(st);
+      stateByGroup.set(entry.inodeGroup!, st);
+      const metadata: LazyArchiveFileEntry = {
+        ino: st.ino,
+        generation: st.generation,
+        dataSequence: st.dataSequence,
+        size: entry.size,
+        isSymlink: false,
+        deleted: false,
+        materialized: false,
+        archivePath: entry.sourcePath,
+        sourcePath: entry.sourcePath,
+        type: "file",
+        inodeGroup: entry.inodeGroup,
+      };
+      group.entries.set(entry.vfsPath, metadata);
+      this.lazyArchiveInodes.set(
+        MemoryFileSystem.inodeKey(st.ino, st.generation),
+        group,
+      );
+    }
+
+    for (const entry of entries) {
+      if (entry.type !== "hardlink") continue;
+      const canonical = canonicalByGroup.get(entry.inodeGroup!)!;
+      ensureParents(entry.vfsPath);
+      this.fs.link(canonical.vfsPath, entry.vfsPath);
+      const st = this.fs.lstat(entry.vfsPath);
+      const expected = stateByGroup.get(entry.inodeGroup!)!;
+      if (st.ino !== expected.ino || st.generation !== expected.generation) {
+        throw new Error(`Lazy tree hardlink ${entry.vfsPath} did not share its inode`);
+      }
+      group.entries.set(entry.vfsPath, {
+        ino: st.ino,
+        generation: st.generation,
+        dataSequence: st.dataSequence,
+        size: entry.size,
+        isSymlink: false,
+        deleted: false,
+        materialized: false,
+        archivePath: canonical.sourcePath,
+        sourcePath: entry.sourcePath,
+        type: "hardlink",
+        inodeGroup: entry.inodeGroup,
+        target: entry.target,
+      });
+    }
+
+    this.lazyArchiveGroups.push(group);
+    return group;
+  }
+
+  /**
    * Register a lazy archive group: creates stubs in SharedFS for every file
    * entry and records metadata so that accessing any one of them triggers a
    * single archive fetch that materializes all files in the group.
@@ -1103,6 +1611,22 @@ export class MemoryFileSystem implements FileSystemBackend {
       symlinkTargets,
     );
     const group: LazyArchiveGroup = {
+      ...(integrity
+        ? {
+          content: validateLazyTreeContent({
+            decoder: "zip-v1",
+            mediaType: "application/zip",
+            sha256: integrity.sha256,
+            bytes: integrity.bytes,
+            expandedBytes: plannedEntries.reduce(
+              (total, planned) => total + planned.entry.uncompressedSize,
+              0,
+            ),
+            sourceEntryCount: plannedEntries.length,
+            transports: [url],
+          }),
+        }
+        : {}),
       url,
       mountPrefix,
       integrity: validateLazyArchiveIntegrity(integrity),
@@ -1137,6 +1661,8 @@ export class MemoryFileSystem implements FileSystemBackend {
           deleted: false,
           materialized: true,
           archivePath: ze.fileName,
+          sourcePath: ze.fileName,
+          type: "symlink",
         };
         group.entries.set(vfsPath, entry);
       } else {
@@ -1151,6 +1677,9 @@ export class MemoryFileSystem implements FileSystemBackend {
           deleted: false,
           materialized: false,
           archivePath: ze.fileName,
+          sourcePath: ze.fileName,
+          type: "file",
+          inodeGroup: ze.fileName,
         };
         group.entries.set(vfsPath, entry);
         this.lazyArchiveInodes.set(
@@ -1214,17 +1743,38 @@ export class MemoryFileSystem implements FileSystemBackend {
           materialized,
           archivePath:
             e.archivePath ?? e.vfsPath.slice(normalizedPrefix.length + 1),
+          sourcePath:
+            e.sourcePath ?? e.archivePath ??
+              e.vfsPath.slice(normalizedPrefix.length + 1),
+          type: e.type ?? (e.isSymlink ? "symlink" : "file"),
+          inodeGroup: e.inodeGroup,
+          target: e.target,
         });
       }
+      const content = s.content === undefined
+        ? undefined
+        : validateLazyTreeContent(s.content);
       const group: LazyArchiveGroup = {
-        url: s.url,
+        content,
+        url: content?.transports[0] ?? s.url,
         mountPrefix: s.mountPrefix,
-        integrity: validateLazyArchiveIntegrity(s.integrity),
-        materialized:
-          s.materialized ||
+        integrity: content
+          ? { sha256: content.sha256, bytes: content.bytes }
+          : validateLazyArchiveIntegrity(s.integrity),
+        materialized: s.materialized || (
+          !(content && s.inventory) &&
           Array.from(entries.values()).every(
             (entry) => entry.deleted || entry.materialized,
-          ),
+          )
+        ),
+        inventory: s.inventory?.map((entry) => ({ ...entry })),
+        activation: s.activation
+          ? {
+            mode: s.activation.mode,
+            capabilities: [...s.activation.capabilities],
+            roots: [...s.activation.roots],
+          }
+          : undefined,
         entries,
       };
       this.lazyArchiveGroups.push(group);
@@ -1252,7 +1802,15 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   rewriteLazyArchiveUrls(transform: (url: string) => string): void {
     for (const group of this.lazyArchiveGroups) {
-      group.url = transform(group.url);
+      if (group.content) {
+        group.content = {
+          ...group.content,
+          transports: group.content.transports.map(transform),
+        };
+        group.url = group.content.transports[0];
+      } else {
+        group.url = transform(group.url);
+      }
     }
   }
 
@@ -1269,9 +1827,19 @@ export class MemoryFileSystem implements FileSystemBackend {
         deleted: entry.deleted,
         materialized: entry.materialized,
         archivePath: entry.archivePath,
+        sourcePath: entry.sourcePath,
+        type: entry.type,
+        inodeGroup: entry.inodeGroup,
+        target: entry.target,
       })).filter((entry) => !entry.deleted && !entry.materialized);
-      if (entries.length === 0) continue;
+      if (
+        entries.length === 0 &&
+        !(group.content && group.inventory && !group.materialized)
+      ) continue;
       serialized.push({
+        content: group.content,
+        inventory: group.inventory,
+        activation: group.activation,
         url: group.url,
         mountPrefix: group.mountPrefix,
         integrity: group.integrity,
@@ -1294,7 +1862,65 @@ export class MemoryFileSystem implements FileSystemBackend {
    * handleExec) to avoid sync XHR which deadlocks with COOP/COEP.
    * Returns true if something was materialized, false if already concrete.
    */
+  async preparePath(path: string): Promise<boolean> {
+    let materialized = false;
+    const maximumAttempts = Math.max(3, this.lazyArchiveGroups.length + 1);
+    for (let attempt = 0; attempt < maximumAttempts; attempt++) {
+      const backing = this.lazyBackingForPath(path);
+      if (!backing) return materialized;
+      const preparation = this.lazyPreparations.get(backing.token) ??
+        this.startLazyPreparation(backing);
+      try {
+        materialized = (await preparation.promise) || materialized;
+      } finally {
+        if (this.lazyPreparations.get(backing.token) === preparation) {
+          this.lazyPreparations.delete(backing.token);
+        }
+      }
+    }
+    if (this.lazyBackingForPath(path)) {
+      throw new Error(`Lazy backing kept changing identity while preparing: ${path}`);
+    }
+    return materialized;
+  }
+
+  /**
+   * Resolve every tree whose capability policy requires bytes before boot.
+   * Registration/stat remain inert; callers choose the boot boundary and any
+   * failure aborts that boundary instead of exposing zero-byte stubs.
+   */
+  async prepareBootDeferredTrees(): Promise<number> {
+    const groups = this.lazyArchiveGroups.filter(
+      (group) => !group.materialized && group.activation?.mode === "boot-prefetch",
+    );
+    await Promise.all(groups.map((group) => this.prepareLazyTreeGroup(group)));
+    return groups.length;
+  }
+
+  private async prepareLazyTreeGroup(group: LazyTreeGroup): Promise<boolean> {
+    if (group.materialized) return false;
+    const backing: LazyBacking = {
+      token: group,
+      path: group.activation?.roots[0] ?? group.mountPrefix,
+      directGroup: group,
+    };
+    const preparation = this.lazyPreparations.get(group) ??
+      this.startLazyPreparation(backing);
+    try {
+      return await preparation.promise;
+    } finally {
+      if (this.lazyPreparations.get(group) === preparation) {
+        this.lazyPreparations.delete(group);
+      }
+    }
+  }
+
+  /** Backward-compatible explicit preparation entrypoint. */
   async ensureMaterialized(path: string): Promise<boolean> {
+    return this.preparePath(path);
+  }
+
+  private async materializePath(path: string): Promise<boolean> {
     if (this.lazyFiles.size === 0 && this.lazyArchiveInodes.size === 0)
       return false;
     let st: SfsStatResult;
@@ -1349,6 +1975,186 @@ export class MemoryFileSystem implements FileSystemBackend {
     return false;
   }
 
+  private async decodeAndValidateLazyTree(
+    group: LazyTreeGroup,
+    data: Uint8Array,
+  ): Promise<Map<string, Uint8Array>> {
+    const content = group.content;
+    const inventory = group.inventory;
+    if (!content || !inventory) {
+      throw new Error("Lazy tree is missing its decoder or complete inventory");
+    }
+    const expectedBySource = new Map<string, LazyTreeRegistrationEntry>();
+    const inventoryByPath = new Map(inventory.map((entry) => [entry.vfsPath, entry]));
+    for (const entry of inventory) {
+      if (entry.type === "hardlink") {
+        const target = inventoryByPath.get(entry.target!);
+        if (!target) throw new Error(`Lazy tree hardlink target disappeared: ${entry.target}`);
+        // The derived ZIP scaffold stores one source member per inode and
+        // reconstructs aliases from inventory. Native TAR hardlinks retain a
+        // distinct source member and are validated below.
+        if (entry.sourcePath === target.sourcePath) continue;
+      }
+      const prior = expectedBySource.get(entry.sourcePath);
+      if (prior) {
+        throw new Error(`Lazy tree inventory duplicates source member ${entry.sourcePath}`);
+      }
+      expectedBySource.set(entry.sourcePath, entry);
+    }
+
+    const decoded = new Map<string, {
+      type: "directory" | "file" | "symlink" | "hardlink";
+      mode: number;
+      data?: Uint8Array;
+      target?: string;
+    }>();
+    let expandedBytes = 0;
+    if (content.decoder === "zip-v1") {
+      const { parseZipCentralDirectory, extractZipEntryBounded } =
+        await import("./zip");
+      const zipEntries = parseZipCentralDirectory(data);
+      if (
+        zipEntries.length !== content.sourceEntryCount ||
+        zipEntries.length !== expectedBySource.size
+      ) {
+        throw new Error("Lazy ZIP tree decoded inventory counts differ from its descriptor");
+      }
+      for (const entry of zipEntries) {
+        const sourcePath = entry.isDirectory
+          ? entry.fileName.replace(/\/$/, "")
+          : entry.fileName;
+        if (decoded.has(sourcePath)) {
+          throw new Error(`Lazy ZIP tree duplicates source member ${sourcePath}`);
+        }
+        const expected = expectedBySource.get(sourcePath);
+        if (!expected) {
+          throw new Error(`Lazy ZIP tree has undeclared source member ${sourcePath}`);
+        }
+        expandedBytes += entry.uncompressedSize;
+        if (
+          expandedBytes > content.expandedBytes ||
+          entry.uncompressedSize !== expected.size
+        ) {
+          throw new Error(`Lazy ZIP tree member ${sourcePath} exceeds its inventory`);
+        }
+        const actualType = entry.isDirectory
+          ? "directory"
+          : entry.isSymlink
+            ? "symlink"
+            : "file";
+        if (
+          actualType !== expected.type ||
+          (entry.mode & 0o7777) !== expected.mode
+        ) {
+          throw new Error(`Lazy ZIP tree member ${sourcePath} differs from inventory`);
+        }
+        if (entry.isDirectory) {
+          decoded.set(sourcePath, { type: "directory", mode: entry.mode });
+        } else {
+          const member = extractZipEntryBounded(data, entry, expected.size);
+          if (entry.isSymlink) {
+            let target: string;
+            try {
+              target = new TextDecoder("utf-8", { fatal: true }).decode(member);
+            } catch {
+              throw new Error(`Lazy ZIP tree symlink ${sourcePath} is not UTF-8`);
+            }
+            decoded.set(sourcePath, {
+              type: "symlink",
+              mode: entry.mode,
+              target,
+            });
+          } else {
+            decoded.set(sourcePath, {
+              type: "file",
+              mode: entry.mode,
+              data: member,
+            });
+          }
+        }
+      }
+    } else {
+      const { parseTarGzip } = await import("./tar");
+      const parsed = parseTarGzip(data, {
+        label: `Lazy tree ${content.sha256}`,
+        limits: {
+          maxCompressedBytes: content.bytes,
+          maxUncompressedBytes: content.expandedBytes,
+          maxEntries: content.sourceEntryCount,
+        },
+      });
+      expandedBytes = new DataView(
+        data.buffer,
+        data.byteOffset,
+        data.byteLength,
+      ).getUint32(data.byteLength - 4, true);
+      for (const entry of parsed) {
+        if (decoded.has(entry.path)) {
+          throw new Error(`Lazy TAR tree duplicates source member ${entry.path}`);
+        }
+        if (entry.type === "file") {
+          decoded.set(entry.path, {
+            type: "file",
+            mode: entry.mode,
+            data: entry.data,
+          });
+        } else if (entry.type === "directory") {
+          decoded.set(entry.path, { type: "directory", mode: entry.mode });
+        } else {
+          decoded.set(entry.path, {
+            type: entry.type,
+            mode: entry.mode,
+            target: entry.linkName,
+          });
+        }
+      }
+    }
+    if (
+      decoded.size !== content.sourceEntryCount ||
+      decoded.size !== expectedBySource.size ||
+      expandedBytes !== content.expandedBytes
+    ) {
+      throw new Error("Lazy tree decoded inventory counts differ from its descriptor");
+    }
+
+    for (const [sourcePath, expected] of expectedBySource) {
+      const actual = decoded.get(sourcePath);
+      if (!actual) throw new Error(`Lazy tree is missing source member ${sourcePath}`);
+      const expectedType = expected.type;
+      if (actual.type !== expectedType) {
+        throw new Error(
+          `Lazy tree member ${sourcePath} is ${actual.type}, expected ${expectedType}`,
+        );
+      }
+      if ((actual.mode & 0o7777) !== expected.mode) {
+        throw new Error(`Lazy tree member ${sourcePath} mode differs from inventory`);
+      }
+      if (expectedType === "file" && actual.data?.byteLength !== expected.size) {
+        throw new Error(`Lazy tree member ${sourcePath} size differs from inventory`);
+      }
+      if (expectedType === "symlink" && actual.target !== expected.target) {
+        throw new Error(`Lazy tree symlink ${sourcePath} target differs from inventory`);
+      }
+      if (expectedType === "hardlink") {
+        const target = inventoryByPath.get(expected.target!)!;
+        if (actual.target !== target.sourcePath) {
+          throw new Error(`Lazy tree hardlink ${sourcePath} target differs from inventory`);
+        }
+      }
+    }
+
+    const files = new Map<string, Uint8Array>();
+    for (const entry of inventory) {
+      if (entry.type !== "file") continue;
+      const decodedEntry = decoded.get(entry.sourcePath);
+      if (decodedEntry?.type !== "file" || !decodedEntry.data) {
+        throw new Error(`Lazy tree has no file content for ${entry.sourcePath}`);
+      }
+      files.set(entry.sourcePath, decodedEntry.data);
+    }
+    return files;
+  }
+
   /**
    * Materialize a full lazy archive group: fetch the zip once, parse its
    * central directory, and write every non-deleted entry into its stub.
@@ -1359,17 +2165,37 @@ export class MemoryFileSystem implements FileSystemBackend {
     requested?: { path: string; ino: number; generation: number },
   ): Promise<void> {
     if (group.materialized) return;
+    const genericTree = group.content !== undefined && group.inventory !== undefined;
 
-    const zipData = await this.fetchLazyBytes({
-      id: `archive:${group.mountPrefix}:${group.url}`,
-      kind: "archive",
-      url: group.url,
-      mountPrefix: group.mountPrefix,
-      integrity: group.integrity,
-    });
+    const transports = genericTree ? group.content!.transports : [group.url];
+    const failures: string[] = [];
+    let archiveData: Uint8Array | null = null;
+    for (const [index, url] of transports.entries()) {
+      try {
+        archiveData = await this.fetchLazyBytes({
+          id: `archive:${group.mountPrefix}:${group.content?.sha256 ?? url}:${index}`,
+          kind: genericTree ? "tree" : "archive",
+          url,
+          mountPrefix: group.mountPrefix,
+          integrity: group.integrity,
+        });
+        break;
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (archiveData === null) {
+      throw new Error(
+        `All ${transports.length} lazy ${genericTree ? "tree" : "archive"} ` +
+          `transports failed: ${failures.join("; ")}`,
+      );
+    }
 
+    const decodedTreeFiles = genericTree
+      ? await this.decodeAndValidateLazyTree(group, archiveData)
+      : null;
     const { parseZipCentralDirectory, extractZipEntry } = await import("./zip");
-    const zipEntries = parseZipCentralDirectory(zipData);
+    const zipEntries = decodedTreeFiles ? [] : parseZipCentralDirectory(archiveData);
     const zipLookup = new Map<string, ZipEntry>();
     for (const ze of zipEntries) {
       if (zipLookup.has(ze.fileName)) {
@@ -1379,71 +2205,127 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
 
     const normalizedPrefix = group.mountPrefix.replace(/\/+$/, "");
+    const extractedByIdentity = new Map<string, {
+      archivePath: string;
+      content: Uint8Array;
+    }>();
     for (const [vfsPath, archiveEntry] of group.entries) {
       if (archiveEntry.deleted || archiveEntry.materialized) continue;
       const zipFileName =
         archiveEntry.archivePath ??
         vfsPath.slice(normalizedPrefix.length + 1);
-      const ze = zipLookup.get(zipFileName);
-      if (
-        ze === undefined ||
-        ze.isDirectory ||
-        ze.isSymlink ||
+      const ze = decodedTreeFiles ? undefined : zipLookup.get(zipFileName);
+      const treeContent = decodedTreeFiles?.get(zipFileName);
+      if (decodedTreeFiles) {
+        if (treeContent === undefined || treeContent.byteLength !== archiveEntry.size) {
+          throw new Error(
+            `Lazy tree member ${zipFileName} does not match its registered metadata`,
+          );
+        }
+      } else if (
+        ze === undefined || ze.isDirectory || ze.isSymlink ||
         ze.uncompressedSize !== archiveEntry.size
       ) {
         throw new Error(
           `Lazy archive member ${zipFileName} does not match its registered metadata`,
         );
       }
+      if (archiveEntry.generation === undefined) continue;
+      const key = MemoryFileSystem.inodeKey(
+        archiveEntry.ino,
+        archiveEntry.generation,
+      );
+      const prior = extractedByIdentity.get(key);
+      if (prior && prior.archivePath !== zipFileName) {
+        throw new Error(
+          `Lazy archive aliases for inode ${key} name different members`,
+        );
+      }
+      if (!prior) {
+        // Extraction (including compression/CRC/size validation) is part of
+        // preflight. Do not mutate the first stub until every pending member
+        // has been successfully decoded into ordinary memory.
+        const content = treeContent ?? extractZipEntry(archiveData, ze!);
+        if (content.byteLength !== archiveEntry.size) {
+          throw new Error(
+            `Lazy archive member ${zipFileName} extracted ${content.byteLength} ` +
+              `bytes, expected ${archiveEntry.size}`,
+          );
+        }
+        extractedByIdentity.set(key, { archivePath: zipFileName, content });
+      }
     }
     const requestedKey = requested
       ? MemoryFileSystem.inodeKey(requested.ino, requested.generation)
       : null;
     for (let attempt = 0; attempt < 3; attempt++) {
+      const pending = new Map<string, {
+        ino: number;
+        generation: number;
+        dataSequence: number;
+        paths: Set<string>;
+        content: Uint8Array;
+      }>();
       for (const [vfsPath, archiveEntry] of group.entries) {
-        if (archiveEntry.deleted || archiveEntry.materialized) continue;
-        if (archiveEntry.isSymlink) {
-          archiveEntry.materialized = true;
-          continue;
-        }
-        const zipFileName =
-          archiveEntry.archivePath ??
-          vfsPath.slice(normalizedPrefix.length + 1);
-        const ze = zipLookup.get(zipFileName);
-        if (!ze) continue;
-        const content = extractZipEntry(zipData, ze);
-        if (archiveEntry.generation === undefined) continue;
+        if (
+          archiveEntry.deleted ||
+          archiveEntry.materialized ||
+          archiveEntry.generation === undefined
+        ) continue;
         const key = MemoryFileSystem.inodeKey(
           archiveEntry.ino,
           archiveEntry.generation,
         );
         if (this.lazyArchiveInodes.get(key) !== group) continue;
-        const candidates = new Set([vfsPath]);
+        const extracted = extractedByIdentity.get(key);
+        if (!extracted) {
+          throw new Error(`Lazy archive has no extracted content for inode ${key}`);
+        }
+        let replacement = pending.get(key);
+        if (!replacement) {
+          replacement = {
+            ino: archiveEntry.ino,
+            generation: archiveEntry.generation,
+            dataSequence: archiveEntry.dataSequence ?? 0,
+            paths: new Set(),
+            content: extracted.content,
+          };
+          pending.set(key, replacement);
+        }
+        replacement.paths.add(vfsPath);
         if (
           requested &&
           requested.ino === archiveEntry.ino &&
           requested.generation === archiveEntry.generation
-        )
-          candidates.add(requested.path);
-        let materialized = false;
-        for (const candidate of candidates) {
-          materialized = this.fs.replaceIfIdentity(
-            candidate,
-            archiveEntry.ino,
-            archiveEntry.generation,
-            archiveEntry.dataSequence ?? 0,
-            content,
-          );
-          if (materialized) break;
+        ) {
+          replacement.paths.add(requested.path);
         }
-        if (!materialized) continue;
+      }
+
+      if (pending.size > 0) {
+        const committed = this.fs.replaceManyIfIdentities(
+          Array.from(pending.values(), (replacement) => ({
+            paths: Array.from(replacement.paths),
+            expectedIno: replacement.ino,
+            expectedGeneration: replacement.generation,
+            expectedDataSequence: replacement.dataSequence,
+            data: replacement.content,
+          })),
+        );
+        if (!committed) {
+          this.reconcileLazyIdentityState(this.fs.identityState());
+          if (requestedKey && !this.lazyArchiveInodes.has(requestedKey)) return;
+          continue;
+        }
+      }
+
+      for (const [key, replacement] of pending) {
         this.lazyArchiveInodes.delete(key);
         for (const alias of group.entries.values()) {
           if (
-            alias.ino === archiveEntry.ino &&
-            alias.generation === archiveEntry.generation
-          )
-            alias.materialized = true;
+            alias.ino === replacement.ino &&
+            alias.generation === replacement.generation
+          ) alias.materialized = true;
         }
       }
 
@@ -1468,7 +2350,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     // filesystem is not a stable source for a self-contained image.
     for (let attempt = 0; attempt < 3; attempt++) {
       this.reconcileLazyIdentityState(this.fs.identityState());
-      if (this.lazyFiles.size === 0 && this.lazyArchiveInodes.size === 0)
+      const genericGroups = this.lazyArchiveGroups.filter((group) =>
+        !group.materialized && group.content !== undefined && group.inventory !== undefined
+      );
+      if (
+        this.lazyFiles.size === 0 &&
+        this.lazyArchiveInodes.size === 0 &&
+        genericGroups.length === 0
+      )
         return;
 
       const filePaths = Array.from(
@@ -1478,13 +2367,21 @@ export class MemoryFileSystem implements FileSystemBackend {
       for (const path of filePaths) await this.ensureMaterialized(path);
 
       const archiveGroups = new Set(this.lazyArchiveInodes.values());
+      for (const group of genericGroups) archiveGroups.add(group);
       for (const group of archiveGroups) {
-        await this.ensureArchiveMaterialized(group);
+        await this.prepareLazyTreeGroup(group);
       }
     }
 
     this.reconcileLazyIdentityState(this.fs.identityState());
-    if (this.lazyFiles.size !== 0 || this.lazyArchiveInodes.size !== 0) {
+    const pendingGenericTree = this.lazyArchiveGroups.some((group) =>
+      !group.materialized && group.content !== undefined && group.inventory !== undefined
+    );
+    if (
+      this.lazyFiles.size !== 0 ||
+      this.lazyArchiveInodes.size !== 0 ||
+      pendingGenericTree
+    ) {
       throw new Error(
         "Cannot create a self-contained VFS image while lazy entries remain pending",
       );
@@ -1789,8 +2686,14 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   open(path: string, flags: number, mode: number): number {
+    if (
+      (flags & O_TRUNC) === 0 &&
+      !((flags & O_CREAT) !== 0 && (flags & O_EXCL) !== 0)
+    ) {
+      this.guardSynchronousLazyAccess(path);
+    }
     const handle = this.fs.open(path, flags, mode);
-    if ((flags & 0x0200) !== 0) {
+    if ((flags & O_TRUNC) !== 0) {
       // O_TRUNC
       this.invalidateLazyData(this.fs.fstat(handle));
     }
@@ -1808,6 +2711,16 @@ export class MemoryFileSystem implements FileSystemBackend {
     offset: number | null,
     length: number,
   ): number {
+    if (length > 0) {
+      let backing = this.lazyBackingForStat(this.fs.fstat(handle));
+      if (backing) {
+        // Another SharedFS peer can rename a still-open lazy inode. Refresh
+        // its surviving name before starting the asynchronous preparation.
+        this.reconcileLazyIdentityState(this.fs.identityState());
+        backing = this.lazyBackingForStat(this.fs.fstat(handle));
+        if (backing) this.guardSynchronousLazyAccess(backing.path);
+      }
+    }
     if (offset !== null) {
       return this.fs.readAt(handle, buffer.subarray(0, length), offset);
     }

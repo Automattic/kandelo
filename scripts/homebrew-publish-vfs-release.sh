@@ -105,6 +105,8 @@ env -u GH_TOKEN -u GITHUB_TOKEN python3 "$SCRIPT_DIR/homebrew-vfs-release.py" \
   "${validator_args[@]}" >/dev/null
 
 descriptor="$HANDOFF/kandelo-homebrew-vfs.json"
+lazy_layer_asset="kandelo-homebrew-${FORMULA}-layer.bin"
+lazy_layer_descriptor_asset="kandelo-homebrew-${FORMULA}-layer.json"
 tag="$(jq -er '.release.tag' "$descriptor")"
 [ "$tag" = "homebrew-vfs-sha256-$(jq -er '.image.sha256' "$descriptor")" ] || {
   echo "homebrew-publish-vfs-release: descriptor release tag is not content-addressed" >&2
@@ -242,8 +244,8 @@ printf '%s\n' \
   kandelo-homebrew-node-evidence.json \
   kandelo-homebrew-browser-evidence.json \
   kandelo-homebrew-vfs.json \
-  kandelo-homebrew-shell-layer.zip \
-  kandelo-homebrew-shell-layer.json \
+  "$lazy_layer_asset" \
+  "$lazy_layer_descriptor_asset" \
   | jq -Rsc 'split("\n")[:-1] | sort' >"$expected_names"
 
 assert_asset_names_are_bounded() {
@@ -306,8 +308,8 @@ ensure_asset kandelo-homebrew-vfs-report.json
 ensure_asset kandelo-homebrew-node-evidence.json
 ensure_asset kandelo-homebrew-browser-evidence.json
 ensure_asset kandelo-homebrew-vfs.json
-ensure_asset kandelo-homebrew-shell-layer.zip
-ensure_asset kandelo-homebrew-shell-layer.json
+ensure_asset "$lazy_layer_asset"
+ensure_asset "$lazy_layer_descriptor_asset"
 
 refresh_release
 validate_release
@@ -351,8 +353,8 @@ for name in \
   kandelo-homebrew-node-evidence.json \
   kandelo-homebrew-browser-evidence.json \
   kandelo-homebrew-vfs.json \
-  kandelo-homebrew-shell-layer.zip \
-  kandelo-homebrew-shell-layer.json
+  "$lazy_layer_asset" \
+  "$lazy_layer_descriptor_asset"
 do
   source="$HANDOFF/$name"
   downloaded="$TMP_ROOT/anonymous-$name"
@@ -377,7 +379,7 @@ do
 done
 
 mkdir -p "$(dirname "$RECEIPT")"
-lazy_descriptor="$HANDOFF/kandelo-homebrew-shell-layer.json"
+lazy_descriptor="$HANDOFF/$lazy_layer_descriptor_asset"
 jq -nS \
   --arg repository "$TAP_REPOSITORY" \
   --arg tag "$tag" \
@@ -387,12 +389,14 @@ jq -nS \
   --arg image_url "$(jq -er '.image.url' "$descriptor")" \
   --arg image_sha256 "$(jq -er '.image.sha256' "$descriptor")" \
   --argjson image_bytes "$(jq -er '.image.bytes' "$descriptor")" \
-  --arg lazy_descriptor_url "https://github.com/${TAP_REPOSITORY}/releases/download/${tag}/kandelo-homebrew-shell-layer.json" \
-  --arg lazy_archive_url "$(jq -er '.archive.url' "$lazy_descriptor")" \
-  --arg lazy_archive_sha256 "$(jq -er '.archive.sha256' "$lazy_descriptor")" \
-  --arg lazy_archive_asset "$(jq -er '.archive.asset' "$lazy_descriptor")" \
-  --argjson lazy_archive_bytes "$(jq -er '.archive.bytes' "$lazy_descriptor")" \
-  --argjson lazy_archive_entries "$(jq -er '.archive.entry_count' "$lazy_descriptor")" \
+  --arg lazy_descriptor_url "https://github.com/${TAP_REPOSITORY}/releases/download/${tag}/${lazy_layer_descriptor_asset}" \
+  --arg lazy_payload_url "$(jq -er '.deferred_trees[0].transports[0].url' "$lazy_descriptor")" \
+  --arg lazy_payload_sha256 "$(jq -er '.deferred_trees[0].content.sha256' "$lazy_descriptor")" \
+  --arg lazy_payload_asset "$lazy_layer_asset" \
+  --arg lazy_payload_decoder "$(jq -er '.deferred_trees[0].content.decoder' "$lazy_descriptor")" \
+  --arg lazy_payload_media_type "$(jq -er '.deferred_trees[0].content.media_type' "$lazy_descriptor")" \
+  --argjson lazy_payload_bytes "$(jq -er '.deferred_trees[0].content.bytes' "$lazy_descriptor")" \
+  --argjson lazy_payload_entries "$(jq -er '.deferred_trees[0].inventory.entry_count' "$lazy_descriptor")" \
   --slurpfile assets "$anonymous_manifest" '
     {
       schema: 1,
@@ -407,17 +411,20 @@ jq -nS \
       image: {url: $image_url, sha256: $image_sha256, bytes: $image_bytes},
       lazy_layer: {
         descriptor_url: $lazy_descriptor_url,
-        archive: {
-          asset: $lazy_archive_asset,
-          url: $lazy_archive_url,
-          sha256: $lazy_archive_sha256,
-          bytes: $lazy_archive_bytes,
-          entry_count: $lazy_archive_entries
-        }
+        deferred_trees: [{
+          content: {
+            media_type: $lazy_payload_media_type,
+            decoder: $lazy_payload_decoder,
+            sha256: $lazy_payload_sha256,
+            bytes: $lazy_payload_bytes
+          },
+          transport: {asset: $lazy_payload_asset, url: $lazy_payload_url},
+          entry_count: $lazy_payload_entries
+        }]
       },
       assets: $assets
     }
   ' >"$RECEIPT"
 
 echo "Published immutable Homebrew VFS descriptor: https://github.com/${TAP_REPOSITORY}/releases/download/${tag}/kandelo-homebrew-vfs.json"
-echo "Published immutable Homebrew lazy layer descriptor: https://github.com/${TAP_REPOSITORY}/releases/download/${tag}/kandelo-homebrew-shell-layer.json"
+echo "Published immutable Homebrew lazy layer descriptor: https://github.com/${TAP_REPOSITORY}/releases/download/${tag}/${lazy_layer_descriptor_asset}"

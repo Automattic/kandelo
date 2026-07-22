@@ -21,7 +21,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildHomebrewVfs,
@@ -31,6 +31,8 @@ import {
 import {
   buildHomebrewLazyLayer,
   encodeHomebrewLazyLayerDescriptor,
+  homebrewRuntimeLayerPayloadAsset,
+  homebrewRuntimeLayerDescriptorAsset,
   parseHomebrewLazyLayerBasePackageSource,
 } from "../../../host/src/homebrew-lazy-layer";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
@@ -89,6 +91,8 @@ interface CliOptions {
   lazyLayerDescriptor?: string;
   lazyLayerBaseImage?: string;
   lazyLayerBasePackageSource?: string;
+  runtimeLayerId?: string;
+  runtimeLayerPolicy?: string;
 }
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
@@ -377,23 +381,23 @@ async function main(): Promise<void> {
         bytes: imageBytes.byteLength,
       },
       loadBottleBytes: loadPlannedBottle,
-      selectionSource: brewfileSelection ? {
-        kind: "brewfile",
-        parser: brewfileSelection.kind,
-        sha256: brewfileSelection.sha256,
-        bytes: brewfileSelection.bytes,
-        requestedPackages: brewfileSelection.packages,
-      } : undefined,
+      runtimeLayer: {
+        id: options.runtimeLayerId!,
+        policy: readJsonFile(options.runtimeLayerPolicy!),
+      },
     });
     mkdirSync(dirname(options.lazyLayerOut), { recursive: true });
     mkdirSync(dirname(options.lazyLayerDescriptor), { recursive: true });
-    writeFileSync(options.lazyLayerOut, layer.archive);
+    writeFileSync(options.lazyLayerOut, layer.payload);
     writeFileSync(
       options.lazyLayerDescriptor,
       encodeHomebrewLazyLayerDescriptor(layer.descriptor),
     );
-    console.log(`Homebrew lazy shell layer: ${options.lazyLayerOut}`);
-    console.log(`Homebrew lazy shell layer descriptor: ${options.lazyLayerDescriptor}`);
+    console.log(`Homebrew ${options.runtimeLayerId} runtime layer: ${options.lazyLayerOut}`);
+    console.log(
+      `Homebrew ${options.runtimeLayerId} runtime layer descriptor: ` +
+        options.lazyLayerDescriptor,
+    );
   }
 
   const report = {
@@ -559,6 +563,18 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.lazyLayerBasePackageSource = requireValue(args, ++i, arg);
         break;
+      case "--runtime-layer-id":
+        if (options.runtimeLayerId !== undefined) {
+          usage("--runtime-layer-id may be provided only once");
+        }
+        options.runtimeLayerId = requireValue(args, ++i, arg);
+        break;
+      case "--runtime-layer-policy":
+        if (options.runtimeLayerPolicy !== undefined) {
+          usage("--runtime-layer-policy may be provided only once");
+        }
+        options.runtimeLayerPolicy = requireValue(args, ++i, arg);
+        break;
       case "--help":
       case "-h":
         usage(undefined, 0);
@@ -600,11 +616,15 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (
     options.lazyLayerOut &&
-    (!options.lazyLayerBaseImage || !options.lazyLayerBasePackageSource)
+    (!options.lazyLayerBaseImage ||
+      !options.lazyLayerBasePackageSource ||
+      !options.runtimeLayerId ||
+      !options.runtimeLayerPolicy)
   ) {
     usage(
       "lazy layer output requires --lazy-layer-base-image and " +
-        "--lazy-layer-base-package-source",
+        "--lazy-layer-base-package-source, --runtime-layer-id, and " +
+        "--runtime-layer-policy",
     );
   }
   if (options.lazyLayerBaseImage && !options.lazyLayerOut) {
@@ -612,6 +632,12 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.lazyLayerBasePackageSource && !options.lazyLayerOut) {
     usage("--lazy-layer-base-package-source requires lazy layer outputs");
+  }
+  if (options.runtimeLayerId && !options.lazyLayerOut) {
+    usage("--runtime-layer-id requires lazy layer outputs");
+  }
+  if (options.runtimeLayerPolicy && !options.lazyLayerOut) {
+    usage("--runtime-layer-policy requires lazy layer outputs");
   }
   if (options.lazyLayerBaseImage && !existsSync(options.lazyLayerBaseImage)) {
     usage(`lazy layer base image does not exist: ${options.lazyLayerBaseImage}`);
@@ -624,6 +650,21 @@ function parseArgs(args: string[]): CliOptions {
       `lazy layer base package source does not exist: ` +
         options.lazyLayerBasePackageSource,
     );
+  }
+  if (options.runtimeLayerPolicy && !existsSync(options.runtimeLayerPolicy)) {
+    usage(`runtime layer policy does not exist: ${options.runtimeLayerPolicy}`);
+  }
+  if (options.lazyLayerOut && options.runtimeLayerId) {
+    const payloadAsset = homebrewRuntimeLayerPayloadAsset(options.runtimeLayerId);
+    const descriptorAsset = homebrewRuntimeLayerDescriptorAsset(
+      options.runtimeLayerId,
+    );
+    if (basename(options.lazyLayerOut) !== payloadAsset) {
+      usage(`runtime layer payload must be named ${payloadAsset}`);
+    }
+    if (basename(options.lazyLayerDescriptor!) !== descriptorAsset) {
+      usage(`runtime layer descriptor must be named ${descriptorAsset}`);
+    }
   }
 
   return options as CliOptions;
@@ -1172,10 +1213,12 @@ function usage(message?: string, code = 2): never {
   [--shell-config <shell.json>] [--demo-config <demo.json>] \\
   [--catalog-commit <full-sha>] \\
   [--migration-lock <lock.json>] \\
-  [--lazy-layer-out <layer.zip> \\
+  [--lazy-layer-out <layer.bin> \\
    --lazy-layer-descriptor <layer.json> \\
    --lazy-layer-base-image <main-shell.vfs[.zst]> \\
-   --lazy-layer-base-package-source <source.json>]`);
+   --lazy-layer-base-package-source <source.json> \\
+   --runtime-layer-id <id> \\
+   --runtime-layer-policy <policy.json>]`);
   process.exit(code);
 }
 

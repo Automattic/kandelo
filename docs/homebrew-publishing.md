@@ -1473,15 +1473,19 @@ scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
 ```
 
 The required-acceptance publisher also passes `--lazy-layer-out`,
-`--lazy-layer-descriptor`, `--lazy-layer-base-image`, and
-`--lazy-layer-base-package-source`. The eager acceptance image still uses the
-platform-only base described above. The lazy layer has a different lower
-filesystem: the exact bottle-built `shell.vfs.zst` declared by the canonical
-`shell` package, materialized without credentials or source fallback from the
-package's current index and immutable archive. The package-output receipt binds
-the fetched index snapshot, exact recipe cache key, immutable archive, and
-declared output bytes. The archive digest also transitively binds the
-producer's archived external Git inputs.
+`--lazy-layer-descriptor`, `--lazy-layer-base-image`,
+`--lazy-layer-base-package-source`, an exact `--runtime-layer-id`, and the
+checked-in `--runtime-layer-policy`. Lazy output is fail-closed unless that id
+is a reviewed policy entry whose package name is the id. The producer projects
+the verified plan to that one root and its dependency closure, and the emitted
+descriptor must contain exactly one requested package equal to the layer id.
+The eager acceptance image still uses the platform-only base described above.
+The deferred layer has a different lower filesystem: the exact bottle-built
+`shell.vfs.zst` declared by the canonical `shell` package, materialized without
+credentials or source fallback from the package's current index and immutable
+archive. The package-output receipt binds the fetched index snapshot, exact
+recipe cache key, immutable archive, and declared output bytes. The archive
+digest also transitively binds the producer's archived external Git inputs.
 
 The lazy composer restores that exact shell image, verifies the receipt against
 its bytes and ABI, and reads its Homebrew composition manifest. A selected
@@ -1497,14 +1501,19 @@ are poured into a fresh filesystem with a
 256 MiB ceiling. A directory already present in the lower image may be shared,
 but any file, symlink, or type collision fails composition.
 
-The resulting deterministic ZIP contains only layer-owned paths under
-`/home/linuxbrew/.linuxbrew`; it does not duplicate the lower shell image,
-`/etc` metadata, a gallery profile, or a language-specific VFS image. The
-schema-2 descriptor indexes every directory, regular file, and symlink,
-including ownership, POSIX modes, sizes, and symlink targets. It also binds the
+The current derived producer places only layer-owned paths under
+`/home/linuxbrew/.linuxbrew` into deterministic ZIP bytes; it does not duplicate
+the lower shell image, `/etc` metadata, a gallery profile, or a
+language-specific VFS image. ZIP is a temporary decoder/producer scaffold, not
+the endpoint for bottle-backed layers. The schema-3 descriptor names the bytes
+through a format-neutral `deferred_trees[]` contract: immutable SHA-256 and byte
+count, decoder and media type, transport locations, activation policy, and a
+complete inventory of directories, regular files, symlinks, and hard links.
+The inventory includes ownership, POSIX modes, logical sizes, link targets,
+source member paths, and regular-inode groups. The descriptor also binds the
 complete federated tap lock, base and layer package orders, exact lower-image
-package receipt and composition, separately browser-proven eager acceptance
-image, archive digest, and immutable release URLs.
+package receipt and composition, and the separately browser-proven eager
+acceptance image.
 
 `--dependency-tap-root owner/tap=/exact/checkout` is repeatable for lower-level
 federated planning. The publisher derives these arguments only from the
@@ -1914,8 +1923,8 @@ kandelo-homebrew-vfs.json
 kandelo-homebrew-vfs-report.json
 kandelo-homebrew-node-evidence.json
 kandelo-homebrew-browser-evidence.json
-kandelo-homebrew-shell-layer.zip
-kandelo-homebrew-shell-layer.json
+kandelo-homebrew-<runtime-id>-layer.bin
+kandelo-homebrew-<runtime-id>-layer.json
 ```
 
 `kandelo-homebrew-vfs.json` is the stable machine-readable entry point. It
@@ -1931,70 +1940,87 @@ path:
 ?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
 ```
 
-`kandelo-homebrew-shell-layer.json` is a separate schema-2 entry point for the
-lazy transport artifact. Keeping it separate preserves the stable whole-image
+`kandelo-homebrew-<runtime-id>-layer.json` is a separate schema-3 entry point
+for deferred content. Keeping it separate preserves the stable whole-image
 descriptor contract. It records mount prefix `/`, the complete federated tap
 lock, dependency-first base and layer package orders, exact bottle and
 link-manifest provenance, the canonical shell package-output receipt, lower
-composition identity, separately browser-proven eager VFS identity, and a
-bounded ownership-aware entry index for `kandelo-homebrew-shell-layer.zip`.
-The release validator opens the ZIP, checks every indexed
-path/type/ownership/mode/size and symlink target, and reads every member so the
-ZIP CRCs are verified before publication. It also rejects a shared lower path
-unless that path is a directory. Both assets receive authenticated and
-anonymous digest-and-size readback.
+composition identity, separately browser-proven eager VFS identity, and one or
+more closed `deferred_trees`. Each tree binds activation, immutable content,
+transport, and complete inventory independently of its payload filename.
+
+The current publisher creates one `.bin` payload whose declared decoder is
+`zip-v1`. Its release validator opens those temporary ZIP scaffold bytes,
+checks every indexed source and guest path, type, ownership, mode, logical
+size, symlink target, and inode group, and reads every regular member so ZIP
+CRCs are verified before publication. The same validator understands the
+schema-3 TAR+gzip decoder for the later direct-bottle producer, including TAR
+hard links and complete expanded-byte identity. It rejects undeclared or
+missing members and a shared lower path unless that path is a directory.
+Payload and descriptor receive authenticated and anonymous digest-and-size
+readback.
 
 The browser host can consume a selected layer through the normal boot
 descriptor and VFS path. A `package-layer` mount targets `/` and carries a
 bounded descriptor URL, exact descriptor byte count, and lowercase SHA-256
 reference. Boot eagerly fetches and validates only those descriptor bytes. It
-then binds the schema-2 descriptor to the exact compressed shell package
+then binds the schema-3 descriptor to the exact compressed shell package
 output, ABI, and `/etc/kandelo/homebrew-vfs.json` composition; rejects base or
-pairwise package/path collisions; and serializes the registered stubs into the
-kernel-owned VFS image. The ZIP remains unfetched until a process first opens
-or executes one of its regular files. That fetch is bounded by the declared
-byte count and must match the descriptor's SHA-256 before ZIP parsing or file
-materialization.
+pairwise package/path collisions; and serializes the registered deferred-tree
+metadata into the kernel-owned VFS image. A `first-use` tree remains unfetched
+through registration and `stat`. Its first ordinary open/read or executable
+resolution starts one deduplicated preparation through the owning VFS mount.
+The host tries byte-identical transports in descriptor order, checks the same
+declared compressed identity for each attempt, decodes and validates the
+entire source inventory, and commits every still-matching regular inode in one
+batch. Failure leaves all stubs unchanged and retryable; hard-link names retain
+one inode and link count. A `boot-prefetch` tree uses the same path but must
+finish successfully before boot returns. Metadata-only directory/symlink trees
+retain a group-level activation identity, so serialization cannot silently turn
+boot-prefetch into an unverified no-op merely because no regular stub exists.
 
 The consumer accepts at most eight selected layers. Their descriptor byte counts
 may total at most 16 MiB, their indexes may total at most 100,000 entries, and
 their declared uncompressed payloads may total at most 256 MiB; an individual
-archive is also capped at 256 MiB. Package names, repository identities, paths,
+content object is also capped at 256 MiB. Package names, repository identities, paths,
 and symlink targets have independent bounds. Every layer package must own the
 indexed directory for its declared keg and the exact indexed symlink for its
 declared `opt` link. Selected layers may share directories only when those
 directories already exist in the lower image: one layer cannot use a directory
 owned by another layer as an undeclared ancestor, and two layers cannot reuse
-one archive URL or digest as separate ownership domains.
+one content digest or transport URL as separate ownership domains.
 
 An ordinary main-shell descriptor contains no `package-layer` mounts, so it
-does not fetch a language descriptor or archive and does not add a default VFS
+does not fetch a language descriptor or payload and does not add a default VFS
 per language. Selection is explicit machine state, not package-specific UI or
 an alternate loader. Malformed paths, oversized descriptors, duplicate layer
 identities, ABI/base mismatches, and conflicting layers fail the boot instead
-of being skipped. The current publisher still emits one combined lazy-layer
-artifact; it does not yet publish one immutable descriptor and archive for
-each language.
+of being skipped. The current bounded producer can derive one reviewed runtime
+projection at a time, but its ZIP payload remains scaffolding. It does not yet
+publish finalized direct-bottle trees or a mirror set for every language.
 
-`homebrew/runtime-layer-policy.json` is the reviewed planning contract for the
-next consumer step. It names the canonical `shell` package-output receipt as
+`homebrew/runtime-layer-policy.json` is the reviewed planning contract for
+runtime derivation. It names the canonical `shell` package-output receipt as
 the lower image and defines independent `perl`, `python`, and `erlang` package
-roots. The host policy selector walks each root's verified dependency closure,
-excludes package names already owned by the verified lower shell composition,
-and requires the root itself to remain layer-owned. The lazy-layer builder
-still verifies exact bottle identities before reuse. The selector rejects an
-empty delta instead of publishing a no-op layer. It also rejects any non-base
-package shared by two runtime deltas; such a dependency must move into the
-common base or into an explicit shared-layer design before the layers have
-disjoint package ownership.
+roots. A per-runtime producer walks only the selected root's verified
+dependency closure, excludes package names already owned by the verified lower
+shell composition, and requires the root itself to remain layer-owned. The
+lazy-layer builder still verifies exact bottle identities before reuse. The
+selector rejects an empty delta instead of publishing a no-op layer. When a
+federated plan contains all reviewed roots, the all-runtime selector also
+rejects any non-base package shared by two runtime deltas; such a dependency
+must move into the common base or into an explicit shared-layer design before
+the layers have disjoint package ownership.
 
-This selection policy does not yet publish three descriptors or add concrete
-language selections to a default or gallery descriptor. Those remain
-publication/catalog follow-ups, and a runtime must have finalized bottle
-sidecars before it can produce a real policy-selected layer. The publisher
-must additionally prove pairwise archive path disjointness; the consumer
-independently checks the selected descriptors at boot because distinct package
-closures alone do not make filesystem overlays safe to mix.
+This selection policy does not add concrete language selections to a default
+or gallery descriptor. Direct multi-bottle and mirror publication, then the
+reviewed shell cutover, remain separate follow-ups. Bash and its complete
+required closure are intended to be physically embedded in that later shell
+artifact rather than deferred or boot-prefetched; Dash remains a candidate for
+first-use delivery, and a `/bin/sh` change requires its own POSIX audit. The
+publisher must additionally prove pairwise content-path disjointness; the
+consumer independently checks selected descriptors at boot because distinct
+package closures alone do not make filesystem overlays safe to mix.
 
 The release publisher never uses `--clobber`. A content-tag state lock
 serializes writers. An absent release starts as a draft; an interrupted exact

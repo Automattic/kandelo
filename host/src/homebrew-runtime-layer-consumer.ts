@@ -1,13 +1,14 @@
 import type {
+  HomebrewDeferredTreeDescriptor,
   HomebrewLazyLayerDescriptor,
   HomebrewLazyLayerEntry,
   HomebrewLazyLayerPackageRecord,
 } from "./homebrew-lazy-layer-descriptor";
 import {
   MemoryFileSystem,
-  type LazyArchiveGroup,
+  type LazyTreeGroup,
+  type LazyTreeRegistrationEntry,
 } from "./vfs/memory-fs";
-import type { ZipEntry } from "./vfs/zip";
 
 export const HOMEBREW_RUNTIME_LAYER_LIMITS = {
   maxLayers: 8,
@@ -32,7 +33,6 @@ const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const RELEASE_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const ASSET_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$/;
 const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
 
@@ -58,7 +58,7 @@ export interface RegisterHomebrewRuntimeLayersOptions {
 export interface RegisteredHomebrewRuntimeLayer {
   id: string;
   descriptor: HomebrewLazyLayerDescriptor;
-  archiveGroup: LazyArchiveGroup;
+  deferredTrees: LazyTreeGroup[];
 }
 
 interface LoadedLayer {
@@ -66,16 +66,20 @@ interface LoadedLayer {
   descriptor: HomebrewLazyLayerDescriptor;
 }
 
+interface PlannedTree {
+  descriptor: HomebrewDeferredTreeDescriptor;
+  entries: LazyTreeRegistrationEntry[];
+}
+
 interface PlannedLayer extends LoadedLayer {
-  zipEntries: ZipEntry[];
-  symlinkTargets: Map<string, string>;
+  trees: PlannedTree[];
   directories: HomebrewLazyLayerEntry[];
 }
 
 /**
  * Fetch, verify, preflight, and register independently selected Homebrew
  * runtime layers above one exact shell image. Descriptor bytes are eager and
- * bounded; archive bytes remain lazy until a registered file is consumed.
+ * bounded; deferred-tree bytes remain lazy until a registered file is consumed.
  */
 export async function registerHomebrewRuntimeLayers(
   options: RegisterHomebrewRuntimeLayersOptions,
@@ -145,24 +149,33 @@ export async function registerHomebrewRuntimeLayers(
     }
   }
 
-  return planned.map((layer) => {
-    const archive = layer.descriptor.archive;
-    const archiveGroup = options.fs.registerLazyArchiveFromEntries(
-      archive.url,
-      layer.zipEntries,
-      layer.descriptor.mount_prefix,
-      layer.symlinkTargets,
-      { sha256: archive.sha256, bytes: archive.bytes },
+  const registered = planned.map((layer) => {
+    const deferredTrees = layer.trees.map((tree) =>
+      options.fs.registerLazyTree({
+        decoder: tree.descriptor.content.decoder,
+        mediaType: tree.descriptor.content.media_type,
+        sha256: tree.descriptor.content.sha256,
+        bytes: tree.descriptor.content.bytes,
+        expandedBytes: tree.descriptor.inventory.expanded_bytes,
+        sourceEntryCount: tree.descriptor.inventory.source_entry_count,
+        transports: tree.descriptor.transports.map((transport) => transport.url),
+      }, tree.entries, layer.descriptor.mount_prefix, {
+        mode: tree.descriptor.activation.mode,
+        capabilities: [...tree.descriptor.activation.capabilities],
+        roots: [...tree.descriptor.activation.roots],
+      })
     );
     return {
       id: layer.reference.id,
       descriptor: layer.descriptor,
-      archiveGroup,
+      deferredTrees,
     };
   });
+  await options.fs.prepareBootDeferredTrees();
+  return registered;
 }
 
-/** Parse the closed schema-2 release descriptor without evaluating package code. */
+/** Parse the closed schema-3 release descriptor without evaluating package code. */
 export function parseHomebrewRuntimeLayerDescriptor(
   value: unknown,
 ): HomebrewLazyLayerDescriptor {
@@ -180,12 +193,11 @@ export function parseHomebrewRuntimeLayerDescriptor(
     "base_vfs",
     "release",
     "acceptance_vfs",
-    "archive",
-    "entries",
+    "deferred_trees",
   ], "Homebrew runtime layer descriptor");
   if (
-    root.schema !== 2 ||
-    root.kind !== "kandelo-homebrew-lazy-archive"
+    root.schema !== 3 ||
+    root.kind !== "kandelo-homebrew-deferred-layer"
   ) {
     throw new Error("Homebrew runtime layer descriptor has an unsupported identity");
   }
@@ -420,43 +432,11 @@ export function parseHomebrewRuntimeLayerDescriptor(
     throw new Error("Homebrew runtime layer acceptance VFS does not bind its release");
   }
 
-  const archive = exactRecord(root.archive, [
-    "format",
-    "asset",
-    "url",
-    "sha256",
-    "bytes",
-    "entry_count",
-    "layer_entry_count",
-    "shared_base_directory_count",
-    "uncompressed_bytes",
-  ], "Homebrew runtime layer archive");
-  if (archive.format !== "zip") {
-    throw new Error("Homebrew runtime layer archive format is unsupported");
+  const deferredTrees = validateDeferredTrees(root.deferred_trees, releaseRoot);
+  const entries = deferredTrees.flatMap((tree) => tree.inventory.entries);
+  if (new Set(entries.map((entry) => entry.path)).size !== entries.length) {
+    throw new Error("Homebrew runtime layer deferred trees duplicate a VFS path");
   }
-  const archiveAsset = requireString(
-    archive.asset,
-    "Homebrew runtime layer archive asset",
-    256,
-  );
-  if (!ASSET_RE.test(archiveAsset)) {
-    throw new Error("Homebrew runtime layer archive asset is invalid");
-  }
-  if (
-    requireHttpsUrl(archive.url, "Homebrew runtime layer archive URL") !==
-      `${releaseRoot}/${archiveAsset}`
-  ) {
-    throw new Error("Homebrew runtime layer archive URL differs from its release");
-  }
-  requireSha256(archive.sha256, "Homebrew runtime layer archive digest");
-  requireInteger(
-    archive.bytes,
-    "Homebrew runtime layer archive bytes",
-    1,
-    HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes,
-  );
-
-  const entries = validateEntries(root.entries, archive);
   validateLayerPackageEntries(layerPackages, entries);
   void requestedPackages;
   void baseVfs;
@@ -672,19 +652,25 @@ function validateLayerBinding(
 
 function validatePackageOwnership(layers: readonly LoadedLayer[]): void {
   const owner = new Map<string, string>();
-  const archiveUrls = new Set<string>();
-  const archiveDigests = new Set<string>();
+  const transportUrls = new Set<string>();
+  const contentDigests = new Set<string>();
   for (const layer of layers) {
-    if (
-      archiveUrls.has(layer.descriptor.archive.url) ||
-      archiveDigests.has(layer.descriptor.archive.sha256)
-    ) {
-      throw new Error(
-        `Homebrew runtime layer ${layer.reference.id} reuses another layer archive`,
-      );
+    for (const tree of layer.descriptor.deferred_trees) {
+      if (contentDigests.has(tree.content.sha256)) {
+        throw new Error(
+          `Homebrew runtime layer ${layer.reference.id} reuses another deferred tree`,
+        );
+      }
+      contentDigests.add(tree.content.sha256);
+      for (const transport of tree.transports) {
+        if (transportUrls.has(transport.url)) {
+          throw new Error(
+            `Homebrew runtime layer ${layer.reference.id} reuses another tree transport`,
+          );
+        }
+        transportUrls.add(transport.url);
+      }
     }
-    archiveUrls.add(layer.descriptor.archive.url);
-    archiveDigests.add(layer.descriptor.archive.sha256);
     for (const pkg of layer.descriptor.packages.layer) {
       const previous = owner.get(pkg.full_name);
       if (previous !== undefined) {
@@ -712,79 +698,76 @@ function preflightLayerPaths(
   const planned: PlannedLayer[] = [];
 
   for (const layer of layers) {
-    totalUncompressed += layer.descriptor.archive.uncompressed_bytes;
-    if (totalUncompressed > HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes) {
-      throw new Error("Selected Homebrew runtime layers exceed the uncompressed size cap");
-    }
-    totalEntries += layer.descriptor.entries.length;
-    if (totalEntries > HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries) {
-      throw new Error("Selected Homebrew runtime layers exceed the entry-count cap");
-    }
-    const zipEntries: ZipEntry[] = [];
-    const symlinkTargets = new Map<string, string>();
     const directories: HomebrewLazyLayerEntry[] = [];
-    for (const entry of layer.descriptor.entries) {
-      const vfsPath = `/${entry.path}`;
-      const base = lstatOrNull(fs, vfsPath);
-      if (entry.ownership === "shared-base-directory") {
-        if (base === null || (base.mode & S_IFMT) !== S_IFDIR) {
-          throw new Error(
-            `Homebrew runtime layer ${layer.reference.id} does not share an ` +
-              `existing base directory at ${vfsPath}`,
-          );
-        }
-      } else if (base !== null) {
-        throw new Error(
-          `Homebrew runtime layer ${layer.reference.id} collides with the base at ${vfsPath}`,
-        );
+    const trees: PlannedTree[] = [];
+    for (const tree of layer.descriptor.deferred_trees) {
+      totalUncompressed += tree.inventory.expanded_bytes;
+      if (totalUncompressed > HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes) {
+        throw new Error("Selected Homebrew runtime layers exceed the expansion cap");
       }
-
-      const previous = ownership.get(entry.path);
-      if (previous !== undefined) {
-        const jointlySharedDirectory =
-          previous.type === "directory" &&
-          entry.type === "directory" &&
-          previous.ownership === "shared-base-directory" &&
-          entry.ownership === "shared-base-directory";
-        if (!jointlySharedDirectory) {
+      totalEntries += tree.inventory.entries.length;
+      if (totalEntries > HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries) {
+        throw new Error("Selected Homebrew runtime layers exceed the entry-count cap");
+      }
+      const registrationEntries: LazyTreeRegistrationEntry[] = [];
+      for (const entry of tree.inventory.entries) {
+        const vfsPath = `/${entry.path}`;
+        const base = lstatOrNull(fs, vfsPath);
+        if (entry.ownership === "shared-base-directory") {
+          if (base === null || (base.mode & S_IFMT) !== S_IFDIR) {
+            throw new Error(
+              `Homebrew runtime layer ${layer.reference.id} does not share an ` +
+                `existing base directory at ${vfsPath}`,
+            );
+          }
+        } else if (base !== null) {
           throw new Error(
-            `Homebrew runtime layers ${previous.id} and ${layer.reference.id} ` +
-              `conflict at ${vfsPath}`,
+            `Homebrew runtime layer ${layer.reference.id} collides with the base at ${vfsPath}`,
           );
         }
-      } else {
-        ownership.set(entry.path, {
-          id: layer.reference.id,
+
+        const previous = ownership.get(entry.path);
+        if (previous !== undefined) {
+          const jointlySharedDirectory =
+            previous.type === "directory" &&
+            entry.type === "directory" &&
+            previous.ownership === "shared-base-directory" &&
+            entry.ownership === "shared-base-directory";
+          if (!jointlySharedDirectory) {
+            throw new Error(
+              `Homebrew runtime layers ${previous.id} and ${layer.reference.id} ` +
+                `conflict at ${vfsPath}`,
+            );
+          }
+        } else {
+          ownership.set(entry.path, {
+            id: layer.reference.id,
+            type: entry.type,
+            ownership: entry.ownership,
+          });
+        }
+
+        if (entry.type === "directory" && entry.ownership === "layer") {
+          directories.push(entry);
+        }
+        registrationEntries.push({
+          vfsPath,
+          sourcePath: entry.source_path,
           type: entry.type,
-          ownership: entry.ownership,
+          mode: entry.mode,
+          size: entry.size,
+          ...(entry.target === undefined
+            ? {}
+            : { target: entry.type === "hardlink" ? `/${entry.target}` : entry.target }),
+          ...(entry.inode_group === undefined ? {} : { inodeGroup: entry.inode_group }),
         });
       }
-
-      if (entry.type === "directory" && entry.ownership === "layer") {
-        directories.push(entry);
-      }
-      const fileName = entry.type === "directory" ? `${entry.path}/` : entry.path;
-      zipEntries.push({
-        fileName,
-        fileNameBytes: new TextEncoder().encode(fileName),
-        compressedSize: 0,
-        uncompressedSize: entry.size,
-        compressionMethod: 0,
-        localHeaderOffset: 0,
-        mode: entry.mode,
-        isDirectory: entry.type === "directory",
-        isSymlink: entry.type === "symlink",
-        externalAttrs: 0,
-        creatorOS: 3,
-      });
-      if (entry.type === "symlink") {
-        symlinkTargets.set(fileName, entry.target!);
-      }
+      trees.push({ descriptor: tree, entries: registrationEntries });
     }
     directories.sort((left, right) =>
       pathDepth(left.path) - pathDepth(right.path) || compareText(left.path, right.path)
     );
-    planned.push({ ...layer, zipEntries, symlinkTargets, directories });
+    planned.push({ ...layer, trees, directories });
   }
 
   for (const [path, entry] of ownership) {
@@ -1049,9 +1032,165 @@ function validatePackageRecord(
   return record as unknown as HomebrewLazyLayerPackageRecord;
 }
 
+function validateDeferredTrees(
+  value: unknown,
+  _releaseRoot: string,
+): HomebrewDeferredTreeDescriptor[] {
+  const values = requireArray(
+    value,
+    "Homebrew runtime layer deferred trees",
+    1,
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackages,
+  );
+  const ids = new Set<string>();
+  const digests = new Set<string>();
+  const urls = new Set<string>();
+  const trees = values.map((item, index) => {
+    const tree = exactRecord(
+      item,
+      ["id", "activation", "content", "transports", "inventory"],
+      `Homebrew runtime layer deferred tree ${index}`,
+    );
+    const id = requirePackageName(
+      tree.id,
+      `Homebrew runtime layer deferred tree ${index} id`,
+    );
+    if (ids.has(id)) throw new Error(`Homebrew runtime layer duplicates tree ${id}`);
+    ids.add(id);
+
+    const activation = exactRecord(
+      tree.activation,
+      ["mode", "capabilities", "roots"],
+      `Homebrew runtime layer deferred tree ${id} activation`,
+    );
+    if (activation.mode !== "boot-prefetch" && activation.mode !== "first-use") {
+      throw new Error(`Homebrew runtime layer deferred tree ${id} activation is invalid`);
+    }
+    const capabilities = requireArray(
+      activation.capabilities,
+      `Homebrew runtime layer deferred tree ${id} capabilities`,
+      1,
+      32,
+    ).map((capability, capabilityIndex) => {
+      const text = requireString(
+        capability,
+        `Homebrew runtime layer deferred tree ${id} capability ${capabilityIndex}`,
+        255,
+      );
+      if (!/^[a-z0-9][a-z0-9:._-]*$/.test(text)) {
+        throw new Error(`Homebrew runtime layer deferred tree ${id} capability is invalid`);
+      }
+      return text;
+    });
+    if (
+      new Set(capabilities).size !== capabilities.length ||
+      !arraysEqual(capabilities, [...capabilities].sort(compareText))
+    ) {
+      throw new Error(`Homebrew runtime layer deferred tree ${id} capabilities are not canonical`);
+    }
+    const roots = requireArray(
+      activation.roots,
+      `Homebrew runtime layer deferred tree ${id} roots`,
+      1,
+      64,
+    ).map((root, rootIndex) =>
+      requireCanonicalAbsolutePath(
+        root,
+        `Homebrew runtime layer deferred tree ${id} root ${rootIndex}`,
+        HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+      )
+    );
+    if (
+      new Set(roots).size !== roots.length ||
+      !arraysEqual(roots, [...roots].sort(compareText))
+    ) {
+      throw new Error(`Homebrew runtime layer deferred tree ${id} roots are not canonical`);
+    }
+
+    const content = exactRecord(
+      tree.content,
+      ["media_type", "decoder", "sha256", "bytes"],
+      `Homebrew runtime layer deferred tree ${id} content`,
+    );
+    const validDecoder =
+      (content.decoder === "zip-v1" && content.media_type === "application/zip") ||
+      (content.decoder === "homebrew-bottle-tar-gzip-v1" &&
+        content.media_type === "application/vnd.oci.image.layer.v1.tar+gzip");
+    if (!validDecoder) {
+      throw new Error(`Homebrew runtime layer deferred tree ${id} decoder is unsupported`);
+    }
+    const digest = requireSha256(
+      content.sha256,
+      `Homebrew runtime layer deferred tree ${id} digest`,
+    );
+    requireInteger(
+      content.bytes,
+      `Homebrew runtime layer deferred tree ${id} bytes`,
+      1,
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes,
+    );
+    if (digests.has(digest)) {
+      throw new Error(`Homebrew runtime layer deferred tree ${id} reuses content identity`);
+    }
+    digests.add(digest);
+
+    const transports = requireArray(
+      tree.transports,
+      `Homebrew runtime layer deferred tree ${id} transports`,
+      1,
+      8,
+    );
+    for (const [transportIndex, transportValue] of transports.entries()) {
+      const transport = exactRecord(
+        transportValue,
+        ["url"],
+        `Homebrew runtime layer deferred tree ${id} transport ${transportIndex}`,
+      );
+      const url = requireHttpsUrl(
+        transport.url,
+        `Homebrew runtime layer deferred tree ${id} transport ${transportIndex} URL`,
+      );
+      if (urls.has(url)) {
+        throw new Error(`Homebrew runtime layer deferred tree ${id} reuses a transport`);
+      }
+      urls.add(url);
+    }
+
+    const inventory = exactRecord(
+      tree.inventory,
+      [
+        "entry_count",
+        "source_entry_count",
+        "regular_inode_count",
+        "layer_entry_count",
+        "shared_base_directory_count",
+        "expanded_bytes",
+        "payload_bytes",
+        "entries",
+      ],
+      `Homebrew runtime layer deferred tree ${id} inventory`,
+    );
+    const entries = validateEntries(inventory.entries, inventory, content.decoder);
+    for (const root of roots) {
+      const relative = root.slice(1);
+      if (!entries.some((entry) =>
+        entry.path === relative || entry.path.startsWith(`${relative}/`)
+      )) {
+        throw new Error(`Homebrew runtime layer deferred tree ${id} root ${root} is unowned`);
+      }
+    }
+    return tree as unknown as HomebrewDeferredTreeDescriptor;
+  });
+  if (!arraysEqual(trees.map((tree) => tree.id), [...trees.map((tree) => tree.id)].sort(compareText))) {
+    throw new Error("Homebrew runtime layer deferred trees are not in canonical order");
+  }
+  return trees;
+}
+
 function validateEntries(
   value: unknown,
-  archive: Record<string, unknown>,
+  inventory: Record<string, unknown>,
+  decoder: unknown,
 ): HomebrewLazyLayerEntry[] {
   const values = requireArray(
     value,
@@ -1062,21 +1201,32 @@ function validateEntries(
   const entries: HomebrewLazyLayerEntry[] = [];
   const entriesByPath = new Map<string, HomebrewLazyLayerEntry>();
   const paths = new Set<string>();
-  let uncompressed = 0;
+  let decodedPayload = 0;
+  let payloadBytes = 0;
   let layerCount = 0;
   let sharedCount = 0;
   let hasPayload = false;
   for (const [index, item] of values.entries()) {
     const initial = requireRecord(item, `Homebrew runtime layer entry ${index}`);
     const type = initial.type;
-    if (type !== "directory" && type !== "file" && type !== "symlink") {
+    if (
+      type !== "directory" && type !== "file" && type !== "symlink" &&
+      type !== "hardlink"
+    ) {
       throw new Error(`Homebrew runtime layer entry ${index} has an invalid type`);
     }
     const record = exactRecord(
       item,
       type === "symlink"
-        ? ["path", "type", "ownership", "mode", "size", "target"]
-        : ["path", "type", "ownership", "mode", "size"],
+        ? ["path", "source_path", "type", "ownership", "mode", "size", "target"]
+        : type === "file"
+          ? ["path", "source_path", "type", "ownership", "mode", "size", "inode_group"]
+          : type === "hardlink"
+            ? [
+              "path", "source_path", "type", "ownership", "mode", "size",
+              "target", "inode_group",
+            ]
+            : ["path", "source_path", "type", "ownership", "mode", "size"],
       `Homebrew runtime layer entry ${index}`,
     );
     if (
@@ -1091,6 +1241,11 @@ function validateEntries(
     const path = requireSafeRelativePath(
       record.path,
       `Homebrew runtime layer entry ${index} path`,
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    );
+    const sourcePath = requireSafeRelativePath(
+      record.source_path,
+      `Homebrew runtime layer entry ${index} source path`,
       HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
     );
     if (
@@ -1119,6 +1274,7 @@ function validateEntries(
       throw new Error(`Homebrew runtime layer directory ${path} has nonzero size`);
     }
     let target: string | undefined;
+    let inodeGroup: string | undefined;
     if (type === "symlink") {
       target = requireString(
         record.target,
@@ -1128,9 +1284,26 @@ function validateEntries(
       if (new TextEncoder().encode(target).byteLength !== size) {
         throw new Error(`Homebrew runtime layer symlink ${path} size differs from its target`);
       }
+    } else if (type === "file" || type === "hardlink") {
+      inodeGroup = requireString(
+        record.inode_group,
+        `Homebrew runtime layer entry ${index} inode group`,
+        HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+      );
+      if (type === "hardlink") {
+        target = requireSafeRelativePath(
+          record.target,
+          `Homebrew runtime layer entry ${index} hardlink target`,
+          HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+        );
+      }
     }
-    uncompressed += size;
-    if (uncompressed > HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes) {
+    if (type !== "hardlink") decodedPayload += size;
+    if (type === "file") payloadBytes += size;
+    if (
+      decodedPayload > HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes ||
+      payloadBytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes
+    ) {
       throw new Error("Homebrew runtime layer exceeds the uncompressed size cap");
     }
     if (record.ownership === "layer") {
@@ -1141,11 +1314,13 @@ function validateEntries(
     }
     const entry = {
       path,
+      source_path: sourcePath,
       type,
       ownership: record.ownership,
       mode,
       size,
       ...(target === undefined ? {} : { target }),
+      ...(inodeGroup === undefined ? {} : { inode_group: inodeGroup }),
     } as HomebrewLazyLayerEntry;
     entries.push(entry);
     entriesByPath.set(path, entry);
@@ -1167,14 +1342,58 @@ function validateEntries(
       }
     }
   }
+  const canonicalByGroup = new Map<string, HomebrewLazyLayerEntry>();
+  for (const entry of entries) {
+    if (entry.type !== "file") continue;
+    if (canonicalByGroup.has(entry.inode_group!)) {
+      throw new Error(`Homebrew runtime layer inode group ${entry.inode_group} has multiple files`);
+    }
+    canonicalByGroup.set(entry.inode_group!, entry);
+  }
+  for (const entry of entries) {
+    if (entry.type !== "hardlink") continue;
+    const target = entriesByPath.get(entry.target!);
+    const canonical = canonicalByGroup.get(entry.inode_group!);
+    if (
+      target === undefined || canonical === undefined ||
+      target.inode_group !== entry.inode_group || target.size !== entry.size ||
+      target.mode !== entry.mode
+    ) {
+      throw new Error(`Homebrew runtime layer hardlink ${entry.path} has an invalid target`);
+    }
+    const seen = new Set<string>([entry.path]);
+    let resolved = target;
+    while (resolved.type === "hardlink") {
+      if (seen.has(resolved.path)) {
+        throw new Error(`Homebrew runtime layer hardlink cycle reaches ${resolved.path}`);
+      }
+      seen.add(resolved.path);
+      resolved = entriesByPath.get(resolved.target!)!;
+      if (!resolved) break;
+    }
+    if (resolved !== canonical) {
+      throw new Error(`Homebrew runtime layer hardlink ${entry.path} does not resolve to its inode`);
+    }
+  }
   if (!hasPayload) throw new Error("Homebrew runtime layer has no layer-owned payload");
+  const sourceEntryCount = new Set(entries.map((entry) => entry.source_path)).size;
+  const expandedBytes = requireInteger(
+    inventory.expanded_bytes,
+    "Homebrew runtime layer expanded bytes",
+    0,
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes,
+  );
   if (
-    archive.entry_count !== entries.length ||
-    archive.layer_entry_count !== layerCount ||
-    archive.shared_base_directory_count !== sharedCount ||
-    archive.uncompressed_bytes !== uncompressed
+    inventory.entry_count !== entries.length ||
+    inventory.source_entry_count !== sourceEntryCount ||
+    inventory.regular_inode_count !== canonicalByGroup.size ||
+    inventory.layer_entry_count !== layerCount ||
+    inventory.shared_base_directory_count !== sharedCount ||
+    inventory.payload_bytes !== payloadBytes ||
+    expandedBytes < decodedPayload ||
+    (decoder === "zip-v1" && expandedBytes !== decodedPayload)
   ) {
-    throw new Error("Homebrew runtime layer archive counts differ from its entries");
+    throw new Error("Homebrew runtime layer deferred-tree counts differ from its entries");
   }
   return entries;
 }

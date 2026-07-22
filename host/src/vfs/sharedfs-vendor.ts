@@ -191,6 +191,19 @@ export interface RenameIdentityResult {
   replaced?: NamespaceEntryIdentity;
 }
 
+/**
+ * One conditional lazy-file replacement in an all-or-nothing archive commit.
+ * Every candidate path is resolved while the namespace lock is held; the
+ * first name that still identifies the expected untouched stub is used.
+ */
+export interface ConditionalFileReplacement {
+  paths: readonly string[];
+  expectedIno: number;
+  expectedGeneration: number;
+  expectedDataSequence: number;
+  data: Uint8Array;
+}
+
 interface DirIndexEntry {
   ino: number;
   abs: number;
@@ -2364,6 +2377,126 @@ export class SharedFS {
         return true;
       } finally {
         this.inodeWriteUnlock(ino);
+      }
+    });
+  }
+
+  /**
+   * Atomically replace a set of untouched lazy stubs.
+   *
+   * Archive materialization must not expose a prefix of the archive when a
+   * later member cannot be allocated or written. Resolve every name under the
+   * namespace lock, acquire all target inode locks in numeric order, validate
+   * every identity again, and retain those locks until the complete commit is
+   * visible. A write/allocation failure truncates every touched inode back to
+   * its original empty state and restores its exact mutation timestamps and
+   * data sequence before any target lock is released.
+   *
+   * Returns false without mutation when any target stopped naming the exact
+   * registered stub while an asynchronous archive fetch was in flight.
+   */
+  replaceManyIfIdentities(
+    replacements: readonly ConditionalFileReplacement[],
+  ): boolean {
+    if (replacements.length === 0) return true;
+    return this.withNamespaceLock(() => {
+      const resolved: Array<ConditionalFileReplacement & { ino: number }> = [];
+      const seenInodes = new Set<number>();
+
+      for (const replacement of replacements) {
+        this.validateFileSize(replacement.data.byteLength);
+        let matchedIno = -1;
+        for (const path of replacement.paths) {
+          const ino = this.pathResolve(path, true);
+          if (ino !== replacement.expectedIno) continue;
+          const off = this.inodeOffset(ino);
+          if (
+            this.r64(off + INO_GENERATION) ===
+                replacement.expectedGeneration &&
+            this.r32(off + INO_DATA_SEQUENCE) ===
+                replacement.expectedDataSequence &&
+            (this.r32(off + INO_MODE) & S_IFMT) === S_IFREG &&
+            this.r64(off + INO_SIZE) === 0
+          ) {
+            matchedIno = ino;
+            break;
+          }
+        }
+        if (matchedIno < 0) return false;
+        if (seenInodes.has(matchedIno)) {
+          // Callers must collapse hard-link aliases to one replacement. Two
+          // independent payloads for one inode would make atomic ownership
+          // ambiguous.
+          throw new SFSError(EINVAL, "duplicate conditional replacement inode");
+        }
+        seenInodes.add(matchedIno);
+        resolved.push({ ...replacement, ino: matchedIno });
+      }
+
+      const lockedInodes = [...seenInodes].sort((left, right) => left - right);
+      for (const ino of lockedInodes) this.inodeWriteLock(ino);
+      try {
+        // Descriptor writes do not take the namespace lock. They may have won
+        // before we acquired the last inode lock, so validate the complete set
+        // again before changing the first byte.
+        for (const replacement of resolved) {
+          const off = this.inodeOffset(replacement.ino);
+          if (
+            this.r64(off + INO_GENERATION) !==
+                replacement.expectedGeneration ||
+            this.r32(off + INO_DATA_SEQUENCE) !==
+                replacement.expectedDataSequence ||
+            (this.r32(off + INO_MODE) & S_IFMT) !== S_IFREG ||
+            this.r64(off + INO_SIZE) !== 0
+          ) return false;
+        }
+
+        const originals = resolved.map((replacement) => {
+          const off = this.inodeOffset(replacement.ino);
+          return {
+            ino: replacement.ino,
+            dataSequence: this.r32(off + INO_DATA_SEQUENCE),
+            mtime: this.r64(off + INO_MTIME),
+            ctime: this.r64(off + INO_CTIME),
+          };
+        });
+        let touched = 0;
+        try {
+          for (const replacement of resolved) {
+            touched++;
+            this.inodeTruncate(replacement.ino, 0, true);
+            const written = replacement.data.byteLength > 0
+              ? this.inodeWriteData(
+                replacement.ino,
+                0,
+                replacement.data,
+                replacement.data.byteLength,
+              )
+              : 0;
+            if (written !== replacement.data.byteLength) {
+              throw new SFSError(written < 0 ? written : ENOSPC);
+            }
+          }
+        } catch (error) {
+          for (let index = touched - 1; index >= 0; index--) {
+            const original = originals[index];
+            const off = this.inodeOffset(original.ino);
+            this.inodeTruncate(original.ino, 0, true);
+            Atomics.store(
+              this.i32,
+              (off + INO_DATA_SEQUENCE) >> 2,
+              original.dataSequence,
+            );
+            this.w64(off + INO_MTIME, original.mtime);
+            this.w64(off + INO_CTIME, original.ctime);
+          }
+          throw error;
+        }
+        return true;
+      } finally {
+        for (let index = lockedInodes.length - 1; index >= 0; index--) {
+          this.inodeWriteUnlock(lockedInodes[index]);
+        }
       }
     });
   }

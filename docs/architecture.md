@@ -672,6 +672,19 @@ concrete files rather than copying aliases into independent inodes. A rebase
 walks one quiescent source snapshot, so a peer rename cannot mix lazy paths
 from one namespace state with bytes from another.
 
+`registerLazyTree` is the format-neutral grouped form used by schema-3 package
+layers. Its serialized metadata adds a closed decoder/media type, immutable
+digest and byte count, transport locations, activation policy, complete source
+and guest inventory, and regular-inode groups. Existing
+`registerLazyArchiveFromEntries` ZIP consumers remain supported. Registration
+and `stat` expose declared logical sizes without fetching content. The first
+ordinary open/read or executable resolution starts one asynchronous preparation
+for the group; guest syscall retries keep its internal `EAGAIN` sentinel out of
+the POSIX result. Every member is decoded and checked before an
+identity-guarded batch replacement, so failure leaves all pending regular
+inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
+identity when the lazy metadata is transferred or saved in an image.
+
 ### VFS Images
 
 A `MemoryFileSystem` can be serialized to a portable binary image and restored later to boot a new kernel with a pre-populated filesystem. This enables snapshotting an initialized VFS (with all files, directories, symlinks, and permissions) and restoring it without repeating the setup work.
@@ -775,7 +788,7 @@ Offset   Size   Field
 16       N      Raw SharedArrayBuffer bytes (block filesystem)
 16+N     4      Lazy entries JSON length (M)
 20+N     M      Lazy-file JSON (identity, aliases, URL, declared size)
-...      4+L    Optional lazy-archive JSON length and bytes (when bit 1 is set)
+...      4+L    Optional lazy-archive/deferred-tree JSON length and bytes (when bit 1 is set)
 ...      4+P    Optional image-metadata JSON length and bytes (when bit 2 is set)
 ```
 

@@ -477,10 +477,26 @@ an exact descriptor byte count and `sha256:<digest>` reference. The shared
 host consumer verifies the descriptor and its binding to the exact loaded
 shell image, ABI, and Homebrew composition before it adds any paths. Selected
 layers must have disjoint non-base packages and filesystem ownership. Their
-ZIP archives remain lazy inside the serialized kernel-owned VFS and are
-bounded and SHA-256 checked before first-use materialization. Descriptors with
-no package-layer mounts retain the ordinary shell behavior and fetch no
-runtime-layer bytes.
+schema-3 `deferred_trees` carry a complete path, type, mode, link, and regular
+inode inventory plus an immutable content identity, closed decoder/media-type
+pair, and one or more byte-identical HTTPS transports. Deferred content
+remains lazy inside the serialized kernel-owned VFS. Registration and `stat`
+do not fetch it. The first ordinary open/read or executable resolution prepares
+the tree through its owning VFS mount; transports are tried in descriptor order
+until one passes the same digest and size identity, and all members are bounded, decoded, and
+verified before one identity-guarded batch commit. A failed fetch, digest,
+decode, inventory check, or allocation leaves every regular inode pending and
+retryable. Hard-link inventory members are restored as names of the same inode,
+including across VFS image save/restore. A metadata-only tree remains deferred
+through serialization and is still verified at first-use or boot-prefetch even
+though it has no regular stub to replace. Descriptors with no package-layer
+mounts retain the ordinary shell behavior and fetch no runtime-layer bytes.
+
+The current derived producer uses deterministic ZIP bytes with decoder
+`zip-v1` as a temporary scaffold. The host contract is format-neutral and also
+accepts bounded browser-safe gzip-compressed POSIX/PAX TAR trees, including TAR
+hard links. Direct publication from finalized bottle bytes and transport
+mirrors is a later producer step; ZIP is not the target bottle transport.
 
 Boot accepts at most eight package layers and 16 MiB of descriptor bytes
 in aggregate. The shared consumer additionally caps aggregate entry count and
@@ -503,9 +519,11 @@ The object shape is closed: package-layer mounts do not accept inline data,
 ephemeral flags, credentials in the URL, or non-root target paths.
 
 No Perl, Python, or Erlang layer URL is built into the browser. Concrete
-entries require immutable published descriptor/archive identities derived from
+entries require immutable published descriptor/content identities derived from
 their finalized bottle sidecars; missing or mismatched identities fail boot
-instead of falling back to a standalone language VFS.
+instead of falling back to a standalone language VFS. This substrate does not
+change the main-shell composition: the Bash-plus-required-closure embedding and
+any default-shell cutover remain explicit later producer decisions.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a

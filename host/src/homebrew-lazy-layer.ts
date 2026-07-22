@@ -1,22 +1,25 @@
 import { createHash } from "node:crypto";
 import { zipSync, type Zippable } from "fflate";
-import {
-  buildHomebrewVfs,
-  type HomebrewVfsSelectionSource,
-} from "./homebrew-vfs-builder";
+import { buildHomebrewVfs } from "./homebrew-vfs-builder";
 import type {
   HomebrewFederatedVfsPlan,
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+import {
+  projectHomebrewRuntimeLayerPlan,
+  selectHomebrewRuntimeLayer,
+} from "./homebrew-runtime-layer-policy";
 import type {
+  HomebrewDeferredTreeDescriptor,
   HomebrewLazyLayerBasePackageSource,
   HomebrewLazyLayerDescriptor,
   HomebrewLazyLayerEntry,
   HomebrewLazyLayerPackageRecord,
 } from "./homebrew-lazy-layer-descriptor";
 export type {
+  HomebrewDeferredTreeDescriptor,
   HomebrewLazyLayerBasePackageSource,
   HomebrewLazyLayerDescriptor,
   HomebrewLazyLayerEntry,
@@ -24,10 +27,19 @@ export type {
 } from "./homebrew-lazy-layer-descriptor";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 
-export const HOMEBREW_LAZY_LAYER_ARCHIVE =
-  "kandelo-homebrew-shell-layer.zip";
-export const HOMEBREW_LAZY_LAYER_DESCRIPTOR =
-  "kandelo-homebrew-shell-layer.json";
+export function homebrewRuntimeLayerPayloadAsset(id: string): string {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
+    throw new Error(`invalid Homebrew runtime layer id ${id}`);
+  }
+  return `kandelo-homebrew-${id}-layer.bin`;
+}
+
+export function homebrewRuntimeLayerDescriptorAsset(id: string): string {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
+    throw new Error(`invalid Homebrew runtime layer id ${id}`);
+  }
+  return `kandelo-homebrew-${id}-layer.json`;
+}
 
 const HOMEBREW_VFS_ASSET = "kandelo-homebrew.vfs.zst";
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
@@ -65,11 +77,13 @@ export interface BuildHomebrewLazyLayerOptions {
   loadBottleBytes: (
     pkg: HomebrewVfsPackagePlan,
   ) => Uint8Array | Promise<Uint8Array>;
-  selectionSource?: HomebrewVfsSelectionSource;
+  /** Reviewed policy selection required for independently composable runtimes. */
+  runtimeLayer: { id: string; policy: unknown };
 }
 
 export interface HomebrewLazyLayerBuildResult {
-  archive: Uint8Array;
+  /** Format-neutral immutable bytes described by `deferred_trees[0]`. */
+  payload: Uint8Array;
   descriptor: HomebrewLazyLayerDescriptor;
 }
 
@@ -115,13 +129,23 @@ export async function buildHomebrewLazyLayer(
       "Homebrew lazy layer base bytes do not match their canonical package output",
     );
   }
-  const tapLock = planTapLock(plan);
-  validatePackageTapOwnership(plan.packages, tapLock);
   const base = parseBaseComposition(options.baseVfs, plan.kandeloAbi);
+  const runtimeSelection = selectHomebrewRuntimeLayer(
+    plan,
+    {
+      source: basePackageSource,
+      packageOrder: base.packageOrder,
+    },
+    options.runtimeLayer.policy,
+    options.runtimeLayer.id,
+  );
+  const selectedPlan = projectHomebrewRuntimeLayerPlan(plan, runtimeSelection);
+  const tapLock = planTapLock(selectedPlan);
+  validatePackageTapOwnership(selectedPlan.packages, tapLock);
   const basePackages: HomebrewVfsPackagePlan[] = [];
   const layerPackages: HomebrewVfsPackagePlan[] = [];
 
-  for (const pkg of plan.packages) {
+  for (const pkg of selectedPlan.packages) {
     const existing = base.packages.get(pkg.fullName);
     if (existing === undefined) {
       layerPackages.push(pkg);
@@ -137,37 +161,45 @@ export async function buildHomebrewLazyLayer(
   }
 
   const layerPlan: HomebrewVfsPlan = {
-    ...plan,
+    ...selectedPlan,
     packages: layerPackages,
   };
   await buildHomebrewVfs(layerPlan, {
     fs: options.fs,
     loadBottleBytes: options.loadBottleBytes,
-    selectionSource: options.selectionSource,
     writeProfile: false,
     createdBy: "host/src/homebrew-lazy-layer.ts",
   });
 
   const entries = collectLayerEntries(options.fs, options.baseVfs.fs);
-  const archive = createLayerZip(options.fs, entries);
-  const archiveSha = digest(archive);
+  // ZIP remains a temporary deterministic producer fixture. The public
+  // descriptor identifies bytes by decoder/media type and never by filename.
+  const payload = createLayerZip(options.fs, entries);
+  const payloadSha = digest(payload);
   const releaseTag = `homebrew-vfs-sha256-${options.acceptanceVfs.sha256}`;
   const releaseRoot =
-    `https://github.com/${plan.tapRepository}/releases/download/${releaseTag}`;
+    `https://github.com/${selectedPlan.tapRepository}/releases/download/${releaseTag}`;
+  const payloadAsset = homebrewRuntimeLayerPayloadAsset(runtimeSelection.id);
   const baseRecords = basePackages.map(packageRecord);
   const layerRecords = layerPackages.map(packageRecord);
+  const runtimeRoot = layerRecords.find((pkg) => pkg.name === runtimeSelection.id);
+  if (!runtimeRoot) {
+    throw new Error(
+      `Homebrew runtime layer ${runtimeSelection.id} has no layer-owned root record`,
+    );
+  }
 
   return {
-    archive,
+    payload,
     descriptor: {
-      schema: 2,
-      kind: "kandelo-homebrew-lazy-archive",
+      schema: 3,
+      kind: "kandelo-homebrew-deferred-layer",
       arch,
       mount_prefix: "/",
       tap: {
-        repository: plan.tapRepository,
-        name: plan.tapName,
-        commit: plan.tapCommit,
+        repository: selectedPlan.tapRepository,
+        name: selectedPlan.tapName,
+        commit: selectedPlan.tapCommit,
       },
       tap_lock: tapLock.map((tap) => ({
         repository: tap.tapRepository,
@@ -179,14 +211,14 @@ export async function buildHomebrewLazyLayer(
         bottle_release_tag: tap.releaseTag,
       })),
       kandelo: {
-        repository: plan.kandeloRepository,
-        commit: plan.kandeloCommit,
-        abi: plan.kandeloAbi,
+        repository: selectedPlan.kandeloRepository,
+        commit: selectedPlan.kandeloCommit,
+        abi: selectedPlan.kandeloAbi,
       },
-      bottle_release_tag: plan.releaseTag,
+      bottle_release_tag: selectedPlan.releaseTag,
       selection: {
-        requested_packages: [...plan.requestedPackages],
-        package_order: plan.packages.map((pkg) => pkg.fullName),
+        requested_packages: [...selectedPlan.requestedPackages],
+        package_order: selectedPlan.packages.map((pkg) => pkg.fullName),
         base_package_order: basePackages.map((pkg) => pkg.fullName),
         layer_package_order: layerPackages.map((pkg) => pkg.fullName),
       },
@@ -210,7 +242,7 @@ export async function buildHomebrewLazyLayer(
         },
       },
       release: {
-        repository: plan.tapRepository,
+        repository: selectedPlan.tapRepository,
         tag: releaseTag,
       },
       acceptance_vfs: {
@@ -219,22 +251,56 @@ export async function buildHomebrewLazyLayer(
         sha256: options.acceptanceVfs.sha256,
         bytes: options.acceptanceVfs.bytes,
       },
-      archive: {
-        format: "zip",
-        asset: HOMEBREW_LAZY_LAYER_ARCHIVE,
-        url: `${releaseRoot}/${HOMEBREW_LAZY_LAYER_ARCHIVE}`,
-        sha256: archiveSha,
-        bytes: archive.byteLength,
-        entry_count: entries.length,
-        layer_entry_count: entries.filter((entry) => entry.ownership === "layer").length,
-        shared_base_directory_count: entries.filter(
-          (entry) => entry.ownership === "shared-base-directory",
-        ).length,
-        uncompressed_bytes: entries.reduce(
-          (total, entry) => total + entry.size,
-          0,
-        ),
-      },
+      deferred_trees: [createDeferredTreeDescriptor(
+        runtimeSelection.id,
+        runtimeRoot.keg,
+        `${releaseRoot}/${payloadAsset}`,
+        payloadSha,
+        payload.byteLength,
+        entries,
+      )],
+    },
+  };
+}
+
+function createDeferredTreeDescriptor(
+  id: string,
+  capabilityRoot: string,
+  transportUrl: string,
+  sha256: string,
+  bytes: number,
+  entries: HomebrewLazyLayerEntry[],
+): HomebrewDeferredTreeDescriptor {
+  const regularGroups = new Set(
+    entries.flatMap((entry) => entry.inode_group ? [entry.inode_group] : []),
+  );
+  const canonicalFiles = entries.filter((entry) => entry.type === "file");
+  return {
+    id,
+    activation: {
+      mode: "first-use",
+      capabilities: [`homebrew-runtime:${id}`],
+      roots: [capabilityRoot],
+    },
+    content: {
+      media_type: "application/zip",
+      decoder: "zip-v1",
+      sha256,
+      bytes,
+    },
+    transports: [{ url: transportUrl }],
+    inventory: {
+      entry_count: entries.length,
+      source_entry_count: new Set(entries.map((entry) => entry.source_path)).size,
+      regular_inode_count: regularGroups.size,
+      layer_entry_count: entries.filter((entry) => entry.ownership === "layer").length,
+      shared_base_directory_count: entries.filter(
+        (entry) => entry.ownership === "shared-base-directory",
+      ).length,
+      expanded_bytes: entries
+        .filter((entry) => entry.type !== "hardlink")
+        .reduce((total, entry) => total + entry.size, 0),
+      payload_bytes: canonicalFiles.reduce((total, entry) => total + entry.size, 0),
       entries,
     },
   };
@@ -661,7 +727,7 @@ function collectLayerEntries(
     throw new Error("Homebrew lazy layer is missing its poured prefix");
   }
   const entries: HomebrewLazyLayerEntry[] = [];
-  collectPath(layerFs, HOME_BREW_PREFIX, entries);
+  collectPath(layerFs, HOME_BREW_PREFIX, entries, new Map());
   entries.sort((left, right) => compareText(left.path, right.path));
   for (const entry of entries) {
     const basePath = `/${entry.path}`;
@@ -690,6 +756,7 @@ function collectPath(
   fs: MemoryFileSystem,
   vfsPath: string,
   entries: HomebrewLazyLayerEntry[],
+  regularInodes: Map<number, HomebrewLazyLayerEntry>,
 ): void {
   const stat = fs.lstat(vfsPath);
   const path = withoutLeadingSlash(vfsPath);
@@ -699,6 +766,7 @@ function collectPath(
   if (type === S_IFDIR) {
     entries.push({
       path,
+      source_path: path,
       type: "directory",
       ownership: "layer",
       mode,
@@ -716,17 +784,39 @@ function collectPath(
       fs.closedir(handle);
     }
     names.sort(compareText);
-    for (const name of names) collectPath(fs, `${vfsPath}/${name}`, entries);
+    for (const name of names) {
+      collectPath(fs, `${vfsPath}/${name}`, entries, regularInodes);
+    }
     return;
   }
   if (type === S_IFREG) {
-    entries.push({
+    const canonical = regularInodes.get(stat.ino);
+    if (canonical !== undefined) {
+      entries.push({
+        path,
+        // The ZIP scaffold stores one member per inode. The namespace alias
+        // is reconstructed from the trusted inventory at registration.
+        source_path: canonical.source_path,
+        type: "hardlink",
+        ownership: "layer",
+        mode,
+        size: stat.size,
+        target: canonical.path,
+        inode_group: canonical.inode_group,
+      });
+      return;
+    }
+    const entry: HomebrewLazyLayerEntry = {
       path,
+      source_path: path,
       type: "file",
       ownership: "layer",
       mode,
       size: stat.size,
-    });
+      inode_group: path,
+    };
+    regularInodes.set(stat.ino, entry);
+    entries.push(entry);
     return;
   }
   if (type === S_IFLNK) {
@@ -737,6 +827,7 @@ function collectPath(
     }
     entries.push({
       path,
+      source_path: path,
       type: "symlink",
       ownership: "layer",
       mode,
@@ -754,6 +845,7 @@ function createLayerZip(
 ): Uint8Array {
   const input: Zippable = {};
   for (const entry of entries) {
+    if (entry.type === "hardlink") continue;
     const archivePath = entry.type === "directory" ? `${entry.path}/` : entry.path;
     const typeMode = entry.type === "directory"
       ? S_IFDIR

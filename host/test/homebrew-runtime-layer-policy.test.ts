@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   parseHomebrewRuntimeLayerPolicy,
+  projectHomebrewRuntimeLayerPlan,
   selectHomebrewRuntimeLayer,
   selectHomebrewRuntimeLayers,
   type HomebrewRuntimeLayerPolicy,
@@ -126,6 +127,13 @@ describe("Homebrew runtime layer policy", () => {
     expect(selection.rootPackage).toBe(`${TAP_NAME}/python`);
     expect(selection.packages.map((pkg) => pkg.name)).toEqual(["zlib", "python"]);
     expect(selection.layerPackages.map((pkg) => pkg.name)).toEqual(["python"]);
+    expect(projectHomebrewRuntimeLayerPlan(languagePlan(), selection)).toMatchObject({
+      requestedPackages: ["python"],
+      packages: [
+        { name: "zlib" },
+        { name: "python" },
+      ],
+    });
   });
 
   it("rejects a root already owned by the base instead of emitting an empty delta", () => {
@@ -153,18 +161,20 @@ describe("Homebrew runtime layer policy", () => {
     );
   });
 
-  it("cannot bypass shared package ownership through single-layer selection", () => {
-    expect(() => selectHomebrewRuntimeLayer(
-      languagePlan(),
-      {
-        source: SHELL_BASE.source,
-        packageOrder: [`${TAP_NAME}/dash`, `${TAP_NAME}/coreutils`],
-      },
+  it("selects one reviewed runtime from a one-root producer plan", () => {
+    const plan = languagePlan();
+    plan.requestedPackages = ["python"];
+    plan.packages = plan.packages.filter((candidate) =>
+      candidate.name === "zlib" || candidate.name === "python"
+    );
+    const selection = selectHomebrewRuntimeLayer(
+      plan,
+      SHELL_BASE,
       checkedInPolicy(),
       "python",
-    )).toThrow(
-      "runtime layers perl and python share non-base package kandelo-dev/tap-core/zlib",
     );
+    expect(selection.packages.map((pkg) => pkg.name)).toEqual(["zlib", "python"]);
+    expect(selection.layerPackages.map((pkg) => pkg.name)).toEqual(["python"]);
   });
 
   it("requires every policy root to be both present and explicitly requested", () => {
@@ -252,7 +262,7 @@ describe("Homebrew runtime layer policy", () => {
     })).toThrow("entries are not in canonical id order");
     expect(() => parseHomebrewRuntimeLayerPolicy({
       ...policy,
-      layers: [policy.layers[0], { ...policy.layers[1], id: "erlang" }],
+      layers: [policy.layers[0], { ...policy.layers[0] }],
     })).toThrow("duplicates id erlang");
     expect(() => parseHomebrewRuntimeLayerPolicy({
       ...policy,
@@ -260,11 +270,19 @@ describe("Homebrew runtime layer policy", () => {
         ...policy.layers[1],
         root_package: policy.layers[0].root_package,
       }],
-    })).toThrow("duplicates root kandelo-dev/tap-core/erlang");
+    })).toThrow("id must match its root package name");
     expect(() => parseHomebrewRuntimeLayerPolicy({
       ...policy,
       comment: "not part of the signed policy shape",
     })).toThrow("policy has unexpected fields");
+    expect(() => parseHomebrewRuntimeLayerPolicy({
+      ...policy,
+      layers: [
+        policy.layers[0],
+        policy.layers[1],
+        { id: "python3", root_package: `${TAP_NAME}/python` },
+      ],
+    })).toThrow("id must match its root package name");
   });
 
   it("rejects unknown layer ids at selection time", () => {

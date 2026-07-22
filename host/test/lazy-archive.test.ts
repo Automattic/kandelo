@@ -293,6 +293,7 @@ describe("Lazy archive group registration", () => {
 
   it("fstat and lstat return declared size", () => {
     const mfs = createMemfs();
+    const peer = MemoryFileSystem.fromExisting(mfs.sharedBuffer);
     const entries = makeFakeEntries();
     mfs.registerLazyArchiveFromEntries(
       "http://example.com/vim.zip",
@@ -301,9 +302,9 @@ describe("Lazy archive group registration", () => {
     );
 
     // fstat
-    const fd = mfs.open("/usr/bin/vim", O_RDONLY, 0);
+    const fd = peer.open("/usr/bin/vim", O_RDONLY, 0);
     expect(mfs.fstat(fd).size).toBe(500000);
-    mfs.close(fd);
+    peer.close(fd);
 
     // lstat
     expect(mfs.lstat("/usr/bin/vim").size).toBe(500000);
@@ -828,8 +829,10 @@ describe("Lazy archive materialization", () => {
     await expect(owner.ensureMaterialized("/pkg/a.txt")).resolves.toBe(true);
     expect(readText(owner, "/pkg/a.txt")).toBe("alpha");
 
+    // Archive commit is group-atomic: resolving a.txt commits the renamed
+    // sibling in the same transaction instead of exposing a partial layer.
     await expect(owner.ensureMaterialized("/pkg/moved-b.txt")).resolves.toBe(
-      true,
+      false,
     );
     expect(readText(owner, "/pkg/moved-b.txt")).toBe("bravo");
   });
@@ -1173,10 +1176,6 @@ describe("Lazy archive export/import", () => {
       materialized: false,
     });
 
-    const fd = rebased.open("/usr/bin/vim", O_RDONLY, 0);
-    const buf = new Uint8Array(16);
-    expect(rebased.read(fd, buf, null, buf.length)).toBe(0);
-    rebased.close(fd);
   });
 
   it("omits fully materialized groups from deferred archive metadata", async () => {

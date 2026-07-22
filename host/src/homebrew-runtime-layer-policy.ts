@@ -1,5 +1,6 @@
 import type {
   HomebrewDependency,
+  HomebrewFederatedVfsPlan,
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,
 } from "./homebrew-vfs-planner";
@@ -105,6 +106,11 @@ export function parseHomebrewRuntimeLayerPolicy(
         `Homebrew runtime layer policy entry ${index} has an invalid root package`,
       );
     }
+    if (entry.root_package.split("/")[2] !== entry.id) {
+      throw new Error(
+        `Homebrew runtime layer policy entry ${index} id must match its root package name`,
+      );
+    }
     return { id: entry.id, root_package: entry.root_package };
   });
 
@@ -189,11 +195,42 @@ export function selectHomebrewRuntimeLayer(
   if (entry === undefined) {
     throw new Error(`Homebrew runtime layer policy does not define ${id}`);
   }
-  const selections = selectPolicyEntries(
-    policy.layers,
-    selectionContext(plan, base, policy),
+  // A per-runtime producer resolves one exact root and its dependencies. It
+  // must not require unrelated reviewed roots to be present in that plan.
+  // Callers that have a federated all-runtime plan use
+  // selectHomebrewRuntimeLayers() to additionally prove cross-layer package
+  // disjointness before publishing a set of independently composable layers.
+  return selectPolicyEntry(entry, selectionContext(plan, base, policy));
+}
+
+/**
+ * Project a verified multi-root plan into the exact one-root plan consumed by
+ * the lazy-layer producer. Keeping this projection beside the reviewed policy
+ * selector prevents unrelated Brewfile roots from leaking into a descriptor.
+ */
+export function projectHomebrewRuntimeLayerPlan(
+  plan: HomebrewVfsPlan,
+  selection: HomebrewRuntimeLayerSelection,
+): HomebrewVfsPlan {
+  const root = selection.packages.find(
+    (pkg) => pkg.fullName === selection.rootPackage,
   );
-  return selections.find((selection) => selection.id === entry.id)!;
+  if (!root || root.name !== selection.id) {
+    throw new Error(
+      `Homebrew runtime layer ${selection.id} selection does not contain its exact root`,
+    );
+  }
+  const projected: HomebrewVfsPlan = {
+    ...plan,
+    requestedPackages: [selection.id],
+    packages: [...selection.packages],
+  };
+  if ("requestedFullNames" in plan) {
+    (projected as HomebrewFederatedVfsPlan).requestedFullNames = [
+      selection.rootPackage,
+    ];
+  }
+  return projected;
 }
 
 interface SelectionContext {

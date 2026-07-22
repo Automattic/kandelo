@@ -2827,8 +2827,9 @@ jobs:
           public_dir="$GITHUB_WORKSPACE/kandelo/apps/browser-demos/public/__kandelo-acceptance"
           image="$acceptance_root/homebrew-brewfile.vfs.zst"
           report="$acceptance_root/homebrew-brewfile-report.json"
-          lazy_layer="$acceptance_root/kandelo-homebrew-shell-layer.zip"
-          lazy_layer_descriptor="$acceptance_root/kandelo-homebrew-shell-layer.json"
+          runtime_layer_policy="$PWD/homebrew/runtime-layer-policy.json"
+          lazy_layer="$acceptance_root/kandelo-homebrew-${selected_formula}-layer.bin"
+          lazy_layer_descriptor="$acceptance_root/kandelo-homebrew-${selected_formula}-layer.json"
           node_evidence="$acceptance_root/node-evidence.json"
           browser_evidence="$acceptance_root/browser-evidence.json"
           playwright_report="$acceptance_root/playwright-report.json"
@@ -2963,6 +2964,8 @@ jobs:
             --lazy-layer-descriptor "$lazy_layer_descriptor"
             --lazy-layer-base-image "$shell_package_image"
             --lazy-layer-base-package-source "$shell_package_source"
+            --runtime-layer-id "$selected_formula"
+            --runtime-layer-policy "$runtime_layer_policy"
           )
           vfs_args+=("${dependency_tap_args[@]}")
           if [ -n "$shell_config" ]; then
@@ -3162,13 +3165,15 @@ jobs:
         run: |
           set -euo pipefail
           acceptance_root="$RUNNER_TEMP/homebrew-vfs-acceptance"
+          runtime_layer="$acceptance_root/kandelo-homebrew-${KANDELO_HOMEBREW_FORMULA}-layer.bin"
+          runtime_layer_descriptor="$acceptance_root/kandelo-homebrew-${KANDELO_HOMEBREW_FORMULA}-layer.json"
           python3 kandelo-postverify/scripts/homebrew-vfs-release.py prepare \
             --image "$acceptance_root/homebrew-brewfile.vfs.zst" \
             --report "$acceptance_root/homebrew-brewfile-report.json" \
             --node-evidence "$acceptance_root/node-evidence.json" \
             --browser-evidence "$acceptance_root/browser-evidence.json" \
-            --lazy-layer "$acceptance_root/kandelo-homebrew-shell-layer.zip" \
-            --lazy-layer-descriptor "$acceptance_root/kandelo-homebrew-shell-layer.json" \
+            --lazy-layer "$runtime_layer" \
+            --lazy-layer-descriptor "$runtime_layer_descriptor" \
             --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
@@ -3684,7 +3689,7 @@ jobs:
             echo
             echo "Browser launch input: \`?vfs=$image_url\`"
             echo
-            echo "Lazy shell layer descriptor: $lazy_layer_descriptor_url"
+            echo "Lazy ${KANDELO_HOMEBREW_FORMULA} runtime layer descriptor: $lazy_layer_descriptor_url"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload public VFS publication receipt

@@ -24,7 +24,10 @@ import type {
 import type { KernelPointer } from "./kernel";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
-import { VirtualPlatformIO } from "./vfs/vfs";
+import {
+  readPreparedPlatformFile,
+  VirtualPlatformIO,
+} from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
@@ -157,8 +160,7 @@ async function resolveExecutableForLaunch(
   depth = 0,
 ): Promise<ResolvedSpawnProgram | { errno: number } | null> {
   if (depth > MAX_SHEBANG_DEPTH) return null;
-  await memfs.ensureMaterialized(path);
-  const bytes = readFileFromFs(path);
+  const bytes = await readExecFileFromFs(path);
   if (!bytes) return null;
 
   const shebang = parseShebang(bytes);
@@ -340,6 +342,12 @@ function formatError(err: unknown): string {
     return err.stack ? `${err.message}\n${err.stack}` : err.message;
   }
   return String(err);
+}
+
+function isMissingPathError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  return code === -2 || code === "ENOENT";
 }
 
 function respond(requestId: number, result: unknown) {
@@ -1707,31 +1715,21 @@ async function finishProcessExit(
 // does not exist / is not readable). Used by demos that collect artifacts a
 // process wrote (e.g. sqlite-test's result DB/logs) without sharing the live
 // VFS SharedArrayBuffer with the main thread.
-function handleReadVfsFile(msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>) {
+async function handleReadVfsFile(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
+) {
   if (!io) { respond(msg.requestId, null); return; }
   try {
-    const st = io.stat(msg.path);
-    const size = Number(st.size);
-    const fd = io.open(msg.path, 0 /* O_RDONLY */, 0);
-    try {
-      const out = new Uint8Array(size);
-      let off = 0;
-      while (off < size) {
-        const n = io.read(fd, out.subarray(off), null, size - off);
-        if (n <= 0) break;
-        off += n;
-      }
-      // Copy into a plain (non-shared) ArrayBuffer so it structured-clones back.
-      const data = out.slice(0, off);
-      respond(
-        msg.requestId,
-        msg.includeMode ? { data, mode: st.mode & 0o7777 } : data,
-      );
-    } finally {
-      io.close(fd);
-    }
-  } catch {
-    respond(msg.requestId, null);
+    const { data, stat } = await readPreparedPlatformFile(io, msg.path);
+    // Copy into a plain (non-shared) ArrayBuffer so it structured-clones back.
+    const result = data.slice();
+    respond(
+      msg.requestId,
+      msg.includeMode ? { data: result, mode: stat.mode & 0o7777 } : result,
+    );
+  } catch (error) {
+    if (isMissingPathError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, formatError(error));
   }
 }
 
@@ -2181,8 +2179,16 @@ function readFileFromFs(path: string): ArrayBuffer | null {
 }
 
 async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
-  await memfs.ensureMaterialized(path);
-  return readFileFromFs(path);
+  try {
+    const { data } = await readPreparedPlatformFile(io, path);
+    return data.buffer.slice(
+      data.byteOffset,
+      data.byteOffset + data.byteLength,
+    ) as ArrayBuffer;
+  } catch (error) {
+    if (isMissingPathError(error)) return null;
+    throw error;
+  }
 }
 
 // ── Message dispatch ──
@@ -2207,7 +2213,7 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "spawn": void handleSpawn(msg); break;
     case "terminate_process": void handleTerminateProcess(msg); break;
-    case "read_vfs_file": handleReadVfsFile(msg); break;
+    case "read_vfs_file": void handleReadVfsFile(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;

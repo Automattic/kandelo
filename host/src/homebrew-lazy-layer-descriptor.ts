@@ -32,12 +32,57 @@ export interface HomebrewLazyLayerBasePackageSource {
 }
 
 export interface HomebrewLazyLayerEntry {
+  /** Guest path relative to `/`. */
   path: string;
-  type: "directory" | "file" | "symlink";
+  /** Exact member name in the immutable deferred-tree payload. */
+  source_path: string;
+  type: "directory" | "file" | "symlink" | "hardlink";
   ownership: "layer" | "shared-base-directory";
   mode: number;
+  /** Logical guest size. Hard links repeat their canonical file's size. */
   size: number;
+  /** Symlink text, or the canonical guest path for a hard link. */
   target?: string;
+  /** Stable identity shared by one regular file and all of its hard links. */
+  inode_group?: string;
+}
+
+export type HomebrewDeferredTreeDecoder =
+  | "zip-v1"
+  | "homebrew-bottle-tar-gzip-v1";
+
+export interface HomebrewDeferredTreeDescriptor {
+  id: string;
+  activation: {
+    mode: "boot-prefetch" | "first-use";
+    /** Capability names explain why eager availability is required. */
+    capabilities: string[];
+    /** Absolute VFS roots that trigger materialization of this tree. */
+    roots: string[];
+  };
+  content: {
+    /** Canonical media type of the hashed bytes, independent of transport. */
+    media_type:
+      | "application/zip"
+      | "application/vnd.oci.image.layer.v1.tar+gzip";
+    decoder: HomebrewDeferredTreeDecoder;
+    sha256: string;
+    bytes: number;
+  };
+  /** Byte-identical immutable HTTPS locations, tried in declared order. */
+  transports: Array<{ url: string }>;
+  inventory: {
+    entry_count: number;
+    source_entry_count: number;
+    regular_inode_count: number;
+    layer_entry_count: number;
+    shared_base_directory_count: number;
+    /** Decoder expansion bound (ZIP member bytes or complete TAR bytes). */
+    expanded_bytes: number;
+    /** Bytes allocated once per regular inode, excluding hard-link aliases. */
+    payload_bytes: number;
+    entries: HomebrewLazyLayerEntry[];
+  };
 }
 
 export interface HomebrewLazyLayerPackageRecord {
@@ -70,8 +115,8 @@ export interface HomebrewLazyLayerPackageRecord {
 }
 
 export interface HomebrewLazyLayerDescriptor {
-  schema: 2;
-  kind: "kandelo-homebrew-lazy-archive";
+  schema: 3;
+  kind: "kandelo-homebrew-deferred-layer";
   arch: "wasm32" | "wasm64";
   mount_prefix: "/";
   tap: {
@@ -129,17 +174,6 @@ export interface HomebrewLazyLayerDescriptor {
     sha256: string;
     bytes: number;
   };
-  archive: {
-    format: "zip";
-    /** Per-runtime publication may use a distinct immutable ZIP asset name. */
-    asset: string;
-    url: string;
-    sha256: string;
-    bytes: number;
-    entry_count: number;
-    layer_entry_count: number;
-    shared_base_directory_count: number;
-    uncompressed_bytes: number;
-  };
-  entries: HomebrewLazyLayerEntry[];
+  /** One or more independently materialized immutable filesystem trees. */
+  deferred_trees: HomebrewDeferredTreeDescriptor[];
 }

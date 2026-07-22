@@ -229,7 +229,7 @@ root = pathlib.Path(sys.argv[1])
 tap_commit, kandelo_commit, image_sha = sys.argv[2:5]
 image_bytes = int(sys.argv[5])
 file_sha, dash_sha, bottle_tap_commit, bottle_kandelo_commit = sys.argv[6:10]
-archive_path = root / "layer.zip"
+archive_path = root / "layer.bin"
 entries = [
     {
         "path": "home/linuxbrew/.linuxbrew", "type": "directory",
@@ -277,6 +277,10 @@ entries = [
         "size": len(b"../Cellar/file-formula/5.46"),
     },
 ]
+for entry in entries:
+    entry["source_path"] = entry["path"]
+    if entry["type"] == "file":
+        entry["inode_group"] = entry["path"]
 payloads = {
     entries[5]["path"]: b"file-5.46\n",
     entries[7]["path"]: entries[7]["target"].encode(),
@@ -364,7 +368,7 @@ base_source = {
     },
 }
 descriptor = {
-    "schema": 2, "kind": "kandelo-homebrew-lazy-archive", "arch": "wasm32",
+    "schema": 3, "kind": "kandelo-homebrew-deferred-layer", "arch": "wasm32",
     "mount_prefix": "/",
     "tap": {
         "repository": "kandelo-dev/homebrew-tap-core",
@@ -382,7 +386,7 @@ descriptor = {
     },
     "bottle_release_tag": "bottles-abi-v42",
     "selection": {
-        "requested_packages": ["file-formula", "dash"],
+        "requested_packages": ["file-formula"],
         "package_order": package_order,
         "base_package_order": base_package_order,
         "layer_package_order": layer_package_order,
@@ -407,20 +411,40 @@ descriptor = {
         "url": release_root + "/kandelo-homebrew.vfs.zst",
         "sha256": image_sha, "bytes": image_bytes,
     },
-    "archive": {
-        "format": "zip", "asset": "kandelo-homebrew-shell-layer.zip",
-        "url": release_root + "/kandelo-homebrew-shell-layer.zip",
-        "sha256": hashlib.sha256(archive_bytes).hexdigest(),
-        "bytes": len(archive_bytes), "entry_count": len(entries),
-        "layer_entry_count": sum(
-            entry["ownership"] == "layer" for entry in entries
-        ),
-        "shared_base_directory_count": sum(
-            entry["ownership"] == "shared-base-directory" for entry in entries
-        ),
-        "uncompressed_bytes": sum(entry["size"] for entry in entries),
-    },
-    "entries": entries,
+    "deferred_trees": [{
+        "id": "file-formula",
+        "activation": {
+            "mode": "first-use",
+            "capabilities": ["homebrew-runtime:file-formula"],
+            "roots": [
+                "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46"
+            ],
+        },
+        "content": {
+            "media_type": "application/zip", "decoder": "zip-v1",
+            "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+            "bytes": len(archive_bytes),
+        },
+        "transports": [{
+            "url": release_root + "/kandelo-homebrew-file-formula-layer.bin"
+        }],
+        "inventory": {
+            "entry_count": len(entries),
+            "source_entry_count": len({entry["source_path"] for entry in entries}),
+            "regular_inode_count": 1,
+            "layer_entry_count": sum(
+                entry["ownership"] == "layer" for entry in entries
+            ),
+            "shared_base_directory_count": sum(
+                entry["ownership"] == "shared-base-directory" for entry in entries
+            ),
+            "expanded_bytes": sum(entry["size"] for entry in entries),
+            "payload_bytes": sum(
+                entry["size"] for entry in entries if entry["type"] == "file"
+            ),
+            "entries": entries,
+        },
+    }],
 }
 (root / "layer.json").write_text(json.dumps(descriptor, sort_keys=True, indent=2) + "\n")
 PY
@@ -444,11 +468,99 @@ python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
   --report "$source_root/report.json" \
   --node-evidence "$source_root/node.json" \
   --browser-evidence "$source_root/browser.json" \
-  --lazy-layer "$source_root/layer.zip" \
+  --lazy-layer "$source_root/layer.bin" \
   --lazy-layer-descriptor "$source_root/layer.json" \
   --out "$handoff" "${common_args[@]}" >/dev/null
 python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$handoff" "${common_args[@]}" >/dev/null
+PYTHONDONTWRITEBYTECODE=1 python3 - \
+  "$REPO_ROOT/scripts/homebrew-vfs-release.py" <<'PY'
+import gzip
+import io
+import runpy
+import sys
+import tarfile
+
+release = runpy.run_path(sys.argv[1])
+validate = release["validate_lazy_layer_tar_gzip"]
+ValidationError = release["ValidationError"]
+
+stream = io.BytesIO()
+with tarfile.open(fileobj=stream, mode="w:", format=tarfile.USTAR_FORMAT) as archive:
+    info = tarfile.TarInfo("runtime/tool")
+    info.mode = 0o755
+    info.size = 1
+    archive.addfile(info, io.BytesIO(b"x"))
+tar_value = stream.getvalue()
+entries = [{
+    "path": "runtime/tool",
+    "source_path": "runtime/tool",
+    "type": "file",
+    "mode": 0o755,
+    "size": 1,
+}]
+valid_gzip = gzip.compress(tar_value, mtime=0)
+validate(valid_gzip, entries, len(tar_value))
+
+
+def expect_rejected(label, payload, message):
+    try:
+        validate(payload, entries, len(tar_value))
+    except ValidationError as error:
+        if message not in str(error):
+            raise AssertionError(
+                f"{label} failed for the wrong reason: {error}"
+            ) from error
+    else:
+        raise AssertionError(f"release validator accepted {label}")
+
+
+expect_rejected(
+    "concatenated gzip members",
+    gzip.compress(b"", mtime=0) + valid_gzip,
+    "additional gzip member or data",
+)
+
+terminator = next(
+    offset
+    for offset in range(0, len(tar_value) - 1023, 512)
+    if tar_value[offset : offset + 1024] == bytes(1024)
+)
+post_terminator = bytearray(tar_value)
+post_terminator[terminator + 1024] = 1
+expect_rejected(
+    "nonzero TAR data after the first end marker",
+    gzip.compress(post_terminator, mtime=0),
+    "nonzero data after its end marker",
+)
+
+
+def rewrite_checksum(value):
+    value[148:156] = b"        "
+    checksum = sum(value[:512])
+    value[148:156] = f"{checksum:06o}\0 ".encode("ascii")
+
+
+base256_mode = bytearray(tar_value)
+encoded_mode = bytearray((0o755).to_bytes(8, "big"))
+encoded_mode[0] |= 0x80
+base256_mode[100:108] = encoded_mode
+rewrite_checksum(base256_mode)
+expect_rejected(
+    "base-256 TAR mode",
+    gzip.compress(base256_mode, mtime=0),
+    "base-256",
+)
+
+invalid_octal_size = bytearray(tar_value)
+invalid_octal_size[124:136] = b"00000000008\0"
+rewrite_checksum(invalid_octal_size)
+expect_rejected(
+    "non-octal TAR size",
+    gzip.compress(invalid_octal_size, mtime=0),
+    "valid octal",
+)
+PY
 expect_failure "validator accepted a Kandelo ABI outside the trusted plan" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
     --handoff "$handoff" "${common_identity_args[@]}" \
@@ -465,15 +577,15 @@ jq -e --arg image_sha "$image_sha" '
   .default_shell.path == "/home/linuxbrew/.linuxbrew/bin/dash"
 ' "$handoff/kandelo-homebrew-vfs.json" >/dev/null || fail "descriptor contract changed"
 jq -e --arg image_sha "$image_sha" '
-  .schema == 2 and .kind == "kandelo-homebrew-lazy-archive" and
+  .schema == 3 and .kind == "kandelo-homebrew-deferred-layer" and
   .acceptance_vfs.sha256 == $image_sha and .mount_prefix == "/" and
   .base_vfs.sha256 == .base_vfs.package_source.output.sha256 and
   .selection.base_package_order == ["kandelo-dev/tap-core/dash"] and
   .selection.layer_package_order == ["kandelo-dev/tap-core/file-formula"] and
-  .archive.asset == "kandelo-homebrew-shell-layer.zip" and
-  .archive.entry_count == (.entries | length) and
-  .archive.layer_entry_count == ([.entries[] | select(.ownership == "layer")] | length)
-' "$handoff/kandelo-homebrew-shell-layer.json" >/dev/null ||
+  .deferred_trees[0].content.decoder == "zip-v1" and
+  .deferred_trees[0].inventory.entry_count == (.deferred_trees[0].inventory.entries | length) and
+  .deferred_trees[0].inventory.layer_entry_count == ([.deferred_trees[0].inventory.entries[] | select(.ownership == "layer")] | length)
+' "$handoff/kandelo-homebrew-file-formula-layer.json" >/dev/null ||
   fail "lazy layer descriptor contract changed"
 
 negative="$TMP_ROOT/negative"
@@ -492,47 +604,59 @@ expect_failure "validator accepted browser evidence for different bytes" \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
 cp -a "$handoff" "$negative"
-printf 'tamper' >>"$negative/kandelo-homebrew-shell-layer.zip"
+printf 'tamper' >>"$negative/kandelo-homebrew-file-formula-layer.bin"
 expect_failure "validator accepted a tampered lazy ZIP layer" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
 cp -a "$handoff" "$negative"
-jq '.entries[0].size += 1' "$negative/kandelo-homebrew-shell-layer.json" \
+jq '.deferred_trees[0].inventory.entries[0].size += 1' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" \
   >"$negative/layer.tmp"
-mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
 expect_failure "validator accepted a lazy ZIP index that differs from its archive" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
 cp -a "$handoff" "$negative"
 jq '.base_vfs.package_source.output.sha256 = ("0" * 64)' \
-  "$negative/kandelo-homebrew-shell-layer.json" >"$negative/layer.tmp"
-mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
 expect_failure "validator accepted a base VFS outside its package-output receipt" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
 cp -a "$handoff" "$negative"
 jq '.tap_lock[0].commit = ("b" * 40)' \
-  "$negative/kandelo-homebrew-shell-layer.json" >"$negative/layer.tmp"
-mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
 expect_failure "validator accepted a layer package outside its exact tap lock" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
 cp -a "$handoff" "$negative"
 jq '.packages.layer[0].full_name = "other/runtime/file-formula"' \
-  "$negative/kandelo-homebrew-shell-layer.json" >"$negative/layer.tmp"
-mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
 expect_failure "validator accepted a package name outside its locked tap identity" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
 rm -rf "$negative"
 cp -a "$handoff" "$negative"
-jq '.entries[-1].ownership = "shared-base-directory"' \
-  "$negative/kandelo-homebrew-shell-layer.json" >"$negative/layer.tmp"
-mv "$negative/layer.tmp" "$negative/kandelo-homebrew-shell-layer.json"
+jq '
+  .selection.package_order = ["kandelo-dev/tap-core/file-formula"] |
+  .selection.base_package_order = [] |
+  .packages.base = []
+' "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
+expect_failure "validator accepted a runtime layer that omitted a selected dependency" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
+  --handoff "$negative" "${common_args[@]}"
+rm -rf "$negative"
+cp -a "$handoff" "$negative"
+jq '.deferred_trees[0].inventory.entries[-1].ownership = "shared-base-directory"' \
+  "$negative/kandelo-homebrew-file-formula-layer.json" >"$negative/layer.tmp"
+mv "$negative/layer.tmp" "$negative/kandelo-homebrew-file-formula-layer.json"
 expect_failure "validator accepted a shared non-directory collision" \
   python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
   --handoff "$negative" "${common_args[@]}"
@@ -706,7 +830,7 @@ jq -e --arg image_sha "$image_sha" '
   .schema == 1 and .status == "success" and
   .visibility == "public-anonymous-readback" and
   .image.sha256 == $image_sha and
-  .lazy_layer.archive.asset == "kandelo-homebrew-shell-layer.zip" and
+  .lazy_layer.deferred_trees[0].transport.asset == "kandelo-homebrew-file-formula-layer.bin" and
   (.assets | length) == 7
 ' "$TMP_ROOT/receipt.json" >/dev/null || fail "publisher receipt contract changed"
 
