@@ -154,7 +154,11 @@ Kandelo packages are first-class Homebrew packages:
   closure.
 - The remaining shell package closure is represented as per-bottle first-use
   deferred trees. Opening, reading, mapping, or executing an owned path uses the
-  same materialization path on Node.js and browser hosts.
+  same materialization path on Node.js and browser hosts. The first production
+  cutover fetches and verifies the complete original bottle archive on first
+  use of any file in that bottle; it does not require HTTP range access or
+  per-file transport objects. Independently hashed finer-grained transport may
+  be evaluated later without changing the guest VFS contract.
 - Python, Perl, Erlang, and Ruby are intended to be usable lazily from the main
   shell. Do not create a default VFS image per language runtime. Retain the
   dedicated Node.js demo as the current exception.

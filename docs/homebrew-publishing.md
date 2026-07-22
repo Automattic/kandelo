@@ -1980,6 +1980,10 @@ one inode and link count. A `boot-prefetch` tree uses the same path but must
 finish successfully before boot returns. Metadata-only directory/symlink trees
 retain a group-level activation identity, so serialization cannot silently turn
 boot-prefetch into an unverified no-op merely because no regular stub exists.
+Materialization fetches the complete declared content object; it does not issue
+per-file or byte-range requests inside an archive. The production direct-bottle
+producer therefore uses one deferred tree per bottle so first use pulls that
+bottle without forcing unrelated bottles or selected runtime layers to load.
 
 The consumer accepts at most eight selected layers. Their descriptor byte counts
 may total at most 16 MiB, their compressed payloads may total at most 256 MiB,
