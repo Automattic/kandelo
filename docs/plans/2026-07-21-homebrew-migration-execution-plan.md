@@ -437,13 +437,13 @@ canonical release):
   per-asset authoritative summary ledger, reset semantics, UI consumption, and
   full API tests replace that lossy evidence path; increasing the arbitrary
   raw-event count or weakening the assertion is not the intended fix.
-- This proof uses the exact locally built kernel from PR #1058 because the
-  current released kernel can lose a directory entry at a full `getdents64`
-  buffer boundary. It therefore does not authorize a shell release ahead of
-  the ordered Phase 3 package cutover, PR #1056's aggregate-budget landing, PR
-  #1058's kernel landing and release, and the authoritative browser ledger.
-  The anonymous public Node evidence is complete; Chromium must be rerun after
-  those exact prerequisites before canonical revision-18 activation.
+- The initial proof used the exact locally built directory fix from draft PR
+  #1058. PR #1060 superseded that draft, landed the general `getdents64` fix,
+  activated canonical revision 17, and completed the Phase 3 package cutover.
+  There is no remaining kernel prerequisite for revision 18. Canonical
+  activation now waits for PR #1056's aggregate-budget landing and the
+  authoritative browser ledger in PR #1062, followed by an exact Chromium
+  rerun against those landed prerequisites.
 
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 
@@ -690,7 +690,7 @@ goal from an earlier section.
 | Retarget `Automattic/kandelo-homebrew` to `Kandelo-dev/homebrew-tap-core` | Completed by PR #973; the old repository is retired and archived. |
 | Use a PAT for public package creation | Superseded by the proven built-in `GITHUB_TOKEN` repository-linked public-creation path. The PAT remains experiment history only. |
 | Publish `hello` as the ongoing canary | Superseded. `hello` was retired from product publication by PR #1028; Zlib/core bottles and independent M4 provide real controls. |
-| Build the current main shell from bottles | Completed by PR #1025, but the output is eager. Restoring laziness remains Phase 3. |
+| Build the current main shell from bottles | PR #1025 completed the eager bottle composition. PR #1060 subsequently completed Phase 3 by activating revision 17 with Bash, `libcxx`, and `ncurses` embedded and the other 35 bottles independently deferred. |
 | Require `brew pr-upload`/`pr-pull` plus Skopeo for bottle transport | Superseded by the implemented credential-isolated OCI/ORAS transport, while upstream Homebrew remains authoritative for build/test/bottle semantics. |
 | Encode kernel ABI in the Homebrew platform tag | Superseded. Keep `wasm32_kandelo`/`wasm64_kandelo`; bind ABI through sidecars, namespaces, caches, and validation evidence. |
 | Delete `Kandelo/link` as soon as host composition exists | Superseded for the current verified composer. Link manifests remain valid additive inputs; deferred bottles additionally require a complete mode/link/hardlink inventory. |
