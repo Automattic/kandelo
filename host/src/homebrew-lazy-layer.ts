@@ -52,6 +52,9 @@ export type {
   HomebrewRuntimeLayerAssetIdentity,
 } from "./homebrew-lazy-layer-descriptor";
 import { MemoryFileSystem } from "./vfs/memory-fs";
+import {
+  assertVfsDeferredTreeCollectionUsage,
+} from "./vfs/deferred-tree-limits";
 import { parseTarGzip, type TarEntry } from "./vfs/tar";
 import {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
@@ -194,11 +197,20 @@ export async function buildHomebrewOriginalBottleCollection(
     if (!Number.isSafeInteger(pkg.bytes) || pkg.bytes <= 0) {
       throw new Error(`Homebrew original bottle ${pkg.fullName} has an invalid declared size`);
     }
-    declaredArchiveBytes += pkg.bytes;
-    if (declaredArchiveBytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes) {
-      throw new Error("Homebrew original bottle collection exceeds deferred-layer bounds");
+    if (pkg.bytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes) {
+      throw new Error(
+        `Homebrew original bottle ${pkg.fullName} exceeds the per-bottle archive cap`,
+      );
     }
+    declaredArchiveBytes += pkg.bytes;
   }
+  assertVfsDeferredTreeCollectionUsage({
+    groups: plan.packages.length,
+    archiveBytes: declaredArchiveBytes,
+    expandedBytes: 0,
+    payloadBytes: 0,
+    entries: 0,
+  }, "Homebrew original bottle collection");
 
   const bottles: PreparedOriginalBottle[] = [];
   let aggregateArchiveBytes = 0;
@@ -210,24 +222,22 @@ export async function buildHomebrewOriginalBottleCollection(
     const parsed = parseTarGzip(bytes, {
       label: `Homebrew deferred bottle ${pkg.fullName}`,
       limits: {
-        maxCompressedBytes:
-          HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes - aggregateArchiveBytes,
-        maxUncompressedBytes:
-          HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes - aggregateExpandedBytes,
-        maxEntries: HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries - aggregateSourceEntries,
+        maxCompressedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes,
+        maxUncompressedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes,
+        maxEntries: HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries,
       },
     });
     const sourceEntries = createSourceInventory(parsed);
     aggregateArchiveBytes += bytes.byteLength;
     aggregateExpandedBytes += gzipExpandedBytes(bytes);
     aggregateSourceEntries += sourceEntries.length;
-    if (
-      aggregateArchiveBytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes ||
-      aggregateExpandedBytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes ||
-      aggregateSourceEntries > HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries
-    ) {
-      throw new Error("Homebrew original bottle collection exceeds deferred-layer bounds");
-    }
+    assertVfsDeferredTreeCollectionUsage({
+      groups: bottles.length + 1,
+      archiveBytes: aggregateArchiveBytes,
+      expandedBytes: aggregateExpandedBytes,
+      payloadBytes: 0,
+      entries: aggregateSourceEntries,
+    }, "Homebrew original bottle collection");
     // The expanded TAR is released after each iteration; only compact source
     // truth and the exact compressed object survive to collection closure.
     bottles.push({ pkg, bytes, sourceEntries });
@@ -269,13 +279,13 @@ export async function buildHomebrewOriginalBottleCollection(
     (total, tree) => total + tree.descriptor.inventory.payload_bytes,
     0,
   );
-  if (
-    aggregateSourceEntries + aggregateGuestEntries >
-      HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries ||
-    aggregatePayloadBytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes
-  ) {
-    throw new Error("Homebrew original bottle collection exceeds deferred-layer bounds");
-  }
+  assertVfsDeferredTreeCollectionUsage({
+    groups: trees.length,
+    archiveBytes: aggregateArchiveBytes,
+    expandedBytes: aggregateExpandedBytes,
+    payloadBytes: aggregatePayloadBytes,
+    entries: aggregateSourceEntries + aggregateGuestEntries,
+  }, "Homebrew original bottle collection");
   return {
     payloads: trees.map((tree) => tree.payload),
     deferredTrees: trees.map((tree) => tree.descriptor),

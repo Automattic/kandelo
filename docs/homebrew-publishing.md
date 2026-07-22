@@ -2070,15 +2070,18 @@ the rest of the selected closure.
 The consumer accepts at most eight selected layers and 512 aggregate
 layer-owned packages. Their descriptor byte counts may total at most 16 MiB.
 The base image's pending deferred groups plus newly selected trees may total at
-most 512 groups, 256 MiB of compressed payloads, 256 MiB of expanded payloads,
+most 512 groups, 512 MiB of compressed payloads, 512 MiB of expanded payloads,
+512 MiB of guest file payload, and 100,000 combined source-and-guest inventory
+entries. Those image-wide budgets are separate from the bounds on one deferred
+tree: a single tree may declare at most 256 MiB compressed, 256 MiB expanded,
 256 MiB of guest file payload, and 100,000 combined source-and-guest inventory
-entries; an individual content object is also capped at 256 MiB. Every pending
-group consumes the group budget. A pending generic deferred tree also consumes
-the byte and entry budgets declared by its serialized content and inventories;
-legacy ZIP metadata does not retain those aggregate resource claims. The shared
-MemoryFS save/import validator owns these limits so a composed image cannot be
-emitted in a form that its loader would reject. Boot-prefetch transport uses at
-most two concurrent workers.
+entries. Every pending group consumes the group budget. A pending generic
+deferred tree also consumes the byte and entry budgets declared by its
+serialized content and inventories; legacy ZIP metadata does not retain those
+aggregate resource claims. The producer, runtime-layer consumer, and MemoryFS
+save/import paths use the same typed collection contract, so a composed image
+cannot be emitted in a form that its loader would reject. Boot-prefetch
+transport uses at most two concurrent workers.
 Package names, repository identities, paths, and symlink targets have
 independent bounds. Every layer package must own the indexed directory for its
 declared keg and the exact indexed symlink for its declared `opt` link.

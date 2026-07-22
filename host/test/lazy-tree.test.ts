@@ -6,7 +6,10 @@ import {
   type LazyTreeActivation,
   type LazyTreeRegistrationEntry,
 } from "../src/vfs/memory-fs";
-import { VFS_DEFERRED_TREE_LIMITS } from "../src/vfs/deferred-tree-limits";
+import {
+  VFS_DEFERRED_TREE_COLLECTION_LIMITS,
+  VFS_DEFERRED_TREE_LIMITS,
+} from "../src/vfs/deferred-tree-limits";
 
 const BLOCK = 512;
 const encoder = new TextEncoder();
@@ -35,37 +38,85 @@ describe("format-neutral deferred trees", () => {
       entries: fixture.inventory.length,
     });
     expect(() => fs.assertCanAppendDeferredTreeUsage({
-      groups: VFS_DEFERRED_TREE_LIMITS.maxGroups,
-      archiveBytes: 0,
-      expandedBytes: 0,
-      payloadBytes: 0,
-      entries: 0,
-    })).toThrow(/group cap|groups exceed/);
-    expect(() => fs.assertCanAppendDeferredTreeUsage({
-      groups: 0,
+      groups: VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups - pending.groups,
       archiveBytes:
-        VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes - pending.archiveBytes + 1,
-      expandedBytes: 0,
-      payloadBytes: 0,
-      entries: 0,
-    })).toThrow(/archive-byte cap/);
-    expect(() => fs.assertCanAppendDeferredTreeUsage({
-      groups: 0,
-      archiveBytes: 0,
-      expandedBytes: 0,
-      payloadBytes: 0,
-      entries: VFS_DEFERRED_TREE_LIMITS.maxEntries - pending.entries + 1,
-    })).toThrow(/entry-count cap/);
+        VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxArchiveBytes -
+        pending.archiveBytes,
+      expandedBytes:
+        VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxExpandedBytes -
+        pending.expandedBytes,
+      payloadBytes:
+        VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxPayloadBytes -
+        pending.payloadBytes,
+      entries:
+        VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxEntries - pending.entries,
+    })).not.toThrow();
 
-    const oversized = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
-    for (const root of ["archive-a", "archive-b"]) {
-      const tree = tarTreeFixture("first-use", root);
-      oversized.registerLazyTree({
-        ...tree.content,
-        bytes: Math.floor(VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes / 2) + 1,
-      }, tree.inventory, "/", tree.activation);
+    const overBoundary = [
+      ["groups", /group cap/],
+      ["archiveBytes", /archive-byte cap/],
+      ["expandedBytes", /expansion cap/],
+      ["payloadBytes", /payload-byte cap/],
+      ["entries", /entry-count cap/],
+    ] as const;
+    for (const [field, error] of overBoundary) {
+      const additional = {
+        groups: 0,
+        archiveBytes: 0,
+        expandedBytes: 0,
+        payloadBytes: 0,
+        entries: 0,
+      };
+      const limitField = field === "groups"
+        ? "maxGroups"
+        : field === "archiveBytes"
+          ? "maxArchiveBytes"
+          : field === "expandedBytes"
+            ? "maxExpandedBytes"
+            : field === "payloadBytes"
+              ? "maxPayloadBytes"
+              : "maxEntries";
+      additional[field] =
+        VFS_DEFERRED_TREE_COLLECTION_LIMITS[limitField] - pending[field] + 1;
+      expect(() => fs.assertCanAppendDeferredTreeUsage(additional)).toThrow(
+        error,
+      );
     }
-    await expect(oversized.saveImage()).rejects.toThrow(/archive-byte cap/);
+
+    const boundary = MemoryFileSystem.create(
+      new SharedArrayBuffer(8 * 1024 * 1024),
+    );
+    const third = Math.floor(
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxArchiveBytes / 3,
+    );
+    const archiveBytes = [
+      third,
+      third,
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxArchiveBytes - 2 * third,
+    ];
+    for (const [index, bytes] of archiveBytes.entries()) {
+      const tree = tarTreeFixture("first-use", `archive-${index}`);
+      boundary.registerLazyTree(
+        { ...tree.content, bytes },
+        tree.inventory,
+        "/",
+        tree.activation,
+      );
+    }
+    expect(boundary.pendingDeferredTreeUsage().archiveBytes).toBe(
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxArchiveBytes,
+    );
+    const image = await boundary.saveImage();
+    expect(MemoryFileSystem.fromImage(image).pendingDeferredTreeUsage().archiveBytes)
+      .toBe(VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxArchiveBytes);
+
+    const over = structuredClone(boundary.exportLazyArchiveEntries());
+    over[2]!.content!.bytes += 1;
+    over[2]!.integrity!.bytes += 1;
+    expect(() =>
+      MemoryFileSystem.fromImage(replaceLazyArchiveMetadata(image, over))
+    )
+      .toThrow(/archive-byte cap/);
   });
 
   it("refuses to register a 513th pending group and round-trips the exact boundary", async () => {
@@ -96,19 +147,23 @@ describe("format-neutral deferred trees", () => {
         },
       };
     };
-    for (let index = 0; index < VFS_DEFERRED_TREE_LIMITS.maxGroups; index += 1) {
+    for (
+      let index = 0;
+      index < VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups;
+      index += 1
+    ) {
       const tree = registration(index);
       fs.registerLazyTree(tree.content, tree.inventory, "/", tree.activation);
     }
     expect(fs.pendingDeferredTreeUsage().groups).toBe(
-      VFS_DEFERRED_TREE_LIMITS.maxGroups,
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups,
     );
     const image = await fs.saveImage();
     expect(MemoryFileSystem.fromImage(image).pendingDeferredTreeUsage().groups).toBe(
-      VFS_DEFERRED_TREE_LIMITS.maxGroups,
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups,
     );
 
-    const extra = registration(VFS_DEFERRED_TREE_LIMITS.maxGroups);
+    const extra = registration(VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups);
     expect(() => fs.registerLazyTree(
       extra.content,
       extra.inventory,
@@ -846,12 +901,17 @@ describe("format-neutral deferred trees", () => {
     const source = createFs();
     const first = tarTreeFixture("first-use", "aggregate-first");
     const second = tarTreeFixture("first-use", "aggregate-second");
+    const third = tarTreeFixture("first-use", "aggregate-third");
     source.registerLazyTree(first.content, first.inventory, "/", first.activation);
     source.registerLazyTree(second.content, second.inventory, "/", second.activation);
+    source.registerLazyTree(third.content, third.inventory, "/", third.activation);
     const serialized = structuredClone(source.exportLazyArchiveEntries()) as any[];
 
+    const archiveShare = Math.floor(
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxArchiveBytes / serialized.length,
+    ) + 1;
     for (const group of serialized) {
-      group.content.bytes = 128 * 1024 * 1024 + 1;
+      group.content.bytes = archiveShare;
       group.integrity.bytes = group.content.bytes;
     }
     const archivePeer = MemoryFileSystem.fromExisting(source.sharedBuffer);
@@ -860,8 +920,11 @@ describe("format-neutral deferred trees", () => {
     expect(archivePeer.exportLazyArchiveEntries()).toEqual([]);
 
     const expanded = structuredClone(source.exportLazyArchiveEntries()) as any[];
+    const expandedShare = Math.floor(
+      VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxExpandedBytes / expanded.length,
+    ) + 1;
     for (const group of expanded) {
-      group.content.expandedBytes = 128 * 1024 * 1024 + 1;
+      group.content.expandedBytes = expandedShare;
     }
     const expandedPeer = MemoryFileSystem.fromExisting(source.sharedBuffer);
     expect(() => expandedPeer.importLazyArchiveEntries(expanded as any))
@@ -869,7 +932,7 @@ describe("format-neutral deferred trees", () => {
     expect(expandedPeer.exportLazyArchiveEntries()).toEqual([]);
 
     const payloadSource = createFs();
-    for (const root of ["payload-a", "payload-b"]) {
+    for (const root of ["payload-a", "payload-b", "payload-c"]) {
       const fixture = originalBottleTreeFixture(root);
       payloadSource.registerLazyTree(
         fixture.content,
@@ -880,7 +943,7 @@ describe("format-neutral deferred trees", () => {
     }
     const payload = structuredClone(payloadSource.exportLazyArchiveEntries()) as any[];
     for (const group of payload) {
-      const largeSize = 70 * 1024 * 1024;
+      const largeSize = 90 * 1024 * 1024;
       for (const sourceEntry of group.content.source.entries) {
         if (sourceEntry.type === "file") sourceEntry.size = largeSize;
       }
