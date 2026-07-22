@@ -31,6 +31,7 @@ import {
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "./shell-lazy-archives";
 import {
+  assertVfsImageCapacity,
   saveImage,
   writeVfsFile,
   writeVfsBinary,
@@ -41,6 +42,7 @@ import type { SaveImageOptions } from "./vfs-image-helpers";
 import {
   SHELL_DERIVED_VFS_MIN_FREE_BYTES,
   SHELL_DERIVED_VFS_MIN_FREE_INODES,
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 
 function depEnvKey(name: string): string {
@@ -91,10 +93,18 @@ export function loadShellBaseFileSystem(maxByteLength: number): MemoryFileSystem
 export function saveShellDerivedVfsImage(
   fs: MemoryFileSystem,
   outFile: string,
-  options: Omit<SaveImageOptions, "headroom"> = {},
+  options: Omit<SaveImageOptions, "headroom"> & {
+    /** Explicit escape hatch for a reviewed product profile above 768 MiB. */
+    expectedMaxByteLength?: number;
+  } = {},
 ): Promise<Uint8Array> {
+  const {
+    expectedMaxByteLength = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    ...saveOptions
+  } = options;
+  assertVfsImageCapacity(fs, expectedMaxByteLength, outFile);
   return saveImage(fs, outFile, {
-    ...options,
+    ...saveOptions,
     headroom: {
       minimumFreeBytes: SHELL_DERIVED_VFS_MIN_FREE_BYTES,
       minimumFreeInodes: SHELL_DERIVED_VFS_MIN_FREE_INODES,
