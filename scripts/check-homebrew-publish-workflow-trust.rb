@@ -24,9 +24,9 @@ PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "4299bc3bfe58e5b6efff07e7f9bee98abf96f2d75656d8eb96359c23c07ecbd4"
+PUBLISHER_VERIFY_DIGEST = "5ae8fd198a019dfb100d2645d0d9362f0998a92713f4f5f1a9376e17dd320539"
 PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
-PUBLISHER_VFS_RELEASE_DIGEST = "aa93a31f752789c6a7273d0857d0f6b284ff63282f2659a7b8a741872a6a8700"
+PUBLISHER_VFS_RELEASE_DIGEST = "34171400552baefd1efee3e05a294308ea3ba783f191f899d1affa5135a4d4da"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
@@ -1160,6 +1160,14 @@ def check_publisher(workflow)
   public_core_checkout.call(
     finalize_steps,
     "Checkout exact public core dependency tap for finalization",
+    "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
+    "${{ needs.plan.outputs.core-dependency-tap-sha }}",
+    "dependency-taps/core",
+    "kandelo"
+  )
+  public_core_checkout.call(
+    vfs_release_steps,
+    "Checkout exact public core dependency tap for VFS publication",
     "${{ needs.plan.outputs.core-dependency-tap-sha != '' }}",
     "${{ needs.plan.outputs.core-dependency-tap-sha }}",
     "dependency-taps/core",
@@ -3617,6 +3625,9 @@ def check_publisher(workflow)
     '--lazy-layer "$runtime_layer"',
     '--lazy-layer-descriptor "$runtime_layer_descriptor"',
     '--tap-root "$GITHUB_WORKSPACE/tap-postverify"',
+    'dependency_tap_args+=(--dependency-tap-root',
+    '"$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
+    '"${dependency_tap_args[@]}"',
     '--tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"',
     '--abi "$KANDELO_HOMEBREW_ABI"',
     '--bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG"',
@@ -3632,6 +3643,8 @@ def check_publisher(workflow)
   [
     'git -C kandelo rev-parse HEAD', 'git -C kandelo status --short --untracked-files=all',
     'git -C tap-base rev-parse HEAD', 'git -C tap-base status --short --untracked-files=all',
+    'git -C dependency-taps/core rev-parse HEAD',
+    'git -C dependency-taps/core status --short --untracked-files=all',
   ].each do |fragment|
     check(vfs_snapshot.fetch("run").include?(fragment),
           "publisher VFS release snapshot verification lacks #{fragment}")
@@ -3639,6 +3652,7 @@ def check_publisher(workflow)
   vfs_validate = named_step(vfs_release_steps, "Validate VFS release handoff without credentials")
   check(vfs_validate["id"] == "validate-vfs-release" &&
         vfs_validate["env"] == {
+          "CORE_TAP_SHA" => "${{ needs.plan.outputs.core-dependency-tap-sha }}",
           "KANDELO_HOMEBREW_ABI" => "${{ needs.plan.outputs.abi }}",
           "KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG" => "${{ needs.plan.outputs.release-tag }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ needs.plan.outputs.vfs-acceptance-formula }}",
@@ -3650,6 +3664,11 @@ def check_publisher(workflow)
         vfs_validate.fetch("run").include?('[ -z "${GH_TOKEN:-}" ]') &&
         vfs_validate.fetch("run").include?('[ -z "${GITHUB_TOKEN:-}" ]') &&
         vfs_validate.fetch("run").include?("homebrew-vfs-release.py validate") &&
+        vfs_validate.fetch("run").include?('dependency_tap_args+=(--dependency-tap-root') &&
+        vfs_validate.fetch("run").include?(
+          '"kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core"'
+        ) &&
+        vfs_validate.fetch("run").include?('"${dependency_tap_args[@]}"') &&
         vfs_validate.fetch("run").include?('--abi "$KANDELO_HOMEBREW_ABI"') &&
         vfs_validate.fetch("run").include?(
           '--bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG"'
@@ -3662,6 +3681,7 @@ def check_publisher(workflow)
   check(vfs_release_steps.index(vfs_validate) < vfs_release_steps.index(vfs_publish) &&
         vfs_publish["id"] == "publish-vfs-release" &&
         vfs_publish["env"] == {
+          "CORE_TAP_SHA" => "${{ needs.plan.outputs.core-dependency-tap-sha }}",
           "KANDELO_HOMEBREW_ABI" => "${{ needs.plan.outputs.abi }}",
           "KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG" => "${{ needs.plan.outputs.release-tag }}",
           "GH_TOKEN" => "${{ github.token }}",
@@ -3673,6 +3693,11 @@ def check_publisher(workflow)
           "STATE_LOCK_OWNER_DETAIL" => "public VFS release",
         } &&
         vfs_publish.fetch("run").include?("homebrew-publish-vfs-release.sh") &&
+        vfs_publish.fetch("run").include?('dependency_tap_args+=(--dependency-tap-root') &&
+        vfs_publish.fetch("run").include?(
+          '"kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core"'
+        ) &&
+        vfs_publish.fetch("run").include?('"${dependency_tap_args[@]}"') &&
         vfs_publish.fetch("run").include?('--abi "$KANDELO_HOMEBREW_ABI"') &&
         vfs_publish.fetch("run").include?(
           '--bottle-release-tag "$KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG"'
@@ -3687,7 +3712,7 @@ def check_publisher(workflow)
 
   vfs_validator_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-vfs-release.py"))
   [
-    'expected_assets(runtime_id)', 'homebrew-vfs-sha256-', 'validate_bundle_dir',
+    'expected_assets(runtime_id, tree_assets)', 'homebrew-vfs-sha256-', 'validate_bundle_dir',
     'homebrew-runtime-layer-sha256-', 'runtime_layer_bundle_identity_document',
     'runtime_layer_bundle_sha256', 'runtime_layer_descriptor_bytes',
     'canonical-json-v1', 'close_lazy_layer_descriptor',
@@ -3708,6 +3733,8 @@ def check_publisher(workflow)
   )
   [
     'env -u GH_TOKEN -u GITHUB_TOKEN python3', 'state-lock.sh',
+    '--dependency-tap-root) DEPENDENCY_TAP_ROOTS+=("$2")',
+    'validator_args+=(--dependency-tap-root "$dependency_tap_root")',
     'homebrew-vfs-sha256-', 'homebrew-runtime-layer-sha256-',
     'acceptance_tag=', 'runtime_tag=', 'publish_bundle',
     'draft=true', 'assert_asset_names_are_bounded', 'assert_complete_asset_set',
@@ -3727,7 +3754,8 @@ def check_publisher(workflow)
     'acceptance_release:', 'release_tag: $runtime_tag',
     'lazy_layer_asset="kandelo-homebrew-${FORMULA}-layer.bin"',
     'lazy_layer_descriptor_asset="kandelo-homebrew-${FORMULA}-layer.json"',
-    '.deferred_trees[0].content.sha256',
+    '.bundle.assets.deferred_trees[].asset',
+    'if $receipt_schema == 3',
   ].each do |fragment|
     check(vfs_publisher_source.include?(fragment),
           "Homebrew VFS release publisher lacks #{fragment}")
@@ -4479,6 +4507,41 @@ def self_test(publisher, maintenance, repository_canary)
         w, "publish-vfs-release", "Checkout exact VFS source tap without credentials"
       )
       step.fetch("with")["ref"] = "main"
+    },
+    "VFS release dependency checkout bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-vfs-release",
+        "Checkout exact public core dependency tap for VFS publication"
+      )
+      step["if"] = "${{ false }}"
+    },
+    "VFS handoff dependency tap omitted" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Prepare exact browser-proven VFS release handoff"
+      )
+      step["run"] = step.fetch("run").sub('"${dependency_tap_args[@]}"', "true")
+    },
+    "VFS credential-free dependency tap omitted" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-vfs-release", "Validate VFS release handoff without credentials"
+      )
+      step["run"] = step.fetch("run").sub('"${dependency_tap_args[@]}"', "true")
+    },
+    "VFS publisher dependency tap omitted" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-vfs-release",
+        "Publish and anonymously read back the immutable VFS release"
+      )
+      step["run"] = step.fetch("run").sub('"${dependency_tap_args[@]}"', "true")
+    },
+    "VFS dependency snapshot cleanliness omitted" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-vfs-release", "Verify VFS release source snapshots"
+      )
+      step["run"] = step.fetch("run").sub(
+        "git -C dependency-taps/core status --short --untracked-files=all",
+        "git -C dependency-taps/core status --short --untracked-files=no"
+      )
     },
     "unreviewed Kandelo ref" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Checkout Kandelo workflow source")

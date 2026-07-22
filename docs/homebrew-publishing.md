@@ -1507,20 +1507,28 @@ are poured into a fresh filesystem with a
 256 MiB ceiling. A directory already present in the lower image may be shared,
 but any file, symlink, or type collision fails composition.
 
-The current derived producer places only layer-owned paths under
-`/home/linuxbrew/.linuxbrew` into deterministic ZIP bytes; it does not duplicate
-the lower shell image, `/etc` metadata, a gallery profile, or a
-language-specific VFS image. ZIP is a temporary decoder/producer scaffold, not
-the endpoint for bottle-backed layers. The image builder emits an inert schema-4
-draft because exact Node and Chromium evidence does not exist until the eager
-image has run. The credential-free release preparer validates that draft,
-payload, eager descriptor, report, and both host evidence files, then closes the
-public schema-4 descriptor. Its format-neutral `deferred_trees[]` contract names
-an immutable SHA-256 and byte count, decoder and media type, ordered transport
-locations, activation policy, and a complete inventory of directories, regular
-files, symlinks, and hard links.
-The inventory includes ownership, POSIX modes, logical sizes, link targets,
-source member paths, and regular-inode groups. The closed descriptor also binds
+The direct collection producer resolves the complete selected plan once so
+collision ownership and link suppression are global, then emits one candidate
+tree for every selected Formula. Each payload is that Formula's exact finalized Homebrew
+bottle `.tar.gz`; the producer does not recompress or combine dependency
+bottles. A complete source inventory records every validated TAR member. Its
+guest projection records ownership, POSIX modes, logical sizes, link targets,
+source member paths, regular-inode groups, the package keg and `opt` link, and
+whether a path is an archive member, a link-manifest copy, an explicitly
+mode-overridden copy, or descriptor-created structure. The image builder still
+does not duplicate the lower shell image, `/etc` metadata, a gallery profile,
+or a language-specific VFS image into any bottle tree. Phase 3's product
+composer, not this collection primitive, chooses which candidate trees are
+embedded and which remain independently lazy.
+
+The image builder emits an inert schema-5 draft because exact Node and Chromium
+evidence does not exist until the eager image has run. The credential-free
+release preparer validates that draft, every exact bottle payload, the eager
+descriptor, report, and both host evidence files, then closes the public
+schema-5 descriptor. Its `deferred_trees[]` contract names a Formula identity,
+immutable SHA-256 and byte count, decoder and media type, ordered transport
+locations, activation policy, complete source inventory, and complete guest
+projection. The closed descriptor also binds
 the complete federated tap lock, base and layer package orders, exact
 lower-image package receipt and composition, and the separately browser-proven
 eager acceptance image and evidence identities. Its own canonical bundle
@@ -1953,11 +1961,14 @@ kandelo-homebrew-browser-evidence.json
 ```
 
 The independently identified runtime-layer release has the tag
-`homebrew-runtime-layer-sha256-<bundle-sha256>` and exactly these two assets:
+`homebrew-runtime-layer-sha256-<bundle-sha256>`. It contains one descriptor and
+one byte-identical payload asset per deferred bottle:
 
 ```text
-kandelo-homebrew-<runtime-id>-layer.bin
 kandelo-homebrew-<runtime-id>-layer.json
+kandelo-homebrew-<tree-id-1>-layer.bin
+...
+kandelo-homebrew-<tree-id-N>-layer.bin
 ```
 
 `kandelo-homebrew-vfs.json` is the stable machine-readable entry point. It
@@ -1973,8 +1984,8 @@ path:
 ?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
 ```
 
-`kandelo-homebrew-<runtime-id>-layer.json` is a separate closed schema-4 entry
-point for deferred content. Keeping it separate preserves the stable
+`kandelo-homebrew-<runtime-id>-layer.json` is a separate closed schema-5 entry
+point for direct bottle content. Keeping it separate preserves the stable
 whole-image descriptor contract and gives the runtime layer an identity that
 cannot alias a changed base, payload, or inventory merely because the eager VFS
 bytes stayed the same. It records mount prefix `/`, the complete federated tap
@@ -1992,31 +2003,35 @@ non-circular. An external immutable HTTPS transport remains in the identity.
 The public descriptor is therefore a deterministic envelope around the hash,
 and both the credential-free Python validator and the browser-safe TypeScript
 consumer recompute it before accepting the layer.
-Its `descriptor_encoding` is `canonical-json-v1`: UTF-8 JSON with recursively
-sorted object keys, compact `,` and `:` separators, no ASCII-only escaping, and
-exactly one trailing LF. The publisher and consumer reject any other bytes even
+Its `descriptor_encoding` is `canonical-json-v1`: UTF-8 JSON whose object keys
+are recursively ordered lexicographically by Unicode scalar value, with compact
+`,` and `:` separators, no ASCII-only escaping, and exactly one trailing LF.
+Lone UTF-16 surrogates are invalid rather than replacement-encoded. The
+publisher and consumer reject any other bytes even
 when they parse to the same JSON value. A representation change must introduce
 a new encoding identifier, which is itself covered by the bundle hash; this
 prevents a serializer upgrade from producing different immutable asset bytes
 under an existing runtime tag.
 
-The current publisher creates one `.bin` payload whose declared decoder is
-`zip-v1`. Its release validator opens those temporary ZIP scaffold bytes,
-checks every indexed source and guest path, type, ownership, mode, logical
-size, symlink target, and inode group, and reads every regular member so ZIP
-CRCs are verified before publication. The same validator understands the
-schema-4 TAR+gzip decoder for the later direct-bottle producer, including TAR
-hard links and complete expanded-byte identity. It rejects undeclared or
-missing members and a shared lower path unless that path is a directory.
-Payload and descriptor receive authenticated and anonymous digest-and-size
-readback.
+The publisher copies every finalized bottle payload without recompression and
+derives the exact asset set from the descriptor. Its release validator opens
+every gzip/TAR, validates the complete source inventory, checks every guest
+path, type, ownership, materialization provenance, mode, logical size, symlink
+target, package/keg/activation binding, and inode group, and verifies TAR hard
+links and the complete expanded-byte identity. It rejects an incomplete or
+extra package/tree/asset set, undeclared or missing members, cross-keg archive
+mappings, ordinary copies whose mode differs from their source, and a shared
+lower path unless that path is a directory. The descriptor and every payload
+receive authenticated and anonymous digest-and-size readback. The validator
+retains the historical one-tree `zip-v1` path so already-published schema-4
+layers remain consumable.
 
 The browser host can consume a selected layer through the normal boot
 descriptor and VFS path. A `package-layer` mount targets `/` and carries a
 bounded descriptor URL, exact descriptor byte count, and lowercase SHA-256
 reference. Boot eagerly fetches and validates only those descriptor bytes. It
 then restores the exact compressed shell package output into a private
-filesystem, binds the schema-4 descriptor to that base, its ABI, and
+filesystem, binds the schema-5 descriptor to that base, its ABI, and
 `/etc/kandelo/homebrew-vfs.json` composition, and rejects base or pairwise
 package/path collisions. Only a completely registered selection whose required
 boot-prefetch trees have succeeded is returned to boot, so a failed composition
@@ -2031,37 +2046,67 @@ one inode and link count. A `boot-prefetch` tree uses the same path but must
 finish successfully before boot returns. Metadata-only directory/symlink trees
 retain a group-level activation identity, so serialization cannot silently turn
 boot-prefetch into an unverified no-op merely because no regular stub exists.
-Materialization fetches the complete declared content object; it does not issue
-per-file or byte-range requests inside an archive.
+Materialization fetches the complete declared bottle object; it does not issue
+per-file or byte-range requests inside an archive. `stat` and `readdir` use the
+trusted inventory without fetching. The first content read, mapping, or exec in
+one bottle downloads, verifies, decodes, and atomically materializes that whole
+bottle, while every unrelated bottle remains independently deferred.
+
+The direct source inventory and `archive-copy-mode` provenance are additive
+deferred-tree metadata. New hosts still accept existing schema-4 ZIP layers and
+serialized legacy deferred trees. Older hosts reject a direct descriptor at
+its closed-object validation boundary instead of interpreting it under the
+legacy one-source-per-guest-entry contract. No syscall, channel, process-memory,
+kernel-export, or Wasm program ABI changes as part of this metadata extension;
+VFS images remain bound to the same explicit kernel ABI.
 Every tree declares one bundle-release transport for its browser-readable
 asset and may declare up to seven additional immutable HTTPS locations. This
 keeps canonical bottle identity in `content` while allowing Node.js to use a
 public GHCR bottle directly and browsers to fall back to a byte-identical
-release or same-origin mirror. The production direct-bottle producer will use
-one tree per bottle, so first use fetches that complete bottle without pulling
-an unrelated runtime or the rest of the selected closure.
+release or same-origin mirror. The direct producer uses one tree per bottle, so
+first use fetches that complete bottle without pulling an unrelated runtime or
+the rest of the selected closure.
 
-The consumer accepts at most eight selected layers. Their descriptor byte counts
-may total at most 16 MiB, their compressed payloads may total at most 256 MiB,
-their indexes may total at most 100,000 entries, and their declared uncompressed
-payloads may total at most 256 MiB; an individual content object is also capped
-at 256 MiB. Boot-prefetch transport uses at most two concurrent workers.
+The consumer accepts at most eight selected layers and 512 aggregate
+layer-owned packages. Their descriptor byte counts may total at most 16 MiB.
+The base image's pending deferred groups plus newly selected trees may total at
+most 512 groups, 256 MiB of compressed payloads, 256 MiB of expanded payloads,
+256 MiB of guest file payload, and 100,000 combined source-and-guest inventory
+entries; an individual content object is also capped at 256 MiB. Every pending
+group consumes the group budget. A pending generic deferred tree also consumes
+the byte and entry budgets declared by its serialized content and inventories;
+legacy ZIP metadata does not retain those aggregate resource claims. The shared
+MemoryFS save/import validator owns these limits so a composed image cannot be
+emitted in a form that its loader would reject. Boot-prefetch transport uses at
+most two concurrent workers.
 Package names, repository identities, paths, and symlink targets have
-independent bounds. Every layer package must own the
-indexed directory for its declared keg and the exact indexed symlink for its
-declared `opt` link. Selected layers may share directories only when those
-directories already exist in the lower image: one layer cannot use a directory
-owned by another layer as an undeclared ancestor, and two layers cannot reuse
-one content digest or transport URL as separate ownership domains.
+independent bounds. Every layer package must own the indexed directory for its
+declared keg and the exact indexed symlink for its declared `opt` link.
+Schema-5 trees explicitly declare every structural ancestor at or below
+`/home/linuxbrew/.linuxbrew` as a directory. Keg and in-keg directories are
+package-owned `layer` entries; cross-package structural ancestors are
+`mergeable-directory` entries. The complete aggregate descriptor may satisfy
+an ancestor through any selected bottle tree. An absent mergeable directory is
+created once; an existing lower-image directory is reused without changing its
+inode or mode, but its permission bits must equal every claim. A file, symlink,
+unequal-mode directory claim, or undeclared ancestor fails composition. Legacy
+schema-4 `shared-base-directory` entries remain valid only when the directory
+already exists in the lower image. Two layers cannot reuse one content digest
+or transport URL as separate ownership domains.
 
 An ordinary main-shell descriptor contains no `package-layer` mounts, so it
 does not fetch a language descriptor or payload and does not add a default VFS
 per language. Selection is explicit machine state, not package-specific UI or
 an alternate loader. Malformed paths, oversized descriptors, duplicate layer
 identities, ABI/base mismatches, and conflicting layers fail the boot instead
-of being skipped. The current bounded producer can derive one reviewed runtime
-projection at a time, but its ZIP payload remains scaffolding. It does not yet
-publish finalized direct-bottle trees or a mirror set for every language.
+of being skipped. Each runtime-layer reference currently names exactly one
+requested root equal to its layer ID; the shared 128-request parser/planner
+bound is not a promise that this boot mount composes a multi-root descriptor.
+Phase 3 builds the multi-root shell through the bottle-collection primitive.
+The bounded collection producer derives independently lazy,
+byte-identical bottle trees for a complete reviewed package closure. Choosing
+the production shell's embedded/deferred partition, publishing every deferred
+bottle mirror, and republishing the production shell remain Phase 3 work.
 
 `homebrew/runtime-layer-policy.json` is the reviewed planning contract for
 runtime derivation. It names the canonical `shell` package-output receipt as
@@ -2096,8 +2141,10 @@ ID. Once public, the release is never mutated. Publication creates the tag,
 after which it must be a direct commit reference to the exact tap source
 commit. Success requires GitHub-enforced release immutability plus anonymous
 digest-and-size readback of the acceptance release's exact five assets and the
-runtime release's exact two assets. The schema-2 publication receipt records
-both tags and both independently verified asset lists.
+runtime release's descriptor plus every declared deferred-bottle asset. A new
+schema-3 publication receipt records both tags and both independently verified
+asset lists. Schema 2 is retained only for the historical one-tree receipt
+shape.
 
 An immutable schema-3 acceptance release may already contain the five eager
 assets plus its two historical lazy assets. That exact complete seven-name set
@@ -2105,8 +2152,10 @@ is the only legacy exception: reconciliation verifies all seven current handoff
 files byte-for-byte. A partial legacy set, an unknown name, or a mismatched
 legacy payload fails; the publisher never fills or rewrites an immutable legacy
 release. New acceptance releases always use five assets, and every new closed
-schema-4 layer uses its independent two-asset runtime release. The Actions
-receipt is only a receipt; release assets are the durable public product.
+schema-5 direct layer uses an independent runtime release containing its
+descriptor and exactly one payload per deferred bottle. Historical schema-4
+one-tree layers retain their two-asset release shape. The Actions receipt is
+only a receipt; release assets are the durable public product.
 
 This promotion proves only the configured dependency-bearing acceptance image.
 It does not rewrite bottle `browser_compatible` flags and does not create a
@@ -2518,10 +2567,12 @@ rollback path instead.
 The implemented path covers a trusted bottle build, public repository-rooted
 GHCR package creation plus anonymous readback, sidecar validation, verified VFS
 image building, exact canonical package materialization of the bottle-built
-main shell, base-exclusive deterministic lazy ZIP generation, Node and
-Chromium smoke of the eager acceptance image, immutable public release of that
-image and its lazy transport layer, diagnostic gallery gating, and lossless
-under-lock tap composition with Formula source-closure drift rejection.
-Main-shell lazy layer registration and integrity checking, durable generic
-gallery publication, broader package coverage, general guest `brew install`,
-and broader release/gallery operator runbooks remain separate work.
+main shell, per-Formula original-bottle deferred-tree production, Node and
+synthetic direct-TAR Chromium first-use validation, immutable multi-payload
+runtime-layer publication, diagnostic gallery gating, and lossless under-lock
+tap composition with Formula source-closure drift rejection. Cutting over and
+republishing the production main shell with its Bash closure embedded and the
+remaining closure deferred, live public-release browser retrieval through the
+service-worker transport, durable generic gallery publication, broader package
+coverage, general guest `brew install`, and broader release/gallery operator
+runbooks remain separate work.

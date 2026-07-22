@@ -4,6 +4,7 @@ set -euo pipefail
 
 HANDOFF=""
 TAP_ROOT=""
+DEPENDENCY_TAP_ROOTS=()
 TAP_REPOSITORY=""
 TAP_NAME=""
 TAP_COMMIT=""
@@ -17,6 +18,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --handoff) HANDOFF="$2"; shift 2 ;;
     --tap-root) TAP_ROOT="$2"; shift 2 ;;
+    --dependency-tap-root) DEPENDENCY_TAP_ROOTS+=("$2"); shift 2 ;;
     --tap-repository) TAP_REPOSITORY="$2"; shift 2 ;;
     --tap-name) TAP_NAME="$2"; shift 2 ;;
     --tap-commit) TAP_COMMIT="$2"; shift 2 ;;
@@ -99,6 +101,9 @@ validator_args=(
   --abi "$ABI"
   --bottle-release-tag "$BOTTLE_RELEASE_TAG"
 )
+for dependency_tap_root in "${DEPENDENCY_TAP_ROOTS[@]}"; do
+  validator_args+=(--dependency-tap-root "$dependency_tap_root")
+done
 # The credentialed finalizer treats the handoff only as inert data. The exact
 # validator runs again with token variables removed before any GitHub write.
 env -u GH_TOKEN -u GITHUB_TOKEN python3 "$SCRIPT_DIR/homebrew-vfs-release.py" \
@@ -132,10 +137,11 @@ printf '%s\n' \
   kandelo-homebrew-vfs.json \
   | jq -Rsc 'split("\n")[:-1] | sort' >"$acceptance_expected"
 runtime_expected="$TMP_ROOT/runtime-expected.json"
-printf '%s\n' \
-  "$lazy_layer_asset" \
-  "$lazy_layer_descriptor_asset" \
-  | jq -Rsc 'split("\n")[:-1] | sort' >"$runtime_expected"
+jq -e --arg descriptor "$lazy_layer_descriptor_asset" '
+  [.bundle.assets.deferred_trees[].asset, $descriptor] |
+  if length == (unique | length) then sort
+  else error("duplicate runtime-layer asset") end
+' "$lazy_descriptor" >"$runtime_expected"
 legacy_acceptance_expected="$TMP_ROOT/legacy-acceptance-expected.json"
 printf '%s\n' \
   kandelo-homebrew.vfs.zst \
@@ -418,20 +424,16 @@ jq -nS \
   --arg image_sha256 "$(jq -er '.image.sha256' "$descriptor")" \
   --argjson image_bytes "$(jq -er '.image.bytes' "$descriptor")" \
   --arg lazy_descriptor_url "https://github.com/${TAP_REPOSITORY}/releases/download/${runtime_tag}/${lazy_layer_descriptor_asset}" \
-  --arg lazy_payload_url "$(jq -er '
-    [.deferred_trees[0].transports[] | select(.kind == "bundle-release")] |
-    if length == 1 then .[0].url else error("missing bundle release transport") end
+  --argjson receipt_schema "$(jq -er '
+    if (.deferred_trees | length) == 1 and
+       (.deferred_trees[0] | has("package") | not)
+    then 2 else 3 end
   ' "$lazy_descriptor")" \
-  --arg lazy_payload_sha256 "$(jq -er '.deferred_trees[0].content.sha256' "$lazy_descriptor")" \
-  --arg lazy_payload_asset "$lazy_layer_asset" \
-  --arg lazy_payload_decoder "$(jq -er '.deferred_trees[0].content.decoder' "$lazy_descriptor")" \
-  --arg lazy_payload_media_type "$(jq -er '.deferred_trees[0].content.media_type' "$lazy_descriptor")" \
-  --argjson lazy_payload_bytes "$(jq -er '.deferred_trees[0].content.bytes' "$lazy_descriptor")" \
-  --argjson lazy_payload_entries "$(jq -er '.deferred_trees[0].inventory.entry_count' "$lazy_descriptor")" \
+  --slurpfile lazy_descriptor "$lazy_descriptor" \
   --slurpfile acceptance_assets "$acceptance_manifest" \
   --slurpfile assets "$runtime_manifest" '
     {
-      schema: 2,
+      schema: $receipt_schema,
       status: "success",
       visibility: "public-anonymous-readback",
       repository: $repository,
@@ -445,20 +447,22 @@ jq -nS \
       lazy_layer: {
         release_tag: $runtime_tag,
         descriptor_url: $lazy_descriptor_url,
-        deferred_trees: [{
-          content: {
-            media_type: $lazy_payload_media_type,
-            decoder: $lazy_payload_decoder,
-            sha256: $lazy_payload_sha256,
-            bytes: $lazy_payload_bytes
-          },
-          transport: {
-            kind: "bundle-release",
-            asset: $lazy_payload_asset,
-            url: $lazy_payload_url
-          },
-          entry_count: $lazy_payload_entries
-        }]
+        deferred_trees: [
+          $lazy_descriptor[0].deferred_trees[] |
+          ([.transports[] | select(.kind == "bundle-release")] |
+            if length == 1 then .[0]
+            else error("missing bundle release transport") end) as $transport |
+          {
+            content: .content,
+            transport: $transport,
+            entry_count: .inventory.entry_count
+          } + (
+            if $receipt_schema == 3
+            then {id: .id} + (if has("package") then {package: .package} else {} end)
+            else {}
+            end
+          )
+        ]
       },
       acceptance_assets: $acceptance_assets,
       assets: $assets

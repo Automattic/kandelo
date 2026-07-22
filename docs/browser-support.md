@@ -476,10 +476,16 @@ These mounts are root overlays described by an unauthenticated HTTPS URL plus
 an exact descriptor byte count and `sha256:<digest>` reference. The shared
 host consumer verifies the descriptor and its binding to the exact loaded
 shell image, ABI, and Homebrew composition before it adds any paths. Selected
-layers must have disjoint non-base packages and filesystem ownership. Their
-schema-4 `deferred_trees` carry a complete path, type, mode, link, and regular
-inode inventory plus an immutable content identity, closed decoder/media-type
-pair, and one to eight byte-identical immutable HTTPS transports. Exactly one
+layers must have disjoint non-base packages and filesystem ownership.
+Runtime-layer composition currently requires each layer reference to name one
+requested root equal to its layer ID. The wider 128-name descriptor/parser
+bound is shared with planning and leaves room for collection artifacts, but it
+does not turn this boot mount into a multi-root layer. Phase 3 composes the
+multi-root main shell through the bottle-collection primitive instead.
+Schema-5 direct-bottle `deferred_trees` carry a complete source inventory and guest
+projection: paths, types, modes, links, regular-inode groups, materialization
+provenance, immutable content identity, a closed decoder/media-type pair, and
+one to eight byte-identical immutable HTTPS transports. Exactly one
 transport is the bundle's browser-readable release asset; additional transports
 may name the canonical public bottle or another immutable mirror. The descriptor has its own
 `homebrew-runtime-layer-sha256-<bundle-sha256>` identity, independent from the
@@ -491,18 +497,27 @@ self-derived release URL and the hash itself are excluded to avoid a circular
 identity; external transport records remain bound. The consumer recomputes the
 canonical hash, requires the closed descriptor's canonical-json-v1 byte
 encoding, and verifies the derived release URL before registering paths.
-Deferred content
-remains lazy inside the serialized kernel-owned VFS. Registration and `stat`
-do not fetch it. The first ordinary open/read or executable resolution prepares
-the tree through its owning VFS mount; transports are tried in descriptor order
-until one passes the same digest and size identity, and all members are bounded, decoded, and
-verified before one identity-guarded batch commit. A failed fetch, digest,
+Deferred content remains lazy inside the serialized kernel-owned VFS.
+Registration, `stat`, and `readdir` do not fetch it. The first ordinary
+open/read, mapping, or executable resolution downloads and verifies the whole
+owning bottle; transports are tried in descriptor order until one passes the
+same digest and size identity, and all members are bounded, decoded, and
+verified before one identity-guarded batch commit. There is no per-file or
+byte-range retrieval inside the gzip/TAR. A failed fetch, digest,
 decode, inventory check, or allocation leaves every regular inode pending and
 retryable. Hard-link inventory members are restored as names of the same inode,
 including across VFS image save/restore. A metadata-only tree remains deferred
 through serialization and is still verified at first-use or boot-prefetch even
 though it has no regular stub to replace. Descriptors with no package-layer
 mounts retain the ordinary shell behavior and fetch no runtime-layer bytes.
+Across all selected layers, at most 512 layer-owned packages may be added. The
+base image's already-pending deferred groups and the newly selected bottle
+trees share one 512-group serialization budget. Pending generic deferred trees
+whose resource claims are serialized also share the aggregate compressed-byte,
+expanded-byte, payload-byte, and source-plus-guest-entry budgets with newly
+selected bottles. Legacy ZIP groups such as the current Vim and NetHack groups
+carry no aggregate byte/entry claims in their old metadata, so they consume the
+shared group budget only.
 The consumer restores the base image and composes every selected layer in a
 private filesystem, publishing that filesystem to boot only after registration
 and every required boot-prefetch succeeds. Allocation, collision, validation,
@@ -513,18 +528,40 @@ original error. Failed and superseded boots then run the same bounded WebKit
 reclamation pass used after kernel teardown, so repeated failures do not leave
 untracked staged images on the persistent main thread.
 
-The current derived producer uses deterministic ZIP bytes with decoder
-`zip-v1` as a temporary scaffold. The host contract is format-neutral and also
-accepts bounded browser-safe gzip-compressed POSIX/PAX TAR trees, including TAR
-hard links. Direct publication from finalized bottle bytes and transport
-mirrors is a later producer step; ZIP is not the target bottle transport.
+The Homebrew collection producer emits one candidate tree per selected Formula
+and keeps that Formula's finalized bottle `.tar.gz` byte-for-byte as the tree
+payload. Its closed schema can represent the production shell's 32 requested
+roots under the shared 128-request bound, but Phase 3 calls
+`buildHomebrewOriginalBottleCollection` directly; it does not publish or boot
+that collection as one multi-root runtime layer. The later shell composer
+chooses the embedded/deferred partition. A
+complete source inventory describes every TAR member. A separate
+guest projection binds those members to the keg, reviewed link-manifest copies,
+the builder-owned `opt` link, ownership, modes, and hard-link inode groups.
+Ordinary archive copies must preserve the source mode; an explicit
+`archive-copy-mode` record is required when a reviewed link manifest overrides
+it. Deterministic `zip-v1` remains accepted for already-published schema-4
+layers and non-Homebrew deferred archives, but is not produced as a substitute
+for an original Homebrew bottle.
+
+The source inventory and materialization provenance are additive deferred-tree
+metadata. Existing schema-4 ZIP descriptors and serialized legacy deferred
+trees remain valid on the new host. An older host rejects a direct-bottle
+descriptor because the closed object contains fields it does not understand;
+it does not reinterpret the bottle as the older one-source-per-guest-entry
+shape. These metadata additions do not change the kernel/process ABI or the
+ABI binding carried by a VFS image.
 
 Boot accepts at most eight package layers and 16 MiB of descriptor bytes in
 aggregate. The shared consumer additionally caps aggregate compressed payload
 bytes, expanded bytes, and entry count. Boot-prefetch downloads use at most two
 workers. Each package's declared keg and `opt` link must match its indexed
-paths, and the consumer rejects archive reuse or a path that depends on a
-directory owned by another selected layer.
+paths. Every schema-5 ancestor at or below `/home/linuxbrew/.linuxbrew` must be
+declared in the aggregate guest projection. Equal-mode `mergeable-directory`
+claims can create an absent directory once or reuse an equal-mode lower-image
+directory; undeclared ancestors, unequal modes, and non-directory collisions
+fail closed. The consumer also rejects archive reuse across package ownership
+domains.
 
 ```json
 {

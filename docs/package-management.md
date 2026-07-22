@@ -349,6 +349,13 @@ Homebrew formula revision or bottle rebuild so Homebrew fetches new bytes. Bump
 should change. Do not bump it for formula-only docs, tap metadata, or
 browser-gallery wording.
 
+Bottle-backed lazy VFS composition keeps the same archive as its transport
+unit. The descriptor exposes bounded metadata for `stat` and `readdir`, but the
+first content access downloads and verifies the complete Formula bottle and
+atomically materializes its guest projection. It does not fetch individual TAR
+members or use HTTP ranges. Dependency bottles have separate identities and
+remain unfetched until a path owned by that dependency is used.
+
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.
 

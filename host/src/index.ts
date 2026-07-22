@@ -95,12 +95,14 @@ export type {
   HomebrewDeferredTreeDescriptor,
   HomebrewDeferredTreeDraftDescriptor,
   HomebrewDeferredTreeDraftTransport,
+  HomebrewDeferredTreeSourceEntry,
   HomebrewDeferredTreeTransport,
   HomebrewLazyLayerBasePackageSource,
   HomebrewLazyLayerDescriptor,
   HomebrewLazyLayerDraftDescriptor,
   HomebrewLazyLayerEntry,
   HomebrewLazyLayerPackageRecord,
+  HomebrewLazyLayerPayload,
   HomebrewRuntimeLayerAssetIdentity,
 } from "./homebrew-lazy-layer-descriptor";
 export {

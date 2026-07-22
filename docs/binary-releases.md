@@ -32,8 +32,10 @@ the source tap repository under `homebrew-vfs-sha256-<image-sha256>`. Lazy
 runtime content publishes separately under
 `homebrew-runtime-layer-sha256-<bundle-sha256>`; that closed identity binds its
 shell base, payload inventory, bottle provenance, and acceptance evidence.
-The eager release contains its five acceptance assets; the runtime release
-contains only its payload and closed descriptor. Generic browser gallery output
+The eager release contains its five acceptance assets. A schema-5 direct
+runtime release contains its closed descriptor plus one exact payload per
+deferred bottle; a historical schema-4 one-tree release contains its descriptor
+and single payload. Generic browser gallery output
 remains run-scoped diagnostic evidence. None of these
 artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
