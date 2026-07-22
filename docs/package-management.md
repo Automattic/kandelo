@@ -272,6 +272,7 @@ block — those packages don't publish a binary):
 
 ```toml
 script_path = "packages/registry/zlib/build-zlib.sh"   # mirrors package.toml
+inputs = ["packages/registry/zlib/build-zlib.sh"]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
@@ -287,6 +288,12 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 
 - `script_path` typically equals `package.toml`'s `[build].script_path`;
   a project that monkey-patches a recipe sets its own override.
+- `inputs` declares the complete repository-local source closure that can
+  affect the built artifact. For JavaScript and TypeScript image builders,
+  include every transitive runtime import from the declared source roots; the
+  package-system import-closure test enforces that relationship for derived
+  images. Type-only modules elided by `tsx` are not inferred, but an authored
+  schema that belongs in artifact provenance may be declared explicitly.
 - `repo_url` + `commit` record the project's recipe provenance.
 - `revision` is the publish-time counter the resolver hashes into
   the cache-key. Bump when output bytes legitimately change (build
