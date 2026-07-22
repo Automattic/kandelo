@@ -178,7 +178,8 @@ Homebrew publishing is a sibling to Kandelo package archive publishing:
 | `Kandelo/reports/*.provenance.json` | Same as metadata | Durable publication and validation evidence. |
 | `Kandelo/vfs-acceptance.json` and its Brewfile | Tap git repository | Optional tap-owned dependency-bearing acceptance selection. |
 | `Kandelo/dependency-taps.json` | Primary tap git repository | Exact reviewed public tap source lock. |
-| Required-gate VFS image, lazy shell layer, descriptors, report, and Node/browser evidence | Source tap GitHub Release `homebrew-vfs-sha256-<image-sha256>` | Kandelo browser direct-`vfs` launch, future lazy shell composition, audit tooling, and operators. |
+| Required-gate VFS image, descriptor, report, and Node/browser evidence | Source tap GitHub Release `homebrew-vfs-sha256-<image-sha256>` | Kandelo browser direct-`vfs` launch, acceptance audit tooling, and operators. |
+| Closed lazy runtime-layer descriptor and payload | Source tap GitHub Release `homebrew-runtime-layer-sha256-<bundle-sha256>` | Bottle-backed lazy shell composition and host consumers. |
 | Browser gallery assets | Run-scoped diagnostic artifact | Review evidence only; not a durable public gallery. |
 
 Do not publish Homebrew bottles into Kandelo's `binaries-abi-v<N>` package
@@ -1168,13 +1169,18 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    bundle without a token in its environment, compares its ABI and bottle
    release tag to the trusted plan outputs, and only then exposes the scoped
    `github.token` to one release-write step.
-   That step serializes on the content tag, creates or resumes an exact draft,
-   rejects duplicate, unexpected, missing-public, or byte-mismatched assets,
-   and publishes only after authenticated byte checks succeed. It finally
-   reads all seven public URLs with token variables removed and verifies every
-   SHA-256 and byte count. It requires the published release API record to set
-   `immutable: true` before emitting success. A public release retry is
-   read-only and idempotent.
+   That step publishes two independently content-addressed releases. The eager
+   acceptance release has five assets under
+   `homebrew-vfs-sha256-<image-sha256>`; the closed runtime layer has its
+   payload and descriptor under
+   `homebrew-runtime-layer-sha256-<bundle-sha256>`. Each release serializes on
+   its own content tag, creates or resumes an exact draft, rejects duplicate,
+   unexpected, partial, missing-public, or byte-mismatched assets, and becomes
+   public only after authenticated byte checks succeed. The publisher then
+   reads all five and two public URLs respectively with token variables removed
+   and verifies every SHA-256 and byte count. It requires both published API
+   records to set `immutable: true` before emitting success. A public release
+   retry is read-only and idempotent.
 
 Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
 remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow
@@ -1505,15 +1511,24 @@ The current derived producer places only layer-owned paths under
 `/home/linuxbrew/.linuxbrew` into deterministic ZIP bytes; it does not duplicate
 the lower shell image, `/etc` metadata, a gallery profile, or a
 language-specific VFS image. ZIP is a temporary decoder/producer scaffold, not
-the endpoint for bottle-backed layers. The schema-3 descriptor names the bytes
-through a format-neutral `deferred_trees[]` contract: immutable SHA-256 and byte
-count, decoder and media type, transport locations, activation policy, and a
-complete inventory of directories, regular files, symlinks, and hard links.
+the endpoint for bottle-backed layers. The image builder emits an inert schema-4
+draft because exact Node and Chromium evidence does not exist until the eager
+image has run. The credential-free release preparer validates that draft,
+payload, eager descriptor, report, and both host evidence files, then closes the
+public schema-4 descriptor. Its format-neutral `deferred_trees[]` contract names
+an immutable SHA-256 and byte count, decoder and media type, ordered transport
+locations, activation policy, and a complete inventory of directories, regular
+files, symlinks, and hard links.
 The inventory includes ownership, POSIX modes, logical sizes, link targets,
-source member paths, and regular-inode groups. The descriptor also binds the
-complete federated tap lock, base and layer package orders, exact lower-image
-package receipt and composition, and the separately browser-proven eager
-acceptance image.
+source member paths, and regular-inode groups. The closed descriptor also binds
+the complete federated tap lock, base and layer package orders, exact
+lower-image package receipt and composition, and the separately browser-proven
+eager acceptance image and evidence identities. Its own canonical bundle
+digest excludes its self-derived tag and release URLs, while retaining release
+asset names and any external immutable transport records. A changed base
+receipt, package/tap provenance field, tree payload or inventory, or evidence
+asset therefore produces a different runtime-layer tag even when the eager VFS
+bytes are unchanged.
 
 `--dependency-tap-root owner/tap=/exact/checkout` is repeatable for lower-level
 federated planning. The publisher derives these arguments only from the
@@ -1895,10 +1910,11 @@ bottle verification prerequisites.
 ## Durable Browser-Proven VFS Releases
 
 A non-dry-run publication with the sealed `require-vfs-acceptance: true` input
-promotes the exact accepted wasm32 image only after the complete verifier
-matrix and the atomic tap finalizer are green. Ordinary optional acceptance
-runs do not publish a VFS release. The release belongs to the source tap
-repository and has the content-addressed tag:
+promotes the exact accepted wasm32 image and closes its runtime-layer draft only
+after the complete verifier matrix and the atomic tap finalizer are green.
+Ordinary optional acceptance runs do not publish either release. Both releases
+belong to the source tap repository. The eager acceptance release has the
+content-addressed tag:
 
 ```text
 homebrew-vfs-sha256-<full lowercase image SHA-256>
@@ -1908,14 +1924,14 @@ Before the first required-acceptance dispatch, a repository administrator must
 enable **Settings → Releases → Enable release immutability** for the source tap.
 GitHub applies that setting only to future releases. The publisher deliberately
 keeps only `contents: write` and cannot preflight the administration-only
-setting. Instead, it requires the published release API record to report
+setting. Instead, it requires both published release API records to report
 `immutable: true` before it emits a success receipt or launch URL. If the
-setting was omitted, the run fails loudly and leaves the exact release state as
-diagnostic evidence; it does not delete or relabel the release automatically.
-That release is not an accepted Kandelo VFS product and needs explicit operator
-recovery before the content tag can be reused.
+setting was omitted, the run fails loudly and leaves the exact release states
+as diagnostic evidence; it does not delete or relabel either release
+automatically. Such a release is not an accepted Kandelo product and needs
+explicit operator recovery before its content tag can be reused.
 
-It has exactly these assets:
+The eager acceptance release has exactly these five assets:
 
 ```text
 kandelo-homebrew.vfs.zst
@@ -1923,6 +1939,12 @@ kandelo-homebrew-vfs.json
 kandelo-homebrew-vfs-report.json
 kandelo-homebrew-node-evidence.json
 kandelo-homebrew-browser-evidence.json
+```
+
+The independently identified runtime-layer release has the tag
+`homebrew-runtime-layer-sha256-<bundle-sha256>` and exactly these two assets:
+
+```text
 kandelo-homebrew-<runtime-id>-layer.bin
 kandelo-homebrew-<runtime-id>-layer.json
 ```
@@ -1940,21 +1962,39 @@ path:
 ?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
 ```
 
-`kandelo-homebrew-<runtime-id>-layer.json` is a separate schema-3 entry point
-for deferred content. Keeping it separate preserves the stable whole-image
-descriptor contract. It records mount prefix `/`, the complete federated tap
+`kandelo-homebrew-<runtime-id>-layer.json` is a separate closed schema-4 entry
+point for deferred content. Keeping it separate preserves the stable
+whole-image descriptor contract and gives the runtime layer an identity that
+cannot alias a changed base, payload, or inventory merely because the eager VFS
+bytes stayed the same. It records mount prefix `/`, the complete federated tap
 lock, dependency-first base and layer package orders, exact bottle and
 link-manifest provenance, the canonical shell package-output receipt, lower
-composition identity, separately browser-proven eager VFS identity, and one or
-more closed `deferred_trees`. Each tree binds activation, immutable content,
-transport, and complete inventory independently of its payload filename.
+composition identity, separately browser-proven eager VFS and evidence
+identities, and one or more closed `deferred_trees`. Each tree binds activation,
+immutable content, ordered transports, and complete inventory independently of
+its payload filename.
+
+The canonical runtime bundle hash covers those semantic fields plus the exact
+five eager asset identities and every deferred release-asset identity. It omits
+only its own digest, derived tag, and self-derived release URLs, so closure is
+non-circular. An external immutable HTTPS transport remains in the identity.
+The public descriptor is therefore a deterministic envelope around the hash,
+and both the credential-free Python validator and the browser-safe TypeScript
+consumer recompute it before accepting the layer.
+Its `descriptor_encoding` is `canonical-json-v1`: UTF-8 JSON with recursively
+sorted object keys, compact `,` and `:` separators, no ASCII-only escaping, and
+exactly one trailing LF. The publisher and consumer reject any other bytes even
+when they parse to the same JSON value. A representation change must introduce
+a new encoding identifier, which is itself covered by the bundle hash; this
+prevents a serializer upgrade from producing different immutable asset bytes
+under an existing runtime tag.
 
 The current publisher creates one `.bin` payload whose declared decoder is
 `zip-v1`. Its release validator opens those temporary ZIP scaffold bytes,
 checks every indexed source and guest path, type, ownership, mode, logical
 size, symlink target, and inode group, and reads every regular member so ZIP
 CRCs are verified before publication. The same validator understands the
-schema-3 TAR+gzip decoder for the later direct-bottle producer, including TAR
+schema-4 TAR+gzip decoder for the later direct-bottle producer, including TAR
 hard links and complete expanded-byte identity. It rejects undeclared or
 missing members and a shared lower path unless that path is a directory.
 Payload and descriptor receive authenticated and anonymous digest-and-size
@@ -1965,7 +2005,7 @@ descriptor and VFS path. A `package-layer` mount targets `/` and carries a
 bounded descriptor URL, exact descriptor byte count, and lowercase SHA-256
 reference. Boot eagerly fetches and validates only those descriptor bytes. It
 then restores the exact compressed shell package output into a private
-filesystem, binds the schema-3 descriptor to that base, its ABI, and
+filesystem, binds the schema-4 descriptor to that base, its ABI, and
 `/etc/kandelo/homebrew-vfs.json` composition, and rejects base or pairwise
 package/path collisions. Only a completely registered selection whose required
 boot-prefetch trees have succeeded is returned to boot, so a failed composition
@@ -1981,9 +2021,14 @@ finish successfully before boot returns. Metadata-only directory/symlink trees
 retain a group-level activation identity, so serialization cannot silently turn
 boot-prefetch into an unverified no-op merely because no regular stub exists.
 Materialization fetches the complete declared content object; it does not issue
-per-file or byte-range requests inside an archive. The production direct-bottle
-producer therefore uses one deferred tree per bottle so first use pulls that
-bottle without forcing unrelated bottles or selected runtime layers to load.
+per-file or byte-range requests inside an archive.
+Every tree declares one bundle-release transport for its browser-readable
+asset and may declare up to seven additional immutable HTTPS locations. This
+keeps canonical bottle identity in `content` while allowing Node.js to use a
+public GHCR bottle directly and browsers to fall back to a byte-identical
+release or same-origin mirror. The production direct-bottle producer will use
+one tree per bottle, so first use fetches that complete bottle without pulling
+an unrelated runtime or the rest of the selected closure.
 
 The consumer accepts at most eight selected layers. Their descriptor byte counts
 may total at most 16 MiB, their compressed payloads may total at most 256 MiB,
@@ -2039,9 +2084,18 @@ authenticated, paginated release list and refreshes that draft by its database
 ID. Once public, the release is never mutated. Publication creates the tag,
 after which it must be a direct commit reference to the exact tap source
 commit. Success requires GitHub-enforced release immutability plus anonymous
-digest-and-size readback of all seven assets. The run retains a small publication
-receipt with the descriptor and direct-image URLs, but that Actions artifact is
-only a receipt; the release assets are the durable public product.
+digest-and-size readback of the acceptance release's exact five assets and the
+runtime release's exact two assets. The schema-2 publication receipt records
+both tags and both independently verified asset lists.
+
+An immutable schema-3 acceptance release may already contain the five eager
+assets plus its two historical lazy assets. That exact complete seven-name set
+is the only legacy exception: reconciliation verifies all seven current handoff
+files byte-for-byte. A partial legacy set, an unknown name, or a mismatched
+legacy payload fails; the publisher never fills or rewrites an immutable legacy
+release. New acceptance releases always use five assets, and every new closed
+schema-4 layer uses its independent two-asset runtime release. The Actions
+receipt is only a receipt; release assets are the durable public product.
 
 This promotion proves only the configured dependency-bearing acceptance image.
 It does not rewrite bottle `browser_compatible` flags and does not create a

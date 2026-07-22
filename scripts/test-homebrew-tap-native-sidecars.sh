@@ -1356,7 +1356,7 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
 LAYER_ACCEPTANCE_VFS_SHA256="$(sha256_file "$TMPDIR/sidecar-tool.vfs.zst")"
 jq -e '
   . as $descriptor |
-  .schema == 3 and .kind == "kandelo-homebrew-deferred-layer" and
+  .schema == 4 and .kind == "kandelo-homebrew-deferred-layer-draft" and
   .mount_prefix == "/" and
   .selection.requested_packages == ["sidecar-tool"] and
   .selection.package_order == [
@@ -1388,9 +1388,8 @@ jq -e '
   ($tree.content.sha256 | test("^[0-9a-f]{64}$")) and
   ($tree.content.bytes | type == "number" and . > 0) and
   $tree.transports == [{
-    "url": ($descriptor.release.repository as $repository |
-      $descriptor.release.tag as $tag |
-      "https://github.com/\($repository)/releases/download/\($tag)/kandelo-homebrew-sidecar-tool-layer.bin")
+    "kind":"bundle-release",
+    "asset":"kandelo-homebrew-sidecar-tool-layer.bin"
   }] and
   $tree.inventory.entry_count == ($tree.inventory.entries | length) and
   $tree.inventory.source_entry_count ==

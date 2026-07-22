@@ -672,7 +672,7 @@ concrete files rather than copying aliases into independent inodes. A rebase
 walks one quiescent source snapshot, so a peer rename cannot mix lazy paths
 from one namespace state with bytes from another.
 
-`registerLazyTree` is the format-neutral grouped form used by schema-3 package
+`registerLazyTree` is the format-neutral grouped form used by schema-4 package
 layers. Its serialized metadata adds a closed decoder/media type, immutable
 digest and byte count, transport locations, activation policy, complete source
 and guest inventory, and regular-inode groups. Existing

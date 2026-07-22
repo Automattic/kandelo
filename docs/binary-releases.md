@@ -28,8 +28,13 @@ Homebrew-native artifacts published through the `kandelo-dev/homebrew-tap-core`
 tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and
 provenance publish as tap git state. A required dependency-bearing acceptance
 run also publishes its exact Node-and-Chromium-proven VFS image and evidence in
-the source tap repository under `homebrew-vfs-sha256-<image-sha256>`; generic
-browser gallery output remains run-scoped diagnostic evidence. None of these
+the source tap repository under `homebrew-vfs-sha256-<image-sha256>`. Lazy
+runtime content publishes separately under
+`homebrew-runtime-layer-sha256-<bundle-sha256>`; that closed identity binds its
+shell base, payload inventory, bottle provenance, and acceptance evidence.
+The eager release contains its five acceptance assets; the runtime release
+contains only its payload and closed descriptor. Generic browser gallery output
+remains run-scoped diagnostic evidence. None of these
 artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring, the immutable VFS descriptor contract, and operations.

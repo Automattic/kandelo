@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { gzipSync } from "fflate";
 import { ABI_VERSION } from "../src/generated/abi";
@@ -24,10 +25,18 @@ import {
 } from "../src/homebrew-vfs-builder";
 import {
   buildHomebrewLazyLayer,
+  closeHomebrewLazyLayerDescriptor,
   encodeHomebrewLazyLayerDescriptor,
+  type HomebrewDeferredTreeDescriptor,
+  type HomebrewDeferredTreeDraftDescriptor,
   type HomebrewLazyLayerDescriptor,
+  type HomebrewLazyLayerDraftDescriptor,
   type HomebrewLazyLayerBasePackageSource,
 } from "../src/homebrew-lazy-layer";
+import {
+  canonicalHomebrewRuntimeLayerBundleIdentityBytes,
+  canonicalHomebrewRuntimeLayerDescriptorBytes,
+} from "../src/homebrew-lazy-layer-descriptor";
 import {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
   parseHomebrewRuntimeLayerDescriptor,
@@ -69,6 +78,49 @@ function sha256(bytes: Uint8Array): string {
 
 function utf8(value: string): Uint8Array {
   return new TextEncoder().encode(value);
+}
+
+function pythonRuntimeLayerBundleSha(descriptor: HomebrewLazyLayerDescriptor): string {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-runtime-layer-identity-"));
+  try {
+    const descriptorPath = join(root, "descriptor.json");
+    writeFileSync(descriptorPath, JSON.stringify(descriptor));
+    const validator = fileURLToPath(
+      new URL("../../scripts/homebrew-vfs-release.py", import.meta.url),
+    );
+    return execFileSync("python3", [
+      "-c",
+      "import json,runpy,sys; m=runpy.run_path(sys.argv[1]); " +
+        "print(m['runtime_layer_bundle_sha256'](json.load(open(sys.argv[2]))))",
+      validator,
+      descriptorPath,
+    ], { encoding: "utf8" }).trim();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function pythonRuntimeLayerDescriptorBytes(
+  descriptor: HomebrewLazyLayerDescriptor,
+): Uint8Array {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-runtime-layer-encoding-"));
+  try {
+    const descriptorPath = join(root, "descriptor.json");
+    writeFileSync(descriptorPath, JSON.stringify(descriptor));
+    const validator = fileURLToPath(
+      new URL("../../scripts/homebrew-vfs-release.py", import.meta.url),
+    );
+    return new Uint8Array(execFileSync("python3", [
+      "-c",
+      "import json,runpy,sys; m=runpy.run_path(sys.argv[1]); " +
+        "sys.stdout.buffer.write(m['runtime_layer_descriptor_bytes'](" +
+        "json.load(open(sys.argv[2]))))",
+      validator,
+      descriptorPath,
+    ]));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function bottleTar(entries: TarSpec[]): Uint8Array {
@@ -621,20 +673,66 @@ async function runtimeLayerConsumerFixture() {
   result.descriptor.base_vfs.bytes = baseImageBytes.byteLength;
   result.descriptor.base_vfs.package_source.output.sha256 = baseSha;
   result.descriptor.base_vfs.package_source.output.bytes = baseImageBytes.byteLength;
+  const descriptor = closeHomebrewLazyLayerDescriptor(result.descriptor, {
+    descriptor: {
+      asset: "kandelo-homebrew-vfs.json",
+      sha256: "1".repeat(64),
+      bytes: 101,
+    },
+    report: {
+      asset: "kandelo-homebrew-vfs-report.json",
+      sha256: "2".repeat(64),
+      bytes: 102,
+    },
+    node: {
+      asset: "kandelo-homebrew-node-evidence.json",
+      sha256: "3".repeat(64),
+      bytes: 103,
+    },
+    browser: {
+      asset: "kandelo-homebrew-browser-evidence.json",
+      sha256: "4".repeat(64),
+      bytes: 104,
+    },
+  });
   return {
     ...fixture,
-    descriptor: result.descriptor,
+    descriptor,
     archive: result.payload,
     baseImageBytes,
   };
 }
 
-function descriptorTree(descriptor: HomebrewLazyLayerDescriptor) {
+function descriptorTree(
+  descriptor: HomebrewLazyLayerDescriptor,
+): HomebrewDeferredTreeDescriptor;
+function descriptorTree(
+  descriptor: HomebrewLazyLayerDraftDescriptor,
+): HomebrewDeferredTreeDraftDescriptor;
+function descriptorTree(
+  descriptor: HomebrewLazyLayerDescriptor | HomebrewLazyLayerDraftDescriptor,
+) {
   return descriptor.deferred_trees[0];
 }
 
 function descriptorEntries(descriptor: HomebrewLazyLayerDescriptor) {
   return descriptorTree(descriptor).inventory.entries;
+}
+
+function bundleReleaseTransport(
+  tree: HomebrewDeferredTreeDescriptor,
+) {
+  const transport = tree.transports.find((item) => item.kind === "bundle-release");
+  if (transport === undefined) throw new Error("fixture has no bundle release transport");
+  return transport;
+}
+
+function draftBundleReleaseTransport(
+  tree: HomebrewDeferredTreeDraftDescriptor,
+) {
+  const transport = tree.transports.find((item) => item.kind === "bundle-release");
+  if (transport === undefined) throw new Error("fixture has no bundle release transport");
+  return transport;
 }
 
 function refreshInventory(descriptor: HomebrewLazyLayerDescriptor): void {
@@ -667,7 +765,8 @@ function runtimeLayerReference(
     reference: {
       id,
       descriptor: {
-        url: `https://example.invalid/layers/${id}.json`,
+        url: `https://github.com/${descriptor.release.repository}/releases/download/` +
+          `${descriptor.release.tag}/kandelo-homebrew-${id}-layer.json`,
         sha256: sha256(bytes),
         bytes: bytes.byteLength,
       },
@@ -720,13 +819,48 @@ function runtimeLayerVariant(
   tree.inventory.entries.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0
   );
-  tree.transports[0].url = tree.transports[0].url.replace(
+  const releaseTransport = bundleReleaseTransport(tree);
+  releaseTransport.url = releaseTransport.url.replace(
     /[^/]+$/,
     `kandelo-homebrew-${id}-layer.bin`,
   );
+  releaseTransport.asset = `kandelo-homebrew-${id}-layer.bin`;
   tree.content.sha256 = sha256(utf8(`${id}-tree`));
   refreshInventory(descriptor);
+  descriptor.bundle.assets.deferred_trees = [{
+    id,
+    asset: releaseTransport.asset,
+    sha256: tree.content.sha256,
+    bytes: tree.content.bytes,
+  }];
+  refreshRuntimeLayerBundleIdentity(descriptor);
   return descriptor;
+}
+
+function refreshRuntimeLayerBundleIdentity(
+  descriptor: HomebrewLazyLayerDescriptor,
+): void {
+  descriptor.bundle.assets.deferred_trees = descriptor.deferred_trees.map((tree) => ({
+    id: tree.id,
+    asset: bundleReleaseTransport(tree).asset,
+    sha256: tree.content.sha256,
+    bytes: tree.content.bytes,
+  }));
+  const bundleSha = sha256(
+    canonicalHomebrewRuntimeLayerBundleIdentityBytes(descriptor),
+  );
+  descriptor.bundle.sha256 = bundleSha;
+  descriptor.release.tag = `homebrew-runtime-layer-sha256-${bundleSha}`;
+  const releaseRoot =
+    `https://github.com/${descriptor.release.repository}/releases/download/` +
+    descriptor.release.tag;
+  for (const tree of descriptor.deferred_trees) {
+    for (const transport of tree.transports) {
+      if (transport.kind === "bundle-release") {
+        transport.url = `${releaseRoot}/${transport.asset}`;
+      }
+    }
+  }
 }
 
 function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
@@ -774,6 +908,66 @@ function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
 }
 
 describe("Homebrew runtime layer consumer", () => {
+  it("rejects a semantic mutation that retains the old closed bundle identity", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    fixture.descriptor.base_vfs.package_source.package.revision += 1;
+    const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [reference],
+      fetch: async () => new Response(bytes),
+    })).rejects.toThrow("bundle identity does not match its descriptor");
+  });
+
+  it("rejects noncanonical descriptor bytes even when their JSON value is unchanged", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const bytes = utf8(`${JSON.stringify(fixture.descriptor, null, 2)}\n`);
+    const reference = runtimeLayerReference("runtime", fixture.descriptor).reference;
+    reference.descriptor.sha256 = sha256(bytes);
+    reference.descriptor.bytes = bytes.byteLength;
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [reference],
+      fetch: async () => new Response(bytes),
+    })).rejects.toThrow("descriptor bytes are not canonical-json-v1");
+  });
+
+  it("retains direct immutable transports beside the derived release mirror", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const directUrl = "https://ghcr.io/v2/example/runtime/blobs/sha256:immutable";
+    descriptorTree(fixture.descriptor).transports.unshift({
+      kind: "external-https",
+      url: directUrl,
+    });
+    refreshRuntimeLayerBundleIdentity(fixture.descriptor);
+    expect(pythonRuntimeLayerBundleSha(fixture.descriptor)).toBe(
+      fixture.descriptor.bundle.sha256,
+    );
+    expect(Array.from(pythonRuntimeLayerDescriptorBytes(fixture.descriptor))).toEqual(
+      Array.from(canonicalHomebrewRuntimeLayerDescriptorBytes(fixture.descriptor)),
+    );
+    const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
+    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+
+    await expect(registerHomebrewRuntimeLayers({
+      fs,
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [reference],
+      fetch: async () => new Response(bytes),
+    })).resolves.toHaveLength(1);
+    expect(fs.exportLazyArchiveEntries()[0]?.url).toBe(directUrl);
+  });
+
   it("registers verified stubs without fetching the archive, then verifies it on demand", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
@@ -1018,6 +1212,7 @@ describe("Homebrew runtime layer consumer", () => {
       const file = descriptorEntries(descriptor).find((entry) => entry.type === "file")!;
       file.size = declaredSize;
       refreshInventory(descriptor);
+      refreshRuntimeLayerBundleIdentity(descriptor);
     }
     const runtime = runtimeLayerReference("runtime", runtimeDescriptor);
     const perl = runtimeLayerReference("perl", perlDescriptor);
@@ -1162,6 +1357,7 @@ describe("Homebrew runtime layer consumer", () => {
     );
     descriptorTree(duplicateArchiveDescriptor).content.sha256 =
       descriptorTree(fixture.descriptor).content.sha256;
+    refreshRuntimeLayerBundleIdentity(duplicateArchiveDescriptor);
     const duplicateArchive = runtimeLayerReference("perl", duplicateArchiveDescriptor);
     let responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],
@@ -1182,6 +1378,7 @@ describe("Homebrew runtime layer consumer", () => {
     descriptorEntries(nestedDescriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
+    refreshRuntimeLayerBundleIdentity(nestedDescriptor);
     const nested = runtimeLayerReference("perl", nestedDescriptor);
     responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],
@@ -1200,6 +1397,7 @@ describe("Homebrew runtime layer consumer", () => {
     const fixture = await runtimeLayerConsumerFixture();
     const descriptor = structuredClone(fixture.descriptor);
     descriptor.base_vfs.composition.package_set_sha256 = "9".repeat(64);
+    refreshRuntimeLayerBundleIdentity(descriptor);
     const encoded = runtimeLayerReference("runtime", descriptor);
     const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
@@ -1245,6 +1443,7 @@ describe("Homebrew runtime layer consumer", () => {
     const descriptor = structuredClone(fixture.descriptor);
     descriptor.base_vfs.sha256 = "9".repeat(64);
     descriptor.base_vfs.package_source.output.sha256 = "9".repeat(64);
+    refreshRuntimeLayerBundleIdentity(descriptor);
     const encoded = runtimeLayerReference("runtime", descriptor);
 
     await expect(composeHomebrewRuntimeLayers({
@@ -1281,6 +1480,7 @@ describe("Homebrew runtime layer consumer", () => {
     descriptorEntries(descriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
+    refreshRuntimeLayerBundleIdentity(descriptor);
     const encoded = runtimeLayerReference("runtime", descriptor);
 
     await expect(composeHomebrewRuntimeLayers({
@@ -1304,6 +1504,7 @@ describe("Homebrew runtime layer consumer", () => {
     descriptorEntries(perlDescriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
+    refreshRuntimeLayerBundleIdentity(perlDescriptor);
     const perl = runtimeLayerReference("perl", perlDescriptor);
     const responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],
@@ -1336,7 +1537,8 @@ describe("Homebrew VFS builder", () => {
       base_package_order: ["kandelo-dev/tap-core/hello"],
       layer_package_order: ["kandelo-dev/tap-core/runtime"],
     });
-    expect(first.descriptor.schema).toBe(3);
+    expect(first.descriptor.schema).toBe(4);
+    expect(first.descriptor.kind).toBe("kandelo-homebrew-deferred-layer-draft");
     expect(first.descriptor.base_vfs).toMatchObject({
       sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       bytes: 12345,
@@ -1357,9 +1559,11 @@ describe("Homebrew VFS builder", () => {
         package_order: ["kandelo-dev/tap-core/hello"],
       },
     });
-    expect(first.descriptor.release.tag).toBe(
-      "homebrew-vfs-sha256-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-    );
+    expect(first.descriptor.acceptance_vfs).toEqual({
+      asset: "kandelo-homebrew.vfs.zst",
+      sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      bytes: 23456,
+    });
     expect(first.descriptor.packages.base).toEqual([expect.objectContaining({
       full_name: "kandelo-dev/tap-core/hello",
       sha256: sha256(fixture.baseBytes),
@@ -1375,6 +1579,10 @@ describe("Homebrew VFS builder", () => {
     expect(tree).toMatchObject({
       activation: { mode: "first-use" },
       content: { decoder: "zip-v1", media_type: "application/zip" },
+      transports: [{
+        kind: "bundle-release",
+        asset: "kandelo-homebrew-runtime-layer.bin",
+      }],
     });
     const entries = parseZipCentralDirectory(first.payload);
     expect(entries.map((entry) => entry.fileName)).toEqual(
@@ -1436,8 +1644,8 @@ describe("Homebrew VFS builder", () => {
       base_package_order: ["kandelo-dev/tap-core/hello"],
       layer_package_order: ["kandelo-dev/tap-core/runtime"],
     });
-    expect(descriptorTree(result.descriptor).transports[0].url).toMatch(
-      /\/kandelo-homebrew-runtime-layer\.bin$/,
+    expect(draftBundleReleaseTransport(descriptorTree(result.descriptor)).asset).toBe(
+      "kandelo-homebrew-runtime-layer.bin",
     );
     expect(descriptorEntries(result.descriptor).some((entry) =>
       entry.path.includes("unrelated")

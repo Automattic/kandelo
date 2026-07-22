@@ -27,6 +27,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 FORMULA_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 RUNTIME_LAYER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+ASSET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 TAP_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 GUEST_PATH_RE = re.compile(
@@ -41,6 +42,7 @@ REPORT_ASSET = "kandelo-homebrew-vfs-report.json"
 NODE_ASSET = "kandelo-homebrew-node-evidence.json"
 BROWSER_ASSET = "kandelo-homebrew-browser-evidence.json"
 DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json"
+RUNTIME_LAYER_TAG_PREFIX = "homebrew-runtime-layer-sha256-"
 MAX_LAZY_LAYER_ENTRIES = 100_000
 MAX_LAZY_LAYER_PATH_BYTES = 4096
 MAX_LAZY_LAYER_ARCHIVE_BYTES = 256 * 1024 * 1024
@@ -856,27 +858,39 @@ def validate_lazy_layer(
     tap_commit: str,
     kandelo_commit: str,
     runtime_id: str,
+    draft: bool = False,
 ) -> None:
     archive_value = read_bytes(
         archive_path,
         "Homebrew deferred-tree payload",
         MAX_LAZY_LAYER_ARCHIVE_BYTES,
     )
-    descriptor_value, _ = read_json(
+    descriptor_value, descriptor_raw = read_json(
         descriptor_path, "Homebrew lazy layer descriptor"
     )
     descriptor = record(descriptor_value, "Homebrew lazy layer descriptor")
-    expected_top_level = {
+    common_top_level = {
         "schema", "kind", "arch", "mount_prefix", "tap", "tap_lock",
         "kandelo", "bottle_release_tag", "selection", "packages",
-        "base_vfs", "release", "acceptance_vfs", "deferred_trees",
+        "base_vfs", "acceptance_vfs", "deferred_trees",
     }
+    expected_top_level = (
+        common_top_level
+        if draft
+        else common_top_level | {
+            "bundle", "release", "acceptance_evidence",
+        }
+    )
     if set(descriptor) != expected_top_level:
         fail("Homebrew lazy layer descriptor has unexpected fields")
-    exact(descriptor.get("schema"), 3, "Homebrew lazy layer schema")
+    exact(descriptor.get("schema"), 4, "Homebrew lazy layer schema")
     exact(
         descriptor.get("kind"),
-        "kandelo-homebrew-deferred-layer",
+        (
+            "kandelo-homebrew-deferred-layer-draft"
+            if draft
+            else "kandelo-homebrew-deferred-layer"
+        ),
         "Homebrew lazy layer kind",
     )
     exact(descriptor.get("arch"), "wasm32", "Homebrew lazy layer architecture")
@@ -1182,41 +1196,185 @@ def validate_lazy_layer(
     if any(name not in composition_order for name in base_order):
         fail("Homebrew lazy layer reuses a package absent from the base composition")
 
-    release_tag = f"homebrew-vfs-sha256-{result['image_sha']}"
-    release_root = (
-        f"https://github.com/{tap_repository}/releases/download/{release_tag}"
+    acceptance_tag = f"homebrew-vfs-sha256-{result['image_sha']}"
+    acceptance_root = (
+        f"https://github.com/{tap_repository}/releases/download/{acceptance_tag}"
     )
-    release = record(descriptor.get("release"), "Homebrew lazy layer release")
-    if set(release) != {"repository", "tag"}:
-        fail("Homebrew lazy layer release has unexpected fields")
-    exact(release.get("repository"), tap_repository, "Homebrew lazy layer release repository")
-    exact(release.get("tag"), release_tag, "Homebrew lazy layer release tag")
+    expected_acceptance_identity = {
+        "asset": IMAGE_ASSET,
+        "sha256": result["image_sha"],
+        "bytes": result["image_bytes"],
+    }
+    release_root: str | None = None
+    bundle_tree_assets: list[dict[str, Any]] | None = None
+    if draft:
+        acceptance_vfs = validate_asset_identity(
+            descriptor.get("acceptance_vfs"),
+            "Homebrew lazy layer acceptance VFS",
+            expected_asset=IMAGE_ASSET,
+            maximum_bytes=MAX_VFS_BYTES,
+        )
+        exact(
+            acceptance_vfs,
+            expected_acceptance_identity,
+            "Homebrew lazy layer acceptance VFS identity",
+        )
+    else:
+        bundle = record(descriptor.get("bundle"), "Homebrew lazy layer bundle")
+        if set(bundle) != {
+            "schema", "kind", "algorithm", "descriptor_encoding", "sha256", "assets"
+        }:
+            fail("Homebrew lazy layer bundle has unexpected fields")
+        exact(bundle.get("schema"), 1, "Homebrew lazy layer bundle schema")
+        exact(
+            bundle.get("kind"),
+            "kandelo-homebrew-runtime-layer-bundle",
+            "Homebrew lazy layer bundle kind",
+        )
+        exact(
+            bundle.get("algorithm"),
+            "sha256-canonical-json-v1",
+            "Homebrew lazy layer bundle algorithm",
+        )
+        exact(
+            bundle.get("descriptor_encoding"),
+            "canonical-json-v1",
+            "Homebrew lazy layer descriptor encoding",
+        )
+        bundle_sha = sha(bundle.get("sha256"), "Homebrew lazy layer bundle digest")
+        assets = record(bundle.get("assets"), "Homebrew lazy layer bundle assets")
+        if set(assets) != {
+            "acceptance_vfs", "acceptance_descriptor", "acceptance_report",
+            "acceptance_node_evidence", "acceptance_browser_evidence",
+            "deferred_trees",
+        }:
+            fail("Homebrew lazy layer bundle assets have unexpected fields")
+        bundle_acceptance = validate_asset_identity(
+            assets.get("acceptance_vfs"),
+            "Homebrew lazy layer bundled acceptance VFS",
+            expected_asset=IMAGE_ASSET,
+            maximum_bytes=MAX_VFS_BYTES,
+        )
+        bundle_evidence = {
+            "descriptor": validate_asset_identity(
+                assets.get("acceptance_descriptor"),
+                "Homebrew lazy layer bundled acceptance descriptor",
+                expected_asset=DESCRIPTOR_ASSET,
+            ),
+            "report": validate_asset_identity(
+                assets.get("acceptance_report"),
+                "Homebrew lazy layer bundled acceptance report",
+                expected_asset=REPORT_ASSET,
+            ),
+            "node": validate_asset_identity(
+                assets.get("acceptance_node_evidence"),
+                "Homebrew lazy layer bundled Node evidence",
+                expected_asset=NODE_ASSET,
+            ),
+            "browser": validate_asset_identity(
+                assets.get("acceptance_browser_evidence"),
+                "Homebrew lazy layer bundled browser evidence",
+                expected_asset=BROWSER_ASSET,
+            ),
+        }
+        bundle_tree_assets = []
+        for index, value in enumerate(
+            array(assets.get("deferred_trees"), "Homebrew lazy layer bundled trees")
+        ):
+            tree_asset = record(value, f"Homebrew lazy layer bundled tree {index}")
+            if set(tree_asset) != {"id", "asset", "sha256", "bytes"}:
+                fail(f"Homebrew lazy layer bundled tree {index} has unexpected fields")
+            tree_id = string(tree_asset.get("id"), f"Homebrew lazy layer bundled tree {index} id")
+            if RUNTIME_LAYER_ID_RE.fullmatch(tree_id) is None:
+                fail(f"Homebrew lazy layer bundled tree {index} id is invalid")
+            identity = validate_asset_identity(
+                {key: tree_asset[key] for key in ("asset", "sha256", "bytes")},
+                f"Homebrew lazy layer bundled tree {index}",
+                maximum_bytes=MAX_LAZY_LAYER_ARCHIVE_BYTES,
+            )
+            bundle_tree_assets.append({"id": tree_id, **identity})
+        if (
+            not bundle_tree_assets
+            or [item["id"] for item in bundle_tree_assets]
+                != sorted(item["id"] for item in bundle_tree_assets)
+            or len({item["id"] for item in bundle_tree_assets})
+                != len(bundle_tree_assets)
+        ):
+            fail("Homebrew lazy layer bundled trees are not canonical")
 
-    acceptance_vfs = record(
-        descriptor.get("acceptance_vfs"), "Homebrew lazy layer acceptance VFS"
-    )
-    if set(acceptance_vfs) != {"asset", "url", "sha256", "bytes"}:
-        fail("Homebrew lazy layer acceptance VFS has unexpected fields")
-    exact(
-        acceptance_vfs.get("asset"),
-        IMAGE_ASSET,
-        "Homebrew lazy layer acceptance VFS asset",
-    )
-    exact(
-        acceptance_vfs.get("url"),
-        f"{release_root}/{IMAGE_ASSET}",
-        "Homebrew lazy layer acceptance VFS URL",
-    )
-    exact(
-        acceptance_vfs.get("sha256"),
-        result["image_sha"],
-        "Homebrew lazy layer acceptance VFS digest",
-    )
-    exact(
-        acceptance_vfs.get("bytes"),
-        result["image_bytes"],
-        "Homebrew lazy layer acceptance VFS size",
-    )
+        release_tag = RUNTIME_LAYER_TAG_PREFIX + bundle_sha
+        release_root = (
+            f"https://github.com/{tap_repository}/releases/download/{release_tag}"
+        )
+        release = record(descriptor.get("release"), "Homebrew lazy layer release")
+        if set(release) != {"repository", "tag"}:
+            fail("Homebrew lazy layer release has unexpected fields")
+        exact(
+            release.get("repository"),
+            tap_repository,
+            "Homebrew lazy layer release repository",
+        )
+        exact(release.get("tag"), release_tag, "Homebrew lazy layer release tag")
+
+        acceptance_vfs = validate_release_asset(
+            descriptor.get("acceptance_vfs"),
+            "Homebrew lazy layer acceptance VFS",
+            expected_asset=IMAGE_ASSET,
+            release_root=acceptance_root,
+            maximum_bytes=MAX_VFS_BYTES,
+        )
+        exact(
+            identity_without_url(acceptance_vfs),
+            expected_acceptance_identity,
+            "Homebrew lazy layer acceptance VFS identity",
+        )
+        exact(
+            identity_without_url(acceptance_vfs),
+            bundle_acceptance,
+            "Homebrew lazy layer bundled acceptance VFS identity",
+        )
+        evidence = record(
+            descriptor.get("acceptance_evidence"),
+            "Homebrew lazy layer acceptance evidence",
+        )
+        if set(evidence) != {"descriptor", "report", "node", "browser"}:
+            fail("Homebrew lazy layer acceptance evidence has unexpected fields")
+        evidence_assets = {
+            "descriptor": DESCRIPTOR_ASSET,
+            "report": REPORT_ASSET,
+            "node": NODE_ASSET,
+            "browser": BROWSER_ASSET,
+        }
+        actual_evidence = {
+            "descriptor": asset_identity(
+                DESCRIPTOR_ASSET,
+                read_bytes(
+                    descriptor_path.parent / DESCRIPTOR_ASSET,
+                    "Homebrew acceptance VFS descriptor",
+                    MAX_JSON_BYTES,
+                ),
+            ),
+            "report": asset_identity(REPORT_ASSET, result["report_bytes"]),
+            "node": asset_identity(NODE_ASSET, result["node_bytes"]),
+            "browser": asset_identity(BROWSER_ASSET, result["browser_bytes"]),
+        }
+        for name, asset_name in evidence_assets.items():
+            item = validate_release_asset(
+                evidence.get(name),
+                f"Homebrew lazy layer acceptance {name}",
+                expected_asset=asset_name,
+                release_root=acceptance_root,
+            )
+            exact(
+                identity_without_url(item),
+                bundle_evidence[name],
+                f"Homebrew lazy layer bundled acceptance {name}",
+            )
+            exact(
+                identity_without_url(item),
+                actual_evidence[name],
+                f"Homebrew lazy layer exact acceptance {name}",
+            )
 
     trees = array(descriptor.get("deferred_trees"), "Homebrew deferred trees")
     if len(trees) != 1:
@@ -1278,22 +1436,67 @@ def validate_lazy_layer(
     transports = array(tree.get("transports"), "Homebrew deferred tree transports")
     if not transports or len(transports) > 8:
         fail("Homebrew deferred tree must have one to eight transports")
+    lazy_layer_asset, _ = lazy_layer_asset_names(runtime_id)
     transport_urls: list[str] = []
+    release_transport_count = 0
     for index, value in enumerate(transports):
         transport = record(value, f"Homebrew deferred tree transport {index}")
-        if set(transport) != {"url"}:
-            fail(f"Homebrew deferred tree transport {index} has unexpected fields")
-        transport_urls.append(
-            https_url(transport.get("url"), f"Homebrew deferred tree transport {index} URL")
+        kind = string(
+            transport.get("kind"),
+            f"Homebrew deferred tree transport {index} kind",
+            maximum=64,
         )
+        if kind == "bundle-release":
+            expected_keys = {"kind", "asset"} if draft else {"kind", "asset", "url"}
+            if set(transport) != expected_keys:
+                fail(f"Homebrew deferred tree transport {index} has unexpected fields")
+            asset_name = string(
+                transport.get("asset"),
+                f"Homebrew deferred tree transport {index} asset",
+                maximum=255,
+            )
+            if ASSET_RE.fullmatch(asset_name) is None:
+                fail(f"Homebrew deferred tree transport {index} asset is unsafe")
+            exact(asset_name, lazy_layer_asset, "Homebrew deferred tree release asset")
+            release_transport_count += 1
+            if draft:
+                continue
+            assert release_root is not None
+            transport_url = https_url(
+                transport.get("url"),
+                f"Homebrew deferred tree transport {index} URL",
+            )
+            exact(
+                transport_url,
+                f"{release_root}/{lazy_layer_asset}",
+                "Homebrew deferred tree release transport",
+            )
+        elif kind == "external-https":
+            if set(transport) != {"kind", "url"}:
+                fail(f"Homebrew deferred tree transport {index} has unexpected fields")
+            transport_url = https_url(
+                transport.get("url"),
+                f"Homebrew deferred tree transport {index} URL",
+            )
+        else:
+            fail(f"Homebrew deferred tree transport {index} kind is unsupported")
+        transport_urls.append(transport_url)
+    if release_transport_count != 1:
+        fail("Homebrew deferred tree must have exactly one bundle release transport")
     if len(set(transport_urls)) != len(transport_urls):
         fail("Homebrew deferred tree transports contain duplicates")
-    lazy_layer_asset, _ = lazy_layer_asset_names(runtime_id)
-    exact(
-        transport_urls[0],
-        f"{release_root}/{lazy_layer_asset}",
-        "Homebrew deferred tree primary release mirror",
-    )
+    if not draft:
+        assert bundle_tree_assets is not None
+        exact(
+            bundle_tree_assets,
+            [{
+                "id": runtime_id,
+                "asset": lazy_layer_asset,
+                "sha256": content.get("sha256"),
+                "bytes": content.get("bytes"),
+            }],
+            "Homebrew deferred tree bundled asset identity",
+        )
 
     inventory = record(tree.get("inventory"), "Homebrew deferred tree inventory")
     if set(inventory) != {
@@ -1459,6 +1662,17 @@ def validate_lazy_layer(
             archive_value,
             validated_entries,
             expanded_bytes,
+        )
+    if not draft:
+        exact(
+            descriptor["bundle"]["sha256"],
+            runtime_layer_bundle_sha256(descriptor),
+            "Homebrew lazy layer canonical bundle digest",
+        )
+        exact(
+            descriptor_raw,
+            runtime_layer_descriptor_bytes(descriptor),
+            "Homebrew lazy layer canonical descriptor bytes",
         )
 
 
@@ -1837,6 +2051,269 @@ def asset_record(repository: str, tag: str, name: str, value: bytes) -> dict[str
     }
 
 
+def asset_identity(name: str, value: bytes) -> dict[str, Any]:
+    if ASSET_RE.fullmatch(name) is None:
+        fail(f"unsafe runtime-layer asset name {name!r}")
+    return {"asset": name, "sha256": digest_bytes(value), "bytes": len(value)}
+
+
+def validate_asset_identity(
+    value: Any,
+    label: str,
+    *,
+    expected_asset: str | None = None,
+    maximum_bytes: int = MAX_JSON_BYTES,
+) -> dict[str, Any]:
+    identity = record(value, label)
+    if set(identity) != {"asset", "sha256", "bytes"}:
+        fail(f"{label} has unexpected fields")
+    name = string(identity.get("asset"), f"{label} asset", maximum=255)
+    if ASSET_RE.fullmatch(name) is None:
+        fail(f"{label} asset is unsafe")
+    if expected_asset is not None:
+        exact(name, expected_asset, f"{label} asset")
+    size = integer(identity.get("bytes"), f"{label} size", minimum=1)
+    if size > maximum_bytes:
+        fail(f"{label} exceeds {maximum_bytes} bytes")
+    return {
+        "asset": name,
+        "sha256": sha(identity.get("sha256"), f"{label} digest"),
+        "bytes": size,
+    }
+
+
+def validate_release_asset(
+    value: Any,
+    label: str,
+    *,
+    expected_asset: str,
+    release_root: str,
+    maximum_bytes: int = MAX_JSON_BYTES,
+) -> dict[str, Any]:
+    item = record(value, label)
+    if set(item) != {"asset", "url", "sha256", "bytes"}:
+        fail(f"{label} has unexpected fields")
+    identity = validate_asset_identity(
+        {key: item[key] for key in ("asset", "sha256", "bytes")},
+        label,
+        expected_asset=expected_asset,
+        maximum_bytes=maximum_bytes,
+    )
+    url = https_url(item.get("url"), f"{label} URL")
+    exact(url, f"{release_root}/{expected_asset}", f"{label} URL")
+    return {**identity, "url": url}
+
+
+def identity_without_url(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "asset": value["asset"],
+        "sha256": value["sha256"],
+        "bytes": value["bytes"],
+    }
+
+
+def runtime_layer_bundle_identity_document(
+    descriptor: dict[str, Any],
+) -> dict[str, Any]:
+    """Project a closed descriptor to its non-circular immutable identity."""
+    evidence = record(
+        descriptor.get("acceptance_evidence"),
+        "Homebrew runtime layer acceptance evidence",
+    )
+    return {
+        "schema": 1,
+        "kind": "kandelo-homebrew-runtime-layer-bundle-identity",
+        "bundle": {
+            "schema": descriptor["bundle"]["schema"],
+            "kind": descriptor["bundle"]["kind"],
+            "algorithm": descriptor["bundle"]["algorithm"],
+            "descriptor_encoding": descriptor["bundle"]["descriptor_encoding"],
+            "assets": descriptor["bundle"]["assets"],
+        },
+        "layer": {
+            "schema": descriptor["schema"],
+            "kind": descriptor["kind"],
+            "arch": descriptor["arch"],
+            "mount_prefix": descriptor["mount_prefix"],
+            "tap": descriptor["tap"],
+            "tap_lock": descriptor["tap_lock"],
+            "kandelo": descriptor["kandelo"],
+            "bottle_release_tag": descriptor["bottle_release_tag"],
+            "selection": descriptor["selection"],
+            "packages": descriptor["packages"],
+            "base_vfs": descriptor["base_vfs"],
+            "acceptance_vfs": identity_without_url(descriptor["acceptance_vfs"]),
+            "acceptance_evidence": {
+                "descriptor": identity_without_url(evidence["descriptor"]),
+                "report": identity_without_url(evidence["report"]),
+                "node": identity_without_url(evidence["node"]),
+                "browser": identity_without_url(evidence["browser"]),
+            },
+            "deferred_trees": [
+                {
+                    "id": tree["id"],
+                    "activation": tree["activation"],
+                    "content": tree["content"],
+                    "transports": [
+                        runtime_layer_transport_identity(transport)
+                        for transport in tree["transports"]
+                    ],
+                    "inventory": tree["inventory"],
+                }
+                for tree in descriptor["deferred_trees"]
+            ],
+        },
+    }
+
+
+def runtime_layer_transport_identity(transport: dict[str, Any]) -> dict[str, Any]:
+    if transport["kind"] == "bundle-release":
+        return {"kind": "bundle-release", "asset": transport["asset"]}
+    return transport
+
+
+def runtime_layer_bundle_sha256(descriptor: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        runtime_layer_bundle_identity_document(descriptor),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return digest_bytes(canonical)
+
+
+def runtime_layer_descriptor_bytes(descriptor: dict[str, Any]) -> bytes:
+    """Return the normative canonical-json-v1 public descriptor encoding."""
+    return (
+        json.dumps(
+            descriptor,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def close_lazy_layer_descriptor(
+    draft: dict[str, Any],
+    *,
+    tap_repository: str,
+    runtime_id: str,
+    image_value: bytes,
+    payload_value: bytes,
+    vfs_descriptor_value: bytes,
+    report_value: bytes,
+    node_value: bytes,
+    browser_value: bytes,
+) -> dict[str, Any]:
+    if (
+        draft.get("schema") != 4
+        or draft.get("kind") != "kandelo-homebrew-deferred-layer-draft"
+    ):
+        fail("Homebrew lazy layer closer received a non-draft descriptor")
+    closed = json.loads(json.dumps(draft))
+    closed["kind"] = "kandelo-homebrew-deferred-layer"
+    lazy_asset, _ = lazy_layer_asset_names(runtime_id)
+    tree_assets = []
+    for tree in closed["deferred_trees"]:
+        transports = tree["transports"]
+        release_transports = [
+            transport for transport in transports
+            if transport.get("kind") == "bundle-release"
+        ]
+        if len(release_transports) != 1:
+            fail("Homebrew lazy layer draft must have exactly one bundle release asset")
+        tree_assets.append({
+            "id": tree["id"],
+            "asset": release_transports[0]["asset"],
+            "sha256": tree["content"]["sha256"],
+            "bytes": tree["content"]["bytes"],
+        })
+    exact(tree_assets, [{
+        "id": runtime_id,
+        "asset": lazy_asset,
+        "sha256": digest_bytes(payload_value),
+        "bytes": len(payload_value),
+    }], "Homebrew runtime-layer payload identity")
+
+    acceptance_vfs = asset_identity(IMAGE_ASSET, image_value)
+    exact(
+        closed.get("acceptance_vfs"),
+        acceptance_vfs,
+        "Homebrew lazy layer draft acceptance VFS",
+    )
+    identities = {
+        "acceptance_vfs": acceptance_vfs,
+        "acceptance_descriptor": asset_identity(
+            DESCRIPTOR_ASSET, vfs_descriptor_value
+        ),
+        "acceptance_report": asset_identity(REPORT_ASSET, report_value),
+        "acceptance_node_evidence": asset_identity(NODE_ASSET, node_value),
+        "acceptance_browser_evidence": asset_identity(
+            BROWSER_ASSET, browser_value
+        ),
+        "deferred_trees": tree_assets,
+    }
+    closed["bundle"] = {
+        "schema": 1,
+        "kind": "kandelo-homebrew-runtime-layer-bundle",
+        "algorithm": "sha256-canonical-json-v1",
+        "descriptor_encoding": "canonical-json-v1",
+        "sha256": "0" * 64,
+        "assets": identities,
+    }
+    acceptance_tag = f"homebrew-vfs-sha256-{acceptance_vfs['sha256']}"
+    acceptance_root = (
+        f"https://github.com/{tap_repository}/releases/download/{acceptance_tag}"
+    )
+
+    def release_asset(identity: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **identity,
+            "url": f"{acceptance_root}/{identity['asset']}",
+        }
+
+    closed["acceptance_vfs"] = release_asset(acceptance_vfs)
+    closed["acceptance_evidence"] = {
+        "descriptor": release_asset(identities["acceptance_descriptor"]),
+        "report": release_asset(identities["acceptance_report"]),
+        "node": release_asset(identities["acceptance_node_evidence"]),
+        "browser": release_asset(identities["acceptance_browser_evidence"]),
+    }
+    placeholder_tag = RUNTIME_LAYER_TAG_PREFIX + "0" * 64
+    closed["release"] = {
+        "repository": tap_repository,
+        "tag": placeholder_tag,
+    }
+    placeholder_root = (
+        f"https://github.com/{tap_repository}/releases/download/{placeholder_tag}"
+    )
+    for tree in closed["deferred_trees"]:
+        tree["transports"] = [
+            {
+                **transport,
+                "url": f"{placeholder_root}/{transport['asset']}",
+            }
+            if transport["kind"] == "bundle-release"
+            else transport
+            for transport in tree["transports"]
+        ]
+
+    bundle_sha = runtime_layer_bundle_sha256(closed)
+    release_tag = RUNTIME_LAYER_TAG_PREFIX + bundle_sha
+    release_root = (
+        f"https://github.com/{tap_repository}/releases/download/{release_tag}"
+    )
+    closed["bundle"]["sha256"] = bundle_sha
+    closed["release"]["tag"] = release_tag
+    for tree in closed["deferred_trees"]:
+        for transport in tree["transports"]:
+            if transport["kind"] == "bundle-release":
+                transport["url"] = f"{release_root}/{transport['asset']}"
+    return closed
+
+
 def build_descriptor(
     result: dict[str, Any],
     *,
@@ -1962,6 +2439,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         tap_commit=args.tap_commit,
         kandelo_commit=args.kandelo_commit,
         runtime_id=args.formula,
+        draft=True,
     )
     image_value = read_bytes(output / IMAGE_ASSET, "VFS release image", MAX_VFS_BYTES)
     descriptor = build_descriptor(
@@ -1973,7 +2451,30 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         kandelo_commit=args.kandelo_commit,
         image_value=image_value,
     )
-    (output / DESCRIPTOR_ASSET).write_bytes(descriptor_bytes(descriptor))
+    vfs_descriptor_value = descriptor_bytes(descriptor)
+    (output / DESCRIPTOR_ASSET).write_bytes(vfs_descriptor_value)
+    draft_value, _ = read_json(
+        output / lazy_layer_descriptor_asset,
+        "Homebrew lazy layer draft descriptor",
+    )
+    closed_layer = close_lazy_layer_descriptor(
+        record(draft_value, "Homebrew lazy layer draft descriptor"),
+        tap_repository=args.tap_repository,
+        runtime_id=args.formula,
+        image_value=image_value,
+        payload_value=read_bytes(
+            output / lazy_layer_asset,
+            "Homebrew deferred-tree payload",
+            MAX_LAZY_LAYER_ARCHIVE_BYTES,
+        ),
+        vfs_descriptor_value=vfs_descriptor_value,
+        report_value=result["report_bytes"],
+        node_value=result["node_bytes"],
+        browser_value=result["browser_bytes"],
+    )
+    (output / lazy_layer_descriptor_asset).write_bytes(
+        runtime_layer_descriptor_bytes(closed_layer)
+    )
     validate(args)
     return descriptor
 

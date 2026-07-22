@@ -94,10 +94,20 @@ export type {
 export type {
   HomebrewDeferredTreeDecoder,
   HomebrewDeferredTreeDescriptor,
+  HomebrewDeferredTreeDraftDescriptor,
+  HomebrewDeferredTreeDraftTransport,
+  HomebrewDeferredTreeTransport,
   HomebrewLazyLayerBasePackageSource,
   HomebrewLazyLayerDescriptor,
+  HomebrewLazyLayerDraftDescriptor,
   HomebrewLazyLayerEntry,
   HomebrewLazyLayerPackageRecord,
+  HomebrewRuntimeLayerAssetIdentity,
+} from "./homebrew-lazy-layer-descriptor";
+export {
+  canonicalHomebrewRuntimeLayerBundleIdentityBytes,
+  canonicalHomebrewRuntimeLayerDescriptorBytes,
+  homebrewRuntimeLayerBundleIdentityDocument,
 } from "./homebrew-lazy-layer-descriptor";
 export type {
   HomebrewRuntimeLayerBaseClosure,

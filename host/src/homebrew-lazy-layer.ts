@@ -12,18 +12,29 @@ import {
   selectHomebrewRuntimeLayer,
 } from "./homebrew-runtime-layer-policy";
 import type {
-  HomebrewDeferredTreeDescriptor,
+  HomebrewDeferredTreeDraftDescriptor,
   HomebrewLazyLayerBasePackageSource,
   HomebrewLazyLayerDescriptor,
+  HomebrewLazyLayerDraftDescriptor,
   HomebrewLazyLayerEntry,
   HomebrewLazyLayerPackageRecord,
+  HomebrewRuntimeLayerAssetIdentity,
+} from "./homebrew-lazy-layer-descriptor";
+import {
+  canonicalHomebrewRuntimeLayerBundleIdentityBytes,
+  canonicalHomebrewRuntimeLayerDescriptorBytes,
 } from "./homebrew-lazy-layer-descriptor";
 export type {
   HomebrewDeferredTreeDescriptor,
+  HomebrewDeferredTreeDraftDescriptor,
+  HomebrewDeferredTreeDraftTransport,
+  HomebrewDeferredTreeTransport,
   HomebrewLazyLayerBasePackageSource,
   HomebrewLazyLayerDescriptor,
+  HomebrewLazyLayerDraftDescriptor,
   HomebrewLazyLayerEntry,
   HomebrewLazyLayerPackageRecord,
+  HomebrewRuntimeLayerAssetIdentity,
 } from "./homebrew-lazy-layer-descriptor";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 
@@ -42,6 +53,10 @@ export function homebrewRuntimeLayerDescriptorAsset(id: string): string {
 }
 
 const HOMEBREW_VFS_ASSET = "kandelo-homebrew.vfs.zst";
+const HOMEBREW_VFS_DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json";
+const HOMEBREW_VFS_REPORT_ASSET = "kandelo-homebrew-vfs-report.json";
+const HOMEBREW_NODE_EVIDENCE_ASSET = "kandelo-homebrew-node-evidence.json";
+const HOMEBREW_BROWSER_EVIDENCE_ASSET = "kandelo-homebrew-browser-evidence.json";
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 const HOME_BREW_PREFIX = "/home/linuxbrew/.linuxbrew";
 const ZIP_EPOCH = new Date(1980, 0, 1, 0, 0, 0);
@@ -84,7 +99,23 @@ export interface BuildHomebrewLazyLayerOptions {
 export interface HomebrewLazyLayerBuildResult {
   /** Format-neutral immutable bytes described by `deferred_trees[0]`. */
   payload: Uint8Array;
-  descriptor: HomebrewLazyLayerDescriptor;
+  /** Inert until exact Node/browser evidence closes its independent identity. */
+  descriptor: HomebrewLazyLayerDraftDescriptor;
+}
+
+export interface HomebrewLazyLayerClosureEvidence {
+  descriptor: HomebrewRuntimeLayerAssetIdentity & {
+    asset: "kandelo-homebrew-vfs.json";
+  };
+  report: HomebrewRuntimeLayerAssetIdentity & {
+    asset: "kandelo-homebrew-vfs-report.json";
+  };
+  node: HomebrewRuntimeLayerAssetIdentity & {
+    asset: "kandelo-homebrew-node-evidence.json";
+  };
+  browser: HomebrewRuntimeLayerAssetIdentity & {
+    asset: "kandelo-homebrew-browser-evidence.json";
+  };
 }
 
 interface ParsedBaseComposition {
@@ -176,9 +207,6 @@ export async function buildHomebrewLazyLayer(
   // descriptor identifies bytes by decoder/media type and never by filename.
   const payload = createLayerZip(options.fs, entries);
   const payloadSha = digest(payload);
-  const releaseTag = `homebrew-vfs-sha256-${options.acceptanceVfs.sha256}`;
-  const releaseRoot =
-    `https://github.com/${selectedPlan.tapRepository}/releases/download/${releaseTag}`;
   const payloadAsset = homebrewRuntimeLayerPayloadAsset(runtimeSelection.id);
   const baseRecords = basePackages.map(packageRecord);
   const layerRecords = layerPackages.map(packageRecord);
@@ -192,8 +220,8 @@ export async function buildHomebrewLazyLayer(
   return {
     payload,
     descriptor: {
-      schema: 3,
-      kind: "kandelo-homebrew-deferred-layer",
+      schema: 4,
+      kind: "kandelo-homebrew-deferred-layer-draft",
       arch,
       mount_prefix: "/",
       tap: {
@@ -241,20 +269,15 @@ export async function buildHomebrewLazyLayer(
           package_order: base.packageOrder,
         },
       },
-      release: {
-        repository: selectedPlan.tapRepository,
-        tag: releaseTag,
-      },
       acceptance_vfs: {
         asset: HOMEBREW_VFS_ASSET,
-        url: `${releaseRoot}/${HOMEBREW_VFS_ASSET}`,
         sha256: options.acceptanceVfs.sha256,
         bytes: options.acceptanceVfs.bytes,
       },
       deferred_trees: [createDeferredTreeDescriptor(
         runtimeSelection.id,
         runtimeRoot.keg,
-        `${releaseRoot}/${payloadAsset}`,
+        payloadAsset,
         payloadSha,
         payload.byteLength,
         entries,
@@ -266,11 +289,11 @@ export async function buildHomebrewLazyLayer(
 function createDeferredTreeDescriptor(
   id: string,
   capabilityRoot: string,
-  transportUrl: string,
+  transportAsset: string,
   sha256: string,
   bytes: number,
   entries: HomebrewLazyLayerEntry[],
-): HomebrewDeferredTreeDescriptor {
+): HomebrewDeferredTreeDraftDescriptor {
   const regularGroups = new Set(
     entries.flatMap((entry) => entry.inode_group ? [entry.inode_group] : []),
   );
@@ -288,7 +311,7 @@ function createDeferredTreeDescriptor(
       sha256,
       bytes,
     },
-    transports: [{ url: transportUrl }],
+    transports: [{ kind: "bundle-release", asset: transportAsset }],
     inventory: {
       entry_count: entries.length,
       source_entry_count: new Set(entries.map((entry) => entry.source_path)).size,
@@ -408,9 +431,185 @@ export function parseHomebrewLazyLayerBasePackageSource(
 }
 
 export function encodeHomebrewLazyLayerDescriptor(
-  descriptor: HomebrewLazyLayerDescriptor,
+  descriptor: HomebrewLazyLayerDraftDescriptor | HomebrewLazyLayerDescriptor,
 ): Uint8Array {
+  if (descriptor.kind === "kandelo-homebrew-deferred-layer") {
+    return canonicalHomebrewRuntimeLayerDescriptorBytes(descriptor);
+  }
   return new TextEncoder().encode(`${JSON.stringify(descriptor, null, 2)}\n`);
+}
+
+/**
+ * Close an inert producer descriptor after exact acceptance evidence exists.
+ * Production publication performs the same operation in the credential-free
+ * Python handoff validator; this implementation keeps the producer contract
+ * independently testable and documents the cross-language identity algorithm.
+ */
+export function closeHomebrewLazyLayerDescriptor(
+  draft: HomebrewLazyLayerDraftDescriptor,
+  evidence: HomebrewLazyLayerClosureEvidence,
+): HomebrewLazyLayerDescriptor {
+  if (
+    draft.schema !== 4 ||
+    draft.kind !== "kandelo-homebrew-deferred-layer-draft"
+  ) {
+    throw new Error("Homebrew lazy layer draft has an unsupported identity");
+  }
+  assertAssetIdentity(draft.acceptance_vfs, HOMEBREW_VFS_ASSET, "acceptance VFS");
+  assertAssetIdentity(
+    evidence.descriptor,
+    HOMEBREW_VFS_DESCRIPTOR_ASSET,
+    "acceptance descriptor",
+  );
+  assertAssetIdentity(
+    evidence.report,
+    HOMEBREW_VFS_REPORT_ASSET,
+    "acceptance report",
+  );
+  assertAssetIdentity(
+    evidence.node,
+    HOMEBREW_NODE_EVIDENCE_ASSET,
+    "Node acceptance evidence",
+  );
+  assertAssetIdentity(
+    evidence.browser,
+    HOMEBREW_BROWSER_EVIDENCE_ASSET,
+    "browser acceptance evidence",
+  );
+  const treeAssets = draft.deferred_trees.map((tree) => {
+    if (tree.transports.length === 0 || tree.transports.length > 8) {
+      throw new Error(
+        `Homebrew lazy layer draft tree ${tree.id} must have one to eight transports`,
+      );
+    }
+    const releaseTransports = tree.transports.filter((transport) =>
+      transport.kind === "bundle-release"
+    );
+    if (releaseTransports.length !== 1) {
+      throw new Error(
+        `Homebrew lazy layer draft tree ${tree.id} must have one bundle release asset`,
+      );
+    }
+    for (const transport of tree.transports) {
+      if (transport.kind === "external-https") {
+        assertImmutableHttpsTransport(transport.url, tree.id);
+      }
+    }
+    const asset = releaseTransports[0].asset;
+    assertAssetIdentity(
+      { asset, sha256: tree.content.sha256, bytes: tree.content.bytes },
+      homebrewRuntimeLayerPayloadAsset(tree.id),
+      `deferred tree ${tree.id}`,
+    );
+    return { id: tree.id, asset, sha256: tree.content.sha256, bytes: tree.content.bytes };
+  });
+  const acceptanceTag = `homebrew-vfs-sha256-${draft.acceptance_vfs.sha256}`;
+  const acceptanceRoot =
+    `https://github.com/${draft.tap.repository}/releases/download/${acceptanceTag}`;
+  const releasePlaceholder = "homebrew-runtime-layer-sha256-" + "0".repeat(64);
+  const releaseRoot =
+    `https://github.com/${draft.tap.repository}/releases/download/${releasePlaceholder}`;
+  const descriptor: HomebrewLazyLayerDescriptor = {
+    ...draft,
+    kind: "kandelo-homebrew-deferred-layer",
+    bundle: {
+      schema: 1,
+      kind: "kandelo-homebrew-runtime-layer-bundle",
+      algorithm: "sha256-canonical-json-v1",
+      descriptor_encoding: "canonical-json-v1",
+      sha256: "0".repeat(64),
+      assets: {
+        acceptance_vfs: { ...draft.acceptance_vfs },
+        acceptance_descriptor: { ...evidence.descriptor },
+        acceptance_report: { ...evidence.report },
+        acceptance_node_evidence: { ...evidence.node },
+        acceptance_browser_evidence: { ...evidence.browser },
+        deferred_trees: treeAssets,
+      },
+    },
+    release: {
+      repository: draft.tap.repository,
+      tag: releasePlaceholder,
+    },
+    acceptance_vfs: {
+      ...draft.acceptance_vfs,
+      asset: HOMEBREW_VFS_ASSET,
+      url: `${acceptanceRoot}/${HOMEBREW_VFS_ASSET}`,
+    },
+    acceptance_evidence: {
+      descriptor: withReleaseUrl(evidence.descriptor, acceptanceRoot),
+      report: withReleaseUrl(evidence.report, acceptanceRoot),
+      node: withReleaseUrl(evidence.node, acceptanceRoot),
+      browser: withReleaseUrl(evidence.browser, acceptanceRoot),
+    },
+    deferred_trees: draft.deferred_trees.map((tree) => ({
+      ...tree,
+      transports: tree.transports.map((transport) =>
+        transport.kind === "bundle-release"
+          ? {
+            ...transport,
+            url: `${releaseRoot}/${transport.asset}`,
+          }
+          : transport
+      ),
+    })),
+  };
+  const bundleSha = digest(
+    canonicalHomebrewRuntimeLayerBundleIdentityBytes(descriptor),
+  );
+  const releaseTag = `homebrew-runtime-layer-sha256-${bundleSha}`;
+  const closedRoot =
+    `https://github.com/${draft.tap.repository}/releases/download/${releaseTag}`;
+  descriptor.bundle.sha256 = bundleSha;
+  descriptor.release.tag = releaseTag;
+  for (const tree of descriptor.deferred_trees) {
+    for (const transport of tree.transports) {
+      if (transport.kind === "bundle-release") {
+        transport.url = `${closedRoot}/${transport.asset}`;
+      }
+    }
+  }
+  return descriptor;
+}
+
+function assertImmutableHttpsTransport(url: string, treeId: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Homebrew lazy layer draft tree ${treeId} has an invalid transport URL`);
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.hash !== ""
+  ) {
+    throw new Error(`Homebrew lazy layer draft tree ${treeId} has an unsafe transport URL`);
+  }
+}
+
+function withReleaseUrl<T extends HomebrewRuntimeLayerAssetIdentity>(
+  identity: T,
+  releaseRoot: string,
+): T & { url: string } {
+  return { ...identity, url: `${releaseRoot}/${identity.asset}` };
+}
+
+function assertAssetIdentity(
+  identity: HomebrewRuntimeLayerAssetIdentity,
+  expectedAsset: string,
+  label: string,
+): void {
+  if (identity.asset !== expectedAsset || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(identity.asset)) {
+    throw new Error(`Homebrew lazy layer ${label} asset is invalid`);
+  }
+  if (!SHA256_RE.test(identity.sha256)) {
+    throw new Error(`Homebrew lazy layer ${label} digest is invalid`);
+  }
+  if (!Number.isSafeInteger(identity.bytes) || identity.bytes <= 0) {
+    throw new Error(`Homebrew lazy layer ${label} byte count is invalid`);
+  }
 }
 
 function assertImageSource(

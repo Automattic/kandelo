@@ -3688,6 +3688,10 @@ def check_publisher(workflow)
   vfs_validator_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-vfs-release.py"))
   [
     'expected_assets(runtime_id)', 'homebrew-vfs-sha256-', 'validate_bundle_dir',
+    'homebrew-runtime-layer-sha256-', 'runtime_layer_bundle_identity_document',
+    'runtime_layer_bundle_sha256', 'runtime_layer_descriptor_bytes',
+    'canonical-json-v1', 'close_lazy_layer_descriptor',
+    'kandelo-homebrew-deferred-layer-draft',
     'exact(actual, expected, "VFS release descriptor")', 'Node evidence image digest',
     'browser image digest', 'selected formula tap commit', 'Node dependency edge',
     'expected Kandelo ABI', 'expected bottle release tag',
@@ -3704,19 +3708,23 @@ def check_publisher(workflow)
   )
   [
     'env -u GH_TOKEN -u GITHUB_TOKEN python3', 'state-lock.sh',
-    'homebrew-vfs-sha256-', 'draft=true', 'assert_asset_names_are_bounded',
+    'homebrew-vfs-sha256-', 'homebrew-runtime-layer-sha256-',
+    'acceptance_tag=', 'runtime_tag=', 'publish_bundle',
+    'draft=true', 'assert_asset_names_are_bounded', 'assert_complete_asset_set',
+    'legacy_acceptance_expected=', 'selected_names=',
     'gh api --paginate --slurp', 'releases?per_page=100',
     'type == "array" and all(.[]; type == "array")',
     '[.[][] | select(.tag_name == $tag)]',
     'github_api_get_json "/repos/${TAP_REPOSITORY}/releases/${release_id}"',
     ".id | select(type == \"number\" and . > 0)",
-    'existing release identity is malformed or mismatched',
+    'existing $label identity is malformed or mismatched',
     'public release is not protected by GitHub immutable releases',
-    'public release is missing immutable asset', 'Accept: application/octet-stream',
+    'public $label release is missing immutable asset', 'Accept: application/octet-stream',
     'retry env -u GH_TOKEN -u GITHUB_TOKEN', 'curl --disable',
     'publish response was ambiguous; reconciling',
-    'anonymous readback failed', '.object.type == "commit"',
+    'anonymous $label digest readback failed', '.object.type == "commit"',
     'visibility: "public-anonymous-readback"',
+    'acceptance_release:', 'release_tag: $runtime_tag',
     'lazy_layer_asset="kandelo-homebrew-${FORMULA}-layer.bin"',
     'lazy_layer_descriptor_asset="kandelo-homebrew-${FORMULA}-layer.json"',
     '.deferred_trees[0].content.sha256',
@@ -3724,17 +3732,17 @@ def check_publisher(workflow)
     check(vfs_publisher_source.include?(fragment),
           "Homebrew VFS release publisher lacks #{fragment}")
   end
-  draft_tag_guard = <<~'SHELL'.strip
-    if [ "$(jq -r '.draft' "$release_json")" = false ]; then
-      validate_tag_target
-    fi
-  SHELL
-  guard_index = vfs_publisher_source.index(draft_tag_guard)
-  final_tag_index = vfs_publisher_source.rindex("\nvalidate_tag_target\n")
+  guard_index = vfs_publisher_source.index(
+    %q{if [ "$(jq -r '.draft' "$release_json")" = false ]; then}
+  )
+  guard_call_index = guard_index && vfs_publisher_source.index(
+    "\n    validate_tag_target\n", guard_index
+  )
   public_index = vfs_publisher_source.index("release did not become public")
-  check(!guard_index.nil? && !final_tag_index.nil? && !public_index.nil? &&
-        vfs_publisher_source.scan("\nvalidate_tag_target\n").length == 1 &&
-        guard_index < public_index && final_tag_index > public_index,
+  final_tag_index = vfs_publisher_source.index("\n  validate_tag_target\n", public_index)
+  check(!guard_index.nil? && !guard_call_index.nil? && !final_tag_index.nil? &&
+        !public_index.nil? && guard_index < guard_call_index &&
+        guard_call_index < public_index && final_tag_index > public_index,
         "Homebrew VFS release publisher requires a tag ref while the release is still draft")
   vfs_test_source = File.read(File.join(REPO_ROOT, "scripts/test-homebrew-vfs-release.sh"))
   [
@@ -3750,6 +3758,16 @@ def check_publisher(workflow)
     "Kandelo ABI outside the trusted plan", "bottle release tag outside the trusted plan",
     "tampered lazy ZIP layer", "lazy ZIP index that differs from its archive",
     "runtime layer that omitted a selected dependency",
+    "base receipt change reused a runtime-layer identity",
+    "lazy payload change reused a runtime-layer identity",
+    "mutated base receipt under the old bundle tag",
+    "changed payload bytes under the old bundle tag",
+    "unknown runtime bundle field",
+    "noncanonical runtime descriptor bytes",
+    "changed external transport under the old bundle tag",
+    "(.acceptance_assets | length) == 5 and (.assets | length) == 2",
+    "complete byte-identical legacy acceptance release",
+    "partial legacy acceptance release",
   ].each do |fragment|
     check(vfs_test_source.include?(fragment), "Homebrew VFS release tests lack #{fragment}")
   end

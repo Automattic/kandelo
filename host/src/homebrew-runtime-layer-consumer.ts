@@ -5,6 +5,10 @@ import type {
   HomebrewLazyLayerPackageRecord,
 } from "./homebrew-lazy-layer-descriptor";
 import {
+  canonicalHomebrewRuntimeLayerBundleIdentityBytes,
+  canonicalHomebrewRuntimeLayerDescriptorBytes,
+} from "./homebrew-lazy-layer-descriptor";
+import {
   MemoryFileSystem,
   type LazyTreeGroup,
   type LazyTreeRegistrationEntry,
@@ -29,9 +33,15 @@ export const HOMEBREW_RUNTIME_LAYER_LIMITS = {
 const HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew";
 const COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 const ACCEPTANCE_ASSET = "kandelo-homebrew.vfs.zst";
+const ACCEPTANCE_DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json";
+const ACCEPTANCE_REPORT_ASSET = "kandelo-homebrew-vfs-report.json";
+const ACCEPTANCE_NODE_ASSET = "kandelo-homebrew-node-evidence.json";
+const ACCEPTANCE_BROWSER_ASSET = "kandelo-homebrew-browser-evidence.json";
+const RUNTIME_LAYER_TAG_PREFIX = "homebrew-runtime-layer-sha256-";
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
+const ASSET_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const RELEASE_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const S_IFMT = 0o170000;
@@ -140,6 +150,26 @@ async function registerHomebrewRuntimeLayersOnStagedFileSystem(
     const descriptor = parseHomebrewRuntimeLayerDescriptor(
       decodeJson(bytes, `Homebrew runtime layer ${reference.id} descriptor`),
     );
+    const canonicalDescriptor = canonicalHomebrewRuntimeLayerDescriptorBytes(descriptor);
+    if (
+      canonicalDescriptor.byteLength !== bytes.byteLength ||
+      canonicalDescriptor.some((byte, index) => byte !== bytes[index])
+    ) {
+      throw new Error(
+        `Homebrew runtime layer ${reference.id} descriptor bytes are not canonical-json-v1`,
+      );
+    }
+    const actualBundleSha = await sha256Hex(
+      canonicalHomebrewRuntimeLayerBundleIdentityBytes(descriptor),
+    );
+    if (
+      descriptor.bundle.sha256 !== actualBundleSha ||
+      descriptor.release.tag !== `${RUNTIME_LAYER_TAG_PREFIX}${actualBundleSha}`
+    ) {
+      throw new Error(
+        `Homebrew runtime layer ${reference.id} bundle identity does not match its descriptor`,
+      );
+    }
     return { reference, descriptor };
   }));
 
@@ -206,7 +236,7 @@ async function registerHomebrewRuntimeLayersOnStagedFileSystem(
   return registered;
 }
 
-/** Parse the closed schema-3 release descriptor without evaluating package code. */
+/** Parse the closed schema-4 release descriptor without evaluating package code. */
 export function parseHomebrewRuntimeLayerDescriptor(
   value: unknown,
 ): HomebrewLazyLayerDescriptor {
@@ -222,12 +252,14 @@ export function parseHomebrewRuntimeLayerDescriptor(
     "selection",
     "packages",
     "base_vfs",
+    "bundle",
     "release",
     "acceptance_vfs",
+    "acceptance_evidence",
     "deferred_trees",
   ], "Homebrew runtime layer descriptor");
   if (
-    root.schema !== 3 ||
+    root.schema !== 4 ||
     root.kind !== "kandelo-homebrew-deferred-layer"
   ) {
     throw new Error("Homebrew runtime layer descriptor has an unsupported identity");
@@ -417,6 +449,91 @@ export function parseHomebrewRuntimeLayerDescriptor(
 
   const baseVfs = validateBaseVfs(root.base_vfs, arch, kandeloAbi, baseOrder);
 
+  const bundle = exactRecord(
+    root.bundle,
+    ["schema", "kind", "algorithm", "descriptor_encoding", "sha256", "assets"],
+    "Homebrew runtime layer bundle",
+  );
+  if (
+    bundle.schema !== 1 ||
+    bundle.kind !== "kandelo-homebrew-runtime-layer-bundle" ||
+    bundle.algorithm !== "sha256-canonical-json-v1" ||
+    bundle.descriptor_encoding !== "canonical-json-v1"
+  ) {
+    throw new Error("Homebrew runtime layer bundle identity is unsupported");
+  }
+  const bundleSha = requireSha256(
+    bundle.sha256,
+    "Homebrew runtime layer bundle digest",
+  );
+  const bundleAssets = exactRecord(bundle.assets, [
+    "acceptance_vfs",
+    "acceptance_descriptor",
+    "acceptance_report",
+    "acceptance_node_evidence",
+    "acceptance_browser_evidence",
+    "deferred_trees",
+  ], "Homebrew runtime layer bundle assets");
+  const bundleAcceptance = validateAssetIdentity(
+    bundleAssets.acceptance_vfs,
+    "Homebrew runtime layer bundled acceptance VFS",
+    ACCEPTANCE_ASSET,
+    2 * 1024 * 1024 * 1024,
+  );
+  const bundleDescriptor = validateAssetIdentity(
+    bundleAssets.acceptance_descriptor,
+    "Homebrew runtime layer bundled acceptance descriptor",
+    ACCEPTANCE_DESCRIPTOR_ASSET,
+  );
+  const bundleReport = validateAssetIdentity(
+    bundleAssets.acceptance_report,
+    "Homebrew runtime layer bundled acceptance report",
+    ACCEPTANCE_REPORT_ASSET,
+  );
+  const bundleNode = validateAssetIdentity(
+    bundleAssets.acceptance_node_evidence,
+    "Homebrew runtime layer bundled Node evidence",
+    ACCEPTANCE_NODE_ASSET,
+  );
+  const bundleBrowser = validateAssetIdentity(
+    bundleAssets.acceptance_browser_evidence,
+    "Homebrew runtime layer bundled browser evidence",
+    ACCEPTANCE_BROWSER_ASSET,
+  );
+  const bundledTrees = requireArray(
+    bundleAssets.deferred_trees,
+    "Homebrew runtime layer bundled deferred trees",
+    1,
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackages,
+  ).map((value, index) => {
+    const item = exactRecord(
+      value,
+      ["id", "asset", "sha256", "bytes"],
+      `Homebrew runtime layer bundled deferred tree ${index}`,
+    );
+    return {
+      id: requirePackageName(
+        item.id,
+        `Homebrew runtime layer bundled deferred tree ${index} id`,
+      ),
+      ...validateAssetIdentity(
+        { asset: item.asset, sha256: item.sha256, bytes: item.bytes },
+        `Homebrew runtime layer bundled deferred tree ${index}`,
+        undefined,
+        HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes,
+      ),
+    };
+  });
+  if (
+    new Set(bundledTrees.map((tree) => tree.id)).size !== bundledTrees.length ||
+    !arraysEqual(
+      bundledTrees.map((tree) => tree.id),
+      [...bundledTrees.map((tree) => tree.id)].sort(compareText),
+    )
+  ) {
+    throw new Error("Homebrew runtime layer bundled deferred trees are not canonical");
+  }
+
   const release = exactRecord(
     root.release,
     ["repository", "tag"],
@@ -432,6 +549,9 @@ export function parseHomebrewRuntimeLayerDescriptor(
   );
   if (releaseRepository !== tapRepository) {
     throw new Error("Homebrew runtime layer release repository differs from its tap");
+  }
+  if (releaseTag !== `${RUNTIME_LAYER_TAG_PREFIX}${bundleSha}`) {
+    throw new Error("Homebrew runtime layer release tag differs from its bundle identity");
   }
   const releaseRoot =
     `https://github.com/${releaseRepository}/releases/download/${releaseTag}`;
@@ -455,15 +575,46 @@ export function parseHomebrewRuntimeLayerDescriptor(
     1,
     2 * 1024 * 1024 * 1024,
   );
+  const acceptanceRoot =
+    `https://github.com/${tapRepository}/releases/download/` +
+    `homebrew-vfs-sha256-${acceptanceSha}`;
   if (
     requireHttpsUrl(acceptance.url, "Homebrew runtime layer acceptance VFS URL") !==
-      `${releaseRoot}/${ACCEPTANCE_ASSET}` ||
-    releaseTag !== `homebrew-vfs-sha256-${acceptanceSha}`
+      `${acceptanceRoot}/${ACCEPTANCE_ASSET}` ||
+    !sameAssetIdentity(acceptance, bundleAcceptance)
   ) {
-    throw new Error("Homebrew runtime layer acceptance VFS does not bind its release");
+    throw new Error("Homebrew runtime layer acceptance VFS does not bind its independent release");
   }
 
-  const deferredTrees = validateDeferredTrees(root.deferred_trees, releaseRoot);
+  const acceptanceEvidence = exactRecord(root.acceptance_evidence, [
+    "descriptor",
+    "report",
+    "node",
+    "browser",
+  ], "Homebrew runtime layer acceptance evidence");
+  const evidencePairs = [
+    ["descriptor", ACCEPTANCE_DESCRIPTOR_ASSET, bundleDescriptor],
+    ["report", ACCEPTANCE_REPORT_ASSET, bundleReport],
+    ["node", ACCEPTANCE_NODE_ASSET, bundleNode],
+    ["browser", ACCEPTANCE_BROWSER_ASSET, bundleBrowser],
+  ] as const;
+  for (const [name, asset, bundled] of evidencePairs) {
+    const evidence = validateReleaseAsset(
+      acceptanceEvidence[name],
+      `Homebrew runtime layer acceptance ${name}`,
+      asset,
+      acceptanceRoot,
+    );
+    if (!sameAssetIdentity(evidence, bundled)) {
+      throw new Error(`Homebrew runtime layer acceptance ${name} differs from its bundle`);
+    }
+  }
+
+  const deferredTrees = validateDeferredTrees(
+    root.deferred_trees,
+    releaseRoot,
+    bundledTrees,
+  );
   const entries = deferredTrees.flatMap((tree) => tree.inventory.entries);
   if (new Set(entries.map((entry) => entry.path)).size !== entries.length) {
     throw new Error("Homebrew runtime layer deferred trees duplicate a VFS path");
@@ -605,6 +756,15 @@ function validateLayerBinding(
   composition: ParsedBaseComposition,
 ): void {
   const { reference, descriptor } = layer;
+  const descriptorAsset = `kandelo-homebrew-${reference.id}-layer.json`;
+  const descriptorRoot =
+    `https://github.com/${descriptor.release.repository}/releases/download/` +
+    descriptor.release.tag;
+  if (reference.descriptor.url !== `${descriptorRoot}/${descriptorAsset}`) {
+    throw new Error(
+      `Homebrew runtime layer ${reference.id} descriptor URL differs from its bundle release`,
+    );
+  }
   if (descriptor.arch !== expectedArch) {
     throw new Error(
       `Homebrew runtime layer ${reference.id} architecture ${descriptor.arch} ` +
@@ -1070,7 +1230,13 @@ function validatePackageRecord(
 
 function validateDeferredTrees(
   value: unknown,
-  _releaseRoot: string,
+  releaseRoot: string,
+  bundledTrees: ReadonlyArray<{
+    id: string;
+    asset: string;
+    sha256: string;
+    bytes: number;
+  }>,
 ): HomebrewDeferredTreeDescriptor[] {
   const values = requireArray(
     value,
@@ -1176,20 +1342,55 @@ function validateDeferredTrees(
       1,
       8,
     );
+    const bundled = bundledTrees[index];
+    if (
+      bundled === undefined ||
+      bundled.id !== id ||
+      bundled.sha256 !== digest ||
+      bundled.bytes !== content.bytes
+    ) {
+      throw new Error(`Homebrew runtime layer deferred tree ${id} differs from its bundle`);
+    }
+    let releaseTransportCount = 0;
     for (const [transportIndex, transportValue] of transports.entries()) {
-      const transport = exactRecord(
-        transportValue,
-        ["url"],
-        `Homebrew runtime layer deferred tree ${id} transport ${transportIndex}`,
-      );
-      const url = requireHttpsUrl(
-        transport.url,
-        `Homebrew runtime layer deferred tree ${id} transport ${transportIndex} URL`,
-      );
+      const transportLabel =
+        `Homebrew runtime layer deferred tree ${id} transport ${transportIndex}`;
+      const transportRecord = requireRecord(transportValue, transportLabel);
+      const kind = requireString(transportRecord.kind, `${transportLabel} kind`, 64);
+      let url: string;
+      if (kind === "bundle-release") {
+        const transport = exactRecord(
+          transportValue,
+          ["kind", "asset", "url"],
+          transportLabel,
+        );
+        const asset = requireAssetName(transport.asset, `${transportLabel} asset`);
+        url = requireHttpsUrl(transport.url, `${transportLabel} URL`);
+        if (asset !== bundled.asset || url !== `${releaseRoot}/${asset}`) {
+          throw new Error(
+            `Homebrew runtime layer deferred tree ${id} release transport differs from its bundle`,
+          );
+        }
+        releaseTransportCount += 1;
+      } else if (kind === "external-https") {
+        const transport = exactRecord(
+          transportValue,
+          ["kind", "url"],
+          transportLabel,
+        );
+        url = requireHttpsUrl(transport.url, `${transportLabel} URL`);
+      } else {
+        throw new Error(`${transportLabel} kind is unsupported`);
+      }
       if (urls.has(url)) {
         throw new Error(`Homebrew runtime layer deferred tree ${id} reuses a transport`);
       }
       urls.add(url);
+    }
+    if (releaseTransportCount !== 1) {
+      throw new Error(
+        `Homebrew runtime layer deferred tree ${id} must have one bundle release transport`,
+      );
     }
 
     const inventory = exactRecord(
@@ -1219,6 +1420,9 @@ function validateDeferredTrees(
   });
   if (!arraysEqual(trees.map((tree) => tree.id), [...trees.map((tree) => tree.id)].sort(compareText))) {
     throw new Error("Homebrew runtime layer deferred trees are not in canonical order");
+  }
+  if (trees.length !== bundledTrees.length) {
+    throw new Error("Homebrew runtime layer deferred trees differ from its bundle");
   }
   return trees;
 }
@@ -1699,6 +1903,59 @@ function requireSha256(value: unknown, label: string): string {
     throw new Error(`${label} is not a lowercase SHA-256 digest`);
   }
   return value;
+}
+
+function requireAssetName(value: unknown, label: string): string {
+  if (typeof value !== "string" || !ASSET_RE.test(value) || value.length > 255) {
+    throw new Error(`${label} is not a safe release asset name`);
+  }
+  return value;
+}
+
+function validateAssetIdentity(
+  value: unknown,
+  label: string,
+  expectedAsset?: string,
+  maximumBytes = HOMEBREW_RUNTIME_LAYER_LIMITS.maxDescriptorBytes,
+): { asset: string; sha256: string; bytes: number } {
+  const record = exactRecord(value, ["asset", "sha256", "bytes"], label);
+  const asset = requireAssetName(record.asset, `${label} asset`);
+  if (expectedAsset !== undefined && asset !== expectedAsset) {
+    throw new Error(`${label} names an unsupported asset`);
+  }
+  return {
+    asset,
+    sha256: requireSha256(record.sha256, `${label} digest`),
+    bytes: requireInteger(record.bytes, `${label} bytes`, 1, maximumBytes),
+  };
+}
+
+function validateReleaseAsset(
+  value: unknown,
+  label: string,
+  expectedAsset: string,
+  releaseRoot: string,
+): { asset: string; url: string; sha256: string; bytes: number } {
+  const record = exactRecord(value, ["asset", "url", "sha256", "bytes"], label);
+  const identity = validateAssetIdentity(
+    { asset: record.asset, sha256: record.sha256, bytes: record.bytes },
+    label,
+    expectedAsset,
+  );
+  const url = requireHttpsUrl(record.url, `${label} URL`);
+  if (url !== `${releaseRoot}/${identity.asset}`) {
+    throw new Error(`${label} URL differs from its independent release`);
+  }
+  return { ...identity, url };
+}
+
+function sameAssetIdentity(
+  left: Record<string, unknown> | { asset: string; sha256: string; bytes: number },
+  right: { asset: string; sha256: string; bytes: number },
+): boolean {
+  return left.asset === right.asset &&
+    left.sha256 === right.sha256 &&
+    left.bytes === right.bytes;
 }
 
 function requireGitSha(value: unknown, label: string): string {

@@ -477,9 +477,21 @@ an exact descriptor byte count and `sha256:<digest>` reference. The shared
 host consumer verifies the descriptor and its binding to the exact loaded
 shell image, ABI, and Homebrew composition before it adds any paths. Selected
 layers must have disjoint non-base packages and filesystem ownership. Their
-schema-3 `deferred_trees` carry a complete path, type, mode, link, and regular
+schema-4 `deferred_trees` carry a complete path, type, mode, link, and regular
 inode inventory plus an immutable content identity, closed decoder/media-type
-pair, and one or more byte-identical HTTPS transports. Deferred content
+pair, and one to eight byte-identical immutable HTTPS transports. Exactly one
+transport is the bundle's browser-readable release asset; additional transports
+may name the canonical public bottle or another immutable mirror. The descriptor has its own
+`homebrew-runtime-layer-sha256-<bundle-sha256>` identity, independent from the
+eager `homebrew-vfs-sha256-<image-sha256>` acceptance release. Its canonical
+bundle hash covers the lower shell package-output receipt and composition,
+package and tap provenance, complete tree inventory and payload identity, and
+the exact VFS/report/Node/Chromium evidence identities. The bundle's
+self-derived release URL and the hash itself are excluded to avoid a circular
+identity; external transport records remain bound. The consumer recomputes the
+canonical hash, requires the closed descriptor's canonical-json-v1 byte
+encoding, and verifies the derived release URL before registering paths.
+Deferred content
 remains lazy inside the serialized kernel-owned VFS. Registration and `stat`
 do not fetch it. The first ordinary open/read or executable resolution prepares
 the tree through its owning VFS mount; transports are tried in descriptor order
