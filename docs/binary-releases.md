@@ -41,6 +41,20 @@ artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring, the immutable VFS descriptor contract, and operations.
 
+These content-addressed releases share one manifest-driven immutable-release
+publisher. Before using a credential it stages and verifies the manifest's
+bounded duplicate-free JSON, safe unique basenames, exact sizes, and SHA-256
+digests. Under a tag-specific
+state lock it can resume an exact partial draft, but rejects unknown, duplicate,
+or changed assets. It verifies every complete draft asset through the
+authenticated API and establishes an exact lightweight tag at the planned tap
+commit before publishing. It then requires GitHub release immutability and
+exact anonymous readback before
+atomically emitting a machine-readable receipt. Release and asset discovery are
+paginated, so the same protocol covers the production shell mirror's 35 bottle
+objects and canonical plan rather than relying on the small embedded asset list
+in a release response.
+
 The unprivileged Homebrew build job fetch-only materializes the wasm32 Dash,
 Coreutils, Grep, and Sed artifacts from `binaries-abi-v<N>` so Formula tests can
 execute installed shell scripts on Kandelo. These unqualified host-resolver

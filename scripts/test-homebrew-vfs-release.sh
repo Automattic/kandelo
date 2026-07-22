@@ -1470,8 +1470,10 @@ with log_path.open("a") as log:
 
 def load():
     if not state_path.exists():
-        return {"releases": {}, "next_release_id": 73, "next_asset_id": 100}
-    return json.loads(state_path.read_text())
+        return {"releases": {}, "tags": {}, "next_release_id": 73, "next_asset_id": 100}
+    state = json.loads(state_path.read_text())
+    state.setdefault("tags", {})
+    return state
 
 def save(value):
     state_path.write_text(json.dumps(value, sort_keys=True))
@@ -1479,9 +1481,19 @@ def save(value):
 def release_json(value):
     return {
         "id": value["id"], "tag_name": value["tag"], "target_commitish": value["target"],
+        "name": value["title"], "body": value["body"],
         "draft": value["draft"], "prerelease": False,
         "immutable": not value["draft"] and not os.environ.get("FAKE_IMMUTABLE_RELEASES_DISABLED"),
-        "assets": [{"id": item["id"], "name": name} for name, item in sorted(value["assets"].items())],
+        "assets": [asset_json(name, item) for name, item in sorted(value["assets"].items())],
+    }
+
+def asset_json(name, item):
+    payload = (root / item["file"]).read_bytes()
+    return {
+        "id": item["id"], "name": name,
+        "state": item.get("state", "uploaded"),
+        "size": item.get("size", len(payload)),
+        "digest": item.get("digest", "sha256:" + __import__("hashlib").sha256(payload).hexdigest()),
     }
 
 def by_id(state, release_id):
@@ -1510,18 +1522,32 @@ if args[:2] == ["api", "--include"]:
         print(json.dumps(release_json(release)))
     elif "/git/ref/tags/" in endpoint:
         tag = endpoint.split("/git/ref/tags/", 1)[1]
-        release = state["releases"].get(tag)
-        if release is None or release["draft"]:
-            print("HTTP/1.1 404 Not Found\n")
-            sys.exit(1)
+        tag_value = state["tags"].get(tag)
+        if tag_value is None:
+            release = state["releases"].get(tag)
+            if release is None or release["draft"]:
+                print("HTTP/1.1 404 Not Found\n")
+                sys.exit(1)
+            tag_value = {
+                "type": release.get("tag_type", "commit"),
+                "sha": release.get("tag_sha", release["target"]),
+            }
         print("HTTP/1.1 200 OK\n")
-        print(json.dumps({"ref": "refs/tags/" + release["tag"], "object": {"type": release.get("tag_type", "commit"), "sha": release.get("tag_sha", release["target"])}}))
+        print(json.dumps({"ref": "refs/tags/" + tag, "object": tag_value}))
     else:
         print("HTTP/1.1 404 Not Found\n")
         sys.exit(1)
 elif args[:3] == ["api", "--paginate", "--slurp"]:
     state = load()
-    print(json.dumps([[release_json(value) for value in state["releases"].values()]]))
+    endpoint = args[3]
+    if "/assets?per_page=100" in endpoint:
+        release_id = int(endpoint.split("/releases/", 1)[1].split("/", 1)[0])
+        release = by_id(state, release_id)
+        if release is None: sys.exit(1)
+        assets = [asset_json(name, item) for name, item in sorted(release["assets"].items())]
+        print(json.dumps([assets[:2], assets[2:]]))
+    else:
+        print(json.dumps([[], [release_json(value) for value in state["releases"].values()]]))
 elif args[:3] == ["api", "--method", "POST"]:
     fields = {arg.split("=", 1)[0][2:]: arg.split("=", 1)[1] for arg in args if arg.startswith(("-f", "-F")) and "=" in arg}
     # gh receives -f and its value as separate arguments; parse those too.
@@ -1530,23 +1556,39 @@ elif args[:3] == ["api", "--method", "POST"]:
         if arg in ("-f", "-F"):
             key, value = args[index + 1].split("=", 1); fields[key] = value
     state = load()
-    tag = fields["tag_name"]
-    if tag in state["releases"]:
-        print("duplicate release", file=sys.stderr); sys.exit(1)
-    release = {
-        "id": state["next_release_id"], "tag": tag,
-        "target": fields["target_commitish"], "draft": True, "assets": {},
-    }
-    state["next_release_id"] += 1
-    state["releases"][tag] = release
-    save(state)
-    print(json.dumps(release_json(release)))
+    if args[3].endswith("/git/refs"):
+        prefix = "refs/tags/"
+        if not fields["ref"].startswith(prefix): sys.exit(2)
+        tag = fields["ref"][len(prefix):]
+        if tag in state["tags"]:
+            print("duplicate tag", file=sys.stderr); sys.exit(1)
+        state["tags"][tag] = {"type": "commit", "sha": fields["sha"]}
+        save(state)
+        print(json.dumps({"ref": fields["ref"], "object": state["tags"][tag]}))
+    else:
+        tag = fields["tag_name"]
+        if tag in state["releases"]:
+            print("duplicate release", file=sys.stderr); sys.exit(1)
+        release = {
+            "id": state["next_release_id"], "tag": tag,
+            "target": fields["target_commitish"],
+            "title": fields["name"], "body": fields["body"],
+            "draft": True, "assets": {},
+        }
+        state["next_release_id"] += 1
+        state["releases"][tag] = release
+        save(state)
+        print(json.dumps(release_json(release)))
 elif args[:3] == ["api", "--method", "PATCH"]:
     state = load()
     release = by_id(state, int(args[3].rsplit("/", 1)[1]))
     if release is None: sys.exit(1)
     if not release["draft"]:
         print("published release is immutable", file=sys.stderr); sys.exit(1)
+    if state["tags"].get(release["tag"]) != {
+        "type": "commit", "sha": release["target"]
+    }:
+        print("release tag is not exact", file=sys.stderr); sys.exit(1)
     release["draft"] = False; save(state)
     marker = root / ("lost-publish-response-" + str(release["id"]))
     if os.environ.get("FAKE_PATCH_RESPONSE_LOST") and not marker.exists():
@@ -1617,7 +1659,8 @@ publisher_args=(
   --abi 42
   --bottle-release-tag bottles-abi-v42
 )
-run_publisher() {
+run_publisher_with_receipt() {
+  local receipt="$1"
   PATH="$fake_bin:$PATH" \
   FAKE_GITHUB_STATE="$fake_state" \
   FAKE_EXPECTED_LOCK_ROOT="$tap" \
@@ -1625,7 +1668,10 @@ run_publisher() {
   GITHUB_REPOSITORY=kandelo-dev/homebrew-tap-core \
   GH_TOKEN=fake-token \
     bash "$REPO_ROOT/scripts/homebrew-publish-vfs-release.sh" \
-      "${publisher_args[@]}" --receipt "$TMP_ROOT/receipt.json"
+      "${publisher_args[@]}" --receipt "$receipt"
+}
+run_publisher() {
+  run_publisher_with_receipt "$TMP_ROOT/receipt.json"
 }
 
 acceptance_tag="$(jq -er '.release.tag' "$handoff/kandelo-homebrew-vfs.json")"
@@ -1646,8 +1692,27 @@ jq -e --arg image_sha "$image_sha" --arg acceptance_tag "$acceptance_tag" \
 jq -e --arg acceptance_tag "$acceptance_tag" --arg runtime_tag "$runtime_tag" '
   (.releases | keys | sort) == ([$acceptance_tag, $runtime_tag] | sort) and
   (.releases[$acceptance_tag].assets | length) == 5 and
-  (.releases[$runtime_tag].assets | length) == 2
+  (.releases[$runtime_tag].assets | length) == 2 and
+  .releases[$acceptance_tag].body ==
+    "Content-addressed Kandelo Homebrew VFS image. Provenance and exact Node/Chromium acceptance evidence are attached."
 ' "$fake_state/state.json" >/dev/null || fail "publisher did not split immutable release identities"
+
+# The outer receipt is also a durable success record. If its same-directory
+# staging file cannot be created after both releases reconcile, preserve the
+# last successful receipt byte-for-byte instead of truncating it in place.
+protected_receipt_dir="$TMP_ROOT/protected-receipt"
+protected_receipt="$protected_receipt_dir/receipt.json"
+mkdir "$protected_receipt_dir"
+printf 'previous successful outer receipt\n' >"$protected_receipt"
+cp "$protected_receipt" "$TMP_ROOT/previous-outer-receipt"
+chmod 500 "$protected_receipt_dir"
+if run_publisher_with_receipt "$protected_receipt" >/dev/null 2>&1; then
+  chmod 700 "$protected_receipt_dir"
+  fail "publisher replaced an outer receipt without atomic staging"
+fi
+chmod 700 "$protected_receipt_dir"
+cmp "$TMP_ROOT/previous-outer-receipt" "$protected_receipt" >/dev/null ||
+  fail "failed final receipt construction changed the previous outer receipt"
 
 FAKE_CURL_FAIL_ONCE=kandelo-homebrew.vfs.zst run_publisher >/dev/null ||
   fail "publisher did not retry transient anonymous release propagation"
@@ -1834,7 +1899,7 @@ if PATH="$fake_bin:$PATH" FAKE_GITHUB_STATE="$fake_state" \
 fi
 
 jq --arg tag "$runtime_tag" \
-  '.releases[$tag].tag_sha = "9999999999999999999999999999999999999999"' \
+  '.tags[$tag].sha = "9999999999999999999999999999999999999999"' \
   "$fake_state/state.json" >"$fake_state/state.tmp"
 mv "$fake_state/state.tmp" "$fake_state/state.json"
 expect_failure "publisher accepted a release tag at the wrong commit" run_publisher

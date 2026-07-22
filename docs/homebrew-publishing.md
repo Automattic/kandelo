@@ -2146,7 +2146,9 @@ draft may be completed, while unexpected assets or existing bytes with a
 different digest fail closed. GitHub's release-by-tag and Git-ref endpoints do
 not expose a draft, so recovery discovers the unique pending tag through the
 authenticated, paginated release list and refreshes that draft by its database
-ID. Once public, the release is never mutated. Publication creates the tag,
+ID. Release assets are inventoried through their separately paginated endpoint,
+not the release object's potentially truncated embedded list. Once public, the
+release is never mutated. Publication creates the tag,
 after which it must be a direct commit reference to the exact tap source
 commit. Success requires GitHub-enforced release immutability plus anonymous
 digest-and-size readback of the acceptance release's exact five assets and the
@@ -2154,6 +2156,24 @@ runtime release's descriptor plus every declared deferred-bottle asset. A new
 schema-3 publication receipt records both tags and both independently verified
 asset lists. Schema 2 is retained only for the historical one-tree receipt
 shape.
+
+`scripts/publish-immutable-github-release.sh` owns that release lifecycle for
+both VFS releases and larger bottle mirrors. Its schema-1 inert manifest binds
+one canonical lowercase repository, content tag, exact 40-hex tap commit,
+title, body, preferred asset-name set, optional complete historical sets, and
+one lowercase SHA-256 and byte count per asset. Asset names are unique,
+conservative basenames, and the asset directory contains their exact source
+files. The validator runs with `GH_TOKEN` and `GITHUB_TOKEN` removed and copies
+the verified inputs into a private staging directory before the publisher
+checks a credential. The publisher then holds the tag state lock while it
+reconciles create, upload, and publish responses, authentically downloads every
+complete draft asset immediately before publication, and verifies the
+immutable release, direct tag, and every anonymous download afterward. A
+failed attempt leaves any older receipt untouched. Success atomically replaces
+the receipt with the release ID and every asset's ID, URL, digest, and size.
+This same bounded 256-asset contract can carry the production shell mirror's
+35 bottle payloads plus its canonical plan without adding a second publication
+protocol.
 
 An immutable schema-3 acceptance release may already contain the five eager
 assets plus its two historical lazy assets. That exact complete seven-name set

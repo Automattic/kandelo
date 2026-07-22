@@ -3732,46 +3732,69 @@ def check_publisher(workflow)
     File.join(REPO_ROOT, "scripts/homebrew-publish-vfs-release.sh")
   )
   [
-    'env -u GH_TOKEN -u GITHUB_TOKEN python3', 'state-lock.sh',
+    'env -u GH_TOKEN -u GITHUB_TOKEN python3',
     '--dependency-tap-root) DEPENDENCY_TAP_ROOTS+=("$2")',
     'validator_args+=(--dependency-tap-root "$dependency_tap_root")',
     'homebrew-vfs-sha256-', 'homebrew-runtime-layer-sha256-',
     'acceptance_tag=', 'runtime_tag=', 'publish_bundle',
-    'draft=true', 'assert_asset_names_are_bounded', 'assert_complete_asset_set',
-    'legacy_acceptance_expected=', 'selected_names=',
-    'gh api --paginate --slurp', 'releases?per_page=100',
-    'type == "array" and all(.[]; type == "array")',
-    '[.[][] | select(.tag_name == $tag)]',
-    'github_api_get_json "/repos/${TAP_REPOSITORY}/releases/${release_id}"',
-    ".id | select(type == \"number\" and . > 0)",
-    'existing $label identity is malformed or mismatched',
-    'public release is not protected by GitHub immutable releases',
-    'public $label release is missing immutable asset', 'Accept: application/octet-stream',
-    'retry env -u GH_TOKEN -u GITHUB_TOKEN', 'curl --disable',
-    'publish response was ambiguous; reconciling',
-    'anonymous $label digest readback failed', '.object.type == "commit"',
+    'legacy_acceptance_expected=', 'accepted_existing_asset_sets:',
+    'publish-immutable-github-release.sh', '--manifest "$release_manifest"',
+    '--asset-root "$HANDOFF"', '--lock-root "$TAP_ROOT"',
+    '--receipt "$receipt"',
     'visibility: "public-anonymous-readback"',
     'acceptance_release:', 'release_tag: $runtime_tag',
     'lazy_layer_asset="kandelo-homebrew-${FORMULA}-layer.bin"',
     'lazy_layer_descriptor_asset="kandelo-homebrew-${FORMULA}-layer.json"',
     '.bundle.assets.deferred_trees[].asset',
     'if $receipt_schema == 3',
+    'Provenance and exact Node/Chromium acceptance evidence are attached.',
+    'FINAL_RECEIPT_TMP="$(mktemp "$receipt_dir/.homebrew-vfs-release-receipt.XXXXXX")"',
+    'mv "$FINAL_RECEIPT_TMP" "$RECEIPT"',
   ].each do |fragment|
     check(vfs_publisher_source.include?(fragment),
           "Homebrew VFS release publisher lacks #{fragment}")
   end
-  guard_index = vfs_publisher_source.index(
-    %q{if [ "$(jq -r '.draft' "$release_json")" = false ]; then}
+
+  immutable_publisher_source = File.read(
+    File.join(REPO_ROOT, "scripts/publish-immutable-github-release.sh")
   )
-  guard_call_index = guard_index && vfs_publisher_source.index(
-    "\n    validate_tag_target\n", guard_index
+  [
+    'env -u GH_TOKEN -u GITHUB_TOKEN PYTHONDONTWRITEBYTECODE=1',
+    'validate-immutable-github-release-manifest.py', 'state-lock.sh',
+    'gh api --paginate --slurp', 'releases?per_page=100',
+    'assets?per_page=100',
+    'type == "array" and all(.[]; type == "array")',
+    '[.[][] | select(.tag_name == $tag)]',
+    'github_api_get_json "/repos/${REPOSITORY}/releases/${release_id}"',
+    ".id | select(type == \"number\" and . > 0)",
+    '.name == $title and .body == $body',
+    'existing release identity is malformed or mismatched',
+    'public release is not protected by GitHub immutable releases',
+    'public release is missing immutable asset', 'Accept: application/octet-stream',
+    'retry_command env -u GH_TOKEN -u GITHUB_TOKEN', 'curl --disable',
+    'create response was ambiguous; reconciling',
+    'upload response for $name was ambiguous; reconciling',
+    'tag creation response was ambiguous; reconciling',
+    'gh api --method POST "/repos/${REPOSITORY}/git/refs"',
+    'ensure_direct_tag',
+    'publish response was ambiguous; reconciling',
+    'anonymous digest readback failed', '.object.type == "commit"',
+    'visibility: "public-anonymous-readback"',
+  ].each do |fragment|
+    check(immutable_publisher_source.include?(fragment),
+          "immutable GitHub release publisher lacks #{fragment}")
+  end
+  immutable_manifest_validator_source = File.read(
+    File.join(REPO_ROOT, "scripts/validate-immutable-github-release-manifest.py")
   )
-  public_index = vfs_publisher_source.index("release did not become public")
-  final_tag_index = vfs_publisher_source.index("\n  validate_tag_target\n", public_index)
-  check(!guard_index.nil? && !guard_call_index.nil? && !final_tag_index.nil? &&
-        !public_index.nil? && guard_index < guard_call_index &&
-        guard_call_index < public_index && final_tag_index > public_index,
-        "Homebrew VFS release publisher requires a tag ref while the release is still draft")
+  [
+    'manifest validation must run without GitHub credentials',
+    'safe ASCII basename', 'assets contains duplicate name',
+    'copy_verified_asset', 'accepted_existing_asset_sets',
+  ].each do |fragment|
+    check(immutable_manifest_validator_source.include?(fragment),
+          "immutable release manifest validator lacks #{fragment}")
+  end
   vfs_test_source = File.read(File.join(REPO_ROOT, "scripts/test-homebrew-vfs-release.sh"))
   [
     "validator accepted a tampered VFS image", "browser evidence for different bytes",
@@ -3796,8 +3819,28 @@ def check_publisher(workflow)
     "(.acceptance_assets | length) == 5 and (.assets | length) == 2",
     "complete byte-identical legacy acceptance release",
     "partial legacy acceptance release",
+    "failed final receipt construction changed the previous outer receipt",
   ].each do |fragment|
     check(vfs_test_source.include?(fragment), "Homebrew VFS release tests lack #{fragment}")
+  end
+  immutable_publisher_test_source = File.read(
+    File.join(REPO_ROOT, "scripts/test-publish-immutable-github-release.sh")
+  )
+  [
+    "36-asset receipt is incomplete", "partial draft did not upload exactly 26",
+    "unsafe asset basename", "duplicate asset declarations",
+    "complete accepted subset was not reconciled",
+    "failed publication replaced an existing successful receipt",
+    "unexpected draft asset", "duplicate release asset names",
+    "release asset digest mismatch", "different existing title",
+    "duplicate JSON object key", "oversized manifest",
+    "pre-existing wrong tag", "wrong pre-existing tag was detected only after publication",
+    "failed anonymous readback", "anonymous recovery mutated",
+    "FAKE_CREATE_RESPONSE_LOST", "FAKE_UPLOAD_RESPONSE_LOST",
+    "FAKE_TAG_RESPONSE_LOST", "FAKE_PUBLISH_RESPONSE_LOST",
+  ].each do |fragment|
+    check(immutable_publisher_test_source.include?(fragment),
+          "immutable release publisher tests lack #{fragment}")
   end
 
   package_handoff = named_step(verify_steps,
@@ -4015,6 +4058,7 @@ def check_publisher(workflow)
     'failed atomic batch changed the tap checkout',
     'atomic batch metadata did not contain both exact bottle handoffs',
     'deferred whole-tap validation weakened selected bottle evidence',
+    'bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"',
     'bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"',
     'assert_publish_handoff_download_topologies',
     'correctly named nested single-publication handoff was not accepted',
