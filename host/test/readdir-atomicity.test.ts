@@ -117,4 +117,66 @@ describe("host readdir retry atomicity", () => {
       ),
     ).toBe("new-iterator");
   });
+
+  it("clears a staged entry even when the backend close fails", () => {
+    let failFirstNameRead = true;
+    const { io, kernel } = createKernelBridge([
+      {
+        get name(): string {
+          if (failFirstNameRead) {
+            failFirstNameRead = false;
+            throw new Error("malformed old iterator entry");
+          }
+          return "old-iterator";
+        },
+        type: 8,
+        ino: 1,
+      },
+    ]);
+    io.closedir.mockImplementationOnce(() => {
+      throw new Error("injected close failure");
+    });
+    const bridge = kernel.testAuthority;
+
+    expect(bridge.hostReaddir(7n, 16, 128, 64)).toBeLessThan(0);
+    expect(bridge.hostClosedir(7n)).toBeLessThan(0);
+    expect(bridge.hostReaddir(7n, 16, 128, 64)).toBe(0);
+    expect(io.closedir).toHaveBeenCalledWith(7);
+    expect(io.readdir).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops stale transport state when opendir returns a reused handle", () => {
+    let failFirstNameRead = true;
+    const { io, kernel, memory } = createKernelBridge([
+      {
+        get name(): string {
+          if (failFirstNameRead) {
+            failFirstNameRead = false;
+            throw new Error("malformed old iterator entry");
+          }
+          return "old-iterator";
+        },
+        type: 8,
+        ino: 1,
+      },
+      { name: "new-iterator", type: 4, ino: 2 },
+    ]);
+    const bridge = kernel.testAuthority;
+
+    expect(bridge.hostReaddir(7n, 16, 128, 64)).toBeLessThan(0);
+
+    new Uint8Array(memory.buffer, 256, 4).set(
+      new TextEncoder().encode("/tmp"),
+    );
+    expect(bridge.hostOpendir(256, 4)).toBe(7n);
+    expect(bridge.hostReaddir(7n, 16, 128, 64)).toBe(1);
+
+    expect(io.opendir).toHaveBeenCalledWith("/tmp");
+    expect(io.readdir).toHaveBeenCalledTimes(2);
+    expect(
+      new TextDecoder().decode(
+        new Uint8Array(memory.buffer, 128, "new-iterator".length),
+      ),
+    ).toBe("new-iterator");
+  });
 });
