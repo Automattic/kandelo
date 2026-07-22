@@ -1222,7 +1222,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
   printf 'external target untouched\n' >"$external_opt/sentinel"
-  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":["ninja"],"schema":3,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
+  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":["ninja"],"schema":4,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
   tier2_attestation_json="$active_tier2_attestation_json"

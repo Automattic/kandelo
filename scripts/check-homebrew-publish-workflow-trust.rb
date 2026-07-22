@@ -1472,6 +1472,24 @@ def check_publisher(workflow)
   check(flake.scan("pkgs.gnutar".b).length == 1,
         "dev shell does not declare exactly one GNU tar publisher input")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
+  host_dependency_validator = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-validate-host-dependency-plan.sh")
+  )
+  [
+    'keys == ["build", "build_and_test", "formula", "full_name", "native_requirements", "runtime_and_test", "schema", "tap", "target_taps"]',
+    '.schema == 4',
+    'keys == ["class", "formula", "sentinel", "tags"]',
+    '--slurpfile resolved "$RESOLVED_TAPS"',
+    'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
+    '(.native_requirements == (.native_requirements | sort_by(.class)))',
+    '((.native_requirements | map(.class)) == (.native_requirements | map(.class) | unique))',
+    '(.tags == ["build"] or .tags == ["build", "test"])',
+    '($plan.build | index($native.formula) != null)',
+    '($plan.runtime_and_test | index($native.formula) == null)',
+  ].each do |fragment|
+    check(host_dependency_validator.include?(fragment),
+          "host dependency plan validator lacks #{fragment}")
+  end
   formula_support_inputs = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-formula-support-inputs.sh")
   )
@@ -1511,6 +1529,9 @@ def check_publisher(workflow)
     'JSON.generate(support_runtime_files)',
     'support_copies.values.uniq.length > 1',
     'Kandelo Formula support API or runtime-tree bytes differ across the immutable tap closure',
+    'KANDELO_NATIVE_FORMULA',
+    'KANDELO_NATIVE_SENTINEL',
+    '"native_requirements" => native_requirements.sort_by { |entry| entry.fetch("class") }',
   ].each do |fragment|
     check(formula_closure.include?(fragment),
           "static Formula closure lacks immutable tap identity binding: #{fragment}")
@@ -1519,6 +1540,10 @@ def check_publisher(workflow)
   check(tier2_plan_output&.include?('"schema" => 2') &&
         !tier2_plan_output&.include?('"schema" => 1'),
         "static Formula closure does not emit the exact Tier-2 schema-2 plan")
+  host_dependency_plan_output = formula_closure[/elsif host_dependencies_only(.*?)elsif direct_only/m, 1]
+  check(host_dependency_plan_output&.include?('"schema" => 4') &&
+        host_dependency_plan_output&.include?('"native_requirements" => native_requirements'),
+        "static Formula closure does not emit the sealed schema-4 native Requirement plan")
   check(!formula_closure.include?("legacy_requires") &&
         formula_closure.include?(
           "if runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1"
@@ -1562,13 +1587,10 @@ def check_publisher(workflow)
     'KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG"',
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install',
     "--include-build --include-test",
+    'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
     'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
-    'keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap", "target_taps"]',
-    '.schema == 3',
     'TIER2_ATTESTATION="$CONTROL_DIR/tier2-attestation.json"',
     '.schema == 2 and .tap == $tap and .formula == $formula and .arch == $arch',
-    '--slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
-    'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
     'DEPENDENCY_TAP_ROOTS=()',
     'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"',
     '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
@@ -1749,8 +1771,7 @@ def check_publisher(workflow)
       'EXPECTED_PLAN_TAP="$TAP_NAME"',
       '"$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json',
       'immutable resolved tap map is required',
-      '--slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
-      'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
+      'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
       '"homebrew/core/$dependency"',
       "run_native_brew_logged install --as-dependency --formula",
       'homebrew_patched_launcher_run_native info --json=v2',
@@ -2032,7 +2053,17 @@ def check_publisher(workflow)
     "plan = KandeloPublisher.dependency_plan(formula)",
     "@deps = publisher_build_dependencies if args.build_bottle?",
     "dependency.build? && !dependency.implicit?",
+    "def self.evaluated_native_requirements(formula, plan = dependency_plan(formula))",
+    'NATIVE_FORMULA_CONSTANT = :KANDELO_NATIVE_FORMULA',
+    'NATIVE_SENTINEL_CONSTANT = :KANDELO_NATIVE_SENTINEL',
+    'Dependency.new(requirement.fetch("formula"), [:build])',
+    'actual == expected',
+    'plan["schema"] == 4',
     "direct_native_build_dependencies.sort_by(&:name)",
+    "def self.activate_native_test_requirements!(formula, env)",
+    "Kandelo publisher native test Requirement sentinel is unavailable",
+    "diff --git a/Library/Homebrew/test.rb b/Library/Homebrew/test.rb",
+    "KandeloPublisher.activate_native_test_requirements!(formula, ENV)",
     "diff --git a/Library/Homebrew/extend/os/linux/formula.rb b/Library/Homebrew/extend/os/linux/formula.rb",
     "return if KandeloPublisher.selected_tap_formula?(self)",
     "diff --git a/Library/Homebrew/extend/os/linux/sandbox.rb b/Library/Homebrew/extend/os/linux/sandbox.rb",
@@ -2069,9 +2100,35 @@ def check_publisher(workflow)
     "protected publisher plan changed native Homebrew global dependencies",
     "mutable target tap revision suppressed Linux global dependencies",
     "mismatched target tap repository suppressed Linux global dependencies",
+    "publisher native Requirement inputs did not populate the build-only Superenv dependency path",
+    "publisher accepted a missing evaluated native Requirement",
+    "publisher accepted a forged evaluated native Requirement class",
+    "publisher accepted altered evaluated native Requirement metadata",
+    "publisher accepted ambiguous schema-3 native dependency data",
+    "publisher test environment did not execute the sealed Requirement sentinel by name",
+    "ordinary Homebrew test environment changed without a protected publisher plan",
   ].each do |fragment|
     check(publisher_patch_test.include?(fragment),
           "publisher overlay regression test lacks #{fragment}")
+  end
+  publisher_real_lifecycle_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-publisher-real-lifecycle.sh")
+  )
+  [
+    'BREW_COMMIT="34c40c18ffa2029b611b61c73273e32c003d0842"',
+    'EXPECTED_BUILD_BLOB="be833176c02f78cd5b3502aac968b5a733cb7af8"',
+    'worktree add --detach "$BREW_ROOT" "$BREW_COMMIT"',
+    '0001-add-kandelo-wasm-bottle-tags.patch',
+    '0002-support-isolated-publisher.patch',
+    'depends_on KandeloFormulaSupport::WabtRequirement => [:build, :test]',
+    'install --build-bottle',
+    '--ignore-dependencies kandelo-dev/tap-core/fixture',
+    'test kandelo-dev/tap-core/fixture',
+    'the real Build/Superenv lifecycle did not execute the native Requirement tool',
+    'the real Formula test lifecycle did not execute the sealed native Requirement tool',
+  ].each do |fragment|
+    check(publisher_real_lifecycle_test.include?(fragment),
+          "real pinned Homebrew lifecycle test lacks #{fragment}")
   end
   check(!platform_patch.include?("dir == HOMEBREW_REPOSITORY"),
         "guest Homebrew platform patch skips repository writability")
@@ -2106,6 +2163,7 @@ def check_publisher(workflow)
     'HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"',
     'NATIVE_INSTALL_LOG="$CONTROL_DIR/native-install.log"',
     'DEPENDENCY_POUR_LIST="$CONTROL_DIR/pour-dependencies.txt"',
+    'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
     "--include-test",
     'validate_dependency_list "$DEPENDENCY_LIST"',
     '"$SAME_TAP_TEST_DEPENDENCY_LIST" "test dependency list"',
@@ -4048,6 +4106,8 @@ def check_publisher(workflow)
     'under-lock publisher accepted concurrent dependency-edge drift',
     'Formula differs from the planned tap outside canonical bottle metadata',
     'bash "$REPO_ROOT/scripts/test-install-local-binary-sealed.sh"',
+    'bash "$REPO_ROOT/scripts/test-homebrew-publisher-real-lifecycle.sh"',
+    'bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"',
     'assert_atomic_publication_batch_closes_formula_metadata_wave',
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap_root")"',
     'export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE',

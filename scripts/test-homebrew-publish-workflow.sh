@@ -250,6 +250,7 @@ make_formula_runner_fixture() {
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-support-inputs.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$REPO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
     "$REPO_ROOT/scripts/homebrew-tap-identity.sh" \
     "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/"
   : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
@@ -6967,6 +6968,7 @@ assert_matrix_skips_unchanged_cache_key
 assert_resolved_primary_override_is_bounded
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-publisher-overlay-patch.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-publisher-real-lifecycle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_index_artifact_download_topologies
 assert_publish_handoff_download_topologies
@@ -7002,6 +7004,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-sibling-bottle-policy.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
 bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"
