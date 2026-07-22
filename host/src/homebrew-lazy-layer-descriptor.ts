@@ -43,6 +43,8 @@ export interface HomebrewLazyLayerEntry {
    */
   materialization?:
     | "archive"
+    /** Archive bytes relocated only when named by INSTALL_RECEIPT.json. */
+    | "archive-homebrew-relocate"
     | "archive-copy"
     /** A link-manifest copy whose reviewed mode intentionally differs. */
     | "archive-copy-mode"

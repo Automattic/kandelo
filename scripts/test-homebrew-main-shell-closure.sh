@@ -45,6 +45,9 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
 
+SOURCE_ROOT_COUNT="$(jq -er '.packages | length' "$SOURCE_LOCK")"
+SOURCE_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$SOURCE_LOCK")"
+
 pull_paths="$(awk '
   /^  pull_request:$/ { active = 1; next }
   /^  push:$/ { active = 0 }
@@ -99,16 +102,22 @@ checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$
   [ "$setup_node_line" -lt "$checker_line" ] ||
   fail "pinned Node setup must precede the main-shell contract checker"
 
-grep -Fq '(.packages | length) == 38' "$BUILDER" ||
-  fail "$BUILDER does not require the exact 38-Formula composition report"
+grep -Fq '(.selection.requested_packages | length) == $expected_root_count' "$BUILDER" ||
+  fail "$BUILDER does not bind the requested-root count to the migration lock"
+grep -Fq '(.packages | length) == $expected_closure_count' "$BUILDER" ||
+  fail "$BUILDER does not bind the Formula count to the migration lock"
 grep -Fq '[.packages[].full_name] | sort' "$BUILDER" ||
   fail "$BUILDER does not compare exact Formula composition identities"
 grep -Fq 'formula_closure | sort' "$BUILDER" ||
   fail "$BUILDER does not bind composition identities to the migration lock"
-grep -Fq 'const EXPECTED_ROOT_COUNT = 32' "$IMAGE_CONTRACT" ||
-  fail "post-archive image contract does not require the exact 32 roots"
-grep -Fq 'const EXPECTED_CLOSURE_COUNT = 38' "$IMAGE_CONTRACT" ||
-  fail "post-archive image contract does not require the exact 38-Formula closure"
+grep -Fq 'migration lock has no package roots' "$IMAGE_CONTRACT" ||
+  fail "post-archive image contract must reject an empty root set"
+grep -Fq 'migration lock has no Formula closure' "$IMAGE_CONTRACT" ||
+  fail "post-archive image contract must reject an empty Formula closure"
+grep -Fq 'guest Homebrew requested_packages' "$IMAGE_CONTRACT" ||
+  fail "post-archive image contract must compare exact requested-root identities"
+grep -Fq 'assertPackageClosure(' "$IMAGE_CONTRACT" ||
+  fail "post-archive image contract must compare exact Formula identities"
 [ "$(grep -Fc 'export SOURCE_DATE_EPOCH=0' "$BUILDER")" -eq 1 ] ||
   fail "strict shell composer must own one canonical timestamp epoch"
 bash "$LAZY_ARTIFACT_CHECKER" \
@@ -192,7 +201,7 @@ grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$report"' "$WORKFLOW" ||
 grep -Fq -- '--project=chromium --reporter=json >"$report"' "$WORKFLOW" &&
   fail "browser acceptance must not mix dev-shell stdout into the Playwright JSON report"
 grep -Fq "jq -r '.packages[].registry.name' homebrew/main-shell-migration-lock.json" "$WORKFLOW" &&
-  fail "main-shell workflow must not prefetch the legacy 32-package registry closure"
+  fail "main-shell workflow must not prefetch the legacy package-registry closure"
 grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
   fail "browser bundling input fetch must pass exact positive package selections"
 grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
@@ -605,7 +614,8 @@ expect_failure "tap metadata has the wrong repository identity" \
   --migration-lock "$lock"
 
 baseline_output="$(node "$CHECKER")"
-grep -Fq "32 reviewed migration roots and 38 Formulae" <<<"$baseline_output" ||
+grep -Fq "$SOURCE_ROOT_COUNT reviewed migration roots and $SOURCE_CLOSURE_COUNT Formulae" \
+  <<<"$baseline_output" ||
   fail "main-shell checker does not report both exact closure counts"
 
 metadata="$TMP_ROOT/main-shell-metadata.json"
@@ -624,6 +634,7 @@ jq '
     elif . == "zip" then ["unzip"]
     elif . == "libmagic" then ["bzip2", "xz", "zlib"]
     elif . == "libcurl" then ["openssl", "zlib"]
+    elif . == "python" or . == "ruby" then ["zlib"]
     else []
     end;
   (
@@ -660,18 +671,19 @@ jq '
 ' "$SOURCE_LOCK" >"$metadata"
 
 metadata_output="$(node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$metadata")"
-grep -Fq "32 reviewed migration roots and 38 Formulae" <<<"$metadata_output" ||
+grep -Fq "$SOURCE_ROOT_COUNT reviewed migration roots and $SOURCE_CLOSURE_COUNT Formulae" \
+  <<<"$metadata_output" ||
   fail "main-shell checker did not validate the exact synthetic tap closure"
 
 jq 'del(.formula_closure)' "$SOURCE_LOCK" >"$lock"
 expect_failure "packages/formula_closure/substitutions must be arrays" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
-jq '.formula_closure |= .[:-1]' "$SOURCE_LOCK" >"$lock"
-expect_failure "must contain exactly 38 closure Formulae" \
+jq '.formula_closure = []' "$SOURCE_LOCK" >"$lock"
+expect_failure "must contain roots and a closure" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
-jq '.formula_closure[37] = .formula_closure[36]' "$SOURCE_LOCK" >"$lock"
+jq '.formula_closure[-1] = .formula_closure[-2]' "$SOURCE_LOCK" >"$lock"
 expect_failure "migration lock formula_closure contains duplicate" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
@@ -695,7 +707,7 @@ expect_failure "missing dependency of file-formula Formula libmagic" \
 
 jq '(.packages[] | select(.name == "file-formula") | .dependencies) |=
   map(select(.name != "libmagic"))' "$metadata" >"$TMP_ROOT/short-closure.json"
-expect_failure "resolves 37 main-shell Formulae" \
+expect_failure "resolves $((SOURCE_CLOSURE_COUNT - 1)) main-shell Formulae" \
   node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/short-closure.json"
 
 jq '
@@ -710,7 +722,7 @@ jq '
     "dependencies":[]
   }]
 ' "$metadata" >"$TMP_ROOT/long-closure.json"
-expect_failure "resolves 39 main-shell Formulae" \
+expect_failure "resolves $((SOURCE_CLOSURE_COUNT + 1)) main-shell Formulae" \
   node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" "$TMP_ROOT/long-closure.json"
 
 jq '

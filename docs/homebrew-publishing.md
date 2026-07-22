@@ -1521,6 +1521,26 @@ or a language-specific VFS image into any bottle tree. Phase 3's product
 composer, not this collection primitive, chooses which candidate trees are
 embedded and which remain independently lazy.
 
+The exact bottle is transport truth, but installed Homebrew text is not always
+byte-identical to the archive member. Homebrew records the files it changed
+while replacing install paths with placeholders in
+`INSTALL_RECEIPT.json.changed_files`. Kandelo treats that bounded canonical
+list as authoritative. The producer reads it from the already verified bottle,
+computes the final logical sizes, and marks only those regular files or
+hardlink aliases for `@@HOMEBREW_PREFIX@@`, `@@HOMEBREW_CELLAR@@`,
+`@@HOMEBREW_REPOSITORY@@`, `@@HOMEBREW_LIBRARY@@`, `@@HOMEBREW_PERL@@`, and
+receipt-selected `@@HOMEBREW_JAVA@@` replacement. The eager composer uses the
+same browser-safe relocation implementation.
+
+First use still fetches and verifies the complete unmodified `.tar.gz`; the
+content digest and byte count never describe relocated or recompressed bytes.
+After decoding and complete source-inventory validation, the runtime requires
+its relocation markers to equal the exact receipt list, relocates the shared
+regular inode once, preserves every hardlink alias, and only then atomically
+commits the group. A missing changed file, unsafe or duplicate receipt path,
+unknown retained placeholder, unresolved Java dependency, marker mismatch, or
+final-size mismatch leaves the whole group pending and retryable.
+
 The image builder emits an inert schema-5 draft because exact Node and Chromium
 evidence does not exist until the eager image has run. The credential-free
 release preparer validates that draft, every exact bottle payload, the eager
@@ -1590,8 +1610,8 @@ current rootfs plus browser shell/demo package closure.
 `homebrew/main-shell-migration-lock.json` maps every exact registry
 `name@version` to its Formula identity, version, revision, and bottle rebuild;
 it also records every reviewed identity or version substitution. Its
-`formula_closure` is the separately reviewed distribution contract: all 32
-direct roots plus the six transitive Formula identities, exactly 38 unique
+`formula_closure` is the separately reviewed distribution contract: all 36
+direct roots plus the six transitive Formula identities, exactly 42 unique
 Formulae. The checker derives the closure again from the pinned tap metadata,
 and both the composer and CI require the report to contain exactly that set;
 root inclusion alone is not sufficient evidence. Keep the lock and Brewfile
@@ -1619,7 +1639,7 @@ There is no legacy registry-composition fallback. The dedicated workflow then
 passes `archive-stage --force-source-build`, which bypasses cache and index
 reuse for the `shell` package only. Its dependencies retain normal resolver
 semantics; in this case the package has no registry dependencies because the
-38 public bottles are the composer's immutable inputs. This guarantees the
+42 public bottles are the composer's immutable inputs. This guarantees the
 composer executes even after a prior shell archive has been published. The
 workflow extracts the exact newly archived bytes, boots them through Node, and
 requires Chromium's current `?demo=shell` path to fetch the same SHA-256,
@@ -1629,7 +1649,7 @@ cannot skip it and a package build cannot depend on ambient kernel build
 artifacts.
 
 The wider browser application also imports registry packages that are not part
-of the 38-Formula shell closure, including the canonical `rootfs` image. The
+of the 42-Formula shell closure, including the canonical `rootfs` image. The
 workflow derives that supporting package set from the browser imports, excludes
 `shell`, and resolves it with normal package semantics: reuse an exact public
 archive when one exists, otherwise source-build the current PR recipe. This is
@@ -1637,7 +1657,7 @@ necessary when a PR changes a declared input of a supporting package, because
 the corresponding public archive cannot exist until the change is published.
 It does not weaken the bottle-only shell claim: the accepted `shell.vfs.zst`
 still comes only from the separately staged shell package whose composer reads
-the 38 pinned public bottles.
+the 42 pinned public bottles.
 
 For local use, `./run.sh build shell-vfs` takes the ordinary resolver path and
 materializes the declared output under `local-binaries`. It may reuse a valid
@@ -2184,7 +2204,7 @@ immutable release, direct tag, and every anonymous download afterward. A
 failed attempt leaves any older receipt untouched. Success atomically replaces
 the receipt with the release ID and every asset's ID, URL, digest, and size.
 This same bounded 256-asset contract can carry the production shell mirror's
-35 bottle payloads plus its canonical plan without adding a second publication
+39 bottle payloads plus its canonical plan without adding a second publication
 protocol.
 
 An immutable schema-3 acceptance release may already contain the five eager
@@ -2610,10 +2630,14 @@ GHCR package creation plus anonymous readback, sidecar validation, verified VFS
 image building, exact canonical package materialization of the bottle-built
 main shell, per-Formula original-bottle deferred-tree production, Node and
 synthetic direct-TAR Chromium first-use validation, immutable multi-payload
-runtime-layer publication, diagnostic gallery gating, and lossless under-lock
-tap composition with Formula source-closure drift rejection. Cutting over and
-republishing the production main shell with its Bash closure embedded and the
-remaining closure deferred, live public-release browser retrieval through the
-service-worker transport, durable generic gallery publication, broader package
-coverage, general guest `brew install`, and broader release/gallery operator
-runbooks remain separate work.
+runtime-layer publication, receipt-owned Homebrew text relocation without
+changing original-bottle identity, diagnostic gallery gating, and lossless
+under-lock tap composition with Formula source-closure drift rejection. The
+expanded 42-Formula candidate also has exact local Node and Chromium evidence
+for isolated lazy Python, Perl, Erlang, and Ruby startup; that is not yet public
+release evidence. Cutting over and republishing the production main shell with
+its Bash closure embedded and the remaining closure deferred, live
+public-release browser retrieval through the service-worker transport, durable
+generic gallery publication, broader package coverage, general guest
+`brew install`, and broader release/gallery operator runbooks remain separate
+work.

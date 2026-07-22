@@ -229,8 +229,10 @@ jobs:
                 --work-dir "$candidate_root"
           test -f "$candidate_root/main-shell.vfs.zst"
           test -f "$candidate_root/main-shell-report.json"
+          expected_mirror_files=$(jq -er '.bottle_mirror.assets | length + 1' \
+            "$candidate_root/main-shell-report.json")
           test "$(find "$candidate_root/bottle-mirror" -maxdepth 1 -type f | wc -l)" \
-            -eq 36
+            -eq "$expected_mirror_files"
           {
             echo "image=$candidate_root/main-shell.vfs.zst"
             echo "report=$candidate_root/main-shell-report.json"
@@ -263,6 +265,9 @@ jobs:
           set -euo pipefail
           mirror_dir="$RUNNER_TEMP/homebrew-main-shell-bottles"
           mirror_report="$RUNNER_TEMP/homebrew-main-shell-bottle-recovery.json"
+          expected_assets=$(jq -er '.bottle_mirror.assets | length' \
+            "${{ steps.candidate.outputs.report }}")
+          expected_files=$((expected_assets + 1))
           env -u GH_TOKEN -u GITHUB_TOKEN \
             -u HOMEBREW_GITHUB_API_TOKEN \
             -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -272,12 +277,13 @@ jobs:
               --image "${{ steps.candidate.outputs.image }}" \
               --out "$mirror_dir" \
               --report "$mirror_report"
-          test "$(find "$mirror_dir" -maxdepth 1 -type f | wc -l)" -eq 36
+          test "$(find "$mirror_dir" -maxdepth 1 -type f | wc -l)" \
+            -eq "$expected_files"
           test -f "$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json"
-          jq -e '
+          jq -e --argjson expected_assets "$expected_assets" '
             .schema == 1 and
             .kind == "kandelo-homebrew-bottle-mirror-recovery" and
-            (.assets | length) == 35
+            (.assets | length) == $expected_assets
           ' "$mirror_report" >/dev/null
           publish_manifest="$RUNNER_TEMP/homebrew-main-shell-bottle-publish.json"
           bash scripts/dev-shell.sh npx tsx \
@@ -285,17 +291,20 @@ jobs:
               --bundle "$mirror_dir" \
               --recovery-report "$mirror_report" \
               --out "$publish_manifest"
-          jq -e --arg target "${{ steps.candidate.outputs.tap_sha }}" '
+          jq -e \
+            --arg target "${{ steps.candidate.outputs.tap_sha }}" \
+            --argjson expected_files "$expected_files" '
             .schema == 1 and .target_commitish == $target and
-            (.assets | length) == 36 and
-            (.preferred_asset_names | length) == 36 and
+            (.assets | length) == $expected_files and
+            (.preferred_asset_names | length) == $expected_files and
             .accepted_existing_asset_sets == []
           ' "$publish_manifest" >/dev/null
           browser_mirror=apps/browser-demos/public/homebrew-main-shell-bottles
           test ! -e "$browser_mirror"
           if [ "$TRANSPORT_MODE" = closed ]; then
             cp -R "$mirror_dir" "$browser_mirror"
-            test "$(find "$browser_mirror" -maxdepth 1 -type f | wc -l)" -eq 36
+            test "$(find "$browser_mirror" -maxdepth 1 -type f | wc -l)" \
+              -eq "$expected_files"
           elif [ "$TRANSPORT_MODE" = public ]; then
             mkdir -p "$browser_mirror"
             cp "$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json" \

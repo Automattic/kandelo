@@ -643,7 +643,7 @@ describe("declared shell lazy-archive inputs", () => {
         ],
         { cwd: repoRoot, encoding: "utf8" },
       ),
-    ).toContain("32 reviewed migration roots and 38 Formulae");
+    ).toContain("36 reviewed migration roots and 42 Formulae");
 
     // The package build consumes only public bottle provenance from the
     // locked checkout. The strict composer must reject fallback, verify every

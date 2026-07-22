@@ -202,7 +202,7 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
   };
 }
 
-test("accepts the exact reviewed 32-root, 38-Formula image contract", () => {
+test("accepts the exact reviewed root and Formula identities", () => {
   assert.doesNotThrow(() => assertMainShellImageContract(fixture()));
 });
 

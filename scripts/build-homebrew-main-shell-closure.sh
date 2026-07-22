@@ -47,7 +47,7 @@ Options:
   --lazy-artifact-lock <json>
                             exact lazy-image digest and timestamp contract
   --max-bytes <bytes>       VFS capacity (default: 536870912)
-  --lazy-shell             embed Bash's closure and defer the other 35 bottles
+  --lazy-shell             embed the policy closure and defer every other bottle
   -h, --help                show this help
 EOF
 }
@@ -249,6 +249,22 @@ jq -e '
   (.packages | length > 0)
 ' "$SELECTION" >/dev/null
 
+EXPECTED_ROOT_COUNT="$(jq -er '.packages | length' "$MIGRATION_LOCK")"
+EXPECTED_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$MIGRATION_LOCK")"
+EXPECTED_EMBEDDED_COUNT=0
+EXPECTED_DEFERRED_COUNT=0
+EXPECTED_MIRROR_FILE_COUNT=0
+if [ "$MATERIALIZED_CANDIDATE" = true ]; then
+  EXPECTED_EMBEDDED_COUNT="$(jq -er '.embedded_package_order | length' \
+    "$MATERIALIZATION_POLICY")"
+  if [ "$EXPECTED_EMBEDDED_COUNT" -gt "$EXPECTED_CLOSURE_COUNT" ]; then
+    echo "build-homebrew-main-shell-closure: materialization policy exceeds the closure" >&2
+    exit 1
+  fi
+  EXPECTED_DEFERRED_COUNT="$((EXPECTED_CLOSURE_COUNT - EXPECTED_EMBEDDED_COUNT))"
+  EXPECTED_MIRROR_FILE_COUNT="$((EXPECTED_DEFERRED_COUNT + 1))"
+fi
+
 # Deliberately omit images/rootfs/PACKAGES.toml's generated manifest fragment.
 # This base owns static platform state only, so a successful strict result
 # cannot silently retain legacy package-registry program artifacts.
@@ -317,14 +333,18 @@ jq -e \
   --argjson lock_bytes "$LOCK_BYTES" \
   --arg demo_config_sha "$DEMO_CONFIG_SHA" \
   --argjson demo_config_bytes "$DEMO_CONFIG_BYTES" \
+  --argjson expected_root_count "$EXPECTED_ROOT_COUNT" \
+  --argjson expected_closure_count "$EXPECTED_CLOSURE_COUNT" \
+  --argjson expected_embedded_count "$EXPECTED_EMBEDDED_COUNT" \
+  --argjson expected_deferred_count "$EXPECTED_DEFERRED_COUNT" \
   --argjson max_bytes "$MAX_BYTES" '
   (.bottle_mirror.tag) as $mirror_tag |
   .schema == 1 and
   .selection.kind == "brewfile" and
   .selection.requested_packages == $selection[0].packages and
-  (.selection.requested_packages | length) == 32 and
+  (.selection.requested_packages | length) == $expected_root_count and
   (($selection[0].packages - [.packages[].name]) | length == 0) and
-  (.packages | length) == 38 and
+  (.packages | length) == $expected_closure_count and
   (([.packages[].full_name] | sort) == ($lock[0].formula_closure | sort)) and
   (.metadata.tap_repository == $tap[0].tap_repository) and
   (.metadata.tap_name == $tap[0].tap_name) and
@@ -344,8 +364,8 @@ jq -e \
     (.materialization.policy == "kandelo-homebrew-vfs-materialization-policy") and
     (.materialization.embedded_package_order ==
       $materialization.embedded_package_order) and
-    (.materialization.embedded_tree_count == 3) and
-    (.materialization.deferred_tree_count == 35) and
+    (.materialization.embedded_tree_count == $expected_embedded_count) and
+    (.materialization.deferred_tree_count == $expected_deferred_count) and
     ((.materialization.embedded_package_order +
       .materialization.deferred_package_order | sort) ==
       ($lock[0].formula_closure | sort)) and
@@ -353,14 +373,14 @@ jq -e \
       ($lock[0].formula_closure -
         $materialization.embedded_package_order | sort)) and
     (.materialization.bottle_mirror.repository == $mirror_repository) and
-    (.materialization.bottle_mirror.asset_count == 35) and
+    (.materialization.bottle_mirror.asset_count == $expected_deferred_count) and
     (.bottle_mirror.repository == $mirror_repository) and
     (.bottle_mirror.tag == .materialization.bottle_mirror.tag) and
     (.bottle_mirror.collection_sha256 ==
       .materialization.bottle_mirror.collection_sha256) and
     (.bottle_mirror.plan.asset ==
       "kandelo-homebrew-bottle-mirror-plan.json") and
-    (.bottle_mirror.assets | length == 35) and
+    (.bottle_mirror.assets | length == $expected_deferred_count) and
     (([.bottle_mirror.assets[].package] | sort) ==
       (.materialization.deferred_package_order | sort)) and
     ([.bottle_mirror.assets[] |
@@ -487,8 +507,10 @@ if [ "$LAZY_SHELL" = true ]; then
 
   MIRROR_ENTRY_COUNT="$(find "$BOTTLE_MIRROR_OUT" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')"
   MIRROR_FILE_COUNT="$(find "$BOTTLE_MIRROR_OUT" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
-  if [ "$MIRROR_ENTRY_COUNT" != 36 ] || [ "$MIRROR_FILE_COUNT" != 36 ]; then
-    echo "build-homebrew-main-shell-closure: mirror output must contain exactly 35 bottles and one plan" >&2
+  if [ "$MIRROR_ENTRY_COUNT" != "$EXPECTED_MIRROR_FILE_COUNT" ] ||
+     [ "$MIRROR_FILE_COUNT" != "$EXPECTED_MIRROR_FILE_COUNT" ]; then
+    echo "build-homebrew-main-shell-closure: mirror output must contain exactly " \
+      "$EXPECTED_DEFERRED_COUNT bottles and one plan" >&2
     exit 1
   fi
 fi

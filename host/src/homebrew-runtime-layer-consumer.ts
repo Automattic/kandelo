@@ -837,7 +837,8 @@ function validateDirectBottleBindings(
         }
       }
       if (
-        entry.materialization === "archive" &&
+        (entry.materialization === "archive" ||
+          entry.materialization === "archive-homebrew-relocate") &&
         entry.path !== kegPath && !entry.path.startsWith(`${kegPath}/`)
       ) {
         throw new Error(
@@ -2057,6 +2058,7 @@ function validateEntries(
       : record.materialization;
     if (
       sourceByPath !== undefined && materialization !== "archive" &&
+      materialization !== "archive-homebrew-relocate" &&
       materialization !== "archive-copy" &&
       materialization !== "archive-copy-mode" &&
       materialization !== "descriptor"
@@ -2157,14 +2159,22 @@ function validateEntries(
         materialization === "archive-copy-mode"
       ) {
         if (
-          type !== "file" || source.type !== "file" || source.size !== size ||
+          type !== "file" || source.type !== "file" ||
           (materialization === "archive-copy" && source.mode !== mode)
         ) {
           throw new Error(`Homebrew runtime layer archive copy ${path} differs from source`);
         }
+      } else if (materialization === "archive-homebrew-relocate") {
+        if (
+          (type !== "file" && type !== "hardlink") || source.type !== type ||
+          (type === "file" && source.mode !== mode)
+        ) {
+          throw new Error(
+            `Homebrew runtime layer receipt-relocated entry ${path} differs from source`,
+          );
+        }
       } else if (
         source.type !== type ||
-        (type === "file" && source.size !== size) ||
         (type === "symlink" && source.target !== target) ||
         (type !== "hardlink" && source.mode !== mode)
       ) {
@@ -2203,8 +2213,42 @@ function validateEntries(
     "Homebrew runtime layer",
   );
   if (sourceByPath !== undefined) {
+    const relocatedCanonicalSources = new Set<string>();
     for (const entry of entries) {
-      if (entry.type !== "hardlink" || entry.materialization !== "archive") continue;
+      if (entry.materialization !== "archive-homebrew-relocate") continue;
+      const source = sourceByPath.get(entry.source_path)!;
+      const canonical = source.type === "file"
+        ? source
+        : sourceInventory!.canonicalByPath.get(source.path);
+      if (canonical?.type !== "file") {
+        throw new Error(
+          `Homebrew runtime layer receipt-relocated entry ${entry.path} is not regular`,
+        );
+      }
+      relocatedCanonicalSources.add(canonical.path);
+    }
+    for (const entry of entries) {
+      if (
+        entry.materialization === "descriptor" ||
+        (entry.type !== "file" && entry.type !== "hardlink")
+      ) continue;
+      const source = sourceByPath.get(entry.source_path)!;
+      const canonical = source.type === "file"
+        ? source
+        : sourceInventory!.canonicalByPath.get(source.path);
+      if (
+        canonical?.type !== "file" ||
+        !relocatedCanonicalSources.has(canonical.path) && entry.size !== canonical.size
+      ) {
+        throw new Error(`Homebrew runtime layer archive entry ${entry.path} differs from source`);
+      }
+    }
+    for (const entry of entries) {
+      if (
+        entry.type !== "hardlink" ||
+        (entry.materialization !== "archive" &&
+          entry.materialization !== "archive-homebrew-relocate")
+      ) continue;
       const source = sourceByPath.get(entry.source_path)!;
       const target = entriesByPath.get(entry.target!);
       const regularSource = sourceInventory!.canonicalByPath.get(source.path);

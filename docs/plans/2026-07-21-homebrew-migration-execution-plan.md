@@ -179,7 +179,7 @@ complete here only when its exact accepted artifact has been verified.
 | Bottle-composed main shell | Revision-17 lazy activation is under final review | PR #1025 builds and publishes the current main shell from the exact public 38-Formula closure and proves the exact eager image in Node.js and Chromium. PR #1052 landed the reviewed Bash-closure/35-deferred-bottle policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. PR #1060 is the active activation candidate: it keeps the exact embedded Bash closure, retains 35 independently deferred bottles, binds the immutable 36-asset public mirror to tap commit `74359eeeaf01908c78fbb4ed398b41ae361ee90d`, and exercises anonymous public transport in Node.js and Chromium. Its first merge gate exposed a general directory-record loss bug, so the same candidate now carries the separately tested POSIX `getdents64` repair. Production remains on the eager revision until #1060's refreshed exact-head and synthesized-merge gates pass and the PR lands. |
 | Language bottles | Public publication complete; lazy-shell acceptance pending | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. It also published and anonymously read back the immutable browser-proven Python VFS release `homebrew-vfs-sha256-db98a17118afeb91d7c8d939fecc8c482ba765cbbe63b242ccf2834de2b48119`. Perl is published. Python, Perl, Erlang, and Ruby still need inclusion in the final lazy-shell language acceptance matrix. |
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
-| Deferred bottle trees | Producer landed; Phase 3 candidate closed-validated | PR #1051 landed the generic substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`: exact transport identity, bounded tar+gzip and legacy ZIP decoding, hardlink preservation, atomic batch import and materialization, shared first-open/exec behavior, independent immutable runtime-layer identity, and boot-descriptor composition. PR #1052 landed the reviewed 3-embedded/35-deferred main-shell policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. PR #1053 landed deterministic checked-in software-gallery browser fixtures at `77358bf5a6081c0561cd73c2bd7db3d15ac6730d`. PR #1054 landed the direct producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: every selected Formula retains its byte-identical original bottle as an independently lazy tree with complete source and guest inventories, package/keg/activation bindings, mode-copy validation, and multi-asset release closure. Core-tap PR #84 then pinned all active publisher callers to that exact Kandelo commit at tap commit `e7cfe3140e692965cd7abf10e8029633c5d20c02`. PR #1055 now composes the exact 38-Formula namespace, embeds `libcxx`, `ncurses`, and `bash`, leaves 35 trees pending, creates the exact mirror manifest, and passes closed-transport Node.js and Chromium acceptance. The immutable public mirror, anonymous public-transport acceptance, and canonical package cutover remain pending. |
+| Deferred bottle trees | Generic producer and Phase 3 public proof complete; Phase 4 relocation is local | PR #1051 landed the generic first-use substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`. PR #1054 landed the exact original-bottle producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: one independently lazy tree per Formula, complete source and guest inventories, exact compressed transport identity, hardlinks, and independent TypeScript/Python validation. PR #1055 composes the exact 38-Formula namespace, and PR #1060's exact head proves its immutable public mirror and canonical revision-17 cutover. PR #1056 is the next aggregate-budget correction. The Phase 4 worktree adds receipt-owned relocation before exposing language runtimes, because exact bottle bytes are transport truth while a correct pour may replace only the placeholders named by that bottle's `INSTALL_RECEIPT.json`. |
 | Guest upstream `brew` | Partial experiment | A bootstrap image can run upstream Homebrew and its Ruby support. General `brew tap`/`brew install` from public first-party and third-party bottles is not yet a supported shell capability. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |
 | Bottle-declared, mix-and-match VFS packages | Future retained scope | The current composer produces precomposed images. VFS Formulae/bottles and user-selectable composition remain a later product iteration. |
@@ -407,6 +407,36 @@ Acceptance:
   without prefetching unrelated language groups.
 - Runtime paths, dynamic libraries, modules, and data resolve from the normal
   installed Homebrew prefix.
+
+Implementation checkpoint (2026-07-22; local, stacked, and not yet a supported
+release):
+
+- The reviewed shell selection now contains 36 direct roots and 42 Formulae.
+  `libcxx`, `ncurses`, and Bash remain the only three physically embedded
+  bottles; all 39 other exact original bottles remain independently deferred.
+- The eager composer and first-use decoder now share Homebrew's receipt-owned
+  text-relocation contract. They verify the original compressed bottle first,
+  accept only bounded canonical paths from `INSTALL_RECEIPT.json`
+  `changed_files`, replace the standard Homebrew placeholders only in those
+  files, preserve hardlink inode identity, and reject a descriptor whose
+  relocation markers differ from its bottle receipt. The immutable content
+  digest and byte count continue to identify the unmodified `.tar.gz` bottle.
+- Against exact tap commit
+  `e7cfe3140e692965cd7abf10e8029633c5d20c02`, the materialized local candidate
+  is 5,870,743 compressed bytes with SHA-256
+  `d9663eacfa69a922e1fe11edd1d4c58b7764ef4a1dc5f3c72538ccaf52fabd7a`.
+  Exact Node.js and Chromium runs each boot one fresh embedded Bash shell
+  offline, then start Python, Perl, Erlang, and Ruby in isolated first-use
+  steps. Across the language matrix, seven distinct bottles totaling
+  49,704,666 bytes are fetched; each step fetches no unrelated language and
+  the full run leaves the remaining optional bottle trees pending.
+- This proof uses the exact locally built kernel from PR #1058 because the
+  current released kernel can lose a directory entry at a full `getdents64`
+  buffer boundary. It therefore does not authorize a shell release ahead of
+  the ordered Phase 3 public mirror and package cutover, PR #1056's aggregate
+  budget landing, and PR #1058's kernel landing and release. After those
+  prerequisites, the same candidate still needs anonymous public-mirror Node
+  and Chromium evidence before canonical activation.
 
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 

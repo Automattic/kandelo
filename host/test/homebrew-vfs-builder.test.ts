@@ -448,6 +448,7 @@ async function buildFixture(
     seedFs?: (fs: MemoryFileSystem) => void;
     migrationLock?: { sha256: string; bytes: number };
     onLoadBottle?: () => void;
+    mutatePlan?: (plan: HomebrewVfsPlan) => void;
   } = {},
 ): Promise<HomebrewVfsBuildResult> {
   const manifest = linkManifest(bytes, opts.linkOverrides);
@@ -458,6 +459,7 @@ async function buildFixture(
     ...(opts.strict ? { allowFallback: false } : {}),
     loadLinkManifest: () => manifest,
   });
+  opts.mutatePlan?.(plan);
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
   opts.seedFs?.(fs);
   return buildHomebrewVfs(plan, {
@@ -547,6 +549,8 @@ async function lazyLayerFixture(options: {
   hardlinkCanonicalAfterAlias?: boolean;
   overlappingDirectoryModes?: readonly [dependency: number, runtime: number];
   compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
+  runtimeReceipt?: string;
+  runtimeExtraEntries?: TarSpec[];
 } = {}) {
   const baseBytes = bottleTar(standardEntries());
   const baseManifest = linkManifest(baseBytes);
@@ -609,9 +613,10 @@ async function lazyLayerFixture(options: {
       path: `runtime/${runtimeVersion}/.brew/runtime.rb`,
       data: "class Runtime < Formula\nend\n",
     },
+    ...(options.runtimeExtraEntries ?? []),
     {
       path: `runtime/${runtimeVersion}/INSTALL_RECEIPT.json`,
-      data: "{}\n",
+      data: options.runtimeReceipt ?? "{}\n",
     },
   ]);
   const runtimeCacheKey =
@@ -832,10 +837,16 @@ async function lazyLayerFixture(options: {
 }
 
 async function runtimeLayerConsumerFixture(
-  options: { includeLayerDependency?: boolean } = {},
+  options: {
+    includeLayerDependency?: boolean;
+    runtimeReceipt?: string;
+    runtimeExtraEntries?: TarSpec[];
+  } = {},
 ) {
   const fixture = await lazyLayerFixture({
     includeLayerDependency: options.includeLayerDependency,
+    runtimeReceipt: options.runtimeReceipt,
+    runtimeExtraEntries: options.runtimeExtraEntries,
     mutateBase(fs) {
       const composition = JSON.parse(readVfsFile(fs, "/etc/kandelo/homebrew-vfs.json"));
       composition.packages[0].url =
@@ -1393,6 +1404,152 @@ describe("Homebrew runtime layer consumer", () => {
     expect(readVfsFile(fs, `${fixture.runtimeKeg}/bin/runtime`))
       .toContain("echo runtime");
     expect(archiveFetches).toBe(1);
+  });
+
+  it("keeps the original bottle immutable and applies receipt relocation on first use", async () => {
+    const receipt = JSON.stringify({
+      changed_files: ["INSTALL_RECEIPT.json", "lib/runtime.conf"],
+      source: { path: "@@HOMEBREW_LIBRARY@@/Formula/runtime.rb" },
+    }) + "\n";
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeReceipt: receipt,
+      runtimeExtraEntries: [{
+        path: "runtime/3.0/lib/runtime.conf",
+        data: "prefix=@@HOMEBREW_PREFIX@@\ncellar=@@HOMEBREW_CELLAR@@\n",
+        mode: 0o640,
+      }],
+    });
+    const tree = descriptorTree(fixture.descriptor);
+    expect(tree.content.sha256).toBe(sha256(fixture.runtimeBytes));
+    expect(tree.content.bytes).toBe(fixture.runtimeBytes.byteLength);
+    expect(tree.inventory.entries.filter((entry) =>
+      entry.materialization === "archive-homebrew-relocate"
+    ).map((entry) => entry.source_path).sort()).toEqual([
+      "runtime/3.0/INSTALL_RECEIPT.json",
+      "runtime/3.0/lib/runtime.conf",
+    ]);
+
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => new Response(fixture.runtimeBytes),
+    });
+    await expect(
+      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/lib/runtime.conf`),
+    ).resolves.toBe(true);
+    expect(readVfsFile(composed.fs, `${fixture.runtimeKeg}/lib/runtime.conf`)).toBe(
+      `prefix=${PREFIX}\ncellar=${CELLAR}\n`,
+    );
+    expect(JSON.parse(
+      readVfsFile(composed.fs, `${fixture.runtimeKeg}/INSTALL_RECEIPT.json`),
+    )).toMatchObject({
+      source: { path: `${PREFIX}/Library/Formula/runtime.rb` },
+    });
+    expect(composed.fs.stat(`${fixture.runtimeKeg}/lib/runtime.conf`).mode & 0o7777)
+      .toBe(0o640);
+  });
+
+  it("relocates a lazy receipt-declared hardlink once for every inode alias", async () => {
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeReceipt: JSON.stringify({
+        changed_files: ["lib/runtime.conf", "lib/runtime-alias.conf"],
+      }) + "\n",
+      runtimeExtraEntries: [{
+        path: "runtime/3.0/lib/runtime-alias.conf",
+        type: "hardlink",
+        linkName: "runtime/3.0/lib/runtime.conf",
+      }, {
+        path: "runtime/3.0/lib/runtime.conf",
+        data: "@@HOMEBREW_PREFIX@@\n",
+        mode: 0o640,
+      }],
+    });
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => new Response(fixture.runtimeBytes),
+    });
+
+    await expect(
+      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/lib/runtime-alias.conf`),
+    ).resolves.toBe(true);
+    expect(readVfsFile(composed.fs, `${fixture.runtimeKeg}/lib/runtime.conf`))
+      .toBe(`${PREFIX}\n`);
+    expect(readVfsFile(composed.fs, `${fixture.runtimeKeg}/lib/runtime-alias.conf`))
+      .toBe(`${PREFIX}\n`);
+    expect(composed.fs.stat(`${fixture.runtimeKeg}/lib/runtime.conf`).ino)
+      .toBe(composed.fs.stat(`${fixture.runtimeKeg}/lib/runtime-alias.conf`).ino);
+  });
+
+  it("rejects relocation markers not owned by the immutable bottle receipt", async () => {
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeReceipt: JSON.stringify({
+        changed_files: ["INSTALL_RECEIPT.json"],
+      }) + "\n",
+    });
+    const executable = descriptorEntries(fixture.descriptor).find((entry) =>
+      entry.path.endsWith("/bin/runtime") && entry.type === "file"
+    )!;
+    executable.materialization = "archive-homebrew-relocate";
+    recloseRuntimeLayerDescriptor(fixture.descriptor);
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => new Response(fixture.runtimeBytes),
+    });
+    await expect(
+      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/bin/runtime`),
+    ).rejects.toThrow(/relocation markers differ from INSTALL_RECEIPT.json/);
+  });
+
+  it("rejects a descriptor that hides every relocation named by its bottle receipt", async () => {
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeReceipt: JSON.stringify({
+        changed_files: ["INSTALL_RECEIPT.json", "lib/runtime.conf"],
+        source: { path: "@@HOMEBREW_LIBRARY@@/Formula/runtime.rb" },
+      }) + "\n",
+      runtimeExtraEntries: [{
+        path: "runtime/3.0/lib/runtime.conf",
+        data: "@@HOMEBREW_PREFIX@@\n",
+      }],
+    });
+    const tree = descriptorTree(fixture.descriptor);
+    const sourceByPath = new Map(
+      tree.inventory.source!.entries.map((entry) => [entry.path, entry]),
+    );
+    for (const entry of tree.inventory.entries) {
+      if (entry.materialization !== "archive-homebrew-relocate") continue;
+      entry.materialization = "archive";
+      const source = sourceByPath.get(entry.source_path)!;
+      if (source.type === "file") entry.size = source.size;
+    }
+    refreshInventory(fixture.descriptor);
+    recloseRuntimeLayerDescriptor(fixture.descriptor);
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => new Response(fixture.runtimeBytes),
+    });
+
+    await expect(
+      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/lib/runtime.conf`),
+    ).rejects.toThrow(/relocation markers differ from INSTALL_RECEIPT.json/);
   });
 
   it("composes disjoint selected layers while leaving both archives lazy", async () => {
@@ -3822,6 +3979,162 @@ describe("Homebrew VFS builder", () => {
       tap_name: "kandelo-dev/tap-core",
       tap_commit: TAP_COMMIT,
     });
+  });
+
+  it("relocates every supported Homebrew text placeholder declared by the bottle receipt", async () => {
+    const receipt = JSON.stringify({
+      changed_files: ["INSTALL_RECEIPT.json", "lib/runtime.conf"],
+      source: {
+        path: "@@HOMEBREW_LIBRARY@@/Taps/kandelo-dev/homebrew-tap-core/Formula/hello.rb",
+      },
+    }) + "\n";
+    const runtime = [
+      "prefix=@@HOMEBREW_PREFIX@@",
+      "cellar=@@HOMEBREW_CELLAR@@",
+      "repository=@@HOMEBREW_REPOSITORY@@",
+      "library=@@HOMEBREW_LIBRARY@@",
+      "perl=@@HOMEBREW_PERL@@",
+      "again=@@HOMEBREW_PREFIX@@",
+    ].join("\n") + "\n";
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      { path: "hello/2.12.1/INSTALL_RECEIPT.json", data: receipt },
+      { path: "hello/2.12.1/lib/runtime.conf", data: runtime, mode: 0o640 },
+    ]);
+
+    const result = await buildFixture(bytes);
+    expect(JSON.parse(readVfsFile(result.fs, `${KEG}/INSTALL_RECEIPT.json`)))
+      .toMatchObject({
+        source: {
+          path: `${PREFIX}/Library/Taps/kandelo-dev/homebrew-tap-core/Formula/hello.rb`,
+        },
+      });
+    expect(readVfsFile(result.fs, `${KEG}/lib/runtime.conf`)).toBe([
+      `prefix=${PREFIX}`,
+      `cellar=${CELLAR}`,
+      `repository=${PREFIX}`,
+      `library=${PREFIX}/Library`,
+      `perl=${PREFIX}/opt/perl/bin/perl`,
+      `again=${PREFIX}`,
+    ].join("\n") + "\n");
+    expect(result.fs.stat(`${KEG}/lib/runtime.conf`).mode & 0o7777).toBe(0o640);
+  });
+
+  it("relocates Homebrew's Java placeholder from the exact OpenJDK runtime dependency", async () => {
+    const receipt = JSON.stringify({
+      changed_files: ["lib/java.conf"],
+      runtime_dependencies: [{
+        full_name: "kandelo-dev/tap-core/openjdk@21",
+        version: "21.0.2",
+      }],
+    }) + "\n";
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      { path: "hello/2.12.1/INSTALL_RECEIPT.json", data: receipt },
+      { path: "hello/2.12.1/lib/java.conf", data: "java=@@HOMEBREW_JAVA@@\n" },
+    ]);
+
+    const result = await buildFixture(bytes);
+    expect(readVfsFile(result.fs, `${KEG}/lib/java.conf`)).toBe(
+      `java=${PREFIX}/opt/openjdk@21/libexec\n`,
+    );
+  });
+
+  it("relocates receipt-declared hardlinks through their shared inode", async () => {
+    const receipt = JSON.stringify({
+      changed_files: ["lib/runtime.conf", "lib/runtime-alias.conf"],
+    }) + "\n";
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      { path: "hello/2.12.1/INSTALL_RECEIPT.json", data: receipt },
+      {
+        path: "hello/2.12.1/lib/runtime-alias.conf",
+        type: "hardlink",
+        linkName: "hello/2.12.1/lib/runtime.conf",
+      },
+      { path: "hello/2.12.1/lib/runtime.conf", data: "@@HOMEBREW_PREFIX@@\n" },
+    ]);
+
+    const result = await buildFixture(bytes);
+    expect(readVfsFile(result.fs, `${KEG}/lib/runtime.conf`)).toBe(`${PREFIX}\n`);
+    expect(readVfsFile(result.fs, `${KEG}/lib/runtime-alias.conf`)).toBe(`${PREFIX}\n`);
+    expect(result.fs.stat(`${KEG}/lib/runtime.conf`).ino)
+      .toBe(result.fs.stat(`${KEG}/lib/runtime-alias.conf`).ino);
+  });
+
+  it("leaves undeclared placeholder text untouched because changed_files is authoritative", async () => {
+    const bytes = bottleTar([
+      ...standardEntries(),
+      { path: "hello/2.12.1/lib/runtime.conf", data: "@@HOMEBREW_PREFIX@@\n" },
+    ]);
+
+    const result = await buildFixture(bytes);
+    expect(readVfsFile(result.fs, `${KEG}/lib/runtime.conf`))
+      .toBe("@@HOMEBREW_PREFIX@@\n");
+  });
+
+  it.each([
+    ["a non-array", { changed_files: "lib/runtime.conf" }, "changed_files must be an array"],
+    ["a non-string entry", { changed_files: [17] }, "changed_files[0] is not a string"],
+    ["an unsafe path", { changed_files: ["../runtime.conf"] }, "unsafe path segment"],
+    [
+      "a duplicate path",
+      { changed_files: ["lib/runtime.conf", "lib/runtime.conf"] },
+      "repeats changed file lib/runtime.conf",
+    ],
+    ["a missing path", { changed_files: ["lib/missing.conf"] }, "missing or not regular"],
+    [
+      "an oversized path",
+      { changed_files: [`lib/${"x".repeat(4096)}`] },
+      "unsafe path segment",
+    ],
+  ])("rejects receipt changed_files containing %s", async (_label, receipt, expected) => {
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      {
+        path: "hello/2.12.1/INSTALL_RECEIPT.json",
+        data: JSON.stringify(receipt) + "\n",
+      },
+      { path: "hello/2.12.1/lib/runtime.conf", data: "plain text\n" },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow(expected);
+  });
+
+  it("rejects Java relocation without one exact OpenJDK runtime dependency", async () => {
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      {
+        path: "hello/2.12.1/INSTALL_RECEIPT.json",
+        data: JSON.stringify({ changed_files: ["lib/java.conf"] }) + "\n",
+      },
+      { path: "hello/2.12.1/lib/java.conf", data: "@@HOMEBREW_JAVA@@\n" },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow(
+      "without exactly one OpenJDK runtime dependency",
+    );
+  });
+
+  it("rejects an invalid INSTALL_RECEIPT.json before applying relocation", async () => {
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      { path: "hello/2.12.1/INSTALL_RECEIPT.json", data: "not json\n" },
+    ]);
+
+    await expect(buildFixture(bytes)).rejects.toThrow("not valid UTF-8 JSON");
   });
 
   it("records bounded Brewfile and requested-root provenance", async () => {

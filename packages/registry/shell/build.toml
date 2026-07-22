@@ -29,6 +29,7 @@ inputs = [
   "host/src/constants.ts",
   "host/src/generated/abi.ts",
   "host/src/homebrew-bottle-mirror-plan.ts",
+  "host/src/homebrew-bottle-relocation.ts",
   "host/src/homebrew-lazy-layer.ts",
   "host/src/homebrew-lazy-layer-descriptor.ts",
   "host/src/homebrew-runtime-layer-consumer.ts",
@@ -61,7 +62,7 @@ revision    = 17
 [[git_inputs]]
 name = "homebrew_tap_core"
 repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
-commit = "74359eeeaf01908c78fbb4ed398b41ae361ee90d"
+commit = "e7cfe3140e692965cd7abf10e8029633c5d20c02"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

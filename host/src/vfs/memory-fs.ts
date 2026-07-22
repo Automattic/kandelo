@@ -20,6 +20,10 @@ import {
   VFS_DEFERRED_TREE_LIMITS,
   type VfsDeferredTreeUsage,
 } from "./deferred-tree-limits";
+import {
+  parseHomebrewInstallReceiptRelocation,
+  relocateHomebrewBottleFile,
+} from "../homebrew-bottle-relocation";
 
 /** Serializable lazy file entry for transfer between instances. */
 export interface LazyFileEntry {
@@ -135,6 +139,7 @@ export interface LazyTreeRegistrationEntry {
   /** Explicit only for the original-bottle source-inventory contract. */
   materialization?:
     | "archive"
+    | "archive-homebrew-relocate"
     | "archive-copy"
     | "archive-copy-mode"
     | "descriptor";
@@ -1087,6 +1092,7 @@ function validateLazyTreeDefinition(
     if (
       completeSources !== undefined &&
       materialization !== "archive" &&
+      materialization !== "archive-homebrew-relocate" &&
       materialization !== "archive-copy" &&
       materialization !== "archive-copy-mode" &&
       materialization !== "descriptor"
@@ -1196,14 +1202,20 @@ function validateLazyTreeDefinition(
       ) {
         if (
           entry.type !== "file" || source.type !== "file" ||
-          entry.size !== source.size ||
           (entry.materialization === "archive-copy" && entry.mode !== source.mode)
         ) {
           throw new Error(`Lazy tree archive copy ${vfsPath} differs from its source`);
         }
+      } else if (entry.materialization === "archive-homebrew-relocate") {
+        if (
+          (entry.type !== "file" && entry.type !== "hardlink") ||
+          source.type !== entry.type ||
+          (entry.type === "file" && source.mode !== entry.mode)
+        ) {
+          throw new Error(`Lazy tree receipt-relocated entry ${vfsPath} differs from its source`);
+        }
       } else if (
         source.type !== entry.type ||
-        (entry.type === "file" && source.size !== entry.size) ||
         (entry.type === "symlink" && source.target !== entry.target) ||
         (entry.type !== "hardlink" && source.mode !== entry.mode)
       ) {
@@ -1238,8 +1250,41 @@ function validateLazyTreeDefinition(
     "Lazy tree",
   );
   if (completeSources !== undefined) {
+    const relocatedCanonicalSources = new Set<string>();
     for (const entry of entries) {
-      if (entry.type !== "hardlink" || entry.materialization !== "archive") continue;
+      if (entry.materialization !== "archive-homebrew-relocate") continue;
+      const source = completeSources.get(entry.sourcePath)!;
+      const canonical = source.type === "file"
+        ? source
+        : canonicalSourceByPath!.get(source.sourcePath);
+      if (canonical?.type !== "file") {
+        throw new Error(`Lazy tree receipt-relocated entry ${entry.vfsPath} is not regular`);
+      }
+      relocatedCanonicalSources.add(canonical.sourcePath);
+    }
+    for (const entry of entries) {
+      if (
+        entry.materialization === "descriptor" ||
+        (entry.type !== "file" && entry.type !== "hardlink")
+      ) continue;
+      const source = completeSources.get(entry.sourcePath)!;
+      const canonical = source.type === "file"
+        ? source
+        : canonicalSourceByPath!.get(source.sourcePath);
+      if (
+        canonical?.type !== "file" ||
+        !relocatedCanonicalSources.has(canonical.sourcePath) &&
+          entry.size !== canonical.size
+      ) {
+        throw new Error(`Lazy tree archive entry ${entry.vfsPath} differs from its source`);
+      }
+    }
+    for (const entry of entries) {
+      if (
+        entry.type !== "hardlink" ||
+        (entry.materialization !== "archive" &&
+          entry.materialization !== "archive-homebrew-relocate")
+      ) continue;
       const source = completeSources.get(entry.sourcePath)!;
       const target = byPath.get(entry.target!);
       const regularSource = canonicalSourceByPath!.get(source.sourcePath);
@@ -3471,6 +3516,88 @@ export class MemoryFileSystem implements FileSystemBackend {
           throw new Error(`Lazy tree hardlink ${sourcePath} target differs from inventory`);
         }
       }
+    }
+
+    const relocationSources = new Set(
+      inventory.flatMap((entry) =>
+        entry.materialization === "archive-homebrew-relocate"
+          ? [entry.sourcePath]
+          : []
+      ),
+    );
+    if (content.source !== undefined) {
+      const sourceByPath = new Map(
+        content.source.entries.map((entry) => [entry.sourcePath, entry]),
+      );
+      const canonicalByPath = resolveLazyTreeSourceHardlinks(content.source.entries);
+      const receiptSources = content.source.entries.filter((entry) =>
+        entry.sourcePath === "INSTALL_RECEIPT.json" ||
+        entry.sourcePath.endsWith("/INSTALL_RECEIPT.json")
+      );
+      if (receiptSources.length > 1) {
+        throw new Error(
+          `Lazy Homebrew bottle has ${receiptSources.length} INSTALL_RECEIPT.json ` +
+            "source members, expected at most one",
+        );
+      }
+      if (receiptSources.length === 0) {
+        if (relocationSources.size > 0) {
+          throw new Error(
+            "Lazy Homebrew bottle marks receipt relocation without INSTALL_RECEIPT.json",
+          );
+        }
+      } else {
+        const receiptSource = receiptSources[0]!;
+        const receiptCanonical = receiptSource.type === "file"
+          ? receiptSource
+          : canonicalByPath.get(receiptSource.sourcePath);
+        const receiptDecoded = receiptCanonical === undefined
+          ? undefined
+          : decoded.get(receiptCanonical.sourcePath);
+        if (receiptCanonical?.type !== "file" || receiptDecoded?.type !== "file" ||
+          receiptDecoded.data === undefined) {
+          throw new Error("Lazy Homebrew bottle INSTALL_RECEIPT.json is not regular");
+        }
+        const receipt = parseHomebrewInstallReceiptRelocation(receiptDecoded.data);
+        const separator = receiptSource.sourcePath.lastIndexOf("/");
+        const sourceRoot = separator < 0
+          ? ""
+          : receiptSource.sourcePath.slice(0, separator);
+        const receiptChangedSources = new Set(receipt.changedFiles.map((path) =>
+          sourceRoot.length === 0 ? path : `${sourceRoot}/${path}`
+        ));
+        if (
+          relocationSources.size !== receiptChangedSources.size ||
+          [...relocationSources].some((path) => !receiptChangedSources.has(path))
+        ) {
+          throw new Error(
+            "Lazy Homebrew bottle relocation markers differ from INSTALL_RECEIPT.json",
+          );
+        }
+        const relocatedCanonicalSources = new Set<string>();
+        for (const sourcePath of receiptChangedSources) {
+          const source = sourceByPath.get(sourcePath);
+          const canonical = source?.type === "file"
+            ? source
+            : source === undefined
+              ? undefined
+              : canonicalByPath.get(source.sourcePath);
+          const actual = canonical === undefined
+            ? undefined
+            : decoded.get(canonical.sourcePath);
+          if (canonical?.type !== "file" || actual?.type !== "file" ||
+            actual.data === undefined) {
+            throw new Error(
+              `Lazy Homebrew bottle changed source ${sourcePath} is not regular`,
+            );
+          }
+          if (relocatedCanonicalSources.has(canonical.sourcePath)) continue;
+          actual.data = relocateHomebrewBottleFile(actual.data, receipt, sourcePath);
+          relocatedCanonicalSources.add(canonical.sourcePath);
+        }
+      }
+    } else if (relocationSources.size > 0) {
+      throw new Error("Lazy tree receipt relocation requires original-bottle source truth");
     }
 
     const files = new Map<string, Uint8Array>();

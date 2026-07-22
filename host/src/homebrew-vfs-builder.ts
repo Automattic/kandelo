@@ -12,6 +12,10 @@ import {
   writeVfsFile,
 } from "./vfs/image-helpers";
 import { parseTarGzip, type TarEntry } from "./vfs/tar";
+import {
+  parseHomebrewInstallReceiptRelocation,
+  relocateHomebrewBottleFile,
+} from "./homebrew-bottle-relocation";
 
 const DEFAULT_IMAGE_BYTES = 128 * 1024 * 1024;
 const S_IFMT = 0xf000;
@@ -309,6 +313,7 @@ export async function buildHomebrewVfs(
     const tarEntries = parseBottleTarGz(pkg, bottleBytes);
     const staged = stagePackage(fs, pkg, tarEntries);
     validateReceipts(fs, pkg);
+    relocateBottlePlaceholders(fs, pkg);
     const links = applyLinks(fs, pkg, linkResolution);
 
     packageReports.push({
@@ -734,6 +739,58 @@ function validateReceipts(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): vo
     if (tryLstat(fs, path) === null) {
       fail(pkg, `receipt ${receipt} is missing after staging at ${path}`);
     }
+  }
+}
+
+/**
+ * Apply the same text-file relocation contract Homebrew records in a bottle's
+ * INSTALL_RECEIPT.json. The receipt's changed_files list is authoritative: it
+ * keeps arbitrary binary payloads out of string replacement while allowing
+ * variable-length canonical Kandelo paths in scripts and runtime metadata.
+ */
+function relocateBottlePlaceholders(
+  fs: MemoryFileSystem,
+  pkg: HomebrewVfsPackagePlan,
+): void {
+  const installReceipts = pkg.linkManifest.receipts.filter(
+    (receipt) => receipt === "INSTALL_RECEIPT.json" || receipt.endsWith("/INSTALL_RECEIPT.json"),
+  );
+  if (installReceipts.length === 0) return;
+  if (installReceipts.length > 1) {
+    fail(
+      pkg,
+      `link manifest declares ${installReceipts.length} INSTALL_RECEIPT.json files, expected one`,
+    );
+  }
+  const receiptPath = homebrewManifestSourcePath(pkg, installReceipts[0]!);
+  const receiptStat = fs.lstat(receiptPath);
+  if (kind(receiptStat) !== S_IFREG) {
+    fail(pkg, `INSTALL_RECEIPT.json is not a regular file at ${receiptPath}`);
+  }
+  let relocation: ReturnType<typeof parseHomebrewInstallReceiptRelocation>;
+  try {
+    relocation = parseHomebrewInstallReceiptRelocation(readVfsFile(fs, receiptPath));
+  } catch (error) {
+    fail(pkg, error instanceof Error ? error.message : String(error));
+  }
+  const changedPaths = new Set<string>();
+  for (const value of relocation.changedFiles) {
+    const path = joinGuestPath(pkg.keg, value);
+    changedPaths.add(path);
+  }
+
+  for (const path of changedPaths) {
+    const stat = tryLstat(fs, path);
+    if (stat === null || kind(stat) !== S_IFREG) {
+      fail(pkg, `Homebrew changed file is missing or not regular: ${path}`);
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = relocateHomebrewBottleFile(readVfsFile(fs, path), relocation, path);
+    } catch (error) {
+      fail(pkg, error instanceof Error ? error.message : String(error));
+    }
+    writeVfsBinary(fs, path, bytes, stat.mode & MODE_BITS);
   }
 }
 
