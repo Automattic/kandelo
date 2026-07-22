@@ -2121,6 +2121,7 @@ def check_publisher(workflow)
     '0001-add-kandelo-wasm-bottle-tags.patch',
     '0002-support-isolated-publisher.patch',
     'HOMEBREW_KANDELO_HERMETIC_LIFECYCLE_TEST',
+    'PATH="$PATH"',
     'install-bundler-gems --groups=formula_test',
     '(deny network*)',
     '/usr/bin/unshare --user --map-current-user --net',

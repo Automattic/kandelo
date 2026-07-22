@@ -116,6 +116,7 @@ mkdir -p "$BREW_ROOT/.tmp" "$BREW_ROOT/.cache" "$BREW_ROOT/.config" \
   "$BREW_ROOT/.home"
 BREW_ENV=(
   HOME="$BREW_ROOT/.home"
+  PATH="$PATH"
   HOMEBREW_CACHE="$BREW_ROOT/.cache"
   HOMEBREW_NO_ANALYTICS=1
   HOMEBREW_NO_AUTO_UPDATE=1
@@ -166,6 +167,8 @@ BUNDLE_DIGEST_BEFORE="$(find "$BUNDLE_ROOT" -type f -print0 |
 # Network denial is an OS boundary, not a proxy-only convention. macOS uses
 # sandbox-exec; Linux uses a private user/network namespace while preserving
 # the caller's non-root uid so Homebrew does not observe a root invocation.
+# Keep PATH explicit in BREW_ENV because sudo's secure_path policy otherwise
+# hides the dev-shell publisher tools on the passwordless-sudo fallback.
 case "$(uname -s)" in
   Darwin)
     [ -x /usr/bin/sandbox-exec ] || fail "sandbox-exec is unavailable"
