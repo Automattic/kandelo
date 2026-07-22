@@ -348,6 +348,7 @@ WAT
   chmod +x "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
   printf '#define SIDECAR_TOOL 1\n' >"$stage/include/sidecar-tool.h"
   printf 'archive\n' >"$stage/lib/libsidecar-tool.a"
+  ln "$stage/lib/libsidecar-tool.a" "$stage/lib/libsidecar-tool-hard.a"
   printf 'sidecar-tool(1)\n' >"$stage/share/man/man1/sidecar-tool.1"
   printf 'generated index must not be linked\n' >"$stage/share/info/dir"
   cp "$TAP/Formula/sidecar-tool.rb" "$stage/.brew/sidecar-tool.rb"
@@ -951,6 +952,7 @@ jq -e '
     "bin/sidecar-tool",
     "bin/sidecar-tool-helper",
     "include/sidecar-tool.h",
+    "lib/libsidecar-tool-hard.a",
     "lib/libsidecar-tool.a",
     "share/man/man1/sidecar-tool.1"
   ] and
@@ -1354,9 +1356,17 @@ npx tsx "$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts" \
   --report "$TMPDIR/sidecar-tool-report.json" >/dev/null
 
 LAYER_ACCEPTANCE_VFS_SHA256="$(sha256_file "$TMPDIR/sidecar-tool.vfs.zst")"
+RUNTIME_LAYER_EXPANDED_BYTES="$(python3 - "${tool_bottle[0]}" <<'PY'
+import gzip
+import pathlib
+import sys
+
+print(len(gzip.decompress(pathlib.Path(sys.argv[1]).read_bytes())))
+PY
+)"
 jq -e '
   . as $descriptor |
-  .schema == 4 and .kind == "kandelo-homebrew-deferred-layer-draft" and
+  .schema == 5 and .kind == "kandelo-homebrew-deferred-layer-draft" and
   .mount_prefix == "/" and
   .selection.requested_packages == ["sidecar-tool"] and
   .selection.package_order == [
@@ -1378,88 +1388,267 @@ jq -e '
   (.deferred_trees | length) == 1 and
   (.deferred_trees[0] as $tree |
   $tree.id == "sidecar-tool" and
+  $tree.package == "kandelo-dev/tap-core/sidecar-tool" and
   $tree.activation == {
     "mode":"first-use",
-    "capabilities":["homebrew-runtime:sidecar-tool"],
+    "capabilities":["homebrew-bottle:sidecar-tool"],
     "roots":["/home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3"]
   } and
-  $tree.content.media_type == "application/zip" and
-  $tree.content.decoder == "zip-v1" and
-  ($tree.content.sha256 | test("^[0-9a-f]{64}$")) and
-  ($tree.content.bytes | type == "number" and . > 0) and
+  $tree.content == {
+    "media_type":"application/vnd.oci.image.layer.v1.tar+gzip",
+    "decoder":"homebrew-bottle-tar-gzip-v1",
+    "sha256":$bottle_sha,
+    "bytes":$bottle_bytes
+  } and
   $tree.transports == [{
     "kind":"bundle-release",
     "asset":"kandelo-homebrew-sidecar-tool-layer.bin"
   }] and
   $tree.inventory.entry_count == ($tree.inventory.entries | length) and
-  $tree.inventory.source_entry_count ==
-    ([$tree.inventory.entries[].source_path] | unique | length) and
+  $tree.inventory.source.schema == 1 and
+  $tree.inventory.source.kind == "homebrew-bottle-tar-gzip-v1" and
+  $tree.inventory.source_entry_count == ($tree.inventory.source.entries | length) and
+  [$tree.inventory.source.entries[].path] ==
+    ([$tree.inventory.source.entries[].path] | unique | sort) and
   $tree.inventory.regular_inode_count ==
     ([$tree.inventory.entries[] | select(.type == "file" or .type == "hardlink") | .inode_group] | unique | length) and
   $tree.inventory.layer_entry_count ==
     ([$tree.inventory.entries[] | select(.ownership == "layer")] | length) and
-  $tree.inventory.shared_base_directory_count ==
-    ([$tree.inventory.entries[] | select(.ownership == "shared-base-directory")] | length) and
-  $tree.inventory.expanded_bytes ==
-    ([$tree.inventory.entries[] | select(.type != "hardlink") | .size] | add) and
+  $tree.inventory.mergeable_directory_count ==
+    ([$tree.inventory.entries[] | select(.ownership == "mergeable-directory")] | length) and
+  ($tree.inventory | has("shared_base_directory_count") | not) and
+  $tree.inventory.expanded_bytes == $expanded_bytes and
   $tree.inventory.payload_bytes ==
     ([$tree.inventory.entries[] | select(.type == "file") | .size] | add) and
-  ([$tree.inventory.entries[].path] == ([$tree.inventory.entries[].path] | sort)))
+  ([$tree.inventory.entries[].path] == ([$tree.inventory.entries[].path] | unique | sort)) and
+  all($tree.inventory.entries[];
+    (.materialization == "archive" or
+     .materialization == "archive-copy" or
+     .materialization == "archive-copy-mode" or
+     .materialization == "descriptor")))
 ' --arg base_vfs_sha "$LAYER_BASE_VFS_SHA256" \
   --argjson base_vfs_bytes "$LAYER_BASE_VFS_BYTES" \
   --arg acceptance_vfs_sha "$LAYER_ACCEPTANCE_VFS_SHA256" \
-  "$RUNTIME_LAYER_DESCRIPTOR" >/dev/null
+  --arg bottle_sha "${tool_bottle[2]}" \
+  --argjson bottle_bytes "${tool_bottle[3]}" \
+  --argjson expanded_bytes "$RUNTIME_LAYER_EXPANDED_BYTES" \
+  "$RUNTIME_LAYER_DESCRIPTOR" >/dev/null || {
+    echo "schema-5 original-bottle descriptor assertion failed" >&2
+    jq . "$RUNTIME_LAYER_DESCRIPTOR" >&2
+    exit 1
+  }
 python3 - "$RUNTIME_LAYER_PAYLOAD" \
-  "$RUNTIME_LAYER_DESCRIPTOR" <<'PY'
-import hashlib, json, pathlib, stat, sys, zipfile
+  "$RUNTIME_LAYER_DESCRIPTOR" "${tool_bottle[0]}" <<'PY'
+import gzip
+import hashlib
+import io
+import json
+import pathlib
+import sys
+import tarfile
 
-archive_path, descriptor_path = map(pathlib.Path, sys.argv[1:])
+payload_path, descriptor_path, original_path = map(pathlib.Path, sys.argv[1:])
+
+
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+payload = payload_path.read_bytes()
+original = original_path.read_bytes()
 descriptor = json.loads(descriptor_path.read_text())
+require(descriptor["schema"] == 5, "runtime layer is not schema 5")
+require(
+    descriptor["kind"] == "kandelo-homebrew-deferred-layer-draft",
+    "runtime layer is not an inert producer draft",
+)
+require(len(descriptor["deferred_trees"]) == 1, "fixture must emit exactly one bottle tree")
 tree = descriptor["deferred_trees"][0]
-entries = tree["inventory"]["entries"]
-payload = archive_path.read_bytes()
-assert len(payload) == tree["content"]["bytes"]
-assert hashlib.sha256(payload).hexdigest() == tree["content"]["sha256"]
-with zipfile.ZipFile(archive_path) as archive:
-    infos = archive.infolist()
-    expected = [
-        entry["source_path"] + ("/" if entry["type"] == "directory" else "")
-        for entry in entries
-        if entry["type"] != "hardlink"
-    ]
-    actual_names = [info.filename for info in infos]
-    assert actual_names == expected
-    assert archive.comment == b""
-    kinds = {
-        "directory": stat.S_IFDIR,
-        "file": stat.S_IFREG,
-        "symlink": stat.S_IFLNK,
+inventory = tree["inventory"]
+entries = inventory["entries"]
+source_entries = inventory["source"]["entries"]
+
+require(payload == original, "runtime asset is not byte-identical to the original bottle")
+require(len(payload) == tree["content"]["bytes"], "runtime asset size does not match descriptor")
+require(
+    hashlib.sha256(payload).hexdigest() == tree["content"]["sha256"],
+    "runtime asset digest does not match descriptor",
+)
+require(
+    payload_path.name == tree["transports"][0]["asset"],
+    "runtime asset filename does not match its bundle transport",
+)
+require(
+    len(gzip.decompress(payload)) == inventory["expanded_bytes"],
+    "expanded TAR size does not match descriptor",
+)
+
+with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+    members = archive.getmembers()
+
+
+def normalized_tar_path(value):
+    while value.startswith("./"):
+        value = value[2:]
+    return value.rstrip("/")
+
+
+def source_record(member):
+    record = {
+        "path": normalized_tar_path(member.name),
+        "mode": member.mode & 0o7777,
     }
-    source_entries = {
-        entry["source_path"]: entry
-        for entry in entries
-        if entry["type"] != "hardlink"
-    }
-    for info in infos:
-        entry = source_entries[info.filename.removesuffix("/")]
-        mode = info.external_attr >> 16
-        assert info.create_system == 3
-        assert info.date_time == (1980, 1, 1, 0, 0, 0)
-        assert info.comment == b"" and info.extra == b""
-        assert stat.S_IFMT(mode) == kinds[entry["type"]]
-        assert (mode & 0o7777) == entry["mode"]
-        assert len(archive.read(info)) == entry["size"]
-    executable = archive.getinfo(
-        "home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
+    if member.isfile():
+        record.update(type="file", size=member.size)
+    elif member.isdir():
+        record.update(type="directory", size=0)
+    elif member.issym():
+        record.update(type="symlink", size=0, target=member.linkname)
+    elif member.islnk():
+        record.update(
+            type="hardlink",
+            size=0,
+            target=normalized_tar_path(member.linkname),
+        )
+    else:
+        raise AssertionError(f"fixture contains unsupported TAR member {member.name!r}")
+    return record
+
+
+actual_sources = sorted((source_record(member) for member in members), key=lambda item: item["path"])
+require(source_entries == actual_sources, "descriptor source inventory is not the complete TAR truth")
+require(
+    inventory["source_entry_count"] == len(source_entries),
+    "source-entry count does not match complete TAR inventory",
+)
+source_by_path = {entry["path"]: entry for entry in source_entries}
+require(len(source_by_path) == len(source_entries), "source inventory contains duplicate paths")
+
+require(entries == sorted(entries, key=lambda item: item["path"]), "guest inventory is not sorted")
+guest_by_path = {entry["path"]: entry for entry in entries}
+require(len(guest_by_path) == len(entries), "guest inventory contains duplicate paths")
+require(inventory["entry_count"] == len(entries), "guest-entry count does not match inventory")
+require(
+    inventory["layer_entry_count"]
+    == sum(entry["ownership"] == "layer" for entry in entries),
+    "layer-entry count does not match guest inventory",
+)
+require(
+    inventory["mergeable_directory_count"]
+    == sum(entry["ownership"] == "mergeable-directory" for entry in entries),
+    "mergeable-directory count does not match guest inventory",
+)
+require(
+    inventory["payload_bytes"]
+    == sum(entry["size"] for entry in entries if entry["type"] == "file"),
+    "payload byte count does not match canonical guest files",
+)
+
+source_to_guest = {
+    entry["source_path"]: entry["path"]
+    for entry in entries
+    if entry["materialization"] == "archive"
+}
+regular_groups = set()
+for entry in entries:
+    materialization = entry["materialization"]
+    source_path = entry["source_path"]
+    if entry["type"] in {"file", "hardlink"}:
+        require("inode_group" in entry, f"regular guest {entry['path']} lacks an inode group")
+        regular_groups.add(entry["inode_group"])
+    else:
+        require("inode_group" not in entry, f"non-regular guest {entry['path']} has an inode group")
+
+    if materialization == "descriptor":
+        require(
+            source_path.startswith(".kandelo-descriptor/sidecar-tool/"),
+            f"descriptor-created guest {entry['path']} has an unreserved source identity",
+        )
+        require(
+            entry["type"] in {"directory", "symlink"},
+            f"descriptor-created guest {entry['path']} is not structural",
+        )
+        continue
+
+    source = source_by_path.get(source_path)
+    require(source is not None, f"guest {entry['path']} names a missing TAR source")
+    if materialization in {"archive-copy", "archive-copy-mode"}:
+        require(
+            source["type"] == entry["type"] == "file" and source["size"] == entry["size"],
+            f"copied guest {entry['path']} does not match its regular TAR source",
+        )
+        if materialization == "archive-copy":
+            require(source["mode"] == entry["mode"], f"copy {entry['path']} changed source mode")
+        continue
+
+    require(materialization == "archive", f"guest {entry['path']} has unknown materialization")
+    require(source["type"] == entry["type"], f"guest {entry['path']} changed TAR member type")
+    if entry["type"] == "file":
+        require(
+            source["size"] == entry["size"] and source["mode"] == entry["mode"],
+            f"guest file {entry['path']} changed TAR size or mode",
+        )
+    elif entry["type"] == "hardlink":
+        require(
+            entry["target"] == source_to_guest.get(source["target"]),
+            f"guest hardlink {entry['path']} does not name its canonical guest file",
+        )
+        target = guest_by_path[entry["target"]]
+        require(
+            target["type"] == "file" and target["inode_group"] == entry["inode_group"],
+            f"guest hardlink {entry['path']} does not share its target inode",
+        )
+    elif entry["type"] == "symlink":
+        require(
+            source["target"] == entry["target"] and source["mode"] == entry["mode"],
+            f"guest symlink {entry['path']} changed TAR link text or mode",
+        )
+    else:
+        require(source["mode"] == entry["mode"], f"guest directory {entry['path']} changed mode")
+
+require(
+    inventory["regular_inode_count"] == len(regular_groups),
+    "regular-inode count does not match guest inventory",
+)
+
+keg = "home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3"
+executable = guest_by_path[f"{keg}/bin/sidecar-tool"]
+require(
+    executable["type"] == "file"
+    and executable["materialization"] == "archive"
+    and executable["mode"] == 0o755,
+    "bottle executable lost its archive-owned executable mode",
+)
+header = guest_by_path[f"{keg}/include/sidecar-tool.h"]
+require(header["type"] == "file" and header["mode"] == 0o644, "header mode drifted")
+
+archive_hardlinks = [entry for entry in entries if entry["type"] == "hardlink"]
+require(len(archive_hardlinks) == 1, "fixture must preserve exactly one bottle hardlink")
+require(
+    archive_hardlinks[0]["path"].startswith(f"{keg}/lib/libsidecar-tool"),
+    "bottle hardlink was not materialized inside its keg",
+)
+
+for name in ("sidecar-tool", "sidecar-tool-helper"):
+    linked = guest_by_path[f"home/linuxbrew/.linuxbrew/bin/{name}"]
+    require(
+        linked["type"] == "symlink"
+        and linked["materialization"] == "descriptor"
+        and linked["target"] == f"/{keg}/bin/{name}",
+        f"prefix link {name} does not point at its bottle-owned executable",
     )
-    assert ((executable.external_attr >> 16) & 0o7777) == 0o755
-    linked = archive.getinfo("home/linuxbrew/.linuxbrew/bin/sidecar-tool")
-    assert stat.S_ISLNK(linked.external_attr >> 16)
-    assert archive.read(linked).decode() == (
-        "/home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
-    )
-    assert not any(name.startswith("etc/") for name in actual_names)
-    assert not any("/Cellar/sidecar-dep/" in name for name in actual_names)
+opt = guest_by_path["home/linuxbrew/.linuxbrew/opt/sidecar-tool"]
+require(
+    opt["type"] == "symlink"
+    and opt["materialization"] == "descriptor"
+    and opt["target"] == "../Cellar/sidecar-tool/2.0_3",
+    "canonical opt link is not descriptor-owned",
+)
+require(
+    all("/Cellar/sidecar-dep/" not in f"/{entry['path']}" for entry in entries),
+    "runtime bottle tree duplicated a dependency already owned by the base VFS",
+)
 PY
 
 jq -e --slurpfile metadata "$TAP/Kandelo/metadata.json" '
@@ -1496,6 +1685,7 @@ jq -e --slurpfile metadata "$TAP/Kandelo/metadata.json" '
     "bin/sidecar-tool",
     "bin/sidecar-tool-helper",
     "include/sidecar-tool.h",
+    "lib/libsidecar-tool-hard.a",
     "lib/libsidecar-tool.a",
     "share/man/man1/sidecar-tool.1"
   ] and

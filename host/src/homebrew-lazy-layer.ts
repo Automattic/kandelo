@@ -830,27 +830,44 @@ function createDirectGuestEntry(
     };
   }
   const source = assignment.source!;
+  // The poured filesystem identifies a hardlinked inode, not which pathname
+  // the bottle TAR declared as its canonical regular member. `collectPath`
+  // chooses the first lexical pathname only for its temporary inventory. Keep
+  // the signed source roles authoritative here, after verifying that the
+  // poured paths still have the expected size, mode, and shared inode group.
   if (source.type === "file") {
     if (
-      final.type !== "file" || final.size !== source.size ||
-      final.mode !== source.mode
+      (final.type !== "file" && final.type !== "hardlink") ||
+      final.size !== source.size ||
+      final.mode !== source.mode ||
+      final.inode_group === undefined
     ) {
       throw new Error(`Homebrew poured file /${path} differs from source ${source.path}`);
     }
     return {
-      ...final,
-      ownership,
+      path,
       source_path: source.path,
       materialization: "archive",
+      type: "file",
+      ownership,
+      mode: final.mode,
+      size: final.size,
       inode_group: compactInodeGroup(treeId, "source", source.path),
     };
   }
   if (source.type === "hardlink") {
     const canonicalSource = canonicalSourceByPath.get(source.path);
     const target = guestPathBySource.get(source.target!);
+    const targetFinal = target === undefined ? undefined : finalByPath.get(target);
     if (
-      canonicalSource === undefined || target === undefined ||
-      final.size !== canonicalSource.size || final.mode !== canonicalSource.mode
+      canonicalSource === undefined || target === undefined || targetFinal === undefined ||
+      (final.type !== "file" && final.type !== "hardlink") ||
+      (targetFinal.type !== "file" && targetFinal.type !== "hardlink") ||
+      final.size !== canonicalSource.size || final.mode !== canonicalSource.mode ||
+      targetFinal.size !== canonicalSource.size ||
+      targetFinal.mode !== canonicalSource.mode ||
+      final.inode_group === undefined ||
+      final.inode_group !== targetFinal.inode_group
     ) {
       throw new Error(`Homebrew poured hardlink /${path} has no immediate guest target`);
     }
