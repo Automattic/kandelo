@@ -235,6 +235,7 @@ to a different directory than the original OFD.
 | `renameat2()` | Full | Delegates to renameat. Extra flags parameter ignored. |
 | `faccessat2()` | Full | Delegates to faccessat. Extra flags parameter ignored. |
 | `fchmodat2()` | Full | Delegates to fchmodat. Extra flags parameter ignored. |
+| `getdents64()` | Full | Emits complete Linux directory records, preserves the next host entry when a caller's buffer fills, returns EINVAL when no complete record fits, and exposes stable `d_off` positions for `lseek()`/`seekdir()`. |
 | `getdents()` (legacy) | Full | Delegates to getdents64. |
 | `name_to_handle_at()` / `open_by_handle_at()` | Stub | Returns ENOSYS. |
 
@@ -418,7 +419,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
-| **fork and SCM_RIGHTS recipients have independent ordinary-file OFD metadata** | fork / fd / sockets | POSIX requires inherited and transferred descriptors to refer to the same open file description. Kandelo retains exact global backings for pipes, sockets, PTYs, eventfd/timerfd/signalfd, memfd, and procfs snapshots. `SCM_RIGHTS` also preserves `OfdId`/`FileId` while queued and after receipt, so OFD and `flock()` ownership survives sender close and ends only on the true final reference. The per-process `OfdTable` still copies ordinary regular-file seek positions, status flags, and related metadata, so coordinated users of one inherited or transferred regular fd can observe divergent offsets or flags. The global-OFD redesign remains tracked in [future-improvements.md](future-improvements.md). |
+| **fork and SCM_RIGHTS recipients have independent ordinary-file OFD metadata** | fork / fd / sockets | POSIX requires inherited and transferred descriptors to refer to the same open file description. Kandelo retains exact global backings for pipes, sockets, PTYs, eventfd/timerfd/signalfd, memfd, and procfs snapshots. `SCM_RIGHTS` also preserves `OfdId`/`FileId` while queued and after receipt, so OFD and `flock()` ownership survives sender close and ends only on the true final reference. The per-process `OfdTable` still copies ordinary regular-file seek positions, status flags, and related metadata; host-directory iteration state is likewise process-local and restarts in a fork child or `SCM_RIGHTS` recipient. Coordinated users of one inherited or transferred ordinary fd can therefore observe divergent offsets, flags, or directory positions. The global-OFD redesign remains tracked in [future-improvements.md](future-improvements.md). |
 
 ### High — Missing features that affect common programs
 

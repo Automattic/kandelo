@@ -293,9 +293,21 @@ pub struct OpenFileDesc {
     pub dir_synth_state: u8,
     /// Cumulative entry count across getdents64 calls — used as d_off cookie for seekdir.
     pub dir_entry_offset: i64,
+    /// Host entry already consumed by `host_readdir` but not yet exposed to
+    /// the guest because it did not fit in the caller's getdents64 buffer.
+    /// The next getdents64 call must retry this exact entry before advancing
+    /// the host iterator.
+    pub(crate) dir_pending_entry: Option<PendingDirEntry>,
     /// DRI sidecar; see [`DriOfdState`]. Boxed so non-DRI OFDs pay
     /// only one pointer slot.
     pub dri_state: Option<Box<DriOfdState>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingDirEntry {
+    pub ino: u64,
+    pub d_type: u8,
+    pub name: Vec<u8>,
 }
 
 impl OpenFileDesc {
@@ -390,6 +402,7 @@ impl OfdTable {
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_pending_entry: None,
             dri_state: None,
         };
 
@@ -423,6 +436,7 @@ impl OfdTable {
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_pending_entry: None,
             dri_state: None,
         })
     }
@@ -674,6 +688,7 @@ mod tests {
                 dir_host_handle: -1,
                 dir_synth_state: 0,
                 dir_entry_offset: 0,
+                dir_pending_entry: None,
                 dri_state: None,
             });
         }
