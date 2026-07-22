@@ -413,8 +413,9 @@ unqualified external dependency must be explicitly tagged `:build`, `:test`,
 or both. Untagged and `:recommended` external runtime dependencies fail because
 portable runtime dependencies must come from the primary tap or an exact
 dependency-tap lock; `:optional` dependencies are not selected. Qualified
-locked-tap dependencies remain in the target plan. The resulting control data
-also carries the sorted immutable target-tap set plus three native lists:
+locked-tap dependencies remain in the target plan. The resulting closed
+schema-4 control data also carries the sorted immutable target-tap set, three
+native name lists, and a `native_requirements` array:
 
 - `build` contains only direct native dependencies tagged `:build` (including
   `[:build, :test]`). The isolated Homebrew overlay uses this root-owned list
@@ -424,6 +425,32 @@ also carries the sorted immutable target-tap set plus three native lists:
   needed to build or test the Formula.
 - `runtime_and_test` is used by the bottle verifier and excludes dependencies
   that are only tagged `:build`.
+- `native_requirements` binds each statically allowlisted Requirement's fully
+  qualified class name to its canonical core Formula name, sentinel executable,
+  and exact `build` or `build,test` tags. Records are sorted by class, and class
+  and Formula identities are unique.
+
+Schema 3 is deliberately not accepted by schema-4 consumers. It records only
+Formula names, so it cannot prove whether an evaluated build input came from a
+literal Formula dependency or a custom Requirement. The bottle builder,
+verifier, and publisher overlay all validate the closed schema, tag/list
+membership, ordering, uniqueness, and bounded identifier syntax. In the build
+child, the publisher also compares the evaluated Requirement class, class-owned
+Formula and sentinel metadata, and tags byte-for-byte with the sealed plan. It
+then constructs build-only Homebrew `Dependency` objects for the matching
+Formulae so the ordinary Build/Superenv path receives the preinstalled proxy
+kegs. For a `build,test` Requirement, the publisher's Formula-test process
+also requires the sealed proxy to contain the planned sentinel and adds only
+that proxy's `opt` tool and metadata paths to the test environment. Literal
+string dependencies retain their existing path.
+
+The regression suite applies both production patches to the exact pinned
+Homebrew commit and runs a local-source fixture through real `brew install
+--build-bottle --ignore-dependencies` and `brew test` processes. The fixture's
+allowlisted WABT Requirement must invoke its sealed proxy sentinel from both
+the actual Build/Superenv path and Homebrew's actual Formula-test environment.
+The broader overlay tests separately cover malformed plans, mismatched
+evaluated objects, unchanged string dependencies, and the inactive path.
 
 The native launcher installs each selected direct dependency as an explicit
 `homebrew/core/<name>` reference under an ephemeral native prefix. Each install
@@ -1466,17 +1493,53 @@ after eight minutes and drove its Node host to about 20 GiB RSS. Even a
 history-free current-core snapshot made pinned Homebrew scan thousands of
 version-skewed Formulae, exceeded 9 GiB host RSS, and did not complete.
 
-The remaining work is a supported recipe contract that represents
-publisher-only native tools without placing them in the guest Formula graph.
-The leading design is a tightly allowlisted set of custom Homebrew
-`Requirement` classes, which Homebrew documents for external tools. It must
-retain the publisher's static plan, sealed tool proxies, source identity, and
-provenance checks, reject arbitrary dynamic Requirements, and cover both build
-and test environments before rollout. Supported install, receipt, execution,
-reinstall, uninstall, and cross-tap lifecycle evidence must then run on Node.js
-and Chromium. Full reboot persistence is also not yet a supported claim: the
-current worker-owned mutable root has no whole-image export or durable
-Homebrew-state mount.
+The repository now has the production recipe and publisher contract for
+representing publisher-only native tools without placing them in the guest
+Formula graph. It is a tightly allowlisted set of custom Homebrew `Requirement`
+classes, which Homebrew documents for external tools. Each canonical class is
+fatal, declares fixed `KANDELO_NATIVE_FORMULA` and
+`KANDELO_NATIVE_SENTINEL` metadata, and uses the same sentinel in its fixed
+`satisfy(build_env: false)` predicate. The static parser binds those facts and
+the exact tags into the sealed schema-4 plan without evaluating Formula Ruby;
+the publisher checks the evaluated objects against that plan before restoring
+their Formulae to the source-build environment. Unknown classes, dynamic
+constant lookup, changed metadata or predicates, and ambiguous schema-3 plans
+fail closed.
+
+Tap rollout and full lifecycle evidence remain. The tap must adopt the
+canonical classes across its native-tool declarations, after which install,
+receipt, execution, reinstall, uninstall, and cross-tap lifecycle evidence must
+run on Node.js and Chromium. Full reboot persistence is also not yet a
+supported claim: the current worker-owned mutable root has no whole-image
+export or durable Homebrew-state mount.
+
+A bounded executable prototype now proves that design against the pinned stock
+Homebrew revision. The static Formula parser recognizes only canonical
+`KandeloFormulaSupport::{Binaryen,Pkgconf,Wabt}Requirement` references and maps
+them back to the same `homebrew/core/<name>` identities used by the sealed
+publisher-native plan. Their support definitions use the production canonical
+class shape described above. Unknown classes, dynamic constant lookup, changed
+metadata or predicates, test-only tags, and noncanonical syntax fail without
+evaluating the Formula. A native Requirement must include `:build`; a tool
+needed in tests uses `[:build, :test]`. Pinned Homebrew treats a `:test`-only
+Requirement as a runtime Requirement while installing a bottle, so accepting
+that spelling would make the guest demand a publisher-only executable.
+
+The Node.js proof starts from the exact bootstrap image, verifies Homebrew
+`4ead8619231cb15cbe15e8e8188081e347d6f7cd`, selects the immutable core-tap
+candidate `674813c5c79c97fae8fb971d97b3fee92ad0057c`, verifies the exact Bzip2
+Formula and shared support hashes from that candidate without editing either
+file, and invokes unmodified
+`brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2`. It neither
+creates `homebrew/core` nor uses API metadata, a synthetic core tree, an
+installer patch, or a dependency-bypass flag. The public bottle pours, its
+receipt reports `poured_from_bottle: true` with no runtime dependencies, and
+the installed executable completes a compression round trip. Prepare-merge
+runs this proof against the candidate kernel and bootstrap VFS whenever package
+staging is required. This is still pre-rollout evidence, not the supported
+guest-install contract: the core-tap candidate must land, and Node.js and
+Chromium must cover install, reinstall, uninstall, and third-party lifecycle
+before user-facing install instructions are published.
 
 ABI 41 raised every fork continuation reserve from 16 KiB to 60 KiB. The
 earlier ABI 39 dispatcher and `/usr/bin/brew` alias-launcher measurements needed

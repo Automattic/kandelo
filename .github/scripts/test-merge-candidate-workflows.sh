@@ -376,21 +376,29 @@ grep -Fq -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" || \
   fail "candidate-backed Homebrew execution must test the /usr/bin/brew alias"
 grep -Fq 'homebrew_bootstrap_guest_contract_node.ts' <<<"$homebrew_guest_step" || \
   fail "candidate-backed Homebrew execution must prove the complete guest bootstrap contract"
+grep -Fq 'homebrew_native_requirement_guest_node.ts' <<<"$homebrew_guest_step" || \
+  fail "candidate-backed Homebrew execution must prove stock guest bottle installation"
+grep -Fq -- '--kernel local-binaries/kernel.wasm' <<<"$homebrew_guest_step" || \
+  fail "stock guest bottle installation must use the candidate kernel"
 host_dist_clear_count=$(grep -Fc 'rm -rf host/dist' <<<"$homebrew_guest_step")
-if [ "$host_dist_clear_count" -ne 3 ]; then
-  fail "candidate-backed Homebrew execution must clear host/dist before all three probes"
+if [ "$host_dist_clear_count" -ne 4 ]; then
+  fail "candidate-backed Homebrew execution must clear host/dist before all four probes"
 fi
 first_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '1s/:.*//p')
 second_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '2s/:.*//p')
 third_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '3s/:.*//p')
+fourth_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '4s/:.*//p')
 canonical_brew_line=$(grep -nF -- '--brew-script /home/linuxbrew/.linuxbrew/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
 alias_brew_line=$(grep -nF -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
 guest_contract_line=$(grep -nF 'homebrew_bootstrap_guest_contract_node.ts' <<<"$homebrew_guest_step" | cut -d: -f1)
+native_requirement_line=$(grep -nF 'homebrew_native_requirement_guest_node.ts' <<<"$homebrew_guest_step" | cut -d: -f1)
 if [ "$first_host_dist_clear_line" -ge "$canonical_brew_line" ] || \
    [ "$canonical_brew_line" -ge "$second_host_dist_clear_line" ] || \
    [ "$second_host_dist_clear_line" -ge "$alias_brew_line" ] || \
    [ "$alias_brew_line" -ge "$third_host_dist_clear_line" ] || \
-   [ "$third_host_dist_clear_line" -ge "$guest_contract_line" ]; then
+   [ "$third_host_dist_clear_line" -ge "$guest_contract_line" ] || \
+   [ "$guest_contract_line" -ge "$fourth_host_dist_clear_line" ] || \
+   [ "$fourth_host_dist_clear_line" -ge "$native_requirement_line" ]; then
   fail "candidate-backed Homebrew execution must clear host/dist before each ordered entry-point probe"
 fi
 homebrew_guest_step_line=$(grep -nF -- '- name: Build and prove Homebrew guest bootstrap from candidate artifacts' "$PREPARE" | cut -d: -f1)

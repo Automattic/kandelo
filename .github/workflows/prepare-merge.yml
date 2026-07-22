@@ -1608,6 +1608,14 @@ jobs:
               --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
               --bash binaries/programs/wasm32/bash.wasm \
               --timeout-ms 300000
+
+            rm -rf host/dist
+            host/node_modules/.bin/tsx \
+              homebrew/test/homebrew_native_requirement_guest_node.ts \
+              --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
+              --kernel local-binaries/kernel.wasm \
+              --bash binaries/programs/wasm32/bash.wasm \
+              --timeout-ms 600000
           '
 
       - name: Pack prepared test workspace
