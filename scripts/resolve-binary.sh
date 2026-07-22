@@ -152,15 +152,31 @@ kernel_required_exports=(
     kernel_alloc_scratch
     kernel_create_process
     kernel_create_process_with_stdio
+    kernel_dequeue_signal
+    kernel_exec_prepare
+    kernel_exec_setup_for_thread
+    kernel_fork_process
     kernel_get_parent_pid
+    kernel_get_process_exit_signal
     kernel_get_process_state
     kernel_handle_channel
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
+    kernel_ipc_shmat_for_process
+    kernel_ipc_shmat_for_task
+    kernel_ipc_shmdt_for_process
+    kernel_ipc_shmdt_for_task
     kernel_mark_process_signaled
+    kernel_pipe_has_readers
+    kernel_posix_timer_fire
+    kernel_prepare_write_operation
     kernel_reap_exited_child
     kernel_remove_process
+    kernel_set_current_tid
+    kernel_spawn_process
+    kernel_thread_exit
+    kernel_validate_task
     kernel_wait_child_poll
 )
 

@@ -19,6 +19,9 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 
 **Key properties:**
 - **Single kernel instance** with a `ProcessTable` mapping PIDs to `Process` structs
+- **One kernel-owned task-ID sequence** in that Rust `ProcessTable` allocates all
+  top-level, fork, spawn, and clone PIDs/TIDs monotonically from 100. Callers do
+  not choose IDs, and PID 1 is a kernel-created synthetic init reservation.
 - **Process workers** communicate with the kernel via channel IPC — each process/thread has a channel region in shared memory, and the kernel services syscalls one at a time from the JS event loop
 - **Cross-process shared state** uses kernel-global or host-coordinated
   backings where implemented. Pipes, locks, IPC objects, sockets, and selected
@@ -28,8 +31,10 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 - **Signal delivery** across processes is direct — the kernel can write to any process's pending signal mask
 
 **Key kernel-side APIs:**
-- `kernel_create_process(pid)` — register a new process
-- `kernel_fork_process(parent, child)` — fork state from parent to child (fd table, OFDs, signals, etc.)
+- `kernel_create_process()` — allocate and register a new process, returning its PID
+- `kernel_create_process_with_stdio(stdin_kind, stdout_kind, stderr_kind)` — same allocation with explicit stdio semantics
+- `kernel_fork_process(parent, caller_tid)` — validate the calling task, allocate a child PID, and copy inherited state including that task's signal mask
+- `kernel_spawn_process(parent, caller_tid, blob_ptr, blob_len)` — validate the calling task, allocate the child PID, and apply spawn attributes and file actions
 - `kernel_remove_process(pid)` — clean up on exit
 - `kernel_handle_channel(offset, pid)` — dispatch a syscall from a process's channel
 
@@ -114,7 +119,7 @@ same final-OFD lifetime rules.
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `fork()` | Partial | The kernel copies process state and the host starts a child Worker with copied Memory. Initial launch mirrors the environment into kernel-owned process state; fork copies that metadata while instrumented rewind preserves the live libc `environ` in copied Memory, and `execve()` replaces both from its supplied `envp`. `wasm-fork-instrument` resumes the child at the call site with preserved stack locals and mutable globals. Main-thread and pthread fork are supported, as is the documented direct main-to-one-side-module path; nested/opaque cross-side callbacks and fork from a pthread inside a side module remain unsupported. Pipes, sockets, PTYs, eventfd/timerfd/signalfd, memfd, procfs snapshots, and shared mappings retain their existing backings; signal and wait lifecycle state is copied/coordinated by the kernel. Ordinary regular-file OFD seek positions/status flags are still copied rather than shared. See [fork-instrumentation.md](fork-instrumentation.md) and the known OFD gap below. |
+| `fork()` | Partial | The kernel validates the calling task, allocates the child PID, and copies process state; the host starts a child Worker with copied Memory. The child inherits the calling task's blocked signal mask, and libc refreshes a copied pthread TID from the kernel before returning from `fork()`. Initial launch mirrors the environment into kernel-owned process state; fork copies that metadata while instrumented rewind preserves the live libc `environ` in copied Memory, and `execve()` replaces both from its supplied `envp`. `wasm-fork-instrument` resumes the child at the call site with preserved stack locals and mutable globals. Main-thread and pthread fork are supported, as is the documented direct main-to-one-side-module path; nested/opaque cross-side callbacks and fork from a pthread inside a side module remain unsupported. Pipes, sockets, PTYs, eventfd/timerfd/signalfd, memfd, procfs snapshots, and shared mappings retain their existing backings; signal and wait lifecycle state is copied/coordinated by the kernel. Ordinary regular-file OFD seek positions/status flags are still copied rather than shared. See [fork-instrumentation.md](fork-instrumentation.md) and the known OFD gap below. |
 | `exec()` | Partial | Kernel-initiated via SYS_EXECVE (syscall 211). The host preflights the module, ABI, replacement memory, caller, deferred file actions, and a 4 MiB combined argv/environment representation (strings, terminators, and pointer entries) before replacing the image in place; individual strings are limited to 64 KiB and oversize returns `E2BIG` without truncation. Preserves PID, non-CLOEXEC fds and their exact kernel-backed object state, new argv/envp (including an explicitly empty environment), CWD, the calling pthread's signal mask and directed queue, terminal queues, and `alarm()`/`ITIMER_REAL`; closes directory streams, deletes `timer_create()` timers, publishes and detaches old mappings, terminates sibling threads, and resets the program break before installing the new `__heap_base`. File mappings retain a stable writeback handle even after their original fd closes. Remaining gaps: POSIX message-queue descriptors are not process-owned and therefore cannot yet be closed on exec; epoll registrations track numeric fds rather than OFD identity, so close/dup and same-number replacement cases are incomplete; and main-thread-directed signals share the process-pending queue and therefore cannot be distinguished from process-directed signals when a worker pthread execs. |
 | `wait()` / `waitpid()` / `wait4()` / `waitid()` | Partial | Rust-owned child status covers stop, continue, normal exit, and signal death. New status replaces older unconsumed status; `waitid(WNOWAIT)` preserves the current record. `WNOHANG`, `WUNTRACED`/`WSTOPPED`, `WEXITED`, and `WCONTINUED` are supported, as are specific-PID, any-child, same-process-group, and specific-process-group selection. Stop/continue reports do not reap; consuming exit status does. `wait4()` returns the zero-filled resource-usage wire record described under `getrusage()`. Remaining gap: a blocked `pid == 0` / `P_PGID,id == 0` wait currently re-evaluates the caller's process group on each host retry instead of freezing it at call entry. |
 | `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases locks and mapping/backing ownership, and retains the low eight status bits. Normal codes 128–255 remain distinct from signal termination, which is stored separately. SIGCHLD is delivered to the parent and zombie state remains until `waitpid()` reaps it. |
@@ -138,9 +143,9 @@ same final-OFD lifetime rules.
 | `execveat()` | Partial | SYS_EXECVEAT (386). Resolves fd path via `kernel_get_fd_path`, supports AT_EMPTY_PATH for `fexecve()`, and resolves relative paths against process CWD; otherwise has the same remaining `exec()` limitations. |
 | `fork()` (syscall) | Partial | Glue traps through channel IPC; the kernel copies process state, the host starts a child Worker, and `wasm-fork-instrument` replays the supported call stack so parent/child receive the POSIX return values. The side-module and ordinary-OFD limitations in the main `fork()` row still apply. |
 | `vfork()` | Partial | Alias for `fork()` and therefore has the same continuation/OFD limitations; it does not provide distinct vfork address-space semantics. |
-| `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host parses the blob, calls `kernel_spawn_process` to allocate a child pid + build the child Process descriptor, then invokes `onSpawn` to launch a fresh Worker. No fork, no `wpk_fork_*` rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
+| `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host passes the calling TID to `kernel_spawn_process`; the Rust `ProcessTable` validates that task, allocates the child PID from the global task-ID sequence, and builds the child Process descriptor before `onSpawn` launches a fresh Worker. The child inherits the calling task's signal mask unless `POSIX_SPAWN_SETSIGMASK` replaces it. No fork, no `wpk_fork_*` rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
 | `posix_spawnp()` | Full | PATH search lives in libc (`libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
-| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. The kernel allocates the TID, and the host spawns a thread Worker sharing the parent's Memory. Normal pthread return, pthread_exit, and cancellation cleanup remain per-thread and wake join/clear-TID waiters; uncaught fatal Wasm traps in a pthread worker terminate the whole process with signal-style wait status. |
+| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. The Rust `ProcessTable` allocates the TID from the same global task-ID sequence as every PID, and the host spawns a thread Worker sharing the parent's Memory. Normal pthread return, pthread_exit, and cancellation cleanup remain per-thread and wake join/clear-TID waiters; uncaught fatal Wasm traps in a pthread worker terminate the whole process with signal-style wait status. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
 | `ptrace()` | Stub | Returns ENOSYS. |
@@ -167,7 +172,8 @@ same final-OFD lifetime rules.
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. POSIX EPERM enforced: unprivileged processes cannot signal a target whose real/effective uid does not match their own. A virtual init (pid 1, uid 0) is auto-registered so `kill(1, ...)` resolves; target 4 in compromising-xfails.md. |
+| `kill()` | Partial | The centralized Rust process table validates the caller, resolves process and process-group targets, and owns pending signal state; the host only wakes exact channels selected from kernel-owned tasks. `sig=0` performs existence and permission checks without queuing. Pending signals are delivered at syscall boundaries. POSIX `EPERM` is enforced when an unprivileged caller's real/effective uid does not match the target. The immutable synthetic init reservation (PID 1, uid 0, no user worker) resolves existence checks without becoming a mutable delivery target; target 4 in compromising-xfails.md. |
+| `tkill()` / `tgkill()` | Partial | Linux-compatible exact-thread delivery within the calling process uses kernel-owned task records and the target thread's directed pending queue. TID 0 and unknown or exited targets return `ESRCH`; an exact-thread request never falls back to process-wide delivery. Signal 0 performs the same target validation without queuing a signal. Cross-process per-thread delivery is not yet supported and returns `ESRCH`. |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
 | `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART is honored by the existing blocking read/write/recv/poll paths and by host-deferred waits. SA_SIGINFO calls `handler(signum, siginfo_ptr, ucontext_ptr)` with pointer-width-correct layout, but host-generated SIGCHLD currently lacks the exact child pid/CLD code/status metadata. SA_NOCLDWAIT auto-reaps children and suppresses SIGCHLD. SA_NOCLDSTOP suppresses stop/continue SIGCHLD notification without discarding waitable status. SIG_IGN discards pending signals; SIG_DFL discards pending signals for signals whose default action is "ignore" (e.g., SIGCHLD). **Note:** Programs must be linked with `--table-base=3 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN, index 2 reserved for `__main_void`). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
@@ -303,7 +309,7 @@ shortcuts.
 | `sched_get_priority_min()` | Stub | Returns 0. |
 | `sched_rr_get_interval()` | Stub | Writes 10ms timespec. |
 | `sched_setaffinity()` | Stub | Returns 0 (no-op). |
-| `sched_getaffinity()` | Stub | Linux-specific one-CPU compatibility surface. Running or stopped workers and process leaders that have not been reaped (including zombie leaders) report a fixed four-byte CPU-0 mask; reaped leaders, dead workers, and absent tasks return `ESRCH`. The raw syscall requires a size of at least four bytes aligned to four, writes and returns exactly four bytes, and leaves a larger raw buffer's tail untouched. Musl's public wrapper zero-fills that tail and returns 0. Exact leader PIDs take precedence over Kandelo's per-process worker TID records, whose numeric IDs can still collide across processes. |
+| `sched_getaffinity()` | Stub | Linux-specific one-CPU compatibility surface. Running or stopped workers and process leaders that have not been reaped (including zombie leaders) report a fixed four-byte CPU-0 mask; reaped leaders, dead workers, and absent tasks return `ESRCH`. The raw syscall requires a size of at least four bytes aligned to four, writes and returns exactly four bytes, and leaves a larger raw buffer's tail untouched. Musl's public wrapper zero-fills that tail and returns 0. Process leaders and worker TIDs share the kernel's global task-ID sequence, so each numeric target identifies at most one retained task. |
 | `sched_yield()` | Stub | Returns 0 (no-op, single-threaded). |
 
 ## Event/Notification
@@ -465,7 +471,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 ### Future Work — Remaining items
 
 **Threading:**
-- `clone()` — CLONE_VM|CLONE_THREAD: kernel allocates TID, host spawns thread Worker sharing parent's Memory. TLS initialization via `__wasm_thread_init` export.
+- `clone()` — CLONE_VM|CLONE_THREAD: the Rust `ProcessTable` allocates the TID from its global PID/TID sequence, and the host spawns a thread Worker sharing the parent's Memory. TLS initialization via `__wasm_thread_init` export.
 - `gettid()` — returns actual TID for threads, pid for main thread
 - `set_tid_address()` — stores tidptr; kernel writes 0 + futex-wakes on thread exit (CLONE_CHILD_CLEARTID)
 - `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP are implemented within one process; cross-process waits/wakes remain unsupported even over a coordinated shared mapping
@@ -539,7 +545,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - Message protocol for host ↔ worker communication
 13b. **Phase 13b (Complete):** Fork & Waitpid
 - Binary fork state serialization/deserialization (Rust)
-- kernel_get_fork_state / kernel_init_from_fork Wasm exports
+- `kernel_fork_process(parent, caller_tid)` validates the calling task, allocates the child identity, and copies its state; the caller-selected `kernel_init_from_fork(..., child_pid)` constructor was removed in ABI 42
 - ProcessManager.fork() with state transfer to child worker
 - ProcessManager.waitpid() with WNOHANG support
 13c. **Phase 13c (Complete):** Cross-Process Pipes
@@ -548,13 +554,12 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - kernel_convert_pipe_to_host Wasm export
 - Pipe detection and conversion on fork via ProcessManager
 13d. **Phase 13d (Complete):** Cross-Process Signals
-- kernel_deliver_signal Wasm export for host-initiated signal injection
-- host_kill Wasm import with cross-process routing in sys_kill
-- DeliverSignalMessage protocol and ProcessManager.deliverSignal()
-- KillRequestMessage: worker → host → target worker signal routing
+- Centralized kernel-owned target resolution, pending queues, and permission checks
+- Exact `(pid, tid)` dequeue at the host boundary; the host wakes channels but does not own signal state
+- Obsolete host-side `DeliverSignalMessage` / `ProcessManager.deliverSignal()` authority removed in ABI 42
 13e. **Phase 13e (historical milestone complete; current conformance remains Partial):** Exec
 - In-place centralized exec: CLOEXEC filtering, signal disposition reset, pending-queue preservation
-- Legacy kernel_get_exec_state / kernel_init_from_exec Wasm exports (scheduled for ABI cleanup)
+- Obsolete `kernel_get_exec_state` / `kernel_init_from_exec` Wasm exports removed in ABI 42; exec now uses only the centralized in-place `kernel_exec_prepare` / `kernel_exec_setup_for_thread` path
 - host_exec Wasm import and sys_execve syscall
 - Worker re-initialization against the continuing centralized kernel Process
 - ProcessManager.exec() for host-initiated exec

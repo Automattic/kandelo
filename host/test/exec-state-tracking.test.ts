@@ -7,6 +7,7 @@ import {
   ABI_SYSCALLS,
   CH_ARG_SIZE,
   CH_ARGS,
+  CH_DATA,
   CH_DATA_SIZE,
   CH_RETURN,
   HOST_INTERCEPTED_SYSCALLS,
@@ -102,13 +103,17 @@ describe("exec host-state transition", () => {
         ]),
       });
       const notify = vi.spyOn(Atomics, "notify");
+      const pendingAttachment = issueThreadAttachment(worker, mainChannel, 11);
 
       worker.prepareProcessForExec(7);
 
       expect(worker.processes.has(7)).toBe(true);
       expect(worker.processes.get(7).channels).toEqual([]);
       expect(worker.isExecHandoffActive(7)).toBe(true);
-      expect(() => worker.addChannel(7, 512)).toThrow(/replacing its image/);
+      expect(() => worker.attachThreadChannel(
+        pendingAttachment,
+        512,
+      )).toThrow(/replacing its image/);
       expect(worker.processes.has(8)).toBe(true);
       expect(worker.activeChannels).toEqual([otherChannel]);
       expect(worker.waitingForChild).toEqual([
@@ -148,11 +153,18 @@ describe("exec host-state transition", () => {
   it("rejects an old-memory clone after replacement registration", () => {
     const oldMemory = new WebAssembly.Memory({ initial: 1 });
     const newMemory = new WebAssembly.Memory({ initial: 1 });
+    const oldChannel = createChannel(7, oldMemory, 0);
     const worker = createWorker({
-      processes: new Map([[7, { channels: [], memory: newMemory }]]),
+      processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
+      activeChannels: [oldChannel],
     });
+    const pendingAttachment = issueThreadAttachment(worker, oldChannel, 11, 1, 2);
+    worker.processes.set(7, { channels: [], memory: newMemory });
 
-    expect(() => worker.addChannel(7, 512, 11, 1, 2, oldMemory))
+    expect(() => worker.attachThreadChannel(
+      pendingAttachment,
+      512,
+    ))
       .toThrow(/changed memory generation/);
     expect(worker.processes.get(7).channels).toEqual([]);
   });
@@ -366,6 +378,7 @@ describe("exec host-state transition", () => {
       channel,
       [0, 0, 0, 40, 0, 0],
       7,
+      7,
       0,
       new Uint8Array(40),
       40,
@@ -424,6 +437,7 @@ describe("exec host-state transition", () => {
     worker.handleSpawnAfterResolve(
       channel,
       [0, 0, 0, 40, 0, 0],
+      7,
       7,
       0,
       new Uint8Array(40),
@@ -797,10 +811,9 @@ describe("exec host-state transition", () => {
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
-          kernel_set_current_pid: vi.fn(),
           kernel_ipc_shm_read_chunk: readChunk,
           kernel_ipc_shm_write_chunk: writeChunk,
-          kernel_ipc_shmdt: detach,
+          kernel_ipc_shmdt_for_process: detach,
         },
       },
     });
@@ -811,7 +824,7 @@ describe("exec host-state transition", () => {
     expect(worker.shmMappings.has(7)).toBe(true);
 
     expect(worker.finalizeAddressSpaceForExec(7)).toBe(0);
-    expect(detach).toHaveBeenCalledWith(3);
+    expect(detach).toHaveBeenCalledWith(7, 3);
     expect(worker.shmMappings.has(7)).toBe(false);
   });
 
@@ -832,7 +845,6 @@ describe("exec host-state transition", () => {
             ambientPid = worker.currentHandlePid;
             return 0;
           },
-          kernel_exec_setup: () => 0,
           kernel_fd_is_open: (_pid: number, fd: number) => openFds.has(fd) ? 1 : 0,
         },
       },
@@ -858,6 +870,28 @@ describe("exec host-state transition", () => {
     expect(worker.epollInterests.has("7:10")).toBe(false);
   });
 
+  it("fails loudly when either exact-caller exec export is absent", () => {
+    const missingPrepare = createWorker({
+      currentHandlePid: 0,
+      kernelInstance: {
+        exports: { kernel_exec_setup_for_thread: vi.fn(() => 0) },
+      },
+    });
+    const missingSetup = createWorker({
+      currentHandlePid: 0,
+      kernelInstance: {
+        exports: { kernel_exec_prepare: vi.fn(() => 0) },
+      },
+    });
+
+    expect(() => missingPrepare.kernelExecPrepare(7, 11)).toThrow(
+      "Kernel missing required kernel_exec_prepare export",
+    );
+    expect(() => missingSetup.kernelExecSetup(7, 11)).toThrow(
+      "Kernel missing required kernel_exec_setup_for_thread export",
+    );
+  });
+
   it("remaps a TCP listener mirror to its surviving fd alias", () => {
     let committed = false;
     const close = vi.fn();
@@ -875,7 +909,6 @@ describe("exec host-state transition", () => {
             committed = true;
             return 0;
           },
-          kernel_exec_setup: () => 0,
           kernel_fd_is_open: (_pid: number, fd: number) => committed && fd === 2048 ? 1 : 0,
           kernel_get_fd_accept_wake_idx: (_pid: number, fd: number) => {
             if (fd === 2048) return 41;
@@ -909,7 +942,6 @@ describe("exec host-state transition", () => {
       kernelInstance: {
         exports: {
           kernel_exec_setup_for_thread: () => 0,
-          kernel_exec_setup: () => 0,
           kernel_fd_is_open: (_pid: number, fd: number) => fd === 2048 ? 1 : 0,
           kernel_get_fd_accept_wake_idx: (_pid: number, fd: number) =>
             fd === 2048 ? 41 : -1,
@@ -1117,6 +1149,46 @@ function createWorker(overrides: Record<string, unknown>): any {
     },
   };
   return worker;
+}
+
+function issueThreadAttachment(
+  worker: CentralizedKernelWorker,
+  channel: ReturnType<typeof createChannel>,
+  tid: number,
+  fnPtr = 1,
+  argPtr = 2,
+) {
+  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+  const kernelView = new DataView(kernelMemory.buffer);
+  let attachment: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0]
+    | undefined;
+  new DataView(channel.memory.buffer, channel.channelOffset)
+    .setUint32(CH_DATA, fnPtr, true);
+  new DataView(channel.memory.buffer, channel.channelOffset)
+    .setUint32(CH_DATA + 4, argPtr, true);
+  Object.assign(worker as any, {
+    callbacks: {
+      onClone: (
+        value: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0],
+      ) => {
+        attachment = value;
+        return new Promise<void>(() => {});
+      },
+    },
+    kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+    kernelMemory,
+    scratchOffset: 0,
+    currentHandlePid: 0,
+    threadCtidPtrs: (worker as any).threadCtidPtrs ?? new Map(),
+    bindKernelTidForChannel: vi.fn(),
+  });
+  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn(() => {
+    kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+    return 0;
+  });
+  (worker as any).handleClone(channel, [0, 0, 0, 0, 0, 0]);
+  if (!attachment) throw new Error("clone callback did not receive attachment");
+  return attachment;
 }
 
 function resolvedProgram() {

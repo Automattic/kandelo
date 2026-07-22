@@ -1,8 +1,8 @@
 /**
  * Build a fully-bootable VFS image for the nginx demo. The image starts from
- * shell.vfs.zst, then adds dinit (PID 1), nginx, the nginx config + static
- * content, and a single dinit service file. The browser demo just fetches the
- * image and boots — no JS-side orchestration.
+ * shell.vfs.zst, then adds dinit as the first user process, nginx, the nginx
+ * config + static content, and a single dinit service file. The browser demo
+ * just fetches the image and boots — no JS-side orchestration.
  *
  * Produces: apps/browser-demos/public/nginx.vfs
  *
@@ -95,7 +95,7 @@ const INDEX_HTML = `<!DOCTYPE html>
   <div class="info">
     <p>This page is served by <strong>nginx</strong> running inside a
     POSIX kernel compiled to WebAssembly. The kernel was booted with
-    <code>/sbin/dinit</code> as PID 1, which read
+    <code>/sbin/dinit</code> as the first user process, which read
     <code>/etc/dinit.d/nginx</code> and brought the service up.</p>
     <p>Request flow: browser fetch → service worker → main thread →
     TCP connection injected into the kernel → nginx (Wasm) → response

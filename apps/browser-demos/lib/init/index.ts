@@ -3,7 +3,7 @@
  *
  * Helpers shared across browser surfaces for VFS image construction and worker-side
  * setup. The legacy SystemInit orchestrator was removed once all demos
- * migrated to dinit-as-PID-1 (see scripts/dinit-image-helpers.ts).
+ * migrated to dinit as the first user process (see dinit-image-helpers.ts).
  */
 
 // Terminal panel UI component

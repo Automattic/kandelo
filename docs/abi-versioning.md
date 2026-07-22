@@ -125,6 +125,111 @@ rebuilding because the public process-memory layout belongs to ABI 41. ABI 41
 candidate programs created before publication remain mechanically valid when
 only this host-supplied reserve grows and the frame format stays unchanged.
 
+### ABI 42 kernel-owned task identities
+
+ABI 42 makes the Rust `ProcessTable` the sole authority for process and thread
+identities. One monotonically increasing positive signed task-ID sequence starts
+at 100 and serves top-level process creation, fork, non-forking `posix_spawn`,
+and thread-style clone. IDs are not reused after process reaping or thread exit;
+allocating `i32::MAX` succeeds, and only the following allocation returns
+`EAGAIN`. PID 1 is created separately as the synthetic init reservation and
+never names a user Wasm worker.
+
+The kernel implementation enforces that ownership with a linear
+`AllocatedTaskId`: only `ProcessTable` can mint one, and production `Process` or
+`ThreadInfo` construction consumes it. PID, TID, and thread-membership views are
+not mutable outside that path. Caller-selected constructors remain test-only,
+and fork deserialization restores non-identity state into an already-authorized
+child instead of constructing a PID from serialized or host input. These are
+internal Rust invariants rather than additional Wasm exports.
+
+The kernel creation exports now return their assigned identities:
+`kernel_create_process()` takes no PID, and
+`kernel_create_process_with_stdio(stdin_kind, stdout_kind, stderr_kind)` takes
+only stdio kinds. `kernel_fork_process(parent_pid, caller_tid)` takes no child
+PID and returns the allocated child. The new
+`kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)` signature
+likewise names the already-existing calling task, not a proposed child
+identity. The kernel validates that `caller_tid` is the parent's live main task
+or one of its live kernel-allocated threads before either operation; an unknown,
+stale, or cross-process caller returns `ESRCH`. The caller-selected
+`kernel_init(pid)` and `kernel_init_from_fork(..., child_pid)` constructors are
+removed. Host `createProcess` asks the kernel for an identity, while
+`registerProcess` only attaches memory, channels, and worker metadata to
+existing kernel state; no host allocator or task-ID watermark remains.
+Thread-style clone likewise validates its bound caller against the owning
+process before consuming a task ID. The host adapter manifest and kernel
+artifact gates require the create, fork, spawn, exact exec, and thread-exit
+exports, so a stale kernel cannot defer a missing authority or lifecycle path
+until the first child, exec, or thread exit.
+
+Exec is an exact-caller two-step operation. The required
+`kernel_exec_prepare(pid, caller_tid)` export validates the live task and
+applies deferred file actions before the irreversible transition. The required
+`kernel_exec_setup_for_thread(pid, caller_tid)` export performs the in-place
+exec reset while preserving the calling task's mask and directed signal state.
+The required `kernel_thread_exit(pid, tid)` export removes only that process's
+exact live thread; unknown, already-exited, and cross-process TIDs return
+`ESRCH` rather than falling back to a host-side lifecycle decision.
+
+Fork and spawn use the validated caller identity to select the calling task's
+blocked signal mask. A fork child inherits that mask, and a spawn child inherits
+it unless `POSIX_SPAWN_SETSIGMASK` supplies a replacement. The obsolete
+`kernel_reset_signal_mask` export is removed; clearing the fork child's mask in
+the host would violate pthread-fork semantics. On the child rewind path, libc
+refreshes the copied pthread TID from the kernel through `set_tid_address`
+before returning from `fork()`.
+
+Channel identity binding is kernel-validated in the same epoch.
+`kernel_set_current_tid(pid, tid) -> 0 | -errno` replaces the former unchecked
+one-argument setter. It accepts only the process's main task or a thread that
+the same `ProcessTable` has already allocated for that process; a host cannot
+invent a TID or bind one process's channel to another process's task. The
+read-only `kernel_validate_task(pid, tid)` export lets the host validate channel
+registration without installing dispatch authority. Clone callbacks attach a
+mailbox by consuming a one-shot host transport proof whose immutable PID/TID
+pair comes from that exact kernel clone result. The public attachment path does
+not accept a numeric TID, and rejects proof replay, duplicate offsets, duplicate
+TID ownership, and attempts to substitute a different valid sibling task. A
+successful `kernel_set_current_tid` binding authorizes exactly one
+`kernel_handle_channel` call and is cleared after every return. Because
+`_exit` intentionally traps instead of returning through the dispatcher, it
+clears the binding before trapping. Missing, rejected, stale, or exited task
+bindings fail closed with `ESRCH`; no PID-only ambient selector remains.
+
+All host-initiated guest mutations that previously depended on such a selector
+now carry their authority explicitly. `kernel_dequeue_signal(pid, tid,
+out_ptr)`, `kernel_wait_child_poll(parent_pid, caller_tid, target_pid,
+event_mask, flags, out_ptr)`, and `kernel_prepare_write_operation(pid, tid,
+fd, offset, len, positioned)` validate the exact live caller before consuming
+signal or wait state or applying write-limit side effects. Guest SysV shared
+memory calls use `kernel_ipc_shmat_for_task(pid, tid, ...)` and
+`kernel_ipc_shmdt_for_task(pid, tid, ...)`; lifecycle-only inheritance,
+rollback, and teardown use the separate explicit-process
+`kernel_ipc_shmat_for_process` and `kernel_ipc_shmdt_for_process` exports.
+The former `kernel_set_current_pid` export is removed.
+
+The Rust kernel Wasm's obsolete direct `kernel_fork` export and its
+host-supplied `host_fork` and `host_clone` imports are also removed. Guest libc
+still imports `kernel_fork` from its process-worker adapter; that adapter routes
+the request through the centralized host, which calls
+`kernel_fork_process(parent_pid, caller_tid)` and uses the PID returned by
+`ProcessTable`.
+
+Exact-thread signal delivery is strict in ABI 42. `tkill` and `tgkill` deliver
+only to a retained live task record in the calling process. TID 0 and unknown
+or exited TIDs return `ESRCH`; they are not reinterpreted as process-wide
+signal requests. Cross-process exact-thread delivery remains unsupported.
+Machine-wide `kill` target selection, including process groups and `kill(-1)`,
+now runs entirely against `ProcessTable`; the former `host_kill` import and
+host-side `DeliverSignalMessage` routing path are removed.
+
+These removals and signature/return-semantics changes, including task
+creation, `kernel_set_current_tid`, signal dequeue, child wait, write prepare,
+SysV attachment, exact exec, and exact thread exit, are incompatible kernel
+Wasm changes. Kernels, hosts, packages, guest binaries, and VFS images from
+ABI 41 must be rebuilt rather than mixed with ABI 42 artifacts.
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the

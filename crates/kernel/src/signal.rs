@@ -1,4 +1,4 @@
-use wasm_posix_shared::signal::NSIG;
+use wasm_posix_shared::{Errno, signal::NSIG};
 extern crate alloc;
 
 use alloc::collections::VecDeque;
@@ -106,7 +106,7 @@ fn terminate_process_by_signal_impl(
     signum: u32,
 ) {
     proc.sigsuspend_saved_mask = None;
-    for thread in &mut proc.threads {
+    for thread in proc.thread_states_mut() {
         thread.signals.sigsuspend_saved_mask = None;
     }
     match locks {
@@ -181,7 +181,7 @@ pub(crate) fn dequeue_signal_for(
 /// signals stay queued for the guest glue. While stopped, Process selection
 /// exposes only SIGKILL; SIGCONT has already resumed at generation time.
 pub(crate) fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO) {
-    deliver_pending_signals_impl(proc, None, host);
+    deliver_pending_signals_impl(proc, None, host, crate::process_table::current_tid());
 }
 
 pub(crate) fn deliver_pending_signals_with_locks(
@@ -189,15 +189,34 @@ pub(crate) fn deliver_pending_signals_with_locks(
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
 ) {
-    deliver_pending_signals_impl(proc, Some(locks), host);
+    deliver_pending_signals_impl(proc, Some(locks), host, crate::process_table::current_tid());
+}
+
+/// Consume default/ignored signals for one exact kernel-owned task.
+///
+/// Cross-process generation must not interpret the sender's ambient TID in
+/// the target process. Callers select a target from the target Process and
+/// pass it here; stale, foreign, synthetic, or exited task IDs fail without
+/// consuming pending state.
+pub(crate) fn deliver_pending_signals_for_tid_with_locks(
+    proc: &mut Process,
+    locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    tid: u32,
+) -> Result<(), Errno> {
+    if !proc.is_live_explicit_tid(tid) {
+        return Err(Errno::ESRCH);
+    }
+    deliver_pending_signals_impl(proc, Some(locks), host, tid);
+    Ok(())
 }
 
 fn deliver_pending_signals_impl(
     proc: &mut Process,
     mut locks: Option<&mut crate::lock::AdvisoryLockManager>,
     host: &mut dyn HostIO,
+    tid: u32,
 ) {
-    let tid = crate::process_table::current_tid();
     loop {
         let Some(signum) = proc.next_deliverable_signal(tid) else {
             break;
@@ -925,6 +944,41 @@ mod tests {
         assert_eq!(event.event_mask, EVENT_EXITED);
         assert_eq!(event.si_code, CLD_KILLED);
         assert_eq!(event.si_status, SIGKILL as i32);
+    }
+
+    #[test]
+    fn exact_target_delivery_never_uses_a_foreign_ambient_tid() {
+        use crate::lock::AdvisoryLockManager;
+        use crate::process::{Process, ProcessState, ThreadInfo, test_host::NoopHost};
+
+        let mut proc = Process::new(60);
+        proc.signals.blocked = sig_bit(SIGTERM);
+        proc.add_thread(ThreadInfo::new(61, 0, 0, 0));
+        assert_eq!(proc.pick_thread_for_shared_signal(SIGTERM), Some(61));
+        assert!(proc.raise_signal(SIGTERM));
+
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = NoopHost;
+        assert_eq!(
+            deliver_pending_signals_for_tid_with_locks(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                70,
+            ),
+            Err(Errno::ESRCH),
+        );
+        assert_eq!(proc.state, ProcessState::Running);
+        assert!(proc.signals.is_pending(SIGTERM));
+
+        deliver_pending_signals_for_tid_with_locks(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            61,
+        )
+        .unwrap();
+        assert_eq!(proc.state, ProcessState::Exited);
     }
 
     #[test]

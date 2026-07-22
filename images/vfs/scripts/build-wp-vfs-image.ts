@@ -1,6 +1,6 @@
 /**
  * Build a fully-bootable VFS image for the WordPress browser demo. The image
- * starts from shell.vfs.zst, then dinit (PID 1) brings up:
+ * starts from shell.vfs.zst, then dinit, the first user process, brings up:
  *
  *   wp-config-init (internal) + smtp-capture (process)
  *       → php-fpm (process) → nginx (process)

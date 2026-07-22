@@ -2409,7 +2409,7 @@ mod tests {
             },
             "kernel_exports": [
                 {"name": "__abi_version", "kind": "func", "signature": "() -> (i32)"},
-                {"name": "kernel_set_current_pid", "kind": "func", "signature": "(i32) -> ()"}
+                {"name": "kernel_existing_helper", "kind": "func", "signature": "(i32) -> ()"}
             ],
             "marshalled_structs": {
                 "WasmStat": {"size": 96, "fields": []}
@@ -2547,7 +2547,7 @@ mod tests {
         let report = classify_compat_change(&old, &new).unwrap();
         assert_eq!(
             report.breaking,
-            vec!["changed kernel_exports entry \"kernel_set_current_pid\""]
+            vec!["changed kernel_exports entry \"kernel_existing_helper\""]
         );
     }
 

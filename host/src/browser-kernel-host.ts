@@ -180,8 +180,8 @@ export class BrowserKernel {
   async boot(options: BrowserKernelBootOptions): Promise<{ pid: number; exit: Promise<number> }> {
     await this.initFromImage(options);
 
-    // Spawn the first process — kernel worker assigns the pid and returns
-    // it in the response. Pid is the single source of truth in the worker.
+    // The Rust ProcessTable allocates the first PID; the worker transports it
+    // in the response and does not maintain an allocation authority of its own.
     return this.spawnFirstProcess(options);
   }
 
@@ -316,9 +316,9 @@ export class BrowserKernel {
   }
 
   /**
-   * Internal: send a spawn message for the first ("init") process. The
-   * worker allocates the pid and returns it in the response. The exit
-   * promise is wired up after the pid is known.
+   * Internal: send a spawn message for the first user process. The
+   * Rust kernel allocates the pid; the worker returns it in the response.
+   * The exit promise is wired up after the pid is known.
    */
   private async spawnFirstProcess(
     options: BrowserKernelBootOptions,
@@ -330,7 +330,7 @@ export class BrowserKernel {
     const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
-      // No pid — the kernel worker allocates and returns it.
+      // No pid — the Rust kernel allocates it and the worker returns it.
       programPath: options.argv[0],
       argv: options.argv,
       env: this.mergeEnv(options.env ?? this.options.env),
@@ -433,7 +433,7 @@ export class BrowserKernel {
 
   /**
    * Spawn a process whose binary already lives in the kernel-owned VFS.
-   * Returns the worker-allocated pid + an exit promise.
+   * Returns the kernel-allocated pid + an exit promise.
    *
    * This does not transfer any `programBytes` across the worker boundary —
    * the kernel reads the binary out of its own memfs at `programPath`. Use
@@ -441,8 +441,8 @@ export class BrowserKernel {
    * the VFS) to avoid re-shipping multi-megabyte binaries the kernel already
    * has.
    *
-   * Like every top-level spawn path, the kernel worker allocates and returns
-   * the pid.
+   * Like every top-level spawn path, the Rust kernel allocates the pid and
+   * the worker returns it.
    */
   async spawnFromVfs(
     programPath: string,

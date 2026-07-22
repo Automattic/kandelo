@@ -1,6 +1,6 @@
 /**
  * MariaDB mysql-test browser runner — boots a service-demo VFS image
- * with dinit (PID 1) bringing up:
+ * with dinit bringing up:
  *
  *   mariadb-bootstrap (scripted, oneshot) → mariadb (process)
  *
@@ -9,11 +9,11 @@
  * invocation is a transient kernel.spawn() of mysqltest.wasm — those
  * processes are not part of the dinit service tree.
  *
- * Process layout once boot completes:
- *   pid 1: dinit (--container)
- *   pid 100+: mariadb-bootstrap (exits cleanly after SQL drained)
- *   pid 100+: mariadb (daemon, port 3306)
- *   pid 100+: mysqltest (transient, one per __runMariadbTest call)
+ * Process layout once boot completes (all IDs are kernel-assigned):
+ *   dinit (--container)
+ *   mariadb-bootstrap (exits cleanly after SQL drained)
+ *   mariadb (daemon, port 3306)
+ *   mysqltest (transient, one per __runMariadbTest call)
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import kernelWasmUrl from "@kernel-wasm?url";
