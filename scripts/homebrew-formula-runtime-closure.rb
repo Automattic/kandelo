@@ -21,6 +21,7 @@ FORMULA_NAME = /\A[a-z0-9][a-z0-9._-]*\z/
 HOST_FORMULA_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
 TAP_NAME = /\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
 DEPENDENCY_LINE = /\A  depends_on "([^"]+)"(?: => (:[a-z]+|\[(?::[a-z]+)(?:, :[a-z]+)*\]))?\n\z/
+NATIVE_REQUIREMENT_LINE = /\A  depends_on KandeloFormulaSupport::([A-Z][A-Za-z0-9]*Requirement) => (:[a-z]+|\[(?::[a-z]+)(?:, :[a-z]+)*\])\n\z/
 ALLOWED_TAGS = Set[:build, :test, :optional, :recommended].freeze
 ALLOWED_CLASS_COMMANDS = Set[
   "depends_on", "desc", "homepage", "include", "keg_only", "license",
@@ -81,6 +82,24 @@ EXCLUDED_TAG_SETS = Set[
   Set[:build],
   Set[:test],
   Set[:optional],
+  Set[:build, :test],
+].freeze
+NATIVE_REQUIREMENTS = {
+  "BinaryenRequirement" => {
+    "executable" => "wasm-opt",
+    "formula" => "binaryen",
+  },
+  "PkgconfRequirement" => {
+    "executable" => "pkg-config",
+    "formula" => "pkgconf",
+  },
+  "WabtRequirement" => {
+    "executable" => "wasm-validate",
+    "formula" => "wabt",
+  },
+}.freeze
+NATIVE_REQUIREMENT_TAG_SETS = Set[
+  Set[:build],
   Set[:build, :test],
 ].freeze
 
@@ -703,12 +722,93 @@ canonical_tier2_runtime_assignment = lambda do |statement, lines|
       "  #{TIER2_RUNTIME_CONSTANT} = #{TIER2_RUNTIME_INITIALIZER_METHOD}\n"
 end
 
+canonical_native_requirement = lambda do |statement, lines|
+  next nil unless statement.is_a?(Array) && statement.first == :class
+
+  class_token = statement.dig(1, 1)
+  superclass = statement[2]
+  superclass_token = superclass[1] if superclass.is_a?(Array) && superclass.first == :var_ref
+  body = statement[3]
+  next nil unless class_token.is_a?(Array) && class_token.first == :@const &&
+                  superclass_token.is_a?(Array) && superclass_token.first == :@const &&
+                  superclass_token[1] == "Requirement" &&
+                  body.is_a?(Array) && body.first == :bodystmt &&
+                  body.drop(2).all?(&:nil?) && body[1].is_a?(Array) &&
+                  body[1].length == 2
+
+  class_name = class_token[1]
+  identity = NATIVE_REQUIREMENTS[class_name]
+  next nil if identity.nil?
+
+  line_number = class_token.dig(2, 0)
+  expected_lines = [
+    "  class #{class_name} < Requirement\n",
+    "    fatal true\n",
+    %(    satisfy(build_env: false) { which("#{identity.fetch("executable")}") }\n),
+    "  end\n",
+  ]
+  next nil unless line_number.is_a?(Integer) &&
+                  lines.slice(line_number - 1, expected_lines.length) == expected_lines
+
+  fatal_statement, satisfy_statement = body[1]
+  fatal_arguments = canonical_command_arguments.call(fatal_statement, "fatal")
+  fatal_value = fatal_arguments&.first
+  satisfy_call = satisfy_statement[1] if satisfy_statement.is_a?(Array) &&
+                                            satisfy_statement.first == :method_add_block
+  satisfy_arguments = satisfy_call[2] if satisfy_call.is_a?(Array) &&
+                                          satisfy_call.first == :method_add_arg &&
+                                          satisfy_call.dig(1, 0) == :fcall &&
+                                          satisfy_call.dig(1, 1, 0) == :@ident &&
+                                          satisfy_call.dig(1, 1, 1) == "satisfy"
+  satisfy_argument_list = satisfy_arguments[1] if satisfy_arguments.is_a?(Array) &&
+                                                    satisfy_arguments.first == :arg_paren
+  satisfy_hash = satisfy_argument_list[1]&.first if satisfy_argument_list.is_a?(Array) &&
+                                                     satisfy_argument_list.first == :args_add_block &&
+                                                     satisfy_argument_list[1].is_a?(Array) &&
+                                                     satisfy_argument_list[1].length == 1 &&
+                                                     satisfy_argument_list[2] == false
+  satisfy_assoc = satisfy_hash[1]&.first if satisfy_hash.is_a?(Array) &&
+                                            satisfy_hash.first == :bare_assoc_hash &&
+                                            satisfy_hash[1].is_a?(Array) &&
+                                            satisfy_hash[1].length == 1
+  satisfy_block = satisfy_statement[2] if satisfy_statement.is_a?(Array)
+  which_call = satisfy_block[2]&.first if satisfy_block.is_a?(Array) &&
+                                          satisfy_block.first == :brace_block &&
+                                          satisfy_block[1].nil? &&
+                                          satisfy_block[2].is_a?(Array) &&
+                                          satisfy_block[2].length == 1
+  which_arguments = which_call[2] if which_call.is_a?(Array) &&
+                                      which_call.first == :method_add_arg &&
+                                      which_call.dig(1, 0) == :fcall &&
+                                      which_call.dig(1, 1, 0) == :@ident &&
+                                      which_call.dig(1, 1, 1) == "which"
+  which_argument_list = which_arguments[1] if which_arguments.is_a?(Array) &&
+                                                which_arguments.first == :arg_paren
+  which_literal = which_argument_list[1]&.first if which_argument_list.is_a?(Array) &&
+                                                   which_argument_list.first == :args_add_block &&
+                                                   which_argument_list[1].is_a?(Array) &&
+                                                   which_argument_list[1].length == 1 &&
+                                                   which_argument_list[2] == false
+  next nil unless fatal_arguments&.length == 1 && fatal_value&.first == :var_ref &&
+                  fatal_value.dig(1, 0) == :@kw && fatal_value.dig(1, 1) == "true" &&
+                  satisfy_assoc.is_a?(Array) && satisfy_assoc.first == :assoc_new &&
+                  satisfy_assoc.dig(1, 0) == :@label &&
+                  satisfy_assoc.dig(1, 1) == "build_env:" &&
+                  satisfy_assoc.dig(2, 0) == :var_ref &&
+                  satisfy_assoc.dig(2, 1, 0) == :@kw &&
+                  satisfy_assoc.dig(2, 1, 1) == "false" &&
+                  literal_string.call(which_literal, identity.fetch("executable"))
+
+  [class_name, superclass]
+end
+
 support_validated = Set.new
 support_methods_by_tap = {}
 support_sha256_by_tap = {}
 support_runtime_sha256_by_tap = {}
 support_api_version_by_tap = {}
 support_tier2_package_keyword_by_tap = {}
+support_native_requirements_by_tap = {}
 validate_support = lambda do |context|
   context_tap_name = context.fetch("tap_name")
   next if support_validated.include?(context_tap_name)
@@ -835,6 +935,7 @@ validate_support = lambda do |context|
   runtime_assignment_index = nil
   support_api_version = nil
   tier2_package_keyword = false
+  native_requirements = Set.new
   module_body.each_with_index do |statement, statement_index|
     next if statement.is_a?(Array) && statement.first == :void_stmt
 
@@ -993,6 +1094,24 @@ validate_support = lambda do |context|
                 "#{support_path}"
         end
       end
+    when :class
+      native_requirement = canonical_native_requirement.call(statement, support_lines)
+      if native_requirement.nil?
+        abort "Kandelo Formula support contains an unsupported native Requirement class: #{support_path}"
+      end
+      class_name, allowed_superclass = native_requirement
+      unless native_requirements.add?(class_name)
+        abort "Kandelo Formula support repeats native Requirement #{class_name}: #{support_path}"
+      end
+      forbidden = find_forbidden_support_token.call(
+        statement,
+        Set[allowed_superclass.object_id],
+      )
+      unless forbidden.nil?
+        token, position = forbidden
+        abort "Kandelo Formula support native Requirement uses forbidden operation " \
+              "#{token.inspect} at #{support_path}:#{position.first}"
+      end
     when :assign
       left = statement[1]
       constant = left.dig(1) if left.is_a?(Array) && left.first == :var_field
@@ -1038,6 +1157,7 @@ validate_support = lambda do |context|
   )
   support_api_version_by_tap[context_tap_name] = support_api_version
   support_tier2_package_keyword_by_tap[context_tap_name] = tier2_package_keyword
+  support_native_requirements_by_tap[context_tap_name] = native_requirements.freeze
   support_validated.add(context_tap_name)
 end
 
@@ -1154,7 +1274,12 @@ parse_formula = lambda do |full_name|
     when :command
       method = call_name.call(statement)
       abort "Formula class uses unsupported DSL call #{method.inspect}: #{path}" unless ALLOWED_CLASS_COMMANDS.include?(method)
-      abort "Formula class DSL arguments must be static: #{path}" unless static_expression.call(statement[2])
+      # Every depends_on call is independently matched against one canonical
+      # literal Formula or allowlisted Requirement line below. Do not make the
+      # generic static-expression walker understand arbitrary constant paths.
+      unless method == "depends_on" || static_expression.call(statement[2])
+        abort "Formula class DSL arguments must be static: #{path}"
+      end
       if method == "include"
         line_number = statement.dig(1, 2, 0)
         unless line_number.is_a?(Integer) && lines.fetch(line_number - 1) == "  include KandeloFormulaSupport\n"
@@ -1380,18 +1505,57 @@ parse_formula = lambda do |full_name|
 
   declarations = direct_positions.map do |line_number, _column|
     line = lines.fetch(line_number - 1)
-    match = DEPENDENCY_LINE.match(line)
-    abort "depends_on must use canonical literal syntax at #{path}:#{line_number}" if match.nil?
-    [line_number, match[1], parse_tags.call(match[2], path, line_number)]
+    dependency_match = DEPENDENCY_LINE.match(line)
+    requirement_match = NATIVE_REQUIREMENT_LINE.match(line)
+    if !dependency_match.nil?
+      {
+        "line" => line_number,
+        "name" => dependency_match[1],
+        "requirement_class" => nil,
+        "tags" => parse_tags.call(dependency_match[2], path, line_number),
+      }
+    elsif !requirement_match.nil?
+      class_name = requirement_match[1]
+      identity = NATIVE_REQUIREMENTS[class_name]
+      if identity.nil?
+        abort "depends_on uses unknown native Requirement #{class_name}:#{path}:#{line_number}"
+      end
+      tags = parse_tags.call(requirement_match[2], path, line_number)
+      unless NATIVE_REQUIREMENT_TAG_SETS.include?(tags)
+        abort "native Requirement must include :build and may also include :test at " \
+              "#{path}:#{line_number}"
+      end
+      unless seen_requires.include?(support_require_line)
+        abort "native Requirement requires the canonical tap-local Formula support require: " \
+              "#{path}:#{line_number}"
+      end
+      validate_support.call(context)
+      unless support_native_requirements_by_tap.fetch(formula_tap_name).include?(class_name)
+        abort "native Requirement #{class_name} is not canonically defined by Formula support: " \
+              "#{path}:#{line_number}"
+      end
+      {
+        "line" => line_number,
+        "name" => identity.fetch("formula"),
+        "requirement_class" => "KandeloFormulaSupport::#{class_name}",
+        "tags" => tags,
+      }
+    else
+      abort "depends_on must use canonical literal Formula or native Requirement syntax at " \
+            "#{path}:#{line_number}"
+    end
   end
-  line_positions = declarations.map { |line_number, _dependency, _tags| [line_number, 2] }.sort
+  line_positions = declarations.map { |declaration| [declaration.fetch("line"), 2] }.sort
   unless line_positions == direct_positions
     abort "depends_on syntax does not match the parsed direct calls: #{path}"
   end
 
   seen = Set.new
   runtime_declarations = []
-  dependencies = declarations.each_with_object([]) do |(line_number, dependency, tags), selected|
+  dependencies = declarations.each_with_object([]) do |declaration, selected|
+    line_number = declaration.fetch("line")
+    dependency = declaration.fetch("name")
+    tags = declaration.fetch("tags")
     abort "duplicate dependency #{dependency.inspect} at #{path}:#{line_number}" unless seen.add?(dependency)
     next if [Set[:build], Set[:test], Set[:build, :test]].include?(tags)
 
@@ -1444,8 +1608,12 @@ parse_formula = lambda do |full_name|
   end
   formula_bottles[full_name] = bottle
   formula_runtime_declarations[full_name] = runtime_declarations
-  formula_dependency_declarations[full_name] = declarations.map do |_line_number, dependency, tags|
-    {"name" => dependency, "tags" => tags}
+  formula_dependency_declarations[full_name] = declarations.map do |declaration|
+    {
+      "name" => declaration.fetch("name"),
+      "requirement_class" => declaration.fetch("requirement_class"),
+      "tags" => declaration.fetch("tags"),
+    }
   end
   formula_tier2_bridges[full_name] = {
     "formula_sha256" => Digest::SHA256.hexdigest(source),

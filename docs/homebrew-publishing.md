@@ -1478,6 +1478,32 @@ and Chromium. Full reboot persistence is also not yet a supported claim: the
 current worker-owned mutable root has no whole-image export or durable
 Homebrew-state mount.
 
+A bounded executable prototype now proves that design against the pinned stock
+Homebrew revision. The static Formula parser recognizes only canonical
+`KandeloFormulaSupport::{Binaryen,Pkgconf,Wabt}Requirement` references and maps
+them back to the same `homebrew/core/<name>` identities used by the sealed
+publisher-native plan. Their support definitions are canonical static classes:
+each is fatal and its fixed `satisfy(build_env: false)` predicate names one
+allowlisted executable. Unknown classes, dynamic constant lookup, changed
+predicates, test-only tags, and noncanonical syntax fail without evaluating the
+Formula. A native Requirement must include `:build`; a tool needed in tests uses
+`[:build, :test]`. Pinned Homebrew treats a `:test`-only Requirement as a
+runtime Requirement while installing a bottle, so accepting that spelling
+would make the guest demand a publisher-only executable.
+
+The Node.js proof starts from the exact bootstrap image, verifies Homebrew
+`4ead8619231cb15cbe15e8e8188081e347d6f7cd`, selects tap commit
+`e7cfe3140e692965cd7abf10e8029633c5d20c02`, and invokes unmodified
+`brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2`. It neither
+creates `homebrew/core` nor uses API metadata, a synthetic core tree, an
+installer patch, or a dependency-bypass flag. The public bottle pours, its
+receipt reports `poured_from_bottle: true` with no runtime dependencies, and
+the installed executable completes a compression round trip. This is still
+prototype evidence, not the supported guest-install contract: the tap must
+adopt the canonical classes for the full native-tool allowlist, and Node.js and
+Chromium must cover install, reinstall, uninstall, and third-party lifecycle
+before user-facing install instructions are published.
+
 ABI 41 raised every fork continuation reserve from 16 KiB to 60 KiB. The
 earlier ABI 39 dispatcher and `/usr/bin/brew` alias-launcher measurements needed
 20,012 and 29,212 bytes respectively. The exact candidate bootstrap also found
