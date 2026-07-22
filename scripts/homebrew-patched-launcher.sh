@@ -1779,9 +1779,13 @@ homebrew_patched_launcher_isolate() {
     return 2
   fi
   primary_tap_root="$(cd "$primary_tap_root" && pwd -P)" || return 2
-  taps_root="$HOMEBREW_PATCHED_PREFIX/Library/Taps"
+  # Taps belong to HOMEBREW_REPOSITORY, not HOMEBREW_PREFIX. The reviewed
+  # launcher intentionally keeps the canonical Linuxbrew prefix while running
+  # from a patched repository worktree, so only the active repository can own
+  # the tapped checkouts that Formula resolution actually loads.
+  taps_root="$HOMEBREW_PATCHED_OVERLAY/Library/Taps"
   if [ ! -d "$taps_root" ] || [ -L "$taps_root" ]; then
-    echo "homebrew-patched-launcher: target Homebrew tap storage must be a real directory" >&2
+    echo "homebrew-patched-launcher: active Homebrew repository tap storage must be a real directory" >&2
     return 2
   fi
   taps_root="$(cd "$taps_root" && pwd -P)" || return 2
