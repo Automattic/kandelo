@@ -76,3 +76,18 @@ The layout is designed so later CI path filters can make conservative, explainab
 | `images/**`, `tools/mkrootfs/**` | Rootfs/VFS image checks and consumers of those images |
 
 These are intended categories, not a CI implementation. The current PR only keeps the paths clean enough for a future CI-filter PR to use them.
+
+## GitHub Pages Publication
+
+The browser demo, user guide, and generated host API documentation share one
+`gh-pages` branch but own distinct paths. The browser demo owns the branch root,
+the guide owns `guide/`, and the API documentation owns `api/`.
+
+`.github/workflows/browser-demos-pages.yml` builds all three trees before it
+replaces the complete branch. Replacing the branch is intentional: Vite gives
+browser assets content-addressed names, so retaining files from earlier builds
+would grow the published site without bound. `.github/workflows/docs.yml` can
+still publish either documentation subtree independently; each deployment
+cleans only its own `destination_dir` and leaves the other paths unchanged.
+Both publishers share one concurrency group so their writes to `gh-pages`
+cannot race.

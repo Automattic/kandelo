@@ -10,11 +10,14 @@ on:
       - "MANIFEST"
       - "apps/browser-demos/**"
       - "benchmarks/**"
+      - "docs-site/**"
       - "examples/**"
       - "host/package.json"
       - "host/package-lock.json"
       - "host/src/**"
+      - "host/typedoc.json"
       - "host/tsconfig.json"
+      - "host/tsconfig.docs.json"
       - "host/tsup.config.ts"
       - "web-libs/**"
       - "Cargo.lock"
@@ -35,6 +38,7 @@ on:
       - "scripts/build-musl.sh"
       - "scripts/build-programs.sh"
       - "scripts/build-rootfs.sh"
+      - "scripts/ci-check-pages-deployment.sh"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
       - "scripts/install-overlay-headers.sh"
@@ -44,6 +48,10 @@ on:
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
   workflow_dispatch:
+
+concurrency:
+  group: kandelo-gh-pages
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -100,9 +108,30 @@ jobs:
           VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
         run: npm run build
 
+      # The root publisher replaces the complete branch so content-addressed
+      # browser assets cannot accumulate forever. Include the independently
+      # published documentation trees in that replacement.
+      - name: Build user guide for the complete Pages tree
+        env:
+          VITEPRESS_BASE: /kandelo/guide/
+        run: npm run docs:build
+
+      - name: Typecheck API docs for the complete Pages tree
+        working-directory: host
+        run: npx tsc --noEmit -p tsconfig.docs.json
+
+      - name: Build API docs for the complete Pages tree
+        working-directory: host
+        run: npx typedoc
+
+      - name: Add documentation to the complete Pages tree
+        run: |
+          cp -R docs-site/.vitepress/dist apps/browser-demos/dist/guide
+          cp -R host/docs apps/browser-demos/dist/api
+
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: apps/browser-demos/dist
-          keep_files: true
+          force_orphan: true
