@@ -1,0 +1,21 @@
+[[packages]]
+name = "sample-homebrew-sample-vfs"
+version = "2.12.3"
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "/test/fixtures/homebrew-gallery/nonbrowser/sample-homebrew-sample-vfs.tar.zst"
+archive_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+cache_key_sha = "1111111111111111111111111111111111111111111111111111111111111111"
+browser_compatible = false
+
+[[packages]]
+name = "sample-homebrew-sample-sentinel"
+version = "2.12.3"
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "/test/fixtures/homebrew-gallery/nonbrowser/sample-homebrew-sample-sentinel.tar.zst"
+archive_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+cache_key_sha = "1111111111111111111111111111111111111111111111111111111111111111"
+browser_compatible = true

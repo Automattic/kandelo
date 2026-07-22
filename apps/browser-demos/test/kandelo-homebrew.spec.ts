@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
-import { ABI_VERSION } from "../../../host/src/generated/abi";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -14,12 +13,7 @@ import {
 
 const FIXTURE_BASE_PATH = "/__kandelo-homebrew-test";
 const FIXTURE_ROOT = new URL("../public/__kandelo-homebrew-test/", import.meta.url);
-
-type FixtureEntry = {
-  id: string;
-  title: string;
-  browserCompatible: boolean;
-};
+const GALLERY_FIXTURE_BASE_PATH = "/test/fixtures/homebrew-gallery";
 
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;
@@ -95,41 +89,12 @@ async function runTerminalCommand(
   await waitForTerminalContent(page, expected, timeout);
 }
 
-async function writeHomebrewGalleryFixture(
-  name: string,
-  entries: FixtureEntry[],
-): Promise<string> {
-  const fixtureDir = new URL(`${name}/`, FIXTURE_ROOT);
-  await mkdir(fixtureDir, { recursive: true });
-  await writeFile(new URL("gallery.json", fixtureDir), JSON.stringify({
-    source_id: "kandelo-homebrew",
-    index_url: "index.toml",
-    entries: entries.map((entry) => ({
-      id: entry.id,
-      title: entry.title,
-      description: "A sample package poured from a Homebrew bottle.",
-      packages: [{ name: packageNameForEntry(entry), version: "2.12.3" }],
-    })),
-  }), "utf8");
-  await writeFile(new URL("index.toml", fixtureDir), `abi_version = ${ABI_VERSION}
-
-${entries.map((entry) => `[[packages]]
-name = "${packageNameForEntry(entry)}"
-version = "2.12.3"
-
-[packages.binary.wasm32]
-status = "success"
-archive_url = "${FIXTURE_BASE_PATH}/${name}/${packageNameForEntry(entry)}.tar.zst"
-archive_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-cache_key_sha = "1111111111111111111111111111111111111111111111111111111111111111"
-browser_compatible = ${entry.browserCompatible ? "true" : "false"}
-`).join("\n")}
-`, "utf8");
-  return `${FIXTURE_BASE_PATH}/${name}/gallery.json`;
-}
-
-function packageNameForEntry(entry: FixtureEntry): string {
-  return `sample-homebrew-${entry.id}`;
+function homebrewGalleryFixturePath(name: "browser" | "nonbrowser"): string {
+  // These manifest and index pairs exist before Vite starts. The app's
+  // service worker owns same-origin fetches, so Playwright request routes do
+  // not reliably see them. Creating files after Vite starts is also racy
+  // because the server can discover one sibling before the other.
+  return `${GALLERY_FIXTURE_BASE_PATH}/${name}/gallery.json`;
 }
 
 async function writeHomebrewDefaultShellFixture(): Promise<string> {
@@ -188,36 +153,33 @@ test("strict Homebrew publisher smoke reads Vite shadow-root errors", async ({ p
   await expect(handleViteOverlay(page, false)).rejects.toThrow(/missing ABI node\.wasm/);
 });
 
-test("software gallery hides wasm32 entries without browser-compatible metadata", async ({ page }) => {
-  const manifestPath = await writeHomebrewGalleryFixture("nonbrowser", [
-    { id: "sample-vfs", title: "Sample Homebrew VFS", browserCompatible: false },
-    { id: "sample-sentinel", title: "Sample Browser Sentinel", browserCompatible: true },
-  ]);
-  await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
-  await openNewMachineLauncher(page);
+test.describe("software gallery fixtures", () => {
+  test("hides wasm32 entries without browser-compatible metadata", async ({ page }) => {
+    const manifestPath = homebrewGalleryFixturePath("nonbrowser");
+    await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
+    await openNewMachineLauncher(page);
 
-  await expect(galleryRowByTitle(page, /^Sample Browser Sentinel$/)).toBeVisible({
-    timeout: 90_000,
+    await expect(galleryRowByTitle(page, /^Sample Browser Sentinel$/)).toBeVisible({
+      timeout: 90_000,
+    });
+    await expect(galleryRowByTitle(page, /^Sample Homebrew VFS$/)).toHaveCount(0);
   });
-  await expect(galleryRowByTitle(page, /^Sample Homebrew VFS$/)).toHaveCount(0);
-});
 
-test("browser-compatible gallery archive launch failures are visible", async ({ page }) => {
-  const manifestPath = await writeHomebrewGalleryFixture("browser", [
-    { id: "sample-vfs", title: "Sample Homebrew VFS", browserCompatible: true },
-  ]);
-  await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
-  await openNewMachineLauncher(page);
+  test("makes browser-compatible archive launch failures visible", async ({ page }) => {
+    const manifestPath = homebrewGalleryFixturePath("browser");
+    await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
+    await openNewMachineLauncher(page);
 
-  const row = galleryRowByTitle(page, /^Sample Homebrew VFS$/);
-  await expect(row).toBeVisible({ timeout: 90_000 });
-  await row.getByRole("button", { name: "Launch" }).click();
+    const row = galleryRowByTitle(page, /^Sample Homebrew VFS$/);
+    await expect(row).toBeVisible({ timeout: 90_000 });
+    await row.getByRole("button", { name: "Launch" }).click();
 
-  await expect(page.getByText("Failed to boot Sample Homebrew VFS")).toBeVisible({
-    timeout: 120_000,
+    await expect(page.getByText("Failed to boot Sample Homebrew VFS")).toBeVisible({
+      timeout: 120_000,
+    });
+    await expect(page.getByText(/404|artifact|archive/i).first()).toBeVisible();
+    await expect(page.getByText(/third-party gallery entry/i)).toBeVisible();
   });
-  await expect(page.getByText(/404|artifact|archive/i).first()).toBeVisible();
-  await expect(page.getByText(/third-party gallery entry/i)).toBeVisible();
 });
 
 test("Homebrew file-formula VFS image boots in browser and runs file --version", async ({ page }) => {
